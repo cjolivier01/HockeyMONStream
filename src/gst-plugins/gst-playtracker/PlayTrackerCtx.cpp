@@ -6,7 +6,9 @@
 #include "hockeymom/csrc/play_tracker/TranslatingBox.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
+#include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/PlotContext.h"
+#include "hstream/src/libs/common/Status.h"
 
 #include <nvdsmeta.h>
 
@@ -39,9 +41,13 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "max-lost-track-age",
       "max-positions",
       "max-speed-h",
+      "max-speed-ratio-x",
+      "max-speed-ratio-y",
       "max-speed-w",
       "max-speed-x",
       "max-speed-y",
+      "max-accel-ratio-x",
+      "max-accel-ratio-y",
       "max-velocity-positions",
       "max-width",
       "max-height",
@@ -58,6 +64,7 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "resizing-stop-delay-cooldown-frames",
       "resizing-stop-on-dir-change-delay",
       "resizing-time-to-dest-speed-limit-frames",
+      "resizing-time-to-dest-stop-speed-threshold",
       "size-ratio-thresh-grow-dh",
       "size-ratio-thresh-grow-dw",
       "size-ratio-thresh-shrink-dh",
@@ -69,7 +76,9 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "cancel-stop-hysteresis-frames",
       "post-nonstop-stop-delay-count",
       "time-to-dest-speed-limit-frames",
+      "time-to-dest-stop-speed-threshold",
       "unsticky-translation-size-ratio",
+      "follower-box-min-height-ratio",
   };
   if (!node) {
     return true;
@@ -152,6 +161,7 @@ ResizingConfig create_resizing_config(
   SET_LOCATOR(locator, config, resizing_stop_cancel_hysteresis_frames);
   SET_LOCATOR(locator, config, resizing_stop_delay_cooldown_frames);
   SET_LOCATOR(locator, config, resizing_time_to_dest_speed_limit_frames);
+  SET_LOCATOR(locator, config, resizing_time_to_dest_stop_speed_threshold);
   SET_LOCATOR(locator, config, sticky_sizing);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dw);
   SET_LOCATOR(locator, config, size_ratio_thresh_grow_dh);
@@ -176,6 +186,7 @@ TranslatingBoxConfig create_translating_box_config(
   SET_LOCATOR(locator, config, cancel_stop_hysteresis_frames);
   SET_LOCATOR(locator, config, stop_delay_cooldown_frames);
   SET_LOCATOR(locator, config, time_to_dest_speed_limit_frames);
+  SET_LOCATOR(locator, config, time_to_dest_stop_speed_threshold);
   SET_LOCATOR(locator, config, sticky_translation);
   SET_LOCATOR(locator, config, sticky_size_ratio_to_frame_width);
   SET_LOCATOR(locator, config, sticky_translation_gaussian_mult);
@@ -226,7 +237,7 @@ const std::unordered_map<std::string, float> CAMERA_TYPE_MAX_SPEEDS = {
     {"LiveBarn", 300.0},
 };
 
-void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const std::string& camera = "GoPro") {
+void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const std::string& camera) {
   const float max_camera_speed = CAMERA_TYPE_MAX_SPEEDS.at(camera);
   const float scale = pt_config.play_detector.fps_speed_scale;
   const float camera_box_max_speed_x = std::max(arena_box.width() / max_camera_speed, 12.0f);
@@ -285,14 +296,28 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
 PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::Node& yaml) {
   PlayTrackerConfig config;
   hm::utils::ConfigLocator locator{
-      .ignored{"live-boxes", "hstream-apply-to-fast-box", "hstream-apply-to-follower-box", "hstream-runtime-tuning"},
+      .ignored{
+          "camera-name",
+          "follower-box-min-height-ratio",
+          "hstream-apply-to-fast-box",
+          "hstream-apply-to-follower-box",
+          "hstream-runtime-tuning",
+          "live-boxes",
+          "max-accel-ratio-x",
+          "max-accel-ratio-y",
+          "max-speed-ratio-x",
+          "max-speed-ratio-y",
+      },
   };
   std::vector<YAML::Node> live_box_yamls;
 
   if (yaml["live-boxes"]) {
     YAML::Node live_boxes = yaml["live-boxes"];
-    // Iterate over the list
-    for (const auto& box_yaml : live_boxes) {
+    const auto normalized_order = hm::normalized_playtracker_live_box_order(live_boxes);
+    if (!normalized_order.ok())
+      throw std::invalid_argument(normalized_order.status().ToString());
+    for (const size_t index : *normalized_order) {
+      const YAML::Node box_yaml = live_boxes[index];
       live_box_yamls.emplace_back(box_yaml);
       config.living_boxes.emplace_back(create_all_living_box_config(arena_box, box_yaml));
     }
@@ -306,7 +331,25 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   config.ignore_outlier_players = true; // EXPERIMENTAL
   config.ignore_left_and_right_extremes = false; // EXPERIMENTAL
 
-  adjust_config(arena_box, config);
+  const std::string camera_name = yaml["camera-name"].as<std::string>();
+  adjust_config(arena_box, config, camera_name);
+  const float max_speed_ratio_x = yaml["max-speed-ratio-x"].as<float>();
+  const float max_speed_ratio_y = yaml["max-speed-ratio-y"].as<float>();
+  const float max_accel_ratio_x = yaml["max-accel-ratio-x"].as<float>();
+  const float max_accel_ratio_y = yaml["max-accel-ratio-y"].as<float>();
+  for (AllLivingBoxConfig& box : config.living_boxes) {
+    box.max_speed_x *= max_speed_ratio_x;
+    box.max_speed_y *= max_speed_ratio_y;
+    box.max_accel_x *= max_accel_ratio_x;
+    box.max_accel_y *= max_accel_ratio_y;
+    box.max_speed_w *= max_speed_ratio_x;
+    box.max_speed_h *= max_speed_ratio_y;
+    box.max_accel_w *= max_accel_ratio_x;
+    box.max_accel_h *= max_accel_ratio_y;
+  }
+  if (!config.living_boxes.empty()) {
+    config.living_boxes.back().min_height = arena_box.height() * yaml["follower-box-min-height-ratio"].as<float>();
+  }
   for (size_t i = 0; i < live_box_yamls.size() && i < config.living_boxes.size(); ++i) {
     const std::optional<FloatValue> fixed_aspect_ratio =
         i + 1 == config.living_boxes.size() ? std::optional<FloatValue>(16.0 / 9.0) : std::nullopt;
@@ -316,8 +359,6 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   SET_LOCATOR(locator, config, max_lost_track_age);
   SET_LOCATOR(locator, config, ignore_largest_bbox);
   set_config_from_yaml(yaml, locator);
-
-  config.no_wide_start = true;
 
   return config;
 }
@@ -329,7 +370,7 @@ absl::Status validate_runtime_tuning_target(
   if (tuning.apply_to_fast_box && box_count < 1) {
     return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
   }
-  if (tuning.apply_to_follower_box && box_count < 2) {
+  if (tuning.apply_to_follower_box && box_count < 1) {
     return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
   }
   if (tracker_context.base_play_tracker_config.living_boxes.size() != box_count) {
@@ -364,7 +405,8 @@ absl::Status apply_runtime_tuning_to_tracker(
   }
   const size_t box_count = tracker_context->play_tracker_config.living_boxes.size();
   for (size_t index = 0; index < box_count; ++index) {
-    const bool selected = (index == 0 && tuning.apply_to_fast_box) || (index == 1 && tuning.apply_to_follower_box);
+    const bool selected =
+        (index == 0 && tuning.apply_to_fast_box) || (index + 1 == box_count && tuning.apply_to_follower_box);
     if (!selected) {
       continue;
     }
@@ -732,68 +774,127 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
     if (!live_boxes || !live_boxes.IsSequence() || live_boxes.size() == 0) {
       return absl::InvalidArgumentError("playtracker config play-tracker.live-boxes must be a non-empty sequence");
     }
+    const YAML::Node play_tracker = yaml["play-tracker"];
+    auto require_scalar = [](const YAML::Node& parent, const char* key, const char* context) -> absl::Status {
+      const YAML::Node value = parent[key];
+      if (!value || value.IsNull() || !value.IsScalar())
+        return absl::InvalidArgumentError(absl::StrCat(context, ".", key, " must be a non-null scalar"));
+      return absl::OkStatus();
+    };
+    auto require_bool = [&](const YAML::Node& parent, const char* key, const char* context) -> absl::Status {
+      HM_RETURN_IF_ERROR(require_scalar(parent, key, context));
+      try {
+        (void)parent[key].as<bool>();
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(absl::StrCat("invalid ", context, ".", key, ": ", error.what()));
+      }
+      return absl::OkStatus();
+    };
+    auto require_int = [&](const YAML::Node& parent, const char* key, const char* context) -> absl::Status {
+      HM_RETURN_IF_ERROR(require_scalar(parent, key, context));
+      try {
+        (void)parent[key].as<int>();
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(absl::StrCat("invalid ", context, ".", key, ": ", error.what()));
+      }
+      return absl::OkStatus();
+    };
+    auto require_number = [&](const YAML::Node& parent, const char* key, const char* context) -> absl::Status {
+      HM_RETURN_IF_ERROR(require_scalar(parent, key, context));
+      try {
+        const double parsed = parent[key].as<double>();
+        if (!std::isfinite(parsed))
+          return absl::InvalidArgumentError(absl::StrCat(context, ".", key, " must be finite"));
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(absl::StrCat("invalid ", context, ".", key, ": ", error.what()));
+      }
+      return absl::OkStatus();
+    };
+    HM_RETURN_IF_ERROR(require_scalar(play_tracker, "camera-name", "play-tracker"));
+    for (const char* key : {"no-wide-start", "ignore-largest-bbox"})
+      HM_RETURN_IF_ERROR(require_bool(play_tracker, key, "play-tracker"));
+    for (const char* key : {"nonstop-delay-count", "overshoot-stop-delay-count"})
+      HM_RETURN_IF_ERROR(require_int(play_tracker, key, "play-tracker"));
+    for (const char* key : {
+             "min-considered-group-velocity",
+             "group-ratio-threshold",
+             "group-velocity-speed-ratio",
+             "scale-speed-constraints",
+             "overshoot-scale-speed-ratio",
+             "max-speed-ratio-x",
+             "max-speed-ratio-y",
+             "max-accel-ratio-x",
+             "max-accel-ratio-y",
+             "follower-box-min-height-ratio",
+         }) {
+      HM_RETURN_IF_ERROR(require_number(play_tracker, key, "play-tracker"));
+    }
+    const auto roles = hm::resolve_playtracker_live_box_roles(live_boxes);
+    if (!roles.ok())
+      return roles.status();
+    for (size_t index = 0; index < live_boxes.size(); ++index) {
+      const YAML::Node box = live_boxes[index];
+      const std::string context = absl::StrCat("play-tracker.live-boxes[", index, "]");
+      for (const char* key : {
+               "time-to-dest-speed-limit-frames",
+               "resizing-stop-on-dir-change-delay",
+               "resizing-stop-cancel-hysteresis-frames",
+               "resizing-stop-delay-cooldown-frames",
+               "resizing-time-to-dest-speed-limit-frames",
+           }) {
+        HM_RETURN_IF_ERROR(require_int(box, key, context.c_str()));
+      }
+      for (const char* key : {
+               "time-to-dest-stop-speed-threshold",
+               "resizing-time-to-dest-stop-speed-threshold",
+           }) {
+        HM_RETURN_IF_ERROR(require_number(box, key, context.c_str()));
+      }
+      HM_RETURN_IF_ERROR(require_bool(box, "resizing-cancel-stop-on-opposite-dir", context.c_str()));
+    }
+    const YAML::Node follower = live_boxes[roles->follower_index];
+    const std::string follower_context = absl::StrCat("play-tracker.live-boxes[", roles->follower_index, "]");
+    for (const char* key : {
+             "stop-translation-on-dir-change-delay",
+             "cancel-stop-hysteresis-frames",
+             "stop-delay-cooldown-frames",
+             "post-nonstop-stop-delay-count",
+         }) {
+      HM_RETURN_IF_ERROR(require_int(follower, key, follower_context.c_str()));
+    }
+    HM_RETURN_IF_ERROR(require_bool(follower, "cancel-stop-on-opposite-dir", follower_context.c_str()));
+    for (const char* key : {
+             "sticky-size-ratio-to-frame-width",
+             "sticky-translation-gaussian-mult",
+             "unsticky-translation-size-ratio",
+             "scale-dest-width",
+             "scale-dest-height",
+         }) {
+      HM_RETURN_IF_ERROR(require_number(follower, key, follower_context.c_str()));
+    }
     std::string numeric_error;
     if (!gst_hm_playtracker::validate_numeric_yaml_fields(yaml["play-tracker"], &numeric_error)) {
       return absl::InvalidArgumentError(numeric_error);
+    }
+    if (play_tracker["camera-name"] &&
+        !gst_hm_playtracker::CAMERA_TYPE_MAX_SPEEDS.count(play_tracker["camera-name"].as<std::string>())) {
+      return absl::InvalidArgumentError("unsupported playtracker camera-name");
+    }
+    for (const char* key : {
+             "follower-box-min-height-ratio",
+             "max-accel-ratio-x",
+             "max-accel-ratio-y",
+             "max-speed-ratio-x",
+             "max-speed-ratio-y",
+         }) {
+      if (play_tracker[key] && play_tracker[key].as<double>() < 0.0)
+        return absl::InvalidArgumentError(absl::StrCat("playtracker ", key, " must be non-negative"));
     }
     (void)gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 1920, 1080), yaml["play-tracker"]);
   } catch (const std::exception& exc) {
     return absl::InvalidArgumentError(absl::StrCat("invalid playtracker config file: ", exc.what()));
   }
   return absl::OkStatus();
-}
-
-absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file) {
-  absl::Status status = DsPlayTrackerValidateConfigFile(config_file);
-  if (!status.ok()) {
-    return status;
-  }
-  try {
-    const YAML::Node play_tracker = YAML::LoadFile(config_file)["play-tracker"];
-    const YAML::Node runtime = play_tracker["hstream-runtime-tuning"];
-    auto read_int = [](const YAML::Node& node, const char* key) -> std::optional<int> {
-      return node[key] && node[key].IsScalar() ? std::optional<int>(node[key].as<int>()) : std::nullopt;
-    };
-    auto read_float = [](const YAML::Node& node, const char* key) -> std::optional<float> {
-      return node[key] && node[key].IsScalar() ? std::optional<float>(node[key].as<float>()) : std::nullopt;
-    };
-    auto read_bool = [](const YAML::Node& node, const char* key, bool fallback) {
-      return node[key] && node[key].IsScalar() ? node[key].as<bool>() : fallback;
-    };
-    const bool apply_to_fast = read_bool(play_tracker, "hstream-apply-to-fast-box", false);
-    const bool apply_to_follower = read_bool(play_tracker, "hstream-apply-to-follower-box", true);
-    const YAML::Node live_boxes = play_tracker["live-boxes"];
-    const size_t live_box_count = live_boxes && live_boxes.IsSequence() ? live_boxes.size() : 0;
-    if (apply_to_fast && live_box_count < 1) {
-      return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
-    }
-    if (apply_to_follower && live_box_count < 2) {
-      return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
-    }
-    return DsPlayTrackerRuntimeTuning{
-        .stop_on_dir_change_delay = read_int(runtime, "stop-translation-on-dir-change-delay"),
-        .cancel_on_opposite =
-            runtime["cancel-stop-on-opposite-dir"] && runtime["cancel-stop-on-opposite-dir"].IsScalar()
-            ? std::optional<bool>(runtime["cancel-stop-on-opposite-dir"].as<bool>())
-            : std::nullopt,
-        .cancel_hysteresis_frames = read_int(runtime, "cancel-stop-hysteresis-frames"),
-        .stop_delay_cooldown_frames = read_int(runtime, "stop-delay-cooldown-frames"),
-        .post_nonstop_stop_delay_count = read_int(runtime, "post-nonstop-stop-delay-count"),
-        .time_to_dest_speed_limit_frames = read_int(runtime, "time-to-dest-speed-limit-frames"),
-        .overshoot_stop_delay_count = read_int(runtime, "overshoot-stop-delay-count"),
-        .overshoot_scale_speed_ratio = read_float(runtime, "overshoot-scale-speed-ratio"),
-        .max_speed_x = read_float(runtime, "max-speed-x"),
-        .max_speed_y = read_float(runtime, "max-speed-y"),
-        .max_accel_x = read_float(runtime, "max-accel-x"),
-        .max_accel_y = read_float(runtime, "max-accel-y"),
-        .apply_to_fast_box = apply_to_fast,
-        .apply_to_follower_box = apply_to_follower,
-        .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical"),
-        .dynamic_acceleration_scaling = read_float(runtime, "dynamic-acceleration-scaling"),
-    };
-  } catch (const std::exception& exc) {
-    return absl::InvalidArgumentError(absl::StrCat("invalid playtracker runtime config: ", exc.what()));
-  }
 }
 
 absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning) {
@@ -972,7 +1073,7 @@ absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrac
           lbox.get(),
           play_tracker_ctx.play_tracker_config.living_boxes.at(i),
           /*thickness=*/4,
-          gst_hm_playtracker::track_colors.at(i),
+          gst_hm_playtracker::track_colors[i % gst_hm_playtracker::track_colors.size()],
           /*draw_thresholds=*/true,
           1.0 / scale_x,
           1.0 / scale_y,

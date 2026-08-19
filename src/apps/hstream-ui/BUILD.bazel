@@ -54,6 +54,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":scoreboard_selection_dialog",
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:user_config",
         "//src/libs/stitching:game_config",
         "@qt//:qt_widgets",
@@ -101,6 +103,7 @@ cc_test(
     deps = [
         ":hstream_window",
         ":scoreboard_selection_dialog",
+        "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
         "@yaml-cpp",

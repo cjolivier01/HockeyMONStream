@@ -19,10 +19,10 @@
 #include "nvbufsurface.h"
 
 #if __has_include("nvdscustomusermeta.h")
-    #define HAS_CUSTOM_USER_META 1
-    #include "nvdscustomusermeta.h"
+#define HAS_CUSTOM_USER_META 1
+#include "nvdscustomusermeta.h"
 #else
-    #define HAS_CUSTOM_USER_META 0
+#define HAS_CUSTOM_USER_META 0
 #endif
 
 #include <glib-2.0/glib.h>
@@ -48,6 +48,8 @@ enum {
   PROP_UNIQUE_ID,
   PROP_GPU_DEVICE_ID,
   PROP_DETECTION_MASK_FILE,
+  PROP_RAISE_BBOX_CENTER_BY_HEIGHT_RATIO,
+  PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO,
 };
 
 #define CHECK_NVDS_MEMORY_AND_GPUID(object, surface)                                                       \
@@ -202,6 +204,30 @@ static void gst_dsfieldmask_class_init(GstDsFieldMaskClass* klass) {
           0,
           GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
 
+  g_object_class_install_property(
+      gobject_class,
+      PROP_RAISE_BBOX_CENTER_BY_HEIGHT_RATIO,
+      g_param_spec_float(
+          "raise-bbox-center-by-height-ratio",
+          "Raise bbox center ratio",
+          "Bounding-box height ratio subtracted from the center sampling point",
+          -G_MAXFLOAT,
+          G_MAXFLOAT,
+          0.0F,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
+      PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO,
+      g_param_spec_float(
+          "lower-bbox-bottom-by-height-ratio",
+          "Lower bbox bottom ratio",
+          "Bounding-box height ratio subtracted from the bottom sampling point",
+          -G_MAXFLOAT,
+          G_MAXFLOAT,
+          0.0F,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
   /* Set sink and src pad capabilities */
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dsfieldmask_src_template));
   gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&gst_dsfieldmask_sink_template));
@@ -231,6 +257,8 @@ static void gst_dsfieldmask_init(GstDsFieldMask* dsfieldmask) {
   /* Initialize all property variables to default values */
   dsfieldmask->unique_id = DEFAULT_UNIQUE_ID;
   dsfieldmask->gpu_id = DEFAULT_GPU_ID;
+  dsfieldmask->raise_bbox_center_by_height_ratio = 0.0F;
+  dsfieldmask->lower_bbox_bottom_by_height_ratio = 0.0F;
 
   /* This quark is required to identify NvDsMeta when iterating through
    * the buffer metadatas */
@@ -259,6 +287,12 @@ static void gst_dsfieldmask_set_property(GObject* object, guint prop_id, const G
         dsfieldmask->detection_mask_file[0] = '\0';
       }
     } break;
+    case PROP_RAISE_BBOX_CENTER_BY_HEIGHT_RATIO:
+      dsfieldmask->raise_bbox_center_by_height_ratio = g_value_get_float(value);
+      break;
+    case PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO:
+      dsfieldmask->lower_bbox_bottom_by_height_ratio = g_value_get_float(value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -281,6 +315,12 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
     case PROP_DETECTION_MASK_FILE:
       g_value_set_string(value, dsfieldmask->detection_mask_file);
       break;
+    case PROP_RAISE_BBOX_CENTER_BY_HEIGHT_RATIO:
+      g_value_set_float(value, dsfieldmask->raise_bbox_center_by_height_ratio);
+      break;
+    case PROP_LOWER_BBOX_BOTTOM_BY_HEIGHT_RATIO:
+      g_value_set_float(value, dsfieldmask->lower_bbox_bottom_by_height_ratio);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
@@ -293,7 +333,11 @@ static void gst_dsfieldmask_get_property(GObject* object, guint prop_id, GValue*
 static gboolean gst_dsfieldmask_start(GstBaseTransform* btrans) {
   GstDsFieldMask* dsfieldmask = GST_DSFIELDMASK(btrans);
 
-  DsFieldMaskInitParams init_params = {.detection_mask_file = dsfieldmask->detection_mask_file};
+  DsFieldMaskInitParams init_params = {
+      .detection_mask_file = dsfieldmask->detection_mask_file,
+      .raise_bbox_center_by_height_ratio = dsfieldmask->raise_bbox_center_by_height_ratio,
+      .lower_bbox_bottom_by_height_ratio = dsfieldmask->lower_bbox_bottom_by_height_ratio,
+  };
 
   /* Algorithm specific initializations and resource allocation. */
   dsfieldmask->dsfieldmasklib_ctx = DsFieldMaskCtxInit(&init_params);

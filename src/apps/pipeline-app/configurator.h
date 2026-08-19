@@ -52,6 +52,12 @@ absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_fi
     const std::filesystem::path& configured_path);
 absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config);
 std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
+using ConfigLeafRanks = std::map<std::string, int>;
+absl::StatusOr<YAML::Node> build_effective_playtracker_config(
+    const YAML::Node& effective_config,
+    const ConfigLeafRanks& canonical_value_ranks,
+    int native_base_rank,
+    const YAML::Node& base_playtracker_config);
 
 } // namespace configurator_internal
 
@@ -69,6 +75,10 @@ class Configurator {
   bool overlay_config(const std::string& node_name, const std::string& filename);
 
   absl::Status apply_config_item(const std::string& key, const std::string& value);
+
+  // Translate canonical baseline/user/game/CLI settings into the native
+  // pipeline properties that currently implement those features.
+  absl::Status apply_supported_baseline_mappings();
 
   absl::StatusOr<std::optional<YAML::Node>> load_private_config();
   absl::Status save_private_config(
@@ -115,7 +125,8 @@ class Configurator {
       bool clean_stitching_from_control_points = false,
       const std::string& clean_expected_invalidation_id = {},
       bool show_render_sink = false,
-      double show_render_scale = -1.0);
+      double show_render_scale = -1.0,
+      const std::filesystem::path& pipeline_config_dir = {});
 
   absl::Status prepare_initial_pipeline_position(
       NvDsPipeline& pipeline,
@@ -133,6 +144,8 @@ class Configurator {
  private:
   absl::Status ensure_user_config_snapshot();
   std::filesystem::path resolved_game_dir();
+  void record_explicit_overlay(const YAML::Node& overlay, const std::string& prefix, int rank);
+  int explicit_value_rank(const std::string& path) const;
 
   // Refactoring helpers to keep complete_configuration() readable
   void apply_gpu_override(YAML::Node& pipeline);
@@ -141,10 +154,14 @@ class Configurator {
       const std::filesystem::path& game_dir,
       bool force,
       bool& has_hmstitcher);
-  void map_common_config_keys();
+  absl::Status map_common_config_keys();
+  absl::Status materialize_playtracker_config(
+      YAML::Node& pipeline,
+      const std::filesystem::path& game_dir,
+      const std::filesystem::path& pipeline_config_dir);
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
-  void apply_scoreboard_perspective(YAML::Node& pipeline);
+  absl::Status apply_scoreboard_perspective(YAML::Node& pipeline);
   absl::Status gather_stitching_videos(
       const std::filesystem::path& game_dir,
       bool force,
@@ -193,6 +210,13 @@ class Configurator {
 
   // The fully-realzied merged config
   YAML::Node config_;
+  // Bundled baseline plus the user overlay, before per-game values. This is
+  // the lower layer used to decide whether a game must persist an explicit
+  // zero/nonzero override.
+  YAML::Node lower_layer_config_;
+  // Leaf-path provenance: user=1, game=2, CLI=3. Structural app YAML is not
+  // recorded, and bundled baseline is implicit rank 0.
+  std::map<std::string, int> explicit_value_ranks_;
   std::optional<YAML::Node> user_config_snapshot_;
   std::optional<std::filesystem::path> resolved_game_dir_;
   YAML::Node private_config_;
@@ -202,6 +226,7 @@ class Configurator {
   mutable std::map<std::string, int> archive_lock_fds_;
   mutable std::map<std::string, int> archive_work_lock_fds_;
   mutable std::map<std::string, std::filesystem::path> archive_run_paths_;
+  std::map<std::string, int> playtracker_runtime_lock_fds_;
 
   bool set_stream_offsets_{false};
 };

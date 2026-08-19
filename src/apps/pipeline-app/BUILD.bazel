@@ -33,6 +33,8 @@ PIPELINE_APP_DEPS = [
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
     "//src/libs/common:fs",
+    "//src/libs/common:baseline_config",
+    "//src/libs/common:playtracker_config_roles",
     "//src/libs/common:user_config",
     "//src/libs/stitching",
     "//src/libs/wireless:stream_control",
@@ -85,6 +87,7 @@ cc_test(
         "deepstream_app.h",
     ],
     copts = PIPELINE_APP_COPTS,
+    data = ["//configs:ds_hockey_app_config.yaml"],
     linkopts = PIPELINE_APP_LINKOPTS,
     deps = PIPELINE_APP_DEPS,
 )
@@ -95,9 +98,11 @@ cc_test(
     args = [
         "$(location :hstream-cli)",
         "$(location //configs:ds_hockey_configure_stitching.yaml)",
+        "$(location //configs:baseline.yaml)",
     ],
     data = [
         ":hstream-cli",
+        "//configs:baseline.yaml",
         "//configs:ds_hockey_configure_stitching.yaml",
     ],
 )
@@ -274,6 +279,7 @@ cc_test(
     ],
     deps = [
         "//src/apps/apps-common:deepstream_apps_common",
+        "//src/libs/common:baseline_config",
         "//src/libs/common:utils",
         "@com_google_absl//absl/status:statusor",
         "@deepstream//:deepstream_lib",

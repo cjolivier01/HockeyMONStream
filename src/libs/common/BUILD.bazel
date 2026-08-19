@@ -84,6 +84,46 @@ cc_library(
 )
 
 cc_library(
+    name = "baseline_config",
+    srcs = ["BaselineConfig.cpp"],
+    hdrs = ["BaselineConfig.h"],
+    copts = ["-std=c++17"],
+    data = ["//configs:baseline.yaml"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "playtracker_config_roles",
+    srcs = ["PlayTrackerConfigRoles.cpp"],
+    hdrs = ["PlayTrackerConfigRoles.h"],
+    copts = ["-std=c++17"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "baseline_config_test",
+    srcs = ["BaselineConfigTest.cpp"],
+    data = ["//configs:baseline.yaml"],
+    deps = [
+        ":baseline_config",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "decoded_frame_sequence_meta",
     srcs = ["DecodedFrameSequenceMeta.cpp"],
     hdrs = ["DecodedFrameSequenceMeta.h"],

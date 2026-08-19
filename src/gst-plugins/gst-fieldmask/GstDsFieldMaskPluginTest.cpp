@@ -2,6 +2,7 @@
 
 #include <gst/gst.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
@@ -17,6 +18,8 @@ int main(int argc, char** argv) {
               {"unique-id", G_TYPE_UINT, true},
               {"gpu-id", G_TYPE_UINT, true},
               {"detection-mask", G_TYPE_STRING, true},
+              {"raise-bbox-center-by-height-ratio", G_TYPE_FLOAT, true},
+              {"lower-bbox-bottom-by-height-ratio", G_TYPE_FLOAT, true},
           },
           {
               {"sink", GST_PAD_SINK, GST_PAD_ALWAYS},
@@ -36,15 +39,30 @@ int main(int argc, char** argv) {
               {"unique-id", "21"},
               {"gpu-id", "0"},
               {"detection-mask", "/tmp/mask.png"},
+              {"raise-bbox-center-by-height-ratio", "-0.1"},
+              {"lower-bbox-bottom-by-height-ratio", "0.1"},
           })) {
     gst_object_unref(element);
     return 1;
   }
 
   guint unique_id = 0;
+  gfloat raise_center_ratio = 0.0F;
+  gfloat lower_bottom_ratio = 0.0F;
   gchar* detection_mask = nullptr;
-  g_object_get(G_OBJECT(element), "unique-id", &unique_id, "detection-mask", &detection_mask, NULL);
-  const bool ok = unique_id == 21 && detection_mask && std::string(detection_mask) == "/tmp/mask.png";
+  g_object_get(
+      G_OBJECT(element),
+      "unique-id",
+      &unique_id,
+      "detection-mask",
+      &detection_mask,
+      "raise-bbox-center-by-height-ratio",
+      &raise_center_ratio,
+      "lower-bbox-bottom-by-height-ratio",
+      &lower_bottom_ratio,
+      NULL);
+  const bool ok = unique_id == 21 && detection_mask && std::string(detection_mask) == "/tmp/mask.png" &&
+      std::abs(raise_center_ratio + 0.1F) < 0.0001F && std::abs(lower_bottom_ratio - 0.1F) < 0.0001F;
   g_free(detection_mask);
   gst_object_unref(element);
 

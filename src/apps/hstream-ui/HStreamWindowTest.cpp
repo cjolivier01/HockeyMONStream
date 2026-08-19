@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <QtTest/qtest_widgets.h>
@@ -4035,6 +4036,22 @@ bool test_camera_controls(HStreamWindow* window) {
 
   game_id->setText("ui-camera-control-game");
   activate(create);
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10 &&
+              window->cameraControlValue("Cancel_Stop_On_Opposite_Direction") == 1 &&
+              window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 2 &&
+              window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 2 &&
+              window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 20 &&
+              window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 6 &&
+              window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 6 &&
+              window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 70 &&
+              window->cameraControlValue("Stitch_Rotate_Degrees") == 90 &&
+              window->cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") == 1 &&
+              window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 100 &&
+              window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 100,
+          "Camera control defaults should be transformed directly from the bundled baseline")) {
+    return false;
+  }
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   {
     YAML::Node existing(YAML::NodeType::Map);
@@ -4051,6 +4068,77 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   {
+    YAML::Node null_rotation(YAML::NodeType::Map);
+    null_rotation["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
+    std::ofstream out(config);
+    out << null_rotation << "\n";
+  }
+  activate(create);
+  if (!expect(
+          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 &&
+              !save->isEnabled(),
+          "An explicit null fixed-edge rotation should load as a clean neutral UI value")) {
+    return false;
+  }
+  rotate->setValue(89);
+  activate(save);
+  YAML::Node saved_with_null_rotation = YAML::LoadFile(config.string());
+  if (!expect(
+          saved_with_null_rotation["rink"]["camera"]["fixed_edge_rotation_angle"].IsNull(),
+          "Saving an unrelated control must retain an explicit null fixed-edge rotation")) {
+    return false;
+  }
+
+  {
+    YAML::Node direct_overrides(YAML::NodeType::Map);
+    direct_overrides["rink"]["camera"]["stop_on_dir_change_delay"] = 13;
+    direct_overrides["rink"]["camera"]["cancel_stop_on_opposite_dir"] = false;
+    direct_overrides["rink"]["camera"]["stop_cancel_hysteresis_frames"] = 4;
+    direct_overrides["rink"]["camera"]["stop_delay_cooldown_frames"] = 5;
+    direct_overrides["rink"]["camera"]["time_to_dest_speed_limit_frames"] = 30;
+    direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 8;
+    direct_overrides["rink"]["camera"]["breakaway_detection"]["post_nonstop_stop_delay_count"] = 9;
+    direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_scale_speed_ratio"] = 0.83;
+    direct_overrides["stitching"]["post_stitch_rotate_degrees"] = 18;
+    std::ofstream out(config);
+    out << direct_overrides << "\n";
+  }
+  activate(create);
+  if (!expect(
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 13 &&
+              window->cameraControlValue("Cancel_Stop_On_Opposite_Direction") == 0 &&
+              window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 4 &&
+              window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 5 &&
+              window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 30 &&
+              window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 8 &&
+              window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 9 &&
+              window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 83 &&
+              window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
+          "Direct per-game baseline-key overrides should initialize every corresponding camera control")) {
+    return false;
+  }
+  activate(reset);
+  if (!expect(
+          stop_delay->value() == 10 && rotate->value() == 90 && save->isEnabled(),
+          "Reset should stage removal of direct per-game canonical overrides")) {
+    return false;
+  }
+  activate(save);
+  const YAML::Node after_direct_reset = YAML::LoadFile(config.string());
+  if (!expect(
+          !lookup_yaml_path(after_direct_reset, {"rink", "camera", "stop_on_dir_change_delay"}, nullptr) &&
+              !lookup_yaml_path(after_direct_reset, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
+          "Reset plus Save should remove direct canonical values instead of letting them resurface on reload")) {
+    return false;
+  }
+  activate(create);
+  if (!expect(
+          stop_delay->value() == 10 && rotate->value() == 90 && !save->isEnabled(),
+          "Reload after Reset plus Save should remain on bundled defaults")) {
+    return false;
+  }
+
+  {
     YAML::Node malformed(YAML::NodeType::Map);
     malformed["hstream_ui"]["camera_controls"]["Stop_Direction_Change_Delay_Frames"] = 11;
     malformed["hstream_ui"]["camera_controls"]["Max_Speed_X_x10"] = "not-an-integer";
@@ -4059,7 +4147,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          stop_delay->value() == 0,
+          stop_delay->value() == 10,
           "Malformed saved controls should not partially apply values parsed before the error") ||
       !expect(save->isEnabled(), "Malformed saved controls should leave the current controls unsaved")) {
     return false;
@@ -4127,8 +4215,31 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          fixed_edge_link->value() == 0 && fixed_edge_left->value() == 250 && fixed_edge_right->value() == 750,
-          "Saved controls should be clamped before linked fixed-edge rotation is reconciled")) {
+          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 100 && fixed_edge_right->value() == 100 &&
+              save->isEnabled(),
+          "Out-of-domain selector values should be rejected visibly without partially applying the preset")) {
+    return false;
+  }
+  {
+    YAML::Node expanded_range(YAML::NodeType::Map);
+    expanded_range["rink"]["camera"]["stop_on_dir_change_delay"] = 100;
+    std::ofstream out(config);
+    out << expanded_range << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stop_delay->value() == 100 && stop_delay->maximum() >= 100 && !save->isEnabled(),
+          "A valid per-game value beyond the initial slider range should be represented exactly")) {
+    return false;
+  }
+  activate(reset);
+  activate(save);
+  activate(create);
+  const YAML::Node after_expanded_reset = YAML::LoadFile(config.string());
+  if (!expect(
+          stop_delay->value() == 10 && !save->isEnabled() &&
+              !lookup_yaml_path(after_expanded_reset, {"rink", "camera", "stop_on_dir_change_delay"}, nullptr),
+          "Reset plus Save should normalize an expanded-range canonical override back to the bundled default")) {
     return false;
   }
   {
@@ -4190,7 +4301,7 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(save->isEnabled(), "Restoring the destination game should expose the still-unsaved change")) {
     return false;
   }
-  stop_delay->setValue(0);
+  stop_delay->setValue(10);
   if (!expect(!save->isEnabled(), "Reverting a control to its loaded value should disable Save Preset")) {
     return false;
   }
@@ -4624,8 +4735,8 @@ bool test_camera_controls(HStreamWindow* window) {
 
   activate(reset);
   if (!expect(
-          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 0,
-          "Reset should restore the native tracker default")) {
+          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10,
+          "Reset should restore the bundled baseline tracker default")) {
     return false;
   }
 
@@ -4761,6 +4872,8 @@ bool test_camera_controls(HStreamWindow* window) {
       lookup_yaml_path(
           live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &live_follower_max_speed_y) &&
       live_follower_max_speed_y.IsScalar() && live_follower_max_speed_y.as<double>() == 77.0;
+  const bool native_runtime_tuning_ok =
+      fs::exists(live_playtracker_config) && DsPlayTrackerLoadRuntimeTuning(live_playtracker_config.string()).ok();
   if (!expect(
           window->logText().contains("stdin:@set-property dsplaytracker0 runtime-tuning-config-file="),
           "Live speed slider should send a state-preserving playtracker update to the running pipeline") ||
@@ -4772,7 +4885,8 @@ bool test_camera_controls(HStreamWindow* window) {
           live_preserved_custom_tracker_config,
           "Live playtracker update should preserve the custom base tracker config") ||
       !expect(live_saved_follower_speed, "Live playtracker update should write the new follower speed") ||
-      !expect(live_preserved_follower_y_speed, "Live playtracker update should preserve untouched motion limits")) {
+      !expect(live_preserved_follower_y_speed, "Live playtracker update should preserve untouched motion limits") ||
+      !expect(native_runtime_tuning_ok, "The native playtracker loader should accept the exact UI runtime sidecar")) {
     std::cerr << live_playtracker << '\n';
     activate(stop);
     return false;
@@ -5038,6 +5152,37 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  const fs::path one_box_playtracker_config =
+      fs::path(window->gameDirectoryText().toStdString()) / "one_box_playtracker.yaml";
+  YAML::Node one_box_tracker(YAML::NodeType::Map);
+  YAML::Node one_box_sequence(YAML::NodeType::Sequence);
+  YAML::Node one_box(YAML::NodeType::Map);
+  one_box["name"] = "operator_only";
+  one_box["sticky-translation-gaussian-mult"] = 8.5;
+  one_box_sequence.push_back(one_box);
+  one_box_tracker["play-tracker"]["live-boxes"] = one_box_sequence;
+  std::ofstream(one_box_playtracker_config) << YAML::Dump(one_box_tracker) << '\n';
+  YAML::Node one_box_game_config = YAML::Clone(cleaned);
+  one_box_game_config["pipeline"]["ds-playtracker"]["config-file"] = one_box_playtracker_config.string();
+  one_box_game_config["hstream_ui"].remove("playtracker_config_base");
+  std::ofstream(config) << YAML::Dump(one_box_game_config) << '\n';
+  activate(create);
+  max_speed_x->setValue(333);
+  activate(save);
+  const YAML::Node saved_one_box_game = YAML::LoadFile(config.string());
+  const fs::path saved_one_box_path = saved_one_box_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
+  const YAML::Node saved_one_box = YAML::LoadFile(saved_one_box_path.string());
+  const YAML::Node saved_one_box_sequence = saved_one_box["play-tracker"]["live-boxes"];
+  if (!expect(
+          saved_one_box_sequence.IsSequence() && saved_one_box_sequence.size() == 1 &&
+              saved_one_box_sequence[0]["name"].as<std::string>() == "operator_only" &&
+              saved_one_box_sequence[0]["sticky-translation-gaussian-mult"].as<double>() == 8.5 &&
+              saved_one_box_sequence[0]["max-speed-x"].as<double>() == 33.3,
+          "Saving a one-box tracker preset must tune its shared role without silently adding a second box")) {
+    std::cerr << saved_one_box << '\n';
+    return false;
+  }
+
   const fs::path aged_active_sidecar = runtime_dir / "play_tracker_config_aged-active.yaml";
   fs::copy_file(custom_playtracker_config, aged_active_sidecar, fs::copy_options::overwrite_existing);
   fs::last_write_time(aged_active_sidecar, fs::file_time_type::clock::now() - std::chrono::hours(25));
@@ -5064,6 +5209,115 @@ bool test_camera_controls(HStreamWindow* window) {
              "Preset GC should never delete the aged playtracker sidecar referenced by the committed config") &&
       expect(!lookup_yaml_path(after_aged_active_save, {"stitching", "stitch_frame_time"}, nullptr),
              "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
+}
+
+bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory) {
+  const QByteArray original_home = qgetenv("HOME");
+  QTemporaryDir user_home;
+  if (!user_home.isValid())
+    return false;
+  const QString user_config_directory = QDir(user_home.path()).filePath(".hstream");
+  if (!QDir().mkpath(user_config_directory))
+    return false;
+  YAML::Node user_config(YAML::NodeType::Map);
+  user_config["stitching"]["stitch_frame_time"] = "00:00:08";
+  user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
+  user_config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
+  {
+    std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
+    out << YAML::Dump(user_config) << '\n';
+  }
+
+  const fs::path game_root(qgetenv("HM_GAME_DIR").constData());
+  const fs::path copied_game = game_root / "ui-user-stitch-default";
+  std::error_code copy_error;
+  fs::remove_all(copied_game, copy_error);
+  copy_error.clear();
+  fs::create_directories(copied_game, copy_error);
+  const fs::path source_game(source_game_directory.toStdString());
+  for (fs::directory_iterator it(source_game, copy_error), end; !copy_error && it != end; it.increment(copy_error)) {
+    fs::copy(
+        it->path(),
+        copied_game / it->path().filename(),
+        fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+        copy_error);
+  }
+  if (copy_error)
+    return expect(false, "Could not prepare the nonzero user stitch-frame fixture: " + copy_error.message());
+  const fs::path copied_config = copied_game / "config.yaml";
+  YAML::Node copied_config_node =
+      fs::is_regular_file(copied_config) ? YAML::LoadFile(copied_config.string()) : YAML::Node(YAML::NodeType::Map);
+  if (copied_config_node["stitching"] && copied_config_node["stitching"].IsMap())
+    copied_config_node["stitching"].remove("stitch_frame_time");
+  copied_config_node["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
+  if (copied_config_node["rink"] && copied_config_node["rink"].IsMap() && copied_config_node["rink"]["camera"] &&
+      copied_config_node["rink"]["camera"].IsMap()) {
+    copied_config_node["rink"]["camera"].remove("fixed_edge_rotation_angle");
+  }
+  std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+
+  qputenv("HOME", user_home.path().toLocal8Bit());
+  bool ok = true;
+  {
+    HStreamWindow user_default_window;
+    user_default_window.show();
+    auto* game_id = require_child<QLineEdit>(&user_default_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&user_default_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&user_default_window, "savePresetButton");
+    auto* start = require_child<QPushButton>(&user_default_window, "startPipelineButton");
+    auto* stop = require_child<QPushButton>(&user_default_window, "stopPipelineButton");
+    auto* mode = require_child<QComboBox>(&user_default_window, "runModeCombo");
+    auto* stitch_frame_time = require_child<QTimeEdit>(&user_default_window, "stitchFrameTimeEdit");
+    auto* stitch_rotation = require_child<QSlider>(&user_default_window, "cameraSlider_Stitch_Rotate_Degrees");
+    auto* fixed_edge_left =
+        require_child<QSlider>(&user_default_window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
+    auto* fixed_edge_right =
+        require_child<QSlider>(&user_default_window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
+    ok = game_id && create && save && start && stop && mode && stitch_frame_time && stitch_rotation &&
+        fixed_edge_left && fixed_edge_right;
+    if (ok) {
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+      ok &= expect(
+          stitch_frame_time->time() == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
+              fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 && !save->isEnabled(),
+          "User-level scalar and null defaults must initialize the UI and clean preset snapshot");
+      stitch_frame_time->setTime(QTime(0, 0, 0));
+      QApplication::processEvents();
+      ok &= expect(save->isEnabled(), "Zero must remain an explicit edit against a nonzero user-level default");
+      activate(save);
+      const YAML::Node saved_zero = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          saved_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
+              saved_zero["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
+              !lookup_yaml_path(saved_zero, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr) &&
+              !save->isEnabled(),
+          "Saving against user defaults must preserve game null semantics without materializing a user null default");
+
+      mode->setCurrentIndex(mode->findData("program"));
+      const int zero_argument_count = user_default_window.logText().count("--stitch-frame-time=00:00:00");
+      qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+      activate(start);
+      for (int i = 0;
+           i < 50 && user_default_window.logText().count("--stitch-frame-time=00:00:00") == zero_argument_count;
+           ++i) {
+        QApplication::processEvents();
+        QTest::qWait(10);
+      }
+      const YAML::Node played_zero = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          user_default_window.logText().count("--stitch-frame-time=00:00:00") == zero_argument_count + 1 &&
+              played_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00",
+          "Play must pass and retain an explicit zero stitch frame when the lower-layer default is nonzero");
+      activate(stop);
+      qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    }
+  }
+  if (original_home.isEmpty())
+    qunsetenv("HOME");
+  else
+    qputenv("HOME", original_home);
+  return ok;
 }
 
 bool test_window_close_stops_pipeline(HStreamWindow* window) {
@@ -5679,6 +5933,10 @@ int main(int argc, char** argv) {
 
   if (!test_game_setup(&window, source_root.path())) {
     std::cerr << "test_game_setup failed\n";
+    return 1;
+  }
+  if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
+    std::cerr << "test_nonzero_user_stitch_frame_default failed\n";
     return 1;
   }
   if (!test_calibration_progress_dialog(&window)) {

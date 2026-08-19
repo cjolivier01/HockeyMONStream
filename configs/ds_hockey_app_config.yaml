@@ -182,7 +182,6 @@ sink2:
   enc-type: 0
   sync: 0
   #iframeinterval=10
-  bitrate: 55000000
   #H264 Profile - 0=Baseline 2=Main 4=High
   #H265 Profile - 0=Main 1=Main10
   # set profile only for hw encoder, sw encoder selects profile based on sw-preset
@@ -425,10 +424,8 @@ hmplaycropper:
   enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
-  plot-play-tracking: 0
   # plot-player-tracking: 0
   # transform-object-meta: 0
-  no-crop: 0
   show: 0
   show-scoreboard: 1
   plugin-type: playcropper
@@ -437,12 +434,10 @@ hmplaycropper:
   num-output-buffers: 6
 
 hmstitcher:
-  enable: 1
   gpu-id: 0
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
   stitch-auto-adjust-exposure: 0
-  minimize-blend: 0
   # Configure/reload stitching in-process when control masks are missing.
   one-pass-mode: 1
   show: 0
@@ -454,7 +449,6 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: 0
   show: 0
   dynamic-acceleration-scaling: 1.0
   plugin-type: vpplaytracker
@@ -466,8 +460,6 @@ ds-playtracker:
         dynamic-acceleration-scaling: 0
       - name: current_roi_aspect
         dynamic-acceleration-scaling: 1.0
-        scale_dest_width: 1.45
-        scale_dest_height: 1.45
 
 ds-fieldmask:
   enable: 1

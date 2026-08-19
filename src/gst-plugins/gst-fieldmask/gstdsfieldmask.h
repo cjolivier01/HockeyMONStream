@@ -22,10 +22,8 @@
 #define PACKAGE "dsfieldmask"
 #define VERSION "1.0"
 #define LICENSE "Proprietary"
-#define DESCRIPTION \
-  "NVIDIA example plugin for integration with DeepStream on DGPU"
-#define BINARY_PACKAGE \
-  "NVIDIA DeepStream 3rdparty IP integration example plugin"
+#define DESCRIPTION "NVIDIA example plugin for integration with DeepStream on DGPU"
+#define BINARY_PACKAGE "NVIDIA DeepStream 3rdparty IP integration example plugin"
 #define URL "http://nvidia.com/"
 
 G_BEGIN_DECLS
@@ -35,16 +33,11 @@ typedef struct _GstDsFieldMaskClass GstDsFieldMaskClass;
 
 /* Standard boilerplate stuff */
 #define GST_TYPE_DSFIELDMASK (gst_dsfieldmask_get_type())
-#define GST_DSFIELDMASK(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSFIELDMASK, GstDsFieldMask))
-#define GST_DSFIELDMASK_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSFIELDMASK, GstDsFieldMaskClass))
-#define GST_DSFIELDMASK_GET_CLASS(obj) \
-  (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSFIELDMASK, GstDsFieldMaskClass))
-#define GST_IS_DSFIELDMASK(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSFIELDMASK))
-#define GST_IS_DSFIELDMASK_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSFIELDMASK))
+#define GST_DSFIELDMASK(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_DSFIELDMASK, GstDsFieldMask))
+#define GST_DSFIELDMASK_CLASS(klass) (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_DSFIELDMASK, GstDsFieldMaskClass))
+#define GST_DSFIELDMASK_GET_CLASS(obj) (G_TYPE_INSTANCE_GET_CLASS((obj), GST_TYPE_DSFIELDMASK, GstDsFieldMaskClass))
+#define GST_IS_DSFIELDMASK(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_DSFIELDMASK))
+#define GST_IS_DSFIELDMASK_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_DSFIELDMASK))
 #define GST_DSFIELDMASK_CAST(obj) ((GstDsFieldMask*)(obj))
 
 /** Maximum batch size to be supported by dsfieldmask. */
@@ -76,6 +69,8 @@ struct _GstDsFieldMask {
   guint gpu_id;
 
   gchar detection_mask_file[PATH_MAX * 4];
+  gfloat raise_bbox_center_by_height_ratio;
+  gfloat lower_bbox_bottom_by_height_ratio;
 };
 
 // Boiler plate stuff

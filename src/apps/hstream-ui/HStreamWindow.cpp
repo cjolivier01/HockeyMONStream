@@ -56,6 +56,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
@@ -78,6 +80,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -89,10 +92,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kFixedEdgeRotationDefaultX10 = 100;
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
-constexpr char kDefaultStitchFrameTime[] = "00:00:00";
+constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
 constexpr int kRuntimeControlAckTimeoutMs = 3000;
@@ -1256,6 +1258,21 @@ YAML::Node map_value(YAML::Node parent, const char* key) {
   return YAML::Node();
 }
 
+YAML::Node merge_yaml_maps(const YAML::Node& base, const YAML::Node& overlay) {
+  if (!overlay.IsMap())
+    return YAML::Clone(overlay);
+  YAML::Node result = base.IsMap() ? YAML::Clone(base) : YAML::Node(YAML::NodeType::Map);
+  for (const auto& entry : overlay) {
+    const std::string key = entry.first.as<std::string>();
+    YAML::Node base_child = result[key];
+    if (entry.second.IsMap() && base_child.IsMap())
+      result[key] = merge_yaml_maps(base_child, entry.second);
+    else
+      result[key] = YAML::Clone(entry.second);
+  }
+  return result;
+}
+
 bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   if (!parent.IsMap()) {
     return false;
@@ -1341,9 +1358,13 @@ bool lookup_yaml_path(YAML::Node root, const QString& dotted_path, YAML::Node* v
   return lookup_yaml_path_at(root, parts, 0, value);
 }
 
-bool read_stitch_frame_time(YAML::Node config, QString* normalized, bool* present = nullptr) {
+bool read_stitch_frame_time(
+    YAML::Node config,
+    QString* normalized,
+    bool* present = nullptr,
+    const QString& fallback = QString::fromLatin1(kZeroStitchFrameTime)) {
   if (normalized) {
-    *normalized = QString::fromLatin1(kDefaultStitchFrameTime);
+    *normalized = fallback;
   }
   YAML::Node node;
   const bool found = lookup_yaml_path(config, "stitching.stitch_frame_time", &node);
@@ -1457,18 +1478,6 @@ bool yaml_scalar_bool(YAML::Node node, bool default_value) {
     }
   }
   return default_value;
-}
-
-bool yaml_sequence_contains(YAML::Node node, const char* value) {
-  if (!node || !node.IsSequence()) {
-    return false;
-  }
-  for (const auto& item : node) {
-    if (item.IsScalar() && item.as<std::string>() == value) {
-      return true;
-    }
-  }
-  return false;
 }
 
 struct ArtifactInvalidationResult {
@@ -1623,6 +1632,7 @@ QString hm::ui_internal::development_runtime_root_for_application(const QString&
 }
 
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
+  loadBaselineDefaults();
   hm::ui_internal::configure_application_identity();
   const QString application_path = QCoreApplication::applicationFilePath();
   development_runtime_root_ = hm::ui_internal::development_runtime_root_for_application(application_path);
@@ -1681,6 +1691,151 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   refreshGames();
   updateRunControls();
   appendLog(QString("hstream-ui started with hstream-cli runner backend=%1").arg(pipelineRunnerPath()));
+}
+
+void HStreamWindow::loadBaselineDefaults() {
+  const auto loaded = hm::baseline_config::load();
+  if (!loaded.ok())
+    throw std::runtime_error(loaded.status().ToString());
+  const auto user_overlay = hm::user_config::load_or_create();
+  if (!user_overlay.ok())
+    throw std::runtime_error(user_overlay.status().ToString());
+  baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
+  baseline_config_root_ = QString::fromStdString(loaded->root.string());
+
+  auto require = [this](const QString& path) {
+    YAML::Node value;
+    if (!lookup_yaml_path(baseline_config_, path, &value))
+      throw std::runtime_error(QString("Bundled baseline is missing required UI default %1").arg(path).toStdString());
+    return value;
+  };
+  auto integer = [&require](const QString& path) {
+    const YAML::Node value = require(path);
+    if (!value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline UI default %1 must be a scalar").arg(path).toStdString());
+    try {
+      return value.as<int>();
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid integer UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  };
+  auto boolean = [&require](const QString& path) {
+    const YAML::Node value = require(path);
+    if (!value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline UI default %1 must be a scalar").arg(path).toStdString());
+    try {
+      return value.as<bool>() ? 1 : 0;
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid boolean UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  };
+  auto round_to_int = [](const QString& path, double value) {
+    if (!std::isfinite(value) || value < static_cast<double>(std::numeric_limits<int>::min()) ||
+        value > static_cast<double>(std::numeric_limits<int>::max())) {
+      throw std::runtime_error(
+          QString("UI value %1 is non-finite or outside the integer range: %2").arg(path).arg(value).toStdString());
+    }
+    return static_cast<int>(std::lround(value));
+  };
+  auto scaled = [&require, &round_to_int](const QString& path, double scale) {
+    const YAML::Node value = require(path);
+    if (!value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline UI default %1 must be a scalar").arg(path).toStdString());
+    try {
+      return round_to_int(path, value.as<double>() * scale);
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid numeric UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  };
+  auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
+
+  const YAML::Node stitch_frame_time = require("stitching.stitch_frame_time");
+  if (!stitch_frame_time.IsScalar())
+    throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be a scalar");
+  const auto parsed_stitch_frame_time =
+      parse_stitch_frame_time(QString::fromStdString(stitch_frame_time.as<std::string>()));
+  if (!parsed_stitch_frame_time.has_value())
+    throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
+  default_stitch_frame_time_ = format_stitch_frame_time(*parsed_stitch_frame_time);
+
+  checked("Stop_Direction_Change_Delay_Frames", integer("rink.camera.stop_on_dir_change_delay"), 0, 60);
+  checked("Cancel_Stop_On_Opposite_Direction", boolean("rink.camera.cancel_stop_on_opposite_dir"), 0, 1);
+  checked("Stop_Cancel_Hysteresis_Frames", integer("rink.camera.stop_cancel_hysteresis_frames"), 0, 10);
+  checked("Stop_Delay_Cooldown_Frames", integer("rink.camera.stop_delay_cooldown_frames"), 0, 30);
+  checked("Time_To_Dest_Speed_Limit_Frames", integer("rink.camera.time_to_dest_speed_limit_frames"), 0, 120);
+  checked("Overshoot_Stop_Delay_Frames", integer("rink.camera.breakaway_detection.overshoot_stop_delay_count"), 0, 60);
+  checked(
+      "Post_Nonstop_Stop_Delay_Frames",
+      integer("rink.camera.breakaway_detection.post_nonstop_stop_delay_count"),
+      0,
+      60);
+  checked(
+      "Overshoot_Speed_Ratio_x100",
+      scaled("rink.camera.breakaway_detection.overshoot_scale_speed_ratio", 100.0),
+      0,
+      200);
+
+  const YAML::Node rotation = require("stitching.post_stitch_rotate_degrees");
+  int rotation_slider = 90;
+  if (!rotation.IsNull()) {
+    if (!rotation.IsScalar())
+      throw std::runtime_error("Bundled baseline stitching.post_stitch_rotate_degrees must be null or numeric");
+    try {
+      rotation_slider = round_to_int("stitching.post_stitch_rotate_degrees", 90.0 - rotation.as<double>());
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          std::string("Invalid stitching.post_stitch_rotate_degrees in bundled baseline: ") + error.what());
+    }
+  }
+  checked("Stitch_Rotate_Degrees", rotation_slider, 0, 180);
+
+  const YAML::Node fixed_rotation = require("rink.camera.fixed_edge_rotation_angle");
+  try {
+    if (fixed_rotation.IsNull()) {
+      // An explicit null suppresses the canonical native-property mapping.
+      // Show a neutral value without turning it into an explicit 0-degree
+      // override when an unrelated preset field is saved.
+      checked("Link_Fixed_Edge_Rotation_Left_Right", 1, 0, 1);
+      checked("Left_Fixed_Edge_Rotation_Angle_x10", 0, 0, kFixedEdgeRotationMaximumX10);
+      checked("Right_Fixed_Edge_Rotation_Angle_x10", 0, 0, kFixedEdgeRotationMaximumX10);
+    } else if (fixed_rotation.IsSequence() && fixed_rotation.size() == 2) {
+      checked("Link_Fixed_Edge_Rotation_Left_Right", 0, 0, 1);
+      checked(
+          "Left_Fixed_Edge_Rotation_Angle_x10",
+          round_to_int("rink.camera.fixed_edge_rotation_angle[0]", fixed_rotation[0].as<double>() * 10.0),
+          0,
+          kFixedEdgeRotationMaximumX10);
+      checked(
+          "Right_Fixed_Edge_Rotation_Angle_x10",
+          round_to_int("rink.camera.fixed_edge_rotation_angle[1]", fixed_rotation[1].as<double>() * 10.0),
+          0,
+          kFixedEdgeRotationMaximumX10);
+    } else if (fixed_rotation.IsScalar()) {
+      const int value = round_to_int("rink.camera.fixed_edge_rotation_angle", fixed_rotation.as<double>() * 10.0);
+      checked("Link_Fixed_Edge_Rotation_Left_Right", 1, 0, 1);
+      checked("Left_Fixed_Edge_Rotation_Angle_x10", value, 0, kFixedEdgeRotationMaximumX10);
+      checked("Right_Fixed_Edge_Rotation_Angle_x10", value, 0, kFixedEdgeRotationMaximumX10);
+    } else {
+      throw std::runtime_error(
+          "Effective baseline rink.camera.fixed_edge_rotation_angle must be null, numeric, or [left, right]");
+    }
+  } catch (const YAML::Exception& error) {
+    throw std::runtime_error(
+        std::string("Invalid rink.camera.fixed_edge_rotation_angle in bundled baseline: ") + error.what());
+  }
+
+  // These selectors describe where a UI edit is applied, rather than a
+  // HockeyMOM config value. A zero speed/acceleration means no UI override, so
+  // the effective values continue to come from the baseline-backed pipeline.
+  camera_defaults_["Apply_To_Fast_Box"] = 0;
+  camera_defaults_["Apply_To_Follower_Box"] = 1;
+  camera_defaults_["Max_Speed_X_x10"] = 0;
+  camera_defaults_["Max_Speed_Y_x10"] = 0;
+  camera_defaults_["Max_Accel_X_x10"] = 0;
+  camera_defaults_["Max_Accel_Y_x10"] = 0;
 }
 
 HStreamWindow::~HStreamWindow() {
@@ -1893,7 +2048,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_ = new QTimeEdit();
   stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
   stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
-  stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
+  stitch_frame_time_edit_->setTime(*parse_stitch_frame_time(default_stitch_frame_time_));
   stitch_frame_time_edit_->setWrapping(false);
   stitch_frame_time_edit_->installEventFilter(this);
   stitch_frame_time_edit_->setToolTip(
@@ -2438,6 +2593,12 @@ void HStreamWindow::configureControlHelp() {
 }
 
 void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage) {
+  auto default_value = [this](const QString& id) {
+    const auto found = camera_defaults_.find(id);
+    if (found == camera_defaults_.end())
+      throw std::logic_error(QString("No initialized camera-control default for %1").arg(id).toStdString());
+    return found->second;
+  };
   auto* group = new QGroupBox(program_stage ? "Program Controls" : "Stitched Controls");
   group->setObjectName(program_stage ? "programControlsGroup" : "stitchedControlsGroup");
   group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -2485,36 +2646,64 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
 
   const std::vector<CameraSliderSpec> tracking_controls = {
-      {"Stop_Direction_Change_Delay_Frames", "Stop direction-change delay frames", 0, 60, 0},
-      {"Cancel_Stop_On_Opposite_Direction", "Cancel stop on opposite direction", 0, 1, 0},
-      {"Stop_Cancel_Hysteresis_Frames", "Stop cancel hysteresis frames", 0, 10, 0},
-      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, 0},
-      {"Time_To_Dest_Speed_Limit_Frames", "Time-to-destination speed limit frames", 0, 120, 10},
-      {"Apply_To_Fast_Box", "Apply to fast box", 0, 1, 0},
-      {"Apply_To_Follower_Box", "Apply to follower box", 0, 1, 1},
+      {"Stop_Direction_Change_Delay_Frames",
+       "Stop direction-change delay frames",
+       0,
+       60,
+       default_value("Stop_Direction_Change_Delay_Frames")},
+      {"Cancel_Stop_On_Opposite_Direction",
+       "Cancel stop on opposite direction",
+       0,
+       1,
+       default_value("Cancel_Stop_On_Opposite_Direction")},
+      {"Stop_Cancel_Hysteresis_Frames",
+       "Stop cancel hysteresis frames",
+       0,
+       10,
+       default_value("Stop_Cancel_Hysteresis_Frames")},
+      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, default_value("Stop_Delay_Cooldown_Frames")},
+      {"Time_To_Dest_Speed_Limit_Frames",
+       "Time-to-destination speed limit frames",
+       0,
+       120,
+       default_value("Time_To_Dest_Speed_Limit_Frames")},
+      {"Apply_To_Fast_Box", "Apply to fast box", 0, 1, default_value("Apply_To_Fast_Box")},
+      {"Apply_To_Follower_Box", "Apply to follower box", 0, 1, default_value("Apply_To_Follower_Box")},
   };
   const std::vector<CameraSliderSpec> motion_controls = {
-      {"Overshoot_Stop_Delay_Frames", "Overshoot stop-delay frames", 0, 60, 0},
-      {"Post_Nonstop_Stop_Delay_Frames", "Post-nonstop stop-delay frames", 0, 60, 0},
-      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, 70},
-      {"Max_Speed_X_x10", "Max speed X override x10 (0 = configured)", 0, 2000, 0},
-      {"Max_Speed_Y_x10", "Max speed Y override x10 (0 = configured)", 0, 2000, 0},
-      {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, 0},
-      {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, 0},
+      {"Overshoot_Stop_Delay_Frames",
+       "Overshoot stop-delay frames",
+       0,
+       60,
+       default_value("Overshoot_Stop_Delay_Frames")},
+      {"Post_Nonstop_Stop_Delay_Frames",
+       "Post-nonstop stop-delay frames",
+       0,
+       60,
+       default_value("Post_Nonstop_Stop_Delay_Frames")},
+      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, default_value("Overshoot_Speed_Ratio_x100")},
+      {"Max_Speed_X_x10", "Max speed X override x10 (0 = configured)", 0, 2000, default_value("Max_Speed_X_x10")},
+      {"Max_Speed_Y_x10", "Max speed Y override x10 (0 = configured)", 0, 2000, default_value("Max_Speed_Y_x10")},
+      {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_X_x10")},
+      {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_Y_x10")},
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
-      {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, 90},
-      {"Link_Fixed_Edge_Rotation_Left_Right", "Link left/right fixed-edge rotation", 0, 1, 1},
+      {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, default_value("Stitch_Rotate_Degrees")},
+      {"Link_Fixed_Edge_Rotation_Left_Right",
+       "Link left/right fixed-edge rotation",
+       0,
+       1,
+       default_value("Link_Fixed_Edge_Rotation_Left_Right")},
       {"Left_Fixed_Edge_Rotation_Angle_x10",
        "Left fixed-edge rotation angle x10",
        0,
        kFixedEdgeRotationMaximumX10,
-       kFixedEdgeRotationDefaultX10},
+       default_value("Left_Fixed_Edge_Rotation_Angle_x10")},
       {"Right_Fixed_Edge_Rotation_Angle_x10",
        "Right fixed-edge rotation angle x10",
        0,
        kFixedEdgeRotationMaximumX10,
-       kFixedEdgeRotationDefaultX10},
+       default_value("Right_Fixed_Edge_Rotation_Angle_x10")},
   };
 
   if (program_stage) {
@@ -2716,7 +2905,7 @@ int HStreamWindow::stitchingCalibrationControlPoints() const {
 
 QString HStreamWindow::stitchFrameTime() const {
   return stitch_frame_time_edit_ ? format_stitch_frame_time(stitch_frame_time_edit_->time())
-                                 : QString::fromLatin1(kDefaultStitchFrameTime);
+                                 : default_stitch_frame_time_;
 }
 
 bool HStreamWindow::runStitchingClean(
@@ -2797,8 +2986,9 @@ bool HStreamWindow::saveStitchingCalibrationState(
   }
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (require_matching_pending) {
-    QString current_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
-    const bool current_stitch_frame_time_valid = read_stitch_frame_time(config, &current_stitch_frame_time);
+    QString current_stitch_frame_time = default_stitch_frame_time_;
+    const bool current_stitch_frame_time_valid =
+        read_stitch_frame_time(config, &current_stitch_frame_time, nullptr, default_stitch_frame_time_);
     const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
         ? calibration["control_points"].as<int>()
         : -1;
@@ -2873,7 +3063,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
-  QString saved_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
+  QString saved_stitch_frame_time = default_stitch_frame_time_;
   bool saved_stitch_frame_time_valid = true;
   QString saved_status;
   QString saved_stale_from;
@@ -2898,7 +3088,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_control_points = saved.as<int>();
         saved_found = true;
       }
-      saved_stitch_frame_time_valid = read_stitch_frame_time(config, &saved_stitch_frame_time);
+      saved_stitch_frame_time_valid =
+          read_stitch_frame_time(config, &saved_stitch_frame_time, nullptr, default_stitch_frame_time_);
       YAML::Node status;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
@@ -2922,7 +3113,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
-    if (active_stitch_frame_time_ != kDefaultStitchFrameTime) {
+    if (active_stitch_frame_time_ != default_stitch_frame_time_) {
       config["stitching"]["stitch_frame_time"] = active_stitch_frame_time_.toStdString();
     }
     const bool needs_calibration =
@@ -3532,7 +3723,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   if (isCalibrationRun() || calibration_pending_) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
   }
-  if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != kDefaultStitchFrameTime) {
+  if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != default_stitch_frame_time_) {
     args << QString("--stitch-frame-time=%1").arg(active_stitch_frame_time_);
   }
   if (embed_render_window) {
@@ -3638,6 +3829,8 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
+  if (!baseline_config_root_.isEmpty())
+    env.insert("HM_CONFIG_ROOT", baseline_config_root_);
   const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
   if (!runtime_error.isEmpty()) {
     calibration_pending_ = false;
@@ -6141,6 +6334,11 @@ void HStreamWindow::resetCameraControls() {
       it->second->setValue(value);
     }
   }
+  if (stitch_frame_time_edit_) {
+    const auto parsed = parse_stitch_frame_time(default_stitch_frame_time_);
+    if (parsed.has_value())
+      stitch_frame_time_edit_->setTime(*parsed);
+  }
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
     // Reset every runtime-tunable field on both boxes, including a box that
     // was tuned before its target selector was returned to the default.
@@ -6217,8 +6415,10 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   if (stitch_frame_time_edit_) {
     const bool blocked = stitch_frame_time_edit_->blockSignals(true);
-    stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
-    stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
+    const QTime default_time = *parse_stitch_frame_time(default_stitch_frame_time_);
+    stitch_frame_time_edit_->setTime(default_time);
+    stitch_frame_time_edit_->setDisplayFormat(
+        default_time.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
     stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
@@ -6259,12 +6459,55 @@ void HStreamWindow::loadSavedControlConfig() {
       if (slider == camera_sliders_.end() || !slider->second) {
         return false;
       }
-      staged_controls[id] = std::clamp(value, slider->second->minimum(), slider->second->maximum());
+      staged_controls[id] = value;
       return true;
     };
+    auto rounded_control = [](const QString& path, double value) {
+      if (!std::isfinite(value) || value < static_cast<double>(std::numeric_limits<int>::min()) ||
+          value > static_cast<double>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument(
+            QString("%1 is non-finite or outside the UI integer range").arg(path).toStdString());
+      }
+      return static_cast<int>(std::lround(value));
+    };
+    auto stage_integer_path = [&config, &stage_control](const QString& path, const QString& id) {
+      YAML::Node value;
+      if (lookup_yaml_path(config, path, &value))
+        stage_control(id, value.as<int>());
+    };
+    auto stage_boolean_path = [&config, &stage_control](const QString& path, const QString& id) {
+      YAML::Node value;
+      if (lookup_yaml_path(config, path, &value))
+        stage_control(id, value.as<bool>() ? 1 : 0);
+    };
+    stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
+    stage_boolean_path("rink.camera.cancel_stop_on_opposite_dir", "Cancel_Stop_On_Opposite_Direction");
+    stage_integer_path("rink.camera.stop_cancel_hysteresis_frames", "Stop_Cancel_Hysteresis_Frames");
+    stage_integer_path("rink.camera.stop_delay_cooldown_frames", "Stop_Delay_Cooldown_Frames");
+    stage_integer_path("rink.camera.time_to_dest_speed_limit_frames", "Time_To_Dest_Speed_Limit_Frames");
+    stage_integer_path("rink.camera.breakaway_detection.overshoot_stop_delay_count", "Overshoot_Stop_Delay_Frames");
+    stage_integer_path(
+        "rink.camera.breakaway_detection.post_nonstop_stop_delay_count", "Post_Nonstop_Stop_Delay_Frames");
+    YAML::Node overshoot_ratio;
+    if (lookup_yaml_path(config, "rink.camera.breakaway_detection.overshoot_scale_speed_ratio", &overshoot_ratio)) {
+      stage_control(
+          "Overshoot_Speed_Ratio_x100",
+          rounded_control(
+              "rink.camera.breakaway_detection.overshoot_scale_speed_ratio", overshoot_ratio.as<double>() * 100.0));
+    }
+    YAML::Node stitch_rotation;
+    if (lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &stitch_rotation)) {
+      if (stitch_rotation.IsNull()) {
+        stage_control("Stitch_Rotate_Degrees", 90);
+      } else {
+        stage_control(
+            "Stitch_Rotate_Degrees",
+            rounded_control("stitching.post_stitch_rotate_degrees", 90.0 - stitch_rotation.as<double>()));
+      }
+    }
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
-    QTime staged_stitch_frame_time(0, 0, 0);
+    QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
@@ -6274,7 +6517,8 @@ void HStreamWindow::loadSavedControlConfig() {
     QString configured_stitch_frame_time;
     bool stitch_frame_time_present = false;
     if (stitch_frame_time_edit_ &&
-        !read_stitch_frame_time(config, &configured_stitch_frame_time, &stitch_frame_time_present)) {
+        !read_stitch_frame_time(
+            config, &configured_stitch_frame_time, &stitch_frame_time_present, default_stitch_frame_time_)) {
       throw std::invalid_argument("stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
     }
     if (stitch_frame_time_edit_ && stitch_frame_time_present) {
@@ -6286,18 +6530,28 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
-      auto angle_x10 = [](const YAML::Node& value) { return static_cast<int>(std::lround(value.as<double>() * 10.0)); };
-      if (fixed_edge_rotation.IsSequence() && fixed_edge_rotation.size() == 2) {
+      auto angle_x10 = [&rounded_control](const YAML::Node& value, const QString& path) {
+        return rounded_control(path, value.as<double>() * 10.0);
+      };
+      if (fixed_edge_rotation.IsNull()) {
+        stage_control("Link_Fixed_Edge_Rotation_Left_Right", 1);
+        stage_control("Left_Fixed_Edge_Rotation_Angle_x10", 0);
+        stage_control("Right_Fixed_Edge_Rotation_Angle_x10", 0);
+      } else if (fixed_edge_rotation.IsSequence() && fixed_edge_rotation.size() == 2) {
         stage_control("Link_Fixed_Edge_Rotation_Left_Right", 0);
-        stage_control("Left_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[0]));
-        stage_control("Right_Fixed_Edge_Rotation_Angle_x10", angle_x10(fixed_edge_rotation[1]));
+        stage_control(
+            "Left_Fixed_Edge_Rotation_Angle_x10",
+            angle_x10(fixed_edge_rotation[0], "rink.camera.fixed_edge_rotation_angle[0]"));
+        stage_control(
+            "Right_Fixed_Edge_Rotation_Angle_x10",
+            angle_x10(fixed_edge_rotation[1], "rink.camera.fixed_edge_rotation_angle[1]"));
       } else if (fixed_edge_rotation.IsScalar()) {
-        const int value = angle_x10(fixed_edge_rotation);
+        const int value = angle_x10(fixed_edge_rotation, "rink.camera.fixed_edge_rotation_angle");
         stage_control("Link_Fixed_Edge_Rotation_Left_Right", 1);
         stage_control("Left_Fixed_Edge_Rotation_Angle_x10", value);
         stage_control("Right_Fixed_Edge_Rotation_Angle_x10", value);
       } else {
-        appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected one value or [left, right]");
+        appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected null, one value, or [left, right]");
       }
     }
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
@@ -6305,7 +6559,13 @@ void HStreamWindow::loadSavedControlConfig() {
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
-        if (camera_sliders_.find(id) != camera_sliders_.end() && stage_control(id, entry.second.as<int>())) {
+        const int value = entry.second.as<int>();
+        if ((id == "Link_Fixed_Edge_Rotation_Left_Right" || id == "Apply_To_Fast_Box" ||
+             id == "Apply_To_Follower_Box") &&
+            value != 0 && value != 1) {
+          throw std::invalid_argument(QString("%1 must be 0 or 1").arg(id).toStdString());
+        }
+        if (camera_sliders_.find(id) != camera_sliders_.end() && stage_control(id, value)) {
           ++loaded;
         }
       }
@@ -6330,6 +6590,8 @@ void HStreamWindow::loadSavedControlConfig() {
       if (slider_it == camera_sliders_.end() || !slider_it->second)
         continue;
       const bool blocked = slider_it->second->blockSignals(true);
+      slider_it->second->setRange(
+          std::min(slider_it->second->minimum(), value), std::max(slider_it->second->maximum(), value));
       slider_it->second->setValue(value);
       slider_it->second->blockSignals(blocked);
       const auto label_it = camera_value_labels_.find(id);
@@ -6367,8 +6629,14 @@ bool HStreamWindow::applySavedControlConfig(
   YAML::Node previous_generated = map_value(previous_hstream_ui, "generated_runtime_keys");
   YAML::Node previous_generated_values = map_value(previous_hstream_ui, "generated_runtime_values");
   YAML::Node previous_playtracker_config_base = map_value(previous_hstream_ui, "playtracker_config_base");
-  const bool ui_rotation_previously_generated =
-      yaml_sequence_contains(previous_generated, "stitching.post_stitch_rotate_degrees");
+  YAML::Node previous_stitch_rotation;
+  const bool previous_stitch_rotation_found =
+      lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &previous_stitch_rotation);
+  const bool previous_stitch_rotation_was_null = previous_stitch_rotation_found && previous_stitch_rotation.IsNull();
+  YAML::Node previous_fixed_edge_rotation;
+  const bool previous_fixed_edge_rotation_was_null =
+      lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &previous_fixed_edge_rotation) &&
+      previous_fixed_edge_rotation.IsNull();
   if (yaml_defined(previous_generated) && previous_generated.IsSequence()) {
     for (const auto& item : previous_generated) {
       const QString path = QString::fromStdString(item.as<std::string>());
@@ -6410,6 +6678,26 @@ bool HStreamWindow::applySavedControlConfig(
       !lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config)) {
     config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
   }
+
+  // Every canonical key represented by a UI control is owned by the current
+  // slider state on Save, including keys written directly by an operator.
+  // Remove the old values first, then serialize only non-default controls.
+  for (const char* path : {
+           "stitching.post_stitch_rotate_degrees",
+           "rink.camera.fixed_edge_rotation_angle",
+           "rink.camera.stop_on_dir_change_delay",
+           "rink.camera.cancel_stop_on_opposite_dir",
+           "rink.camera.stop_cancel_hysteresis_frames",
+           "rink.camera.stop_delay_cooldown_frames",
+           "rink.camera.time_to_dest_speed_limit_frames",
+           "rink.camera.breakaway_detection.overshoot_stop_delay_count",
+           "rink.camera.breakaway_detection.post_nonstop_stop_delay_count",
+           "rink.camera.breakaway_detection.overshoot_scale_speed_ratio",
+           "hstream_ui.camera_control_targets.apply_to_fast_box",
+           "hstream_ui.camera_control_targets.apply_to_follower_box",
+       }) {
+    remove_yaml_path(config, QString::fromLatin1(path));
+  }
   YAML::Node generated_runtime_keys(YAML::NodeType::Sequence);
   YAML::Node generated_runtime_values(YAML::NodeType::Map);
   std::set<std::string> generated_key_set;
@@ -6433,13 +6721,14 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["hstream_ui"]["camera_controls"] = controls;
 
-  QString previous_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
-  const bool previous_stitch_frame_time_valid = read_stitch_frame_time(config, &previous_stitch_frame_time);
+  QString previous_stitch_frame_time = default_stitch_frame_time_;
+  const bool previous_stitch_frame_time_valid =
+      read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
   const QString stitch_frame_time = stitchFrameTime();
   const bool stitch_frame_time_changed =
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
   remove_yaml_path(config, {"stitching", "stitch_frame_time"});
-  if (stitch_frame_time != kDefaultStitchFrameTime) {
+  if (stitch_frame_time != default_stitch_frame_time_) {
     config["stitching"]["stitch_frame_time"] = stitch_frame_time.toStdString();
   }
   if (stitch_frame_time_changed) {
@@ -6459,14 +6748,33 @@ bool HStreamWindow::applySavedControlConfig(
     const auto it = camera_sliders_.find(id);
     return it == camera_sliders_.end() ? 0 : it->second->value();
   };
-  if (has_control(controls, "Stitch_Rotate_Degrees")) {
+  const auto saved_stitch_rotation = saved_camera_controls_.find("Stitch_Rotate_Degrees");
+  const auto stitch_rotation_slider = camera_sliders_.find("Stitch_Rotate_Degrees");
+  const bool preserve_stitch_rotation_null = previous_stitch_rotation_was_null &&
+      saved_stitch_rotation != saved_camera_controls_.end() && stitch_rotation_slider != camera_sliders_.end() &&
+      stitch_rotation_slider->second && stitch_rotation_slider->second->value() == saved_stitch_rotation->second;
+  if (preserve_stitch_rotation_null) {
+    config["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
+  } else if (has_control(controls, "Stitch_Rotate_Degrees")) {
     config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
     mark_runtime_key("stitching.post_stitch_rotate_degrees");
   }
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
       has_control(controls, "Right_Fixed_Edge_Rotation_Angle_x10");
-  if (fixed_edge_rotation_changed) {
+  auto fixed_edge_control_matches_saved = [this](const QString& id) {
+    const auto slider = camera_sliders_.find(id);
+    const auto saved = saved_camera_controls_.find(id);
+    return slider != camera_sliders_.end() && slider->second && saved != saved_camera_controls_.end() &&
+        slider->second->value() == saved->second;
+  };
+  const bool preserve_fixed_edge_null = previous_fixed_edge_rotation_was_null &&
+      fixed_edge_control_matches_saved("Link_Fixed_Edge_Rotation_Left_Right") &&
+      fixed_edge_control_matches_saved("Left_Fixed_Edge_Rotation_Angle_x10") &&
+      fixed_edge_control_matches_saved("Right_Fixed_Edge_Rotation_Angle_x10");
+  if (preserve_fixed_edge_null) {
+    config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
+  } else if (fixed_edge_rotation_changed) {
     const double left_angle = slider_value("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
     const double right_angle = slider_value("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
     if (slider_value("Link_Fixed_Edge_Rotation_Left_Right") != 0) {
@@ -6479,17 +6787,12 @@ bool HStreamWindow::applySavedControlConfig(
     }
     mark_runtime_key("rink.camera.fixed_edge_rotation_angle");
   }
-  bool rotation_changed_for_artifacts = false;
-  if (has_control(controls, "Stitch_Rotate_Degrees")) {
-    YAML::Node previous_rotation_value;
-    const bool previous_rotation_value_found =
-        lookup_yaml_key(previous_generated_values, "stitching.post_stitch_rotate_degrees", &previous_rotation_value);
-    const std::string current_rotation_dump = YAML::Dump(config["stitching"]["post_stitch_rotate_degrees"]);
-    rotation_changed_for_artifacts = !ui_rotation_previously_generated || !previous_rotation_value_found ||
-        !previous_rotation_value.IsScalar() || previous_rotation_value.as<std::string>() != current_rotation_dump;
-  } else if (ui_rotation_previously_generated) {
-    rotation_changed_for_artifacts = true;
-  }
+  YAML::Node current_stitch_rotation;
+  const bool current_stitch_rotation_found =
+      lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &current_stitch_rotation);
+  const bool rotation_changed_for_artifacts = previous_stitch_rotation_found != current_stitch_rotation_found ||
+      (previous_stitch_rotation_found && current_stitch_rotation_found &&
+       YAML::Dump(previous_stitch_rotation) != YAML::Dump(current_stitch_rotation));
   if (rotation_changed_for_artifacts) {
     const ArtifactInvalidationResult invalidation = invalidate_rotation_dependent_artifacts(config);
     config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
@@ -6595,11 +6898,16 @@ bool HStreamWindow::applySavedControlConfig(
           play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
         }
         YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
-        while (live_boxes.size() < 2) {
-          YAML::Node box(YAML::NodeType::Map);
-          box["name"] = live_boxes.size() == 0 ? "current_roi" : "current_roi_aspect";
-          live_boxes.push_back(box);
+        if (live_boxes.size() == 0) {
+          for (const char* name : {"current_roi", "current_roi_aspect"}) {
+            YAML::Node box(YAML::NodeType::Map);
+            box["name"] = name;
+            live_boxes.push_back(box);
+          }
         }
+        const auto live_box_roles = hm::resolve_playtracker_live_box_roles(live_boxes);
+        if (!live_box_roles.ok())
+          throw std::invalid_argument(live_box_roles.status().ToString());
 
         YAML::Node play_tracker = play_tracker_config["play-tracker"];
         if (has_control(controls, "Overshoot_Stop_Delay_Frames")) {
@@ -6609,7 +6917,7 @@ bool HStreamWindow::applySavedControlConfig(
           play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
         }
 
-        auto apply_live_box = [&](int index) {
+        auto apply_live_box = [&](size_t index) {
           if (has_control(controls, "Stop_Direction_Change_Delay_Frames")) {
             live_boxes[index]["stop-translation-on-dir-change-delay"] =
                 slider_value("Stop_Direction_Change_Delay_Frames");
@@ -6643,10 +6951,10 @@ bool HStreamWindow::applySavedControlConfig(
           }
         };
         if (slider_value("Apply_To_Fast_Box") != 0) {
-          apply_live_box(0);
+          apply_live_box(live_box_roles->fast_index);
         }
         if (slider_value("Apply_To_Follower_Box") != 0) {
-          apply_live_box(1);
+          apply_live_box(live_box_roles->follower_index);
         }
 
         const absl::Status runtime_publish = hm::stitching::publish_named_file(
@@ -7972,10 +8280,18 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
     }
     YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
-    while (live_boxes.size() < 2) {
-      YAML::Node box(YAML::NodeType::Map);
-      box["name"] = live_boxes.size() == 0 ? "current_roi" : "current_roi_aspect";
-      live_boxes.push_back(box);
+    if (live_boxes.size() == 0) {
+      for (const char* name : {"current_roi", "current_roi_aspect"}) {
+        YAML::Node box(YAML::NodeType::Map);
+        box["name"] = name;
+        live_boxes.push_back(box);
+      }
+    }
+    const auto live_box_roles = hm::resolve_playtracker_live_box_roles(live_boxes);
+    if (!live_box_roles.ok()) {
+      appendLog(
+          QString("could not resolve playtracker live-box roles: %1").arg(live_box_roles.status().ToString().c_str()));
+      return {};
     }
 
     auto slider_value = [this](const QString& id) -> int {
@@ -7986,7 +8302,7 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       const auto default_it = camera_defaults_.find(id);
       return default_it != camera_defaults_.end() && slider_value(id) != default_it->second;
     };
-    auto apply_live_box = [&](int index) {
+    auto apply_live_box = [&](size_t index) {
       auto set_if_changed = [&](const QString& id, const char* key) {
         if (slider_changed(id)) {
           live_boxes[index][key] = static_cast<double>(slider_value(id)) / 10.0;
@@ -8050,10 +8366,10 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
     }
     if (slider_value("Apply_To_Fast_Box") != 0) {
-      apply_live_box(0);
+      apply_live_box(live_box_roles->fast_index);
     }
     if (slider_value("Apply_To_Follower_Box") != 0) {
-      apply_live_box(1);
+      apply_live_box(live_box_roles->follower_index);
     }
 
     const absl::Status publish = hm::stitching::publish_named_file(
@@ -8425,7 +8741,7 @@ QSlider* HStreamWindow::addSlider(
   auto* value_label = make_value_label("cameraValue_" + id, QString::number(value));
   auto* slider = new WheelPassthroughSlider(Qt::Horizontal);
   slider->setObjectName("cameraSlider_" + id);
-  slider->setRange(minimum, maximum);
+  slider->setRange(std::min(minimum, value), std::max(maximum, value));
   slider->setValue(value);
   camera_sliders_[id] = slider;
   camera_value_labels_[id] = value_label;

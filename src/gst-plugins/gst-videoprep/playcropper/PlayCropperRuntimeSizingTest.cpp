@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
 
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -43,6 +44,39 @@ bool expect_size(
 } // namespace
 
 int main() {
+  const hm::BBox left_tracking_box(100, 50, 300, 250);
+  const hm::playcropper::FrameTransformGeometry no_crop_transform = hm::playcropper::CalculateFrameTransformGeometry(
+      /*input_width=*/1000,
+      /*input_height=*/500,
+      left_tracking_box,
+      /*no_crop=*/true,
+      /*fixed_edge_rotation_angle_left=*/10.0f,
+      /*fixed_edge_rotation_angle_right=*/10.0f);
+  if (no_crop_transform.source_rect.left != 0 || no_crop_transform.source_rect.top != 0 ||
+      no_crop_transform.source_rect.right != 1000 || no_crop_transform.source_rect.bottom != 500 ||
+      no_crop_transform.crop_box.left != 0 || no_crop_transform.crop_box.top != 0 ||
+      no_crop_transform.crop_box.right != 1000 || no_crop_transform.crop_box.bottom != 500 ||
+      no_crop_transform.anchor_point.x != left_tracking_box.center().x ||
+      no_crop_transform.anchor_point.y != left_tracking_box.center().y ||
+      std::abs(no_crop_transform.angle - 6.0f) > 1e-6f) {
+    std::cerr << "No-crop must preserve full-frame output while rotating around the tracked camera box\n";
+    return 1;
+  }
+  const hm::playcropper::FrameTransformGeometry cropped_transform = hm::playcropper::CalculateFrameTransformGeometry(
+      /*input_width=*/1000,
+      /*input_height=*/500,
+      left_tracking_box,
+      /*no_crop=*/false,
+      /*fixed_edge_rotation_angle_left=*/10.0f,
+      /*fixed_edge_rotation_angle_right=*/10.0f);
+  if (cropped_transform.source_rect.left != 100 || cropped_transform.source_rect.right != 300 ||
+      cropped_transform.crop_box.left != 0 || cropped_transform.crop_box.right != 200 ||
+      cropped_transform.anchor_point.x != 100 || cropped_transform.anchor_point.y != 150 ||
+      std::abs(cropped_transform.angle - 6.0f) > 1e-6f) {
+    std::cerr << "Cropped transform geometry changed while adding no-crop rotation support\n";
+    return 1;
+  }
+
   hm::playcropper::PlayCropperPriv cropper(/*gpu_id=*/0, /*batch_size=*/1);
   if (!expect_size(
           cropper,
@@ -71,6 +105,7 @@ int main() {
           2160)) {
     return 1;
   }
+
   if (!expect_size(
           cropper,
           /*input_width=*/12102,
@@ -79,6 +114,31 @@ int main() {
           /*input_filled=*/2,
           3838,
           2160)) {
+    return 1;
+  }
+
+  if (!cropper.SetProperty({"no-crop", "1"})) {
+    return 1;
+  }
+  if (!expect_size(
+          cropper,
+          /*input_width=*/12102,
+          /*input_height=*/5153,
+          /*input_batch_capacity=*/2,
+          /*input_filled=*/1,
+          3840,
+          1634)) {
+    std::cerr << "No-crop output must preserve the full input aspect ratio\n";
+    return 1;
+  }
+  if (!expect_size(
+          cropper,
+          /*input_width=*/12102,
+          /*input_height=*/5153,
+          /*input_batch_capacity=*/2,
+          /*input_filled=*/2,
+          3840,
+          1634)) {
     return 1;
   }
 

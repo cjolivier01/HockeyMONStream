@@ -125,9 +125,6 @@ absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, cons
 }
 
 std::string normalized_stitch_frame_time_config_value(uint64_t nanoseconds) {
-  if (nanoseconds == 0) {
-    return {};
-  }
   const uint64_t total_milliseconds = nanoseconds / GST_MSECOND;
   const uint64_t hours = total_milliseconds / (60 * 60 * 1000);
   const uint64_t minutes = total_milliseconds / (60 * 1000) % 60;
@@ -829,6 +826,37 @@ absl::Status PipelineApplication::configureInstances(
         return absl::InternalError("Failed to merge in config file");
       }
 
+      auto apply_pipeline_options = [&]() -> absl::Status {
+        if (pipeline_options_.empty() || current_stage_ < 0) {
+          return absl::OkStatus();
+        }
+        for (const std::map<std::string, std::string>& options : pipeline_options_) {
+          for (const auto& kv_item : options) {
+            HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+          }
+        }
+        return absl::OkStatus();
+      };
+
+      if (clean_only_requested) {
+        // Decide whether this context can own cleanup before expanding source
+        // or sink subconfigs. Missing or malformed runtime-only sidecars in an
+        // incomplete context must not prevent a later eligible context from
+        // deleting stitching artifacts. Apply CLI options first because they
+        // may intentionally change complete-configuration eligibility.
+        HM_RETURN_IF_ERROR(apply_pipeline_options());
+        bool preliminary_complete_configuration_enabled = false;
+        try {
+          preliminary_complete_configuration_enabled = hm::get_node_value(
+              app_ctx->configurator().config(), "pipeline.application.complete-configuration", false);
+        } catch (const std::exception& error) {
+          return absl::InvalidArgumentError(TO_STRING("Invalid complete-configuration setting: " << error.what()));
+        }
+        if (!preliminary_complete_configuration_enabled) {
+          continue;
+        }
+      }
+
       // Run enable-source-types in case we have any subconfigs that have 'type' set
       if (!enabled_source_types_.empty()) {
         if (stage_index) {
@@ -873,17 +901,11 @@ absl::Status PipelineApplication::configureInstances(
       // }
 
       // Finally, command-line config overrides (pipeline or otherwise)
-      if (!pipeline_options_.empty()) {
-        // Historically we avoided applying pipeline options to stage -1 (stitch config), but we do want them for the
-        // main stage (stage >= 0). This also ensures single-stage runs (only stage 0) get CLI options.
-        if (current_stage_ >= 0) {
-          for (const std::map<std::string, std::string>& options : pipeline_options_) {
-            for (const auto& kv_item : options) {
-              HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
-            }
-          }
-        }
-      }
+      // Historically we avoided applying pipeline options to stage -1 (stitch
+      // config), but stage >= 0 and single-stage runs must receive them. A
+      // clean-only eligible context reapplies them here so CLI source/sink
+      // values still win over loaded subconfigs.
+      HM_RETURN_IF_ERROR(apply_pipeline_options());
 
       if (stitching_calibration_only_ && current_stage_ >= 0) {
         hm::pipeline_internal::configure_stitching_calibration_pipeline(app_ctx->configurator().config()["pipeline"]);
@@ -905,18 +927,25 @@ absl::Status PipelineApplication::configureInstances(
       if (clean_only_requested && !complete_configuration_enabled) {
         continue;
       }
-      const auto active_stitcher_before_configuration = active_stitch_output_rotation(app_ctx->configurator().config());
-      if (!active_stitcher_before_configuration.ok()) {
-        return active_stitcher_before_configuration.status();
-      }
-      const bool clean_eligible = active_stitcher_before_configuration->has_value() && complete_configuration_enabled;
+      std::optional<double> active_stitcher_before_configuration;
       if (clean_only_requested) {
+        // Offline cleanup owns stitching artifacts by the presence of the
+        // structural hmstitcher section. It must not validate unrelated
+        // runtime settings such as tracker sidecars or camera rotation.
+        const auto stitcher = hm::get_node(app_ctx->configurator().config(), "pipeline.hmstitcher");
+        const bool clean_eligible = complete_configuration_enabled && stitcher.has_value() && stitcher->IsMap();
         clean_only_eligible_context_seen_ = clean_only_eligible_context_seen_ || clean_eligible;
         if (!clean_eligible || clean_only_action_completed_) {
           continue;
         }
+      } else {
+        // Canonical baseline/user/game/CLI settings must be translated before
+        // active-stage inspection (notably stitching.enabled and rotation).
+        HM_RETURN_IF_ERROR(app_ctx->configurator().apply_supported_baseline_mappings());
+        HM_ASSIGN_OR_RETURN(
+            active_stitcher_before_configuration, active_stitch_output_rotation(app_ctx->configurator().config()));
       }
-      if (stitch_frame_time_set_ && active_stitcher_before_configuration->has_value()) {
+      if (stitch_frame_time_set_ && active_stitcher_before_configuration.has_value()) {
         bool stitch_frame_time_changed = false;
         HM_ASSIGN_OR_RETURN(
             stitch_frame_time_changed,
@@ -978,12 +1007,7 @@ absl::Status PipelineApplication::configureInstances(
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
         uint64_t configured_stitch_frame_time_ns = 0;
-        // Stitch-frame time is a per-game UI/calibration choice. Do not let a
-        // baseline or user overlay value resurface when config.yaml omits the
-        // required default zero value.
-        HM_ASSIGN_OR_RETURN(
-            configured_stitch_frame_time_ns,
-            configured_stitch_frame_time(app_ctx->configurator().game_private_config()));
+        HM_ASSIGN_OR_RETURN(configured_stitch_frame_time_ns, configured_stitch_frame_time(config));
         if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
           return absl::InvalidArgumentError(
               "All pipeline instances must use the same stitching.stitch_frame_time value");

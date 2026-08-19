@@ -194,14 +194,11 @@ streammux:
 
 
 hmstitcher:
-  enable: 1
-  # enable: 0
   gpu-id: 0
   configure-only: 1
   nvbuf-memory-type: 0
   plugin-type: hmstitcher
   stitch-auto-adjust-exposure: 0
-  minimize-blend: 0
   # config-file: /home/colivier/Videos/mlk-heat-1
   # Stitching collapses the two camera surfaces into one stitched output surface.
   num-batch-buffers: 1

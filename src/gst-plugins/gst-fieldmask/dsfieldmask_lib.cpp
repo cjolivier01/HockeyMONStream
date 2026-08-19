@@ -41,10 +41,6 @@ struct DsFieldMaskCtx {
 
 namespace {
 
-constexpr float lower_bbox_center_by_height_ratio = 0.1;
-// In order to avoid picking up players on the bench, we raise the bounding box up a little in order to have some buffer
-// that they need to be lower on the ice than just at the top edge
-constexpr float raise_bbox_bottom_by_height_ratio = 0.15;
 constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
@@ -178,30 +174,32 @@ void prune_detection_boxes(NvDsFrameMeta* frame_meta, const DsFieldMaskCtx* ctx,
     // max_x = std::max(max_x, detector_bbox_info.org_bbox_coords.left + detector_bbox_info.org_bbox_coords.width);
     // max_y = std::max(max_y, detector_bbox_info.org_bbox_coords.top + detector_bbox_info.org_bbox_coords.height);
 
-    const int lower_center_height_amount = float(bbox_coords.height) * lower_bbox_center_by_height_ratio;
-    const int raise_bottom_height_amount = float(bbox_coords.height) * raise_bbox_bottom_by_height_ratio;
+    const int raise_center_height_amount =
+        float(bbox_coords.height) * ctx->initParams.raise_bbox_center_by_height_ratio;
+    const int lower_bottom_height_amount =
+        float(bbox_coords.height) * ctx->initParams.lower_bbox_bottom_by_height_ratio;
 
     // Center of bounding box
-    cv::Point2f ptCenter = cv::Point2f(bbox_center_x, bbox_coords.top + half_height - lower_center_height_amount);
+    cv::Point2f ptCenter = cv::Point2f(bbox_center_x, bbox_coords.top + half_height - raise_center_height_amount);
 
     if (plot_context) {
       plot_context->plot_circle(
           hm::Point{.x = ptCenter.x, .y = ptCenter.y},
-          /*radius=*/lower_center_height_amount,
-          /*thickness=*/lower_center_height_amount / 2,
+          /*radius=*/std::abs(raise_center_height_amount),
+          /*thickness=*/std::max(1, std::abs(raise_center_height_amount) / 2),
           hm::utils::ColorRGB{0, 255, 0});
     }
 
     // Bottom of bounding box (for testing if their feet are on the ice)
     cv::Point2f ptBottom = cv::Point2f(bbox_center_x, bbox_coords.top + bbox_coords.height);
 
-    ptBottom.y -= raise_bottom_height_amount;
+    ptBottom.y -= lower_bottom_height_amount;
 
     if (plot_context) {
       plot_context->plot_circle(
           hm::Point{.x = ptBottom.x, .y = ptBottom.y},
-          /*radius=*/raise_bottom_height_amount,
-          /*thickness=*/raise_bottom_height_amount / 2,
+          /*radius=*/std::abs(lower_bottom_height_amount),
+          /*thickness=*/std::max(1, std::abs(lower_bottom_height_amount) / 2),
           hm::utils::ColorRGB{255, 0, 0});
     }
 
@@ -307,10 +305,7 @@ absl::Status DsFieldMaskProcessFrame(
 #endif
       HM_RETURN_IF_ERROR(
           hm::stitching::create_field_mask(
-              mask_path.parent_path().string(),
-              this_surface,
-              output_generation,
-              ctx->calibration_invalidation_id));
+              mask_path.parent_path().string(), this_surface, output_generation, ctx->calibration_invalidation_id));
       loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));

@@ -3,6 +3,9 @@
 #include <QtCore/QtGlobal>
 #include <QtGui/QIcon>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QMessageBox>
+
+#include <exception>
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
@@ -17,7 +20,12 @@ int main(int argc, char** argv) {
 #endif
   QApplication app(argc, argv);
   app.setWindowIcon(hm::ui_internal::application_icon());
-  HStreamWindow window;
-  window.show();
-  return app.exec();
+  try {
+    HStreamWindow window;
+    window.show();
+    return app.exec();
+  } catch (const std::exception& error) {
+    QMessageBox::critical(nullptr, "HStream configuration error", error.what());
+    return 1;
+  }
 }

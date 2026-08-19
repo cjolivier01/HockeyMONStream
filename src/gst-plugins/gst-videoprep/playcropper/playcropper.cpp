@@ -175,6 +175,42 @@ bool bbox_coords_are_valid(const NvBbox_Coords& coords) {
 
 } // namespace
 
+FrameTransformGeometry CalculateFrameTransformGeometry(
+    size_t input_width,
+    size_t input_height,
+    const BBox& tracking_box,
+    bool no_crop,
+    float fixed_edge_rotation_angle_left,
+    float fixed_edge_rotation_angle_right) {
+  const BBox input_rect(0, 0, input_width, input_height);
+  const float half_width = static_cast<float>(input_width) / 2.0f;
+  const float tracking_center_x = tracking_box.center().x;
+  float angle = 0.0f;
+  if (half_width > 0.0f && tracking_center_x < half_width) {
+    const float pct = 1.0f - tracking_center_x / half_width;
+    angle = fixed_edge_rotation_angle_left * pct;
+  } else if (half_width > 0.0f && tracking_center_x > half_width) {
+    const float pct = (half_width - tracking_center_x) / half_width;
+    angle = fixed_edge_rotation_angle_right * pct;
+  }
+
+  if (no_crop) {
+    // HockeyMOM applies perspective rotation before its final no-crop frame
+    // transform. Keep the camera box as the rotation anchor while selecting
+    // the full rotated input for output.
+    return FrameTransformGeometry{input_rect, tracking_box.center(), input_rect, angle};
+  }
+
+  const FloatValue minimum_width_per_side = tracking_box.width() / 2;
+  const FloatValue clip_left = std::max(input_rect.left, tracking_center_x - minimum_width_per_side);
+  const FloatValue clip_right = std::min(input_rect.right, tracking_center_x + minimum_width_per_side);
+  const BBox source_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
+  BBox local_tracking_box = tracking_box;
+  local_tracking_box.left -= source_rect.left;
+  local_tracking_box.right -= source_rect.left;
+  return FrameTransformGeometry{source_rect, local_tracking_box.center(), local_tracking_box, angle};
+}
+
 absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
   m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
@@ -210,9 +246,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> PlayCropperPriv::PrepareRuntimeOutp
   }
 
   constexpr double kOutputAspectRatio = 16.0 / 9.0;
+  const size_t input_width = in_surface->surfaceList[0].width;
   const size_t input_height = in_surface->surfaceList[0].height;
   size_t output_height = round_down_even(input_height);
-  size_t output_width = round_down_even(static_cast<size_t>(kOutputAspectRatio * output_height));
+  size_t output_width = no_crop_ ? round_down_even(input_width)
+                                 : round_down_even(static_cast<size_t>(kOutputAspectRatio * output_height));
 
   if (runtime_output_max_width_ && runtime_output_max_height_) {
     std::tie(output_width, output_height) =
@@ -516,24 +554,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
     tbox.top *= scale_h;
     tbox.bottom *= scale_h;
 
-    // Calculate rotation angle
-    float angle = 0.0f;
-
-    // const playtracker::PlayTrackerPayload* ptpayload =
-    //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
-    if (false /*ptpayload*/) {
-      // angle = max_angle * ptpayload->`
-    } else {
-      const float half_width = float(frame_meta->source_frame_width) / 2;
-      const float tcx = tbox.center().x;
-      if (tcx < half_width) {
-        float pct = 1.0 - tcx / half_width;
-        angle = fixed_edge_rotation_angle_left_ * pct;
-      } else if (tcx > half_width) {
-        float pct = (half_width - tcx) / half_width;
-        angle = fixed_edge_rotation_angle_right_ * pct;
-      }
-    }
+    const FrameTransformGeometry transform = CalculateFrameTransformGeometry(
+        input_width, input_height, tbox, no_crop_, fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_);
 
     // Calculate crop regions
 #ifndef NDEBUG
@@ -546,26 +568,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
 #ifndef PLAYCROPPER_USE_ONE_KERNEL
     goto fallback;
 #else
-    const BBox input_rect(0, 0, input_width, input_height);
-    const int x_center = tbox.center().x;
-
-    long pre_rotate_size_width = 0 /* ??? */;
-    // long pre_rotate_size_width = videoprep->pre_rotate_size.width;
-    FloatValue min_width_per_side = pre_rotate_size_width / 2;
-    min_width_per_side = std::max(min_width_per_side, tbox.width() / 2);
-    FloatValue clip_left = std::max(input_rect.left, x_center - min_width_per_side);
-    FloatValue clip_right = std::min(input_rect.right, x_center + min_width_per_side);
-    BBox extra_width_src_rect(clip_left, input_rect.top, clip_right, input_rect.bottom);
-
-    BBox new_tbox = tbox;
-    new_tbox.left -= extra_width_src_rect.left;
-    new_tbox.right -= extra_width_src_rect.left;
-    // assert(new_tbox.left >= 0 && new_tbox.top >= 0);
-    // assert(new_tbox.right <= extra_width_src_rect.width());
-
     const BBox output_rect(0, 0, (FloatValue)output_width, (FloatValue)output_height);
-
-    Point anchor_point = new_tbox.center();
 
     // Check if we can use our optimized path
     NvBufSurfaceColorFormat color_format = incoming_surface->colorFormat;
@@ -577,10 +580,10 @@ absl::Status PlayCropperPriv::GenerateOutput(
       // Use the combined transform - no scratch surfaces needed!
       XCUDA_RETURN_IF_ERROR(combinedTransform(
           incoming_surface.get(),
-          extra_width_src_rect,
-          angle,
-          anchor_point,
-          new_tbox,
+          transform.source_rect,
+          transform.angle,
+          transform.anchor_point,
+          transform.crop_box,
           outgoing_surface.get_mutable(),
           output_rect,
           cuda_stream_));
@@ -596,21 +599,21 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
       // Step 1: Crop
       HM_RETURN_IF_ERROR(
-          to_status(cropSurface(incoming_surface, extra_width_src_rect, *scratch_surface_iter, nppStreamContext)));
+          to_status(cropSurface(incoming_surface, transform.source_rect, *scratch_surface_iter, nppStreamContext)));
       // Step 2: Rotate
       auto in_surf_iter = scratch_surface_iter++;
       HM_RETURN_IF_ERROR(to_status(rotateNvBufSurfaceWithNPP(
           *in_surf_iter,
-          BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
+          BBox(0, 0, transform.source_rect.width(), transform.source_rect.height()),
           *scratch_surface_iter,
-          BBox(0, 0, extra_width_src_rect.width(), extra_width_src_rect.height()),
-          angle,
-          anchor_point,
+          BBox(0, 0, transform.source_rect.width(), transform.source_rect.height()),
+          transform.angle,
+          transform.anchor_point,
           nppStreamContext)));
 
       // Step 3: Final crop and resize
       HM_RETURN_IF_ERROR(to_status(cropAndResizeNvBufSurface(
-          *scratch_surface_iter++, new_tbox, outgoing_surface, output_rect, nppStreamContext)));
+          *scratch_surface_iter++, transform.crop_box, outgoing_surface, output_rect, nppStreamContext)));
 #endif
     }
 
@@ -625,7 +628,14 @@ absl::Status PlayCropperPriv::GenerateOutput(
     }
     if (transform_object_meta_) {
       TransformObjectMetaForOutput(
-          frame_meta, scale_w, scale_h, extra_width_src_rect, angle, anchor_point, new_tbox, output_rect);
+          frame_meta,
+          scale_w,
+          scale_h,
+          transform.source_rect,
+          transform.angle,
+          transform.anchor_point,
+          transform.crop_box,
+          output_rect);
     }
     ++frame_count_;
   }

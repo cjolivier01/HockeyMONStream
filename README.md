@@ -53,11 +53,12 @@ The default `configs/config_infer_yolox_hockey.yaml` declares the YOLOX-s COCO a
 ## Configuration
 
 Runtime behavior is controlled by YAML configs in `configs/` and CLI overrides:
+- Canonical defaults: `configs/baseline.yaml`
 - Primary configs: `configs/ds_hockey_configure_stitching.yaml`, `configs/ds_hockey_app_config.yaml`
 - Inference config: `configs/config_infer_yolox_hockey.yaml`
-- Play tracking defaults: `configs/play_tracker_config.yaml`
+- Play tracking structure: `configs/play_tracker_config.yaml`
 
-Configuration layers are applied in this order: HockeyMOM `baseline.yaml`, the
+Configuration layers are applied in this order: the bundled `configs/baseline.yaml`, the
 per-user `~/.hstream/hstream.yaml` overlay, the game's private `config.yaml`,
 then command-line overrides. On first use HStream creates the user overlay with:
 
@@ -75,9 +76,25 @@ Successful UI archive runs are losslessly remuxed (not re-encoded) into the
 game directory as `<game-id>-tracking_output-with-audio.mp4`. The final MP4 is
 published only after ffmpeg completes its fast-start compatibility pass.
 
-HockeyMOM baseline config root:
-- Auto-detected from a sibling `../hm/hmlib/config` checkout when present, or from Bazel's `hm` external repo after a build.
-- Override explicitly via `HM_CONFIG_ROOT=/path/to/hm/hmlib/config`
+The bundled baseline is an exact copy of HockeyMOM's `hmlib/config/baseline.yaml`
+at commit `242f45c148cc5fbc6a6c7255e9f65b2034d75a4c`. It is the default for source,
+Bazel/runfiles, and `/opt/hstream` package runs. Native play-tracker settings
+are materialized from the fully merged configuration, so lower-level plugin
+files do not maintain a second set of baseline defaults.
+
+Every baseline field with a native HStream consumer is translated from that
+same merged configuration. This includes stitching enable/blend/precision and
+rotation, play-crop and plotting controls, tracker tuning, scoreboard geometry,
+and archive bitrate/path/dimensions. Structural app YAML describes pipeline
+topology and may provide an intentional native value; an explicit canonical
+user, game, or CLI value overrides lower layers. At the same explicit layer, a
+direct native property wins. Baseline fields for features that exist only in
+HockeyMOM/Aspen remain present in the merged YAML but have no invented HStream
+mapping until a native consumer exists.
+
+`HM_CONFIG_ROOT=/path/to/config` is an explicit diagnostic/development
+override. If it is set but does not contain a valid `baseline.yaml`, startup
+fails instead of silently selecting another copy.
 
 ## Repo Layout
 
