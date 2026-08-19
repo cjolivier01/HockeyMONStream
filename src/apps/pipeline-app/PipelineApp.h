@@ -193,6 +193,7 @@ class PipelineApplication {
   gdouble show_render_scale_{-1};
   gint64 render_window_id_{0};
   gboolean headless_render_video_{FALSE};
+  gboolean stitching_calibration_only_{FALSE};
   std::vector<guint64> source_render_window_ids_;
   std::map<std::string, guint64> ui_preview_window_ids_;
   std::string initial_ui_preview_channel_{"program"};

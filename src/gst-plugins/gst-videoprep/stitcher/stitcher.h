@@ -154,6 +154,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   size_t process_pass_{0};
   bool configure_only_{false};
   bool one_pass_mode_{false};
+  bool calibrate_field_mask_{true};
   bool force_scoreboard_config_{false};
   size_t canvas_width_hint_{0};
   size_t canvas_height_hint_{0};

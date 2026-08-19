@@ -2822,7 +2822,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   const int calibration_index = mode->findData("stitch-calibration");
+  const int program_preview_args_before = window->logText().count("--ui-preview-windows=program:");
+  const int stitched_preview_args_before = window->logText().count("--ui-preview-windows=stitched:");
   mode->setCurrentIndex(calibration_index);
+  if (!expect(
+          !preview_tabs->isTabEnabled(0) && preview_tabs->currentIndex() == 1,
+          "Stitching Calibration mode should expose Stitched instead of the omitted Program graph")) {
+    return false;
+  }
   control_points->setValue(750);
   qputenv("HSTREAM_UI_TEST_CLEAN_RESULT", "failure");
   activate(start);
@@ -2854,7 +2861,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
   }
-  const bool x11_calibration_preview_ok = window->logText().contains("--ui-preview-windows=program:") &&
+  const bool x11_calibration_preview_ok =
+      window->logText().count("--ui-preview-windows=stitched:") > stitched_preview_args_before &&
+      window->logText().count("--ui-preview-windows=program:") == program_preview_args_before &&
       !stitched_surface->isHidden() && camera1_surface->isHidden() && camera2_surface->isHidden() &&
       camera3_surface->isHidden();
   if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0 && !x11_calibration_preview_ok) {
@@ -2888,9 +2897,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains("pipeline.streammux.frame-num-reset-on-stream-reset=0") &&
               window->logText().contains("pipeline.streammux.frame-num-reset-on-eos=0") &&
               window->logText().contains("pipeline.hmstitcher.show=0") &&
-              !window->logText().contains("pipeline.hmplaycropper.enable=0") &&
-              !window->logText().contains("pipeline.ds-playtracker.enable=0"),
-          "Stitched preview should batch both cameras on the normal pipeline without legacy OpenGL debug windows") ||
+              window->logText().contains("--stitching-calibration-only"),
+          "Stitched preview should batch both cameras on the stitching-only pipeline without Program stages") ||
       !expect(
           window->logText().contains("HM_MAX_CONTROL_POINTS=750"),
           "One-pass calibration should pass the selected control-point limit") ||
@@ -2999,6 +3007,18 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "config.yaml";
     const fs::path active_runtime_dir = config.parent_path() / ".hstream-ui";
     const fs::path switched_runtime_dir = switched_config.parent_path() / ".hstream-ui";
+    auto runtime_snapshot_count = [](const fs::path& dir) {
+      if (!fs::exists(dir))
+        return size_t{0};
+      return static_cast<size_t>(
+          std::count_if(fs::directory_iterator(dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
+            return entry.path().filename().string().rfind("play_tracker_runtime_", 0) == 0;
+          }));
+    };
+    const size_t active_runtime_snapshots_before = runtime_snapshot_count(active_runtime_dir);
+    const size_t switched_runtime_snapshots_before = runtime_snapshot_count(switched_runtime_dir);
+    const int playtracker_commands_before =
+        window->logText().count("stdin:@set-property dsplaytracker0 runtime-tuning-config-file=");
     qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
     const int pipeline_commands_before = window->logText().count("pipeline command ");
     activate(start);
@@ -3021,24 +3041,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     max_speed_x->setValue(original_max_speed_x + 1);
     for (int i = 0; i < 50 &&
          !window->logText().contains(
-             QString("camera control Max_Speed_X_x10=%1 apply=live").arg(original_max_speed_x + 1));
+             QString("camera control Max_Speed_X_x10=%1 apply=save/restart").arg(original_max_speed_x + 1));
          ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    auto contains_runtime_snapshot = [](const fs::path& dir) {
-      if (!fs::exists(dir))
-        return false;
-      return std::any_of(fs::directory_iterator(dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
-        return entry.path().filename().string().rfind("play_tracker_runtime_", 0) == 0;
-      });
-    };
-    const bool runtime_control_used_launched_game =
-        contains_runtime_snapshot(active_runtime_dir) && !contains_runtime_snapshot(switched_runtime_dir);
+    const bool calibration_omitted_playtracker_runtime =
+        runtime_snapshot_count(active_runtime_dir) == active_runtime_snapshots_before &&
+        runtime_snapshot_count(switched_runtime_dir) == switched_runtime_snapshots_before &&
+        window->logText().count("stdin:@set-property dsplaytracker0 runtime-tuning-config-file=") ==
+            playtracker_commands_before &&
+        window->logText().contains(
+            QString("camera control Max_Speed_X_x10=%1 apply=save/restart").arg(original_max_speed_x + 1));
     game_id->setText(launched_game_id);
     max_speed_x->setValue(original_max_speed_x);
     for (int i = 0; i < 50 &&
-         !window->logText().contains(QString("camera control Max_Speed_X_x10=%1 apply=live").arg(original_max_speed_x));
+         !window->logText().contains(
+             QString("camera control Max_Speed_X_x10=%1 apply=save/restart").arg(original_max_speed_x));
          ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
@@ -3061,8 +3080,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
                 window->logText().contains("pipeline.streammux.frame-num-reset-on-stream-reset=0") &&
                 window->logText().contains("pipeline.streammux.frame-num-reset-on-eos=0") &&
                 window->logText().contains("pipeline.hmstitcher.show=0") &&
-                !window->logText().contains("pipeline.hmplaycropper.enable=0"),
-            "Continuous preview should stay on the normal pipeline without legacy OpenGL debug windows") ||
+                window->logText().contains("--stitching-calibration-only"),
+            "Continuous preview should stay on the stitching-only graph without Program processing") ||
         !expect(window->pipelineStateText() == "PLAYING", "Continuous stitched preview should remain running") ||
         !expect(
             has_transitioned_status && transitioned_status.IsScalar() &&
@@ -3073,8 +3092,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             !fs::exists(switched_config),
             "Calibration completion should remain associated with the game that launched the run") ||
         !expect(
-            runtime_control_used_launched_game,
-            "Live controls should write runtime config for the game that launched the pipeline")) {
+            calibration_omitted_playtracker_runtime,
+            "Stitching-only calibration should not publish playtracker runtime configuration")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
       return false;
@@ -3205,8 +3224,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     fixed_edge_link->setValue(1);
     fixed_edge_left->setValue(310);
-    for (int i = 0;
-         i < 50 && !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed");
+    for (int i = 0; i < 50 &&
+         !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=save/restart");
          ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
@@ -3226,10 +3245,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
                 !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=live"),
             "Rejected runtime controls should not be reported as live") ||
         !expect(
-            window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=pending") &&
-                window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed") &&
-                !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=live"),
-            "A multi-stage fixed-edge update should fail as one batch when its property commands are rejected")) {
+            window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=save/restart") &&
+                !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=pending") &&
+                !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed"),
+            "Calibration should not send fixed-edge controls to omitted Program stages")) {
       return false;
     }
 

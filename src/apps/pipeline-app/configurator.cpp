@@ -1260,8 +1260,14 @@ absl::Status Configurator::setup_stitcher_and_masks(
     if (enabled && (configure_only || one_pass_mode)) {
       bool is_configured;
       HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir));
-      const bool field_mask_configured = is_configured && stitching::is_field_mask_configured(game_dir.string());
-      stitching_calibration_required_ = OnePassCalibrationRequired(one_pass_mode, is_configured, field_mask_configured);
+      const bool calibrate_field_mask = StitcherCalibratesFieldMask(pipeline);
+      const bool field_mask_configured =
+          calibrate_field_mask && is_configured && stitching::is_field_mask_configured(game_dir.string());
+      const char* calibration_pending = g_getenv("HSTREAM_CALIBRATION_PENDING");
+      const bool calibration_completion_requested =
+          calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
+      stitching_calibration_required_ = OnePassCalibrationRequiredForMode(
+          one_pass_mode, is_configured, field_mask_configured, calibrate_field_mask, calibration_completion_requested);
       if (configure_only && is_configured && !force) {
         return absl::CancelledError("Stitching is already configured.");
       }

@@ -850,6 +850,8 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     configure_only_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "one-pass-mode") {
     one_pass_mode_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "calibrate-field-mask" || prop.key == "calibrate_field_mask") {
+    calibrate_field_mask_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "force-scoreboard-config" || prop.key == "force_scoreboard_config") {
     force_scoreboard_config_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "show") {
@@ -1423,13 +1425,14 @@ absl::Status StitcherPriv::GenerateOutput(
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
-      bool mask_configured = stitching::is_field_mask_configured(config_file_, output_generation);
+      bool mask_configured =
+          !calibrate_field_mask_ || stitching::is_field_mask_configured(config_file_, output_generation);
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
           configured_during_run_,
           mask_configured,
           /*report_latched=*/false,
           process_calibration_completion_latch.delivered(completion_scope));
-      if (progress.report) {
+      if (progress.create_mask) {
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
@@ -1476,7 +1479,8 @@ absl::Status StitcherPriv::GenerateOutput(
         if (delivered) {
           calibration_completion_reported_ = true;
           if (process_calibration_completion_latch.try_begin_delivery(completion_scope)) {
-            report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
+            if (calibrate_field_mask_)
+              report_calibration_progress("rink-mask", "complete", "Ice surface calibration is ready");
             report_calibration_progress("calibration", "complete", "Stitching calibration is complete");
             g_print("hmstitcher: one-pass stitching configuration complete\n");
             std::fflush(stdout);

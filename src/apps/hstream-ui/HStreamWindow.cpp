@@ -1861,6 +1861,16 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     if (stitched_status_ && isCalibrationRun()) {
       stitched_status_->setText("Stitching calibration preview");
     }
+    if (preview_tabs_) {
+      const bool calibration = isCalibrationRun();
+      preview_tabs_->setTabEnabled(0, !calibration);
+      preview_tabs_->setTabToolTip(
+          0,
+          calibration ? "Program processing is omitted from the stitching-only calibration pipeline."
+                      : "Final Program output after detection, tracking, cropping, and overlays.");
+      if (calibration)
+        preview_tabs_->setCurrentIndex(1);
+    }
   });
 
   control_points_spin_ = new QSpinBox();
@@ -2301,7 +2311,9 @@ void HStreamWindow::configureControlHelp() {
 
   help(
       "runModeCombo",
-      "Choose Program for the full output pipeline, or Stitching Calibration to rebuild stitching artifacts and inspect the stitched preview. Output archives are created only by Program runs.");
+      "Choose Program for the full output pipeline, or Stitching Calibration for a stitching-only graph without "
+      "detection, tracking, rink-mask filtering, cropping, or Program output. Output archives are created only by "
+      "Program runs.");
   help(
       "controlPointsSpin",
       "Set the maximum number of feature control points used during stitching calibration. Changing it makes Program recalibrate stale stitching before continuing.");
@@ -3460,6 +3472,7 @@ QStringList HStreamWindow::pipelineArguments() const {
   if (!active_calibration_invalidation_id_.isEmpty())
     args << QString("--clean-expected-invalidation-id=%1").arg(active_calibration_invalidation_id_);
   if (isCalibrationRun()) {
+    args << "--stitching-calibration-only";
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     args << QString("--enable-sinks=%1").arg(render_video || embed_render_window ? "RENDER" : "FAKE");
     if (render_video || embed_render_window) {
@@ -3498,16 +3511,20 @@ QStringList HStreamWindow::pipelineArguments() const {
       preview_windows << QString("%1:%2").arg(channel).arg(static_cast<qulonglong>(window_id));
       return true;
     };
-    const bool have_required_windows =
-        add_window("program", preview_render_target_) && add_window("stitched", stitched_render_target_);
+    const bool calibration_only = isCalibrationRun();
+    const bool have_required_windows = add_window("stitched", stitched_render_target_) &&
+        (calibration_only || add_window("program", preview_render_target_));
     for (int camera_index = 0; camera_index < static_cast<int>(camera_preview_render_targets_.size()); ++camera_index) {
       add_window(QString("source%1").arg(camera_index), camera_preview_render_targets_[camera_index]);
     }
     if (have_required_windows) {
-      const QString initial_channel = preview_tabs_
-          ? hm::ui_internal::preview_channel_for_tab(
-                preview_tabs_->currentIndex(), static_cast<int>(camera_preview_render_targets_.size()))
-          : QString("program");
+      QString initial_channel = "program";
+      if (calibration_only) {
+        initial_channel = "stitched";
+      } else if (preview_tabs_) {
+        initial_channel = hm::ui_internal::preview_channel_for_tab(
+            preview_tabs_->currentIndex(), static_cast<int>(camera_preview_render_targets_.size()));
+      }
       args << QString("--ui-preview-windows=%1").arg(preview_windows.join(','));
       args << QString("--ui-preview-active=%1")
                   .arg(render_video ? (initial_channel.isEmpty() ? "program" : initial_channel) : "none");
@@ -8195,6 +8212,9 @@ bool HStreamWindow::publishRuntimeControlBatch(
 
 bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    return false;
+  }
+  if (active_run_is_calibration_ && id != "Stitch_Rotate_Degrees") {
     return false;
   }
   if (id == "Stitch_Rotate_Degrees") {

@@ -5,6 +5,7 @@
 #include "PipelineApp.h"
 #include "PipelineRuntimePaths.h"
 #include "StitchFrameTimePlan.h"
+#include "StitchingCalibrationMode.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -881,6 +882,13 @@ absl::Status PipelineApplication::configureInstances(
             }
           }
         }
+      }
+
+      if (stitching_calibration_only_ && current_stage_ >= 0) {
+        hm::pipeline_internal::configure_stitching_calibration_pipeline(app_ctx->configurator().config()["pipeline"]);
+        g_print(
+            "HSTREAM_PIPELINE_MODE mode=stitching-calibration-only "
+            "downstream-video-stages=disabled\n");
       }
 
       bool complete_configuration_enabled = false;
@@ -2051,6 +2059,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        G_OPTION_ARG_NONE,
        &headless_render_video_,
        "Replace render-type video output with an unsynchronized fakesink while retaining render audio routing",
+       nullptr},
+      {"stitching-calibration-only",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &stitching_calibration_only_,
+       "Build a stitching-only graph without Program detection, tracking, field-mask, crop, or overlay stages",
        nullptr},
       {"ui-preview-windows",
        0,
@@ -4345,7 +4360,8 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     return TRUE;
   }
   if (!output_generation || !*output_generation || stitcher_config_path.empty() ||
-      !hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation)) {
+      (!stitching_calibration_only_ &&
+       !hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation))) {
     g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
     return TRUE;
   }
