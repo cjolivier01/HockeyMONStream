@@ -103,6 +103,7 @@ cc_test(
     deps = [
         ":hstream_window",
         ":scoreboard_selection_dialog",
+        "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
         "@yaml-cpp",

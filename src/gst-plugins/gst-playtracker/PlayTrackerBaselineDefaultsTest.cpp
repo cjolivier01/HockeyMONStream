@@ -122,6 +122,35 @@ live-boxes:
           near(reordered_config.living_boxes[2].min_height, 300.0f),
       "Native tracker construction must normalize fast first and follower last while retaining additional boxes");
 
+  NvDsBatchMeta* draw_batch = nvds_create_batch_meta(1);
+  NvDsFrameMeta* draw_frame_meta = draw_batch ? nvds_acquire_frame_meta_from_pool(draw_batch) : nullptr;
+  if (!expect(draw_batch && draw_frame_meta, "Expected DeepStream metadata for arbitrary-box draw test")) {
+    if (draw_batch)
+      nvds_destroy_batch_meta(draw_batch);
+    return 1;
+  }
+  draw_frame_meta->source_id = 0;
+  draw_frame_meta->source_frame_width = 2000;
+  draw_frame_meta->source_frame_height = 1000;
+  nvds_add_frame_meta_to_batch(draw_batch, draw_frame_meta);
+  NvBufSurfaceParams draw_surface{};
+  draw_surface.width = 2000;
+  draw_surface.height = 1000;
+  DsPlayTrackerCtx draw_context;
+  draw_context.arena_box = hm::BBox(0, 0, 2000, 1000);
+  auto& draw_tracker = draw_context.play_trackers[0];
+  draw_tracker.base_play_tracker_config = reordered_config;
+  draw_tracker.play_tracker_config = reordered_config;
+  draw_tracker.play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(draw_context.arena_box, reordered_config);
+  GstDsPlayTrackerFrame draw_frame;
+  draw_frame.frame_meta = draw_frame_meta;
+  draw_frame.input_surf_params = &draw_surface;
+  draw_frame.play_tracker_results.tracking_boxes = {
+      hm::BBox(100, 100, 300, 300), hm::BBox(400, 100, 600, 300), hm::BBox(700, 100, 900, 300)};
+  const absl::Status draw_status = DsPlayTrackerDrawToDisplayMeta(&draw_context, draw_frame);
+  ok &= expect(draw_status.ok(), "Display drawing must support more than two live boxes");
+  nvds_destroy_batch_meta(draw_batch);
+
   YAML::Node one_box_yaml = YAML::Clone(yaml);
   YAML::Node one_box_sequence(YAML::NodeType::Sequence);
   YAML::Node one_box = YAML::Clone(yaml["live-boxes"][1]);

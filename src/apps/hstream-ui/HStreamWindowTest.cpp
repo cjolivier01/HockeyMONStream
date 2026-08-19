@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <QtTest/qtest_widgets.h>
@@ -4763,6 +4764,8 @@ bool test_camera_controls(HStreamWindow* window) {
       lookup_yaml_path(
           live_playtracker, {"play-tracker", "live-boxes", "1", "max-speed-y"}, &live_follower_max_speed_y) &&
       live_follower_max_speed_y.IsScalar() && live_follower_max_speed_y.as<double>() == 77.0;
+  const bool native_runtime_tuning_ok =
+      fs::exists(live_playtracker_config) && DsPlayTrackerLoadRuntimeTuning(live_playtracker_config.string()).ok();
   if (!expect(
           window->logText().contains("stdin:@set-property dsplaytracker0 runtime-tuning-config-file="),
           "Live speed slider should send a state-preserving playtracker update to the running pipeline") ||
@@ -4774,7 +4777,8 @@ bool test_camera_controls(HStreamWindow* window) {
           live_preserved_custom_tracker_config,
           "Live playtracker update should preserve the custom base tracker config") ||
       !expect(live_saved_follower_speed, "Live playtracker update should write the new follower speed") ||
-      !expect(live_preserved_follower_y_speed, "Live playtracker update should preserve untouched motion limits")) {
+      !expect(live_preserved_follower_y_speed, "Live playtracker update should preserve untouched motion limits") ||
+      !expect(native_runtime_tuning_ok, "The native playtracker loader should accept the exact UI runtime sidecar")) {
     std::cerr << live_playtracker << '\n';
     activate(stop);
     return false;

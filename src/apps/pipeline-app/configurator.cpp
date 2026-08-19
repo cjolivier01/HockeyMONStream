@@ -916,12 +916,13 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
 
 absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_config(
     const YAML::Node& effective_config,
-    const YAML::Node& explicit_config,
+    const ConfigLeafRanks& canonical_value_ranks,
+    int native_base_rank,
     const YAML::Node& base_playtracker_config) {
   if (!effective_config.IsMap())
     return absl::InvalidArgumentError("Effective application config must be a YAML map");
-  if (explicit_config.IsDefined() && !explicit_config.IsNull() && !explicit_config.IsMap())
-    return absl::InvalidArgumentError("Explicit application config must be a YAML map");
+  if (native_base_rank < 0)
+    return absl::InvalidArgumentError("Native playtracker provenance rank must be non-negative");
   if (!base_playtracker_config.IsMap() || !base_playtracker_config["play-tracker"].IsMap())
     return absl::InvalidArgumentError("Playtracker config must contain a play-tracker map");
 
@@ -969,10 +970,11 @@ absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_co
     const std::optional<YAML::Node> source = get_node(effective_config, source_path);
     if (!source || !source->IsDefined() || source->IsNull())
       return absl::InvalidArgumentError(std::string("Effective baseline is missing required key ") + source_path);
-    HM_RETURN_IF_ERROR(validate_scalar(*source, type, source_path));
-    const std::optional<YAML::Node> explicit_source = get_node(explicit_config, source_path);
     const YAML::Node current = destination[destination_key];
-    if ((explicit_source && explicit_source->IsDefined()) || !current.IsDefined() || current.IsNull()) {
+    const auto source_rank_it = canonical_value_ranks.find(source_path);
+    const int source_rank = source_rank_it == canonical_value_ranks.end() ? 0 : source_rank_it->second;
+    if (!current.IsDefined() || current.IsNull() || source_rank > native_base_rank) {
+      HM_RETURN_IF_ERROR(validate_scalar(*source, type, source_path));
       destination[destination_key] = YAML::Clone(*source);
     } else {
       HM_RETURN_IF_ERROR(validate_scalar(current, type, destination_path));
@@ -1660,6 +1662,41 @@ absl::Status Configurator::map_common_config_keys() {
         "plot-player-tracking"));
   }
 
+  if (pipeline["ds-playtracker"].IsMap()) {
+    YAML::Node tracker = pipeline["ds-playtracker"];
+    HM_RETURN_IF_ERROR(map_bool("plot.debug_play_tracker", "pipeline.ds-playtracker.draw", tracker, "draw"));
+  }
+
+  if (pipeline["ds-fieldmask"].IsMap()) {
+    YAML::Node fieldmask = pipeline["ds-fieldmask"];
+    if (!fieldmask["properties"].IsMap())
+      fieldmask["properties"] = YAML::Node(YAML::NodeType::Map);
+    YAML::Node properties = fieldmask["properties"];
+    for (const auto& [canonical_key, native_key] : {
+             std::pair<const char*, const char*>(
+                 "raise_bbox_center_by_height_ratio", "raise-bbox-center-by-height-ratio"),
+             std::pair<const char*, const char*>(
+                 "lower_bbox_bottom_by_height_ratio", "lower-bbox-bottom-by-height-ratio"),
+         }) {
+      const std::string source_path = std::string("ice_boundaries.") + canonical_key;
+      const std::string destination_path = std::string("pipeline.ds-fieldmask.properties.") + native_key;
+      std::optional<YAML::Node> source;
+      HM_ASSIGN_OR_RETURN(source, canonical_source(source_path, destination_path, properties[native_key], true));
+      if (!source.has_value())
+        continue;
+      if ((*source).IsNull() || !(*source).IsScalar())
+        return absl::InvalidArgumentError(source_path + " must be a finite number");
+      try {
+        const double value = (*source).as<double>();
+        if (!std::isfinite(value))
+          return absl::InvalidArgumentError(source_path + " must be finite");
+        properties[native_key] = value;
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError("Invalid " + source_path + ": " + error.what());
+      }
+    }
+  }
+
   for (const auto& entry : pipeline) {
     const std::string section_name = entry.first.as<std::string>();
     YAML::Node sink = entry.second;
@@ -1983,8 +2020,11 @@ absl::Status Configurator::materialize_playtracker_config(
         "Failed to load playtracker base config " + base_path.string() + ": " + error.what());
   }
   YAML::Node effective;
+  const int native_base_rank = std::max(0, explicit_value_rank("pipeline.ds-playtracker.config-file"));
   HM_ASSIGN_OR_RETURN(
-      effective, configurator_internal::build_effective_playtracker_config(config_, explicit_config_, base));
+      effective,
+      configurator_internal::build_effective_playtracker_config(
+          config_, explicit_value_ranks_, native_base_rank, base));
   const std::string contents = YAML::Dump(effective) + "\n";
 
   uint64_t hash = 1469598103934665603ULL;
@@ -3111,7 +3151,6 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   const YAML::Node user_overlay = YAML::Clone(*user_config_snapshot_);
   explicit_value_ranks_.clear();
   record_explicit_overlay(user_overlay, {}, 1);
-  explicit_config_ = YAML::Clone(user_overlay);
   config = merge_nodes(
       config,
       user_overlay,
@@ -3123,10 +3162,6 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
     private_config_ = *private_config;
     persisted_private_config_ = YAML::Clone(private_config_);
     record_explicit_overlay(private_config_, {}, 2);
-    explicit_config_ = merge_nodes(
-        explicit_config_,
-        private_config_,
-        /*warn_if_key_not_in_dest=*/false);
     config = merge_nodes(
         config,
         private_config_,
@@ -3171,17 +3206,9 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
         config_,
         overlaid_config,
         /*warn_if_key_not_in_dest=*/false);
-    explicit_config_ = merge_nodes(
-        explicit_config_,
-        overlaid_config,
-        /*warn_if_key_not_in_dest=*/false);
   } else {
     config_[node_name] = merge_nodes(
         config_[node_name],
-        overlaid_config,
-        /*warn_if_key_not_in_dest=*/false);
-    explicit_config_[node_name] = merge_nodes(
-        explicit_config_[node_name],
         overlaid_config,
         /*warn_if_key_not_in_dest=*/false);
   }
@@ -3543,7 +3570,6 @@ absl::Status Configurator::apply_config_item(const std::string& key, const std::
   // std::cout << overlaid_config << std::endl;
   //  std::cout << config_ << std::endl;
   config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
-  explicit_config_ = merge_nodes(explicit_config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
   record_explicit_overlay(overlaid_config, {}, 3);
   // std::cout << config_ << std::endl;
   return absl::OkStatus();

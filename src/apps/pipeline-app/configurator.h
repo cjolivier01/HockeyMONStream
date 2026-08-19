@@ -52,9 +52,11 @@ absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_fi
     const std::filesystem::path& configured_path);
 absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config);
 std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
+using ConfigLeafRanks = std::map<std::string, int>;
 absl::StatusOr<YAML::Node> build_effective_playtracker_config(
     const YAML::Node& effective_config,
-    const YAML::Node& explicit_config,
+    const ConfigLeafRanks& canonical_value_ranks,
+    int native_base_rank,
     const YAML::Node& base_playtracker_config);
 
 } // namespace configurator_internal
@@ -208,9 +210,6 @@ class Configurator {
 
   // The fully-realzied merged config
   YAML::Node config_;
-  // Only user, game, and CLI overlays. App YAML files are structural
-  // underlays and therefore are intentionally excluded from this tree.
-  YAML::Node explicit_config_;
   // Bundled baseline plus the user overlay, before per-game values. This is
   // the lower layer used to decide whether a game must persist an explicit
   // zero/nonzero override.

@@ -124,7 +124,7 @@ play-tracker:
 )");
   auto effective_playtracker = bundled_baseline.ok()
       ? hm::configurator_internal::build_effective_playtracker_config(
-            bundled_baseline->values, YAML::Node(YAML::NodeType::Map), playtracker_base)
+            bundled_baseline->values, {}, /*native_base_rank=*/0, playtracker_base)
       : absl::StatusOr<YAML::Node>(bundled_baseline.status());
   if (effective_playtracker.ok()) {
     const YAML::Node play_tracker = (*effective_playtracker)["play-tracker"];
@@ -169,13 +169,14 @@ play-tracker:
   }
   if (bundled_baseline.ok()) {
     YAML::Node overlaid = YAML::Clone(bundled_baseline->values);
-    YAML::Node explicit_overrides(YAML::NodeType::Map);
     overlaid["rink"]["camera"]["stop_on_dir_change_delay"] = 17;
     overlaid["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 12;
-    explicit_overrides["rink"]["camera"]["stop_on_dir_change_delay"] = 17;
-    explicit_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 12;
-    const auto overlaid_playtracker =
-        hm::configurator_internal::build_effective_playtracker_config(overlaid, explicit_overrides, playtracker_base);
+    const hm::configurator_internal::ConfigLeafRanks explicit_overrides = {
+        {"rink.camera.stop_on_dir_change_delay", 1},
+        {"rink.camera.breakaway_detection.overshoot_stop_delay_count", 1},
+    };
+    const auto overlaid_playtracker = hm::configurator_internal::build_effective_playtracker_config(
+        overlaid, explicit_overrides, /*native_base_rank=*/0, playtracker_base);
     ok &= expect(
         overlaid_playtracker.ok() &&
             (*overlaid_playtracker)["play-tracker"]["overshoot-stop-delay-count"].as<int>() == 12 &&
@@ -187,17 +188,17 @@ play-tracker:
     custom_base["play-tracker"]["no-wide-start"] = false;
     custom_base["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"] = 9.5;
     const auto custom_only = hm::configurator_internal::build_effective_playtracker_config(
-        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), custom_base);
+        bundled_baseline->values, {}, /*native_base_rank=*/0, custom_base);
     YAML::Node different_effective = YAML::Clone(bundled_baseline->values);
-    YAML::Node different_explicit(YAML::NodeType::Map);
     different_effective["rink"]["camera"]["sticky_translation_gaussian_mult"] = 7.25;
-    different_explicit["rink"]["camera"]["sticky_translation_gaussian_mult"] = 7.25;
+    const hm::configurator_internal::ConfigLeafRanks different_explicit = {
+        {"rink.camera.sticky_translation_gaussian_mult", 1}};
     const auto explicit_different = hm::configurator_internal::build_effective_playtracker_config(
-        different_effective, different_explicit, custom_base);
-    YAML::Node equal_explicit(YAML::NodeType::Map);
-    equal_explicit["rink"]["camera"]["sticky_translation_gaussian_mult"] = 5.0;
+        different_effective, different_explicit, /*native_base_rank=*/0, custom_base);
+    const hm::configurator_internal::ConfigLeafRanks equal_explicit = {
+        {"rink.camera.sticky_translation_gaussian_mult", 1}};
     const auto explicit_equal = hm::configurator_internal::build_effective_playtracker_config(
-        bundled_baseline->values, equal_explicit, custom_base);
+        bundled_baseline->values, equal_explicit, /*native_base_rank=*/0, custom_base);
     ok &= expect(
         custom_only.ok() && !(*custom_only)["play-tracker"]["no-wide-start"].as<bool>() &&
             (*custom_only)["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() == 9.5 &&
@@ -218,7 +219,7 @@ play-tracker:
     reordered_boxes.push_back(reordered_base["play-tracker"]["live-boxes"][0]);
     reordered_base["play-tracker"]["live-boxes"] = reordered_boxes;
     const auto reordered = hm::configurator_internal::build_effective_playtracker_config(
-        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), reordered_base);
+        bundled_baseline->values, {}, /*native_base_rank=*/0, reordered_base);
     YAML::Node one_box = YAML::Clone(playtracker_base);
     YAML::Node one_box_sequence(YAML::NodeType::Sequence);
     YAML::Node operator_box(YAML::NodeType::Map);
@@ -226,7 +227,7 @@ play-tracker:
     one_box_sequence.push_back(operator_box);
     one_box["play-tracker"]["live-boxes"] = one_box_sequence;
     const auto one_box_effective = hm::configurator_internal::build_effective_playtracker_config(
-        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), one_box);
+        bundled_baseline->values, {}, /*native_base_rank=*/0, one_box);
     ok &= expect(
         reordered.ok() && (*reordered)["play-tracker"]["live-boxes"].size() == 3 &&
             (*reordered)["play-tracker"]["live-boxes"][0]["name"].as<std::string>() == "current_roi" &&
@@ -241,15 +242,14 @@ play-tracker:
         "Baseline fill must normalize native roles, preserve additional boxes, and retain one-box compatibility");
 
     YAML::Node malformed_effective = YAML::Clone(bundled_baseline->values);
-    YAML::Node malformed_explicit(YAML::NodeType::Map);
     malformed_effective["play_tracker"]["no_wide_start"] = "not-a-boolean";
-    malformed_explicit["play_tracker"]["no_wide_start"] = "not-a-boolean";
+    const hm::configurator_internal::ConfigLeafRanks malformed_explicit = {{"play_tracker.no_wide_start", 1}};
     const auto malformed_canonical = hm::configurator_internal::build_effective_playtracker_config(
-        malformed_effective, malformed_explicit, playtracker_base);
+        malformed_effective, malformed_explicit, /*native_base_rank=*/0, playtracker_base);
     YAML::Node malformed_native = YAML::Clone(playtracker_base);
     malformed_native["play-tracker"]["no-wide-start"] = "not-a-boolean";
     const auto malformed_custom = hm::configurator_internal::build_effective_playtracker_config(
-        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), malformed_native);
+        bundled_baseline->values, {}, /*native_base_rank=*/0, malformed_native);
     ok &= expect(
         !malformed_canonical.ok() && !malformed_custom.ok(),
         "Malformed baseline-backed canonical and custom-native scalar types must fail materialization");
@@ -292,6 +292,7 @@ play-tracker:
   mapping_structure["hmstitcher"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["hmplaycropper"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["ds-playtracker"] = YAML::Node(YAML::NodeType::Map);
+  mapping_structure["ds-fieldmask"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["sink0"]["type"] = 3; // NV_DS_SINK_ENCODE_FILE
   std::ofstream(mapping_structure_path) << YAML::Dump(mapping_structure) << '\n';
 
@@ -314,6 +315,9 @@ play-tracker:
           mapped_defaults["hmplaycropper"]["no-crop"].as<int>() == 0 &&
           mapped_defaults["hmplaycropper"]["plot-play-tracking"].as<int>() == 0 &&
           mapped_defaults["hmplaycropper"]["plot-player-tracking"].as<int>() == 0 &&
+          mapped_defaults["ds-playtracker"]["draw"].as<int>() == 0 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.1 &&
+          mapped_defaults["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.1 &&
           mapped_defaults["sink0"]["bitrate"].as<int>() == 55000000 &&
           !mapped_defaults["sink0"]["output-file"].IsDefined() && !mapped_defaults["sink0"]["width"].IsDefined() &&
           !mapped_defaults["sink0"]["height"].IsDefined() &&
@@ -334,6 +338,9 @@ play-tracker:
   structural_custom["hmplaycropper"]["no-crop"] = 1;
   structural_custom["hmplaycropper"]["plot-play-tracking"] = 1;
   structural_custom["hmplaycropper"]["plot-player-tracking"] = 1;
+  structural_custom["ds-playtracker"]["draw"] = 1;
+  structural_custom["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"] = -0.25;
+  structural_custom["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"] = 0.35;
   structural_custom["hmplaycropper"]["fixed-edge-rotation-angle"] = 12.0;
   structural_custom["hmplaycropper"]["scoreboard-projected-width"] = "%77";
   structural_custom["sink0"]["bitrate"] = 999999;
@@ -357,6 +364,9 @@ play-tracker:
           mapped_structural["hmplaycropper"]["no-crop"].as<int>() == 1 &&
           mapped_structural["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
           mapped_structural["hmplaycropper"]["plot-player-tracking"].as<int>() == 1 &&
+          mapped_structural["ds-playtracker"]["draw"].as<int>() == 1 &&
+          mapped_structural["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.25 &&
+          mapped_structural["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.35 &&
           mapped_structural["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 12.0 &&
           mapped_structural["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%77" &&
           mapped_structural["sink0"]["bitrate"].as<int>() == 999999 &&
@@ -385,6 +395,9 @@ play-tracker:
   }
   canonical_overrides["plot"]["plot_moving_boxes"] = true;
   canonical_overrides["plot"]["plot_individual_player_tracking"] = true;
+  canonical_overrides["plot"]["debug_play_tracker"] = false;
+  canonical_overrides["ice_boundaries"]["raise_bbox_center_by_height_ratio"] = -0.4;
+  canonical_overrides["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"] = 0.45;
   canonical_overrides["video_out"]["bit_rate"] = 123456;
   canonical_overrides["video_out"]["output_video_path"] = "/tmp/canonical.mkv";
   canonical_overrides["video_out"]["output_width"] = 1280;
@@ -405,6 +418,9 @@ play-tracker:
           mapped_canonical["hmplaycropper"]["no-crop"].as<int>() == 1 &&
           mapped_canonical["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
           mapped_canonical["hmplaycropper"]["plot-player-tracking"].as<int>() == 1 &&
+          mapped_canonical["ds-playtracker"]["draw"].as<int>() == 0 &&
+          mapped_canonical["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.4 &&
+          mapped_canonical["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.45 &&
           !mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle"].IsDefined() &&
           mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle-left"].as<double>() == 21.0 &&
           mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle-right"].as<double>() == 22.0 &&
@@ -606,6 +622,52 @@ play-tracker:
         raw_status.ok() && raw_effective_path.parent_path() == runtime_root / "hstream" &&
             fs::is_regular_file(raw_effective_path) && raw_effective_path.parent_path() != fs::current_path(),
         "No-game raw launches must materialize baseline-backed tracker config in a per-user runtime directory");
+
+    user_overlay["rink"]["camera"]["sticky_translation_gaussian_mult"] = 6.5;
+    std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+    auto materialized_sticky_value = [&](const std::string& game_id,
+                                         std::optional<double> game_canonical,
+                                         std::optional<double> cli_canonical) -> absl::StatusOr<double> {
+      const fs::path provenance_game_dir = games / game_id;
+      fs::create_directories(provenance_game_dir);
+      YAML::Node game_config(YAML::NodeType::Map);
+      game_config["pipeline"]["ds-playtracker"]["config-file"] = tracker_base_path.string();
+      if (game_canonical.has_value())
+        game_config["rink"]["camera"]["sticky_translation_gaussian_mult"] = *game_canonical;
+      std::ofstream(provenance_game_dir / "config.yaml") << YAML::Dump(game_config) << '\n';
+      hm::Configurator provenance(game_id, bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+      if (!provenance.configure().ok() || !provenance.underlay_config("pipeline", incomplete_pipeline.string()))
+        return absl::InternalError("Could not load tracker provenance fixture");
+      if (cli_canonical.has_value()) {
+        HM_RETURN_IF_ERROR(provenance.apply_config_item(
+            "rink.camera.sticky_translation_gaussian_mult", std::to_string(*cli_canonical)));
+      }
+      HM_RETURN_IF_ERROR(provenance.complete_configuration(
+          /*force=*/false,
+          /*clean_stitching_artifacts=*/false,
+          /*clean_stitching_from_control_points=*/false,
+          /*clean_expected_invalidation_id=*/{},
+          /*show_render_sink=*/false,
+          /*show_render_scale=*/-1.0,
+          incomplete_pipeline.parent_path()));
+      const fs::path generated = provenance.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
+      try {
+        return YAML::LoadFile(generated.string())["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"]
+            .as<double>();
+      } catch (const std::exception& error) {
+        return absl::InvalidArgumentError(std::string("Could not read materialized tracker fixture: ") + error.what());
+      }
+    };
+    const auto user_canonical_game_native =
+        materialized_sticky_value("tracker-user-vs-game-native", std::nullopt, std::nullopt);
+    const auto game_canonical_game_native = materialized_sticky_value("tracker-game-tie", 7.5, std::nullopt);
+    const auto cli_canonical_game_native = materialized_sticky_value("tracker-cli-vs-game-native", 7.5, 8.5);
+    ok &= expect(
+        user_canonical_game_native.ok() && *user_canonical_game_native == 9.5 && game_canonical_game_native.ok() &&
+            *game_canonical_game_native == 9.5 && cli_canonical_game_native.ok() && *cli_canonical_game_native == 8.5,
+        "Tracker materialization must honor layer rank and prefer direct native values on same-rank ties");
+    user_overlay["rink"]["camera"].remove("sticky_translation_gaussian_mult");
+    std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
 
     fs::last_write_time(incomplete_effective_path, fs::file_time_type::clock::now() - std::chrono::hours(48));
     const fs::path game_runtime_dir = incomplete_effective_path.parent_path();

@@ -20,35 +20,41 @@ int main(int argc, char** argv) {
     return 1;
   }
   const fs::path root(pattern);
-  auto run_clean =
-      [&](const char* game_id, const std::vector<const char*>& clean_flags, const char* runtime_invalidation_id) {
-        const pid_t child = ::fork();
-        if (child == 0) {
-          ::setenv("HOME", (root / "home").c_str(), 1);
-          ::setenv("HM_GAME_DIR", (root / "games").c_str(), 1);
-          ::setenv("HM_CONFIG_ROOT", (root / "config-root").c_str(), 1);
-          ::setenv("HTTP_PROXY", "http://127.0.0.1:1", 1);
-          ::setenv("HTTPS_PROXY", "http://127.0.0.1:1", 1);
-          if (runtime_invalidation_id != nullptr)
-            ::setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", runtime_invalidation_id, 1);
-          else
-            ::unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
-          std::vector<char*> child_argv = {
-              argv[1],
-              const_cast<char*>("-g"),
-              const_cast<char*>(game_id),
-              const_cast<char*>("-c"),
-              argv[2],
-          };
-          for (const char* flag : clean_flags)
-            child_argv.push_back(const_cast<char*>(flag));
-          child_argv.push_back(nullptr);
-          ::execv(argv[1], child_argv.data());
-          _exit(127);
-        }
-        int status = 0;
-        return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  auto run_clean = [&](const char* game_id,
+                       const std::vector<const char*>& clean_flags,
+                       const char* runtime_invalidation_id,
+                       const fs::path* leading_config = nullptr) {
+    const pid_t child = ::fork();
+    if (child == 0) {
+      ::setenv("HOME", (root / "home").c_str(), 1);
+      ::setenv("HM_GAME_DIR", (root / "games").c_str(), 1);
+      ::setenv("HM_CONFIG_ROOT", (root / "config-root").c_str(), 1);
+      ::setenv("HTTP_PROXY", "http://127.0.0.1:1", 1);
+      ::setenv("HTTPS_PROXY", "http://127.0.0.1:1", 1);
+      if (runtime_invalidation_id != nullptr)
+        ::setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", runtime_invalidation_id, 1);
+      else
+        ::unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+      std::vector<char*> child_argv = {
+          argv[1],
+          const_cast<char*>("-g"),
+          const_cast<char*>(game_id),
       };
+      if (leading_config != nullptr) {
+        child_argv.push_back(const_cast<char*>("-c"));
+        child_argv.push_back(const_cast<char*>(leading_config->c_str()));
+      }
+      child_argv.push_back(const_cast<char*>("-c"));
+      child_argv.push_back(argv[2]);
+      for (const char* flag : clean_flags)
+        child_argv.push_back(const_cast<char*>(flag));
+      child_argv.push_back(nullptr);
+      ::execv(argv[1], child_argv.data());
+      _exit(127);
+    }
+    int status = 0;
+    return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  };
 
   const fs::path full_game = root / "games" / "clean-only-test";
   fs::create_directories(root / "config-root");
@@ -91,10 +97,17 @@ int main(int argc, char** argv) {
       !fs::exists(combined_game / "right.png");
   const bool mismatched_runtime_token_rejected = !run_clean(
       "clean-only-test", {"--clean", "--clean-expected-invalidation-id=cli-token"}, "different-environment-token");
+  const fs::path incomplete_malformed_config = root / "incomplete-malformed.yaml";
+  std::ofstream(incomplete_malformed_config) << "application:\n  stage: -1\n  complete-configuration: 0\n"
+                                             << "hmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: malformed\n";
+  std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
+  const bool incomplete_context_skipped =
+      run_clean("clean-only-test", {"--clean"}, nullptr, &incomplete_malformed_config) &&
+      !fs::exists(full_game / "seam_file.png");
   const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hstream" / "models");
   fs::remove_all(root);
   if (!full_clean_ok || !partial_clean_ok || !synchronization_preserved || !combined_clean_ok ||
-      !mismatched_runtime_token_rejected || !no_asset_download) {
+      !mismatched_runtime_token_rejected || !incomplete_context_skipped || !no_asset_download) {
     std::cerr << "FAIL: clean-only modes must respect dependency boundaries without downloading pretrained models\n";
     return 1;
   }

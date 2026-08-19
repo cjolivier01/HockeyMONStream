@@ -880,10 +880,6 @@ absl::Status PipelineApplication::configureInstances(
         }
       }
 
-      // Canonical baseline/user/game/CLI settings must be translated before
-      // active-stage inspection (notably stitching.enabled and rotation).
-      HM_RETURN_IF_ERROR(app_ctx->configurator().apply_supported_baseline_mappings());
-
       bool complete_configuration_enabled = false;
       try {
         complete_configuration_enabled =
@@ -897,6 +893,11 @@ absl::Status PipelineApplication::configureInstances(
       if (clean_only_requested && !complete_configuration_enabled) {
         continue;
       }
+      // Canonical baseline/user/game/CLI settings must be translated before
+      // active-stage inspection (notably stitching.enabled and rotation).
+      // In clean-only mode, incomplete contexts were skipped above so their
+      // unrelated malformed runtime values cannot reject an eligible cleanup.
+      HM_RETURN_IF_ERROR(app_ctx->configurator().apply_supported_baseline_mappings());
       const auto active_stitcher_before_configuration = active_stitch_output_rotation(app_ctx->configurator().config());
       if (!active_stitcher_before_configuration.ok()) {
         return active_stitcher_before_configuration.status();

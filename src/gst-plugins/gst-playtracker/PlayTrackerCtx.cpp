@@ -897,59 +897,6 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file) {
   return absl::OkStatus();
 }
 
-absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file) {
-  absl::Status status = DsPlayTrackerValidateConfigFile(config_file);
-  if (!status.ok()) {
-    return status;
-  }
-  try {
-    const YAML::Node play_tracker = YAML::LoadFile(config_file)["play-tracker"];
-    const YAML::Node runtime = play_tracker["hstream-runtime-tuning"];
-    auto read_int = [](const YAML::Node& node, const char* key) -> std::optional<int> {
-      return node[key] && node[key].IsScalar() ? std::optional<int>(node[key].as<int>()) : std::nullopt;
-    };
-    auto read_float = [](const YAML::Node& node, const char* key) -> std::optional<float> {
-      return node[key] && node[key].IsScalar() ? std::optional<float>(node[key].as<float>()) : std::nullopt;
-    };
-    auto read_bool = [](const YAML::Node& node, const char* key, bool fallback) {
-      return node[key] && node[key].IsScalar() ? node[key].as<bool>() : fallback;
-    };
-    const bool apply_to_fast = read_bool(play_tracker, "hstream-apply-to-fast-box", false);
-    const bool apply_to_follower = read_bool(play_tracker, "hstream-apply-to-follower-box", true);
-    const YAML::Node live_boxes = play_tracker["live-boxes"];
-    const size_t live_box_count = live_boxes && live_boxes.IsSequence() ? live_boxes.size() : 0;
-    if (apply_to_fast && live_box_count < 1) {
-      return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
-    }
-    if (apply_to_follower && live_box_count < 1) {
-      return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
-    }
-    return DsPlayTrackerRuntimeTuning{
-        .stop_on_dir_change_delay = read_int(runtime, "stop-translation-on-dir-change-delay"),
-        .cancel_on_opposite =
-            runtime["cancel-stop-on-opposite-dir"] && runtime["cancel-stop-on-opposite-dir"].IsScalar()
-            ? std::optional<bool>(runtime["cancel-stop-on-opposite-dir"].as<bool>())
-            : std::nullopt,
-        .cancel_hysteresis_frames = read_int(runtime, "cancel-stop-hysteresis-frames"),
-        .stop_delay_cooldown_frames = read_int(runtime, "stop-delay-cooldown-frames"),
-        .post_nonstop_stop_delay_count = read_int(runtime, "post-nonstop-stop-delay-count"),
-        .time_to_dest_speed_limit_frames = read_int(runtime, "time-to-dest-speed-limit-frames"),
-        .overshoot_stop_delay_count = read_int(runtime, "overshoot-stop-delay-count"),
-        .overshoot_scale_speed_ratio = read_float(runtime, "overshoot-scale-speed-ratio"),
-        .max_speed_x = read_float(runtime, "max-speed-x"),
-        .max_speed_y = read_float(runtime, "max-speed-y"),
-        .max_accel_x = read_float(runtime, "max-accel-x"),
-        .max_accel_y = read_float(runtime, "max-accel-y"),
-        .apply_to_fast_box = apply_to_fast,
-        .apply_to_follower_box = apply_to_follower,
-        .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical"),
-        .dynamic_acceleration_scaling = read_float(runtime, "dynamic-acceleration-scaling"),
-    };
-  } catch (const std::exception& exc) {
-    return absl::InvalidArgumentError(absl::StrCat("invalid playtracker runtime config: ", exc.what()));
-  }
-}
-
 absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning) {
   if (!ctx) {
     return absl::InvalidArgumentError("playtracker context is null");
@@ -1126,7 +1073,7 @@ absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrac
           lbox.get(),
           play_tracker_ctx.play_tracker_config.living_boxes.at(i),
           /*thickness=*/4,
-          gst_hm_playtracker::track_colors.at(i),
+          gst_hm_playtracker::track_colors[i % gst_hm_playtracker::track_colors.size()],
           /*draw_thresholds=*/true,
           1.0 / scale_x,
           1.0 / scale_y,
