@@ -81,8 +81,10 @@ __global__ void cropRotateResizeKernel(
       float p1 = p10 * (1.0f - dx_frac) + p11 * dx_frac;
       float result = p0 * (1.0f - dy_frac) + p1 * dy_frac;
       const bool is_alpha = num_channels == 4 && c == 3;
-      if (!is_alpha && shadow_lift_percent > 0.0f) {
-        result = evaluate_shadow_lift_curve(result / 255.0f, shadow_lift_percent) * 255.0f + 0.5f;
+      const float normalized_result = result / 255.0f;
+      if (!is_alpha && shadow_lift_percent > 0.0f && normalized_result > 0.0f &&
+          normalized_result < kShadowLiftVideoStart) {
+        result = evaluate_shadow_lift_curve(normalized_result, shadow_lift_percent) * 255.0f + 0.5f;
       }
 
       // Write to output

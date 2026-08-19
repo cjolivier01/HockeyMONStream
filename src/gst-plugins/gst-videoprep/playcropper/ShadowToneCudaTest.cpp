@@ -19,13 +19,14 @@ bool cuda_ok(cudaError_t result, const char* operation) {
   return true;
 }
 
-bool transform_pixel(const std::array<uint8_t, 4>& pixel, float lift_percent, std::array<uint8_t, 4>* output) {
+bool transform_sample(
+    const std::array<uint8_t, 16>& input,
+    float sample_x,
+    float sample_y,
+    float lift_percent,
+    std::array<uint8_t, 4>* output) {
   if (!output) {
     return false;
-  }
-  std::array<uint8_t, 16> input{};
-  for (size_t offset = 0; offset < input.size(); offset += pixel.size()) {
-    std::copy(pixel.begin(), pixel.end(), input.begin() + offset);
   }
 
   uint8_t* device_input = nullptr;
@@ -64,7 +65,7 @@ bool transform_pixel(const std::array<uint8_t, 4>& pixel, float lift_percent, st
                           hm::BBox(0, 0, 2, 2),
                           0.0f,
                           hm::Point{.x = 0.0f, .y = 0.0f},
-                          hm::BBox(0, 0, 1, 1),
+                          hm::BBox(sample_x, sample_y, sample_x + 1.0f, sample_y + 1.0f),
                           &output_params,
                           hm::BBox(0, 0, 1, 1),
                           lift_percent,
@@ -78,6 +79,14 @@ bool transform_pixel(const std::array<uint8_t, 4>& pixel, float lift_percent, st
   cudaFree(device_output);
   cudaFree(device_input);
   return ok;
+}
+
+bool transform_pixel(const std::array<uint8_t, 4>& pixel, float lift_percent, std::array<uint8_t, 4>* output) {
+  std::array<uint8_t, 16> input{};
+  for (size_t offset = 0; offset < input.size(); offset += pixel.size()) {
+    std::copy(pixel.begin(), pixel.end(), input.begin() + offset);
+  }
+  return transform_sample(input, 0.0f, 0.0f, lift_percent, output);
 }
 
 uint8_t lifted_channel(uint8_t value, float lift_percent) {
@@ -111,6 +120,32 @@ int main() {
   const std::array<uint8_t, 4> protected_input = {0, 153, 255, 203};
   if (!transform_pixel(protected_input, 100.0f, &output) || output != protected_input) {
     std::cerr << "CUDA shadow lift must preserve black, the shadow boundary, white, and alpha\n";
+    return 1;
+  }
+
+  const std::array<uint8_t, 16> protected_bilinear_input = {
+      200,
+      200,
+      200,
+      17,
+      201,
+      201,
+      201,
+      17,
+      201,
+      201,
+      201,
+      17,
+      201,
+      201,
+      201,
+      17,
+  };
+  const std::array<uint8_t, 4> protected_bilinear_expected = {200, 200, 200, 17};
+  if (!transform_sample(protected_bilinear_input, 0.5f, 0.5f, 0.0f, &output) || output != protected_bilinear_expected ||
+      !transform_sample(protected_bilinear_input, 0.5f, 0.5f, 100.0f, &output) ||
+      output != protected_bilinear_expected) {
+    std::cerr << "Shadow lift must not change legacy interpolation or quantization above the shadow boundary\n";
     return 1;
   }
   return 0;
