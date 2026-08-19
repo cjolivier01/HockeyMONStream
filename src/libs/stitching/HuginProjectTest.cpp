@@ -162,8 +162,8 @@ int main() {
       "second fake mapping must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0000", 40, 32), "first fake CV_16U remap must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0001", 40, 32), "second fake CV_16U remap must exist");
-  cv::Mat seam(32, 42, CV_8U, cv::Scalar(0));
-  seam.colRange(21, 42).setTo(255);
+  cv::Mat seam(30, 40, CV_8U, cv::Scalar(0));
+  seam.colRange(20, 40).setTo(255);
   ok &= expect(cv::imwrite((fixtures / "seam_file.png").string(), seam), "fake seam must exist");
   ok &= expect(
       cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 42, CV_8UC3, cv::Scalar(1, 2, 3))),
@@ -300,8 +300,8 @@ int main() {
         "Hugin orchestration must not request script-only optimization");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
     ok &= expect(
-        published_seam.size() == cv::Size(42, 32),
-        "Hugin validation must match hm-cupano's float placement arithmetic at a pixel boundary");
+        published_seam.size() == cv::Size(40, 30),
+        "Hugin validation must preserve an enblend mask cropped within hm-cupano's 42x32 mapping canvas");
     const cv::Mat published_left = cv::imread((root / "game" / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat published_right = cv::imread((root / "game" / "right.png").string(), cv::IMREAD_COLOR);
     ok &= expect(
@@ -327,6 +327,34 @@ int main() {
        }) {
     ok &= expect(fs::is_regular_file(root / "game" / artifact), "configured Hugin artifact must be published");
   }
+
+  const fs::path fallback_game = root / "fallback-game";
+  fs::create_directories(fallback_game);
+  ok &= expect(write_tool(enblend, "exit 44\n"), "failing fake enblend must be created");
+  ::unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto fallback_disabled = hm::stitching::HuginProject::Configure(
+      fallback_game, root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+  ok &= expect(
+      absl::IsFailedPrecondition(fallback_disabled) &&
+          std::string(fallback_disabled.message()).find("HM_ALLOW_HARD_SEAM_FALLBACK=1") != std::string::npos &&
+          !fs::exists(fallback_game / "seam_file.png"),
+      "failed enblend must fail closed without publishing a hard seam");
+  ::setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", 1);
+  const auto fallback_enabled = hm::stitching::HuginProject::Configure(
+      fallback_game, root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+  ::unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  ok &= expect(
+      fallback_enabled.ok() && fs::is_regular_file(fallback_game / "seam_file.png"),
+      "HM_ALLOW_HARD_SEAM_FALLBACK=1 must permit transactional hard-seam generation");
+  ok &= expect(
+      write_tool(
+          enblend,
+          "cp '" + fixtures.string() +
+              "/seam_file.png' seam_file.png\n"
+              "cp '" +
+              fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "working fake enblend must be restored");
+
   const auto previous_project = [&]() {
     std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());

@@ -15,6 +15,10 @@
 
 namespace hm::stitching {
 
+// Hard-seam generation is a diagnostic fallback and must be explicitly opted
+// into with HM_ALLOW_HARD_SEAM_FALLBACK=1.
+bool hard_seam_fallback_enabled();
+
 class HuginProject {
  public:
   class ArtifactLock {

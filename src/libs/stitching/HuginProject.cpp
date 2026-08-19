@@ -38,6 +38,12 @@
 extern "C" char** environ;
 
 namespace hm::stitching {
+
+bool hard_seam_fallback_enabled() {
+  const char* value = std::getenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -646,7 +652,11 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
   const fs::path seam_path = directory / "seam_file.png";
   auto seam_dimensions = read_png_dimensions(seam_path);
   cv::Mat seam;
-  if (seam_dimensions.ok() && seam_dimensions->first == canvas->first && seam_dimensions->second == canvas->second) {
+  // Enblend may crop the saved mask to the non-transparent panorama bounds.
+  // hm-cupano deliberately pads such masks on the right and bottom by
+  // replicating their border, so any non-empty mask bounded by the decoded
+  // mapping canvas satisfies its runtime contract.
+  if (seam_dimensions.ok() && seam_dimensions->first <= canvas->first && seam_dimensions->second <= canvas->second) {
     try {
       seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
     } catch (const cv::Exception&) {
@@ -659,7 +669,12 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
   double maximum = 0.0;
   if (!seam.empty())
     cv::minMaxLoc(seam, &minimum, &maximum);
-  if (seam.empty() || seam.cols != canvas->first || seam.rows != canvas->second || maximum <= minimum) {
+  if (seam.empty() || seam.cols > canvas->first || seam.rows > canvas->second || maximum <= minimum) {
+    if (!hard_seam_fallback_enabled()) {
+      return absl::FailedPreconditionError(
+          "enblend did not produce a valid, non-uniform seam_file.png; refusing to generate a hard-seam fallback. "
+          "Fix enblend seam generation or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
+    }
     try {
       status = create_hard_seam(seam_path, first, second, canvas->first, canvas->second);
     } catch (const cv::Exception& exception) {
@@ -679,7 +694,7 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
       return absl::FailedPreconditionError("Generated Hugin seam is not decodable");
     cv::minMaxLoc(seam, &minimum, &maximum);
   }
-  if (seam.type() != CV_8UC1 || seam.cols != canvas->first || seam.rows != canvas->second || maximum <= minimum)
+  if (seam.type() != CV_8UC1 || seam.cols > canvas->first || seam.rows > canvas->second || maximum <= minimum)
     return absl::FailedPreconditionError("Hugin seam violates the decoded canvas/type contract");
   return fsync_path(seam_path);
 }
@@ -1194,8 +1209,9 @@ absl::Status HuginProject::Configure(
       return status;
   }
 
-  // Enblend's preview/seam is preferred. The complete decoded artifact
-  // validator below creates a hard-seam fallback inside this transaction.
+  // Enblend's preview/seam is required by default. The complete decoded
+  // artifact validator may create a hard-seam fallback only when explicitly
+  // enabled for diagnostics.
   auto enblend = executable("HM_ENBLEND", "enblend");
   if (enblend.ok()) {
     status = run_checked(
@@ -1206,12 +1222,26 @@ absl::Status HuginProject::Configure(
     if (!status.ok()) {
       if (absl::IsCancelled(status))
         return status;
-      std::cerr << "Warning: native enblend preview failed; a hard seam will be generated: " << status << '\n';
+      if (!hard_seam_fallback_enabled()) {
+        return absl::FailedPreconditionError(
+            "enblend failed to generate seam_file.png and hard-seam fallback is disabled: " + status.ToString() +
+            ". Fix enblend or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
+      }
+      std::cerr << "Warning: native enblend preview failed; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits a hard seam: "
+                << status << '\n';
       fs::remove(staging / "seam_file.png", error);
       error.clear();
       fs::remove(staging / "panorama.tif", error);
       error.clear();
     }
+  } else if (!hard_seam_fallback_enabled()) {
+    return absl::FailedPreconditionError(
+        "Cannot generate seam_file.png because enblend is unavailable and hard-seam fallback is disabled: " +
+        enblend.status().ToString() +
+        ". Install/fix enblend or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
+  } else {
+    std::cerr << "Warning: enblend is unavailable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits a hard seam: "
+              << enblend.status() << '\n';
   }
 
   status = validate_staged_artifacts(staging, options.max_canvas_dimension);

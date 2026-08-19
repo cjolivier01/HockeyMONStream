@@ -607,19 +607,20 @@ void set_all_field_values(
   }
 }
 
-std::optional<std::tuple<int, int>> get_canvas_size(const std::string& game_dir) {
-  // Control masks require `seam_file.png`. If it is missing, create a simple hard-seam fallback so we can still
-  // determine canvas sizing and avoid the pipeline booting into a gray passthrough mode.
-  (void)stitching::maybe_create_default_seam_file(game_dir);
+absl::StatusOr<std::optional<std::tuple<int, int>>> get_canvas_size(const std::string& game_dir) {
+  // Control masks require a valid seam_file.png. Propagate validation errors so
+  // the pipeline cannot quietly boot into a gray passthrough mode.
+  HM_RETURN_IF_ERROR(stitching::maybe_create_default_seam_file(game_dir));
   auto artifact_lock = stitching::HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok()) {
-    return std::nullopt;
+    return artifact_lock.status();
   }
   hm::pano::ControlMasks control_masks(game_dir);
   if (!control_masks.is_valid()) {
-    return std::nullopt;
+    return std::optional<std::tuple<int, int>>{};
   }
-  return std::make_tuple(control_masks.canvas_width(), control_masks.canvas_height());
+  return std::optional<std::tuple<int, int>>(
+      std::make_tuple(control_masks.canvas_width(), control_masks.canvas_height()));
 }
 
 std::optional<YAML::Node> get_node_if_enabled(const YAML::Node& pipeline, const std::string& name) {
@@ -1532,7 +1533,7 @@ absl::Status Configurator::set_output_dimensions(
       return stitching_configured.status();
     }
     if (stitching_configured.value()) {
-      canvas_size_result = get_canvas_size(game_dir);
+      HM_ASSIGN_OR_RETURN(canvas_size_result, get_canvas_size(game_dir));
     }
     if (canvas_size_result) {
       size_t canvas_width = std::get<0>(*canvas_size_result);

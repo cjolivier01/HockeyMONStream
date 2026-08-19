@@ -2,6 +2,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
+#include <opencv2/imgcodecs.hpp>
 #include <tiffio.h>
 #include <yaml-cpp/yaml.h>
 
@@ -380,9 +381,63 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
       !write_mapping_tiff(dir / "mapping_0001.tif", 1, 1, 0.0f, 0.0f)) {
     return false;
   }
+  setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
   const auto status = hm::stitching::maybe_create_default_seam_file(dir.string());
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
   if (!absl::IsResourceExhausted(status) || fs::exists(dir / "seam_file.png")) {
     std::cerr << "oversized legacy TIFF must fail before seam allocation: " << status << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_hard_seam_generation_requires_opt_in(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "hard_seam_opt_in";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto disabled = hm::stitching::maybe_create_default_seam_file(dir.string());
+  if (!absl::IsFailedPrecondition(disabled) ||
+      std::string(disabled.message()).find("HM_ALLOW_HARD_SEAM_FALLBACK=1") == std::string::npos ||
+      fs::exists(dir / "seam_file.png")) {
+    std::cerr << "hard seam must fail closed without explicit opt-in: " << disabled << std::endl;
+    return false;
+  }
+
+  setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
+  const auto enabled = hm::stitching::maybe_create_default_seam_file(dir.string());
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  if (!enabled.ok() || !fs::is_regular_file(dir / "seam_file.png")) {
+    std::cerr << "hard seam opt-in must permit fallback generation: " << enabled << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_cropped_enblend_seam_is_accepted(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "cropped_enblend_seam";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+  cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
+  seam.colRange(45, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto status = hm::stitching::maybe_create_default_seam_file(dir.string());
+  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!status.ok() || preserved.size() != seam.size()) {
+    std::cerr << "cropped enblend seam within the mapping canvas must be preserved: " << status << std::endl;
     return false;
   }
   return true;
@@ -438,6 +493,14 @@ int main() {
 
   if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
     finish(tmpdir, 10);
+  }
+
+  if (!expect_hard_seam_generation_requires_opt_in(tmpdir)) {
+    finish(tmpdir, 12);
+  }
+
+  if (!expect_cropped_enblend_seam_is_accepted(tmpdir)) {
+    finish(tmpdir, 13);
   }
 
   finish(tmpdir, 0);

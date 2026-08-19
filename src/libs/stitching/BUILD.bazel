@@ -334,6 +334,7 @@ cc_test(
   ],
   deps = [
     ":stitching",
+    "@opencv_linux//:opencv",
   ],
 )
 
