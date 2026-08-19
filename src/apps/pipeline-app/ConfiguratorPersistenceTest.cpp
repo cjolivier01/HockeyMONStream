@@ -329,6 +329,26 @@ play-tracker:
           !mapped_defaults["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Every supported non-tracker native default must be filled from the bundled canonical baseline");
 
+  const fs::path primary_draw_baseline_root = root / "primary-draw-baseline";
+  fs::create_directories(primary_draw_baseline_root);
+  YAML::Node primary_draw_baseline = YAML::Clone(test_baseline);
+  primary_draw_baseline["plot"]["debug_play_tracker"] = true;
+  std::ofstream(primary_draw_baseline_root / "baseline.yaml") << YAML::Dump(primary_draw_baseline) << '\n';
+  fs::create_directories(games / "mapping-primary-app");
+  hm::Configurator mapping_primary_app(
+      "mapping-primary-app", primary_draw_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const fs::path primary_app_config =
+      bundled_baseline.ok() ? bundled_baseline->root / "ds_hockey_app_config.yaml" : fs::path();
+  const bool mapping_primary_loaded = bundled_baseline.ok() && fs::is_regular_file(primary_app_config) &&
+      mapping_primary_app.configure().ok() &&
+      mapping_primary_app.underlay_config("pipeline", primary_app_config.string());
+  const absl::Status mapping_primary_status = mapping_primary_loaded
+      ? mapping_primary_app.apply_supported_baseline_mappings()
+      : absl::InternalError("primary app mapping fixture did not load");
+  ok &= expect(
+      mapping_primary_status.ok() && mapping_primary_app.config()["pipeline"]["ds-playtracker"]["draw"].as<int>() == 1,
+      "The primary app config must take plot.debug_play_tracker from the canonical baseline");
+
   const fs::path structural_custom_path = root / "mapping-structural-custom.yaml";
   YAML::Node structural_custom = YAML::Clone(mapping_structure);
   structural_custom["hmstitcher"]["enable"] = 0;
@@ -381,7 +401,7 @@ play-tracker:
   canonical_overrides["stitching"]["minimize_blend"] = true;
   canonical_overrides["stitching"]["dtype"] = "float16";
   canonical_overrides["stitching"]["post_stitch_rotate_degrees"] = 15.0;
-  canonical_overrides["rink"]["camera"]["crop_image"] = false;
+  canonical_overrides["apply_camera"]["crop_output_image"] = false;
   canonical_overrides["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(21.0);
   canonical_overrides["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(22.0);
   canonical_overrides["rink"]["scoreboard"]["projected_width"] = "%11";
@@ -461,6 +481,38 @@ play-tracker:
       mapping_native_precedence_status.ok() &&
           mapping_native_precedence.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 0,
       "A higher-ranked canonical CLI value must replace a lower-ranked direct native game value");
+
+  const fs::path disabled_stitching_game_dir = games / "disabled-stitching";
+  fs::create_directories(disabled_stitching_game_dir);
+  YAML::Node disabled_stitching_game(YAML::NodeType::Map);
+  disabled_stitching_game["stitching"]["enabled"] = false;
+  disabled_stitching_game["game"]["videos"]["left"].push_back("missing-left.mp4");
+  disabled_stitching_game["game"]["videos"]["right"].push_back("missing-right.mp4");
+  std::ofstream(disabled_stitching_game_dir / "config.yaml") << YAML::Dump(disabled_stitching_game) << '\n';
+  std::ofstream(disabled_stitching_game_dir / "seam_file.png") << "must remain untouched\n";
+  const fs::path disabled_stitching_pipeline_path = root / "disabled-stitching-pipeline.yaml";
+  std::ofstream(disabled_stitching_pipeline_path) << "application:\n  complete-configuration: 1\n"
+                                                  << "hmstitcher: {}\n"
+                                                  << "streammux: {}\n";
+  hm::Configurator disabled_stitching(
+      "disabled-stitching", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool disabled_stitching_loaded = disabled_stitching.configure().ok() &&
+      disabled_stitching.underlay_config("pipeline", disabled_stitching_pipeline_path.string());
+  const absl::Status disabled_stitching_status = disabled_stitching_loaded
+      ? disabled_stitching.complete_configuration(
+            /*force=*/true,
+            /*clean_stitching_artifacts=*/false,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            disabled_stitching_pipeline_path.parent_path())
+      : absl::InternalError("disabled stitching fixture did not load");
+  ok &= expect(
+      disabled_stitching_status.ok() &&
+          disabled_stitching.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 0 &&
+          fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
+      "stitching.enabled=false must skip runtime discovery, calibration, and artifact mutation");
 
   const fs::path clear_game_dir = games / "mapping-explicit-clear";
   fs::create_directories(clear_game_dir);

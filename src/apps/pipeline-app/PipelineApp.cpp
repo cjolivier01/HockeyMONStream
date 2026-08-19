@@ -893,23 +893,25 @@ absl::Status PipelineApplication::configureInstances(
       if (clean_only_requested && !complete_configuration_enabled) {
         continue;
       }
-      // Canonical baseline/user/game/CLI settings must be translated before
-      // active-stage inspection (notably stitching.enabled and rotation).
-      // In clean-only mode, incomplete contexts were skipped above so their
-      // unrelated malformed runtime values cannot reject an eligible cleanup.
-      HM_RETURN_IF_ERROR(app_ctx->configurator().apply_supported_baseline_mappings());
-      const auto active_stitcher_before_configuration = active_stitch_output_rotation(app_ctx->configurator().config());
-      if (!active_stitcher_before_configuration.ok()) {
-        return active_stitcher_before_configuration.status();
-      }
-      const bool clean_eligible = active_stitcher_before_configuration->has_value() && complete_configuration_enabled;
+      std::optional<double> active_stitcher_before_configuration;
       if (clean_only_requested) {
+        // Offline cleanup owns stitching artifacts by the presence of the
+        // structural hmstitcher section. It must not validate unrelated
+        // runtime settings such as tracker sidecars or camera rotation.
+        const auto stitcher = hm::get_node(app_ctx->configurator().config(), "pipeline.hmstitcher");
+        const bool clean_eligible = complete_configuration_enabled && stitcher.has_value() && stitcher->IsMap();
         clean_only_eligible_context_seen_ = clean_only_eligible_context_seen_ || clean_eligible;
         if (!clean_eligible || clean_only_action_completed_) {
           continue;
         }
+      } else {
+        // Canonical baseline/user/game/CLI settings must be translated before
+        // active-stage inspection (notably stitching.enabled and rotation).
+        HM_RETURN_IF_ERROR(app_ctx->configurator().apply_supported_baseline_mappings());
+        HM_ASSIGN_OR_RETURN(
+            active_stitcher_before_configuration, active_stitch_output_rotation(app_ctx->configurator().config()));
       }
-      if (stitch_frame_time_set_ && active_stitcher_before_configuration->has_value()) {
+      if (stitch_frame_time_set_ && active_stitcher_before_configuration.has_value()) {
         bool stitch_frame_time_changed = false;
         HM_ASSIGN_OR_RETURN(
             stitch_frame_time_changed,

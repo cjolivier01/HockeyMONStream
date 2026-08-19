@@ -71,6 +71,7 @@ int main() {
           2160)) {
     return 1;
   }
+
   if (!expect_size(
           cropper,
           /*input_width=*/12102,
@@ -79,6 +80,31 @@ int main() {
           /*input_filled=*/2,
           3838,
           2160)) {
+    return 1;
+  }
+
+  if (!cropper.SetProperty({"no-crop", "1"})) {
+    return 1;
+  }
+  if (!expect_size(
+          cropper,
+          /*input_width=*/12102,
+          /*input_height=*/5153,
+          /*input_batch_capacity=*/2,
+          /*input_filled=*/1,
+          3840,
+          1634)) {
+    std::cerr << "No-crop output must preserve the full input aspect ratio\n";
+    return 1;
+  }
+  if (!expect_size(
+          cropper,
+          /*input_width=*/12102,
+          /*input_height=*/5153,
+          /*input_batch_capacity=*/2,
+          /*input_filled=*/2,
+          3840,
+          1634)) {
     return 1;
   }
 

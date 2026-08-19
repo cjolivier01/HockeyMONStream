@@ -449,7 +449,6 @@ ds-playtracker:
   enable: 1
   gpu-id: 0
   unique-id: 75
-  draw: 0
   show: 0
   dynamic-acceleration-scaling: 1.0
   plugin-type: vpplaytracker

@@ -1499,8 +1499,9 @@ absl::Status Configurator::setup_stitcher_and_masks(
     const fs::path& game_dir,
     bool force,
     bool& has_hmstitcher) {
-  has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
-  if (has_hmstitcher) {
+  const bool has_hmstitcher_section = get_node(pipeline, "hmstitcher")->IsDefined();
+  has_hmstitcher = has_hmstitcher_section && get_node_value(pipeline, "hmstitcher.enable", FALSE);
+  if (has_hmstitcher_section) {
     const bool enabled = get_node_value(pipeline, "hmstitcher.enable", FALSE);
     const bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", FALSE);
     const bool one_pass_mode = get_node_value(pipeline, "hmstitcher.one-pass-mode", FALSE);
@@ -1652,7 +1653,8 @@ absl::Status Configurator::map_common_config_keys() {
 
   if (pipeline["hmplaycropper"].IsMap()) {
     YAML::Node cropper = pipeline["hmplaycropper"];
-    HM_RETURN_IF_ERROR(map_bool("rink.camera.crop_image", "pipeline.hmplaycropper.no-crop", cropper, "no-crop", true));
+    HM_RETURN_IF_ERROR(
+        map_bool("apply_camera.crop_output_image", "pipeline.hmplaycropper.no-crop", cropper, "no-crop", true));
     HM_RETURN_IF_ERROR(
         map_bool("plot.plot_moving_boxes", "pipeline.hmplaycropper.plot-play-tracking", cropper, "plot-play-tracking"));
     HM_RETURN_IF_ERROR(map_bool(
@@ -2418,9 +2420,10 @@ absl::Status Configurator::set_output_dimensions(
       size_t canvas_height = std::get<1>(*canvas_size_result);
       pipeline["hmstitcher"]["output-width"] = std::to_string(canvas_width);
       pipeline["hmstitcher"]["output-height"] = std::to_string(canvas_height);
-      constexpr double ar = 16.0 / 9.0;
+      const bool no_crop = get_node_value(pipeline, "hmplaycropper.no-crop", false);
       const auto even_canvas_height = static_cast<long>(round_down_even(static_cast<long>(canvas_height)));
-      auto wh_tuple = cap_output(static_cast<long>(ar * even_canvas_height), even_canvas_height);
+      auto wh_tuple = no_crop ? cap_output(static_cast<long>(canvas_width), even_canvas_height)
+                              : cap_output(static_cast<long>((16.0 / 9.0) * even_canvas_height), even_canvas_height);
       pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
       pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
     } else {
@@ -3308,15 +3311,18 @@ absl::Status Configurator::complete_configuration(
                                           : absl::OkStatus();
   }
 
-  apply_gpu_override(pipeline);
-  HM_RETURN_IF_ERROR(apply_supported_baseline_mappings());
-
   if (game_id_.empty() && clean_requested)
     return absl::InvalidArgumentError("No game id specified for cleaning");
 
+  if (!clean_requested) {
+    apply_gpu_override(pipeline);
+    HM_RETURN_IF_ERROR(apply_supported_baseline_mappings());
+  }
+
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const fs::path game_dir = resolved_game_dir();
-  HM_RETURN_IF_ERROR(materialize_playtracker_config(pipeline, game_dir, pipeline_config_dir));
+  if (!clean_requested)
+    HM_RETURN_IF_ERROR(materialize_playtracker_config(pipeline, game_dir, pipeline_config_dir));
 
   if (!complete_configuration_enabled || game_id_.empty()) {
     // Raw/no-game and structurally incomplete launches still require the
@@ -3325,13 +3331,11 @@ absl::Status Configurator::complete_configuration(
     return absl::OkStatus();
   }
 
-  std::map<int, YAML::Node> camera_sources;
-  HM_ASSIGN_OR_RETURN(camera_sources, get_camera_sources(pipeline));
-  const bool is_camera_source = !camera_sources.empty();
-
-  // Stitching config mask config dir
-  const bool has_hmstitcher = has_node(pipeline, "hmstitcher", false);
-  if (clean_requested && !has_hmstitcher) {
+  // Stitching config mask config dir. Section presence owns offline cleanup;
+  // enabled state owns every runtime stitching operation.
+  const bool has_hmstitcher_section = has_node(pipeline, "hmstitcher", false);
+  const bool has_active_hmstitcher = has_hmstitcher_section && get_node_value(pipeline, "hmstitcher.enable", false);
+  if (clean_requested && !has_hmstitcher_section) {
     return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");
   }
   const std::string loaded_invalidation_id =
@@ -3339,14 +3343,15 @@ absl::Status Configurator::complete_configuration(
   const std::string loaded_status = get_node_value(config_, "hstream_ui.stitching_calibration.status", std::string());
   const std::string loaded_stale_from =
       get_node_value(config_, "hstream_ui.stitching_calibration.stale_from", std::string());
-  const bool resume_pending_invalidation = has_hmstitcher && clean_expected_invalidation_id.empty() &&
+  const bool resume_pending_invalidation = has_active_hmstitcher && clean_expected_invalidation_id.empty() &&
       loaded_status == "pending" && !loaded_invalidation_id.empty();
   const std::string effective_invalidation_id =
       resume_pending_invalidation ? loaded_invalidation_id : clean_expected_invalidation_id;
   std::optional<size_t> loaded_control_points;
   bool control_points_environment_enforced = false;
   bool stitching_artifacts_precleaned = false;
-  if (has_hmstitcher && !effective_invalidation_id.empty()) {
+  const bool has_cleanup_owner = clean_requested ? has_hmstitcher_section : has_active_hmstitcher;
+  if (has_cleanup_owner && !effective_invalidation_id.empty()) {
     bool loaded_invalidation_matches = loaded_invalidation_id == effective_invalidation_id;
     bool loaded_artifacts_invalidated = false;
     if (loaded_status == "pending") {
@@ -3411,13 +3416,13 @@ absl::Status Configurator::complete_configuration(
   // cleaned before dependency inspection. This includes explicit guarded
   // launches: a direct CLI stitch-frame change can reuse the caller's owner
   // while still requiring a full input-stage invalidation.
-  const bool auto_clean_pending_invalidation = has_hmstitcher && loaded_status == "pending" &&
+  const bool auto_clean_pending_invalidation = has_active_hmstitcher && loaded_status == "pending" &&
       !effective_invalidation_id.empty() && !stitching_artifacts_precleaned;
   const bool effective_clean_from_control_points =
       clean_from_control_points_only || (auto_clean_pending_invalidation && loaded_stale_from == "features");
   const bool should_clean_stitching =
       clean_requested || auto_clean_pending_invalidation || (force && !stitching_artifacts_precleaned);
-  if (has_hmstitcher && should_clean_stitching) {
+  if (has_cleanup_owner && should_clean_stitching) {
     YAML::Node preserved_pipeline = config_["pipeline"];
     absl::Status clean_status = effective_clean_from_control_points
         ? stitching::clean_stitching_artifacts_from_control_points(game_dir.string(), effective_invalidation_id)
@@ -3445,7 +3450,7 @@ absl::Status Configurator::complete_configuration(
     }
   }
 
-  if (has_hmstitcher) {
+  if (has_hmstitcher_section) {
     pipeline["hmstitcher"]["force-scoreboard-config"] = force ? "1" : "0";
   }
   if (pipeline["hmplaycropper"].IsDefined()) {
@@ -3456,7 +3461,11 @@ absl::Status Configurator::complete_configuration(
     return absl::CancelledError("Stitching artifacts cleaned");
   }
 
-  bool pipeline_has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
+  std::map<int, YAML::Node> camera_sources;
+  HM_ASSIGN_OR_RETURN(camera_sources, get_camera_sources(pipeline));
+  const bool is_camera_source = !camera_sources.empty();
+
+  bool pipeline_has_hmstitcher = has_active_hmstitcher;
   if (pipeline_has_hmstitcher) {
     HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));
     HM_RETURN_IF_ERROR(invalidate_canvas_dependent_cache_if_needed(game_dir));
@@ -3506,7 +3515,7 @@ absl::Status Configurator::complete_configuration(
   std::vector<std::string> left_files;
   std::vector<std::string> right_files;
 
-  if (!is_camera_source) {
+  if (!is_camera_source && pipeline_has_hmstitcher) {
     HM_RETURN_IF_ERROR(gather_stitching_videos(game_dir, force, left_files, right_files, offsets));
     apply_frame_offsets_and_sizes(left_files, right_files, offsets, ww, hh, area, pipeline);
   }

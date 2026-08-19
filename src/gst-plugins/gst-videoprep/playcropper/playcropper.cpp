@@ -210,9 +210,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> PlayCropperPriv::PrepareRuntimeOutp
   }
 
   constexpr double kOutputAspectRatio = 16.0 / 9.0;
+  const size_t input_width = in_surface->surfaceList[0].width;
   const size_t input_height = in_surface->surfaceList[0].height;
   size_t output_height = round_down_even(input_height);
-  size_t output_width = round_down_even(static_cast<size_t>(kOutputAspectRatio * output_height));
+  size_t output_width = no_crop_ ? round_down_even(input_width)
+                                 : round_down_even(static_cast<size_t>(kOutputAspectRatio * output_height));
 
   if (runtime_output_max_width_ && runtime_output_max_height_) {
     std::tie(output_width, output_height) =
@@ -460,8 +462,10 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
   HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
 
-  const std::vector<std::optional<BBox>> tracking_boxes = get_object_boxes_by_frame(
-      batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
+  const std::vector<std::optional<BBox>> tracking_boxes = no_crop_
+      ? std::vector<std::optional<BBox>>(batch_meta->num_frames_in_batch)
+      : get_object_boxes_by_frame(
+            batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
   if (tracking_boxes.size() != batch_meta->num_frames_in_batch || tracking_boxes.size() != in_surface->numFilled) {
     return absl::FailedPreconditionError("Playcropper metadata does not match the filled input batch");
   }
@@ -507,9 +511,11 @@ absl::Status PlayCropperPriv::GenerateOutput(
     FloatValue scale_h = float(input_height) / frame_meta->source_frame_height;
 
     // Get tracking box
-    BBox tbox = tracking_boxes[batch_nr].has_value()
-        ? *tracking_boxes[batch_nr]
-        : make_null_tracking_box(&in_surface->surfaceList[batch_nr], &out_surface->surfaceList[batch_nr]);
+    BBox tbox = no_crop_
+        ? BBox(0, 0, frame_meta->source_frame_width, frame_meta->source_frame_height)
+        : (tracking_boxes[batch_nr].has_value()
+               ? *tracking_boxes[batch_nr]
+               : make_null_tracking_box(&in_surface->surfaceList[batch_nr], &out_surface->surfaceList[batch_nr]));
 
     tbox.left *= scale_w;
     tbox.right *= scale_w;
@@ -521,7 +527,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
     // const playtracker::PlayTrackerPayload* ptpayload =
     //     playtracker::PlayTrackerPayload::get_payload<playtracker::PlayTrackerPayload>(frame_meta);
-    if (false /*ptpayload*/) {
+    if (no_crop_) {
+      angle = 0.0f;
+    } else if (false /*ptpayload*/) {
       // angle = max_angle * ptpayload->`
     } else {
       const float half_width = float(frame_meta->source_frame_width) / 2;
