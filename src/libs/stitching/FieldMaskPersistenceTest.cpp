@@ -47,6 +47,9 @@ int main() {
        }) {
     cv::imwrite((root / name).string(), cv::Mat(24, 32, CV_32F, cv::Scalar(0.0f)));
   }
+  cv::Mat initial_seam(24, 32, CV_8U, cv::Scalar(0));
+  initial_seam.colRange(16, initial_seam.cols).setTo(255);
+  cv::imwrite((root / "seam_file.png").string(), initial_seam);
   auto initial_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
   ok &= expect(initial_hugin_lock.ok(), "generation test must lock initial Hugin artifacts");
   std::string initial_output_generation;
@@ -61,6 +64,13 @@ int main() {
     }
     initial_hugin_lock->reset();
   }
+  NvBufSurfaceParams cancelled_surface_params{};
+  hm::surface::Surface cancelled_surface(&cancelled_surface_params);
+  const auto cancelled_rink =
+      hm::stitching::create_field_mask(root.string(), cancelled_surface, {}, {}, [] { return true; });
+  ok &= expect(
+      absl::IsCancelled(cancelled_rink),
+      "an already-cancelled rink-mask generation must stop before GPU readback or inference");
   cv::Mat first(24, 32, CV_8U, cv::Scalar(0));
   cv::Mat second(24, 32, CV_8U, cv::Scalar(0));
   first(cv::Rect(2, 3, 10, 8)).setTo(255);
@@ -105,6 +115,11 @@ int main() {
         "current calibration token must permit transactional rink publication");
     YAML::Node completed_config = YAML::LoadFile((root / "config.yaml").string());
     YAML::Node completed_calibration = completed_config["hstream_ui"]["stitching_calibration"];
+    ok &= expect(
+        completed_calibration["status"].as<std::string>("") == "complete" && !completed_calibration["stale_from"] &&
+            !completed_calibration["artifacts_invalidated"] &&
+            completed_calibration["invalidation_id"].as<std::string>("") == "rink-run-a",
+        "final rink publication must complete the active calibration generation atomically");
     completed_calibration["status"] = "complete";
     completed_calibration.remove("artifacts_invalidated");
     completed_config["stitching"]["post_stitch_rotate_degrees"] = 2.5;
@@ -199,6 +214,19 @@ int main() {
     ok &= expect(
         hm::stitching::is_field_mask_configured(root.string()),
         "durably prepared rink publication must recover on the next owner");
+
+    const fs::path replacement_seam = root / "seam_file.replacement.png";
+    cv::Mat changed_seam(24, 32, CV_8U, cv::Scalar(255));
+    changed_seam.colRange(16, changed_seam.cols).setTo(0);
+    cv::imwrite(replacement_seam.string(), changed_seam);
+    fs::rename(replacement_seam, root / "seam_file.png");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()),
+        "a seam-only replacement must invalidate a field mask generated from different stitched pixels");
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile).ok() &&
+            hm::stitching::is_field_mask_configured(root.string()),
+        "regenerating the profile must bind it to the replacement seam generation");
 
     const fs::path replacement_mapping = root / "mapping_0000_x.replacement.tif";
     cv::imwrite(replacement_mapping.string(), cv::Mat(24, 32, CV_32F, cv::Scalar(1.0f)));

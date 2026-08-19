@@ -360,12 +360,16 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       g_free(debuginfo);
       appCtx->return_value = -1;
       appCtx->quit = TRUE;
+      if (appCtx->fatal_pipeline_error_cb) {
+        appCtx->fatal_pipeline_error_cb(appCtx);
+      }
       break;
     }
     case GST_MESSAGE_STATE_CHANGED: {
       GstState oldstate, newstate;
       gst_message_parse_state_changed(message, &oldstate, &newstate, NULL);
       if (appCtx && GST_ELEMENT(GST_MESSAGE_SRC(message)) == appCtx->pipeline.pipeline) {
+        appCtx->observed_pipeline_state = newstate;
         switch (newstate) {
           case GST_STATE_PLAYING:
             NVGSTDS_INFO_MSG_V("Pipeline running\n");
@@ -399,6 +403,10 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
     }
     case GST_MESSAGE_EOS: {
       appCtx->eos_received = TRUE;
+      if (appCtx->defer_eos_cb && appCtx->defer_eos_cb(appCtx)) {
+        NVGSTDS_INFO_MSG_V("Received EOS while awaiting calibration restart ...\n");
+        return TRUE;
+      }
       /*
        * In normal scenario, this would use g_main_loop_quit() to exit the
        * loop and release the resources. Since this application might be
@@ -431,6 +439,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
     }
     case GST_MESSAGE_ELEMENT: {
+      if (appCtx->element_message_cb && appCtx->element_message_cb(appCtx, message)) {
+        break;
+      }
       if (hm::gst_message_is_force_pipeline_eos(message)) {
         bool app_quit = false;
         if (hm::gst_message_parse_force_pipeline_eos(message, &app_quit)) {
@@ -519,6 +530,24 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
   }
   return TRUE;
+}
+
+gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return TRUE;
+  }
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
+  GstMessage* message = nullptr;
+  gboolean keep_running = TRUE;
+  while ((message = gst_bus_pop(bus)) != nullptr) {
+    keep_running = bus_callback(bus, message, appCtx);
+    gst_message_unref(message);
+    if (!keep_running && appCtx->quit) {
+      break;
+    }
+  }
+  gst_object_unref(bus);
+  return keep_running && appCtx->return_value == 0 && !appCtx->quit;
 }
 
 /**
@@ -1752,6 +1781,7 @@ gboolean create_pipeline(
   // previous GstPipeline generation and must never let a replacement skip its
   // own mux finalization.
   appCtx->eos_received = FALSE;
+  appCtx->observed_pipeline_state = GST_STATE_NULL;
 
   appCtx->all_bbox_generated_cb = all_bbox_generated_cb;
   appCtx->bbox_generated_post_analytics_cb = bbox_generated_post_analytics_cb;
@@ -2181,8 +2211,6 @@ gboolean create_pipeline(
 
   GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-null");
 
-  g_mutex_init(&appCtx->app_lock);
-  g_cond_init(&appCtx->app_cond);
   g_mutex_init(&appCtx->latency_lock);
 
   bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline->pipeline));
@@ -2219,7 +2247,7 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
     return TRUE;
   }
 
-  cancel_uri_playlist_frame_barrier(&appCtx->pipeline.multi_src_bin);
+  stop_uri_playlist_sources_gracefully(&appCtx->pipeline.multi_src_bin);
   gboolean finalized = appCtx->eos_received || appCtx->return_value != 0;
   gboolean fatal_error = FALSE;
   if (!finalized) {
@@ -2338,6 +2366,17 @@ void destroy_pipeline(AppCtx* appCtx) {
         stop_cloud_to_device_messaging(appCtx->c2d_ctx[i]);
     }
   }
+}
+
+void destroy_pipeline_for_recreate(AppCtx* appCtx) {
+  if (!appCtx) {
+    return;
+  }
+  // A replacement generation will open/finalize its own sinks. Treat the old
+  // generation as already finalized so destroy_pipeline does not wait for EOS
+  // on a pipeline intentionally paused at a calibration boundary.
+  appCtx->eos_received = TRUE;
+  destroy_pipeline(appCtx);
 }
 
 gboolean pause_pipeline(AppCtx* appCtx) {

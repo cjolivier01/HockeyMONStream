@@ -220,10 +220,16 @@ bool expect_resumed_calibration_progress_contract() {
       /*configured_during_run=*/false, /*mask_configured=*/false);
   const auto resumed_after_creation = hm::stitcher::one_pass_calibration_progress_plan(
       /*configured_during_run=*/false, /*mask_configured=*/true);
+  const auto recreated_after_completion = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false,
+      /*mask_configured=*/true,
+      /*report_latched=*/false,
+      /*process_completion_latched=*/true);
   g_unsetenv("HSTREAM_CALIBRATION_PENDING");
   if (!resumed_existing.report || resumed_existing.create_mask || !resumed_existing.complete ||
       !resumed_missing.report || !resumed_missing.create_mask || resumed_missing.complete ||
-      !resumed_after_creation.complete) {
+      !resumed_after_creation.complete || recreated_after_completion.report || recreated_after_completion.create_mask ||
+      recreated_after_completion.complete) {
     std::cerr << "Resumed calibration should complete with an existing mask or create and then complete a missing mask"
               << std::endl;
     return false;
@@ -235,6 +241,28 @@ bool expect_resumed_calibration_progress_contract() {
     std::cerr << "New one-pass configuration should retain its calibration progress contract" << std::endl;
     return false;
   }
+  hm::stitcher::OnePassCalibrationCompletionLatch completion_latch;
+  const std::string first_scope = "output-a/invalidation-a/run-1";
+  const std::string second_scope = "output-b/invalidation-a/run-2";
+  if (!completion_latch.try_begin_delivery(first_scope) || completion_latch.delivered(first_scope)) {
+    std::cerr << "Completion latch should expose an in-flight delivery without marking it delivered" << std::endl;
+    return false;
+  }
+  completion_latch.finish_delivery(first_scope, /*delivered=*/false);
+  if (completion_latch.delivered(first_scope) || !completion_latch.try_begin_delivery(first_scope)) {
+    std::cerr << "A failed bus post should release completion ownership for a recreated stitcher" << std::endl;
+    return false;
+  }
+  completion_latch.finish_delivery(first_scope, /*delivered=*/true);
+  if (!completion_latch.delivered(first_scope) || completion_latch.try_begin_delivery(first_scope)) {
+    std::cerr << "A delivered completion should suppress duplicate recreated-stitcher messages" << std::endl;
+    return false;
+  }
+  if (completion_latch.delivered(second_scope) || !completion_latch.try_begin_delivery(second_scope)) {
+    std::cerr << "A later output/invalidation/run generation should have independent completion ownership" << std::endl;
+    return false;
+  }
+  completion_latch.finish_delivery(second_scope, /*delivered=*/true);
   return true;
 }
 

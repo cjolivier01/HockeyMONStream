@@ -111,10 +111,26 @@ append_path() {
   esac
 }
 
+# Keep Bazel runtime caches tied to the exact output configuration selected by
+# bazel-bin. Debug and optimized plugins are ABI-compatible in principle, but
+# sharing registries and staged parser links lets one launch redirect another.
+BAZEL_BIN_REAL="$(readlink -f "${SCRIPT_DIR}/bazel-bin" 2>/dev/null || true)"
+BAZEL_OUTPUT_CONFIGURATION="installed"
+if [ -n "${BAZEL_BIN_REAL}" ] && [ -d "${BAZEL_BIN_REAL}" ]; then
+  BAZEL_OUTPUT_CONFIGURATION="$(basename "$(dirname "${BAZEL_BIN_REAL}")")"
+  BAZEL_OUTPUT_CONFIGURATION="$(printf '%s' "${BAZEL_OUTPUT_CONFIGURATION}" | tr -c 'A-Za-z0-9_.-' '_')"
+fi
+case "$(uname -m)" in
+  x86_64 | amd64) BAZEL_SOLIB_DIRECTORY="_solib_k8" ;;
+  aarch64 | arm64) BAZEL_SOLIB_DIRECTORY="_solib_aarch64" ;;
+  *) BAZEL_SOLIB_DIRECTORY="_solib_unknown" ;;
+esac
+RUNTIME_LAUNCH_KEY="launch-${BASHPID:-$$}"
+
 # Use a repo-local registry so stale blacklists in ~/.cache don't break local plugins.
 GST_REGISTRY_DIR="${SCRIPT_DIR}/.cache/gstreamer-1.0"
 mkdir -p "${GST_REGISTRY_DIR}"
-export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.native-onnx-v1.$(uname -m).bin"
+export GST_REGISTRY="${GST_REGISTRY_DIR}/registry.hstream.native-onnx-v1.$(uname -m).${BAZEL_OUTPUT_CONFIGURATION}.bin"
 
 prepend_path GST_PLUGIN_PATH "${SCRIPT_DIR}/lib/gst-plugins"
 prepend_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
@@ -130,7 +146,7 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 # directories on LD_LIBRARY_PATH so dependent support libraries remain visible.
 BAZEL_GST_PLUGIN_ROOT="${SCRIPT_DIR}/bazel-bin/src/gst-plugins"
 if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
-  BAZEL_GST_RUNTIME_PLUGIN_DIR="${SCRIPT_DIR}/.cache/gst-plugin-path/$(uname -m)"
+  BAZEL_GST_RUNTIME_PLUGIN_DIR="${SCRIPT_DIR}/.cache/gst-plugin-path/$(uname -m)/${BAZEL_OUTPUT_CONFIGURATION}/${RUNTIME_LAUNCH_KEY}"
   mkdir -p "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
   find "${BAZEL_GST_RUNTIME_PLUGIN_DIR}" -maxdepth 1 -type l -name '*.so' -delete
 
@@ -162,7 +178,6 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
       -printf '%h\n' | sort -u
   )
 
-  BAZEL_BIN_REAL="$(readlink -f "${SCRIPT_DIR}/bazel-bin" 2>/dev/null || true)"
   if [ -n "${BAZEL_BIN_REAL}" ] && [ -d "${BAZEL_BIN_REAL}" ]; then
     while IFS= read -r solib_dir; do
       solib_dir="$(readlink -f "${solib_dir}")"
@@ -171,7 +186,8 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
       find "${BAZEL_BIN_REAL}" \
         -maxdepth 2 \
         -type d \
-        \( -name '_solib_*' -o -path "${BAZEL_BIN_REAL}/_solib_*/*" \) \
+        \( -path "${BAZEL_BIN_REAL}/${BAZEL_SOLIB_DIRECTORY}" -o \
+        -path "${BAZEL_BIN_REAL}/${BAZEL_SOLIB_DIRECTORY}/*" \) \
         ! -path '*Sstubs*' \
         -printf '%p\n' | sort -u
     )
@@ -179,28 +195,23 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
     # Plugins are staged behind symlinks, so their Bazel-relative RUNPATH can
     # no longer reliably locate ONNX Runtime. Put the exact SONAME in a short,
     # stable dependency directory before the scanner runs.
-    BAZEL_RUNTIME_LIB_DIR="${SCRIPT_DIR}/.cache/runtime-lib-path/$(uname -m)"
+    BAZEL_RUNTIME_LIB_DIR="${SCRIPT_DIR}/.cache/runtime-lib-path/$(uname -m)/${BAZEL_OUTPUT_CONFIGURATION}/${RUNTIME_LAUNCH_KEY}"
     mkdir -p "${BAZEL_RUNTIME_LIB_DIR}"
     ORT_RUNTIME_SO="$({
-      find -L "${BAZEL_BIN_REAL}" -maxdepth 4 -type f -name 'libonnxruntime.so.1' -print -quit
+      find -L "${BAZEL_BIN_REAL}/${BAZEL_SOLIB_DIRECTORY}" \
+        -maxdepth 3 -type f -name 'libonnxruntime.so.1' -print -quit
     } 2>/dev/null || true)"
     if [ -n "${ORT_RUNTIME_SO}" ]; then
       ln -sfn "$(readlink -f "${ORT_RUNTIME_SO}")" "${BAZEL_RUNTIME_LIB_DIR}/libonnxruntime.so.1"
-      prepend_path LD_LIBRARY_PATH "${BAZEL_RUNTIME_LIB_DIR}"
     fi
+    YOLO_CUSTOM_IMPL="${BAZEL_BIN_REAL}/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
+    if [ -e "${YOLO_CUSTOM_IMPL}" ]; then
+      ln -sfn "$(readlink -f "${YOLO_CUSTOM_IMPL}")" "${BAZEL_RUNTIME_LIB_DIR}/libnvdsinfer_custom_impl_Yolo.so"
+    fi
+    prepend_path LD_LIBRARY_PATH "${BAZEL_RUNTIME_LIB_DIR}"
   fi
 
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
-fi
-
-YOLO_CUSTOM_IMPL="${SCRIPT_DIR}/bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
-YOLO_CUSTOM_IMPL_LINK="${SCRIPT_DIR}/lib/libnvdsinfer_custom_impl_Yolo.so"
-if [ -e "${YOLO_CUSTOM_IMPL}" ]; then
-  YOLO_CUSTOM_IMPL="$(readlink -f "${YOLO_CUSTOM_IMPL}")"
-  mkdir -p "${SCRIPT_DIR}/lib"
-  if [ ! -e "${YOLO_CUSTOM_IMPL_LINK}" ] || [ -L "${YOLO_CUSTOM_IMPL_LINK}" ]; then
-    ln -sfn "${YOLO_CUSTOM_IMPL}" "${YOLO_CUSTOM_IMPL_LINK}"
-  fi
 fi
 
 PIPELINE_APP_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"

@@ -46,13 +46,28 @@ struct OnePassCalibrationProgressPlan {
   bool complete;
 };
 
+class OnePassCalibrationCompletionLatch {
+ public:
+  bool delivered(const std::string& calibration_scope) const;
+  bool try_begin_delivery(const std::string& calibration_scope);
+  void finish_delivery(const std::string& calibration_scope, bool delivered);
+
+ private:
+  // 0 = available, 1 = a stitcher is publishing completion, 2 = published.
+  mutable std::mutex mutex_;
+  std::unordered_map<std::string, unsigned> state_by_scope_;
+};
+
 // Keeps resumed calibration observable even when stitch mappings were already
 // committed before the prior run stopped. report_latched preserves a progress
 // sequence that this run already announced while it creates the rink mask.
+// process_completion_latched suppresses duplicate progress from stitchers
+// recreated after another instance completed the shared game calibration.
 OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool configured_during_run,
     bool mask_configured,
-    bool report_latched = false);
+    bool report_latched = false,
+    bool process_completion_latched = false);
 
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
@@ -133,6 +148,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::string calibration_invalidation_id_;
+  std::string calibration_run_generation_;
+  GstElement* owner_element_{nullptr};
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};
@@ -145,6 +162,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
   bool calibration_completion_reported_{false};
+  bool calibration_completion_ready_{false};
+  std::atomic_bool calibration_cancelled_{false};
   size_t left_frame_offset_ns_{0}, right_frame_offset_ns_{0};
   bool show_{false};
   bool match_exposure_{false};

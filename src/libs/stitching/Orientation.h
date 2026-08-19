@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <string>
 
@@ -32,7 +33,8 @@ absl::StatusOr<std::string> classify_rink_orientation(const cv::Mat& binary_mask
 absl::Status configure_game_orientation(
     const std::string& game_dir,
     const RinkSegmentation& rink_model,
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {});
 
 } // namespace stitching
 } // namespace hm

@@ -3,6 +3,8 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "PipelineRuntimePaths.h"
+#include "StitchFrameTimePlan.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -34,6 +36,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -49,6 +52,7 @@
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/strings/str_split.h"
@@ -62,6 +66,111 @@ namespace fs = std::filesystem;
 GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
+
+struct StitchFrameRewindRequest {
+  long stage;
+  uint64_t main_loop_generation;
+};
+
+guint stitch_frame_completion_timeout_ms() {
+  constexpr guint kDefaultTimeoutMs = 300'000;
+  const char* configured = g_getenv("HM_TEST_STITCH_FRAME_COMPLETION_TIMEOUT_MS");
+  if (!configured || !*configured) {
+    return kDefaultTimeoutMs;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  if (!end || *end != '\0' || parsed == 0 || parsed > G_MAXUINT) {
+    g_printerr(
+        "Ignoring invalid HM_TEST_STITCH_FRAME_COMPLETION_TIMEOUT_MS=%s; using %u ms\n", configured, kDefaultTimeoutMs);
+    return kDefaultTimeoutMs;
+  }
+  return static_cast<guint>(parsed);
+}
+
+guint stitch_frame_restart_timeout_ms() {
+  constexpr guint kDefaultTimeoutMs = 30'000;
+  const char* configured = g_getenv("HM_TEST_STITCH_FRAME_RESTART_TIMEOUT_MS");
+  if (!configured || !*configured) {
+    return kDefaultTimeoutMs;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  if (!end || *end != '\0' || parsed == 0 || parsed > G_MAXUINT) {
+    g_printerr(
+        "Ignoring invalid HM_TEST_STITCH_FRAME_RESTART_TIMEOUT_MS=%s; using %u ms\n", configured, kDefaultTimeoutMs);
+    return kDefaultTimeoutMs;
+  }
+  return static_cast<guint>(parsed);
+}
+
+absl::StatusOr<uint64_t> parse_time_option(const char* option, const char* value) {
+  try {
+    return hm::hhmmss_to_nanoseconds(value ? value : "");
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(
+        std::string("Invalid ") + option + " value '" + (value ? value : "") + "': " + error.what());
+  }
+}
+
+absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, const char* value) {
+  try {
+    return hm::stitch_frame_time_to_nanoseconds(value ? value : "");
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(
+        std::string("Invalid ") + option + " value '" + (value ? value : "") + "': " + error.what());
+  }
+}
+
+std::string normalized_stitch_frame_time_config_value(uint64_t nanoseconds) {
+  if (nanoseconds == 0) {
+    return {};
+  }
+  const uint64_t total_milliseconds = nanoseconds / GST_MSECOND;
+  const uint64_t hours = total_milliseconds / (60 * 60 * 1000);
+  const uint64_t minutes = total_milliseconds / (60 * 1000) % 60;
+  const uint64_t seconds = total_milliseconds / 1000 % 60;
+  const uint64_t milliseconds = total_milliseconds % 1000;
+  std::ostringstream value;
+  value << std::setfill('0') << std::setw(2) << hours << ':' << std::setw(2) << minutes << ':' << std::setw(2)
+        << seconds;
+  if (milliseconds != 0) {
+    value << '.' << std::setw(3) << milliseconds;
+  }
+  return value.str();
+}
+
+absl::StatusOr<uint64_t> configured_stitch_frame_time(const YAML::Node& config) {
+  const auto value = hm::get_node(config, "stitching.stitch_frame_time");
+  if (!value.has_value()) {
+    return 0;
+  }
+  if (!value->IsScalar()) {
+    return absl::InvalidArgumentError("stitching.stitch_frame_time must be a scalar HH:MM:SS or HH:MM:SS.mmm value");
+  }
+  try {
+    return hm::stitch_frame_time_to_nanoseconds(value->as<std::string>());
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid stitching.stitch_frame_time: " << error.what()));
+  }
+}
+
+absl::StatusOr<std::optional<double>> active_stitch_output_rotation(const YAML::Node& config) {
+  try {
+    const auto stitcher = hm::get_node(config, "pipeline.hmstitcher");
+    if (!stitcher.has_value() || !stitcher->IsMap() ||
+        !hm::get_node_value(config, "pipeline.hmstitcher.enable", false)) {
+      return std::nullopt;
+    }
+    const auto rotation = hm::configurator_internal::effective_stitch_output_rotation(config);
+    if (!rotation.ok()) {
+      return rotation.status();
+    }
+    return *rotation;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid active hmstitcher rotation: " << error.what()));
+  }
+}
 
 void emit_ui_startup(const char* stage, const char* message) {
   if (!g_getenv("HSTREAM_UI_PARENT_PID")) {
@@ -103,6 +212,20 @@ std::string host_arch_name() {
 #endif
 }
 
+std::string bazel_solib_directory_name() {
+#if defined(__x86_64__)
+  return "_solib_k8";
+#elif defined(__aarch64__)
+  return "_solib_aarch64";
+#else
+  return {};
+#endif
+}
+
+std::string runtime_launch_key() {
+  return "launch-" + std::to_string(static_cast<unsigned long>(::getpid()));
+}
+
 bool manages_its_own_window(GstElement* sink) {
   if (sink == nullptr) {
     return false;
@@ -112,16 +235,49 @@ bool manages_its_own_window(GstElement* sink) {
       g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), NVDS_ELEM_SINK_3D) == 0;
 }
 
-absl::Status pause_pipeline_for_model_initialization(GstElement* pipeline) {
+absl::Status pause_pipeline_for_model_initialization(
+    AppCtx* app_ctx,
+    const volatile sig_atomic_t* interrupt_requested) {
+  GstElement* pipeline = app_ctx ? app_ctx->pipeline.pipeline : nullptr;
+  if (!pipeline) {
+    return absl::InvalidArgumentError("Missing pipeline while initializing models");
+  }
   if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE)
     return absl::InternalError("Failed to set pipeline to PAUSED");
-  constexpr GstClockTime kModelInitializationTimeout = 15 * 60 * GST_SECOND;
-  const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kModelInitializationTimeout);
-  if (result == GST_STATE_CHANGE_FAILURE)
-    return absl::InternalError("Pipeline failed while initializing models");
-  if (result == GST_STATE_CHANGE_ASYNC)
-    return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
-  return absl::OkStatus();
+  constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
+  constexpr auto kCancellationTimeout = std::chrono::seconds(5);
+  constexpr GstClockTime kPollInterval = 100 * GST_MSECOND;
+  const auto initialization_deadline = std::chrono::steady_clock::now() + kModelInitializationTimeout;
+  std::optional<std::chrono::steady_clock::time_point> cancellation_deadline;
+  while (true) {
+    const GstStateChangeReturn result = gst_element_get_state(pipeline, nullptr, nullptr, kPollInterval);
+    const bool interrupted = interrupt_requested && *interrupt_requested;
+    if (interrupted && !cancellation_deadline.has_value()) {
+      g_printerr("Interrupt received during pipeline preroll; cancelling stitching calibration\n");
+      if (GstElement* stitcher = app_ctx->pipeline.hmstitcher_bin.elem_hmstitcher) {
+        g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+      }
+      cancellation_deadline = std::chrono::steady_clock::now() + kCancellationTimeout;
+    }
+    if (interrupted && result != GST_STATE_CHANGE_ASYNC) {
+      return absl::CancelledError("Pipeline initialization interrupted");
+    }
+    if (result == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Pipeline failed while initializing models");
+    }
+    if (result != GST_STATE_CHANGE_ASYNC) {
+      return absl::OkStatus();
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (cancellation_deadline.has_value() && now >= *cancellation_deadline) {
+      g_printerr("Calibration did not acknowledge cancellation within five seconds; terminating the worker process\n");
+      std::fflush(stderr);
+      std::_Exit(128 + SIGINT);
+    }
+    if (now >= initialization_deadline) {
+      return absl::DeadlineExceededError("Timed out waiting for pipeline model initialization");
+    }
+  }
 }
 
 void prepend_env_path(const char* name, const fs::path& dir) {
@@ -144,49 +300,73 @@ void prepend_env_path(const char* name, const fs::path& dir) {
   setenv(name, updated.c_str(), 1);
 }
 
-std::optional<fs::path> runtime_root_from_executable(const char* argv0) {
+std::optional<fs::path> running_executable_path(const char* argv0) {
   std::error_code ec;
   fs::path exe = fs::read_symlink("/proc/self/exe", ec);
   if (ec && argv0 && std::string(argv0).find('/') != std::string::npos) {
     exe = fs::canonical(argv0, ec);
   }
-  if (ec || exe.empty()) {
+  if (ec || exe.empty())
     return std::nullopt;
-  }
-  for (fs::path cursor = exe.parent_path(); !cursor.empty(); cursor = cursor.parent_path()) {
-    if (cursor.filename() == "bazel-bin") {
-      return cursor.parent_path();
-    }
-    if (cursor.filename() == "bin" && fs::exists(cursor.parent_path() / "configs")) {
-      return cursor.parent_path();
-    }
-    if (cursor == cursor.root_path()) {
-      break;
-    }
-  }
-  return std::nullopt;
+  return exe;
 }
 
-fs::path pipeline_runtime_root(const char* argv0) {
+absl::StatusOr<fs::path> select_runtime_cache_root(const fs::path& root) {
+  std::vector<fs::path> candidates;
+  auto add_environment_candidate = [&candidates](const char* name, const fs::path& suffix = {}) {
+    if (const char* value = std::getenv(name); value && *value)
+      candidates.push_back(fs::path(value) / suffix);
+  };
+  add_environment_candidate("HSTREAM_RUNTIME_CACHE_DIR");
+  candidates.push_back(root / ".cache");
+  add_environment_candidate("TEST_TMPDIR", "hstream-runtime-cache");
+  add_environment_candidate("XDG_CACHE_HOME", "hstream");
+  add_environment_candidate("HOME", ".cache/hstream");
+
   std::error_code ec;
-  const fs::path cwd = fs::current_path(ec);
-  if (!ec && (fs::is_directory(cwd / "bazel-bin/src/gst-plugins") || fs::is_directory(cwd / "lib/gst-plugins"))) {
-    return cwd;
+  for (const fs::path& candidate : candidates) {
+    if (candidate.empty())
+      continue;
+    fs::create_directories(candidate, ec);
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    const fs::path probe = candidate / (".write-probe-" + std::to_string(static_cast<unsigned long>(::getpid())));
+    fs::remove(probe, ec);
+    ec.clear();
+    if (!fs::create_directory(probe, ec) || ec) {
+      ec.clear();
+      continue;
+    }
+    fs::remove(probe, ec);
+    if (!ec)
+      return candidate;
+    ec.clear();
   }
-  if (auto exe_root = runtime_root_from_executable(argv0)) {
-    return *exe_root;
+
+  const fs::path temp = fs::temp_directory_path(ec);
+  if (!ec) {
+    std::string pattern = (temp / "hstream-runtime-XXXXXX").string();
+    std::vector<char> mutable_pattern(pattern.begin(), pattern.end());
+    mutable_pattern.push_back('\0');
+    if (char* directory = ::mkdtemp(mutable_pattern.data()))
+      return fs::path(directory);
   }
-  return cwd;
+  return absl::PermissionDeniedError("Could not find a writable hstream runtime cache directory");
 }
 
-void stage_bazel_gst_plugins(const fs::path& root) {
-  const fs::path bazel_plugin_root = root / "bazel-bin/src/gst-plugins";
+void stage_bazel_gst_plugins(const fs::path& cache_root, const fs::path& bazel_bin) {
+  const fs::path bazel_plugin_root = bazel_bin / "src/gst-plugins";
   if (!fs::is_directory(bazel_plugin_root)) {
     return;
   }
 
   std::error_code ec;
-  const fs::path runtime_plugin_dir = root / ".cache/gst-plugin-path" / host_arch_name();
+  const std::string output_configuration =
+      bazel_bin.parent_path().filename().empty() ? "unknown-output" : bazel_bin.parent_path().filename().string();
+  const fs::path runtime_plugin_dir =
+      cache_root / "gst-plugin-path" / host_arch_name() / output_configuration / runtime_launch_key();
   fs::create_directories(runtime_plugin_dir, ec);
   if (ec) {
     return;
@@ -224,53 +404,116 @@ void stage_bazel_gst_plugins(const fs::path& root) {
   prepend_env_path("GST_PLUGIN_PATH", runtime_plugin_dir);
 }
 
-void stage_bazel_runtime_libraries(const fs::path& root) {
-  const fs::path bazel_bin = root / "bazel-bin";
-  if (!fs::is_directory(bazel_bin))
-    return;
-  std::error_code ec;
-  fs::path onnxruntime;
-  for (const fs::directory_entry& solib : fs::directory_iterator(bazel_bin, ec)) {
-    if (ec)
-      return;
-    if (!solib.is_directory(ec) || solib.path().filename().string().rfind("_solib_", 0) != 0) {
-      ec.clear();
-      continue;
-    }
-    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(solib.path(), ec)) {
-      if (ec)
-        return;
-      if (entry.path().filename() == "libonnxruntime.so.1" && entry.is_regular_file(ec) && !ec) {
-        onnxruntime = fs::canonical(entry.path(), ec);
-        break;
-      }
-    }
-    if (!onnxruntime.empty())
-      break;
+absl::Status validate_bazel_runtime_artifacts(const hm::pipeline_internal::RuntimePaths& runtime) {
+  if (!runtime.bazel_output)
+    return absl::OkStatus();
+  const std::vector<fs::path> required = {
+      "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
+      "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
+      "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+  };
+  for (const fs::path& relative_path : required) {
+    const fs::path artifact = runtime.bazel_bin / relative_path;
+    std::error_code ec;
+    if (!fs::is_regular_file(artifact, ec) || ec)
+      return absl::NotFoundError(TO_STRING("Matching Bazel runtime artifact is missing: " << artifact));
   }
-  if (onnxruntime.empty() || ec)
-    return;
-  const fs::path runtime_dir = root / ".cache/runtime-lib-path" / host_arch_name();
-  fs::create_directories(runtime_dir, ec);
-  if (ec)
-    return;
-  const fs::path link = runtime_dir / "libonnxruntime.so.1";
-  fs::remove(link, ec);
-  ec.clear();
-  fs::create_symlink(onnxruntime, link, ec);
-  if (!ec)
-    prepend_env_path("LD_LIBRARY_PATH", runtime_dir);
+  return absl::OkStatus();
 }
 
-void configure_pipeline_runtime_environment(const char* argv0) {
-  const fs::path root = pipeline_runtime_root(argv0);
+absl::Status stage_bazel_runtime_libraries(
+    const hm::pipeline_internal::RuntimePaths& runtime,
+    const fs::path& cache_root) {
+  const fs::path& bazel_bin = runtime.bazel_bin;
+  if (!fs::is_directory(bazel_bin))
+    return absl::OkStatus();
+  std::error_code ec;
+  fs::path onnxruntime;
+  const fs::path solib = bazel_bin / bazel_solib_directory_name();
+  if (!fs::is_directory(solib, ec)) {
+    if (runtime.bazel_output)
+      return absl::NotFoundError(TO_STRING("Matching Bazel shared-library tree is missing: " << solib));
+    return absl::OkStatus();
+  }
+  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(solib, ec)) {
+    if (ec)
+      return absl::InternalError(TO_STRING("Could not inspect Bazel runtime libraries: " << ec.message()));
+    if (entry.path().filename() == "libonnxruntime.so.1" && entry.is_regular_file(ec) && !ec) {
+      onnxruntime = fs::canonical(entry.path(), ec);
+      break;
+    }
+  }
+  if (ec)
+    return absl::InternalError(TO_STRING("Could not inspect Bazel runtime libraries: " << ec.message()));
+  if (runtime.bazel_output && onnxruntime.empty())
+    return absl::NotFoundError(TO_STRING("Matching Bazel ONNX Runtime library is missing below " << bazel_bin));
+  const fs::path yolo = bazel_bin / "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so";
+  if (onnxruntime.empty() && !fs::is_regular_file(yolo, ec))
+    return absl::OkStatus();
+
+  const fs::path runtime_dir =
+      cache_root / "runtime-lib-path" / host_arch_name() / runtime.output_configuration / runtime_launch_key();
+  fs::create_directories(runtime_dir, ec);
+  if (ec)
+    return absl::InternalError(
+        TO_STRING("Could not create runtime-library cache " << runtime_dir << ": " << ec.message()));
+  auto stage_library = [&runtime_dir](const fs::path& source, const fs::path& name) -> absl::Status {
+    if (source.empty())
+      return absl::OkStatus();
+    std::error_code link_ec;
+    const fs::path canonical = fs::canonical(source, link_ec);
+    if (link_ec)
+      return absl::InternalError(
+          TO_STRING("Could not resolve runtime library " << source << ": " << link_ec.message()));
+    const fs::path link = runtime_dir / name;
+    fs::remove(link, link_ec);
+    link_ec.clear();
+    fs::create_symlink(canonical, link, link_ec);
+    if (link_ec) {
+      std::error_code existing_ec;
+      const fs::path existing = fs::canonical(link, existing_ec);
+      if (!existing_ec && existing == canonical)
+        return absl::OkStatus();
+      return absl::InternalError(TO_STRING("Could not stage runtime library " << link << ": " << link_ec.message()));
+    }
+    return absl::OkStatus();
+  };
+  auto status = stage_library(onnxruntime, "libonnxruntime.so.1");
+  if (!status.ok())
+    return status;
+  if (fs::is_regular_file(yolo, ec) && !ec) {
+    status = stage_library(yolo, "libnvdsinfer_custom_impl_Yolo.so");
+    if (!status.ok())
+      return status;
+  }
+  prepend_env_path("LD_LIBRARY_PATH", runtime_dir);
+  return absl::OkStatus();
+}
+
+absl::Status configure_pipeline_runtime_environment(const char* argv0) {
+  std::error_code error;
+  const fs::path working_directory = fs::current_path(error);
+  const fs::path executable = running_executable_path(argv0).value_or(argv0 ? fs::path(argv0) : fs::path());
+  const hm::pipeline_internal::RuntimePaths runtime =
+      hm::pipeline_internal::select_runtime_paths(executable, error ? fs::path() : working_directory);
+  const fs::path& root = runtime.root;
+  const fs::path& bazel_bin = runtime.bazel_bin;
+  auto runtime_status = validate_bazel_runtime_artifacts(runtime);
+  if (!runtime_status.ok())
+    return runtime_status;
+  auto cache_root = select_runtime_cache_root(root);
+  if (!cache_root.ok())
+    return cache_root.status();
+  // Preserve an atomically created fallback across the one-time re-exec and
+  // keep any UI-selected private cache root coherent in the child process.
+  setenv("HSTREAM_RUNTIME_CACHE_DIR", cache_root->c_str(), 1);
   const fs::path packaged_native_models = root / "pretrained/native-calibration";
   if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
     setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
   }
-  stage_bazel_runtime_libraries(root);
   std::error_code ec;
-  fs::path registry_dir = root / ".cache/gstreamer-1.0";
+  fs::path registry_dir = *cache_root / "gstreamer-1.0";
   fs::create_directories(registry_dir, ec);
   if (ec) {
     if (const char* home = std::getenv("HOME"); home && *home) {
@@ -281,7 +524,9 @@ void configure_pipeline_runtime_environment(const char* argv0) {
   }
   if (!ec) {
     const std::string registry =
-        (registry_dir / ("registry.hstream.native-onnx-v1." + host_arch_name() + ".bin")).string();
+        (registry_dir /
+         ("registry.hstream.native-onnx-v1." + host_arch_name() + "." + runtime.output_configuration + ".bin"))
+            .string();
     setenv("GST_REGISTRY", registry.c_str(), 1);
   }
 
@@ -291,22 +536,22 @@ void configure_pipeline_runtime_environment(const char* argv0) {
   prepend_env_path("LD_LIBRARY_PATH", root / "lib/gst-plugins");
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path("LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  stage_bazel_gst_plugins(root);
-
-  const fs::path yolo_so = root / "bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so";
-  if (fs::exists(yolo_so)) {
-    const fs::path lib_dir = root / "lib";
-    fs::create_directories(lib_dir, ec);
-    const fs::path link_path = lib_dir / "libnvdsinfer_custom_impl_Yolo.so";
-    if (!fs::exists(link_path) || fs::is_symlink(fs::symlink_status(link_path))) {
-      std::error_code link_ec;
-      const fs::path canonical = fs::canonical(yolo_so, link_ec);
-      if (!link_ec) {
-        fs::remove(link_path, link_ec);
-        fs::create_symlink(canonical, link_path, link_ec);
-      }
-    }
+  stage_bazel_gst_plugins(*cache_root, bazel_bin);
+  runtime_status = stage_bazel_runtime_libraries(runtime, *cache_root);
+  if (!runtime_status.ok())
+    return runtime_status;
+  const fs::path staged_custom_library_dir =
+      *cache_root / "runtime-lib-path" / host_arch_name() / runtime.output_configuration / runtime_launch_key();
+  const fs::path staged_yolo = staged_custom_library_dir / "libnvdsinfer_custom_impl_Yolo.so";
+  const fs::path installed_yolo = root / "lib/libnvdsinfer_custom_impl_Yolo.so";
+  if (fs::is_regular_file(staged_yolo, ec) && !ec) {
+    setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", staged_custom_library_dir.c_str(), 1);
+  } else {
+    ec.clear();
+    if (fs::is_regular_file(installed_yolo, ec) && !ec)
+      setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", installed_yolo.parent_path().c_str(), 1);
   }
+  return absl::OkStatus();
 }
 
 std::string format_duration_ns(uint64_t ns) {
@@ -526,6 +771,9 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     app_ctx->car_class_id = -1;
     app_ctx->index = i;
     app_ctx->active_source_index = -1;
+    app_ctx->element_message_cb = handle_element_message_static;
+    app_ctx->defer_eos_cb = should_defer_eos_static;
+    app_ctx->fatal_pipeline_error_cb = handle_fatal_pipeline_error_static;
     if (show_bbox_text_)
       app_ctx->show_bbox_text = TRUE;
     if (input_uris_ && input_uris_[i]) {
@@ -554,10 +802,25 @@ absl::Status PipelineApplication::configureInstances(
     size_t stage_index,
     std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
+  std::vector<double> stage_stitch_output_rotations;
+  const bool clean_only_requested = clean_stitching_artifacts_ || clean_stitching_from_control_points_;
   for (size_t i = 0; i < app_contexts.size(); ++i) {
     auto& app_ctx = app_contexts[i];
-    if (g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
-        g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml")) {
+    // Clean-only is a single global action. Once an eligible context has
+    // completed it, later contexts must not load subconfigs, apply overrides,
+    // or validate settings that cannot affect the already-finished cleanup.
+    if (clean_only_requested && clean_only_action_completed_) {
+      continue;
+    }
+    const bool yaml_config = g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yml") ||
+        g_str_has_suffix(app_ctx->app_config_file().c_str(), ".yaml");
+    // Clean-only eligibility depends on the layered YAML configuration. Legacy
+    // DeepStream text configs cannot own the game-private stitching artifacts,
+    // so do not parse or prepare them during an offline cleanup run.
+    if (clean_only_requested && !yaml_config) {
+      continue;
+    }
+    if (yaml_config) {
       if (!app_ctx->underlay_config("pipeline", app_ctx->app_config_file())) {
         NVGSTDS_ERR_MSG_V("Failed to merge in config file '%s'", app_ctx->app_config_file().c_str());
         app_ctx->return_value = -1;
@@ -620,6 +883,42 @@ absl::Status PipelineApplication::configureInstances(
         }
       }
 
+      bool complete_configuration_enabled = false;
+      try {
+        complete_configuration_enabled =
+            hm::get_node_value(app_ctx->configurator().config(), "pipeline.application.complete-configuration", false);
+      } catch (const std::exception& error) {
+        return absl::InvalidArgumentError(TO_STRING("Invalid complete-configuration setting: " << error.what()));
+      }
+      // Rotation is a runtime stitcher setting. An incomplete configuration
+      // cannot own a clean-only action, so do not reject cleanup based on a
+      // malformed rotation in a context that will be skipped globally.
+      if (clean_only_requested && !complete_configuration_enabled) {
+        continue;
+      }
+      const auto active_stitcher_before_configuration = active_stitch_output_rotation(app_ctx->configurator().config());
+      if (!active_stitcher_before_configuration.ok()) {
+        return active_stitcher_before_configuration.status();
+      }
+      const bool clean_eligible = active_stitcher_before_configuration->has_value() && complete_configuration_enabled;
+      if (clean_only_requested) {
+        clean_only_eligible_context_seen_ = clean_only_eligible_context_seen_ || clean_eligible;
+        if (!clean_eligible || clean_only_action_completed_) {
+          continue;
+        }
+      }
+      if (stitch_frame_time_set_ && active_stitcher_before_configuration->has_value()) {
+        bool stitch_frame_time_changed = false;
+        HM_ASSIGN_OR_RETURN(
+            stitch_frame_time_changed,
+            app_ctx->configurator().reconcile_stitch_frame_time_override(
+                stitch_frame_time_override_config_value_,
+                clean_stitching_expected_invalidation_id_ ? clean_stitching_expected_invalidation_id_ : ""));
+        if (stitch_frame_time_changed) {
+          g_print("Changed stitch-frame time; stitching calibration is pending from the input stage\n");
+        }
+      }
+
       // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
       absl::Status configuration_status = app_ctx->complete_configuration(
           force_reconfigure_,
@@ -633,12 +932,56 @@ absl::Status PipelineApplication::configureInstances(
           return configuration_status;
         }
         std::cerr << configuration_status << std::endl;
+        clean_only_action_completed_ = true;
         continue;
       }
       if (!configuration_status.ok()) {
         return configuration_status;
       }
+      if (clean_only_requested) {
+        return absl::FailedPreconditionError("Eligible stitching configuration did not complete clean-only setup");
+      }
+      std::optional<double> stitch_output_rotation;
+      HM_ASSIGN_OR_RETURN(stitch_output_rotation, active_stitch_output_rotation(app_ctx->configurator().config()));
+      if (stitch_output_rotation.has_value()) {
+        stage_stitch_output_rotations.push_back(*stitch_output_rotation);
+        if (!hm::pipeline_internal::stitch_output_rotations_are_consistent(stage_stitch_output_rotations)) {
+          return absl::InvalidArgumentError(
+              "All active hmstitcher instances in a stage must use the same post-stitch rotation");
+        }
+      }
+      const std::string& active_invalidation_id = app_ctx->configurator().active_stitching_invalidation_id();
+      if (!active_invalidation_id.empty()) {
+        const char* runtime_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+        if (runtime_invalidation_id && *runtime_invalidation_id && runtime_invalidation_id != active_invalidation_id) {
+          return absl::InvalidArgumentError(
+              "All pipeline instances must use the same stitching calibration invalidation ID");
+        }
+        if (!g_setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", active_invalidation_id.c_str(), /*overwrite=*/TRUE)) {
+          return absl::InternalError("Unable to publish the saved stitching invalidation ID to runtime plugins");
+        }
+      }
+      if (app_ctx->configurator().stitching_calibration_required()) {
+        HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(
+            "pipeline.hmstitcher.private-properties.calibration-run-generation",
+            std::to_string(main_loop_generation_ + 1)));
+      }
       YAML::Node config = app_ctx->configurator().config();
+      if (!stitch_frame_time_set_) {
+        uint64_t configured_stitch_frame_time_ns = 0;
+        // Stitch-frame time is a per-game UI/calibration choice. Do not let a
+        // baseline or user overlay value resurface when config.yaml omits the
+        // required default zero value.
+        HM_ASSIGN_OR_RETURN(
+            configured_stitch_frame_time_ns,
+            configured_stitch_frame_time(app_ctx->configurator().game_private_config()));
+        if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
+          return absl::InvalidArgumentError(
+              "All pipeline instances must use the same stitching.stitch_frame_time value");
+        }
+        stitch_frame_time_ns_ = configured_stitch_frame_time_ns;
+        stitch_frame_time_loaded_from_config_ = true;
+      }
       // std::cout << config["pipeline"] << "\n";
       if (!config["pipeline"].IsDefined()) {
         NVGSTDS_ERR_MSG_V("Config file '%s' did not produce a pipeline section", app_ctx->app_config_file().c_str());
@@ -691,9 +1034,16 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    const uint64_t initial_position_ns = initial_pipeline_position_ns(app_contexts[i].get());
+    if (app_contexts[i]->configurator().stitching_calibration_required() && initial_position_ns != 0 &&
+        !app_contexts[i]->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
+      return absl::FailedPreconditionError(
+          "A nonzero stitch-frame time requires exactly two URI-MULTIPLE camera sources so calibration can be "
+          "positioned before preroll");
+    }
     HM_RETURN_IF_ERROR(
         app_contexts[i]->configurator().prepare_initial_pipeline_position(
-            app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_));
+            app_contexts[i]->pipeline, app_contexts[i]->config, initial_position_ns));
     if (dump_pipeline_dot_) {
       std::string s = "pipeline";
       if (i) {
@@ -1290,18 +1640,66 @@ absl::Status PipelineApplication::createMainLoop(
     }
   });
 
-  _intr_setup();
-  have_first_pts_ = false;
-  first_pts_ns_ = 0;
-  have_first_frame_by_source_.fill(false);
-  first_frame_numbers_by_source_.fill(0);
-  timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
-  if (time_limit_seconds_ > 0) {
-    timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
-  } else {
-    timed_run_last_progress_wall_ = {};
+  const uint64_t main_loop_generation = ++main_loop_generation_;
+  cleanup_stack.push([this, main_loop_generation] { cancel_stitch_frame_rewind(main_loop_generation); });
+
+  std::vector<AppCtx*> stage_calibration_contexts;
+  for (const auto& context : app_contexts) {
+    if (context && context->configurator().stitching_calibration_required()) {
+      one_pass_calibration_contexts_.insert(context.get());
+      stage_calibration_contexts.push_back(context.get());
+    }
   }
+  cleanup_stack.push([this, stage_calibration_contexts] {
+    for (AppCtx* context : stage_calibration_contexts) {
+      one_pass_calibration_contexts_.erase(context);
+    }
+  });
+
+  _intr_setup();
+  const bool calibration_active = std::any_of(app_contexts.begin(), app_contexts.end(), [this](const auto& context) {
+    return context && context->configurator().stitching_calibration_required() &&
+        stitch_frame_rewound_contexts_.count(context.get()) == 0;
+  });
+  stitch_frame_calibration_active_.store(calibration_active, std::memory_order_release);
+  reset_playback_timing_state(current_stage_);
   g_timeout_add(400, check_for_interrupt_static, nullptr);
+
+  auto owned_windows = std::make_shared<std::set<Window>>();
+  cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
+    for (const auto& context : contexts) {
+      if (!context) {
+        continue;
+      }
+      if (context->return_value == -1) {
+        return_value_ = -1;
+      }
+      destroy_pipeline(context.get());
+    }
+    const auto stage_windows = stage_windows_.find(stage);
+    if (stage_windows != stage_windows_.end()) {
+      for (auto& [index, window] : stage_windows->second) {
+        (void)index;
+        if (window && owned_windows->count(window)) {
+          absl::MutexLock lk(&disp_lock_);
+          if (display_) {
+            XFlush(display_);
+            XDestroyWindow(display_, window);
+          }
+        }
+        window = 0;
+      }
+    }
+    if (x_event_thread_ && x_event_thread_->joinable) {
+      g_thread_join(x_event_thread_);
+      x_event_thread_ = nullptr;
+    }
+    absl::MutexLock lk(&disp_lock_);
+    if (display_) {
+      XCloseDisplay(display_);
+      display_ = nullptr;
+    }
+  });
 
   bool has_video_overlay_sink = false;
   for (const auto& app_ctx : app_contexts) {
@@ -1323,19 +1721,16 @@ absl::Status PipelineApplication::createMainLoop(
       NVGSTDS_ERR_MSG_V("Could not open X Display");
       return absl::InternalError("Could not open X Display");
     }
-    cleanup_stack.push([this] {
-      absl::MutexLock lk(&disp_lock_);
-      if (display_)
-        XCloseDisplay(display_);
-      display_ = nullptr;
-    });
   }
 
-  std::set<Window> owned_windows;
   for (guint i = 0; i < app_contexts.size(); i++) {
 #if defined(__aarch64__)
-    auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+    auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i].get(), &cintr_);
     if (!pause_status.ok()) {
+      if (absl::IsCancelled(pause_status)) {
+        quit_ = TRUE;
+        return absl::OkStatus();
+      }
       NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
       return pause_status;
     }
@@ -1380,7 +1775,7 @@ absl::Status PipelineApplication::createMainLoop(
             2,
             0x00000000,
             0x00000000);
-        owned_windows.insert(windows[i]);
+        owned_windows->insert(windows[i]);
 
         XSetNormalHints(display_, windows[i], &hints);
 
@@ -1419,41 +1814,19 @@ absl::Status PipelineApplication::createMainLoop(
     cudaGetDevice(&current_device);
     struct cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, current_device);
-    if (!prop.integrated) {
-      auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i]->pipeline.pipeline);
+    if (!prop.integrated && !g_getenv("HM_TEST_CONCURRENT_STITCHING_CALIBRATION")) {
+      auto pause_status = pause_pipeline_for_model_initialization(app_contexts[i].get(), &cintr_);
       if (!pause_status.ok()) {
+        if (absl::IsCancelled(pause_status)) {
+          quit_ = TRUE;
+          return absl::OkStatus();
+        }
         NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
         return pause_status;
       }
     }
 #endif
   }
-  cleanup_stack.push([this, contexts = app_contexts, windows = windows, owned_windows]() mutable -> void {
-    // (void)waitForPipelinesStopped(contexts);
-    for (guint i = 0; i < contexts.size(); i++) {
-      if (contexts[i]) {
-        if (contexts[i]->return_value == -1)
-          return_value_ = -1;
-        destroy_pipeline(contexts[i].get());
-        absl::MutexLock lk(&disp_lock_);
-        if (windows[i] && owned_windows.count(windows[i])) {
-          // post_dummy_event(display_, windows[i]);
-          XFlush(display_);
-          XDestroyWindow(display_, windows[i]);
-        }
-        windows[i] = 0;
-        // contexts[i].reset();
-      }
-    }
-    if (x_event_thread_ && x_event_thread_->joinable) {
-      g_thread_join(x_event_thread_);
-    }
-    absl::MutexLock lk(&disp_lock_);
-    if (display_)
-      XCloseDisplay(display_);
-    display_ = nullptr;
-  });
-
   return absl::OkStatus();
 }
 
@@ -1463,6 +1836,23 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
   }
   GstElement* pipeline = app_context->pipeline.pipeline;
   if (!pipeline) {
+    return absl::OkStatus();
+  }
+  if (one_pass_calibration_contexts_.count(app_context.get()) != 0) {
+    // A one-pass generation has no complete downstream stream to finalize
+    // until calibration posts its completion message. On interruption, discard
+    // that generation directly; waiting for EOS behind a synchronous feature
+    // or rink-mask calculation can only time out and there is no valid archive
+    // to preserve yet.
+    GstElement* stitcher = app_context->pipeline.hmstitcher_bin.elem_hmstitcher;
+    if (stitcher) {
+      g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+    }
+    app_context->eos_received = TRUE;
+    cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
+    if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+      return absl::InternalError("Interrupted calibration pipeline could not be stopped");
+    }
     return absl::OkStatus();
   }
   if (!stop_pipeline_gracefully(app_context.get(), 5 * GST_SECOND)) {
@@ -1477,8 +1867,9 @@ absl::Status PipelineApplication::playPipelines(
     CleanupStack& cleanup_stack) {
   absl::Status status;
   for (guint i = 0; i < app_contexts.size(); i++) {
+    const uint64_t initial_position_ns = initial_pipeline_position_ns(app_contexts[i].get());
     status = app_contexts[i]->configurator().post_config_pipeline(
-        app_contexts[i]->pipeline, app_contexts[i]->config, start_time_ns_);
+        app_contexts[i]->pipeline, app_contexts[i]->config, initial_position_ns);
     if (!status.ok()) {
       std::cerr << status << std::endl;
       g_print("\npipeline post-configuration failed.\n");
@@ -1506,6 +1897,9 @@ absl::Status PipelineApplication::playPipelines(
   print_runtime_commands();
   changemode(1);
   g_timeout_add(40, event_thread_func_static, nullptr);
+  if (g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_ERROR") || g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS")) {
+    g_idle_add(inject_stitching_calibration_error_static, nullptr);
+  }
   if (!ui_preview_channels_.empty()) {
     // Re-arm the initial channel directly after PLAYING. Startup must not race
     // an external command against installation of the GLib stdin poll.
@@ -1613,6 +2007,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
   char* start_time{nullptr};
+  char* stitch_frame_time{nullptr};
   std::vector<std::string> normalized_args = normalize_cli_args(argc, argv);
   std::vector<char*> normalized_argv = make_mutable_argv(normalized_args);
   int normalized_argc = static_cast<int>(normalized_argv.size());
@@ -1903,6 +2298,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        "Apply stitching changes only if this invalidation is still current",
        "ID"},
       {"start-time", 's', 0, G_OPTION_ARG_STRING, &start_time, "Start time", nullptr},
+      {"stitch-frame-time",
+       0,
+       0,
+       G_OPTION_ARG_STRING,
+       &stitch_frame_time,
+       "Use the frame at this timestamp for one-pass stitching calibration",
+       "HH:MM:SS[.mmm]"},
       {"input-uri",
        'i',
        0,
@@ -1994,8 +2396,24 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
 
   if (start_time) {
-    start_time_ns_ = hm::hhmmss_to_nanoseconds(start_time);
+    const auto parsed_start_time = parse_time_option("--start-time", start_time);
     g_free(start_time);
+    if (!parsed_start_time.ok()) {
+      if (stitch_frame_time)
+        g_free(stitch_frame_time);
+      return parsed_start_time.status();
+    }
+    start_time_ns_ = *parsed_start_time;
+  }
+  if (stitch_frame_time) {
+    const auto parsed_stitch_frame_time = parse_stitch_frame_time_option("--stitch-frame-time", stitch_frame_time);
+    g_free(stitch_frame_time);
+    if (!parsed_stitch_frame_time.ok()) {
+      return parsed_stitch_frame_time.status();
+    }
+    stitch_frame_time_ns_ = *parsed_stitch_frame_time;
+    stitch_frame_time_override_config_value_ = normalized_stitch_frame_time_config_value(stitch_frame_time_ns_);
+    stitch_frame_time_set_ = true;
   }
 
   if (progress_ui_enabled_) {
@@ -2118,6 +2536,9 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         HM_RETURN_IF_ERROR(createPipelines(app_contexts, stage_cleanup_stack));
         emit_ui_startup("video", "Opening video sources and preparing output branches");
         HM_RETURN_IF_ERROR(createMainLoop(app_contexts, stage_windows_[current_stage_], stage_cleanup_stack));
+        if (quit_) {
+          return absl::OkStatus();
+        }
         hm::pipeline::ReleaseTensorRtModelCacheLocks();
         // editor_thread_ = hm::edit_pipeline(GST_OBJECT(app_contexts[0]->pipeline.pipeline));
         emit_ui_startup("decoding", "Starting decoders and waiting for the first frame");
@@ -2129,6 +2550,11 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       std::this_thread::sleep_for(std::chrono::seconds(5));
     }
     ++stage_count;
+  }
+  if ((clean_stitching_artifacts_ || clean_stitching_from_control_points_) && !clean_only_action_completed_) {
+    return absl::FailedPreconditionError(
+        clean_only_eligible_context_seen_ ? "Stitching clean-only action did not complete"
+                                          : "No active hmstitcher configuration is eligible for cleaning");
   }
   return absl::OkStatus();
 }
@@ -2200,10 +2626,36 @@ void PipelineApplication::perf_cb_static(gpointer context, NvDsAppPerfStruct* st
     instance_->perf_cb(context, str);
 }
 
+void PipelineApplication::reset_playback_timing_state(long stage) {
+  g_mutex_lock(&fps_lock_);
+  for (auto& [index, state] : progress_states_) {
+    (void)index;
+    state.initialized = false;
+    state.total_video_ns = GST_CLOCK_TIME_NONE;
+    state.rate_estimator.reset();
+  }
+  ui_progress_by_stage_.erase(stage);
+  g_mutex_unlock(&fps_lock_);
+  std::lock_guard<std::mutex> lock(playback_timing_mu_);
+  have_first_pts_ = false;
+  first_pts_ns_ = 0;
+  have_first_frame_by_source_.fill(false);
+  first_frame_numbers_by_source_.fill(0);
+  timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
+  timed_run_last_progress_wall_ = time_limit_seconds_ > 0 &&
+          hm::pipeline_internal::stitch_frame_should_account_playback(
+                                      stitch_frame_calibration_active_.load(std::memory_order_acquire))
+      ? std::chrono::steady_clock::now()
+      : std::chrono::steady_clock::time_point{};
+}
+
 void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
-  if (time_limit_seconds_ <= 0 || processed_ns == GST_CLOCK_TIME_NONE) {
+  if (time_limit_seconds_ <= 0 || processed_ns == GST_CLOCK_TIME_NONE ||
+      !hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
     return;
   }
+  std::lock_guard<std::mutex> lock(playback_timing_mu_);
   if (timed_run_last_progress_ns_ == GST_CLOCK_TIME_NONE || processed_ns > timed_run_last_progress_ns_) {
     timed_run_last_progress_ns_ = processed_ns;
     timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
@@ -2212,7 +2664,9 @@ void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
 
 hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx* app_ctx) {
   hm::PlaybackProgressMetrics metrics;
-  if (!app_ctx || !app_ctx->pipeline.pipeline) {
+  if (!app_ctx || !app_ctx->pipeline.pipeline ||
+      !hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
     return metrics;
   }
 
@@ -2620,11 +3074,18 @@ gboolean PipelineApplication::check_for_interrupt() {
       g_main_loop_quit(main_loop_);
     return FALSE;
   }
-  if (time_limit_seconds_ > 0 && timed_run_last_progress_wall_ != std::chrono::steady_clock::time_point{}) {
+  std::chrono::steady_clock::time_point last_progress_wall;
+  {
+    std::lock_guard<std::mutex> lock(playback_timing_mu_);
+    last_progress_wall = timed_run_last_progress_wall_;
+  }
+  if (time_limit_seconds_ > 0 &&
+      hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire)) &&
+      last_progress_wall != std::chrono::steady_clock::time_point{}) {
     constexpr int kTimedRunNoProgressTimeoutSeconds = 60;
-    const auto stalled_seconds = std::chrono::duration_cast<std::chrono::seconds>(
-                                     std::chrono::steady_clock::now() - timed_run_last_progress_wall_)
-                                     .count();
+    const auto stalled_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - last_progress_wall).count();
     if (stalled_seconds >= kTimedRunNoProgressTimeoutSeconds) {
       g_printerr(
           "Timed run saw no video-time progress for %d wall-clock seconds; stopping\n",
@@ -3706,6 +4167,529 @@ gboolean PipelineApplication::event_thread_func_static(gpointer arg) {
   return TRUE;
 }
 
+uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx) const {
+  return hm::pipeline_internal::stitch_frame_initial_position(
+      start_time_ns_,
+      stitch_frame_time_ns_,
+      app_ctx && app_ctx->configurator().stitching_calibration_required(),
+      app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0);
+}
+
+gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, GstMessage* message) {
+  return instance_ ? instance_->handle_element_message(app_ctx, message) : FALSE;
+}
+
+void PipelineApplication::handle_fatal_pipeline_error_static(AppCtx* app_ctx) {
+  if (instance_) {
+    instance_->handle_fatal_pipeline_error(app_ctx);
+  }
+}
+
+void PipelineApplication::handle_fatal_pipeline_error(AppCtx* app_ctx) {
+  if (!app_ctx || !stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return;
+  }
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (active_stage == stage_app_contexts_.end() ||
+      std::none_of(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& context) {
+        return context.get() == app_ctx;
+      })) {
+    return;
+  }
+  if (!stitch_frame_calibration_active_.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  const bool restart_active = stitch_frame_rewind_cancellation_requested_ || stitch_frame_restart_awaiting_playing_ ||
+      stitch_frame_rewound_contexts_.count(app_ctx) != 0;
+  if (stitch_frame_rewind_source_id_ != 0) {
+    g_source_remove(stitch_frame_rewind_source_id_);
+    stitch_frame_rewind_source_id_ = 0;
+  }
+  cancel_stitch_frame_completion_timeout();
+  stitch_frame_rewind_pending_contexts_.clear();
+  stitch_frame_rewind_cancellation_requested_ = false;
+  stitch_frame_restart_awaiting_playing_ = false;
+  stitch_frame_rewind_deadline_ = {};
+  for (const auto& context : active_stage->second) {
+    if (!context) {
+      continue;
+    }
+    context->return_value = -1;
+    context->quit = TRUE;
+  }
+  g_print(
+      "HSTREAM_CALIBRATION stage=%s status=failed message=Pipeline failed during stitching calibration\n",
+      restart_active ? "playback-restart" : "calibration");
+  std::fflush(stdout);
+  quit_ = TRUE;
+  if (main_loop_) {
+    g_main_loop_quit(main_loop_);
+  }
+}
+
+gboolean PipelineApplication::should_defer_eos_static(AppCtx* app_ctx) {
+  return instance_ ? instance_->should_defer_eos(app_ctx) : FALSE;
+}
+
+gboolean PipelineApplication::should_defer_eos(AppCtx* app_ctx) {
+  if (!app_ctx || app_ctx->return_value != 0 || !stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return FALSE;
+  }
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (active_stage == stage_app_contexts_.end()) {
+    return FALSE;
+  }
+  const auto context =
+      std::find_if(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& candidate) {
+        return candidate.get() == app_ctx;
+      });
+  if (context == active_stage->second.end()) {
+    return FALSE;
+  }
+  const bool unfinished_calibration =
+      (*context)->configurator().stitching_calibration_required() && stitch_frame_rewound_contexts_.count(app_ctx) == 0;
+  if (!unfinished_calibration) {
+    return FALSE;
+  }
+  if (stitch_frame_rewind_pending_contexts_.count(app_ctx) != 0 && stitch_frame_rewound_contexts_.count(app_ctx) == 0) {
+    return TRUE;
+  }
+  if (stitch_frame_completion_timeout_source_id_ == 0) {
+    auto* request = new StitchFrameRewindRequest{
+        .stage = current_stage_,
+        .main_loop_generation = main_loop_generation_,
+    };
+    stitch_frame_completion_timeout_source_id_ = g_timeout_add_full(
+        G_PRIORITY_DEFAULT,
+        stitch_frame_completion_timeout_ms(),
+        stitch_frame_completion_timeout_static,
+        request,
+        [](gpointer data) { delete static_cast<StitchFrameRewindRequest*>(data); });
+    if (stitch_frame_completion_timeout_source_id_ == 0) {
+      delete request;
+      g_printerr("Failed to schedule stitching calibration completion timeout\n");
+      app_ctx->return_value = -1;
+      app_ctx->quit = TRUE;
+      quit_ = TRUE;
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+gboolean PipelineApplication::stitch_frame_completion_timeout_static(gpointer arg) {
+  const auto* request = static_cast<const StitchFrameRewindRequest*>(arg);
+  return instance_ && request
+      ? instance_->stitch_frame_completion_timeout(request->stage, request->main_loop_generation)
+      : G_SOURCE_REMOVE;
+}
+
+gboolean PipelineApplication::stitch_frame_completion_timeout(long stage, uint64_t main_loop_generation) {
+  stitch_frame_completion_timeout_source_id_ = 0;
+  if (!hm::pipeline_internal::stitch_frame_rewind_request_is_current(
+          stage, main_loop_generation, current_stage_, main_loop_generation_, main_loop_ != nullptr) ||
+      !stitch_frame_calibration_active_.load(std::memory_order_acquire) ||
+      !stitch_frame_rewind_pending_contexts_.empty()) {
+    return G_SOURCE_REMOVE;
+  }
+  const auto active_stage = stage_app_contexts_.find(stage);
+  if (active_stage == stage_app_contexts_.end()) {
+    return G_SOURCE_REMOVE;
+  }
+  g_printerr("Timed out waiting for stitching calibration completion after EOS\n");
+  for (const auto& context : active_stage->second) {
+    if (context && context->configurator().stitching_calibration_required() &&
+        stitch_frame_rewound_contexts_.count(context.get()) == 0) {
+      context->return_value = -1;
+      context->quit = TRUE;
+    }
+  }
+  stitch_frame_calibration_active_.store(false, std::memory_order_release);
+  quit_ = TRUE;
+  if (main_loop_) {
+    g_main_loop_quit(main_loop_);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+void PipelineApplication::cancel_stitch_frame_completion_timeout() {
+  if (stitch_frame_completion_timeout_source_id_ != 0) {
+    g_source_remove(stitch_frame_completion_timeout_source_id_);
+    stitch_frame_completion_timeout_source_id_ = 0;
+  }
+}
+
+gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
+  const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
+  if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {
+    return FALSE;
+  }
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (!app_ctx || active_stage == stage_app_contexts_.end()) {
+    return TRUE;
+  }
+  const auto completion_context =
+      std::find_if(active_stage->second.begin(), active_stage->second.end(), [app_ctx](const auto& context) {
+        return context.get() == app_ctx;
+      });
+  if (completion_context == active_stage->second.end()) {
+    return TRUE;
+  }
+  const char* output_generation = gst_structure_get_string(structure, "output-generation");
+  std::string stitcher_config_path;
+  try {
+    stitcher_config_path = hm::get_node_value(
+        (*completion_context)->configurator().config(), "pipeline.hmstitcher.config-file", std::string());
+  } catch (const std::exception& error) {
+    g_printerr("Ignoring malformed stitching completion message config: %s\n", error.what());
+    return TRUE;
+  }
+  if (!output_generation || !*output_generation || stitcher_config_path.empty() ||
+      !hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation)) {
+    g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
+    return TRUE;
+  }
+  cancel_stitch_frame_completion_timeout();
+  // The stitch artifact generation and completion latch are shared across all
+  // contexts in this stage. Only one stitcher posts the completion message.
+  // Keep every calibration context classified as such until its old worker is
+  // cancelled and its replacement pipeline is running.
+  std::vector<hm::pipeline_internal::StitchFrameRewindState> states;
+  states.reserve(active_stage->second.size());
+  for (const auto& context : active_stage->second) {
+    states.push_back({
+        context && context->configurator().stitching_calibration_required(),
+        context && stitch_frame_rewound_contexts_.count(context.get()) != 0,
+        context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0,
+    });
+  }
+  for (const size_t index : hm::pipeline_internal::stitch_frame_rewind_candidates(stitch_frame_time_ns_, states)) {
+    AppCtx* context = active_stage->second[index].get();
+    stitch_frame_rewind_pending_contexts_.insert(context);
+  }
+  if (!stitch_frame_rewind_pending_contexts_.empty() && stitch_frame_rewind_source_id_ == 0) {
+    auto* request = new StitchFrameRewindRequest{
+        .stage = current_stage_,
+        .main_loop_generation = main_loop_generation_,
+    };
+    stitch_frame_rewind_source_id_ = g_timeout_add_full(
+        G_PRIORITY_DEFAULT, 10, rewind_after_stitching_calibration_static, request, [](gpointer data) {
+          delete static_cast<StitchFrameRewindRequest*>(data);
+        });
+    if (stitch_frame_rewind_source_id_ == 0) {
+      delete request;
+      stitch_frame_rewind_pending_contexts_.clear();
+      g_printerr("Failed to schedule playback restart after stitching calibration\n");
+      for (const auto& context : active_stage->second) {
+        if (context && context->configurator().stitching_calibration_required()) {
+          context->return_value = -1;
+          context->quit = TRUE;
+        }
+      }
+      stitch_frame_calibration_active_.store(false, std::memory_order_release);
+      quit_ = TRUE;
+      if (main_loop_) {
+        g_main_loop_quit(main_loop_);
+      }
+      return TRUE;
+    }
+  } else if (
+      stitch_frame_rewind_pending_contexts_.empty() &&
+      stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    // A zero stitch-frame time needs no pipeline recreation, but calibration
+    // work still must not consume normal playback progress or time limits.
+    // Publish a fresh baseline before enabling those callbacks.
+    reset_playback_timing_state(current_stage_);
+    {
+      std::lock_guard<std::mutex> lock(playback_timing_mu_);
+      timed_run_last_progress_wall_ =
+          time_limit_seconds_ > 0 ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    }
+    for (const auto& context : active_stage->second) {
+      if (context) {
+        one_pass_calibration_contexts_.erase(context.get());
+        if (context->configurator().stitching_calibration_required() && context->eos_received &&
+            context->return_value == 0) {
+          context->quit = TRUE;
+        }
+      }
+    }
+    stitch_frame_calibration_active_.store(false, std::memory_order_release);
+    g_print("HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted\n");
+    std::fflush(stdout);
+  }
+  return TRUE;
+}
+
+gboolean PipelineApplication::rewind_after_stitching_calibration_static(gpointer arg) {
+  const auto* request = static_cast<const StitchFrameRewindRequest*>(arg);
+  if (instance_ && request) {
+    return instance_->rewind_after_stitching_calibration(request->stage, request->main_loop_generation);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+void PipelineApplication::cancel_stitch_frame_rewind(uint64_t main_loop_generation) {
+  if (main_loop_generation != main_loop_generation_) {
+    return;
+  }
+  if (stitch_frame_rewind_source_id_ != 0) {
+    g_source_remove(stitch_frame_rewind_source_id_);
+    stitch_frame_rewind_source_id_ = 0;
+  }
+  cancel_stitch_frame_completion_timeout();
+  stitch_frame_rewind_pending_contexts_.clear();
+  stitch_frame_rewind_cancellation_requested_ = false;
+  stitch_frame_restart_awaiting_playing_ = false;
+  stitch_frame_rewind_deadline_ = {};
+  stitch_frame_calibration_active_.store(false, std::memory_order_release);
+}
+
+gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation) {
+  if (!hm::pipeline_internal::stitch_frame_rewind_request_is_current(
+          stage, main_loop_generation, current_stage_, main_loop_generation_, main_loop_ != nullptr)) {
+    stitch_frame_rewind_source_id_ = 0;
+    stitch_frame_rewind_pending_contexts_.clear();
+    stitch_frame_rewind_cancellation_requested_ = false;
+    stitch_frame_restart_awaiting_playing_ = false;
+    stitch_frame_rewind_deadline_ = {};
+    return FALSE;
+  }
+  const auto active_stage = stage_app_contexts_.find(stage);
+  if (active_stage == stage_app_contexts_.end()) {
+    stitch_frame_rewind_source_id_ = 0;
+    stitch_frame_rewind_pending_contexts_.clear();
+    stitch_frame_rewind_cancellation_requested_ = false;
+    stitch_frame_restart_awaiting_playing_ = false;
+    stitch_frame_rewind_deadline_ = {};
+    return FALSE;
+  }
+  std::vector<AppCtx*> rewind_contexts;
+  for (const auto& context : active_stage->second) {
+    if (context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0) {
+      rewind_contexts.push_back(context.get());
+    }
+  }
+  if (rewind_contexts.empty() || quit_) {
+    stitch_frame_rewind_source_id_ = 0;
+    stitch_frame_rewind_pending_contexts_.clear();
+    stitch_frame_rewind_cancellation_requested_ = false;
+    stitch_frame_restart_awaiting_playing_ = false;
+    stitch_frame_rewind_deadline_ = {};
+    return FALSE;
+  }
+
+  std::vector<AppCtx*> stage_contexts;
+  for (const auto& context : active_stage->second) {
+    if (context && context->pipeline.pipeline) {
+      stage_contexts.push_back(context.get());
+    }
+  }
+  const auto clean_terminal_context = [](const AppCtx* context) {
+    return context && context->eos_received && context->quit && context->return_value == 0;
+  };
+  auto fail_restart = [&](const char* diagnostic, const char* message) -> gboolean {
+    g_printerr("%s\n", diagnostic);
+    for (AppCtx* context : stage_contexts) {
+      context->return_value = -1;
+      context->quit = TRUE;
+    }
+    stitch_frame_rewind_source_id_ = 0;
+    stitch_frame_rewind_pending_contexts_.clear();
+    stitch_frame_rewind_cancellation_requested_ = false;
+    stitch_frame_restart_awaiting_playing_ = false;
+    stitch_frame_rewind_deadline_ = {};
+    if (stitch_frame_calibration_active_.exchange(false, std::memory_order_acq_rel)) {
+      g_print("HSTREAM_CALIBRATION stage=playback-restart status=failed message=%s\n", message);
+      std::fflush(stdout);
+    }
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return G_SOURCE_REMOVE;
+  };
+
+  // A shared completion can arrive while another same-stage stitcher is still
+  // inside synchronous feature, Hugin, or rink-mask work, or while an ordinary
+  // peer is still entering PLAYING. Cancel calibration work cooperatively, then
+  // move every same-stage pipeline through the same bounded asynchronous pause
+  // so no legacy blocking state wait can pin the GLib main loop.
+  if (!stitch_frame_rewind_cancellation_requested_) {
+    g_print(
+        "hmstitcher: calibration frame complete; restarting playback at %" GST_TIME_FORMAT "\n",
+        GST_TIME_ARGS(start_time_ns_));
+    for (AppCtx* context : stage_contexts) {
+      if (clean_terminal_context(context)) {
+        continue;
+      }
+      if (std::find(rewind_contexts.begin(), rewind_contexts.end(), context) != rewind_contexts.end()) {
+        cancel_uri_playlist_frame_barrier(&context->pipeline.multi_src_bin);
+        if (GstElement* stitcher = context->pipeline.hmstitcher_bin.elem_hmstitcher) {
+          g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+        }
+        context->eos_received = TRUE;
+      }
+      if (gst_element_set_state(context->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+        return fail_restart(
+            "Failed to quiesce same-stage pipelines before stitch-frame restart",
+            "Could not pause playback for restart");
+      }
+      context->observed_pipeline_state = GST_STATE_VOID_PENDING;
+      pause_perf_measurement(&context->perf_struct);
+    }
+    stitch_frame_rewind_cancellation_requested_ = true;
+    stitch_frame_rewind_deadline_ =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(stitch_frame_restart_timeout_ms());
+  }
+
+  if (!stitch_frame_restart_awaiting_playing_) {
+    bool all_quiesced = true;
+    for (AppCtx* context : stage_contexts) {
+      const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+      if (!bus_running && !clean_terminal_context(context)) {
+        return fail_restart(
+            "A same-stage pipeline failed while quiescing for stitch-frame restart",
+            "A pipeline failed while preparing playback restart");
+      }
+      if (clean_terminal_context(context)) {
+        continue;
+      }
+      GstState current = GST_STATE_VOID_PENDING;
+      GstState pending = GST_STATE_VOID_PENDING;
+      const GstStateChangeReturn state =
+          gst_element_get_state(context->pipeline.pipeline, &current, &pending, /*timeout=*/0);
+      if (state == GST_STATE_CHANGE_FAILURE) {
+        return fail_restart(
+            "A same-stage pipeline failed while quiescing for stitch-frame restart",
+            "A pipeline failed while preparing playback restart");
+      }
+      if (state == GST_STATE_CHANGE_ASYNC || current != GST_STATE_PAUSED ||
+          (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PAUSED)) {
+        all_quiesced = false;
+      }
+    }
+    if (!all_quiesced) {
+      if (std::chrono::steady_clock::now() < stitch_frame_rewind_deadline_) {
+        return G_SOURCE_CONTINUE;
+      }
+      return fail_restart(
+          "Timed out quiescing same-stage pipelines before stitch-frame restart",
+          "Timed out pausing playback for restart");
+    }
+
+    // A bus error may arrive after the state poll that first observed PAUSED.
+    // Drain every peer once more at the last safe boundary before destroying
+    // any old calibration generation.
+    for (AppCtx* context : stage_contexts) {
+      const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+      if (!bus_running && !clean_terminal_context(context)) {
+        return fail_restart(
+            "A same-stage pipeline failed at the stitch-frame restart boundary",
+            "A pipeline failed before playback could restart");
+      }
+    }
+
+    for (AppCtx* context : rewind_contexts) {
+      stitch_frame_rewound_contexts_.insert(context);
+    }
+    reset_playback_timing_state(stage);
+
+    for (AppCtx* context : rewind_contexts) {
+      if (context->return_value != 0 || !recreate_pipeline_thread_func(context)) {
+        return fail_restart(
+            "Failed to recreate a calibration pipeline for normal playback",
+            "Could not recreate playback after calibration");
+      }
+      context->quit = FALSE;
+      one_pass_calibration_contexts_.erase(context);
+    }
+    for (AppCtx* context : stage_contexts) {
+      if (std::find(rewind_contexts.begin(), rewind_contexts.end(), context) != rewind_contexts.end()) {
+        continue;
+      }
+      if (clean_terminal_context(context)) {
+        continue;
+      }
+      context->observed_pipeline_state = GST_STATE_VOID_PENDING;
+      if (gst_element_set_state(context->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+        return fail_restart(
+            "Failed to resume a same-stage peer after stitch-frame calibration",
+            "Could not resume playback after calibration");
+      }
+    }
+    stitch_frame_restart_awaiting_playing_ = true;
+    stitch_frame_rewind_deadline_ =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(stitch_frame_restart_timeout_ms());
+    return G_SOURCE_CONTINUE;
+  }
+
+  bool all_playing = true;
+  for (AppCtx* context : stage_contexts) {
+    const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+    if (!bus_running && !clean_terminal_context(context)) {
+      return fail_restart(
+          "A replacement pipeline failed while entering PLAYING", "Playback failed while restarting after calibration");
+    }
+    if (clean_terminal_context(context)) {
+      continue;
+    }
+    GstState current = GST_STATE_VOID_PENDING;
+    GstState pending = GST_STATE_VOID_PENDING;
+    const GstStateChangeReturn state =
+        gst_element_get_state(context->pipeline.pipeline, &current, &pending, /*timeout=*/0);
+    if (state == GST_STATE_CHANGE_FAILURE) {
+      return fail_restart(
+          "A replacement pipeline failed while entering PLAYING", "Playback failed while restarting after calibration");
+    }
+    if (state == GST_STATE_CHANGE_ASYNC || current != GST_STATE_PLAYING ||
+        (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PLAYING) ||
+        context->observed_pipeline_state != GST_STATE_PLAYING) {
+      all_playing = false;
+    }
+  }
+  if (!all_playing) {
+    if (std::chrono::steady_clock::now() < stitch_frame_rewind_deadline_) {
+      return G_SOURCE_CONTINUE;
+    }
+    return fail_restart(
+        "Timed out waiting for replacement pipelines to enter PLAYING",
+        "Timed out restarting playback after calibration");
+  }
+  for (AppCtx* context : stage_contexts) {
+    const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
+    if (!bus_running && !clean_terminal_context(context)) {
+      return fail_restart(
+          "A replacement pipeline failed immediately after entering PLAYING",
+          "Playback failed while restarting after calibration");
+    }
+    if (!clean_terminal_context(context)) {
+      resume_perf_measurement(&context->perf_struct);
+    }
+  }
+
+  // The calibration pipelines were paused before the shared timing fields
+  // were reset, and all callbacks continue to ignore those fields while this
+  // flag is true. Publish the new baseline before allowing normal accounting.
+  reset_playback_timing_state(stage);
+  {
+    std::lock_guard<std::mutex> lock(playback_timing_mu_);
+    timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
+    timed_run_last_progress_wall_ =
+        time_limit_seconds_ > 0 ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  }
+  stitch_frame_rewind_source_id_ = 0;
+  stitch_frame_rewind_pending_contexts_.clear();
+  stitch_frame_rewind_cancellation_requested_ = false;
+  stitch_frame_restart_awaiting_playing_ = false;
+  stitch_frame_rewind_deadline_ = {};
+  stitch_frame_calibration_active_.store(false, std::memory_order_release);
+  g_print("hmstitcher: playback restarted after stitch-frame calibration\n");
+  g_print("HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted\n");
+  std::fflush(stdout);
+  return G_SOURCE_REMOVE;
+}
+
 gboolean PipelineApplication::event_thread_func() {
   guint i;
   gboolean ret = TRUE;
@@ -3716,6 +4700,18 @@ gboolean PipelineApplication::event_thread_func() {
       break;
   }
   if (i == app_ctx.size()) {
+    // Replacement EOS is terminal playback, not calibration EOS. Give the
+    // already-scheduled restart callback one turn to consume that terminal
+    // state and publish completion before the stage loop exits normally.
+    const bool replacement_eos_awaiting_finalization =
+        stitch_frame_restart_awaiting_playing_ && stitch_frame_calibration_active_.load(std::memory_order_acquire) &&
+        std::any_of(app_ctx.begin(), app_ctx.end(), [this](const auto& context) {
+          return context && stitch_frame_rewound_contexts_.count(context.get()) != 0 && context->eos_received &&
+              context->return_value == 0;
+        });
+    if (replacement_eos_awaiting_finalization) {
+      return TRUE;
+    }
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
@@ -3967,65 +4963,73 @@ gboolean PipelineApplication::overlay_graphics(
     GstBuffer* buf,
     NvDsBatchMeta* batch_meta,
     guint index) {
-  if (time_limit_seconds_ > 0 && batch_meta) {
+  if (time_limit_seconds_ > 0 && batch_meta &&
+      hm::pipeline_internal::stitch_frame_should_account_playback(
+          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (buf) {
       GstClockTime pts = GST_BUFFER_PTS(buf);
       if (GST_CLOCK_TIME_IS_VALID(pts)) {
-        uint64_t pts_ns = static_cast<uint64_t>(pts);
-        if (!have_first_pts_) {
-          first_pts_ns_ = pts_ns;
-          have_first_pts_ = true;
-        } else {
-          if (pts_ns < first_pts_ns_) {
+        const uint64_t pts_ns = static_cast<uint64_t>(pts);
+        uint64_t elapsed_ns = 0;
+        bool have_elapsed = false;
+        {
+          std::lock_guard<std::mutex> lock(playback_timing_mu_);
+          if (!have_first_pts_) {
+            first_pts_ns_ = pts_ns;
+            have_first_pts_ = true;
+          } else if (pts_ns < first_pts_ns_) {
             first_pts_ns_ = pts_ns;
           } else {
-            uint64_t elapsed_ns = pts_ns - first_pts_ns_;
-            record_timed_run_progress(elapsed_ns);
-            if (elapsed_ns >= limit_ns) {
-              if (!quit_) {
-                quit_ = TRUE;
-                if (main_loop_) {
-                  g_main_loop_quit(main_loop_);
-                }
+            elapsed_ns = pts_ns - first_pts_ns_;
+            have_elapsed = true;
+          }
+        }
+        if (have_elapsed) {
+          record_timed_run_progress(elapsed_ns);
+          if (elapsed_ns >= limit_ns) {
+            if (!quit_) {
+              quit_ = TRUE;
+              if (main_loop_) {
+                g_main_loop_quit(main_loop_);
               }
-              return TRUE;
             }
+            return TRUE;
           }
         }
       }
     }
 
     uint64_t elapsed_from_frames_ns = 0;
-    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
-      NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
-      if (!frame_meta || frame_meta->source_id >= MAX_SOURCE_BINS) {
-        continue;
-      }
-      const int source_id = static_cast<int>(frame_meta->source_id);
-      const int fps_n = app_ctx->config.multi_source_config[source_id].camera_fps_n;
-      const int fps_d = app_ctx->config.multi_source_config[source_id].camera_fps_d;
-      if (fps_n <= 0 || fps_d <= 0) {
-        continue;
-      }
-      if (frame_meta->frame_num < 0) {
-        continue;
-      }
-      const uint64_t frame_num = static_cast<uint64_t>(frame_meta->frame_num);
-      if (!have_first_frame_by_source_[source_id]) {
-        have_first_frame_by_source_[source_id] = true;
-        first_frame_numbers_by_source_[source_id] = frame_num;
-        continue;
-      }
-      if (frame_num < first_frame_numbers_by_source_[source_id]) {
-        first_frame_numbers_by_source_[source_id] = frame_num;
-        continue;
-      }
-      const uint64_t frame_delta = frame_num - first_frame_numbers_by_source_[source_id];
-      const uint64_t elapsed_ns = (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) /
-          static_cast<uint64_t>(fps_n);
-      if (elapsed_ns > elapsed_from_frames_ns) {
-        elapsed_from_frames_ns = elapsed_ns;
+    {
+      std::lock_guard<std::mutex> lock(playback_timing_mu_);
+      for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
+        NvDsFrameMeta* frame_meta = reinterpret_cast<NvDsFrameMeta*>(l_frame->data);
+        if (!frame_meta || frame_meta->source_id >= MAX_SOURCE_BINS) {
+          continue;
+        }
+        const int source_id = static_cast<int>(frame_meta->source_id);
+        const int fps_n = app_ctx->config.multi_source_config[source_id].camera_fps_n;
+        const int fps_d = app_ctx->config.multi_source_config[source_id].camera_fps_d;
+        if (fps_n <= 0 || fps_d <= 0 || frame_meta->frame_num < 0) {
+          continue;
+        }
+        const uint64_t frame_num = static_cast<uint64_t>(frame_meta->frame_num);
+        if (!have_first_frame_by_source_[source_id]) {
+          have_first_frame_by_source_[source_id] = true;
+          first_frame_numbers_by_source_[source_id] = frame_num;
+          continue;
+        }
+        if (frame_num < first_frame_numbers_by_source_[source_id]) {
+          first_frame_numbers_by_source_[source_id] = frame_num;
+          continue;
+        }
+        const uint64_t frame_delta = frame_num - first_frame_numbers_by_source_[source_id];
+        const uint64_t elapsed_ns = (frame_delta * static_cast<uint64_t>(GST_SECOND) * static_cast<uint64_t>(fps_d)) /
+            static_cast<uint64_t>(fps_n);
+        if (elapsed_ns > elapsed_from_frames_ns) {
+          elapsed_from_frames_ns = elapsed_ns;
+        }
       }
     }
     record_timed_run_progress(elapsed_from_frames_ns);
@@ -4079,21 +5083,69 @@ gboolean PipelineApplication::recreate_pipeline_thread_func_static(gpointer arg)
   return instance_ ? instance_->recreate_pipeline_thread_func(arg) : FALSE;
 }
 
+gboolean PipelineApplication::inject_stitching_calibration_error_static(gpointer /*arg*/) {
+  return instance_ ? instance_->inject_stitching_calibration_error() : G_SOURCE_REMOVE;
+}
+
+gboolean PipelineApplication::inject_stitching_calibration_error() {
+  if (!stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return G_SOURCE_REMOVE;
+  }
+  const auto active_stage = stage_app_contexts_.find(current_stage_);
+  if (active_stage == stage_app_contexts_.end()) {
+    return G_SOURCE_REMOVE;
+  }
+  for (const auto& context : active_stage->second) {
+    if (!context || one_pass_calibration_contexts_.count(context.get()) == 0 || !context->pipeline.pipeline) {
+      continue;
+    }
+    if (g_getenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS")) {
+      g_print("hmstitcher: posting calibration EOS before completion for lifecycle test\n");
+      gst_element_post_message(context->pipeline.pipeline, gst_message_new_eos(GST_OBJECT(context->pipeline.pipeline)));
+      return G_SOURCE_REMOVE;
+    }
+    g_print("hmstitcher: injecting calibration pipeline error for lifecycle test\n");
+    GError* error = g_error_new_literal(
+        g_quark_from_static_string("hstream-stitch-frame-lifecycle-test"), 1, "injected calibration pipeline failure");
+    GstMessage* message = gst_message_new_error(
+        GST_OBJECT(context->pipeline.pipeline), error, "injected calibration pipeline failure with same-stage peer");
+    g_error_free(error);
+    gst_element_post_message(context->pipeline.pipeline, message);
+    return G_SOURCE_REMOVE;
+  }
+  return G_SOURCE_REMOVE;
+}
+
 gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   guint i;
   gboolean ret = TRUE;
   AppCtx* app_ctx_ptr = reinterpret_cast<AppCtx*>(arg);
+  const bool calibration_context = one_pass_calibration_contexts_.count(app_ctx_ptr) != 0;
+  const bool calibration_restart = calibration_context && stitch_frame_rewound_contexts_.count(app_ctx_ptr) != 0;
+  if (stitch_frame_restart_awaiting_playing_) {
+    g_print("Deferring periodic pipeline recreation until stitch-frame playback restart completes\n");
+    return TRUE;
+  }
+  if (calibration_context && !calibration_restart) {
+    g_print("Deferring periodic pipeline recreation until stitching calibration completes\n");
+    return TRUE;
+  }
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
-  destroy_pipeline(app_ctx_ptr);
+  if (calibration_restart) {
+    destroy_pipeline_for_recreate(app_ctx_ptr);
+  } else {
+    destroy_pipeline(app_ctx_ptr);
+  }
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
     return FALSE;
   }
   auto* hm_app = static_cast<HmApp*>(app_ctx_ptr);
+  const uint64_t initial_position_ns = initial_pipeline_position_ns(hm_app);
   const absl::Status position_status =
-      hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, start_time_ns_);
+      hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, initial_position_ns);
   if (!position_status.ok()) {
     NVGSTDS_ERR_MSG_V("Failed to restore initial pipeline position: %s", position_status.ToString().c_str());
     return FALSE;
@@ -4114,6 +5166,12 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
     return FALSE;
   }
+  const absl::Status post_config_status =
+      hm_app->configurator().post_config_pipeline(hm_app->pipeline, hm_app->config, initial_position_ns);
+  if (!post_config_status.ok()) {
+    NVGSTDS_ERR_MSG_V("Failed to restore post-configuration position: %s", post_config_status.ToString().c_str());
+    return FALSE;
+  }
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {
     GstElement* sink = app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink;
     if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))
@@ -4122,9 +5180,18 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
         GST_VIDEO_OVERLAY(sink), (gulong)stage_windows_.at(current_stage_)[app_ctx_ptr->index]);
     gst_video_overlay_expose(GST_VIDEO_OVERLAY(sink));
   }
+  if (calibration_restart && g_getenv("HM_TEST_SUPPRESS_STITCH_FRAME_RESTART_PLAYING")) {
+    g_print("hmstitcher: suppressing replacement PLAYING transition for lifecycle test\n");
+    return ret;
+  }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     g_print("\ncan't set pipeline to playing state.\n");
     return FALSE;
+  }
+  if (calibration_restart && g_getenv("HM_TEST_STITCH_FRAME_REPLACEMENT_EOS")) {
+    g_print("hmstitcher: posting replacement EOS before restart finalization for lifecycle test\n");
+    gst_element_post_message(
+        app_ctx_ptr->pipeline.pipeline, gst_message_new_eos(GST_OBJECT(app_ctx_ptr->pipeline.pipeline)));
   }
   return ret;
 }
@@ -4144,7 +5211,11 @@ int main(int argc, char* argv[]) {
     }
   }
 #endif
-  configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
+  const auto runtime_status = configure_pipeline_runtime_environment(argc > 0 ? argv[0] : nullptr);
+  if (!runtime_status.ok()) {
+    g_printerr("hstream-cli runtime setup failed: %s\n", runtime_status.ToString().c_str());
+    return 78;
+  }
   if (!std::getenv("HSTREAM_RUNTIME_ENV_READY")) {
     setenv("HSTREAM_RUNTIME_ENV_READY", "1", 1);
     if (argc > 0 && argv[0]) {

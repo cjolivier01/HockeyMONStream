@@ -4,6 +4,7 @@
 #include "src/libs/common/Status.h"
 /* clang-format on */
 
+#include <functional>
 #include <string>
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -49,7 +50,8 @@ absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
     const std::string& expected_output_generation = {},
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {});
 
 absl::Status save_rink_profile(
     const std::string& game_dir,
@@ -80,7 +82,10 @@ absl::Status clean_stitching_artifacts_from_control_points(
     const std::string& game_dir,
     const std::string& expected_invalidation_id = {});
 
-absl::Status configure_orientation(const std::string& game_dir, const std::string& expected_invalidation_id = {});
+absl::Status configure_orientation(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {});
 
 bool is_scoreboard_configured(const std::string& game_dir);
 
@@ -90,15 +95,16 @@ absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {});
 
-// Ensure `${game_dir}/seam_file.png` exists.
+// Validate that `${game_dir}/seam_file.png` exists.
 //
 // Some environments produce the mapping TIFFs but fail to generate `seam_file.png` (e.g. missing enblend/multiblend).
 // The runtime stitcher requires a seam mask; without it the pipeline will render a gray canvas.
 //
-// When missing, this creates a simple "hard seam" mask based on the mapping TIFF placements.
-// It is intended as a robust fallback for debugging; higher-quality seams can still be generated offline.
+// With HM_ALLOW_HARD_SEAM_FALLBACK=1, a missing or invalid seam is replaced by a simple "hard seam" mask based on the
+// mapping TIFF placements. Without that explicit diagnostic opt-in, a missing or invalid seam fails closed.
 absl::Status maybe_create_default_seam_file(const std::string& game_dir);
 
 } // namespace stitching

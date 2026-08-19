@@ -5,6 +5,7 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QDirIterator>
+#include <QtCore/QEvent>
 #include <QtCore/QEventLoop>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -50,6 +51,7 @@
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QTabBar>
+#include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QToolButton>
 
 #include <yaml-cpp/yaml.h>
@@ -90,6 +92,9 @@ namespace {
 constexpr int kFixedEdgeRotationDefaultX10 = 100;
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+constexpr char kDefaultStitchFrameTime[] = "00:00:00";
+constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
+constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
 constexpr int kRuntimeControlAckTimeoutMs = 3000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kStitchedPreviewPipelineOptions[] =
@@ -112,6 +117,18 @@ constexpr CalibrationStageSpec kCalibrationStages[] = {
     {"rink-mask", "Find the ice surface"},
 };
 
+std::optional<QTime> parse_stitch_frame_time(const QString& value) {
+  QTime parsed = QTime::fromString(value, kStitchFrameTimeFormat);
+  if (!parsed.isValid()) {
+    parsed = QTime::fromString(value, kStitchFrameTimeFractionalFormat);
+  }
+  return parsed.isValid() ? std::optional<QTime>(parsed) : std::nullopt;
+}
+
+QString format_stitch_frame_time(const QTime& value) {
+  return value.msec() == 0 ? value.toString(kStitchFrameTimeFormat) : value.toString(kStitchFrameTimeFractionalFormat);
+}
+
 std::optional<size_t> calibration_stage_index(const QString& stage) {
   for (size_t index = 0; index < std::size(kCalibrationStages); ++index) {
     if (stage == QString::fromLatin1(kCalibrationStages[index].id))
@@ -125,30 +142,6 @@ absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& 
   if (config.IsDefined() && !config.IsNull())
     contents = YAML::Dump(config) + "\n";
   return hm::stitching::publish_game_config(config_path.parent_path(), contents);
-}
-
-QString development_runtime_root() {
-  QString application_path = QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath();
-  if (application_path.isEmpty()) {
-    application_path = QFileInfo(QCoreApplication::applicationFilePath()).absoluteFilePath();
-  }
-  const QString application_name = QFileInfo(application_path).fileName();
-  QDir candidate_root(QDir::currentPath());
-  while (true) {
-    const QString candidate_application =
-        candidate_root.filePath(QString("bazel-bin/src/apps/hstream-ui/%1").arg(application_name));
-    const QString candidate_path = QFileInfo(candidate_application).canonicalFilePath();
-    const QString runner = candidate_root.filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
-    const QString configs = candidate_root.filePath("configs");
-    if (!candidate_path.isEmpty() && candidate_path == application_path && QFileInfo(runner).isExecutable() &&
-        QFileInfo(configs).isDir()) {
-      return candidate_root.absolutePath();
-    }
-    if (!candidate_root.cdUp()) {
-      break;
-    }
-  }
-  return {};
 }
 
 struct CameraSliderSpec {
@@ -707,15 +700,88 @@ void prepend_env_path(QProcessEnvironment& env, const QString& name, const QStri
   }
 }
 
-void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_dir) {
-  const QDir root(QDir(working_dir).filePath("bazel-bin/src/gst-plugins"));
+QString bazel_output_configuration(const QString& bazel_bin_path) {
+  const QString canonical_path = canonical_dir_path(bazel_bin_path);
+  const QFileInfo bin_info(canonical_path);
+  if (bin_info.fileName() != "bin")
+    return "installed";
+  const QDir configuration_dir = bin_info.dir();
+  QDir bazel_out_dir = configuration_dir;
+  if (!bazel_out_dir.cdUp() || bazel_out_dir.dirName() != "bazel-out")
+    return "installed";
+  QString output_configuration = configuration_dir.dirName();
+  output_configuration.replace(QRegularExpression("[^A-Za-z0-9_.-]"), "_");
+  return output_configuration.isEmpty() ? QString("unknown-output") : output_configuration;
+}
+
+QString bazel_solib_directory(const QString& architecture) {
+  const QString normalized = architecture.toLower();
+  if (normalized == "x86_64" || normalized == "amd64")
+    return "_solib_k8";
+  if (normalized == "aarch64" || normalized == "arm64")
+    return "_solib_aarch64";
+  return {};
+}
+
+QString runtime_architecture_name() {
+  const QString architecture = QSysInfo::currentCpuArchitecture().toLower();
+  if (architecture == "amd64" || architecture == "x86_64")
+    return "x86_64";
+  if (architecture == "arm64" || architecture == "aarch64")
+    return "aarch64";
+  return architecture.isEmpty() ? QString("unknown") : architecture;
+}
+
+QString runtime_launch_key() {
+  return QString("launch-%1").arg(QCoreApplication::applicationPid());
+}
+
+QString writable_runtime_cache_root(const QString& working_dir) {
+  QStringList candidates;
+  auto add_environment_candidate = [&candidates](const char* name, const QString& suffix = {}) {
+    const QString value = qEnvironmentVariable(name);
+    if (!value.isEmpty())
+      candidates.push_back(suffix.isEmpty() ? value : QDir(value).filePath(suffix));
+  };
+  add_environment_candidate("HSTREAM_RUNTIME_CACHE_DIR");
+  candidates.push_back(QDir(working_dir).filePath(".cache"));
+  add_environment_candidate("TEST_TMPDIR", "hstream-runtime-cache");
+  add_environment_candidate("XDG_CACHE_HOME", "hstream");
+  const QString standard_cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+  if (!standard_cache.isEmpty())
+    candidates.push_back(QDir(standard_cache).filePath("runtime"));
+
+  for (const QString& candidate : candidates) {
+    if (candidate.isEmpty() || !QDir().mkpath(candidate))
+      continue;
+    QTemporaryDir probe(QDir(candidate).filePath(".write-probe-XXXXXX"));
+    if (probe.isValid())
+      return QDir(candidate).absolutePath();
+  }
+
+  QTemporaryDir fallback(QDir(QDir::tempPath()).filePath("hstream-runtime-XXXXXX"));
+  if (!fallback.isValid() ||
+      !QFile::setPermissions(
+          fallback.path(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
+    return {};
+  }
+  fallback.setAutoRemove(false);
+  return QDir(fallback.path()).absolutePath();
+}
+
+void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root, const QString& bazel_bin_path) {
+  const QDir bazel_bin(bazel_bin_path);
+  const QDir root(bazel_bin.filePath("src/gst-plugins"));
   if (!root.exists()) {
     return;
   }
 
-  const QString arch =
-      QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
-  QDir runtime_dir(QDir(working_dir).filePath(QString(".cache/gst-plugin-path/%1").arg(arch)));
+  const QString arch = runtime_architecture_name();
+  const QDir canonical_bazel_bin(canonical_dir_path(bazel_bin.absolutePath()));
+  const QString output_configuration = bazel_output_configuration(canonical_bazel_bin.absolutePath());
+  QDir runtime_dir(
+      QDir(cache_root)
+          .filePath(QString("gst-plugin-path/%1/%2/%3").arg(arch, output_configuration, runtime_launch_key())));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
     return;
   }
@@ -749,14 +815,10 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
     }
   }
 
-  QFileInfo bazel_bin_info(QDir(working_dir).filePath("bazel-bin"));
-  QString bazel_bin_path = bazel_bin_info.canonicalFilePath();
-  if (bazel_bin_path.isEmpty()) {
-    bazel_bin_path = bazel_bin_info.absoluteFilePath();
-  }
-  const QDir bazel_bin_dir(bazel_bin_path);
-  const QFileInfoList solib_roots =
-      bazel_bin_dir.entryInfoList(QStringList() << "_solib_*", QDir::Dirs | QDir::NoDotAndDotDot);
+  const QDir bazel_bin_dir(canonical_bazel_bin);
+  const QString solib_directory = bazel_solib_directory(arch);
+  const QFileInfoList solib_roots = bazel_bin_dir.entryInfoList(
+      QStringList() << (solib_directory.isEmpty() ? "_solib_*" : solib_directory), QDir::Dirs | QDir::NoDotAndDotDot);
   for (const QFileInfo& solib_root : solib_roots) {
     prepend_env_path(env, "LD_LIBRARY_PATH", solib_root.absoluteFilePath());
     const QDir solib_dir(solib_root.absoluteFilePath());
@@ -768,7 +830,10 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
     }
   }
 
-  QDir runtime_lib_dir(QDir(working_dir).filePath(QString(".cache/runtime-lib-path/%1").arg(arch)));
+  QDir runtime_lib_dir(
+      QDir(cache_root)
+          .filePath(QString("runtime-lib-path/%1/%2/%3").arg(arch, output_configuration, runtime_launch_key())));
+  bool staged_runtime_library = false;
   if (runtime_lib_dir.mkpath(".")) {
     for (const QFileInfo& solib_root : solib_roots) {
       QDirIterator onnxruntime_it(
@@ -778,11 +843,20 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& working_di
       const QFileInfo onnxruntime(onnxruntime_it.next());
       const QString link_path = runtime_lib_dir.filePath("libonnxruntime.so.1");
       QFile::remove(link_path);
-      if (QFile::link(onnxruntime.canonicalFilePath(), link_path))
-        prepend_env_path(env, "LD_LIBRARY_PATH", runtime_lib_dir.absolutePath());
+      staged_runtime_library = QFile::link(onnxruntime.canonicalFilePath(), link_path) ||
+          QFileInfo(link_path).isFile() || staged_runtime_library;
       break;
     }
+    const QFileInfo yolo(bazel_bin.filePath("src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"));
+    if (yolo.isFile()) {
+      const QString link_path = runtime_lib_dir.filePath("libnvdsinfer_custom_impl_Yolo.so");
+      QFile::remove(link_path);
+      staged_runtime_library =
+          QFile::link(yolo.canonicalFilePath(), link_path) || QFileInfo(link_path).isFile() || staged_runtime_library;
+    }
   }
+  if (staged_runtime_library)
+    prepend_env_path(env, "LD_LIBRARY_PATH", runtime_lib_dir.absolutePath());
 
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
 }
@@ -803,7 +877,21 @@ bool is_tegra_runtime() {
 #endif
 }
 
-void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QString& working_dir) {
+QString configure_pipeline_runtime_environment(
+    QProcessEnvironment& env,
+    const QString& working_dir,
+    const QString& bazel_bin_path) {
+  if (!bazel_bin_path.isEmpty()) {
+    const QString missing = hm::ui_internal::missing_development_runtime_artifact(bazel_bin_path);
+    if (!missing.isEmpty())
+      return QString("matching Bazel runtime artifact is missing: %1").arg(missing);
+  }
+  const QString cache_root = writable_runtime_cache_root(working_dir);
+  if (cache_root.isEmpty())
+    return "could not find a writable hstream runtime cache directory";
+  // Keep the child CLI on this exact private root, including when the UI had
+  // to create an unpredictable last-resort temporary directory.
+  env.insert("HSTREAM_RUNTIME_CACHE_DIR", cache_root);
   // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
   // by stitching. Match run.sh while preserving an explicit diagnostic
   // override from the caller.
@@ -816,14 +904,15 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
         hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "ximagesink"
                                                                                                      : "nv3dsink");
   }
-  QDir registry_dir(QDir(working_dir).filePath(".cache/gstreamer-1.0"));
-  if (!registry_dir.mkpath(".")) {
-    registry_dir = QDir(QDir::home().filePath(".cache/gstreamer-1.0"));
-  }
+  QDir registry_dir(QDir(cache_root).filePath("gstreamer-1.0"));
   if (registry_dir.mkpath(".")) {
-    const QString arch =
-        QSysInfo::currentCpuArchitecture().isEmpty() ? QString("unknown") : QSysInfo::currentCpuArchitecture();
-    env.insert("GST_REGISTRY", registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.bin").arg(arch)));
+    const QString arch = runtime_architecture_name();
+    const QString selected_bazel_bin =
+        bazel_bin_path.isEmpty() ? QDir(working_dir).filePath("bazel-bin") : bazel_bin_path;
+    const QString output_configuration = bazel_output_configuration(selected_bazel_bin);
+    env.insert(
+        "GST_REGISTRY",
+        registry_dir.filePath(QString("registry.hstream.native-onnx-v1.%1.%2.bin").arg(arch, output_configuration)));
   }
 
   prepend_env_path(env, "GST_PLUGIN_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
@@ -832,21 +921,9 @@ void configure_pipeline_runtime_environment(QProcessEnvironment& env, const QStr
   prepend_env_path(env, "LD_LIBRARY_PATH", QDir(working_dir).filePath("lib/gst-plugins"));
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  stage_bazel_gst_plugins(env, working_dir);
-
-  const QString yolo_so =
-      QDir(working_dir).filePath("bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so");
-  if (QFileInfo::exists(yolo_so)) {
-    QDir lib_dir(QDir(working_dir).filePath("lib"));
-    if (lib_dir.mkpath(".")) {
-      const QString link_path = lib_dir.filePath("libnvdsinfer_custom_impl_Yolo.so");
-      const QFileInfo link_info(link_path);
-      if (!link_info.exists() || link_info.isSymLink()) {
-        QFile::remove(link_path);
-        QFile::link(QFileInfo(yolo_so).canonicalFilePath(), link_path);
-      }
-    }
-  }
+  if (!bazel_bin_path.isEmpty())
+    stage_bazel_gst_plugins(env, cache_root, bazel_bin_path);
+  return {};
 }
 
 QString archive_output_work_dir(const QProcessEnvironment& env, const QString& working_dir) {
@@ -1259,6 +1336,35 @@ bool lookup_yaml_path(YAML::Node root, const QString& dotted_path, YAML::Node* v
   return lookup_yaml_path_at(root, parts, 0, value);
 }
 
+bool read_stitch_frame_time(YAML::Node config, QString* normalized, bool* present = nullptr) {
+  if (normalized) {
+    *normalized = QString::fromLatin1(kDefaultStitchFrameTime);
+  }
+  YAML::Node node;
+  const bool found = lookup_yaml_path(config, "stitching.stitch_frame_time", &node);
+  if (present) {
+    *present = found;
+  }
+  if (!found) {
+    return true;
+  }
+  if (!node.IsScalar()) {
+    return false;
+  }
+  try {
+    const auto parsed = parse_stitch_frame_time(QString::fromStdString(node.as<std::string>()));
+    if (!parsed.has_value()) {
+      return false;
+    }
+    if (normalized) {
+      *normalized = format_stitch_frame_time(*parsed);
+    }
+    return true;
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
 QStringList pipeline_config_files_from_args(const QStringList& pipeline_args) {
   QStringList config_files;
   for (int i = 0; i < pipeline_args.size(); ++i) {
@@ -1430,8 +1536,93 @@ QString hm::ui_internal::preview_channel_for_tab(int tab_index, int camera_count
   return source_index >= 0 && source_index < camera_count ? QString("source%1").arg(source_index) : QString();
 }
 
+QString hm::ui_internal::matching_development_pipeline_runner(const QString& application_path) {
+  const QString bazel_bin = matching_development_bazel_bin(application_path);
+  if (bazel_bin.isEmpty())
+    return {};
+  const QString runner = QDir(bazel_bin).filePath("src/apps/pipeline-app/hstream-cli");
+  return QFileInfo(runner).isExecutable() ? QFileInfo(runner).absoluteFilePath() : QString();
+}
+
+QString hm::ui_internal::matching_development_bazel_bin(const QString& application_path) {
+  QFileInfo application_info(application_path);
+  QString resolved_application = application_info.canonicalFilePath();
+  if (resolved_application.isEmpty())
+    resolved_application = application_info.absoluteFilePath();
+  application_info.setFile(resolved_application);
+  if (application_info.fileName() != "hstream-ui")
+    return {};
+
+  QDir application_dir = application_info.absoluteDir();
+  if (application_dir.dirName() != "hstream-ui" || !application_dir.cdUp() || application_dir.dirName() != "apps" ||
+      !application_dir.cdUp() || application_dir.dirName() != "src" || !application_dir.cdUp() ||
+      application_dir.dirName() != "bin")
+    return {};
+  QDir configuration_dir = application_dir;
+  if (!configuration_dir.cdUp() || configuration_dir.dirName().isEmpty() || !configuration_dir.cdUp() ||
+      configuration_dir.dirName() != "bazel-out")
+    return {};
+  return application_dir.absolutePath();
+}
+
+QString hm::ui_internal::missing_development_runtime_artifact(const QString& bazel_bin_path) {
+  const QDir bazel_bin(canonical_dir_path(bazel_bin_path));
+  const QStringList required = {
+      "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
+      "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
+      "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
+      "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+  };
+  for (const QString& relative_path : required) {
+    const QString artifact = bazel_bin.filePath(relative_path);
+    if (!QFileInfo(artifact).isFile())
+      return artifact;
+  }
+  return {};
+}
+
+QString hm::ui_internal::development_runtime_root_for_application(const QString& application_path) {
+  const QString bazel_bin_path = matching_development_bazel_bin(application_path);
+  if (bazel_bin_path.isEmpty())
+    return {};
+
+  QFileInfo application_info(application_path);
+  QString resolved_application = application_info.canonicalFilePath();
+  if (resolved_application.isEmpty())
+    resolved_application = application_info.absoluteFilePath();
+  QDir candidate = QFileInfo(resolved_application).absoluteDir();
+  while (true) {
+    const QFileInfo workspace_marker(candidate.filePath("WORKSPACE.bazel"));
+    const QFileInfo configs(candidate.filePath("configs"));
+    if (workspace_marker.isFile() && configs.isDir()) {
+      const QString canonical_marker = workspace_marker.canonicalFilePath();
+      const QString source_root =
+          canonical_marker.isEmpty() ? candidate.absolutePath() : QFileInfo(canonical_marker).absolutePath();
+      if (QFileInfo(QDir(source_root).filePath("configs")).isDir())
+        return source_root;
+    }
+    if (!candidate.cdUp())
+      break;
+  }
+  QDir execroot(bazel_bin_path);
+  if (!execroot.cdUp() || !execroot.cdUp() || !execroot.cdUp())
+    return {};
+  const QString canonical_source_directory = QFileInfo(execroot.filePath("src")).canonicalFilePath();
+  if (canonical_source_directory.isEmpty())
+    return {};
+  const QDir source_root = QFileInfo(canonical_source_directory).dir();
+  const QFileInfo workspace_marker(source_root.filePath("WORKSPACE.bazel"));
+  if (workspace_marker.isFile() && QFileInfo(source_root.filePath("configs")).isDir())
+    return source_root.absolutePath();
+  return {};
+}
+
 HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   hm::ui_internal::configure_application_identity();
+  const QString application_path = QCoreApplication::applicationFilePath();
+  development_runtime_root_ = hm::ui_internal::development_runtime_root_for_application(application_path);
+  development_pipeline_runner_ = hm::ui_internal::matching_development_pipeline_runner(application_path);
+  development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application_path);
   setWindowIcon(hm::ui_internal::application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   pipeline_process_ = new QProcess(this);
@@ -1484,11 +1675,27 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   buildUi();
   refreshGames();
   updateRunControls();
-  appendLog("hstream-ui started with hstream-cli runner backend");
+  appendLog(QString("hstream-ui started with hstream-cli runner backend=%1").arg(pipelineRunnerPath()));
 }
 
 HStreamWindow::~HStreamWindow() {
   releaseArchiveFinalizerOwnership(false);
+}
+
+bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == stitch_frame_time_edit_ && event) {
+    if (event->type() == QEvent::FocusIn) {
+      stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFractionalFormat);
+    } else if (event->type() == QEvent::FocusOut) {
+      QTimer::singleShot(0, this, [this] {
+        if (stitch_frame_time_edit_ && !stitch_frame_time_edit_->hasFocus() &&
+            stitch_frame_time_edit_->time().msec() == 0) {
+          stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
+        }
+      });
+    }
+  }
+  return QMainWindow::eventFilter(watched, event);
 }
 
 void HStreamWindow::closeEvent(QCloseEvent* event) {
@@ -1647,6 +1854,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       control_points_spin_->setEnabled(!running);
     }
+    if (stitch_frame_time_edit_) {
+      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+      stitch_frame_time_edit_->setEnabled(!running);
+    }
     if (stitched_status_ && isCalibrationRun()) {
       stitched_status_->setText("Stitching calibration preview");
     }
@@ -1662,6 +1873,22 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_points_spin_->setToolTip(
       "Control-point limit for stitching calibration. Changing this in Program mode recalibrates stitching before "
       "the full pipeline continues.");
+
+  auto* stitch_frame_time_label = new QLabel("Stitch frame:");
+  stitch_frame_time_edit_ = new QTimeEdit();
+  stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
+  stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
+  stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
+  stitch_frame_time_edit_->setWrapping(false);
+  stitch_frame_time_edit_->installEventFilter(this);
+  stitch_frame_time_edit_->setToolTip(
+      "Frame timestamp used to calibrate stitching. Playback returns to the beginning after one-pass calibration.");
+  connect(stitch_frame_time_edit_, &QTimeEdit::timeChanged, this, [this](const QTime& value) {
+    stitch_frame_time_edit_->setDisplayFormat(
+        value.msec() == 0 && !stitch_frame_time_edit_->hasFocus() ? kStitchFrameTimeFormat
+                                                                  : kStitchFrameTimeFractionalFormat);
+    updatePresetDirtyState();
+  });
 
   render_video_toggle_ = new QCheckBox("Render video");
   render_video_toggle_->setObjectName("renderVideoCheck");
@@ -1698,6 +1925,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   status_bar->addStretch(1);
   status_bar->addWidget(run_mode_selector_);
   status_bar->addWidget(control_points_spin_);
+  status_bar->addWidget(stitch_frame_time_label);
+  status_bar->addWidget(stitch_frame_time_edit_);
   status_bar->addWidget(render_video_toggle_);
 
   auto* action_bar = new QHBoxLayout();
@@ -2077,6 +2306,9 @@ void HStreamWindow::configureControlHelp() {
       "controlPointsSpin",
       "Set the maximum number of feature control points used during stitching calibration. Changing it makes Program recalibrate stale stitching before continuing.");
   help(
+      "stitchFrameTimeEdit",
+      "Choose the video timestamp used as the stitching calibration reference frame. Playback returns to its normal start after one-pass calibration completes.");
+  help(
       "renderVideoCheck",
       "Show GPU video previews and local monitor audio. This can be toggled while running without stopping the processing pipeline.");
   help(
@@ -2322,9 +2554,14 @@ QString HStreamWindow::pipelineRunnerPath() const {
   if (!test_runner.isEmpty()) {
     return QString::fromLocal8Bit(test_runner);
   }
-  const QString development_root = development_runtime_root();
-  if (!development_root.isEmpty()) {
-    return QDir(development_root).filePath("bazel-bin/src/apps/pipeline-app/hstream-cli");
+  if (!development_pipeline_runner_.isEmpty()) {
+    return development_pipeline_runner_;
+  }
+  if (!development_bazel_bin_.isEmpty()) {
+    // A Bazel-built UI must never fall back to an installed or differently
+    // configured CLI. Returning the expected sibling path makes startup fail
+    // closed with a useful missing-runner diagnostic.
+    return QDir(development_bazel_bin_).filePath("src/apps/pipeline-app/hstream-cli");
   }
   const QString installed_runner = "/opt/hstream/bin/hstream-cli";
   if (QFileInfo::exists(installed_runner)) {
@@ -2342,9 +2579,8 @@ QString HStreamWindow::pipelineRunnerPath() const {
 }
 
 QString HStreamWindow::pipelineConfigPath(const QString& config_name) const {
-  const QString development_root = development_runtime_root();
-  if (!development_root.isEmpty()) {
-    const QString development_config = QDir(QDir(development_root).filePath("configs")).filePath(config_name);
+  if (!development_runtime_root_.isEmpty()) {
+    const QString development_config = QDir(QDir(development_runtime_root_).filePath("configs")).filePath(config_name);
     if (QFileInfo::exists(development_config)) {
       return development_config;
     }
@@ -2360,9 +2596,8 @@ QString HStreamWindow::pipelineWorkingDirectory() const {
   if (!qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty()) {
     return QDir::currentPath();
   }
-  const QString development_root = development_runtime_root();
-  if (!development_root.isEmpty()) {
-    return development_root;
+  if (!development_runtime_root_.isEmpty()) {
+    return development_runtime_root_;
   }
   if (QFileInfo::exists("/opt/hstream/bin/hstream-cli")) {
     return "/opt/hstream";
@@ -2462,6 +2697,11 @@ int HStreamWindow::stitchingCalibrationControlPoints() const {
   return control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
 }
 
+QString HStreamWindow::stitchFrameTime() const {
+  return stitch_frame_time_edit_ ? format_stitch_frame_time(stitch_frame_time_edit_->time())
+                                 : QString::fromLatin1(kDefaultStitchFrameTime);
+}
+
 bool HStreamWindow::runStitchingClean(
     const QString& runner,
     const QString& working_dir,
@@ -2540,6 +2780,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
   }
   YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (require_matching_pending) {
+    QString current_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
+    const bool current_stitch_frame_time_valid = read_stitch_frame_time(config, &current_stitch_frame_time);
     const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
         ? calibration["control_points"].as<int>()
         : -1;
@@ -2554,8 +2796,18 @@ bool HStreamWindow::saveStitchingCalibrationState(
         : QString();
     const bool current_invalidated = calibration["artifacts_invalidated"] &&
         calibration["artifacts_invalidated"].IsScalar() && calibration["artifacts_invalidated"].as<bool>();
+    const bool already_completed = status == "complete" && current_status == "complete" && current_stale.isEmpty() &&
+        current_invalidation_id == expected_invalidation_id && !current_invalidated &&
+        current_stitch_frame_time_valid && current_stitch_frame_time == active_stitch_frame_time_ &&
+        current_control_points == control_points;
+    if (already_completed) {
+      if (applied)
+        *applied = true;
+      return true;
+    }
     const bool expected_invalidated = status != "pending";
-    if (current_control_points != control_points || current_status != "pending" || current_stale != stale_from ||
+    if (!current_stitch_frame_time_valid || current_stitch_frame_time != active_stitch_frame_time_ ||
+        current_control_points != control_points || current_status != "pending" || current_stale != stale_from ||
         current_invalidation_id != expected_invalidation_id || current_invalidated != expected_invalidated) {
       appendLog(
           QString("stitching calibration state transition to %1 skipped because dependency state changed concurrently")
@@ -2601,6 +2853,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
+  QString saved_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
+  bool saved_stitch_frame_time_valid = true;
   QString saved_status;
   QString saved_stale_from;
   bool saved_artifacts_invalidated = false;
@@ -2624,6 +2878,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_control_points = saved.as<int>();
         saved_found = true;
       }
+      saved_stitch_frame_time_valid = read_stitch_frame_time(config, &saved_stitch_frame_time);
       YAML::Node status;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
@@ -2644,7 +2899,14 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
 
     const bool control_points_changed = !saved_found || saved_control_points != control_points;
-    const bool needs_calibration = active_force_reconfigure_ || control_points_changed || saved_status != "complete";
+    const bool stitch_frame_time_changed =
+        !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
+    remove_yaml_path(config, {"stitching", "stitch_frame_time"});
+    if (active_stitch_frame_time_ != kDefaultStitchFrameTime) {
+      config["stitching"]["stitch_frame_time"] = active_stitch_frame_time_.toStdString();
+    }
+    const bool needs_calibration =
+        active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed || saved_status != "complete";
     if (!needs_calibration) {
       active_calibration_start_stage_.clear();
       // Reserve one generation owner before the process starts. Program can
@@ -2673,13 +2935,13 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     } else if (control_points_changed && saved_found && features_index < *calibration_stage_index(stale_from)) {
       stale_from = "features";
     }
-    if (active_force_reconfigure_)
+    if (active_force_reconfigure_ || stitch_frame_time_changed)
       stale_from = "input";
     active_calibration_start_stage_ = stale_from;
 
-    clean_from_control_points = !active_force_reconfigure_ && stale_from == "features" &&
+    clean_from_control_points = !active_force_reconfigure_ && !stitch_frame_time_changed && stale_from == "features" &&
         (control_points_changed || !saved_artifacts_invalidated);
-    clean_all = active_force_reconfigure_ ||
+    clean_all = active_force_reconfigure_ || stitch_frame_time_changed ||
         (stale_from != "features" && (!saved_artifacts_invalidated || control_points_changed));
 
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -2700,6 +2962,11 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
 
   if (active_force_reconfigure_)
     appendLog("stitching calibration restart requested; rebuilding the complete dependency graph");
+  if (saved_stitch_frame_time != active_stitch_frame_time_ || !saved_stitch_frame_time_valid) {
+    appendLog(QString("stitch frame time changed %1 -> %2; rebuilding stitching from the selected frame")
+                  .arg(saved_stitch_frame_time_valid ? saved_stitch_frame_time : QString("invalid"))
+                  .arg(active_stitch_frame_time_));
+  }
   if (clean_all) {
     appendLog(QString("stitching calibration dependency %1 is stale; cleaning it and all downstream artifacts")
                   .arg(active_calibration_start_stage_));
@@ -3019,15 +3286,37 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
   const QString stage = match.captured(1);
   const QString status = match.captured(2);
   const QString message = match.captured(3).trimmed();
+  if (stage == "playback-restart") {
+    if (status == "complete" && !active_run_game_id_.isEmpty()) {
+      calibration_playback_restart_observed_ = true;
+      if (calibration_waiting_for_playback_restart_)
+        completeStitchingCalibration();
+    } else if (status == "failed" && calibration_pending_) {
+      failStitchingCalibration(message.isEmpty() ? "Playback could not restart after stitching." : message);
+    }
+    return;
+  }
   if (!calibration_pending_ && !beginObservedStitchingCalibration(stage))
     return;
   if (status == "started" && calibration_dialog_)
     calibration_dialog_->show();
   if (stage == "calibration") {
-    if (status == "complete")
-      completeStitchingCalibration();
-    else if (status == "failed")
+    if (status == "complete") {
+      calibration_waiting_for_playback_restart_ = true;
+      for (const CalibrationStageSpec& spec : kCalibrationStages)
+        setStitchingCalibrationStage(QString::fromLatin1(spec.id), "complete", {});
+      if (calibration_headline_)
+        calibration_headline_->setText("Restarting playback…");
+      if (calibration_detail_)
+        calibration_detail_->setText("Stitching is ready. Restarting continuous playback from the beginning.");
+      if (preview_status_)
+        preview_status_->setText("Restarting playback after stitching calibration");
+      appendLog("one-pass stitching calibration complete; waiting for continuous playback to restart");
+      if (calibration_playback_restart_observed_)
+        completeStitchingCalibration();
+    } else if (status == "failed") {
       failStitchingCalibration(message.isEmpty() ? "The native stitching calibration failed." : message);
+    }
     return;
   }
   setStitchingCalibrationStage(stage, status, message);
@@ -3054,6 +3343,8 @@ void HStreamWindow::completeStitchingCalibration() {
         "Stitching inputs changed while calibration was running. Stop and press Play to rebuild the newer dependency.");
     return;
   }
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   calibration_pending_ = false;
   for (const CalibrationStageSpec& spec : kCalibrationStages)
     setStitchingCalibrationStage(QString::fromLatin1(spec.id), "complete", {});
@@ -3110,6 +3401,8 @@ void HStreamWindow::completeStitchingCalibration() {
 void HStreamWindow::failStitchingCalibration(const QString& message) {
   if (calibration_dialog_failed_)
     return;
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   if (!calibration_dialog_)
     showStitchingCalibrationDialog();
   calibration_dialog_failed_ = true;
@@ -3191,6 +3484,9 @@ QStringList HStreamWindow::pipelineArguments() const {
   if (isCalibrationRun() || calibration_pending_) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
   }
+  if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != kDefaultStitchFrameTime) {
+    args << QString("--stitch-frame-time=%1").arg(active_stitch_frame_time_);
+  }
   if (embed_render_window) {
     QStringList preview_windows;
     auto add_window = [&preview_windows](const QString& channel, QWidget* target) {
@@ -3259,7 +3555,10 @@ void HStreamWindow::startPipeline() {
   }
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   active_calibration_control_points_ = 0;
+  active_stitch_frame_time_ = stitchFrameTime();
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
@@ -3287,7 +3586,17 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString working_dir = pipelineWorkingDirectory();
-  configure_pipeline_runtime_environment(env, working_dir);
+  const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
+  if (!runtime_error.isEmpty()) {
+    calibration_pending_ = false;
+    active_run_game_id_.clear();
+    active_run_is_calibration_ = false;
+    preview_status_->setText("Pipeline failed to start");
+    appendLog(runtime_error);
+    show_startup_error(runtime_error);
+    updateRunControls();
+    return;
+  }
   setPlaybackStartupStage("stitching", "Validating saved stitching state and Left/Right video assignments");
   active_archive_output_path_.clear();
   active_archive_recovery_path_.clear();
@@ -3355,6 +3664,8 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
+  saved_stitch_frame_time_ = active_stitch_frame_time_;
+  updatePresetDirtyState();
   calibration_pending_ = calibration_required;
   if (calibration_pending_)
     showStitchingCalibrationDialog();
@@ -3722,6 +4033,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   }
   last_playtracker_runtime_snapshot_.clear();
   calibration_pending_ = false;
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
   active_calibration_control_points_ = 0;
@@ -3830,6 +4143,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
+  calibration_waiting_for_playback_restart_ = false;
+  calibration_playback_restart_observed_ = false;
   if (!active_archive_output_path_.isEmpty()) {
     if (error == QProcess::Crashed) {
       output_states_["archive-file"]->setText("CHECKING");
@@ -5580,6 +5895,9 @@ void HStreamWindow::updateRunControls() {
   if (control_points_spin_) {
     control_points_spin_->setEnabled(!running && !finalizing);
   }
+  if (stitch_frame_time_edit_) {
+    stitch_frame_time_edit_->setEnabled(!running && !finalizing);
+  }
   if (render_video_toggle_) {
     render_video_toggle_->setEnabled(!running || pipeline_render_embedded_);
   }
@@ -5802,6 +6120,7 @@ void HStreamWindow::captureSavedControlState() {
     if (slider)
       saved_camera_controls_[id] = slider->value();
   }
+  saved_stitch_frame_time_ = stitchFrameTime();
   updatePresetDirtyState();
 }
 
@@ -5810,7 +6129,8 @@ void HStreamWindow::updatePresetDirtyState() {
     return;
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
-  bool dirty = retry_required || saved_camera_controls_.size() != camera_sliders_.size();
+  bool dirty = retry_required || saved_camera_controls_.size() != camera_sliders_.size() ||
+      saved_stitch_frame_time_ != stitchFrameTime();
   if (!dirty) {
     for (const auto& [id, slider] : camera_sliders_) {
       const auto saved = saved_camera_controls_.find(id);
@@ -5825,9 +6145,9 @@ void HStreamWindow::updatePresetDirtyState() {
   if (save_preset_button_->isEnabled() != can_save)
     save_preset_button_->setEnabled(can_save);
   const QString description = !has_game ? "Select or create a game before saving camera-control changes."
-      : retry_required ? "Retry saving the current preset because its last durability check failed."
-      : dirty ? "Save the changed Program and Stitched camera controls into this game's config.yaml for future runs."
-              : "No camera-control changes need saving. Adjust a Program or Stitched control to enable Save Preset.";
+      : retry_required                  ? "Retry saving the current preset because its last durability check failed."
+      : dirty ? "Save the changed stitching and camera controls into this game's config.yaml for future runs."
+              : "No stitching or camera-control changes need saving. Adjust a control to enable Save Preset.";
   if (save_preset_button_->toolTip() != description)
     set_control_help(save_preset_button_, description);
 }
@@ -5841,6 +6161,12 @@ void HStreamWindow::loadSavedControlConfig() {
     const bool blocked = control_points_spin_->blockSignals(true);
     control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
     control_points_spin_->blockSignals(blocked);
+  }
+  if (stitch_frame_time_edit_) {
+    const bool blocked = stitch_frame_time_edit_->blockSignals(true);
+    stitch_frame_time_edit_->setTime(QTime(0, 0, 0));
+    stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
+    stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
     const auto slider_it = camera_sliders_.find(id);
@@ -5885,11 +6211,25 @@ void HStreamWindow::loadSavedControlConfig() {
     };
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
+    QTime staged_stitch_frame_time(0, 0, 0);
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
         control_points.IsScalar()) {
       staged_control_points = control_points.as<int>();
+    }
+    QString configured_stitch_frame_time;
+    bool stitch_frame_time_present = false;
+    if (stitch_frame_time_edit_ &&
+        !read_stitch_frame_time(config, &configured_stitch_frame_time, &stitch_frame_time_present)) {
+      throw std::invalid_argument("stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
+    }
+    if (stitch_frame_time_edit_ && stitch_frame_time_present) {
+      const auto parsed = parse_stitch_frame_time(configured_stitch_frame_time);
+      if (!parsed.has_value()) {
+        throw std::invalid_argument("stitching.stitch_frame_time could not be normalized");
+      }
+      staged_stitch_frame_time = *parsed;
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
@@ -5924,6 +6264,13 @@ void HStreamWindow::loadSavedControlConfig() {
       const bool blocked = control_points_spin_->blockSignals(true);
       control_points_spin_->setValue(staged_control_points);
       control_points_spin_->blockSignals(blocked);
+    }
+    if (stitch_frame_time_edit_) {
+      const bool blocked = stitch_frame_time_edit_->blockSignals(true);
+      stitch_frame_time_edit_->setTime(staged_stitch_frame_time);
+      stitch_frame_time_edit_->setDisplayFormat(
+          staged_stitch_frame_time.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
+      stitch_frame_time_edit_->blockSignals(blocked);
     }
     for (const auto& [id, value] : staged_controls) {
       const auto slider_it = camera_sliders_.find(id);
@@ -6032,6 +6379,27 @@ bool HStreamWindow::applySavedControlConfig(
     ++changed;
   }
   config["hstream_ui"]["camera_controls"] = controls;
+
+  QString previous_stitch_frame_time = QString::fromLatin1(kDefaultStitchFrameTime);
+  const bool previous_stitch_frame_time_valid = read_stitch_frame_time(config, &previous_stitch_frame_time);
+  const QString stitch_frame_time = stitchFrameTime();
+  const bool stitch_frame_time_changed =
+      !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
+  remove_yaml_path(config, {"stitching", "stitch_frame_time"});
+  if (stitch_frame_time != kDefaultStitchFrameTime) {
+    config["stitching"]["stitch_frame_time"] = stitch_frame_time.toStdString();
+  }
+  if (stitch_frame_time_changed) {
+    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["control_points"] = stitchingCalibrationControlPoints();
+    calibration["status"] = "pending";
+    calibration["stale_from"] = "input";
+    calibration["artifacts_invalidated"] = false;
+    calibration["invalidation_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    appendLog(QString("stitch frame time changed %1 -> %2; stitching calibration marked stale")
+                  .arg(previous_stitch_frame_time_valid ? previous_stitch_frame_time : QString("invalid"))
+                  .arg(stitch_frame_time));
+  }
 
   auto slider_value = [this](const QString& id) -> int {
     const auto it = camera_sliders_.find(id);

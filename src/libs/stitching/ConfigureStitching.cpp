@@ -665,9 +665,8 @@ const char* level0 = "left.png,right.png";
 const char* level1 = "hm_project.pto";
 const char* level2 = "autooptimiser_out.pto";
 const char* level3 =
-    // Runtime stitcher uses the per-camera mapping files; the panorama/seam preview artifacts are optional and may not
-    // be generated in some environments (e.g. missing enblend deps). Keep the dependency check focused on required
-    // runtime outputs so we can still run end-to-end.
+    // Keep the dependency graph focused on the mapping generation so legacy/incomplete artifact sets can reach the
+    // explicit seam validator and report how to regenerate the seam (or opt into the diagnostic hard-seam fallback).
     "mapping_0000.tif,mapping_0000_x.tif,mapping_0000_y.tif,mapping_0001.tif,mapping_0001_x.tif,mapping_0001_y.tif";
 const char* level4 = "s.png";
 const char* level5 = "rink_mask_0.png";
@@ -931,7 +930,6 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   if (!artifact_lock.ok())
     return artifact_lock.status();
   const fs::path seam_path = root / "seam_file.png";
-  const bool seam_exists = fs::exists(seam_path);
 
   const fs::path mapping0_path = root / "mapping_0000.tif";
   const fs::path mapping1_path = root / "mapping_0001.tif";
@@ -949,29 +947,22 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   HM_ASSIGN_OR_RETURN(measured_canvas, normalize_and_measure_canvas(&p0, &p1));
   const int canvas_width = static_cast<int>(measured_canvas.width);
   const int canvas_height = static_cast<int>(measured_canvas.height);
-  if (seam_exists) {
-    cv::Mat existing;
-    try {
-      existing = cv::imread(seam_path.string(), cv::IMREAD_UNCHANGED);
-    } catch (const cv::Exception& exception) {
-      return absl::ResourceExhaustedError("Unable to safely decode existing seam: " + std::string(exception.what()));
-    } catch (const std::bad_alloc&) {
-      return absl::ResourceExhaustedError("Unable to allocate decoded seam");
-    }
-    if (!existing.empty() && existing.cols == canvas_width && existing.rows == canvas_height) {
-      double min_value = 0.0;
-      double max_value = 0.0;
-      cv::minMaxLoc(existing, &min_value, &max_value);
-      if (max_value > min_value) {
-        return absl::OkStatus();
-      }
-      std::cerr << "Existing seam mask is uniform; regenerating " << seam_path.string() << std::endl;
-    }
-    if (existing.empty() || existing.cols != canvas_width || existing.rows != canvas_height) {
-      std::cerr << "Existing seam mask does not match stitched canvas; regenerating " << seam_path.string() << " for "
-                << canvas_width << "x" << canvas_height << std::endl;
-    }
+  const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(seam_path, canvas_width, canvas_height);
+  if (seam_status.ok())
+    return absl::OkStatus();
+  if (!absl::IsFailedPrecondition(seam_status))
+    return seam_status;
+
+  if (!hard_seam_fallback_enabled()) {
+    return absl::FailedPreconditionError(TO_STRING(
+        "A usable seam_file.png is required under " << root.string()
+                                                    << "; refusing to generate a hard-seam fallback: " << seam_status
+                                                    << ". Regenerate it with enblend or set "
+                                                       "HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly "
+                                                       "allow the fallback"));
   }
+  std::cerr << "Existing seam mask is unusable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits regeneration: " << seam_status
+            << std::endl;
 
   const int x0 = static_cast<int>(p0.x_px);
   const int y0 = static_cast<int>(p0.y_px);
@@ -1038,7 +1029,7 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
 
   std::cout << "Created fallback seam mask: " << seam_path.string() << " (" << canvas_width << "x" << canvas_height
             << ")" << std::endl;
-  return absl::OkStatus();
+  return HuginProject::ValidateAndNormalizeSeam(seam_path, canvas_width, canvas_height);
 }
 
 bool can_configure_stitching(const YAML::Node& config) {
@@ -1059,7 +1050,8 @@ absl::Status create_control_points(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
   std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -1099,10 +1091,20 @@ absl::Status create_control_points(
   std::unique_ptr<FeatureMatcher> matcher;
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string()));
   FeatureMatchResult matched;
-  HM_ASSIGN_OR_RETURN(matched, matcher->Infer(left, right, max_control_points, [] {
-    report_calibration_progress("features", "complete", "Control points found in both camera frames");
-    report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
-  }));
+  HM_ASSIGN_OR_RETURN(
+      matched,
+      matcher->Infer(
+          left,
+          right,
+          max_control_points,
+          [] {
+            report_calibration_progress("features", "complete", "Control points found in both camera frames");
+            report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
+          },
+          is_cancelled));
+  if (is_cancelled && is_cancelled()) {
+    return absl::CancelledError("Stitching calibration cancelled");
+  }
   if (matched.accepted_match_count < 16) {
     return absl::FailedPreconditionError(TO_STRING(
         "Native feature matcher produced only " << matched.accepted_match_count
@@ -1118,6 +1120,7 @@ absl::Status create_control_points(
   options.max_canvas_dimension = max_canvas_dimension;
   options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
+  options.is_cancelled = is_cancelled;
   return HuginProject::Configure(game_dir, left_file, right_file, matched.selected, options);
 }
 
@@ -1588,6 +1591,13 @@ absl::Status save_rink_profile_locked(
         profile.combined_bbox.x + profile.combined_bbox.width,
         profile.combined_bbox.y + profile.combined_bbox.height};
     config["rink"]["stitched_output_generation"] = current_output_generation;
+    if (!expected_invalidation_id.empty()) {
+      YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+      calibration["status"] = "complete";
+      calibration["invalidation_id"] = expected_invalidation_id;
+      calibration.remove("stale_from");
+      calibration.remove("artifacts_invalidated");
+    }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to update rink profile YAML: " + std::string(exception.what()));
   }
@@ -1758,7 +1768,10 @@ absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
     const std::string& expected_output_generation,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
+  if (is_cancelled && is_cancelled())
+    return absl::CancelledError("Rink-mask calibration cancelled before inference");
   const fs::path root(game_dir);
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
@@ -1781,6 +1794,15 @@ absl::Status create_field_mask(
     if (!config.ok())
       return config.status();
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+  }
+  if (const char* delay = std::getenv("HM_TEST_RINK_INFERENCE_DELAY_MS")) {
+    const long delay_ms = std::strtol(delay, nullptr, 10);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0L, delay_ms));
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (is_cancelled && is_cancelled())
+        return absl::CancelledError("Rink-mask calibration cancelled before inference");
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
   }
   std::string pattern = (root / ".hstream-field-mask-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
@@ -1808,17 +1830,20 @@ absl::Status create_field_mask(
   std::unique_ptr<RinkSegmentation> model;
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
   RinkProfile profile;
-  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale));
+  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled));
   return save_rink_profile_locked(
       game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id, &stitched);
 }
 
-absl::Status configure_orientation(const std::string& game_dir, const std::string& expected_invalidation_id) {
+absl::Status configure_orientation(
+    const std::string& game_dir,
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;
   HM_ASSIGN_OR_RETURN(model, RinkSegmentation::Create(model_path.string()));
-  return configure_game_orientation(game_dir, *model, expected_invalidation_id);
+  return configure_game_orientation(game_dir, *model, expected_invalidation_id, is_cancelled);
 }
 
 bool is_scoreboard_configured(const std::string& game_dir) {
@@ -1854,8 +1879,10 @@ absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
-    const std::string& expected_invalidation_id) {
-  HM_RETURN_IF_ERROR(create_control_points(game_dir, left_surface, right_surface, expected_invalidation_id));
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
+  HM_RETURN_IF_ERROR(
+      create_control_points(game_dir, left_surface, right_surface, expected_invalidation_id, is_cancelled));
   return absl::OkStatus();
 }
 

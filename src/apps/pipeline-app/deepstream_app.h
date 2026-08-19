@@ -54,6 +54,9 @@ typedef struct _AppCtx AppCtx;
 
 typedef void (*bbox_generated_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
 typedef gboolean (*overlay_graphics_callback)(AppCtx* appCtx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
+typedef gboolean (*element_message_callback)(AppCtx* appCtx, GstMessage* message);
+typedef gboolean (*defer_eos_callback)(AppCtx* appCtx);
+typedef void (*fatal_pipeline_error_callback)(AppCtx* appCtx);
 
 typedef struct {
   guint index;
@@ -184,6 +187,7 @@ struct _AppCtx {
   gint return_value{0};
   guint index{0};
   gint active_source_index{0};
+  GstState observed_pipeline_state{GST_STATE_NULL};
 
   GMutex app_lock{
       0,
@@ -219,6 +223,9 @@ struct _AppCtx {
   overlay_graphics_callback overlay_graphics_cb{
       0,
   };
+  element_message_callback element_message_cb{nullptr};
+  defer_eos_callback defer_eos_cb{nullptr};
+  fatal_pipeline_error_callback fatal_pipeline_error_cb{nullptr};
   NvDsFrameLatencyInfo* latency_info{nullptr};
   GMutex latency_lock{
       0,
@@ -237,7 +244,15 @@ struct _AppCtx {
 class HmApp : public _AppCtx {
  public:
   HmApp(std::string game_id, std::string app_config_file, int override_gpu_id)
-      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)), override_gpu_id_(override_gpu_id) {}
+      : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)), override_gpu_id_(override_gpu_id) {
+    g_mutex_init(&app_lock);
+    g_cond_init(&app_cond);
+  }
+
+  ~HmApp() {
+    g_cond_clear(&app_cond);
+    g_mutex_clear(&app_lock);
+  }
 
   const std::string& app_config_file() const {
     return app_config_file_;
@@ -334,6 +349,8 @@ gboolean seek_pipeline(AppCtx* appCtx, glong milliseconds, gboolean seek_is_rela
 void toggle_show_bbox_text(AppCtx* appCtx);
 
 void destroy_pipeline(AppCtx* appCtx);
+void destroy_pipeline_for_recreate(AppCtx* appCtx);
+gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx);
 gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout);
 void restart_pipeline(AppCtx* appCtx);
 

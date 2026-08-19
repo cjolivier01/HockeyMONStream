@@ -12,6 +12,7 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
+#include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
@@ -29,6 +30,7 @@
 class QProcessEnvironment;
 class QCloseEvent;
 class QDialog;
+class QEvent;
 class QIcon;
 class QProgressBar;
 class QSplitter;
@@ -48,6 +50,14 @@ QIcon application_icon();
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
 bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
 QString preview_channel_for_tab(int tab_index, int camera_count);
+// Selects the pipeline runner and source workspace that belong to a Bazel-built
+// UI executable without consulting the mutable bazel-bin workspace symlink.
+QString matching_development_pipeline_runner(const QString& application_path);
+QString matching_development_bazel_bin(const QString& application_path);
+QString development_runtime_root_for_application(const QString& application_path);
+// Returns an empty string when all artifacts needed by a Bazel development
+// runtime are present, or the missing artifact path otherwise.
+QString missing_development_runtime_artifact(const QString& bazel_bin_path);
 
 } // namespace hm::ui_internal
 
@@ -69,6 +79,7 @@ class HStreamWindow : public QMainWindow {
 
  protected:
   void closeEvent(QCloseEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
   enum class CopiedImportCleanupResult {
@@ -246,6 +257,7 @@ class HStreamWindow : public QMainWindow {
   bool setupPretrainedAssets(const QStringList& pipeline_args);
   void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
   int stitchingCalibrationControlPoints() const;
+  QString stitchFrameTime() const;
   bool prepareStitchingCalibrationRun(
       const QString& runner,
       const QString& working_dir,
@@ -303,6 +315,7 @@ class HStreamWindow : public QMainWindow {
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
   QSpinBox* control_points_spin_{nullptr};
+  QTimeEdit* stitch_frame_time_edit_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
   QListWidget* video_set_list_{nullptr};
@@ -363,6 +376,8 @@ class HStreamWindow : public QMainWindow {
   int playback_reset_attempts_{0};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
+  bool calibration_waiting_for_playback_restart_{false};
+  bool calibration_playback_restart_observed_{false};
   bool preview_focus_mode_{false};
   bool preview_layout_compacted_{false};
   int focused_preview_tab_{-1};
@@ -405,6 +420,7 @@ class HStreamWindow : public QMainWindow {
   bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};
   int active_calibration_control_points_{0};
+  QString active_stitch_frame_time_;
   QString active_calibration_start_stage_;
   QString active_calibration_invalidation_id_;
   bool calibration_restart_requested_{false};
@@ -432,6 +448,10 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   std::map<QString, int> saved_camera_controls_;
+  QString development_runtime_root_;
+  QString development_pipeline_runner_;
+  QString development_bazel_bin_;
+  QString saved_stitch_frame_time_;
   std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;

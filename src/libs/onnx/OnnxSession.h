@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -63,8 +64,11 @@ class Session {
       const std::string& input_name,
       const std::vector<int64_t>& input_shape,
       const float* input_data,
-      size_t input_count) const;
-  absl::StatusOr<std::vector<Tensor>> RunFloatInputs(const std::vector<FloatInput>& inputs) const;
+      size_t input_count,
+      const std::function<bool()>& is_cancelled = {}) const;
+  absl::StatusOr<std::vector<Tensor>> RunFloatInputs(
+      const std::vector<FloatInput>& inputs,
+      const std::function<bool()>& is_cancelled = {}) const;
 
  private:
   Session(

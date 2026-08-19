@@ -15,10 +15,13 @@
 #include <termios.h>
 #include <unistd.h>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <thread>
@@ -137,6 +140,20 @@ class PipelineApplication {
       const std::vector<std::tuple<std::string, std::string, std::string>>& assignments);
   static gboolean event_thread_func_static(gpointer arg);
   gboolean event_thread_func();
+  static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
+  gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
+  static void handle_fatal_pipeline_error_static(AppCtx* app_ctx);
+  void handle_fatal_pipeline_error(AppCtx* app_ctx);
+  static gboolean should_defer_eos_static(AppCtx* app_ctx);
+  gboolean should_defer_eos(AppCtx* app_ctx);
+  static gboolean stitch_frame_completion_timeout_static(gpointer arg);
+  gboolean stitch_frame_completion_timeout(long stage, uint64_t main_loop_generation);
+  void cancel_stitch_frame_completion_timeout();
+  static gboolean rewind_after_stitching_calibration_static(gpointer arg);
+  gboolean rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation);
+  void cancel_stitch_frame_rewind(uint64_t main_loop_generation);
+  void reset_playback_timing_state(long stage);
+  uint64_t initial_pipeline_position_ns(const HmApp* app_ctx) const;
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx);
   static gpointer nvds_x_event_thread_static(gpointer data);
   gpointer nvds_x_event_thread();
@@ -144,6 +161,8 @@ class PipelineApplication {
   gboolean overlay_graphics(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static gboolean recreate_pipeline_thread_func_static(gpointer arg);
   gboolean recreate_pipeline_thread_func(gpointer arg);
+  static gboolean inject_stitching_calibration_error_static(gpointer arg);
+  gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
   absl::Status configure_source_preview_sinks(const std::vector<std::shared_ptr<HmApp>>& app_contexts);
 
@@ -151,9 +170,10 @@ class PipelineApplication {
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;
   std::map<long, std::vector<std::shared_ptr<HmApp>>> stage_app_contexts_;
   std::map<long, std::map</*instance_number=*/int, Window>> stage_windows_;
+  std::set<AppCtx*> one_pass_calibration_contexts_;
 
   long current_stage_{0};
-  guint cintr_;
+  volatile sig_atomic_t cintr_;
   GMainLoop* main_loop_{nullptr};
   // Command-line options / configuration
   gchar** cfg_files_{nullptr};
@@ -218,6 +238,7 @@ class PipelineApplication {
   std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
   uint64_t playback_progress_generation_{0};
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
+  std::mutex playback_timing_mu_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
   uint64_t timed_run_last_progress_ns_{GST_CLOCK_TIME_NONE};
   // Display / event loop
@@ -228,6 +249,21 @@ class PipelineApplication {
   gboolean rrowsel_, selecting_;
   std::unique_ptr<std::thread> editor_thread_;
   uint64_t start_time_ns_{0};
+  uint64_t stitch_frame_time_ns_{0};
+  std::string stitch_frame_time_override_config_value_;
+  bool stitch_frame_time_set_{false};
+  bool stitch_frame_time_loaded_from_config_{false};
+  std::set<const AppCtx*> stitch_frame_rewound_contexts_;
+  std::set<const AppCtx*> stitch_frame_rewind_pending_contexts_;
+  std::atomic<bool> stitch_frame_calibration_active_{false};
+  guint stitch_frame_rewind_source_id_{0};
+  guint stitch_frame_completion_timeout_source_id_{0};
+  bool stitch_frame_rewind_cancellation_requested_{false};
+  bool stitch_frame_restart_awaiting_playing_{false};
+  std::chrono::steady_clock::time_point stitch_frame_rewind_deadline_;
+  bool clean_only_eligible_context_seen_{false};
+  bool clean_only_action_completed_{false};
+  uint64_t main_loop_generation_{0};
   uint64_t first_pts_ns_{0};
   bool have_first_pts_{false};
   std::array<uint64_t, MAX_SOURCE_BINS> first_frame_numbers_by_source_{};

@@ -38,6 +38,12 @@
 extern "C" char** environ;
 
 namespace hm::stitching {
+
+bool hard_seam_fallback_enabled() {
+  const char* value = std::getenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -73,6 +79,18 @@ const std::array<const char*, 8> kLegacyRequiredArtifacts = {
     "mapping_0001.tif",
     "mapping_0001_x.tif",
     "mapping_0001_y.tif",
+};
+
+const std::array<const char*, 9> kGenerationArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "seam_file.png",
 };
 
 const std::array<const char*, 2> kOptionalArtifacts = {"seam_file.png", "panorama.tif"};
@@ -129,9 +147,13 @@ absl::StatusOr<std::string> executable(const char* override_name, const char* na
 absl::Status run_checked(
     const std::vector<std::string>& command,
     const fs::path& working_dir,
-    std::string* captured = nullptr) {
+    std::string* captured = nullptr,
+    const std::function<bool()>& is_cancelled = {}) {
   const int exit_code = hm::run_command(
-      command, working_dir.string(), environment(), [captured](const std::string& error, const std::string& output) {
+      command,
+      working_dir.string(),
+      environment(),
+      [captured](const std::string& error, const std::string& output) {
         if (captured != nullptr) {
           captured->append(error);
           captured->push_back('\n');
@@ -142,7 +164,11 @@ absl::Status run_checked(
           std::cerr << error << '\n';
         if (!output.empty())
           std::cout << output << '\n';
-      });
+      },
+      is_cancelled);
+  if (is_cancelled && is_cancelled()) {
+    return absl::CancelledError("Hugin calibration command cancelled");
+  }
   if (exit_code != 0) {
     std::ostringstream message;
     message << "Command failed with exit code " << exit_code << ':';
@@ -434,28 +460,256 @@ absl::Status inspect_remap_tiff(
   return validate_decoded_dimensions(width, height, maximum_dimension, "Hugin remap TIFF " + path.string());
 }
 
-absl::StatusOr<std::pair<int, int>> read_png_dimensions(const fs::path& path) {
+struct PngLayout {
+  int width{0};
+  int height{0};
+  int offset_x{0};
+  int offset_y{0};
+};
+
+uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t size) {
+  uint32_t crc = 0xffffffffU;
+  auto update = [&](const unsigned char* bytes, size_t count) {
+    for (size_t index = 0; index < count; ++index) {
+      crc ^= bytes[index];
+      for (int bit = 0; bit < 8; ++bit)
+        crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+  };
+  update(type, 4);
+  update(data, size);
+  return crc ^ 0xffffffffU;
+}
+
+absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
-  std::array<unsigned char, 24> header{};
-  input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
   const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
-  if (input.gcount() != static_cast<std::streamsize>(header.size()) ||
-      !std::equal(signature.begin(), signature.end(), header.begin()) || header[8] != 0 || header[9] != 0 ||
-      header[10] != 0 || header[11] != 13 || header[12] != 'I' || header[13] != 'H' || header[14] != 'D' ||
-      header[15] != 'R') {
+  std::array<unsigned char, 8> file_signature{};
+  input.read(reinterpret_cast<char*>(file_signature.data()), static_cast<std::streamsize>(file_signature.size()));
+  if (!input || file_signature != signature) {
     return absl::FailedPreconditionError("Invalid PNG header: " + path.string());
   }
-  auto big_endian_u32 = [&](size_t offset) {
-    return (static_cast<uint32_t>(header[offset]) << 24) | (static_cast<uint32_t>(header[offset + 1]) << 16) |
-        (static_cast<uint32_t>(header[offset + 2]) << 8) | static_cast<uint32_t>(header[offset + 3]);
+  auto big_endian_u32 = [](const unsigned char* bytes) {
+    return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
+        (static_cast<uint32_t>(bytes[2]) << 8) | static_cast<uint32_t>(bytes[3]);
   };
-  const uint32_t width = big_endian_u32(16);
-  const uint32_t height = big_endian_u32(20);
-  if (width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
-      height > std::numeric_limits<int>::max()) {
-    return absl::FailedPreconditionError("Invalid PNG dimensions: " + path.string());
+
+  PngLayout layout;
+  bool have_header = false;
+  bool have_offset = false;
+  bool have_image_data = false;
+  bool have_end = false;
+  bool first_chunk = true;
+  while (input) {
+    std::array<unsigned char, 8> chunk_header{};
+    input.read(reinterpret_cast<char*>(chunk_header.data()), static_cast<std::streamsize>(chunk_header.size()));
+    if (!input)
+      break;
+    const uint32_t length = big_endian_u32(chunk_header.data());
+    const std::string type(reinterpret_cast<const char*>(chunk_header.data() + 4), 4);
+    if (first_chunk && type != "IHDR")
+      return absl::FailedPreconditionError("PNG IHDR is not the first chunk: " + path.string());
+    first_chunk = false;
+    std::optional<uint32_t> expected_crc;
+    if (type == "IHDR") {
+      if (have_header || length != 13)
+        return absl::FailedPreconditionError("Invalid PNG IHDR chunk: " + path.string());
+      std::array<unsigned char, 13> data{};
+      input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+      if (!input)
+        return absl::FailedPreconditionError("Truncated PNG IHDR chunk: " + path.string());
+      const uint32_t width = big_endian_u32(data.data());
+      const uint32_t height = big_endian_u32(data.data() + 4);
+      if (width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
+          height > std::numeric_limits<int>::max()) {
+        return absl::FailedPreconditionError("Invalid PNG dimensions: " + path.string());
+      }
+      layout.width = static_cast<int>(width);
+      layout.height = static_cast<int>(height);
+      have_header = true;
+      expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
+    } else if (type == "oFFs") {
+      if (!have_header || have_offset || have_image_data || length != 9)
+        return absl::FailedPreconditionError("Invalid PNG oFFs chunk: " + path.string());
+      std::array<unsigned char, 9> data{};
+      input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+      if (!input || data[8] != 0)
+        return absl::FailedPreconditionError("PNG seam offset is not expressed in pixels: " + path.string());
+      auto signed_coordinate = [&](const unsigned char* bytes) {
+        const uint32_t value = big_endian_u32(bytes);
+        return value <= static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+            ? static_cast<int64_t>(value)
+            : static_cast<int64_t>(value) - (int64_t{1} << 32);
+      };
+      layout.offset_x = static_cast<int>(signed_coordinate(data.data()));
+      layout.offset_y = static_cast<int>(signed_coordinate(data.data() + 4));
+      have_offset = true;
+      expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
+    } else {
+      input.seekg(static_cast<std::streamoff>(length), std::ios::cur);
+      if (!input)
+        return absl::FailedPreconditionError("Truncated PNG chunk: " + path.string());
+    }
+    std::array<unsigned char, 4> crc{};
+    input.read(reinterpret_cast<char*>(crc.data()), static_cast<std::streamsize>(crc.size()));
+    if (!input)
+      return absl::FailedPreconditionError("Truncated PNG chunk CRC: " + path.string());
+    if (expected_crc.has_value() && big_endian_u32(crc.data()) != *expected_crc)
+      return absl::FailedPreconditionError("PNG " + type + " chunk has an invalid CRC: " + path.string());
+    if (type == "IDAT")
+      have_image_data = true;
+    if (type == "IEND") {
+      have_end = true;
+      break;
+    }
   }
-  return std::make_pair(static_cast<int>(width), static_cast<int>(height));
+  if (!have_header)
+    return absl::FailedPreconditionError("PNG is missing its IHDR chunk: " + path.string());
+  if (!have_end)
+    return absl::FailedPreconditionError("PNG is missing its IEND chunk: " + path.string());
+  return layout;
+}
+
+absl::StatusOr<std::pair<int, int>> read_png_dimensions(const fs::path& path) {
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  return std::make_pair(layout->width, layout->height);
+}
+
+absl::StatusOr<cv::Mat> decode_nonuniform_seam(const fs::path& path, const PngLayout& layout) {
+  cv::Mat seam;
+  try {
+    seam = cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to safely decode seam: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate decoded seam");
+  }
+  if (seam.empty() || seam.type() != CV_8UC1 || seam.cols != layout.width || seam.rows != layout.height)
+    return absl::FailedPreconditionError("PNG seam is not a decodable 8-bit grayscale image: " + path.string());
+  double minimum = 0.0;
+  double maximum = 0.0;
+  cv::minMaxLoc(seam, &minimum, &maximum);
+  if (maximum <= minimum)
+    return absl::FailedPreconditionError("PNG seam is uniform: " + path.string());
+  return seam;
+}
+
+absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, int canvas_width, int canvas_height) {
+  std::vector<unsigned char> encoded;
+  if (!cv::imencode(".png", seam, encoded) || encoded.empty())
+    return absl::InternalError("Unable to encode normalized seam: " + path.string());
+
+  const fs::path parent = path.parent_path().empty() ? fs::path(".") : path.parent_path();
+  std::string pattern = (parent / ("." + path.filename().string() + ".normalize-XXXXXX.png")).string();
+  std::vector<char> writable_pattern(pattern.begin(), pattern.end());
+  writable_pattern.push_back('\0');
+  const int descriptor = ::mkstemps(writable_pattern.data(), 4);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to create normalized seam temporary file: " + std::string(std::strerror(errno)));
+  const fs::path temporary(writable_pattern.data());
+  struct TemporaryCleanup {
+    int descriptor;
+    fs::path path;
+    ~TemporaryCleanup() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+      if (!path.empty()) {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+      }
+    }
+  } cleanup{descriptor, temporary};
+
+  struct stat source_metadata{};
+  if (::stat(path.c_str(), &source_metadata) != 0)
+    return absl::InternalError("Unable to read normalized seam source mode: " + std::string(std::strerror(errno)));
+  if (!S_ISREG(source_metadata.st_mode))
+    return absl::FailedPreconditionError("Normalized seam source is not a regular file: " + path.string());
+  if (::fchmod(descriptor, source_metadata.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) != 0)
+    return absl::InternalError("Unable to preserve normalized seam mode: " + std::string(std::strerror(errno)));
+
+  size_t written = 0;
+  while (written < encoded.size()) {
+    const ssize_t count = ::write(descriptor, encoded.data() + written, encoded.size() - written);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::InternalError(
+          "Unable to write normalized seam temporary file: " + std::string(std::strerror(errno)));
+    written += static_cast<size_t>(count);
+  }
+  if (::fsync(descriptor) != 0)
+    return absl::InternalError("Unable to fsync normalized seam temporary file: " + std::string(std::strerror(errno)));
+  if (::close(descriptor) != 0) {
+    cleanup.descriptor = -1;
+    return absl::InternalError("Unable to close normalized seam temporary file: " + std::string(std::strerror(errno)));
+  }
+  cleanup.descriptor = -1;
+
+  auto temporary_layout = read_png_layout(temporary);
+  if (!temporary_layout.ok())
+    return temporary_layout.status();
+  if (temporary_layout->offset_x != 0 || temporary_layout->offset_y != 0 || temporary_layout->width != canvas_width ||
+      temporary_layout->height != canvas_height) {
+    return absl::FailedPreconditionError("Encoded normalized seam has an invalid layout: " + temporary.string());
+  }
+  auto decoded = decode_nonuniform_seam(temporary, *temporary_layout);
+  if (!decoded.ok())
+    return decoded.status();
+
+  if (const char* interrupt = std::getenv("HM_TEST_SEAM_NORMALIZATION_FAIL_BEFORE_RENAME");
+      interrupt != nullptr && std::strcmp(interrupt, "1") == 0) {
+    return absl::InternalError("Injected seam normalization failure before atomic rename");
+  }
+  std::error_code error;
+  fs::rename(temporary, path, error);
+  if (error)
+    return absl::InternalError("Unable to atomically publish normalized seam: " + error.message());
+  cleanup.path.clear();
+  return fsync_path(parent, true);
+}
+
+absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width, int canvas_height) {
+  if (canvas_width <= 0 || canvas_height <= 0)
+    return absl::InvalidArgumentError("Seam canvas dimensions must be positive");
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  const int64_t right = static_cast<int64_t>(layout->offset_x) + layout->width;
+  const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
+  if (layout->offset_x < 0 || layout->offset_y < 0 || right > canvas_width || bottom > canvas_height) {
+    return absl::FailedPreconditionError(
+        "PNG seam crop lies outside its mapping canvas: " + path.string() + " crop=" + std::to_string(layout->width) +
+        "x" + std::to_string(layout->height) + "+" + std::to_string(layout->offset_x) + "+" +
+        std::to_string(layout->offset_y) + " canvas=" + std::to_string(canvas_width) + "x" +
+        std::to_string(canvas_height));
+  }
+
+  auto seam = decode_nonuniform_seam(path, *layout);
+  if (!seam.ok())
+    return seam.status();
+
+  if (layout->offset_x != 0 || layout->offset_y != 0 || seam->cols != canvas_width || seam->rows != canvas_height) {
+    cv::Mat normalized;
+    try {
+      cv::copyMakeBorder(
+          *seam,
+          normalized,
+          layout->offset_y,
+          canvas_height - static_cast<int>(bottom),
+          layout->offset_x,
+          canvas_width - static_cast<int>(right),
+          cv::BORDER_REPLICATE);
+      return publish_normalized_seam(path, normalized, canvas_width, canvas_height);
+    } catch (const cv::Exception& exception) {
+      return absl::ResourceExhaustedError("Unable to normalize seam: " + std::string(exception.what()));
+    } catch (const std::bad_alloc&) {
+      return absl::ResourceExhaustedError("Unable to allocate normalized seam");
+    }
+  }
+  return absl::OkStatus();
 }
 
 absl::Status validate_remaps(
@@ -636,22 +890,16 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
   // expected to equal the uncropped PTO panorama canvas. Both contracts must
   // independently be finite and bounded.
   const fs::path seam_path = directory / "seam_file.png";
-  auto seam_dimensions = read_png_dimensions(seam_path);
-  cv::Mat seam;
-  if (seam_dimensions.ok() && seam_dimensions->first == canvas->first && seam_dimensions->second == canvas->second) {
-    try {
-      seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
-    } catch (const cv::Exception&) {
-      seam.release();
-    } catch (const std::bad_alloc&) {
-      return absl::ResourceExhaustedError("Unable to allocate decoded Hugin seam");
+  status = validate_and_normalize_seam(seam_path, canvas->first, canvas->second);
+  if (!status.ok()) {
+    if (!absl::IsFailedPrecondition(status))
+      return status;
+    if (!hard_seam_fallback_enabled()) {
+      return absl::FailedPreconditionError(
+          "enblend did not produce a usable seam_file.png; refusing to generate a hard-seam fallback: " +
+          status.ToString() +
+          ". Fix enblend seam generation or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
     }
-  }
-  double minimum = 0.0;
-  double maximum = 0.0;
-  if (!seam.empty())
-    cv::minMaxLoc(seam, &minimum, &maximum);
-  if (seam.empty() || seam.cols != canvas->first || seam.rows != canvas->second || maximum <= minimum) {
     try {
       status = create_hard_seam(seam_path, first, second, canvas->first, canvas->second);
     } catch (const cv::Exception& exception) {
@@ -661,18 +909,10 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
     }
     if (!status.ok())
       return status;
-    auto generated_dimensions = read_png_dimensions(seam_path);
-    if (!generated_dimensions.ok() || generated_dimensions->first != canvas->first ||
-        generated_dimensions->second != canvas->second) {
-      return absl::FailedPreconditionError("Generated Hugin seam has invalid dimensions");
-    }
-    seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
-    if (seam.empty())
-      return absl::FailedPreconditionError("Generated Hugin seam is not decodable");
-    cv::minMaxLoc(seam, &minimum, &maximum);
+    status = validate_and_normalize_seam(seam_path, canvas->first, canvas->second);
+    if (!status.ok())
+      return status;
   }
-  if (seam.type() != CV_8UC1 || seam.cols != canvas->first || seam.rows != canvas->second || maximum <= minimum)
-    return absl::FailedPreconditionError("Hugin seam violates the decoded canvas/type contract");
   return fsync_path(seam_path);
 }
 
@@ -707,7 +947,8 @@ void remove_mapping_outputs(const fs::path& directory) {
 absl::Status run_autooptimiser(
     const std::string& autooptimiser,
     const fs::path& directory,
-    const std::optional<double>& output_scale = std::nullopt) {
+    const std::optional<double>& output_scale = std::nullopt,
+    const std::function<bool()>& is_cancelled = {}) {
   // Match HockeyMOM's automatic alignment path: let Hugin choose the
   // optimization stages, projection, field of view, and canvas. When the
   // resulting canvas exceeds the configured GPU limit, -x scales that same
@@ -723,7 +964,7 @@ absl::Status run_autooptimiser(
   }
   command.insert(command.end(), {"-o", "autooptimiser_out.pto", "hm_project.pto"});
   std::string output;
-  auto status = run_checked(command, directory, &output);
+  auto status = run_checked(command, directory, &output, is_cancelled);
   if (!status.ok())
     return status;
   static const std::regex rms_pattern(R"(([0-9]+(?:[.][0-9]+)?(?:[eE][+-]?[0-9]+)?)[[:space:]]+units)");
@@ -739,10 +980,16 @@ absl::Status run_autooptimiser(
   return absl::OkStatus();
 }
 
-absl::Status run_nona(const std::string& nona, const fs::path& directory) {
+absl::Status run_nona(
+    const std::string& nona,
+    const fs::path& directory,
+    const std::function<bool()>& is_cancelled = {}) {
   remove_mapping_outputs(directory);
   return run_checked(
-      {nona, "-m", "TIFF_m", "-z", "NONE", "--bigtiff", "-c", "-o", "mapping_", "autooptimiser_out.pto"}, directory);
+      {nona, "-m", "TIFF_m", "-z", "NONE", "--bigtiff", "-c", "-o", "mapping_", "autooptimiser_out.pto"},
+      directory,
+      nullptr,
+      is_cancelled);
 }
 
 absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir, bool* prepared) {
@@ -865,12 +1112,16 @@ absl::Status HuginProject::Recover(const fs::path& game_dir) {
   return lock.ok() ? absl::OkStatus() : lock.status();
 }
 
+absl::Status HuginProject::ValidateAndNormalizeSeam(const fs::path& seam_path, int canvas_width, int canvas_height) {
+  return validate_and_normalize_seam(seam_path, canvas_width, canvas_height);
+}
+
 absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {
   std::ostringstream generation;
-  // The stitched surface is determined by the PTO/remap generation. Legacy
-  // valid generations did not publish left.png/right.png, so do not make
-  // those provenance images part of the runtime identity.
-  for (const char* name : kLegacyRequiredArtifacts) {
+  // The stitched surface is determined by the PTO/remaps and seam. Legacy
+  // valid generations did not publish left.png/right.png, so do not make those
+  // provenance images part of the runtime identity.
+  for (const char* name : kGenerationArtifacts) {
     struct stat metadata{};
     const fs::path path = game_dir / name;
     if (::stat(path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
@@ -1023,6 +1274,9 @@ absl::Status HuginProject::Configure(
     const fs::path& game_dir,
     const std::vector<FeatureMatch>& matches,
     const Options& options) {
+  if (options.is_cancelled && options.is_cancelled()) {
+    return absl::CancelledError("Hugin calibration cancelled before optimizer setup");
+  }
   return Configure(game_dir, game_dir / "left.png", game_dir / "right.png", matches, options);
 }
 
@@ -1032,6 +1286,9 @@ absl::Status HuginProject::Configure(
     const fs::path& right_image,
     const std::vector<FeatureMatch>& matches,
     const Options& options) {
+  if (options.is_cancelled && options.is_cancelled()) {
+    return absl::CancelledError("Hugin calibration cancelled before optimizer setup");
+  }
   if (!std::isfinite(options.horizontal_fov) || options.horizontal_fov <= 0.0 || options.horizontal_fov >= 360.0) {
     return absl::InvalidArgumentError("Hugin horizontal field of view must be between 0 and 360 degrees");
   }
@@ -1087,8 +1344,11 @@ absl::Status HuginProject::Configure(
   // produces a superficially blendable panorama, but leaves a large geometric
   // mismatch in the overlap that GPU blending exposes as repeated/ghosted
   // content. Keep this aligned with HockeyMOM's proven stitching setup.
-  auto status =
-      run_checked({*pto_gen, "-p", "0", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"}, staging);
+  auto status = run_checked(
+      {*pto_gen, "-p", "0", "-o", "hm_project.pto", "-f", fov.str(), "left.png", "right.png"},
+      staging,
+      nullptr,
+      options.is_cancelled);
   if (!status.ok())
     return status;
   auto project = read_file(staging / "hm_project.pto");
@@ -1101,7 +1361,7 @@ absl::Status HuginProject::Configure(
   if (!status.ok())
     return status;
 
-  status = run_autooptimiser(*autooptimiser, staging);
+  status = run_autooptimiser(*autooptimiser, staging, std::nullopt, options.is_cancelled);
   if (!status.ok())
     return status;
   if (options.progress)
@@ -1117,7 +1377,7 @@ absl::Status HuginProject::Configure(
     const double factor =
         static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest) * rounding_guard;
     output_scale = output_scale.value_or(1.0) * factor;
-    return run_autooptimiser(*autooptimiser, staging, output_scale);
+    return run_autooptimiser(*autooptimiser, staging, output_scale, options.is_cancelled);
   };
   if (options.max_canvas_dimension.has_value()) {
     auto optimized = read_file(staging / "autooptimiser_out.pto");
@@ -1135,7 +1395,7 @@ absl::Status HuginProject::Configure(
   }
 
   for (int attempt = 0; attempt < 3; ++attempt) {
-    status = run_nona(*nona, staging);
+    status = run_nona(*nona, staging, options.is_cancelled);
     if (!status.ok())
       return status;
     bool mappings_valid = true;
@@ -1170,25 +1430,46 @@ absl::Status HuginProject::Configure(
       return status;
   }
 
-  // Enblend's preview/seam is preferred. The complete decoded artifact
-  // validator below creates a hard-seam fallback inside this transaction.
+  // Enblend's preview/seam is required by default. The complete decoded
+  // artifact validator may create a hard-seam fallback only when explicitly
+  // enabled for diagnostics.
   auto enblend = executable("HM_ENBLEND", "enblend");
   if (enblend.ok()) {
     status = run_checked(
         {*enblend, "--save-masks=seam_file.png", "-o", "panorama.tif", "mapping_0000.tif", "mapping_0001.tif"},
-        staging);
+        staging,
+        nullptr,
+        options.is_cancelled);
     if (!status.ok()) {
-      std::cerr << "Warning: native enblend preview failed; a hard seam will be generated: " << status << '\n';
+      if (absl::IsCancelled(status))
+        return status;
+      if (!hard_seam_fallback_enabled()) {
+        return absl::FailedPreconditionError(
+            "enblend failed to generate seam_file.png and hard-seam fallback is disabled: " + status.ToString() +
+            ". Fix enblend or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
+      }
+      std::cerr << "Warning: native enblend preview failed; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits a hard seam: "
+                << status << '\n';
       fs::remove(staging / "seam_file.png", error);
       error.clear();
       fs::remove(staging / "panorama.tif", error);
       error.clear();
     }
+  } else if (!hard_seam_fallback_enabled()) {
+    return absl::FailedPreconditionError(
+        "Cannot generate seam_file.png because enblend is unavailable and hard-seam fallback is disabled: " +
+        enblend.status().ToString() +
+        ". Install/fix enblend or set HM_ALLOW_HARD_SEAM_FALLBACK=1 to explicitly allow the fallback");
+  } else {
+    std::cerr << "Warning: enblend is unavailable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits a hard seam: "
+              << enblend.status() << '\n';
   }
 
   status = validate_staged_artifacts(staging, options.max_canvas_dimension);
   if (!status.ok())
     return status;
+  if (options.is_cancelled && options.is_cancelled())
+    return absl::CancelledError("Hugin calibration cancelled before publication");
   if (!options.expected_invalidation_id.empty()) {
     auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
     if (!config_transaction.ok())

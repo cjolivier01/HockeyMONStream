@@ -23,6 +23,11 @@ PIPELINE_APP_LINKOPTS = [
     "-lm",
 ]
 
+PIPELINE_APP_RUNTIME_DATA = [
+    "//src/gst-plugins:hstream_runtime_plugins",
+    "//src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo",
+]
+
 PIPELINE_APP_DEPS = [
     "//src/libs/assets:asset_manager",
     # "//src/libs/common:mod_pipeline",
@@ -55,6 +60,7 @@ cc_binary(
     name = "pipeline-app",
     srcs = PIPELINE_APP_SRCS,
     copts = PIPELINE_APP_COPTS,
+    data = PIPELINE_APP_RUNTIME_DATA,
     linkopts = PIPELINE_APP_LINKOPTS,
     deps = PIPELINE_APP_DEPS,
 )
@@ -63,6 +69,7 @@ cc_binary(
     name = "hstream-cli",
     srcs = PIPELINE_APP_SRCS,
     copts = PIPELINE_APP_COPTS,
+    data = PIPELINE_APP_RUNTIME_DATA,
     linkopts = PIPELINE_APP_LINKOPTS,
     visibility = ["//visibility:public"],
     deps = PIPELINE_APP_DEPS,
@@ -121,6 +128,10 @@ cc_test(
         ":hstream-cli",
         "//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so",
     ],
+    deps = [
+        "//src/libs/stitching:game_config",
+        "@yaml-cpp",
+    ],
     size = "large",
     tags = [
         "local",
@@ -176,6 +187,37 @@ cc_test(
         "PlaybackProgressTest.cpp",
     ],
     copts = PIPELINE_APP_COPTS,
+)
+
+cc_test(
+    name = "pipeline_runtime_paths_test",
+    srcs = [
+        "PipelineRuntimePaths.cpp",
+        "PipelineRuntimePaths.h",
+        "PipelineRuntimePathsTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+)
+
+cc_test(
+    name = "stitch_frame_time_plan_test",
+    srcs = [
+        "StitchFrameTimePlan.h",
+        "StitchFrameTimePlanTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+    deps = [
+        "//src/libs/common:utils_base",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "stitch_frame_time_cli_test",
+    srcs = ["StitchFrameTimeCliTest.cpp"],
+    args = ["$(location :hstream-cli)"],
+    data = [":hstream-cli"],
+    deps = ["@yaml-cpp"],
 )
 
 cc_test(

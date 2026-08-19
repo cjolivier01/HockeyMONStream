@@ -527,7 +527,8 @@ absl::StatusOr<std::string> classify_rink_orientation(const cv::Mat& binary_mask
 absl::Status configure_game_orientation(
     const std::string& game_dir_string,
     const RinkSegmentation& rink_model,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled) {
   const fs::path game_dir(game_dir_string);
   auto videos = get_available_videos(game_dir.string());
   if (!videos.ok())
@@ -539,6 +540,8 @@ absl::Status configure_game_orientation(
 
   std::map<std::string, VideoChapter> oriented;
   for (const auto& [camera, chapters] : *videos) {
+    if (is_cancelled && is_cancelled())
+      return absl::CancelledError("Camera orientation cancelled");
     if (camera == "stitched" || chapters.empty())
       continue;
     // Preserve HockeyMOM's current selection semantics: the minimum pathname,
@@ -553,7 +556,7 @@ absl::Status configure_game_orientation(
     if (!capture.read(first_frame) || first_frame.empty()) {
       return absl::InternalError("Failed to decode the first orientation frame: " + selected->second);
     }
-    auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale);
+    auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled);
     if (!rink.ok()) {
       return absl::Status(
           rink.status().code(),

@@ -1,3 +1,4 @@
+#include "src/apps/pipeline-app/StitcherOnePassConfig.h"
 #include "src/apps/pipeline-app/configurator.h"
 
 #include <algorithm>
@@ -36,6 +37,67 @@ bool expect(bool condition, const char* message) {
 int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
+  const auto rotation_value = [](const YAML::Node& config) {
+    return hm::configurator_internal::effective_stitch_output_rotation(config);
+  };
+  const auto missing_rotation = rotation_value(YAML::Load("{}"));
+  const auto global_null_rotation = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: null\n"));
+  const auto global_rotation = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: 2.5\n"));
+  const auto pipeline_null_fallback = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: 2.5\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: null\n"));
+  const auto pipeline_override = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: invalid-lower-priority-value\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: 5\n"));
+  const auto underscored_pipeline_override = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: invalid-lower-priority-value\n"
+          "pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: 7.5\n"));
+  const auto underscored_pipeline_null_fallback = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: 2.5\n"
+          "pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: null\n"));
+  const auto all_null_rotation = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: null\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: null\n"
+          "    post_stitch_rotate_degrees: null\n"));
+  const auto malformed_pipeline = rotation_value(
+      YAML::Load(
+          "stitching:\n  post_stitch_rotate_degrees: 2.5\n"
+          "pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: invalid\n"));
+  const auto non_finite_pipeline =
+      rotation_value(YAML::Load("pipeline:\n  hmstitcher:\n    post-stitch-rotate-degrees: .nan\n"));
+  const auto malformed_underscored_pipeline =
+      rotation_value(YAML::Load("pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: invalid\n"));
+  const auto non_finite_underscored_pipeline =
+      rotation_value(YAML::Load("pipeline:\n  hmstitcher:\n    post_stitch_rotate_degrees: .inf\n"));
+  const auto malformed_global = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: invalid\n"));
+  const auto non_finite_global = rotation_value(YAML::Load("stitching:\n  post_stitch_rotate_degrees: -.inf\n"));
+  ok &= expect(
+      missing_rotation.ok() && *missing_rotation == 0.0 && global_null_rotation.ok() && *global_null_rotation == 0.0 &&
+          global_rotation.ok() && *global_rotation == 2.5 && pipeline_null_fallback.ok() &&
+          *pipeline_null_fallback == 2.5 && pipeline_override.ok() && *pipeline_override == 5.0 &&
+          underscored_pipeline_override.ok() && *underscored_pipeline_override == 7.5 &&
+          underscored_pipeline_null_fallback.ok() && *underscored_pipeline_null_fallback == 2.5 &&
+          all_null_rotation.ok() && *all_null_rotation == 0.0 && absl::IsInvalidArgument(malformed_pipeline.status()) &&
+          absl::IsInvalidArgument(non_finite_pipeline.status()) &&
+          absl::IsInvalidArgument(malformed_underscored_pipeline.status()) &&
+          absl::IsInvalidArgument(non_finite_underscored_pipeline.status()) &&
+          absl::IsInvalidArgument(malformed_global.status()) && absl::IsInvalidArgument(non_finite_global.status()),
+      "Stitch output rotation must use the highest-priority non-null value and reject an invalid active value");
+  ok &= expect(
+      !hm::OnePassCalibrationRequired(
+          /*one_pass_mode=*/false, /*stitching_configured=*/false, /*field_mask_configured=*/false) &&
+          !hm::OnePassCalibrationRequired(
+              /*one_pass_mode=*/true, /*stitching_configured=*/true, /*field_mask_configured=*/true) &&
+          hm::OnePassCalibrationRequired(
+              /*one_pass_mode=*/true, /*stitching_configured=*/false, /*field_mask_configured=*/false) &&
+          hm::OnePassCalibrationRequired(
+              /*one_pass_mode=*/true, /*stitching_configured=*/true, /*field_mask_configured=*/false),
+      "One-pass calibration must include missing mappings and mask-only resume state");
   const fs::path root = fs::temp_directory_path() / ("configurator-persistence-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
   const std::string original_home = ::getenv("HOME") ? ::getenv("HOME") : "";
@@ -64,10 +126,15 @@ int main() {
 
   const fs::path baseline_root = root / "baseline";
   fs::create_directories(baseline_root);
-  std::ofstream(baseline_root / "baseline.yaml") << "pipeline:\n  layered-value: baseline\n  baseline-only: yes\n";
+  std::ofstream(baseline_root / "baseline.yaml") << "pipeline:\n"
+                                                 << "  layered-value: baseline\n"
+                                                 << "  baseline-only: yes\n"
+                                                 << "stitching:\n"
+                                                 << "  stitch_frame_time: 00:00:07\n";
   YAML::Node user_overlay = first_user_config.ok() ? YAML::Clone(*first_user_config) : YAML::Node(YAML::NodeType::Map);
   user_overlay["pipeline"]["layered-value"] = "user";
   user_overlay["pipeline"]["user-only"] = "yes";
+  user_overlay["stitching"]["stitch_frame_time"] = "00:00:08";
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey] = (root / "configured-output").string();
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
@@ -105,7 +172,9 @@ int main() {
       layered_config.ok() && (*layered_config)["pipeline"]["layered-value"].as<std::string>() == "private" &&
           (*layered_config)["pipeline"]["baseline-only"].as<std::string>() == "yes" &&
           (*layered_config)["pipeline"]["user-only"].as<std::string>() == "yes" &&
-          (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes",
+          (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes" &&
+          (*layered_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
+          !hm::get_node(layered.game_private_config(), "stitching.stitch_frame_time").has_value(),
       "Config precedence must be baseline, then user overlay, then game-private YAML");
   ::unsetenv("HM_GAME_DIR");
   ok &= expect(
@@ -166,6 +235,37 @@ int main() {
           (**final_config)["hstream_ui"]["keep"].as<bool>(),
       "Configurator first save must retain keys created after its absent baseline");
 
+  const fs::path stitch_override_dir = games / "stitch-override";
+  fs::create_directories(stitch_override_dir);
+  YAML::Node stitch_override_config(YAML::NodeType::Map);
+  stitch_override_config["stitching"]["stitch_frame_time"] = "00:00:07";
+  stitch_override_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  stitch_override_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "stitch-override-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(stitch_override_dir, YAML::Dump(stitch_override_config) + "\n").ok(),
+      "stitch-frame override fixture must publish");
+  hm::Configurator stitch_override("stitch-override", "", hm::Configurator::kUseConfigFileGpu);
+  const auto stitch_override_loaded = stitch_override.load_config();
+  const absl::Status zero_override_status = stitch_override.persist_stitch_frame_time_override({});
+  auto after_zero_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
+  hm::Configurator stitch_override_reloaded(
+      "stitch-override", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto stitch_override_reloaded_config = stitch_override_reloaded.load_config();
+  const absl::Status fractional_override_status = stitch_override.persist_stitch_frame_time_override("00:00:00.500");
+  auto after_fractional_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
+  ok &= expect(
+      stitch_override_loaded.ok() && zero_override_status.ok() && after_zero_override.ok() &&
+          after_zero_override->has_value() && !(**after_zero_override)["stitching"]["stitch_frame_time"] &&
+          stitch_override_reloaded_config.ok() &&
+          (*stitch_override_reloaded_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
+          !hm::get_node(stitch_override_reloaded.game_private_config(), "stitching.stitch_frame_time").has_value() &&
+          (**after_zero_override)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+              "stitch-override-a" &&
+          fractional_override_status.ok() && after_fractional_override.ok() && after_fractional_override->has_value() &&
+          (**after_fractional_override)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00.500",
+      "Runtime stitch-frame overrides must remove zero, mask lower config layers, persist nonzero, and preserve the "
+      "pending generation owner");
+
   YAML::Node source_uri_spellings(YAML::NodeType::Map);
   source_uri_spellings["source0"]["enable"] = 1;
   source_uri_spellings["source0"]["type"] = static_cast<int>(NV_DS_SOURCE_URI_MULTIPLE);
@@ -182,7 +282,7 @@ int main() {
               "file:///camera/chapter-1.mp4",
               "file:///camera/chapter-highest-bitrate.mp4",
               "file:///camera/chapter-1.mp4"},
-      "Bitrate discovery must inspect every enabled uri_list chapter, including later higher-bitrate entries");
+       "Bitrate discovery must inspect every enabled uri_list chapter, including later higher-bitrate entries");
 
   YAML::Node explicit_roles(YAML::NodeType::Map);
   explicit_roles["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010001.MP4");
@@ -507,6 +607,7 @@ int main() {
   YAML::Node stale_force_config(YAML::NodeType::Map);
   stale_force_config["pipeline"]["application"]["complete-configuration"] = "1";
   stale_force_config["pipeline"]["hmstitcher"]["enable"] = "1";
+  stale_force_config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
   stale_force_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   stale_force_config["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
   stale_force_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;

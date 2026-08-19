@@ -1,8 +1,11 @@
 #include "hstream/src/libs/onnx/OnnxSession.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <limits>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 namespace hm::onnx {
@@ -36,6 +39,44 @@ std::string shape_string(const std::vector<int64_t>& shape) {
 absl::Status ort_error(const std::string& operation, const Ort::Exception& error) {
   return absl::InternalError(operation + ": " + error.what());
 }
+
+class RunCancellationMonitor {
+ public:
+  RunCancellationMonitor(Ort::RunOptions* options, std::function<bool()> is_cancelled)
+      : options_(options), is_cancelled_(std::move(is_cancelled)) {
+    if (!options_ || !is_cancelled_) {
+      return;
+    }
+    thread_ = std::thread([this] {
+      while (!finished_.load(std::memory_order_acquire)) {
+        if (is_cancelled_()) {
+          try {
+            options_->SetTerminate();
+          } catch (const Ort::Exception&) {
+          }
+          return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+    });
+  }
+
+  ~RunCancellationMonitor() {
+    finished_.store(true, std::memory_order_release);
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+  RunCancellationMonitor(const RunCancellationMonitor&) = delete;
+  RunCancellationMonitor& operator=(const RunCancellationMonitor&) = delete;
+
+ private:
+  Ort::RunOptions* options_{nullptr};
+  std::function<bool()> is_cancelled_;
+  std::atomic<bool> finished_{false};
+  std::thread thread_;
+};
 
 }  // namespace
 
@@ -194,11 +235,17 @@ absl::StatusOr<std::vector<Tensor>> Session::RunFloat(
     const std::string& input_name,
     const std::vector<int64_t>& input_shape,
     const float* input_data,
-    size_t input_count) const {
-  return RunFloatInputs({{input_name, input_shape, input_data, input_count}});
+    size_t input_count,
+    const std::function<bool()>& is_cancelled) const {
+  return RunFloatInputs({{input_name, input_shape, input_data, input_count}}, is_cancelled);
 }
 
-absl::StatusOr<std::vector<Tensor>> Session::RunFloatInputs(const std::vector<FloatInput>& inputs) const {
+absl::StatusOr<std::vector<Tensor>> Session::RunFloatInputs(
+    const std::vector<FloatInput>& inputs,
+    const std::function<bool()>& is_cancelled) const {
+  if (is_cancelled && is_cancelled()) {
+    return absl::CancelledError("ONNX inference cancelled before execution");
+  }
   if (inputs.size() != inputs_.size()) {
     return absl::InvalidArgumentError("Float input count does not match the model contract");
   }
@@ -236,8 +283,10 @@ absl::StatusOr<std::vector<Tensor>> Session::RunFloatInputs(const std::vector<Fl
     std::vector<const char*> output_names;
     output_names.reserve(outputs_.size());
     for (const auto& output : outputs_) output_names.push_back(output.name.c_str());
+    Ort::RunOptions run_options;
+    RunCancellationMonitor cancellation_monitor(&run_options, is_cancelled);
     auto values = session_->Run(
-        Ort::RunOptions{nullptr},
+        run_options,
         input_names.data(),
         input_values.data(),
         input_values.size(),
@@ -259,6 +308,9 @@ absl::StatusOr<std::vector<Tensor>> Session::RunFloatInputs(const std::vector<Fl
     }
     return tensors;
   } catch (const Ort::Exception& error) {
+    if (is_cancelled && is_cancelled()) {
+      return absl::CancelledError("ONNX inference cancelled");
+    }
     return ort_error("ONNX inference failed", error);
   }
 }

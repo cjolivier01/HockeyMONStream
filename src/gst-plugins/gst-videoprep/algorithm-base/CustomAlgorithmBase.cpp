@@ -718,6 +718,14 @@ void update_dummy_meta_data_on_buffer(NvDsBatchMeta* batch_meta) {
 #endif // HAS_NVDS_CUSTOMUSERMETA
 
 void CustomAlgorithmBase::Shutdown() {
+  RequestShutdown();
+  /* Wait for OutputThread to complete */
+  if (m_outputThread && m_outputThread->joinable()) {
+    m_outputThread->join();
+  }
+}
+
+void CustomAlgorithmBase::RequestShutdown() {
   shutdown_requested_.store(true, std::memory_order_release);
   // Stop accepting input immediately, then close caps/pool publication while
   // holding the same lock used by the publishing transaction. If publication
@@ -737,10 +745,6 @@ void CustomAlgorithmBase::Shutdown() {
   while (!pending.empty()) {
     gst_buffer_unref(pending.front().inbuf);
     pending.pop();
-  }
-  /* Wait for OutputThread to complete */
-  if (m_outputThread && m_outputThread->joinable()) {
-    m_outputThread->join();
   }
 }
 

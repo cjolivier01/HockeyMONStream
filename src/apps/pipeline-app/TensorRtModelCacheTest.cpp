@@ -29,6 +29,10 @@ void write_inference_config(const fs::path& path, int network_mode) {
                "  model-engine-file: /tmp/not-the-derived-name.engine\n"
                "  labelfile-path: ../packaged-models/labels.txt\n"
                "  custom-lib-path: ../packaged-models/custom.so\n"
+               "  custom-network-config: ../packaged-models/network.cfg\n"
+               "  tlt-encoded-model: ../packaged-models/detector.etlt\n"
+               "  op-tensor-files: ../packaged-models/output-0.tensor;../packaged-models/output-1.tensor\n"
+               "  raw-output-file-write: true\n"
                "  batch-size: 2\n"
                "  gpu-id: 0\n"
                "  network-mode: "
@@ -66,9 +70,34 @@ int main(int argc, char** argv) {
     std::ofstream(models / "detector.onnx") << "test onnx model\n";
     std::ofstream(models / "labels.txt") << "person\n";
     std::ofstream(models / "custom.so") << "test library\n";
+    std::ofstream(models / "network.cfg") << "test network config\n";
+    std::ofstream(models / "detector.etlt") << "test TLT model\n";
+    std::ofstream(models / "output-0.tensor") << "test output tensor zero\n";
+    std::ofstream(models / "output-1.tensor") << "test output tensor one\n";
     std::ofstream(models / "detector_bf16.engine") << "prebuilt BF16 engine\n";
     fs::create_symlink("detector.onnx", models / "linked-detector.onnx");
     write_inference_config(configs / "infer.yaml", 0);
+    std::ofstream(configs / "loader.yaml") << "property:\n"
+                                              "  onnx-file: ../packaged-models/detector.onnx\n"
+                                              "  model-engine-file: ../packaged-models/loader.engine\n"
+                                              "  custom-lib-path: libnvdsinfer_custom_impl_Yolo.so\n"
+                                              "  batch-size: 2\n"
+                                              "  gpu-id: 0\n"
+                                              "  network-mode: 0\n";
+    std::ofstream(configs / "writable-detector.onnx") << "writable test model\n";
+    std::ofstream(configs / "loader-writable.yaml")
+        << "property:\n"
+           "  onnx-file: writable-detector.onnx\n"
+           "  model-engine-file: writable-detector.engine\n"
+           "  custom-lib-path: libnvdsinfer_custom_impl_Yolo.so\n"
+           "  custom-network-config: ../packaged-models/network.cfg\n"
+           "  tlt-encoded-model: ../packaged-models/detector.etlt\n"
+           "  op-tensor-files: "
+           "../packaged-models/output-0.tensor;../packaged-models/output-1.tensor\n"
+           "  raw-output-file-write: true\n"
+           "  batch-size: 2\n"
+           "  gpu-id: 0\n"
+           "  network-mode: 0\n";
     std::ofstream(configs / "infer.txt") << "[property]\nonnx-file=detector.onnx\n";
     std::ofstream(configs / "linked.yaml") << "property:\n"
                                               "  onnx-file: ../packaged-models/linked-detector.onnx\n"
@@ -142,6 +171,19 @@ int main(int argc, char** argv) {
     ok &= expect(
         cached["property"]["custom-lib-path"].as<std::string>() == (models / "custom.so").string(),
         "relative custom library path must remain valid after moving the runtime config");
+    ok &= expect(
+        cached["property"]["custom-network-config"].as<std::string>() == (models / "network.cfg").string(),
+        "custom network config must remain valid after moving the runtime config");
+    ok &= expect(
+        cached["property"]["tlt-encoded-model"].as<std::string>() == (models / "detector.etlt").string(),
+        "TLT model must remain valid after moving the runtime config");
+    ok &= expect(
+        cached["property"]["op-tensor-files"].as<std::string>() ==
+            (models / "output-0.tensor").string() + ";" + (models / "output-1.tensor").string(),
+        "each output tensor path must remain valid after moving the runtime config");
+    ok &= expect(
+        cached["property"]["raw-output-file-write"].as<bool>(),
+        "raw-output-file-write must remain a boolean instead of being treated as a path");
   }
 
   const pid_t lock_probe = ::fork();
@@ -166,6 +208,141 @@ int main(int argc, char** argv) {
       ::waitpid(lock_probe, &probe_status, 0) == lock_probe && WIFEXITED(probe_status) &&
           WEXITSTATUS(probe_status) == 0,
       "concurrent cache probe must continue after the engine lock is released");
+
+  std::ofstream(models / "output-0.tensor", std::ios::trunc) << "changed output tensor zero\n";
+  YAML::Node changed_first_tensor_pipeline = pipeline_for("infer.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(changed_first_tensor_pipeline, configs).ok(),
+      "a changed first output tensor must prepare successfully");
+  const fs::path changed_first_tensor_runtime =
+      changed_first_tensor_pipeline["primary-gie"]["config-file"].as<std::string>();
+  ok &= expect(
+      changed_first_tensor_runtime.parent_path() != runtime_config.parent_path(),
+      "the first output tensor contents must participate in engine cache identity");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  std::ofstream(models / "output-1.tensor", std::ios::trunc) << "changed output tensor one\n";
+  YAML::Node changed_second_tensor_pipeline = pipeline_for("infer.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(changed_second_tensor_pipeline, configs).ok(),
+      "a changed second output tensor must prepare successfully");
+  const fs::path changed_second_tensor_runtime =
+      changed_second_tensor_pipeline["primary-gie"]["config-file"].as<std::string>();
+  ok &= expect(
+      changed_second_tensor_runtime.parent_path() != changed_first_tensor_runtime.parent_path(),
+      "the second output tensor contents must independently participate in engine cache identity");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  std::ofstream(models / "network.cfg", std::ios::trunc) << "changed network config\n";
+  YAML::Node changed_network_config_pipeline = pipeline_for("infer.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(changed_network_config_pipeline, configs).ok(),
+      "a changed custom network config must prepare successfully");
+  const fs::path changed_network_config_runtime =
+      changed_network_config_pipeline["primary-gie"]["config-file"].as<std::string>();
+  ok &= expect(
+      changed_network_config_runtime.parent_path() != changed_second_tensor_runtime.parent_path(),
+      "custom network config contents must participate in engine cache identity");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  YAML::Node loader_pipeline = pipeline_for("loader.yaml");
+  const fs::path parser_binary = root / "libnvdsinfer_custom_impl_Yolo.so";
+  std::ofstream(parser_binary) << "staged test parser\n";
+  const fs::path runtime_libraries = root / "runtime-libraries";
+  fs::create_directories(runtime_libraries);
+  const fs::path staged_yolo = runtime_libraries / "libnvdsinfer_custom_impl_Yolo.so";
+  fs::create_symlink(parser_binary, staged_yolo);
+  ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", runtime_libraries.c_str(), 1);
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(loader_pipeline, configs).ok(),
+      "a loader-resolved custom inference library must prepare successfully");
+  const fs::path loader_runtime = loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  fs::path loader_engine;
+  if (fs::is_regular_file(loader_runtime)) {
+    const YAML::Node loader_cached = YAML::LoadFile(loader_runtime.string());
+    loader_engine = loader_cached["property"]["model-engine-file"].as<std::string>();
+    ok &= expect(
+        loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
+        "a bare custom library name must resolve to the staged runtime library in the runtime inference config");
+  }
+  YAML::Node writable_loader_pipeline = pipeline_for("loader-writable.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(writable_loader_pipeline, configs).ok(),
+      "a staged custom library must prepare even when the ONNX model directory is writable");
+  const fs::path writable_loader_runtime = writable_loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  ok &= expect(
+      writable_loader_runtime != configs / "loader-writable.yaml" && fs::is_regular_file(writable_loader_runtime),
+      "a writable model must still receive a runtime inference config for its staged custom library");
+  if (fs::is_regular_file(writable_loader_runtime)) {
+    const YAML::Node writable_loader_cached = YAML::LoadFile(writable_loader_runtime.string());
+    ok &= expect(
+        writable_loader_cached["property"]["custom-lib-path"].as<std::string>() == staged_yolo.string(),
+        "the writable-model runtime config must use the staged custom library path");
+    ok &= expect(
+        writable_loader_cached["property"]["onnx-file"].as<std::string>() ==
+            fs::absolute(configs / "writable-detector.onnx").lexically_normal().string(),
+        "moving a staged-parser config must preserve its relative ONNX path");
+    ok &= expect(
+        writable_loader_cached["property"]["model-engine-file"].as<std::string>() ==
+            fs::absolute(configs / "writable-detector.engine").lexically_normal().string(),
+        "moving a staged-parser config must preserve its relative engine path");
+    ok &= expect(
+        writable_loader_cached["property"]["custom-network-config"].as<std::string>() ==
+            (models / "network.cfg").string(),
+        "parser-only staging must preserve a relative custom network config");
+    ok &= expect(
+        writable_loader_cached["property"]["tlt-encoded-model"].as<std::string>() ==
+            (models / "detector.etlt").string(),
+        "parser-only staging must preserve a relative TLT model");
+    ok &= expect(
+        writable_loader_cached["property"]["op-tensor-files"].as<std::string>() ==
+            (models / "output-0.tensor").string() + ";" + (models / "output-1.tensor").string(),
+        "parser-only staging must relocate every output tensor path");
+    ok &= expect(
+        writable_loader_cached["property"]["raw-output-file-write"].as<bool>(),
+        "parser-only staging must preserve raw-output-file-write as a boolean");
+  }
+
+  const fs::path second_runtime_libraries = root / "runtime-libraries-second-launch";
+  fs::create_directories(second_runtime_libraries);
+  const fs::path second_staged_yolo = second_runtime_libraries / "libnvdsinfer_custom_impl_Yolo.so";
+  fs::create_symlink(parser_binary, second_staged_yolo);
+  ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", second_runtime_libraries.c_str(), 1);
+  YAML::Node second_loader_pipeline = pipeline_for("loader.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(second_loader_pipeline, configs).ok(),
+      "the same parser staged for a second launch must prepare successfully");
+  const fs::path second_loader_runtime = second_loader_pipeline["primary-gie"]["config-file"].as<std::string>();
+  if (fs::is_regular_file(second_loader_runtime)) {
+    const YAML::Node second_loader_cached = YAML::LoadFile(second_loader_runtime.string());
+    ok &= expect(
+        second_loader_cached["property"]["custom-lib-path"].as<std::string>() == second_staged_yolo.string(),
+        "the second launch runtime config must use its own staged custom library path");
+    ok &= expect(
+        !loader_engine.empty() &&
+            fs::path(second_loader_cached["property"]["model-engine-file"].as<std::string>()) == loader_engine,
+        "identical parser contents in different launch directories must reuse the TensorRT engine cache identity");
+  }
+
+  std::ofstream(parser_binary, std::ios::trunc) << "changed staged test parser\n";
+  const fs::path third_runtime_libraries = root / "runtime-libraries-changed-parser";
+  fs::create_directories(third_runtime_libraries);
+  const fs::path third_staged_yolo = third_runtime_libraries / "libnvdsinfer_custom_impl_Yolo.so";
+  fs::create_symlink(parser_binary, third_staged_yolo);
+  ::setenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR", third_runtime_libraries.c_str(), 1);
+  YAML::Node changed_parser_pipeline = pipeline_for("loader.yaml");
+  ok &= expect(
+      hm::pipeline::PrepareTensorRtModelCache(changed_parser_pipeline, configs).ok(),
+      "a changed parser staged for another launch must prepare successfully");
+  const fs::path changed_parser_runtime = changed_parser_pipeline["primary-gie"]["config-file"].as<std::string>();
+  if (fs::is_regular_file(changed_parser_runtime)) {
+    const YAML::Node changed_parser_cached = YAML::LoadFile(changed_parser_runtime.string());
+    ok &= expect(
+        fs::path(changed_parser_cached["property"]["model-engine-file"].as<std::string>()) != loader_engine,
+        "changed parser contents must select a fresh TensorRT engine cache identity");
+  }
+  ::unsetenv("HSTREAM_NVINFER_CUSTOM_LIBRARY_DIR");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
 
   const fs::path fp32_runtime_directory = runtime_config.parent_path();
   write_inference_config(configs / "infer.yaml", 2);

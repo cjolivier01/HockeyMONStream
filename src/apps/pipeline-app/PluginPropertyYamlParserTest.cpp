@@ -187,6 +187,50 @@ post-stitch-rotate-degrees: nope
     return 1;
   }
 
+  HmStitcherConfig null_stitcher_rotation{};
+  null_stitcher_rotation.post_stitch_rotate_degrees = 6.0F;
+  const YAML::Node null_stitcher_rotation_yaml = YAML::Load(R"yaml(
+post-stitch-rotate-degrees: null
+)yaml");
+  if (!parse_hmstitcher_yaml(&null_stitcher_rotation, null_stitcher_rotation_yaml, "/tmp") ||
+      null_stitcher_rotation.post_stitch_rotate_degrees != 6.0F) {
+    std::cerr << "Expected null post-stitch-rotate-degrees to behave as unset\n";
+    return 1;
+  }
+
+  HmStitcherConfig underscored_null_stitcher_rotation{};
+  underscored_null_stitcher_rotation.post_stitch_rotate_degrees = 7.0F;
+  const YAML::Node underscored_null_stitcher_rotation_yaml = YAML::Load(R"yaml(
+post_stitch_rotate_degrees: null
+)yaml");
+  if (!parse_hmstitcher_yaml(&underscored_null_stitcher_rotation, underscored_null_stitcher_rotation_yaml, "/tmp") ||
+      underscored_null_stitcher_rotation.post_stitch_rotate_degrees != 7.0F) {
+    std::cerr << "Expected null underscored post_stitch_rotate_degrees to behave as unset\n";
+    return 1;
+  }
+
+  auto dashed_null_underscored_rotation = std::make_unique<HmStitcherConfig>();
+  const YAML::Node dashed_null_underscored_rotation_yaml = YAML::Load(R"yaml(
+post-stitch-rotate-degrees: null
+post_stitch_rotate_degrees: 8.5
+)yaml");
+  if (!parse_hmstitcher_yaml(dashed_null_underscored_rotation.get(), dashed_null_underscored_rotation_yaml, "/tmp") ||
+      dashed_null_underscored_rotation->post_stitch_rotate_degrees != 8.5F) {
+    std::cerr << "Expected a non-null underscored rotation to follow a null dashed alias\n";
+    return 1;
+  }
+
+  auto dashed_null_malformed_underscored_rotation = std::make_unique<HmStitcherConfig>();
+  const YAML::Node dashed_null_malformed_underscored_rotation_yaml = YAML::Load(R"yaml(
+post-stitch-rotate-degrees: null
+post_stitch_rotate_degrees: invalid
+)yaml");
+  if (parse_hmstitcher_yaml(
+          dashed_null_malformed_underscored_rotation.get(), dashed_null_malformed_underscored_rotation_yaml, "/tmp")) {
+    std::cerr << "Expected a malformed active underscored rotation after a null dashed alias to fail\n";
+    return 1;
+  }
+
   const YAML::Node uri_playlist_config = YAML::Load(R"yaml(
 application:
   enable-perf-measurement: 0

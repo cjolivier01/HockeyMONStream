@@ -1,8 +1,12 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -84,6 +88,84 @@ bool write_remap_pair(
       cv::imwrite((directory / (prefix + "_y.tif")).string(), y);
 }
 
+uint32_t png_crc32(const unsigned char* data, size_t size) {
+  uint32_t crc = 0xffffffffU;
+  for (size_t index = 0; index < size; ++index) {
+    crc ^= data[index];
+    for (int bit = 0; bit < 8; ++bit)
+      crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+  }
+  return crc ^ 0xffffffffU;
+}
+
+void append_big_endian_u32(std::vector<unsigned char>* output, uint32_t value) {
+  output->push_back(static_cast<unsigned char>(value >> 24));
+  output->push_back(static_cast<unsigned char>(value >> 16));
+  output->push_back(static_cast<unsigned char>(value >> 8));
+  output->push_back(static_cast<unsigned char>(value));
+}
+
+bool add_png_pixel_offset(const std::filesystem::path& path, int32_t x, int32_t y) {
+  std::ifstream input(path, std::ios::binary);
+  std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  if (png.size() < 33 || std::string(png.begin() + 12, png.begin() + 16) != "IHDR")
+    return false;
+  std::vector<unsigned char> chunk;
+  append_big_endian_u32(&chunk, 9);
+  chunk.insert(chunk.end(), {'o', 'F', 'F', 's'});
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(x));
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(y));
+  chunk.push_back(0); // pixel units
+  append_big_endian_u32(&chunk, png_crc32(chunk.data() + 4, 13));
+  png.insert(png.begin() + 33, chunk.begin(), chunk.end());
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
+}
+
+std::vector<unsigned char> read_binary_file(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::vector<unsigned char>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+bool corrupt_png_pixel_offset_without_updating_crc(const std::filesystem::path& path) {
+  std::vector<unsigned char> png = read_binary_file(path);
+  const std::array<unsigned char, 4> type = {'o', 'F', 'F', 's'};
+  const auto found = std::search(png.begin(), png.end(), type.begin(), type.end());
+  if (found == png.end() || std::distance(found, png.end()) < 17)
+    return false;
+  *(found + 7) ^= 1U;
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
+}
+
+bool move_png_pixel_offset_after_first_image_data(const std::filesystem::path& path) {
+  std::vector<unsigned char> png = read_binary_file(path);
+  const std::array<unsigned char, 4> offset_type = {'o', 'F', 'F', 's'};
+  auto offset = std::search(png.begin(), png.end(), offset_type.begin(), offset_type.end());
+  if (offset == png.end() || std::distance(png.begin(), offset) < 4 || std::distance(offset, png.end()) < 17)
+    return false;
+  auto chunk_begin = offset - 4;
+  std::vector<unsigned char> chunk(chunk_begin, chunk_begin + 21);
+  png.erase(chunk_begin, chunk_begin + 21);
+
+  const std::array<unsigned char, 4> image_data_type = {'I', 'D', 'A', 'T'};
+  const auto image_data = std::search(png.begin(), png.end(), image_data_type.begin(), image_data_type.end());
+  if (image_data == png.end() || std::distance(png.begin(), image_data) < 4)
+    return false;
+  const auto length = static_cast<size_t>(static_cast<uint32_t>(*(image_data - 4)) << 24) |
+      static_cast<size_t>(static_cast<uint32_t>(*(image_data - 3)) << 16) |
+      static_cast<size_t>(static_cast<uint32_t>(*(image_data - 2)) << 8) |
+      static_cast<size_t>(static_cast<uint32_t>(*(image_data - 1)));
+  if (length > static_cast<size_t>(std::distance(image_data, png.end())) - 8)
+    return false;
+  png.insert(image_data + 8 + static_cast<std::ptrdiff_t>(length), chunk.begin(), chunk.end());
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
+}
+
 } // namespace
 
 int main() {
@@ -162,9 +244,63 @@ int main() {
       "second fake mapping must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0000", 40, 32), "first fake CV_16U remap must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0001", 40, 32), "second fake CV_16U remap must exist");
-  cv::Mat seam(32, 42, CV_8U, cv::Scalar(0));
-  seam.colRange(21, 42).setTo(255);
+  cv::Mat seam(30, 40, CV_8U, cv::Scalar(0));
+  seam.colRange(20, 40).setTo(255);
   ok &= expect(cv::imwrite((fixtures / "seam_file.png").string(), seam), "fake seam must exist");
+  ok &= expect(
+      add_png_pixel_offset(fixtures / "seam_file.png", 1, 1), "fake cropped enblend seam must carry an oFFs origin");
+
+  const fs::path seam_validation = root / "seam-validation";
+  fs::create_directories(seam_validation);
+  const fs::path corrupt_offset = seam_validation / "corrupt-offset.png";
+  ok &= expect(cv::imwrite(corrupt_offset.string(), seam), "corrupt-offset fixture must be encoded");
+  ok &= expect(
+      add_png_pixel_offset(corrupt_offset, 1, 1) && corrupt_png_pixel_offset_without_updating_crc(corrupt_offset),
+      "corrupt-offset fixture must retain a stale oFFs CRC");
+  ok &= expect(
+      absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(corrupt_offset, 42, 32)),
+      "a corrupt oFFs payload must fail closed even when libpng can decode the pixels");
+
+  const fs::path duplicate_offset = seam_validation / "duplicate-offset.png";
+  ok &= expect(cv::imwrite(duplicate_offset.string(), seam), "duplicate-offset fixture must be encoded");
+  ok &= expect(
+      add_png_pixel_offset(duplicate_offset, 1, 1) && add_png_pixel_offset(duplicate_offset, 1, 1),
+      "duplicate-offset fixture must contain two valid oFFs chunks");
+  ok &= expect(
+      absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(duplicate_offset, 42, 32)),
+      "duplicate oFFs chunks must fail closed");
+
+  const fs::path late_offset = seam_validation / "late-offset.png";
+  ok &= expect(cv::imwrite(late_offset.string(), seam), "late-offset fixture must be encoded");
+  ok &= expect(
+      add_png_pixel_offset(late_offset, 1, 1) && move_png_pixel_offset_after_first_image_data(late_offset),
+      "late-offset fixture must carry its oFFs chunk after IDAT");
+  ok &= expect(
+      absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(late_offset, 42, 32)),
+      "an oFFs chunk after image data must fail closed instead of being ignored");
+
+  const fs::path interrupted_normalization = seam_validation / "interrupted-normalization.png";
+  ok &= expect(
+      cv::imwrite(interrupted_normalization.string(), seam) && add_png_pixel_offset(interrupted_normalization, 1, 1),
+      "interrupted-normalization fixture must carry an oFFs origin");
+  const std::vector<unsigned char> original_interrupted_seam = read_binary_file(interrupted_normalization);
+  ::setenv("HM_TEST_SEAM_NORMALIZATION_FAIL_BEFORE_RENAME", "1", 1);
+  const auto interrupted_normalization_status =
+      hm::stitching::HuginProject::ValidateAndNormalizeSeam(interrupted_normalization, 42, 32);
+  ::unsetenv("HM_TEST_SEAM_NORMALIZATION_FAIL_BEFORE_RENAME");
+  bool temporary_remains = false;
+  for (const auto& entry : fs::directory_iterator(seam_validation)) {
+    if (entry.path().filename().string().rfind(".interrupted-normalization.png.normalize-", 0) == 0)
+      temporary_remains = true;
+  }
+  ok &= expect(
+      !interrupted_normalization_status.ok() &&
+          read_binary_file(interrupted_normalization) == original_interrupted_seam && !temporary_remains,
+      "failed normalization must preserve the published seam and remove its temporary file");
+  ok &= expect(
+      hm::stitching::HuginProject::ValidateAndNormalizeSeam(interrupted_normalization, 42, 32).ok() &&
+          cv::imread(interrupted_normalization.string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(42, 32),
+      "successful normalization must atomically publish the full-canvas seam");
   ok &= expect(
       cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 42, CV_8UC3, cv::Scalar(1, 2, 3))),
       "fake panorama must exist");
@@ -237,6 +373,34 @@ int main() {
       "optimizer stage must become active before Hugin setup can fail");
   ::setenv("HM_PTO_GEN", pto_gen.c_str(), 1);
   options.progress = {};
+  const fs::path slow_autooptimiser = root / "slow-autooptimiser";
+  const fs::path slow_optimizer_started = root / "slow-autooptimiser.started";
+  ok &= expect(
+      write_tool(
+          slow_autooptimiser,
+          "printf started > '" + slow_optimizer_started.string() +
+              "'\n"
+              "sleep 30\n"),
+      "slow fake autooptimiser must be created");
+  ::setenv("HM_AUTOOPTIMISER", slow_autooptimiser.c_str(), 1);
+  std::atomic<bool> cancel_optimizer{false};
+  options.is_cancelled = [&] { return cancel_optimizer.load(); };
+  std::thread optimizer_interrupt([&] {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!fs::exists(slow_optimizer_started) && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    cancel_optimizer = true;
+  });
+  const auto cancellation_started = std::chrono::steady_clock::now();
+  const auto cancelled_optimizer = hm::stitching::HuginProject::Configure(
+      root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+  const auto cancellation_elapsed = std::chrono::steady_clock::now() - cancellation_started;
+  optimizer_interrupt.join();
+  options.is_cancelled = {};
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
+  ok &= expect(
+      absl::IsCancelled(cancelled_optimizer) && cancellation_elapsed < std::chrono::seconds(5),
+      "optimizer cancellation must terminate the Hugin process group before pipeline shutdown times out");
   const auto configured = hm::stitching::HuginProject::Configure(
       root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
   if (!configured.ok())
@@ -271,9 +435,11 @@ int main() {
         optimizer_args.find("-n") == std::string::npos,
         "Hugin orchestration must not request script-only optimization");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+    cv::Mat expected_seam;
+    cv::copyMakeBorder(seam, expected_seam, 1, 1, 1, 1, cv::BORDER_REPLICATE);
     ok &= expect(
-        published_seam.size() == cv::Size(42, 32),
-        "Hugin validation must match hm-cupano's float placement arithmetic at a pixel boundary");
+        published_seam.size() == cv::Size(42, 32) && cv::norm(published_seam, expected_seam, cv::NORM_INF) == 0,
+        "Hugin validation must place an oFFs-cropped enblend mask onto hm-cupano's full mapping canvas");
     const cv::Mat published_left = cv::imread((root / "game" / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat published_right = cv::imread((root / "game" / "right.png").string(), cv::IMREAD_COLOR);
     ok &= expect(
@@ -299,6 +465,34 @@ int main() {
        }) {
     ok &= expect(fs::is_regular_file(root / "game" / artifact), "configured Hugin artifact must be published");
   }
+
+  const fs::path fallback_game = root / "fallback-game";
+  fs::create_directories(fallback_game);
+  ok &= expect(write_tool(enblend, "exit 44\n"), "failing fake enblend must be created");
+  ::unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto fallback_disabled = hm::stitching::HuginProject::Configure(
+      fallback_game, root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+  ok &= expect(
+      absl::IsFailedPrecondition(fallback_disabled) &&
+          std::string(fallback_disabled.message()).find("HM_ALLOW_HARD_SEAM_FALLBACK=1") != std::string::npos &&
+          !fs::exists(fallback_game / "seam_file.png"),
+      "failed enblend must fail closed without publishing a hard seam");
+  ::setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", 1);
+  const auto fallback_enabled = hm::stitching::HuginProject::Configure(
+      fallback_game, root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
+  ::unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  ok &= expect(
+      fallback_enabled.ok() && fs::is_regular_file(fallback_game / "seam_file.png"),
+      "HM_ALLOW_HARD_SEAM_FALLBACK=1 must permit transactional hard-seam generation");
+  ok &= expect(
+      write_tool(
+          enblend,
+          "cp '" + fixtures.string() +
+              "/seam_file.png' seam_file.png\n"
+              "cp '" +
+              fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "working fake enblend must be restored");
+
   const auto previous_project = [&]() {
     std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());

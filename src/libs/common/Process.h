@@ -30,7 +30,8 @@ int run_command(
     const std::vector<std::string>& cmd,
     const std::string& working_dir,
     const std::map<std::string, std::string>& env,
-    std::function<void(const std::string&, const std::string&)> callback);
+    std::function<void(const std::string&, const std::string&)> callback,
+    const std::function<bool()>& is_cancelled = {});
 
 std::optional<std::string> findExecutable(const std::string& executable, const std::vector<std::string>& envVars);
 std::vector<std::string> splitPaths(const std::string& paths);

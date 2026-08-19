@@ -15,6 +15,10 @@
 
 namespace hm::stitching {
 
+// Hard-seam generation is a diagnostic fallback and must be explicitly opted
+// into with HM_ALLOW_HARD_SEAM_FALLBACK=1.
+bool hard_seam_fallback_enabled();
+
 class HuginProject {
  public:
   class ArtifactLock {
@@ -43,6 +47,7 @@ class HuginProject {
     std::optional<size_t> max_canvas_dimension;
     std::string expected_invalidation_id;
     ProgressCallback progress;
+    std::function<bool()> is_cancelled;
   };
 
   // Pure helpers exposed for focused contract tests.
@@ -52,6 +57,13 @@ class HuginProject {
   static absl::StatusOr<std::pair<size_t, size_t>> ParseCanvasSize(const std::string& pto);
   static absl::StatusOr<int> ParseProjection(const std::string& pto);
   static absl::StatusOr<CameraPose> ParseCameraPose(const std::string& pto, size_t image_index);
+
+  // Validate a two-camera enblend seam and expand any pixel-offset crop to the
+  // full mapping canvas expected by hm-cupano.
+  static absl::Status ValidateAndNormalizeSeam(
+      const std::filesystem::path& seam_path,
+      int canvas_width,
+      int canvas_height);
 
   // Builds all Hugin products in a private same-filesystem directory and only
   // publishes them into game_dir after every required mapping has validated.

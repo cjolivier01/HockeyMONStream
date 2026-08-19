@@ -239,7 +239,13 @@ absl::StatusOr<RinkProfile> RinkSegmentation::Postprocess(
   return result;
 }
 
-absl::StatusOr<RinkProfile> RinkSegmentation::Infer(const cv::Mat& bgr_image, double inference_scale) const {
+absl::StatusOr<RinkProfile> RinkSegmentation::Infer(
+    const cv::Mat& bgr_image,
+    double inference_scale,
+    const std::function<bool()>& is_cancelled) const {
+  if (is_cancelled && is_cancelled()) {
+    return absl::CancelledError("Rink inference cancelled before preprocessing");
+  }
   if (bgr_image.empty() || bgr_image.type() != CV_8UC3) {
     return absl::InvalidArgumentError("Rink input must be a non-empty CV_8UC3 BGR image");
   }
@@ -267,8 +273,8 @@ absl::StatusOr<RinkProfile> RinkSegmentation::Infer(const cv::Mat& bgr_image, do
   auto input = Prepare(inference_image);
   if (!input.ok())
     return input.status();
-  auto outputs =
-      session_->RunFloat("images", {1, 3, kInputHeight, kInputWidth}, input->tensor.data(), input->tensor.size());
+  auto outputs = session_->RunFloat(
+      "images", {1, 3, kInputHeight, kInputWidth}, input->tensor.data(), input->tensor.size(), is_cancelled);
   if (!outputs.ok())
     return outputs.status();
   if (outputs->size() != 2)

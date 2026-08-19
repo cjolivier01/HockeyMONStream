@@ -212,12 +212,16 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     const cv::Mat& left_bgr,
     const cv::Mat& right_bgr,
     size_t max_control_points,
-    const std::function<void()>& inference_complete) const {
+    const std::function<void()>& inference_complete,
+    const std::function<bool()>& is_cancelled) const {
+  if (is_cancelled && is_cancelled()) {
+    return absl::CancelledError("Feature matching cancelled before preprocessing");
+  }
   auto input = Prepare(left_bgr, right_bgr);
   if (!input.ok())
     return input.status();
-  auto outputs =
-      session_->RunFloat("images", {2, 3, kInputHeight, kInputWidth}, input->tensor.data(), input->tensor.size());
+  auto outputs = session_->RunFloat(
+      "images", {2, 3, kInputHeight, kInputWidth}, input->tensor.data(), input->tensor.size(), is_cancelled);
   if (!outputs.ok())
     return outputs.status();
   if (outputs->size() != 3)

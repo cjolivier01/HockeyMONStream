@@ -50,6 +50,7 @@ absl::Status claim_unique_archive_output_path(
     const std::string& sink_name);
 absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_files(
     const std::filesystem::path& configured_path);
+absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config);
 std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
 
 } // namespace configurator_internal
@@ -74,6 +75,10 @@ class Configurator {
       const YAML::Node& private_config,
       const std::string& expected_invalidation_id = {},
       bool remove_rink_masks = false);
+  absl::Status persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time);
+  absl::StatusOr<bool> reconcile_stitch_frame_time_override(
+      const std::string& normalized_stitch_frame_time,
+      const std::string& expected_invalidation_id = {});
 
   static std::filesystem::path get_game_dir(const std::string& game_id);
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);
@@ -92,6 +97,16 @@ class Configurator {
 
   const YAML::Node& config() const {
     return config_;
+  }
+  const YAML::Node& game_private_config() const {
+    return private_config_;
+  }
+
+  bool stitching_calibration_required() const {
+    return stitching_calibration_required_;
+  }
+  const std::string& active_stitching_invalidation_id() const {
+    return active_stitching_invalidation_id_;
   }
 
   absl::Status complete_configuration(
@@ -183,6 +198,7 @@ class Configurator {
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
   std::string active_stitching_invalidation_id_;
+  bool stitching_calibration_required_{false};
   mutable std::map<std::string, int> archive_lock_fds_;
   mutable std::map<std::string, int> archive_work_lock_fds_;
   mutable std::map<std::string, std::filesystem::path> archive_run_paths_;

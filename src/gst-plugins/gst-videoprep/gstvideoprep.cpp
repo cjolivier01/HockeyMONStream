@@ -149,6 +149,7 @@ enum {
   PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
   PROP_DYNAMIC_ACCELERATION_SCALING,
   PROP_RUNTIME_TUNING_CONFIG_FILE,
+  PROP_CANCEL_PENDING_WORK,
   PROP_LAST_PROPERTY_SET_OK,
   PROP_SILENT,
 };
@@ -1201,6 +1202,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_CANCEL_PENDING_WORK,
+      g_param_spec_boolean(
+          "cancel-pending-work",
+          "Cancel pending work",
+          "Request cooperative cancellation of long-running plugin work",
+          FALSE,
+          GParamFlags(G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_LAST_PROPERTY_SET_OK,
       g_param_spec_boolean(
           "last-property-set-ok",
@@ -1460,6 +1471,11 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
           config_file && *config_file && set_priv_property("runtime-tuning-config-file", config_file);
       break;
     }
+    case PROP_CANCEL_PENDING_WORK:
+      if (g_value_get_boolean(value)) {
+        set_priv_property("cancel-pending-work", "1");
+      }
+      break;
     case PROP_LAST_PROPERTY_SET_OK:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
       break;
