@@ -387,6 +387,14 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_right_)) {
       return false;
     }
+  } else if (key == "shadow-lift") {
+    float shadow_lift_percent = 0.0f;
+    if (!parse_finite_float(prop.value, &shadow_lift_percent) || shadow_lift_percent < 0.0f ||
+        shadow_lift_percent > 100.0f) {
+      std::cerr << "Invalid shadow lift percentage: " << prop.value << std::endl;
+      return false;
+    }
+    shadow_lift_percent_ = shadow_lift_percent;
   } else if (key == "no-crop") {
     // TODO: implement, needs to change caps too
     no_crop_ = !!std::atoi(prop.value.c_str());
@@ -586,6 +594,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           transform.crop_box,
           outgoing_surface.get_mutable(),
           output_rect,
+          shadow_lift_percent_,
           cuda_stream_));
     } else {
       // assert(false);

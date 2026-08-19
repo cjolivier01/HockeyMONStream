@@ -2565,6 +2565,10 @@ void HStreamWindow::configureControlHelp() {
        "Limit tracking speed when the estimated time to the destination falls below this frame count."},
       {"Apply_To_Fast_Box", "Apply saved tracking and motion tuning to the fast/current-ROI tracking box."},
       {"Apply_To_Follower_Box", "Apply saved tracking and motion tuning to the follower/aspect tracking box."},
+      {"Bring_Up_Shadows",
+       "Reveal detail in dark Program areas with a monotone, black-anchored VIDEO grading curve. Midtones, "
+       "highlights, overlays, and alpha are protected. Zero bypasses the grade; 100 is the strongest validated "
+       "lift."},
       {"Overshoot_Stop_Delay_Frames", "Frames to delay stopping when tracking motion overshoots its destination."},
       {"Post_Nonstop_Stop_Delay_Frames", "Frames to delay stopping after a continuous non-stop movement segment."},
       {"Overshoot_Speed_Ratio_x100",
@@ -2687,6 +2691,9 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_X_x10")},
       {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_Y_x10")},
   };
+  const std::vector<CameraSliderSpec> color_controls = {
+      {"Bring_Up_Shadows", "Bring up shadows (%)", 0, 100, 0},
+  };
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, default_value("Stitch_Rotate_Degrees")},
       {"Link_Fixed_Edge_Rotation_Left_Right",
@@ -2709,6 +2716,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   if (program_stage) {
     control_tabs->addTab(add_slider_tab(tracking_controls), "Tracking");
     control_tabs->addTab(add_slider_tab(motion_controls), "Motion");
+    control_tabs->addTab(add_slider_tab(color_controls), "Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
     control_tabs->addTab(add_slider_tab(crop_controls), "Crop Rotation");
   } else {
@@ -4210,6 +4218,9 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   ++scheduled_playtracker_control_generation_;
   scheduled_playtracker_controls_.clear();
   scheduled_playtracker_controls_ready_ = false;
+  ++scheduled_playcropper_control_generation_;
+  scheduled_playcropper_controls_.clear();
+  scheduled_playcropper_controls_ready_ = false;
   publishing_playtracker_controls_.reset();
   scheduled_playtracker_force_all_targets_ = false;
   publishing_playtracker_force_all_targets_ = false;
@@ -4356,6 +4367,9 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   ++scheduled_playtracker_control_generation_;
   scheduled_playtracker_controls_.clear();
   scheduled_playtracker_controls_ready_ = false;
+  ++scheduled_playcropper_control_generation_;
+  scheduled_playcropper_controls_.clear();
+  scheduled_playcropper_controls_ready_ = false;
   publishing_playtracker_controls_.reset();
   scheduled_playtracker_force_all_targets_ = false;
   publishing_playtracker_force_all_targets_ = false;
@@ -6759,6 +6773,10 @@ bool HStreamWindow::applySavedControlConfig(
     config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
     mark_runtime_key("stitching.post_stitch_rotate_degrees");
   }
+  if (has_control(controls, "Bring_Up_Shadows")) {
+    config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = slider_value("Bring_Up_Shadows");
+    mark_runtime_key("pipeline.hmplaycropper.properties.shadow-lift");
+  }
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
       has_control(controls, "Right_Fixed_Edge_Rotation_Angle_x10");
@@ -8604,6 +8622,10 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     schedulePlaytrackerRuntimeControl(id, value);
     return false;
   }
+  if (id == "Bring_Up_Shadows") {
+    schedulePlaycropperRuntimeControl(id, value);
+    return false;
+  }
   return false;
 }
 
@@ -8633,6 +8655,21 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int val
       return;
     }
     scheduled_playtracker_controls_ready_ = true;
+    flushScheduledRuntimeControls();
+  });
+}
+
+void HStreamWindow::schedulePlaycropperRuntimeControl(const QString& id, int value) {
+  appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
+  scheduled_playcropper_controls_[id] = value;
+  scheduled_playcropper_controls_ready_ = false;
+  const quint64 generation = ++scheduled_playcropper_control_generation_;
+  QTimer::singleShot(120, this, [this, generation]() {
+    if (generation != scheduled_playcropper_control_generation_ || !pipeline_process_ ||
+        pipeline_process_->state() == QProcess::NotRunning) {
+      return;
+    }
+    scheduled_playcropper_controls_ready_ = true;
     flushScheduledRuntimeControls();
   });
 }
@@ -8669,6 +8706,17 @@ void HStreamWindow::flushScheduledRuntimeControls() {
         add_both_stages("fixed-edge-rotation-angle-left", left_angle);
         add_both_stages("fixed-edge-rotation-angle-right", right_angle);
       }
+    }
+    publishRuntimeControlBatch(controls, commands);
+    return;
+  }
+  if (scheduled_playcropper_controls_ready_ && !scheduled_playcropper_controls_.empty()) {
+    const std::map<QString, int> controls = std::move(scheduled_playcropper_controls_);
+    scheduled_playcropper_controls_.clear();
+    scheduled_playcropper_controls_ready_ = false;
+    std::vector<RuntimePropertyCommand> commands;
+    if (controls.count("Bring_Up_Shadows")) {
+      commands.push_back({"playcropper0", "shadow-lift", QString::number(cameraControlValue("Bring_Up_Shadows"))});
     }
     publishRuntimeControlBatch(controls, commands);
     return;
@@ -8754,7 +8802,8 @@ QSlider* HStreamWindow::addSlider(
       appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
     } else if (
         (scheduled_rotation_controls_.count(id) && scheduled_rotation_controls_.at(id) == new_value) ||
-        (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value)) {
+        (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value) ||
+        (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value)) {
       // The scheduler already reported the coalesced live update.
     } else {
       appendLog(QString("camera control %1=%2 apply=save/restart").arg(id).arg(new_value));

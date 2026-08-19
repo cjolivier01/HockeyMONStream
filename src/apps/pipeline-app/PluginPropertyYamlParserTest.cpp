@@ -52,6 +52,7 @@ hmplaycropper:
     output-width: 1920
     output-height: 1080
     silent: true
+    shadow-lift: 35
   private-properties:
     runtime-output-max-width: 3840
     runtime-output-max-height: 2160
@@ -84,6 +85,7 @@ ds-playtracker:
   }
   if (!expect_property(playcropper.plugin_properties, "output-width", "1920") ||
       !expect_property(playcropper.plugin_properties, "silent", "true") ||
+      !expect_property(playcropper.plugin_properties, "shadow-lift", "35") ||
       !expect_property(playcropper.private_properties, "runtime-output-max-width", "3840") ||
       !expect_property(playcropper.private_properties, "no-crop", "false")) {
     return 1;

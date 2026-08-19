@@ -1,3 +1,4 @@
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/ShadowToneCurve.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 
 #include <cstdint>
@@ -25,7 +26,8 @@ __global__ void cropRotateResizeKernel(
     float box_top,
     float box_width,
     float box_height,
-    int num_channels) {
+    int num_channels,
+    float shadow_lift_percent) {
   // Calculate output pixel coordinates
   const int x_out = blockIdx.x * blockDim.x + threadIdx.x;
   const int y_out = blockIdx.y * blockDim.y + threadIdx.y;
@@ -77,10 +79,15 @@ __global__ void cropRotateResizeKernel(
       // Bilinear interpolation
       float p0 = p00 * (1.0f - dx_frac) + p01 * dx_frac;
       float p1 = p10 * (1.0f - dx_frac) + p11 * dx_frac;
-      uint8_t result = static_cast<uint8_t>(p0 * (1.0f - dy_frac) + p1 * dy_frac);
+      float result = p0 * (1.0f - dy_frac) + p1 * dy_frac;
+      const bool is_alpha = num_channels == 4 && c == 3;
+      if (!is_alpha && shadow_lift_percent > 0.0f) {
+        result = evaluate_shadow_lift_curve(result / 255.0f, shadow_lift_percent) * 255.0f + 0.5f;
+      }
 
       // Write to output
-      output[y_out * output_pitch + x_out * num_channels + c] = result;
+      output[y_out * output_pitch + x_out * num_channels + c] =
+          static_cast<uint8_t>(clamp_shadow_value(result, 0.0f, 255.0f));
     }
   }
 }
@@ -95,6 +102,7 @@ cudaError_t combinedTransform(
     const hm::BBox& crop_box,
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
+    float shadow_lift_percent,
     cudaStream_t stream) {
   // Determine number of channels based on color format
   int num_channels = 0;
@@ -144,7 +152,8 @@ cudaError_t combinedTransform(
       crop_box.top,
       crop_box.width(),
       crop_box.height(),
-      num_channels);
+      num_channels,
+      shadow_lift_percent);
 
   // Check for errors
   return cudaGetLastError();

@@ -89,12 +89,14 @@ struct GstVideoPrep
   gdouble fixed_edge_rotation_angle_left;
   gdouble fixed_edge_rotation_angle_right;
   gdouble dynamic_acceleration_scaling;
+  gdouble shadow_lift;
   gboolean last_property_set_ok;
   gboolean post_stitch_rotate_degrees_set;
   gboolean fixed_edge_rotation_angle_set;
   gboolean fixed_edge_rotation_angle_left_set;
   gboolean fixed_edge_rotation_angle_right_set;
   gboolean dynamic_acceleration_scaling_set;
+  gboolean shadow_lift_set;
   guint property_set_sequence;
   guint plugin_private_config_sequence;
   guint post_stitch_rotate_degrees_sequence;
@@ -102,6 +104,7 @@ struct GstVideoPrep
   guint fixed_edge_rotation_angle_left_sequence;
   guint fixed_edge_rotation_angle_right_sequence;
   guint dynamic_acceleration_scaling_sequence;
+  guint shadow_lift_sequence;
 
   // GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 

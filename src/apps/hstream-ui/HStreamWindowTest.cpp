@@ -2033,6 +2033,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
+  auto* bring_up_shadows = require_child<QSlider>(window, "cameraSlider_Bring_Up_Shadows");
   auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* clear_log = require_child<QPushButton>(window, "clearLogButton");
@@ -2066,12 +2067,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time || !game_id || !rotate ||
-      !max_speed_x || !render_video || !log || !clear_log || !main_log_splitter || !setup_preview_splitter ||
-      !output_routing || !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface ||
-      !stitched_target || !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface ||
-      !camera3_surface || !external_notice || !camera1_notice || !stitched_status || !program_controls ||
-      !program_controls_toggle || !stitched_controls || !program_control_tabs || !stitched_control_tabs ||
-      !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !pipeline_process) {
+      !max_speed_x || !bring_up_shadows || !render_video || !log || !clear_log || !main_log_splitter ||
+      !setup_preview_splitter || !output_routing || !preview_tabs || !program_host || !preview_surface ||
+      !preview_target || !stitched_surface || !stitched_target || !camera1_host || !camera1_surface ||
+      !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface || !external_notice ||
+      !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle || !stitched_controls ||
+      !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel ||
+      !playback_progress || !pipeline_process) {
     return false;
   }
 
@@ -2131,9 +2133,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   setup_preview_splitter->setSizes({240, 440});
   QApplication::processEvents();
   if (!expect(
-          program_controls->isAncestorOf(max_speed_x) && stitched_controls->isAncestorOf(rotate) &&
-              !camera1_host->isAncestorOf(max_speed_x) && !camera1_host->isAncestorOf(rotate) &&
-              program_control_tabs->count() == 3 && stitched_control_tabs->count() == 1,
+          program_controls->isAncestorOf(max_speed_x) && program_controls->isAncestorOf(bring_up_shadows) &&
+              stitched_controls->isAncestorOf(rotate) && !camera1_host->isAncestorOf(max_speed_x) &&
+              !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
+              program_control_tabs->count() == 4 && stitched_control_tabs->count() == 1,
           "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
     return false;
   }
@@ -3963,7 +3966,7 @@ bool test_output_controls(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 4, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 5, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -3976,6 +3979,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* max_speed_y = require_child<QSlider>(window, "cameraSlider_Max_Speed_Y_x10");
+  auto* bring_up_shadows = require_child<QSlider>(window, "cameraSlider_Bring_Up_Shadows");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -3985,8 +3989,8 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !apply_to_fast ||
-      !max_accel_x || !max_speed_x || !max_speed_y || !reset || !save || !create || !game_id || !start || !stop ||
-      !mode || !stitch_frame_time) {
+      !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !reset || !save || !create || !game_id ||
+      !start || !stop || !mode || !stitch_frame_time) {
     return false;
   }
 
@@ -4024,6 +4028,7 @@ bool test_camera_controls(HStreamWindow* window) {
       "cameraSlider_Stitch_Rotate_Degrees",
       "cameraSlider_Stop_Direction_Change_Delay_Frames",
       "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10",
+      "cameraSlider_Bring_Up_Shadows",
   };
   for (const QString& object_name : documented_controls) {
     QWidget* control = window->findChild<QWidget*>(object_name);
@@ -4312,6 +4317,7 @@ bool test_camera_controls(HStreamWindow* window) {
   fixed_edge_right->setValue(750);
   stop_delay->setValue(14);
   max_speed_x->setValue(450);
+  bring_up_shadows->setValue(35);
   stitch_frame_time->setTime(QTime(0, 0, 7));
   if (!expect(
           window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
@@ -4325,6 +4331,10 @@ bool test_camera_controls(HStreamWindow* window) {
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
           "Tracker braking slider should update controller state") ||
       !expect(window->cameraControlValue("Max_Speed_X_x10") == 450, "Speed slider should update controller state") ||
+      !expect(
+          window->cameraControlValue("Bring_Up_Shadows") == 35 && bring_up_shadows->minimum() == 0 &&
+              bring_up_shadows->maximum() == 100,
+          "Bring up shadows should expose a bounded percentage control") ||
       !expect(
           stitch_frame_time->time() == QTime(0, 0, 7),
           "Stitch-frame control should accept an HH:MM:SS calibration timestamp") ||
@@ -4547,10 +4557,15 @@ bool test_camera_controls(HStreamWindow* window) {
   };
   const bool saved_controls_ok = saved_int("Stop_Direction_Change_Delay_Frames", 14) &&
       saved_int("Stitch_Rotate_Degrees", 72) && saved_int("Link_Fixed_Edge_Rotation_Left_Right", 0) &&
-      saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) && saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750);
+      saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) && saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750) &&
+      saved_int("Bring_Up_Shadows", 35);
   YAML::Node saved_rotation;
   const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
   const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
+  YAML::Node saved_shadow_lift;
+  const bool saved_shadow_lift_ok =
+      lookup_yaml_path(saved, {"pipeline", "hmplaycropper", "properties", "shadow-lift"}, &saved_shadow_lift) &&
+      saved_shadow_lift.IsScalar() && saved_shadow_lift.as<int>() == 35;
   YAML::Node saved_stitch_frame_time;
   const bool saved_stitch_frame_time_ok =
       lookup_yaml_path(saved, {"stitching", "stitch_frame_time"}, &saved_stitch_frame_time) &&
@@ -4622,6 +4637,7 @@ bool test_camera_controls(HStreamWindow* window) {
           stitch_frame_time_invalidated_calibration,
           "Changing stitch-frame time should reserve a backend-visible input invalidation owner") ||
       !expect(has_saved_rotation && saved_rotation_ok, "Stitch slider should save the runtime rotation config") ||
+      !expect(saved_shadow_lift_ok, "Shadow slider should save the playcropper GPU property") ||
       !expect(
           saved_fixed_edge_rotation_ok,
           "Unlinked fixed-edge sliders should save rink.camera.fixed_edge_rotation_angle as [left, right]") ||
@@ -4736,7 +4752,8 @@ bool test_camera_controls(HStreamWindow* window) {
   activate(reset);
   if (!expect(
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10,
-          "Reset should restore the bundled baseline tracker default")) {
+          "Reset should restore the bundled baseline tracker default") ||
+      !expect(window->cameraControlValue("Bring_Up_Shadows") == 0, "Reset should disable shadow lift")) {
     return false;
   }
 
@@ -4745,6 +4762,7 @@ bool test_camera_controls(HStreamWindow* window) {
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 14,
           "Create/Load should restore saved native controls") ||
       !expect(window->cameraControlValue("Stitch_Rotate_Degrees") == 72, "Create/Load should restore stitch control") ||
+      !expect(window->cameraControlValue("Bring_Up_Shadows") == 35, "Create/Load should restore shadow lift") ||
       !expect(
           window->cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") == 0 &&
               window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 250 &&
@@ -4772,6 +4790,26 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           window->logText().contains("--stitch-frame-time=00:00:07"),
           "A saved non-default stitch-frame time should be passed to hstream-cli")) {
+    activate(stop);
+    return false;
+  }
+  const int shadow_commands_before = window->logText().count("stdin:@set-property playcropper0 shadow-lift=");
+  for (int value = 36; value <= 45; ++value) {
+    bring_up_shadows->setValue(value);
+  }
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Bring_Up_Shadows=45 apply=live"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("stdin:@set-property playcropper0 shadow-lift=") == shadow_commands_before + 1,
+          "Rapid shadow-lift changes should coalesce into one live GPU property update") ||
+      !expect(
+          window->logText().contains("stdin:@set-property playcropper0 shadow-lift=45") &&
+              window->logText().contains("camera control Bring_Up_Shadows=45 apply=pending") &&
+              window->logText().contains("camera control Bring_Up_Shadows=45 apply=live") &&
+              !window->logText().contains("camera control Bring_Up_Shadows=36 apply=pending"),
+          "Only the final coalesced shadow lift should become pending and live")) {
     activate(stop);
     return false;
   }

@@ -95,6 +95,11 @@ int main() {
   if (!cropper.SetProperty({"runtime-output-max-height", "2160"})) {
     return 1;
   }
+  if (!cropper.SetProperty({"shadow-lift", "75"}) || cropper.SetProperty({"shadow-lift", "-1"}) ||
+      cropper.SetProperty({"shadow-lift", "101"}) || cropper.SetProperty({"shadow-lift", "nan"})) {
+    std::cerr << "Shadow lift should accept finite percentages from 0 through 100 only" << std::endl;
+    return 1;
+  }
   if (!expect_size(
           cropper,
           /*input_width=*/12102,
