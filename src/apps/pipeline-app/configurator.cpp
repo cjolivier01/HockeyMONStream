@@ -751,6 +751,35 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 
 } // namespace
 
+std::vector<std::string> configurator_internal::enabled_source_video_uris(const YAML::Node& pipeline) {
+  std::vector<std::string> uris;
+  for (const auto& item : pipeline) {
+    const std::string key = item.first.as<std::string>();
+    if (!absl::StartsWith(key, "source") || !is_enabled(item.second)) {
+      continue;
+    }
+    const NvDsSourceType source_type = static_cast<NvDsSourceType>(get_node_value<int>(item.second, "type", 0));
+    if (source_type != NV_DS_SOURCE_URI && source_type != NV_DS_SOURCE_URI_MULTIPLE) {
+      continue;
+    }
+
+    const YAML::Node uri_list = item.second["uri-list"].IsDefined() ? item.second["uri-list"] : item.second["uri_list"];
+    if (uri_list.IsSequence()) {
+      for (const YAML::Node& uri : uri_list) {
+        uris.emplace_back(uri.as<std::string>());
+      }
+    } else if (uri_list.IsScalar()) {
+      for (const absl::string_view uri : absl::StrSplit(uri_list.as<std::string>(), ';', absl::SkipEmpty())) {
+        uris.emplace_back(uri.data(), uri.size());
+      }
+    }
+    if (item.second["uri"].IsScalar()) {
+      uris.emplace_back(item.second["uri"].as<std::string>());
+    }
+  }
+  return uris;
+}
+
 configurator_internal::ExplicitStitchingVideoSelection configurator_internal::select_explicit_stitching_videos(
     const YAML::Node& config,
     bool force) {
@@ -2427,29 +2456,8 @@ absl::Status Configurator::complete_configuration(
       source_video_paths.emplace_back(file_maybe_in_game_dir(*path));
     }
   };
-  for (const auto& item : pipeline) {
-    const std::string key = item.first.as<std::string>();
-    if (!absl::StartsWith(key, "source") || !is_enabled(item.second)) {
-      continue;
-    }
-    const NvDsSourceType source_type = static_cast<NvDsSourceType>(get_node_value<int>(item.second, "type", 0));
-    if (source_type != NV_DS_SOURCE_URI && source_type != NV_DS_SOURCE_URI_MULTIPLE) {
-      continue;
-    }
-
-    const YAML::Node uri_list = item.second["uri-list"];
-    if (uri_list.IsSequence()) {
-      for (const YAML::Node& uri : uri_list) {
-        append_source_uri(uri.as<std::string>());
-      }
-    } else if (uri_list.IsScalar()) {
-      for (const absl::string_view uri : absl::StrSplit(uri_list.as<std::string>(), ';', absl::SkipEmpty())) {
-        append_source_uri(std::string(uri));
-      }
-    }
-    if (item.second["uri"].IsScalar()) {
-      append_source_uri(item.second["uri"].as<std::string>());
-    }
+  for (const std::string& uri : configurator_internal::enabled_source_video_uris(pipeline)) {
+    append_source_uri(uri);
   }
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline, source_video_paths));
 

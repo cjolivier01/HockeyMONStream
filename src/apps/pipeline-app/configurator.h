@@ -50,6 +50,7 @@ absl::Status claim_unique_archive_output_path(
     const std::string& sink_name);
 absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_files(
     const std::filesystem::path& configured_path);
+std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
 
 } // namespace configurator_internal
 
