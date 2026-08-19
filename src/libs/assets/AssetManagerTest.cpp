@@ -1,5 +1,7 @@
 #include "hstream/src/libs/assets/AssetManager.h"
 
+#include <yaml-cpp/yaml.h>
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -231,6 +233,23 @@ int main(int, char**) {
   if (discovered.ok())
     ok &= expect(
         discovered->front().target == root / "pretrained" / "model.bin", "relative target must resolve from config");
+  {
+    std::ofstream child(root / "configs" / "program-assets.yaml");
+    child << "pretrained-assets:\n  - name: program detector\n    url: https://example.invalid/detector.bin\n"
+             "    sha256: "
+          << (hash.ok() ? *hash : std::string(64, '0')) << "\n    path: ../pretrained/model.bin\n";
+    std::ofstream parent(root / "configs" / "transformed-parent.yaml");
+    parent << "pretrained-assets:\n  - name: calibration model\n    url: https://example.invalid/calibration.bin\n"
+              "    sha256: "
+           << (hash.ok() ? *hash : std::string(64, '0'))
+           << "\n    path: ../pretrained/model.bin\n"
+              "program:\n  enable: 1\n  config-file: program-assets.yaml\n";
+  }
+  auto transformed = hm::assets::AssetManager::Discover(
+      {root / "configs" / "transformed-parent.yaml"}, [](YAML::Node config) { config["program"]["enable"] = 0; });
+  ok &= expect(
+      transformed.ok() && transformed->size() == 1 && transformed->front().name == "calibration model",
+      "runtime config transforms must retain direct assets while pruning disabled Program child assets");
   auto ensured = hm::assets::AssetManager::Ensure({root / "configs" / "parent.yaml"});
   ok &= expect(ensured.ok(), "valid cached asset must work offline");
   fs::remove(root / "pretrained" / "model.bin.lock");

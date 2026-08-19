@@ -1409,6 +1409,34 @@ absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
 
 } // namespace
 
+absl::Status validate_stitched_output_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation) {
+  if (game_dir.empty() || expected_output_generation.empty())
+    return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
+
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
+  auto config = load_config_or_empty(root / "config.yaml");
+  if (!config.ok())
+    return config.status();
+  auto configured_generation = configured_output_generation(*config, *hugin_generation);
+  if (!configured_generation.ok())
+    return configured_generation.status();
+  if (*configured_generation != expected_output_generation)
+    return absl::AbortedError("Stitched output uses a stale post-stitch rotation");
+  return absl::OkStatus();
+}
+
 absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::string& expected_output_generation) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");

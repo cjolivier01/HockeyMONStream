@@ -64,6 +64,23 @@ int main() {
     }
     initial_hugin_lock->reset();
   }
+  ok &= expect(
+      !initial_output_generation.empty() &&
+          hm::stitching::validate_stitched_output_generation(root.string(), initial_output_generation).ok(),
+      "stitching-only completion must accept the current Hugin and rotation generation without a rink mask");
+  {
+    YAML::Node changed_rotation = YAML::LoadFile((root / "config.yaml").string());
+    changed_rotation["stitching"]["post_stitch_rotate_degrees"] = 1.0;
+    std::ofstream(root / "config.yaml") << changed_rotation << '\n';
+  }
+  ok &= expect(
+      absl::IsAborted(hm::stitching::validate_stitched_output_generation(root.string(), initial_output_generation)),
+      "stitching-only completion must reject a result from the previous configured rotation");
+  {
+    YAML::Node restored_rotation = YAML::LoadFile((root / "config.yaml").string());
+    restored_rotation["stitching"]["post_stitch_rotate_degrees"] = 0.0;
+    std::ofstream(root / "config.yaml") << restored_rotation << '\n';
+  }
   NvBufSurfaceParams cancelled_surface_params{};
   hm::surface::Surface cancelled_surface(&cancelled_surface_params);
   const auto cancelled_rink =

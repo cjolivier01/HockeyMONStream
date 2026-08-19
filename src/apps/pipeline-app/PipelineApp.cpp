@@ -53,6 +53,7 @@
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 #include "absl/cleanup/cleanup.h"
@@ -2473,7 +2474,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     std::vector<fs::path> asset_configs;
     for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
       asset_configs.emplace_back(cfg_files_[index]);
-    HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs));
+    if (stitching_calibration_only_) {
+      HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs, [](YAML::Node config) {
+        hm::pipeline_internal::configure_stitching_calibration_pipeline(config);
+      }));
+    } else {
+      HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs));
+    }
   }
 
   if (pipline_options) {
@@ -4351,6 +4358,7 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     return TRUE;
   }
   const char* output_generation = gst_structure_get_string(structure, "output-generation");
+  const char* calibration_scope = gst_structure_get_string(structure, "calibration-scope");
   std::string stitcher_config_path;
   try {
     stitcher_config_path = hm::get_node_value(
@@ -4359,9 +4367,16 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     g_printerr("Ignoring malformed stitching completion message config: %s\n", error.what());
     return TRUE;
   }
-  if (!output_generation || !*output_generation || stitcher_config_path.empty() ||
-      (!stitching_calibration_only_ &&
-       !hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation))) {
+  const std::string& active_invalidation_id = (*completion_context)->configurator().active_stitching_invalidation_id();
+  const std::string expected_scope = output_generation && *output_generation
+      ? hm::stitching::calibration_completion_scope(
+            output_generation, active_invalidation_id, std::to_string(main_loop_generation_))
+      : std::string();
+  const bool generation_current = output_generation && *output_generation && !stitcher_config_path.empty() &&
+      (stitching_calibration_only_
+           ? hm::stitching::validate_stitched_output_generation(stitcher_config_path, output_generation).ok()
+           : hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation));
+  if (!generation_current || !calibration_scope || expected_scope != calibration_scope) {
     g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
     return TRUE;
   }

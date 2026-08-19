@@ -592,6 +592,7 @@ bool write_fake_runner(const QString& path) {
       "            print('HSTREAM_PREVIEW channel=' + initial_preview + ' status=ready generation=2 message=first "
       "GPU frame presented', flush=True)\n");
   file.write("calibration_result = os.environ.get('HSTREAM_UI_TEST_CALIBRATION_RESULT', '')\n");
+  file.write("stitching_only = '--stitching-calibration-only' in sys.argv[1:]\n");
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    calibration_result = 'success'\n");
   file.write("if calibration_result in ('success', 'failure', 'exit'):\n");
@@ -651,12 +652,13 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "        print('HSTREAM_CALIBRATION stage=canvas status=complete message=Stitch maps and panorama preview are "
       "ready', flush=True)\n");
+  file.write("        if not stitching_only:\n");
   file.write(
-      "        print('HSTREAM_CALIBRATION stage=rink-mask status=started message=Looking for the ice surface in the "
-      "stitched panorama', flush=True)\n");
+      "            print('HSTREAM_CALIBRATION stage=rink-mask status=started message=Looking for the ice surface in "
+      "the stitched panorama', flush=True)\n");
   file.write(
-      "        print('HSTREAM_CALIBRATION stage=rink-mask status=complete message=Ice surface calibration is ready', "
-      "flush=True)\n");
+      "            print('HSTREAM_CALIBRATION stage=rink-mask status=complete message=Ice surface calibration is "
+      "ready', flush=True)\n");
   file.write(
       "        print('HSTREAM_CALIBRATION stage=calibration status=complete message=Stitching calibration is "
       "complete', flush=True)\n");
@@ -1776,8 +1778,8 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
               features_stage->property("calibrationState").toString() == "complete" &&
               matching_stage->property("calibrationState").toString() == "complete" &&
               optimizer_stage->property("calibrationState").toString() == "failed" &&
-              rink_stage->property("calibrationState").toString() == "pending",
-          "Native milestones should advance completed stages and mark the active failure stage") ||
+              rink_stage->property("calibrationState").toString() == "skipped",
+          "Native milestones should advance completed stitching stages and keep the Program rink stage omitted") ||
       !expect(
           ok->isVisible() && ok->isEnabled() && !cancel->isVisible(),
           "A failed calibration should end with an enabled OK button") ||
@@ -1888,15 +1890,23 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   YAML::Node completed_status;
   const bool has_completed_status =
       lookup_yaml_path(completed, {"hstream_ui", "stitching_calibration", "status"}, &completed_status);
+  YAML::Node completed_rink_status;
+  const bool has_completed_rink_status =
+      lookup_yaml_path(completed, {"hstream_ui", "stitching_calibration", "rink_mask_status"}, &completed_rink_status);
   const bool success_ok = expect(
                               !dialog->isVisible(),
-                              "Successful rink-complete calibration should close the popup automatically") &&
+                              "Successful stitching-only calibration should close the popup automatically") &&
       waits_for_restart &&
       expect(window->pipelineStateText() == "PLAYING", "The pipeline should continue after the popup auto-closes") &&
       expect(has_completed_status && completed_status.as<std::string>() == "complete",
-             "Only the final rink-complete milestone should persist completed calibration") &&
-      expect(rink_stage->property("calibrationState").toString() == "complete",
-             "Successful calibration should complete the final ice-surface stage");
+             "The final stitching milestone should persist completed stitching calibration") &&
+      expect(has_completed_rink_status && completed_rink_status.as<std::string>() == "omitted",
+             "Stitching-only completion must record that it did not build the Program rink mask") &&
+      expect(rink_stage->property("calibrationState").toString() == "skipped" &&
+                 rink_stage->text().contains("Program only") &&
+                 detail->text().contains("Program will validate or build its rink mask") &&
+                 !detail->text().contains("ice-surface calibration are ready"),
+             "Stitching-only completion should present the downstream rink-mask stage as omitted");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -1930,11 +1940,19 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  const YAML::Node program_completed =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
   const bool program_discovery_completed =
       expect(!dialog->isVisible(), "Successful Program calibration should close the progress popup automatically") &&
       expect(
           window->pipelineStateText() == "PLAYING",
-          "Program playback should continue after runtime-discovered calibration completes");
+          "Program playback should continue after runtime-discovered calibration completes") &&
+      expect(
+          rink_stage->property("calibrationState").toString() == "complete" &&
+              detail->text().contains("ice-surface calibration are ready") &&
+              program_completed["hstream_ui"]["stitching_calibration"]["rink_mask_status"].as<std::string>("") ==
+                  "complete",
+          "Program calibration should still generate and report its required rink mask");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -2822,8 +2840,6 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   const int calibration_index = mode->findData("stitch-calibration");
-  const int program_preview_args_before = window->logText().count("--ui-preview-windows=program:");
-  const int stitched_preview_args_before = window->logText().count("--ui-preview-windows=stitched:");
   mode->setCurrentIndex(calibration_index);
   if (!expect(
           !preview_tabs->isTabEnabled(0) && preview_tabs->currentIndex() == 1,
@@ -2861,9 +2877,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
   }
-  const bool x11_calibration_preview_ok =
-      window->logText().count("--ui-preview-windows=stitched:") > stitched_preview_args_before &&
-      window->logText().count("--ui-preview-windows=program:") == program_preview_args_before &&
+  const QString runtime_log = window->logText();
+  const int latest_command_offset = runtime_log.lastIndexOf("pipeline command ");
+  const QString latest_calibration_command =
+      latest_command_offset >= 0 ? runtime_log.mid(latest_command_offset).section('\n', 0, 0) : QString();
+  const QRegularExpressionMatch preview_windows_match =
+      QRegularExpression(R"(--ui-preview-windows=([^\s]+))").match(latest_calibration_command);
+  QStringList preview_channels;
+  if (preview_windows_match.hasMatch()) {
+    for (const QString& mapping : preview_windows_match.captured(1).split(','))
+      preview_channels.push_back(mapping.section(':', 0, 0));
+    std::sort(preview_channels.begin(), preview_channels.end());
+  }
+  QStringList expected_calibration_channels{"source0", "source1", "source2", "stitched"};
+  std::sort(expected_calibration_channels.begin(), expected_calibration_channels.end());
+  const bool x11_calibration_preview_ok = preview_channels == expected_calibration_channels &&
+      !preview_channels.contains("program") && latest_calibration_command.contains("--ui-preview-active=stitched") &&
       !stitched_surface->isHidden() && camera1_surface->isHidden() && camera2_surface->isHidden() &&
       camera3_surface->isHidden();
   if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0 && !x11_calibration_preview_ok) {

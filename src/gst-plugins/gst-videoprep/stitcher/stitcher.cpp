@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
@@ -82,16 +83,6 @@ bool calibration_progress_requested() {
 
 bool calibration_starts_from_control_points() {
   return g_strcmp0(g_getenv("HSTREAM_CALIBRATION_START_STAGE"), "features") == 0;
-}
-
-std::string calibration_completion_scope(
-    const std::string& output_generation,
-    const std::string& invalidation_id,
-    const std::string& run_generation) {
-  std::ostringstream scope;
-  scope << output_generation.size() << ':' << output_generation << invalidation_id.size() << ':' << invalidation_id
-        << run_generation.size() << ':' << run_generation;
-  return scope.str();
 }
 
 void log_canvas_hint(const std::string& prefix, size_t width, size_t height) {
@@ -1420,8 +1411,8 @@ absl::Status StitcherPriv::GenerateOutput(
     std::string output_generation;
     HM_ASSIGN_OR_RETURN(
         output_generation, stitching::stitched_output_generation_id(hugin_generation, applied_post_stitch_rotation));
-    const std::string completion_scope =
-        calibration_completion_scope(output_generation, calibration_invalidation_id_, calibration_run_generation_);
+    const std::string completion_scope = stitching::calibration_completion_scope(
+        output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;

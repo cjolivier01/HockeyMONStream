@@ -1,4 +1,5 @@
 #include "src/apps/pipeline-app/StitchingCalibrationMode.h"
+#include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "src/apps/pipeline-app/StitcherOnePassConfig.h"
 
 #include <iostream>
@@ -68,6 +69,13 @@ pipeline:
   ok &= expect(
       hm::OnePassCalibrationRequiredForMode(true, true, false, true, false),
       "Program mode must still calibrate a missing rink mask");
+  const std::string completion_scope = hm::stitching::calibration_completion_scope("output-a", "owner-a", "17");
+  ok &= expect(
+      completion_scope == hm::stitching::calibration_completion_scope("output-a", "owner-a", "17") &&
+          completion_scope != hm::stitching::calibration_completion_scope("output-a", "owner-b", "17") &&
+          completion_scope != hm::stitching::calibration_completion_scope("output-a", "owner-a", "18") &&
+          completion_scope != hm::stitching::calibration_completion_scope("output-b", "owner-a", "17"),
+      "completion scope must reject stale output, owner, and pipeline generations");
   for (const char* stage : {
            "primary-gie",
            "secondary-gie0",

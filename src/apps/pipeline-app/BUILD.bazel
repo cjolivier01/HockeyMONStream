@@ -220,7 +220,10 @@ cc_test(
         "StitcherOnePassConfig.h",
     ],
     copts = PIPELINE_APP_COPTS,
-    deps = ["@yaml-cpp"],
+    deps = [
+        "//src/libs/stitching",
+        "@yaml-cpp",
+    ],
 )
 
 cc_test(

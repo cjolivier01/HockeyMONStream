@@ -2835,6 +2835,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
   if (status == "complete") {
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
+    calibration["rink_mask_status"] = active_run_is_calibration_ ? "omitted" : "complete";
   } else if (!stale_from.isEmpty()) {
     calibration["stale_from"] = stale_from.toStdString();
     calibration["artifacts_invalidated"] = artifacts_invalidated;
@@ -3045,6 +3046,7 @@ void HStreamWindow::showStitchingCalibrationDialog() {
     dialog->setMinimumWidth(560);
     dialog->setStyleSheet(
         "QLabel[calibrationState=\"pending\"] { color: #667085; }"
+        "QLabel[calibrationState=\"skipped\"] { color: #667085; font-style: italic; }"
         "QLabel[calibrationState=\"active\"] { color: #1570ef; font-weight: 600; }"
         "QLabel[calibrationState=\"complete\"] { color: #039855; }"
         "QLabel[calibrationState=\"failed\"] { color: #d92d20; font-weight: 600; }");
@@ -3146,8 +3148,14 @@ void HStreamWindow::showStitchingCalibrationDialog() {
     icon->setText(QString::fromUtf8("\u25cb"));
     apply_state(icon, "pending");
   }
-  for (const auto& [id, label] : calibration_stage_labels_) {
-    (void)id;
+  for (const CalibrationStageSpec& spec : kCalibrationStages) {
+    const QString id = QString::fromLatin1(spec.id);
+    auto label_it = calibration_stage_labels_.find(id);
+    if (label_it == calibration_stage_labels_.end())
+      continue;
+    QLabel* label = label_it->second;
+    label->setText(QString::fromLatin1(spec.label));
+    label->setToolTip({});
     apply_state(label, "pending");
   }
   calibration_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxInformation).pixmap(32, 32));
@@ -3176,6 +3184,8 @@ void HStreamWindow::showStitchingCalibrationDialog() {
     setStitchingCalibrationStage(stage, "complete", {});
   }
   setStitchingCalibrationStage(start_stage, "started", calibration_detail_->text());
+  if (active_run_is_calibration_)
+    setStitchingCalibrationStage("rink-mask", "skipped", {});
   calibration_dialog_->show();
   QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
@@ -3284,6 +3294,12 @@ void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QSt
     icon_it->second->setText(QString::fromUtf8("\u2715"));
     apply_state(icon_it->second, "failed");
     apply_state(label_it->second, "failed");
+  } else if (status == "skipped") {
+    icon_it->second->setText(QString::fromUtf8("\u2014"));
+    label_it->second->setText("Find the ice surface (Program only)");
+    label_it->second->setToolTip("Rink-mask generation is omitted from stitching-only calibration.");
+    apply_state(icon_it->second, "skipped");
+    apply_state(label_it->second, "skipped");
   }
   if (!message.isEmpty() && calibration_detail_)
     calibration_detail_->setText(message);
@@ -3315,8 +3331,11 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
   if (stage == "calibration") {
     if (status == "complete") {
       calibration_waiting_for_playback_restart_ = true;
-      for (const CalibrationStageSpec& spec : kCalibrationStages)
-        setStitchingCalibrationStage(QString::fromLatin1(spec.id), "complete", {});
+      for (const CalibrationStageSpec& spec : kCalibrationStages) {
+        const QString stage_id = QString::fromLatin1(spec.id);
+        setStitchingCalibrationStage(
+            stage_id, active_run_is_calibration_ && stage_id == "rink-mask" ? "skipped" : "complete", {});
+      }
       if (calibration_headline_)
         calibration_headline_->setText("Restarting playback…");
       if (calibration_detail_)
@@ -3358,8 +3377,11 @@ void HStreamWindow::completeStitchingCalibration() {
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
   calibration_pending_ = false;
-  for (const CalibrationStageSpec& spec : kCalibrationStages)
-    setStitchingCalibrationStage(QString::fromLatin1(spec.id), "complete", {});
+  for (const CalibrationStageSpec& spec : kCalibrationStages) {
+    const QString stage_id = QString::fromLatin1(spec.id);
+    setStitchingCalibrationStage(
+        stage_id, active_run_is_calibration_ && stage_id == "rink-mask" ? "skipped" : "complete", {});
+  }
   if (calibration_icon_) {
     calibration_icon_->setPixmap(style()->standardIcon(QStyle::SP_DialogApplyButton).pixmap(32, 32));
     calibration_icon_->setProperty("calibrationState", "complete");
@@ -3368,8 +3390,12 @@ void HStreamWindow::completeStitchingCalibration() {
     calibration_headline_->setText("Stitching calibration complete");
     calibration_headline_->setProperty("calibrationState", "complete");
   }
-  if (calibration_detail_)
-    calibration_detail_->setText("The stitched panorama and ice-surface calibration are ready.");
+  if (calibration_detail_) {
+    calibration_detail_->setText(
+        active_run_is_calibration_
+            ? "The stitching maps and panorama are ready. Program will validate or build its rink mask when it starts."
+            : "The stitched panorama and ice-surface calibration are ready.");
+  }
   if (calibration_progress_)
     calibration_progress_->setVisible(false);
   if (calibration_ok_button_)
@@ -3716,7 +3742,8 @@ void HStreamWindow::startPipeline() {
     return;
   }
   setPlaybackStartupStage("launch", "Preparing GPU preview windows and launching hstream-cli");
-  logMissingTensorRtEngineCaches(args);
+  if (!active_run_is_calibration_)
+    logMissingTensorRtEngineCaches(args);
 
   const bool embedded_render = std::any_of(
       args.begin(), args.end(), [](const QString& argument) { return argument.startsWith("--ui-preview-windows="); });
