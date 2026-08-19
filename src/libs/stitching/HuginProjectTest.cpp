@@ -1,5 +1,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -120,6 +122,23 @@ bool add_png_pixel_offset(const std::filesystem::path& path, int32_t x, int32_t 
   return output.good();
 }
 
+std::vector<unsigned char> read_binary_file(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::vector<unsigned char>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+bool corrupt_png_pixel_offset_without_updating_crc(const std::filesystem::path& path) {
+  std::vector<unsigned char> png = read_binary_file(path);
+  const std::array<unsigned char, 4> type = {'o', 'F', 'F', 's'};
+  const auto found = std::search(png.begin(), png.end(), type.begin(), type.end());
+  if (found == png.end() || std::distance(found, png.end()) < 17)
+    return false;
+  *(found + 7) ^= 1U;
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
+}
+
 } // namespace
 
 int main() {
@@ -203,6 +222,49 @@ int main() {
   ok &= expect(cv::imwrite((fixtures / "seam_file.png").string(), seam), "fake seam must exist");
   ok &= expect(
       add_png_pixel_offset(fixtures / "seam_file.png", 1, 1), "fake cropped enblend seam must carry an oFFs origin");
+
+  const fs::path seam_validation = root / "seam-validation";
+  fs::create_directories(seam_validation);
+  const fs::path corrupt_offset = seam_validation / "corrupt-offset.png";
+  ok &= expect(cv::imwrite(corrupt_offset.string(), seam), "corrupt-offset fixture must be encoded");
+  ok &= expect(
+      add_png_pixel_offset(corrupt_offset, 1, 1) && corrupt_png_pixel_offset_without_updating_crc(corrupt_offset),
+      "corrupt-offset fixture must retain a stale oFFs CRC");
+  ok &= expect(
+      absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(corrupt_offset, 42, 32)),
+      "a corrupt oFFs payload must fail closed even when libpng can decode the pixels");
+
+  const fs::path duplicate_offset = seam_validation / "duplicate-offset.png";
+  ok &= expect(cv::imwrite(duplicate_offset.string(), seam), "duplicate-offset fixture must be encoded");
+  ok &= expect(
+      add_png_pixel_offset(duplicate_offset, 1, 1) && add_png_pixel_offset(duplicate_offset, 1, 1),
+      "duplicate-offset fixture must contain two valid oFFs chunks");
+  ok &= expect(
+      absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(duplicate_offset, 42, 32)),
+      "duplicate oFFs chunks must fail closed");
+
+  const fs::path interrupted_normalization = seam_validation / "interrupted-normalization.png";
+  ok &= expect(
+      cv::imwrite(interrupted_normalization.string(), seam) && add_png_pixel_offset(interrupted_normalization, 1, 1),
+      "interrupted-normalization fixture must carry an oFFs origin");
+  const std::vector<unsigned char> original_interrupted_seam = read_binary_file(interrupted_normalization);
+  ::setenv("HM_TEST_SEAM_NORMALIZATION_FAIL_BEFORE_RENAME", "1", 1);
+  const auto interrupted_normalization_status =
+      hm::stitching::HuginProject::ValidateAndNormalizeSeam(interrupted_normalization, 42, 32);
+  ::unsetenv("HM_TEST_SEAM_NORMALIZATION_FAIL_BEFORE_RENAME");
+  bool temporary_remains = false;
+  for (const auto& entry : fs::directory_iterator(seam_validation)) {
+    if (entry.path().filename().string().rfind(".interrupted-normalization.png.normalize-", 0) == 0)
+      temporary_remains = true;
+  }
+  ok &= expect(
+      !interrupted_normalization_status.ok() &&
+          read_binary_file(interrupted_normalization) == original_interrupted_seam && !temporary_remains,
+      "failed normalization must preserve the published seam and remove its temporary file");
+  ok &= expect(
+      hm::stitching::HuginProject::ValidateAndNormalizeSeam(interrupted_normalization, 42, 32).ok() &&
+          cv::imread(interrupted_normalization.string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(42, 32),
+      "successful normalization must atomically publish the full-canvas seam");
   ok &= expect(
       cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 42, CV_8UC3, cv::Scalar(1, 2, 3))),
       "fake panorama must exist");

@@ -467,6 +467,20 @@ struct PngLayout {
   int offset_y{0};
 };
 
+uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t size) {
+  uint32_t crc = 0xffffffffU;
+  auto update = [&](const unsigned char* bytes, size_t count) {
+    for (size_t index = 0; index < count; ++index) {
+      crc ^= bytes[index];
+      for (int bit = 0; bit < 8; ++bit)
+        crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+  };
+  update(type, 4);
+  update(data, size);
+  return crc ^ 0xffffffffU;
+}
+
 absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
   const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
@@ -482,6 +496,8 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
 
   PngLayout layout;
   bool have_header = false;
+  bool have_offset = false;
+  bool first_chunk = true;
   while (input) {
     std::array<unsigned char, 8> chunk_header{};
     input.read(reinterpret_cast<char*>(chunk_header.data()), static_cast<std::streamsize>(chunk_header.size()));
@@ -489,6 +505,10 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
       break;
     const uint32_t length = big_endian_u32(chunk_header.data());
     const std::string type(reinterpret_cast<const char*>(chunk_header.data() + 4), 4);
+    if (first_chunk && type != "IHDR")
+      return absl::FailedPreconditionError("PNG IHDR is not the first chunk: " + path.string());
+    first_chunk = false;
+    std::optional<uint32_t> expected_crc;
     if (type == "IHDR") {
       if (have_header || length != 13)
         return absl::FailedPreconditionError("Invalid PNG IHDR chunk: " + path.string());
@@ -505,8 +525,9 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
       layout.width = static_cast<int>(width);
       layout.height = static_cast<int>(height);
       have_header = true;
+      expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
     } else if (type == "oFFs") {
-      if (!have_header || length != 9)
+      if (!have_header || have_offset || length != 9)
         return absl::FailedPreconditionError("Invalid PNG oFFs chunk: " + path.string());
       std::array<unsigned char, 9> data{};
       input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
@@ -520,6 +541,8 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
       };
       layout.offset_x = static_cast<int>(signed_coordinate(data.data()));
       layout.offset_y = static_cast<int>(signed_coordinate(data.data() + 4));
+      have_offset = true;
+      expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
     } else {
       input.seekg(static_cast<std::streamoff>(length), std::ios::cur);
       if (!input)
@@ -529,6 +552,8 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
     input.read(reinterpret_cast<char*>(crc.data()), static_cast<std::streamsize>(crc.size()));
     if (!input)
       return absl::FailedPreconditionError("Truncated PNG chunk CRC: " + path.string());
+    if (expected_crc.has_value() && big_endian_u32(crc.data()) != *expected_crc)
+      return absl::FailedPreconditionError("PNG " + type + " chunk has an invalid CRC: " + path.string());
     if (type == "IDAT" || type == "IEND")
       break;
   }
@@ -542,6 +567,92 @@ absl::StatusOr<std::pair<int, int>> read_png_dimensions(const fs::path& path) {
   if (!layout.ok())
     return layout.status();
   return std::make_pair(layout->width, layout->height);
+}
+
+absl::StatusOr<cv::Mat> decode_nonuniform_seam(const fs::path& path, const PngLayout& layout) {
+  cv::Mat seam;
+  try {
+    seam = cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to safely decode seam: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate decoded seam");
+  }
+  if (seam.empty() || seam.type() != CV_8UC1 || seam.cols != layout.width || seam.rows != layout.height)
+    return absl::FailedPreconditionError("PNG seam is not a decodable 8-bit grayscale image: " + path.string());
+  double minimum = 0.0;
+  double maximum = 0.0;
+  cv::minMaxLoc(seam, &minimum, &maximum);
+  if (maximum <= minimum)
+    return absl::FailedPreconditionError("PNG seam is uniform: " + path.string());
+  return seam;
+}
+
+absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, int canvas_width, int canvas_height) {
+  std::vector<unsigned char> encoded;
+  if (!cv::imencode(".png", seam, encoded) || encoded.empty())
+    return absl::InternalError("Unable to encode normalized seam: " + path.string());
+
+  const fs::path parent = path.parent_path().empty() ? fs::path(".") : path.parent_path();
+  std::string pattern = (parent / ("." + path.filename().string() + ".normalize-XXXXXX.png")).string();
+  std::vector<char> writable_pattern(pattern.begin(), pattern.end());
+  writable_pattern.push_back('\0');
+  const int descriptor = ::mkstemps(writable_pattern.data(), 4);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to create normalized seam temporary file: " + std::string(std::strerror(errno)));
+  const fs::path temporary(writable_pattern.data());
+  struct TemporaryCleanup {
+    int descriptor;
+    fs::path path;
+    ~TemporaryCleanup() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+      if (!path.empty()) {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+      }
+    }
+  } cleanup{descriptor, temporary};
+
+  size_t written = 0;
+  while (written < encoded.size()) {
+    const ssize_t count = ::write(descriptor, encoded.data() + written, encoded.size() - written);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::InternalError(
+          "Unable to write normalized seam temporary file: " + std::string(std::strerror(errno)));
+    written += static_cast<size_t>(count);
+  }
+  if (::fsync(descriptor) != 0)
+    return absl::InternalError("Unable to fsync normalized seam temporary file: " + std::string(std::strerror(errno)));
+  if (::close(descriptor) != 0) {
+    cleanup.descriptor = -1;
+    return absl::InternalError("Unable to close normalized seam temporary file: " + std::string(std::strerror(errno)));
+  }
+  cleanup.descriptor = -1;
+
+  auto temporary_layout = read_png_layout(temporary);
+  if (!temporary_layout.ok())
+    return temporary_layout.status();
+  if (temporary_layout->offset_x != 0 || temporary_layout->offset_y != 0 || temporary_layout->width != canvas_width ||
+      temporary_layout->height != canvas_height) {
+    return absl::FailedPreconditionError("Encoded normalized seam has an invalid layout: " + temporary.string());
+  }
+  auto decoded = decode_nonuniform_seam(temporary, *temporary_layout);
+  if (!decoded.ok())
+    return decoded.status();
+
+  if (const char* interrupt = std::getenv("HM_TEST_SEAM_NORMALIZATION_FAIL_BEFORE_RENAME");
+      interrupt != nullptr && std::strcmp(interrupt, "1") == 0) {
+    return absl::InternalError("Injected seam normalization failure before atomic rename");
+  }
+  std::error_code error;
+  fs::rename(temporary, path, error);
+  if (error)
+    return absl::InternalError("Unable to atomically publish normalized seam: " + error.message());
+  cleanup.path.clear();
+  return fsync_path(parent, true);
 }
 
 absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width, int canvas_height) {
@@ -560,35 +671,22 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
         std::to_string(canvas_height));
   }
 
-  cv::Mat seam;
-  try {
-    seam = cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
-  } catch (const cv::Exception& exception) {
-    return absl::ResourceExhaustedError("Unable to safely decode seam: " + std::string(exception.what()));
-  } catch (const std::bad_alloc&) {
-    return absl::ResourceExhaustedError("Unable to allocate decoded seam");
-  }
-  if (seam.empty() || seam.type() != CV_8UC1 || seam.cols != layout->width || seam.rows != layout->height)
-    return absl::FailedPreconditionError("PNG seam is not a decodable 8-bit grayscale image: " + path.string());
-  double minimum = 0.0;
-  double maximum = 0.0;
-  cv::minMaxLoc(seam, &minimum, &maximum);
-  if (maximum <= minimum)
-    return absl::FailedPreconditionError("PNG seam is uniform: " + path.string());
+  auto seam = decode_nonuniform_seam(path, *layout);
+  if (!seam.ok())
+    return seam.status();
 
-  if (layout->offset_x != 0 || layout->offset_y != 0 || seam.cols != canvas_width || seam.rows != canvas_height) {
+  if (layout->offset_x != 0 || layout->offset_y != 0 || seam->cols != canvas_width || seam->rows != canvas_height) {
     cv::Mat normalized;
     try {
       cv::copyMakeBorder(
-          seam,
+          *seam,
           normalized,
           layout->offset_y,
           canvas_height - static_cast<int>(bottom),
           layout->offset_x,
           canvas_width - static_cast<int>(right),
           cv::BORDER_REPLICATE);
-      if (!cv::imwrite(path.string(), normalized))
-        return absl::InternalError("Unable to write normalized seam: " + path.string());
+      return publish_normalized_seam(path, normalized, canvas_width, canvas_height);
     } catch (const cv::Exception& exception) {
       return absl::ResourceExhaustedError("Unable to normalize seam: " + std::string(exception.what()));
     } catch (const std::bad_alloc&) {
