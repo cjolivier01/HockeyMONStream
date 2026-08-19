@@ -1880,8 +1880,23 @@ absl::Status Configurator::map_common_config_keys() {
         }
       }
     } else if (fixed_edge_rotation->IsSequence()) {
-      if (may_replace("fixed-edge-rotation-angle"))
-        stage_config.remove("fixed-edge-rotation-angle");
+      const char* generic_key = "fixed-edge-rotation-angle";
+      const int generic_rank = explicit_value_rank(prefix + generic_key);
+      const bool generic_native_wins = !may_replace(generic_key);
+      if (generic_native_wins) {
+        // The native parser applies the generic property before side-specific
+        // properties. A winning generic value therefore owns both sides; any
+        // lower-ranked side values must be removed rather than allowed to
+        // override it by parser order.
+        if (generic_rank >= 1) {
+          for (const char* side_key : {"fixed-edge-rotation-angle-left", "fixed-edge-rotation-angle-right"}) {
+            if (explicit_value_rank(prefix + side_key) < generic_rank)
+              stage_config.remove(side_key);
+          }
+        }
+        continue;
+      }
+      stage_config.remove(generic_key);
       if (may_replace("fixed-edge-rotation-angle-left"))
         stage_config["fixed-edge-rotation-angle-left"] = (*fixed_edge_rotation)[0];
       if (may_replace("fixed-edge-rotation-angle-right"))

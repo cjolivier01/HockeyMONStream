@@ -467,6 +467,61 @@ play-tracker:
           mapping_canonical.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 1,
       "A higher-ranked direct native value must win, and direct native must win a same-rank canonical tie");
 
+  const fs::path fixed_edge_same_rank_game_dir = games / "mapping-fixed-edge-same-rank";
+  fs::create_directories(fixed_edge_same_rank_game_dir);
+  YAML::Node fixed_edge_same_rank(YAML::NodeType::Map);
+  fixed_edge_same_rank["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(21.0);
+  fixed_edge_same_rank["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(22.0);
+  fixed_edge_same_rank["pipeline"]["hmplaycropper"]["fixed-edge-rotation-angle"] = 12.0;
+  fixed_edge_same_rank["pipeline"]["ds-playtracker"]["fixed-edge-rotation-angle"] = 13.0;
+  std::ofstream(fixed_edge_same_rank_game_dir / "config.yaml") << YAML::Dump(fixed_edge_same_rank) << '\n';
+  hm::Configurator mapping_fixed_edge_same_rank(
+      "mapping-fixed-edge-same-rank", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_fixed_edge_same_rank_loaded = mapping_fixed_edge_same_rank.configure().ok() &&
+      mapping_fixed_edge_same_rank.underlay_config("pipeline", mapping_structure_path.string());
+  const absl::Status mapping_fixed_edge_same_rank_status = mapping_fixed_edge_same_rank_loaded
+      ? mapping_fixed_edge_same_rank.apply_supported_baseline_mappings()
+      : absl::InternalError("fixed-edge same-rank fixture did not load");
+  const YAML::Node mapped_fixed_edge_same_rank = mapping_fixed_edge_same_rank.config()["pipeline"];
+  ok &= expect(
+      mapping_fixed_edge_same_rank_status.ok() &&
+          mapped_fixed_edge_same_rank["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 12.0 &&
+          !mapped_fixed_edge_same_rank["hmplaycropper"]["fixed-edge-rotation-angle-left"].IsDefined() &&
+          !mapped_fixed_edge_same_rank["hmplaycropper"]["fixed-edge-rotation-angle-right"].IsDefined() &&
+          mapped_fixed_edge_same_rank["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 13.0 &&
+          !mapped_fixed_edge_same_rank["ds-playtracker"]["fixed-edge-rotation-angle-left"].IsDefined() &&
+          !mapped_fixed_edge_same_rank["ds-playtracker"]["fixed-edge-rotation-angle-right"].IsDefined(),
+      "A same-rank direct native fixed-edge angle must own both sides over a canonical array");
+
+  user_overlay["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(31.0);
+  user_overlay["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(32.0);
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+  const fs::path fixed_edge_higher_native_game_dir = games / "mapping-fixed-edge-higher-native";
+  fs::create_directories(fixed_edge_higher_native_game_dir);
+  YAML::Node fixed_edge_higher_native(YAML::NodeType::Map);
+  fixed_edge_higher_native["pipeline"]["hmplaycropper"]["fixed-edge-rotation-angle"] = 14.0;
+  fixed_edge_higher_native["pipeline"]["ds-playtracker"]["fixed-edge-rotation-angle"] = 15.0;
+  std::ofstream(fixed_edge_higher_native_game_dir / "config.yaml") << YAML::Dump(fixed_edge_higher_native) << '\n';
+  hm::Configurator mapping_fixed_edge_higher_native(
+      "mapping-fixed-edge-higher-native", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_fixed_edge_higher_native_loaded = mapping_fixed_edge_higher_native.configure().ok() &&
+      mapping_fixed_edge_higher_native.underlay_config("pipeline", mapping_structure_path.string());
+  const absl::Status mapping_fixed_edge_higher_native_status = mapping_fixed_edge_higher_native_loaded
+      ? mapping_fixed_edge_higher_native.apply_supported_baseline_mappings()
+      : absl::InternalError("fixed-edge higher-native fixture did not load");
+  const YAML::Node mapped_fixed_edge_higher_native = mapping_fixed_edge_higher_native.config()["pipeline"];
+  ok &= expect(
+      mapping_fixed_edge_higher_native_status.ok() &&
+          mapped_fixed_edge_higher_native["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 14.0 &&
+          !mapped_fixed_edge_higher_native["hmplaycropper"]["fixed-edge-rotation-angle-left"].IsDefined() &&
+          !mapped_fixed_edge_higher_native["hmplaycropper"]["fixed-edge-rotation-angle-right"].IsDefined() &&
+          mapped_fixed_edge_higher_native["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 15.0 &&
+          !mapped_fixed_edge_higher_native["ds-playtracker"]["fixed-edge-rotation-angle-left"].IsDefined() &&
+          !mapped_fixed_edge_higher_native["ds-playtracker"]["fixed-edge-rotation-angle-right"].IsDefined(),
+      "A higher-ranked direct native fixed-edge angle must own both sides over a lower canonical array");
+  user_overlay["rink"]["camera"].remove("fixed_edge_rotation_angle");
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+
   const fs::path native_game_dir = games / "mapping-native-precedence";
   fs::create_directories(native_game_dir);
   YAML::Node native_game_override(YAML::NodeType::Map);
