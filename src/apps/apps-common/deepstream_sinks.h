@@ -56,6 +56,9 @@ typedef struct {
   NvDsEncHwSwType enc_type;
   guint compute_hw;
   gint bitrate;
+  /** Optional reduced source-bitrate/source-pixel-count ratio used by encode-file sinks. */
+  guint64 bitrate_per_pixel_numerator;
+  guint64 bitrate_per_pixel_denominator;
   guint profile;
   gint sync;
   gchar* output_file_path;
