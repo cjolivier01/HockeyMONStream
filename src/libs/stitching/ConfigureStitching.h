@@ -46,13 +46,17 @@ absl::Status validate_stitched_output_generation(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id = {});
 
-bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation = {});
+bool is_field_mask_configured(
+    const std::string& game_dir,
+    const std::string& expected_output_generation = {},
+    const std::string& expected_invalidation_id = {});
 
 // Validates and decodes rink_mask_0.png while holding the Hugin and
 // config/rink transaction locks for one complete artifact generation.
 absl::StatusOr<cv::Mat> load_field_mask(
     const std::string& game_dir,
-    const std::string& expected_output_generation = {});
+    const std::string& expected_output_generation = {},
+    const std::string& expected_invalidation_id = {});
 
 absl::Status create_field_mask(
     const std::string& game_dir,

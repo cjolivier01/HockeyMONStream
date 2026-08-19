@@ -171,8 +171,8 @@ int main() {
     }
     ok &= expect(
         hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a").ok() &&
-            hm::stitching::is_field_mask_configured(root.string()),
-        "the completed generation owner must be able to publish a live-rotation rink generation");
+            hm::stitching::is_field_mask_configured(root.string(), {}, "rink-run-a"),
+        "the completed generation owner must be able to publish and validate a live-rotation rink generation");
     YAML::Node superseding_config = YAML::LoadFile((root / "config.yaml").string());
     superseding_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
     superseding_config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
@@ -186,8 +186,9 @@ int main() {
     ok &= expect(
         absl::IsAborted(superseded_rink) &&
             after_superseded_rink["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
-                "rink-run-b",
-        "superseded rink publication must preserve the newer invalidation generation");
+                "rink-run-b" &&
+            !hm::stitching::is_field_mask_configured(root.string(), {}, "rink-run-a"),
+        "superseded rink publication and completion must preserve the newer invalidation generation");
 
     const cv::Mat committed_snapshot(24, 32, CV_8UC3, cv::Scalar(1, 2, 3));
     ok &= expect(

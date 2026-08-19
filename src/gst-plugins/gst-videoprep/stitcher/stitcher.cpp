@@ -1416,8 +1416,8 @@ absl::Status StitcherPriv::GenerateOutput(
 
     if (one_pass_mode_ && !field_mask_attempted_) {
       field_mask_attempted_ = true;
-      bool mask_configured =
-          !calibrate_field_mask_ || stitching::is_field_mask_configured(config_file_, output_generation);
+      bool mask_configured = !calibrate_field_mask_ ||
+          stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
           configured_during_run_,
           mask_configured,

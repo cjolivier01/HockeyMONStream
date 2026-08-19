@@ -4377,10 +4377,11 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
             output_generation, active_invalidation_id, std::to_string(main_loop_generation_))
       : std::string();
   const bool generation_current = output_generation && *output_generation && !stitcher_config_path.empty() &&
-      (stitching_calibration_only_ ? hm::stitching::validate_stitched_output_generation(
-                                         stitcher_config_path, output_generation, active_invalidation_id)
-                                         .ok()
-                                   : hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation));
+      (stitching_calibration_only_
+           ? hm::stitching::validate_stitched_output_generation(
+                 stitcher_config_path, output_generation, active_invalidation_id)
+                 .ok()
+           : hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation, active_invalidation_id));
   if (!generation_current || !calibration_scope || expected_scope != calibration_scope) {
     g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
     return TRUE;

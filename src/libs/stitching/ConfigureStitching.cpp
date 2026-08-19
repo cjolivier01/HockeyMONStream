@@ -1433,7 +1433,10 @@ absl::Status validate_stitched_output_generation(
   return validate_stitching_generation_owner(*config, expected_invalidation_id);
 }
 
-absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::string& expected_output_generation) {
+absl::StatusOr<cv::Mat> load_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
@@ -1451,6 +1454,7 @@ absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();
+  HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
   std::string current_output_generation;
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
@@ -1511,8 +1515,11 @@ absl::StatusOr<cv::Mat> load_field_mask(const std::string& game_dir, const std::
   return mask;
 }
 
-bool is_field_mask_configured(const std::string& game_dir, const std::string& expected_output_generation) {
-  return load_field_mask(game_dir, expected_output_generation).ok();
+bool is_field_mask_configured(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask(game_dir, expected_output_generation, expected_invalidation_id).ok();
 }
 
 absl::Status save_rink_profile_locked(
