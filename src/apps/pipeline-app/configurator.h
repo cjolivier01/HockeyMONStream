@@ -54,6 +54,7 @@ absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config
 std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
 absl::StatusOr<YAML::Node> build_effective_playtracker_config(
     const YAML::Node& effective_config,
+    const YAML::Node& explicit_config,
     const YAML::Node& base_playtracker_config);
 
 } // namespace configurator_internal
@@ -201,6 +202,9 @@ class Configurator {
 
   // The fully-realzied merged config
   YAML::Node config_;
+  // Only user, game, and CLI overlays. App YAML files are structural
+  // underlays and therefore are intentionally excluded from this tree.
+  YAML::Node explicit_config_;
   std::optional<YAML::Node> user_config_snapshot_;
   std::optional<std::filesystem::path> resolved_game_dir_;
   YAML::Node private_config_;
@@ -210,6 +214,7 @@ class Configurator {
   mutable std::map<std::string, int> archive_lock_fds_;
   mutable std::map<std::string, int> archive_work_lock_fds_;
   mutable std::map<std::string, std::filesystem::path> archive_run_paths_;
+  std::map<std::string, int> playtracker_runtime_lock_fds_;
 
   bool set_stream_offsets_{false};
 };

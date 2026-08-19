@@ -1,7 +1,11 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+
+#include <unistd.h>
 
 namespace {
 
@@ -27,6 +31,12 @@ max-speed-ratio-y: 3.0
 max-accel-ratio-x: 4.0
 max-accel-ratio-y: 5.0
 follower-box-min-height-ratio: 0.3
+min-considered-group-velocity: 3.0
+group-ratio-threshold: 0.5
+group-velocity-speed-ratio: 0.3
+scale-speed-constraints: 3.0
+nonstop-delay-count: 2
+overshoot-scale-speed-ratio: 0.7
 overshoot-stop-delay-count: 6
 live-boxes:
   - name: current_roi
@@ -52,6 +62,11 @@ live-boxes:
     resizing-stop-delay-cooldown-frames: 2
     resizing-time-to-dest-speed-limit-frames: 10
     resizing-time-to-dest-stop-speed-threshold: 0.35
+    sticky-size-ratio-to-frame-width: 10.0
+    sticky-translation-gaussian-mult: 5.0
+    unsticky-translation-size-ratio: 0.75
+    scale-dest-width: 1.45
+    scale-dest-height: 1.45
 )");
   const hm::play_tracker::PlayTrackerConfig config =
       gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), yaml);
@@ -83,5 +98,18 @@ live-boxes:
           follower.cancel_stop_hysteresis_frames == 2 && follower.stop_delay_cooldown_frames == 2 &&
           follower.post_nonstop_stop_delay_count == 6,
       "Follower braking defaults should be parsed from the materialized baseline");
+  const std::filesystem::path validation_path = std::filesystem::temp_directory_path() /
+      ("playtracker-baseline-validation-" + std::to_string(::getpid()) + ".yaml");
+  YAML::Node document(YAML::NodeType::Map);
+  document["play-tracker"] = YAML::Clone(yaml);
+  std::ofstream(validation_path) << YAML::Dump(document) << '\n';
+  const absl::Status valid_status = DsPlayTrackerValidateConfigFile(validation_path.string());
+  document["play-tracker"]["no-wide-start"] = "not-a-boolean";
+  std::ofstream(validation_path) << YAML::Dump(document) << '\n';
+  const absl::Status malformed_status = DsPlayTrackerValidateConfigFile(validation_path.string());
+  std::filesystem::remove(validation_path);
+  ok &= expect(
+      valid_status.ok() && !malformed_status.ok(),
+      "Native validation must require and type-check every baseline-backed tracker field");
   return ok ? 0 : 1;
 }

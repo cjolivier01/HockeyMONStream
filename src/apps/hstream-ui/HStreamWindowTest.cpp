@@ -4046,6 +4046,26 @@ bool test_camera_controls(HStreamWindow* window) {
           "Direct per-game baseline-key overrides should initialize every corresponding camera control")) {
     return false;
   }
+  activate(reset);
+  if (!expect(
+          stop_delay->value() == 10 && rotate->value() == 90 && save->isEnabled(),
+          "Reset should stage removal of direct per-game canonical overrides")) {
+    return false;
+  }
+  activate(save);
+  const YAML::Node after_direct_reset = YAML::LoadFile(config.string());
+  if (!expect(
+          !lookup_yaml_path(after_direct_reset, {"rink", "camera", "stop_on_dir_change_delay"}, nullptr) &&
+              !lookup_yaml_path(after_direct_reset, {"stitching", "post_stitch_rotate_degrees"}, nullptr),
+          "Reset plus Save should remove direct canonical values instead of letting them resurface on reload")) {
+    return false;
+  }
+  activate(create);
+  if (!expect(
+          stop_delay->value() == 10 && rotate->value() == 90 && !save->isEnabled(),
+          "Reload after Reset plus Save should remain on bundled defaults")) {
+    return false;
+  }
 
   {
     YAML::Node malformed(YAML::NodeType::Map);
@@ -4124,8 +4144,31 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          fixed_edge_link->value() == 0 && fixed_edge_left->value() == 250 && fixed_edge_right->value() == 750,
-          "Saved controls should be clamped before linked fixed-edge rotation is reconciled")) {
+          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 100 && fixed_edge_right->value() == 100 &&
+              save->isEnabled(),
+          "Out-of-domain selector values should be rejected visibly without partially applying the preset")) {
+    return false;
+  }
+  {
+    YAML::Node expanded_range(YAML::NodeType::Map);
+    expanded_range["rink"]["camera"]["stop_on_dir_change_delay"] = 100;
+    std::ofstream out(config);
+    out << expanded_range << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stop_delay->value() == 100 && stop_delay->maximum() >= 100 && !save->isEnabled(),
+          "A valid per-game value beyond the initial slider range should be represented exactly")) {
+    return false;
+  }
+  activate(reset);
+  activate(save);
+  activate(create);
+  const YAML::Node after_expanded_reset = YAML::LoadFile(config.string());
+  if (!expect(
+          stop_delay->value() == 10 && !save->isEnabled() &&
+              !lookup_yaml_path(after_expanded_reset, {"rink", "camera", "stop_on_dir_change_delay"}, nullptr),
+          "Reset plus Save should normalize an expanded-range canonical override back to the bundled default")) {
     return false;
   }
   {

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -914,86 +915,251 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
 
 absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_config(
     const YAML::Node& effective_config,
+    const YAML::Node& explicit_config,
     const YAML::Node& base_playtracker_config) {
   if (!effective_config.IsMap())
     return absl::InvalidArgumentError("Effective application config must be a YAML map");
+  if (explicit_config.IsDefined() && !explicit_config.IsNull() && !explicit_config.IsMap())
+    return absl::InvalidArgumentError("Explicit application config must be a YAML map");
   if (!base_playtracker_config.IsMap() || !base_playtracker_config["play-tracker"].IsMap())
     return absl::InvalidArgumentError("Playtracker config must contain a play-tracker map");
 
   YAML::Node result = YAML::Clone(base_playtracker_config);
   YAML::Node play_tracker = result["play-tracker"];
   YAML::Node live_boxes = play_tracker["live-boxes"];
-  if (!live_boxes.IsSequence() || live_boxes.size() < 2)
-    return absl::InvalidArgumentError("Playtracker config must contain fast and follower live-boxes");
+  if (!live_boxes.IsSequence() || live_boxes.size() == 0)
+    return absl::InvalidArgumentError("Playtracker config must contain at least one live-box");
 
-  auto copy_required = [&](YAML::Node destination, const char* destination_key, const char* source_path) {
-    const std::optional<YAML::Node> source = get_node(effective_config, source_path);
-    if (!source || !source->IsDefined() || source->IsNull())
-      return absl::InvalidArgumentError(std::string("Effective baseline is missing required key ") + source_path);
-    destination[destination_key] = YAML::Clone(*source);
+  enum class ScalarType { kString, kBool, kInt, kDouble };
+  auto validate_scalar = [](const YAML::Node& value, ScalarType type, const std::string& path) -> absl::Status {
+    if (!value.IsDefined() || value.IsNull() || !value.IsScalar())
+      return absl::InvalidArgumentError(path + " must be a non-null scalar");
+    try {
+      switch (type) {
+        case ScalarType::kString:
+          (void)value.as<std::string>();
+          break;
+        case ScalarType::kBool:
+          (void)value.as<bool>();
+          break;
+        case ScalarType::kInt:
+          (void)value.as<int>();
+          break;
+        case ScalarType::kDouble: {
+          const double parsed = value.as<double>();
+          if (!std::isfinite(parsed))
+            return absl::InvalidArgumentError(path + " must be finite");
+          break;
+        }
+      }
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + path + ": " + error.what());
+    }
     return absl::OkStatus();
   };
 
-  HM_RETURN_IF_ERROR(copy_required(play_tracker, "camera-name", "camera.name"));
-  HM_RETURN_IF_ERROR(copy_required(play_tracker, "no-wide-start", "play_tracker.no_wide_start"));
-  HM_RETURN_IF_ERROR(copy_required(play_tracker, "ignore-largest-bbox", "rink.tracking.cam_ignore_largest"));
-  HM_RETURN_IF_ERROR(copy_required(
-      play_tracker, "min-considered-group-velocity", "rink.camera.breakaway_detection.min_considered_group_velocity"));
-  HM_RETURN_IF_ERROR(
-      copy_required(play_tracker, "group-ratio-threshold", "rink.camera.breakaway_detection.group_ratio_threshold"));
-  HM_RETURN_IF_ERROR(copy_required(
-      play_tracker, "group-velocity-speed-ratio", "rink.camera.breakaway_detection.group_velocity_speed_ratio"));
-  HM_RETURN_IF_ERROR(copy_required(
-      play_tracker, "scale-speed-constraints", "rink.camera.breakaway_detection.scale_speed_constraints"));
-  HM_RETURN_IF_ERROR(
-      copy_required(play_tracker, "nonstop-delay-count", "rink.camera.breakaway_detection.nonstop_delay_count"));
-  HM_RETURN_IF_ERROR(copy_required(
-      play_tracker, "overshoot-scale-speed-ratio", "rink.camera.breakaway_detection.overshoot_scale_speed_ratio"));
-  HM_RETURN_IF_ERROR(copy_required(
-      play_tracker, "overshoot-stop-delay-count", "rink.camera.breakaway_detection.overshoot_stop_delay_count"));
-  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-speed-ratio-x", "rink.camera.max_speed_ratio_x"));
-  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-speed-ratio-y", "rink.camera.max_speed_ratio_y"));
-  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-accel-ratio-x", "rink.camera.max_accel_ratio_x"));
-  HM_RETURN_IF_ERROR(copy_required(play_tracker, "max-accel-ratio-y", "rink.camera.max_accel_ratio_y"));
-  HM_RETURN_IF_ERROR(
-      copy_required(play_tracker, "follower-box-min-height-ratio", "rink.camera.follower_box_min_height_ratio"));
+  auto copy_required = [&](YAML::Node destination,
+                           const char* destination_key,
+                           const char* source_path,
+                           ScalarType type,
+                           const std::string& destination_path) {
+    const std::optional<YAML::Node> source = get_node(effective_config, source_path);
+    if (!source || !source->IsDefined() || source->IsNull())
+      return absl::InvalidArgumentError(std::string("Effective baseline is missing required key ") + source_path);
+    HM_RETURN_IF_ERROR(validate_scalar(*source, type, source_path));
+    const std::optional<YAML::Node> explicit_source = get_node(explicit_config, source_path);
+    const YAML::Node current = destination[destination_key];
+    if ((explicit_source && explicit_source->IsDefined()) || !current.IsDefined() || current.IsNull()) {
+      destination[destination_key] = YAML::Clone(*source);
+    } else {
+      HM_RETURN_IF_ERROR(validate_scalar(current, type, destination_path));
+    }
+    return absl::OkStatus();
+  };
 
-  YAML::Node fast = live_boxes[0];
-  YAML::Node follower = live_boxes[1];
-  for (YAML::Node box : {fast, follower}) {
-    HM_RETURN_IF_ERROR(
-        copy_required(box, "time-to-dest-speed-limit-frames", "rink.camera.time_to_dest_speed_limit_frames"));
-    HM_RETURN_IF_ERROR(
-        copy_required(box, "time-to-dest-stop-speed-threshold", "rink.camera.time_to_dest_stop_speed_threshold"));
-    HM_RETURN_IF_ERROR(
-        copy_required(box, "resizing-stop-on-dir-change-delay", "rink.camera.resizing_stop_on_dir_change_delay"));
-    HM_RETURN_IF_ERROR(
-        copy_required(box, "resizing-cancel-stop-on-opposite-dir", "rink.camera.resizing_cancel_stop_on_opposite_dir"));
-    HM_RETURN_IF_ERROR(copy_required(
-        box, "resizing-stop-cancel-hysteresis-frames", "rink.camera.resizing_stop_cancel_hysteresis_frames"));
-    HM_RETURN_IF_ERROR(
-        copy_required(box, "resizing-stop-delay-cooldown-frames", "rink.camera.resizing_stop_delay_cooldown_frames"));
-    HM_RETURN_IF_ERROR(copy_required(
-        box, "resizing-time-to-dest-speed-limit-frames", "rink.camera.resizing_time_to_dest_speed_limit_frames"));
-    HM_RETURN_IF_ERROR(copy_required(
-        box, "resizing-time-to-dest-stop-speed-threshold", "rink.camera.resizing_time_to_dest_stop_speed_threshold"));
-  }
-  HM_RETURN_IF_ERROR(
-      copy_required(follower, "stop-translation-on-dir-change-delay", "rink.camera.stop_on_dir_change_delay"));
-  HM_RETURN_IF_ERROR(copy_required(follower, "cancel-stop-on-opposite-dir", "rink.camera.cancel_stop_on_opposite_dir"));
-  HM_RETURN_IF_ERROR(
-      copy_required(follower, "cancel-stop-hysteresis-frames", "rink.camera.stop_cancel_hysteresis_frames"));
-  HM_RETURN_IF_ERROR(copy_required(follower, "stop-delay-cooldown-frames", "rink.camera.stop_delay_cooldown_frames"));
+  auto copy_global = [&](const char* destination_key, const char* source_path, ScalarType type) {
+    return copy_required(
+        play_tracker, destination_key, source_path, type, std::string("play-tracker.") + destination_key);
+  };
+
+  HM_RETURN_IF_ERROR(copy_global("camera-name", "camera.name", ScalarType::kString));
+  HM_RETURN_IF_ERROR(copy_global("no-wide-start", "play_tracker.no_wide_start", ScalarType::kBool));
+  HM_RETURN_IF_ERROR(copy_global("ignore-largest-bbox", "rink.tracking.cam_ignore_largest", ScalarType::kBool));
   HM_RETURN_IF_ERROR(copy_required(
-      follower, "post-nonstop-stop-delay-count", "rink.camera.breakaway_detection.post_nonstop_stop_delay_count"));
+      play_tracker,
+      "min-considered-group-velocity",
+      "rink.camera.breakaway_detection.min_considered_group_velocity",
+      ScalarType::kDouble,
+      "play-tracker.min-considered-group-velocity"));
+  HM_RETURN_IF_ERROR(copy_global(
+      "group-ratio-threshold", "rink.camera.breakaway_detection.group_ratio_threshold", ScalarType::kDouble));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker,
+      "group-velocity-speed-ratio",
+      "rink.camera.breakaway_detection.group_velocity_speed_ratio",
+      ScalarType::kDouble,
+      "play-tracker.group-velocity-speed-ratio"));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker,
+      "scale-speed-constraints",
+      "rink.camera.breakaway_detection.scale_speed_constraints",
+      ScalarType::kDouble,
+      "play-tracker.scale-speed-constraints"));
   HM_RETURN_IF_ERROR(
-      copy_required(follower, "sticky-size-ratio-to-frame-width", "rink.camera.sticky_size_ratio_to_frame_width"));
+      copy_global("nonstop-delay-count", "rink.camera.breakaway_detection.nonstop_delay_count", ScalarType::kInt));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker,
+      "overshoot-scale-speed-ratio",
+      "rink.camera.breakaway_detection.overshoot_scale_speed_ratio",
+      ScalarType::kDouble,
+      "play-tracker.overshoot-scale-speed-ratio"));
+  HM_RETURN_IF_ERROR(copy_required(
+      play_tracker,
+      "overshoot-stop-delay-count",
+      "rink.camera.breakaway_detection.overshoot_stop_delay_count",
+      ScalarType::kInt,
+      "play-tracker.overshoot-stop-delay-count"));
+  HM_RETURN_IF_ERROR(copy_global("max-speed-ratio-x", "rink.camera.max_speed_ratio_x", ScalarType::kDouble));
+  HM_RETURN_IF_ERROR(copy_global("max-speed-ratio-y", "rink.camera.max_speed_ratio_y", ScalarType::kDouble));
+  HM_RETURN_IF_ERROR(copy_global("max-accel-ratio-x", "rink.camera.max_accel_ratio_x", ScalarType::kDouble));
+  HM_RETURN_IF_ERROR(copy_global("max-accel-ratio-y", "rink.camera.max_accel_ratio_y", ScalarType::kDouble));
   HM_RETURN_IF_ERROR(
-      copy_required(follower, "sticky-translation-gaussian-mult", "rink.camera.sticky_translation_gaussian_mult"));
-  HM_RETURN_IF_ERROR(
-      copy_required(follower, "unsticky-translation-size-ratio", "rink.camera.unsticky_translation_size_ratio"));
-  HM_RETURN_IF_ERROR(copy_required(follower, "scale-dest-width", "rink.camera.follower_box_scale_width"));
-  HM_RETURN_IF_ERROR(copy_required(follower, "scale-dest-height", "rink.camera.follower_box_scale_height"));
+      copy_global("follower-box-min-height-ratio", "rink.camera.follower_box_min_height_ratio", ScalarType::kDouble));
+
+  YAML::Node follower;
+  bool named_follower_found = false;
+  std::set<std::string> known_names;
+  for (size_t index = 0; index < live_boxes.size(); ++index) {
+    YAML::Node box = live_boxes[index];
+    if (!box.IsMap())
+      return absl::InvalidArgumentError("play-tracker.live-boxes entries must be maps");
+    const YAML::Node name = box["name"];
+    if (name.IsDefined() && !name.IsNull()) {
+      HM_RETURN_IF_ERROR(validate_scalar(name, ScalarType::kString, "play-tracker.live-boxes.name"));
+      const std::string parsed_name = name.as<std::string>();
+      if ((parsed_name == "current_roi" || parsed_name == "current_roi_aspect") &&
+          !known_names.insert(parsed_name).second) {
+        return absl::InvalidArgumentError("play-tracker.live-boxes contains duplicate known name " + parsed_name);
+      }
+      if (parsed_name == "current_roi_aspect") {
+        follower = box;
+        named_follower_found = true;
+      }
+    }
+    const std::string box_path = "play-tracker.live-boxes[" + std::to_string(index) + "].";
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "time-to-dest-speed-limit-frames",
+        "rink.camera.time_to_dest_speed_limit_frames",
+        ScalarType::kInt,
+        box_path + "time-to-dest-speed-limit-frames"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "time-to-dest-stop-speed-threshold",
+        "rink.camera.time_to_dest_stop_speed_threshold",
+        ScalarType::kDouble,
+        box_path + "time-to-dest-stop-speed-threshold"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "resizing-stop-on-dir-change-delay",
+        "rink.camera.resizing_stop_on_dir_change_delay",
+        ScalarType::kInt,
+        box_path + "resizing-stop-on-dir-change-delay"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "resizing-cancel-stop-on-opposite-dir",
+        "rink.camera.resizing_cancel_stop_on_opposite_dir",
+        ScalarType::kBool,
+        box_path + "resizing-cancel-stop-on-opposite-dir"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "resizing-stop-cancel-hysteresis-frames",
+        "rink.camera.resizing_stop_cancel_hysteresis_frames",
+        ScalarType::kInt,
+        box_path + "resizing-stop-cancel-hysteresis-frames"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "resizing-stop-delay-cooldown-frames",
+        "rink.camera.resizing_stop_delay_cooldown_frames",
+        ScalarType::kInt,
+        box_path + "resizing-stop-delay-cooldown-frames"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "resizing-time-to-dest-speed-limit-frames",
+        "rink.camera.resizing_time_to_dest_speed_limit_frames",
+        ScalarType::kInt,
+        box_path + "resizing-time-to-dest-speed-limit-frames"));
+    HM_RETURN_IF_ERROR(copy_required(
+        box,
+        "resizing-time-to-dest-stop-speed-threshold",
+        "rink.camera.resizing_time_to_dest_stop_speed_threshold",
+        ScalarType::kDouble,
+        box_path + "resizing-time-to-dest-stop-speed-threshold"));
+  }
+  if (!named_follower_found)
+    follower = live_boxes[live_boxes.size() - 1];
+  const std::string follower_path =
+      named_follower_found ? "play-tracker.live-boxes[current_roi_aspect]." : "play-tracker.live-boxes[last].";
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "stop-translation-on-dir-change-delay",
+      "rink.camera.stop_on_dir_change_delay",
+      ScalarType::kInt,
+      follower_path + "stop-translation-on-dir-change-delay"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "cancel-stop-on-opposite-dir",
+      "rink.camera.cancel_stop_on_opposite_dir",
+      ScalarType::kBool,
+      follower_path + "cancel-stop-on-opposite-dir"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "cancel-stop-hysteresis-frames",
+      "rink.camera.stop_cancel_hysteresis_frames",
+      ScalarType::kInt,
+      follower_path + "cancel-stop-hysteresis-frames"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "stop-delay-cooldown-frames",
+      "rink.camera.stop_delay_cooldown_frames",
+      ScalarType::kInt,
+      follower_path + "stop-delay-cooldown-frames"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "post-nonstop-stop-delay-count",
+      "rink.camera.breakaway_detection.post_nonstop_stop_delay_count",
+      ScalarType::kInt,
+      follower_path + "post-nonstop-stop-delay-count"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "sticky-size-ratio-to-frame-width",
+      "rink.camera.sticky_size_ratio_to_frame_width",
+      ScalarType::kDouble,
+      follower_path + "sticky-size-ratio-to-frame-width"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "sticky-translation-gaussian-mult",
+      "rink.camera.sticky_translation_gaussian_mult",
+      ScalarType::kDouble,
+      follower_path + "sticky-translation-gaussian-mult"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "unsticky-translation-size-ratio",
+      "rink.camera.unsticky_translation_size_ratio",
+      ScalarType::kDouble,
+      follower_path + "unsticky-translation-size-ratio"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "scale-dest-width",
+      "rink.camera.follower_box_scale_width",
+      ScalarType::kDouble,
+      follower_path + "scale-dest-width"));
+  HM_RETURN_IF_ERROR(copy_required(
+      follower,
+      "scale-dest-height",
+      "rink.camera.follower_box_scale_height",
+      ScalarType::kDouble,
+      follower_path + "scale-dest-height"));
   return result;
 }
 
@@ -1407,6 +1573,125 @@ void Configurator::map_common_config_keys() {
   }
 }
 
+namespace {
+
+constexpr size_t kPlaytrackerRuntimeRetentionCount = 8;
+constexpr auto kPlaytrackerRuntimeGracePeriod = std::chrono::hours(24);
+
+fs::path playtracker_runtime_directory(const fs::path& game_dir) {
+  if (!game_dir.empty())
+    return game_dir / ".hstream-runtime";
+  if (const char* runtime_root = std::getenv("XDG_RUNTIME_DIR"); runtime_root && *runtime_root) {
+    const fs::path configured(runtime_root);
+    if (configured.is_absolute())
+      return configured / "hstream";
+  }
+  std::error_code error;
+  fs::path temporary = fs::temp_directory_path(error);
+  if (error)
+    temporary = "/tmp";
+  return temporary / ("hstream-" + std::to_string(::getuid()));
+}
+
+absl::StatusOr<int> acquire_playtracker_runtime_lock(const fs::path& path) {
+  // The YAML file itself is the lock object. Cleanup verifies inode identity
+  // after locking, so an opener racing an unlink will retry the published path
+  // instead of retaining a lock on an unreachable inode.
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+      if (errno == ENOENT)
+        continue;
+      return absl::InternalError(
+          "Could not open playtracker runtime config " + path.string() + ": " + std::strerror(errno));
+    }
+    if (::flock(fd, LOCK_SH) != 0) {
+      const int saved_errno = errno;
+      ::close(fd);
+      return absl::InternalError(
+          "Could not lock playtracker runtime config " + path.string() + ": " + std::strerror(saved_errno));
+    }
+    struct stat opened_stat{};
+    struct stat path_stat{};
+    const bool current_inode = ::fstat(fd, &opened_stat) == 0 && ::lstat(path.c_str(), &path_stat) == 0 &&
+        opened_stat.st_dev == path_stat.st_dev && opened_stat.st_ino == path_stat.st_ino &&
+        S_ISREG(opened_stat.st_mode);
+    if (current_inode)
+      return fd;
+    ::close(fd);
+  }
+  return absl::UnavailableError("Playtracker runtime config changed repeatedly while acquiring its reader lock");
+}
+
+absl::Status prune_playtracker_runtime_configs(const fs::path& runtime_dir, const fs::path& current_path) {
+  struct Candidate {
+    fs::path path;
+    fs::file_time_type modified;
+  };
+  std::vector<Candidate> candidates;
+  const std::regex generated_name(R"(^play_tracker_config-[0-9a-f]+\.yaml$)");
+  std::error_code error;
+  for (fs::directory_iterator it(runtime_dir, error), end; !error && it != end; it.increment(error)) {
+    const fs::path path = it->path();
+    if (!std::regex_match(path.filename().string(), generated_name) || !it->is_regular_file(error)) {
+      error.clear();
+      continue;
+    }
+    const fs::file_time_type modified = fs::last_write_time(path, error);
+    if (error) {
+      error.clear();
+      continue;
+    }
+    candidates.push_back({path, modified});
+  }
+  if (error)
+    return absl::InternalError("Could not inspect playtracker runtime configs: " + error.message());
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
+    return left.modified > right.modified;
+  });
+  const fs::file_time_type stale_before = fs::file_time_type::clock::now() - kPlaytrackerRuntimeGracePeriod;
+  for (size_t index = 0; index < candidates.size(); ++index) {
+    const Candidate& candidate = candidates[index];
+    if (candidate.path == current_path || index < kPlaytrackerRuntimeRetentionCount ||
+        candidate.modified > stale_before) {
+      continue;
+    }
+    const int fd = ::open(candidate.path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+      if (errno == ENOENT)
+        continue;
+      return absl::InternalError(
+          "Could not inspect stale playtracker runtime config " + candidate.path.string() + ": " +
+          std::strerror(errno));
+    }
+    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+      const int saved_errno = errno;
+      ::close(fd);
+      if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN)
+        continue;
+      return absl::InternalError(
+          "Could not lock stale playtracker runtime config " + candidate.path.string() + ": " +
+          std::strerror(saved_errno));
+    }
+    struct stat opened_stat{};
+    struct stat path_stat{};
+    const bool current_inode = ::fstat(fd, &opened_stat) == 0 && ::lstat(candidate.path.c_str(), &path_stat) == 0 &&
+        opened_stat.st_dev == path_stat.st_dev && opened_stat.st_ino == path_stat.st_ino &&
+        S_ISREG(opened_stat.st_mode);
+    if (current_inode && ::unlink(candidate.path.c_str()) != 0 && errno != ENOENT) {
+      const int saved_errno = errno;
+      ::close(fd);
+      return absl::InternalError(
+          "Could not remove stale playtracker runtime config " + candidate.path.string() + ": " +
+          std::strerror(saved_errno));
+    }
+    ::close(fd);
+  }
+  return absl::OkStatus();
+}
+
+} // namespace
+
 absl::Status Configurator::materialize_playtracker_config(
     YAML::Node& pipeline,
     const fs::path& game_dir,
@@ -1457,7 +1742,8 @@ absl::Status Configurator::materialize_playtracker_config(
         "Failed to load playtracker base config " + base_path.string() + ": " + error.what());
   }
   YAML::Node effective;
-  HM_ASSIGN_OR_RETURN(effective, configurator_internal::build_effective_playtracker_config(config_, base));
+  HM_ASSIGN_OR_RETURN(
+      effective, configurator_internal::build_effective_playtracker_config(config_, explicit_config_, base));
   const std::string contents = YAML::Dump(effective) + "\n";
 
   uint64_t hash = 1469598103934665603ULL;
@@ -1467,7 +1753,7 @@ absl::Status Configurator::materialize_playtracker_config(
   }
   std::ostringstream filename;
   filename << "play_tracker_config-" << std::hex << hash << ".yaml";
-  const fs::path runtime_dir = game_dir / ".hstream-runtime";
+  const fs::path runtime_dir = playtracker_runtime_directory(game_dir);
   std::error_code directory_error;
   fs::create_directories(runtime_dir, directory_error);
   if (directory_error) {
@@ -1476,16 +1762,30 @@ absl::Status Configurator::materialize_playtracker_config(
         directory_error.message());
   }
   const fs::path effective_path = runtime_dir / filename.str();
-  bool already_current = false;
-  {
-    std::ifstream existing(effective_path, std::ios::binary);
-    if (existing) {
-      const std::string existing_contents((std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
-      already_current = existing_contents == contents;
+  const std::string effective_path_key = effective_path.string();
+  if (playtracker_runtime_lock_fds_.find(effective_path_key) == playtracker_runtime_lock_fds_.end()) {
+    absl::StatusOr<int> reader_lock = absl::UnavailableError("Playtracker runtime config was not published");
+    for (int attempt = 0; attempt < 4 && !reader_lock.ok(); ++attempt) {
+      bool already_current = false;
+      {
+        std::ifstream existing(effective_path, std::ios::binary);
+        if (existing) {
+          const std::string existing_contents(
+              (std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
+          already_current = existing_contents == contents;
+        }
+      }
+      if (!already_current)
+        HM_RETURN_IF_ERROR(stitching::publish_named_file(effective_path, contents));
+      reader_lock = acquire_playtracker_runtime_lock(effective_path);
     }
+    if (!reader_lock.ok())
+      return reader_lock.status();
+    playtracker_runtime_lock_fds_.emplace(effective_path_key, *reader_lock);
   }
-  if (!already_current)
-    HM_RETURN_IF_ERROR(stitching::publish_named_file(effective_path, contents));
+  const absl::Status prune_status = prune_playtracker_runtime_configs(runtime_dir, effective_path);
+  if (!prune_status.ok())
+    std::cerr << "Warning: " << prune_status << '\n';
   section["config-file"] = effective_path.string();
   return absl::OkStatus();
 }
@@ -2198,6 +2498,8 @@ Configurator::Configurator(const std::string& game_id, const std::string& config
   // Constructor
 }
 Configurator::~Configurator() {
+  for (const auto& [_, lock_fd] : playtracker_runtime_lock_fds_)
+    ::close(lock_fd);
   for (const auto& [_, lock_fd] : archive_work_lock_fds_)
     ::close(lock_fd);
   for (const auto& [_, lock_fd] : archive_lock_fds_)
@@ -2515,6 +2817,7 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   YAML::Node config = YAML::Clone(baseline->values);
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const YAML::Node user_overlay = YAML::Clone(*user_config_snapshot_);
+  explicit_config_ = YAML::Clone(user_overlay);
   config = merge_nodes(
       config,
       user_overlay,
@@ -2524,6 +2827,10 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   if (private_config.has_value()) {
     private_config_ = *private_config;
     persisted_private_config_ = YAML::Clone(private_config_);
+    explicit_config_ = merge_nodes(
+        explicit_config_,
+        private_config_,
+        /*warn_if_key_not_in_dest=*/false);
     config = merge_nodes(
         config,
         private_config_,
@@ -2584,9 +2891,17 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
         config_,
         overlaid_config,
         /*warn_if_key_not_in_dest=*/false);
+    explicit_config_ = merge_nodes(
+        explicit_config_,
+        overlaid_config,
+        /*warn_if_key_not_in_dest=*/false);
   } else {
     config_[node_name] = merge_nodes(
         config_[node_name],
+        overlaid_config,
+        /*warn_if_key_not_in_dest=*/false);
+    explicit_config_[node_name] = merge_nodes(
+        explicit_config_[node_name],
         overlaid_config,
         /*warn_if_key_not_in_dest=*/false);
   }
@@ -2664,21 +2979,28 @@ absl::Status Configurator::complete_configuration(
   stitching_calibration_required_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
   const bool clean_from_control_points_only = clean_stitching_from_control_points && !clean_stitching_artifacts;
-  if (!get_node_value(config_, "pipeline.application.complete-configuration", false)) {
-    return absl::OkStatus();
+  const bool complete_configuration_enabled =
+      get_node_value(config_, "pipeline.application.complete-configuration", false);
+  YAML::Node pipeline = config_["pipeline"];
+  if (!pipeline.IsDefined()) {
+    return complete_configuration_enabled ? absl::InvalidArgumentError("Configuration has no pipeline section")
+                                          : absl::OkStatus();
   }
 
-  YAML::Node pipeline = config_["pipeline"];
-  assert(pipeline.IsDefined());
-
   apply_gpu_override(pipeline);
+  map_common_config_keys();
 
-  if (game_id_.empty()) {
-    // return absl::InvalidArgumentError("No game id specified");
-    // Just go by what's in the config file(s)
-    if (clean_requested) {
-      return absl::InvalidArgumentError("No game id specified for cleaning");
-    }
+  if (game_id_.empty() && clean_requested)
+    return absl::InvalidArgumentError("No game id specified for cleaning");
+
+  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
+  const fs::path game_dir = resolved_game_dir();
+  HM_RETURN_IF_ERROR(materialize_playtracker_config(pipeline, game_dir, pipeline_config_dir));
+
+  if (!complete_configuration_enabled || game_id_.empty()) {
+    // Raw/no-game and structurally incomplete launches still require the
+    // canonical tracker materialization above, but skip game discovery and
+    // dependent stitching configuration.
     return absl::OkStatus();
   }
 
@@ -2687,8 +3009,6 @@ absl::Status Configurator::complete_configuration(
   const bool is_camera_source = !camera_sources.empty();
 
   // Stitching config mask config dir
-  HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
-  const fs::path game_dir = resolved_game_dir();
   const bool has_hmstitcher = has_node(pipeline, "hmstitcher", false);
   if (clean_requested && !has_hmstitcher) {
     return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");
@@ -2815,8 +3135,6 @@ absl::Status Configurator::complete_configuration(
     return absl::CancelledError("Stitching artifacts cleaned");
   }
 
-  map_common_config_keys();
-  HM_RETURN_IF_ERROR(materialize_playtracker_config(pipeline, game_dir, pipeline_config_dir));
   bool pipeline_has_hmstitcher = get_node(pipeline, "hmstitcher")->IsDefined();
   if (pipeline_has_hmstitcher) {
     HM_RETURN_IF_ERROR(invalidate_rotation_dependent_cache_if_needed(game_dir));
@@ -2949,6 +3267,7 @@ absl::Status Configurator::apply_config_item(const std::string& key, const std::
   // std::cout << overlaid_config << std::endl;
   //  std::cout << config_ << std::endl;
   config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
+  explicit_config_ = merge_nodes(explicit_config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
   // std::cout << config_ << std::endl;
   return absl::OkStatus();
 }

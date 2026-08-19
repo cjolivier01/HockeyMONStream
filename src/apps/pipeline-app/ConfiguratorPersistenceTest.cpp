@@ -2,11 +2,13 @@
 #include "src/apps/pipeline-app/configurator.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <string>
 
 #include <gst/gst.h>
@@ -104,6 +106,7 @@ int main() {
   const std::string original_home = ::getenv("HOME") ? ::getenv("HOME") : "";
   const std::string original_game_root = ::getenv("HM_GAME_DIR") ? ::getenv("HM_GAME_DIR") : "";
   const std::string original_output_root = ::getenv("HM_OUTPUT_WORK_DIR") ? ::getenv("HM_OUTPUT_WORK_DIR") : "";
+  const std::string original_xdg_runtime_dir = ::getenv("XDG_RUNTIME_DIR") ? ::getenv("XDG_RUNTIME_DIR") : "";
   const fs::path test_home = root / "home";
   fs::create_directories(test_home);
   ::setenv("HOME", test_home.c_str(), 1);
@@ -120,7 +123,8 @@ play-tracker:
       preserve-follower: 1
 )");
   auto effective_playtracker = bundled_baseline.ok()
-      ? hm::configurator_internal::build_effective_playtracker_config(bundled_baseline->values, playtracker_base)
+      ? hm::configurator_internal::build_effective_playtracker_config(
+            bundled_baseline->values, YAML::Node(YAML::NodeType::Map), playtracker_base)
       : absl::StatusOr<YAML::Node>(bundled_baseline.status());
   if (effective_playtracker.ok()) {
     const YAML::Node play_tracker = (*effective_playtracker)["play-tracker"];
@@ -165,16 +169,87 @@ play-tracker:
   }
   if (bundled_baseline.ok()) {
     YAML::Node overlaid = YAML::Clone(bundled_baseline->values);
+    YAML::Node explicit_overrides(YAML::NodeType::Map);
     overlaid["rink"]["camera"]["stop_on_dir_change_delay"] = 17;
     overlaid["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 12;
+    explicit_overrides["rink"]["camera"]["stop_on_dir_change_delay"] = 17;
+    explicit_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 12;
     const auto overlaid_playtracker =
-        hm::configurator_internal::build_effective_playtracker_config(overlaid, playtracker_base);
+        hm::configurator_internal::build_effective_playtracker_config(overlaid, explicit_overrides, playtracker_base);
     ok &= expect(
         overlaid_playtracker.ok() &&
             (*overlaid_playtracker)["play-tracker"]["overshoot-stop-delay-count"].as<int>() == 12 &&
             (*overlaid_playtracker)["play-tracker"]["live-boxes"][1]["stop-translation-on-dir-change-delay"]
                     .as<int>() == 17,
         "Merged user/game/CLI values must replace bundled defaults in the materialized native tracker config");
+
+    YAML::Node custom_base = YAML::Clone(playtracker_base);
+    custom_base["play-tracker"]["no-wide-start"] = false;
+    custom_base["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"] = 9.5;
+    const auto custom_only = hm::configurator_internal::build_effective_playtracker_config(
+        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), custom_base);
+    YAML::Node different_effective = YAML::Clone(bundled_baseline->values);
+    YAML::Node different_explicit(YAML::NodeType::Map);
+    different_effective["rink"]["camera"]["sticky_translation_gaussian_mult"] = 7.25;
+    different_explicit["rink"]["camera"]["sticky_translation_gaussian_mult"] = 7.25;
+    const auto explicit_different = hm::configurator_internal::build_effective_playtracker_config(
+        different_effective, different_explicit, custom_base);
+    YAML::Node equal_explicit(YAML::NodeType::Map);
+    equal_explicit["rink"]["camera"]["sticky_translation_gaussian_mult"] = 5.0;
+    const auto explicit_equal = hm::configurator_internal::build_effective_playtracker_config(
+        bundled_baseline->values, equal_explicit, custom_base);
+    ok &= expect(
+        custom_only.ok() && !(*custom_only)["play-tracker"]["no-wide-start"].as<bool>() &&
+            (*custom_only)["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() == 9.5 &&
+            explicit_different.ok() &&
+            (*explicit_different)["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() ==
+                7.25 &&
+            explicit_equal.ok() &&
+            (*explicit_equal)["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() == 5.0,
+        "Native custom values must survive baseline fill unless an exact canonical overlay path is explicit");
+
+    YAML::Node reordered_base = YAML::Clone(playtracker_base);
+    YAML::Node reordered_boxes(YAML::NodeType::Sequence);
+    reordered_boxes.push_back(reordered_base["play-tracker"]["live-boxes"][1]);
+    YAML::Node additional_box(YAML::NodeType::Map);
+    additional_box["name"] = "operator_extra";
+    additional_box["preserve-extra"] = true;
+    reordered_boxes.push_back(additional_box);
+    reordered_boxes.push_back(reordered_base["play-tracker"]["live-boxes"][0]);
+    reordered_base["play-tracker"]["live-boxes"] = reordered_boxes;
+    const auto reordered = hm::configurator_internal::build_effective_playtracker_config(
+        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), reordered_base);
+    YAML::Node one_box = YAML::Clone(playtracker_base);
+    YAML::Node one_box_sequence(YAML::NodeType::Sequence);
+    YAML::Node operator_box(YAML::NodeType::Map);
+    operator_box["name"] = "operator_only";
+    one_box_sequence.push_back(operator_box);
+    one_box["play-tracker"]["live-boxes"] = one_box_sequence;
+    const auto one_box_effective = hm::configurator_internal::build_effective_playtracker_config(
+        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), one_box);
+    ok &= expect(
+        reordered.ok() && (*reordered)["play-tracker"]["live-boxes"].size() == 3 &&
+            (*reordered)["play-tracker"]["live-boxes"][0]["sticky-translation-gaussian-mult"].as<double>() == 5.0 &&
+            (*reordered)["play-tracker"]["live-boxes"][1]["preserve-extra"].as<bool>() &&
+            (*reordered)["play-tracker"]["live-boxes"][1]["time-to-dest-speed-limit-frames"].as<int>() == 20 &&
+            one_box_effective.ok() && (*one_box_effective)["play-tracker"]["live-boxes"].size() == 1 &&
+            (*one_box_effective)["play-tracker"]["live-boxes"][0]["sticky-translation-gaussian-mult"].as<double>() ==
+                5.0,
+        "Baseline fill must map the named follower, preserve additional boxes, and retain one-box compatibility");
+
+    YAML::Node malformed_effective = YAML::Clone(bundled_baseline->values);
+    YAML::Node malformed_explicit(YAML::NodeType::Map);
+    malformed_effective["play_tracker"]["no_wide_start"] = "not-a-boolean";
+    malformed_explicit["play_tracker"]["no_wide_start"] = "not-a-boolean";
+    const auto malformed_canonical = hm::configurator_internal::build_effective_playtracker_config(
+        malformed_effective, malformed_explicit, playtracker_base);
+    YAML::Node malformed_native = YAML::Clone(playtracker_base);
+    malformed_native["play-tracker"]["no-wide-start"] = "not-a-boolean";
+    const auto malformed_custom = hm::configurator_internal::build_effective_playtracker_config(
+        bundled_baseline->values, YAML::Node(YAML::NodeType::Map), malformed_native);
+    ok &= expect(
+        !malformed_canonical.ok() && !malformed_custom.ok(),
+        "Malformed baseline-backed canonical and custom-native scalar types must fail materialization");
   }
 
   auto first_user_config = hm::user_config::load_or_create();
@@ -277,6 +352,115 @@ play-tracker:
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
 
+  const fs::path tracker_base_path = root / "custom-playtracker.yaml";
+  std::ofstream(tracker_base_path) << R"(play-tracker:
+  preserve-custom-root: true
+  no-wide-start: false
+  live-boxes:
+    - name: current_roi
+    - name: current_roi_aspect
+      sticky-translation-gaussian-mult: 9.5
+)";
+  const fs::path incomplete_pipeline = root / "incomplete-pipeline.yaml";
+  std::ofstream(incomplete_pipeline) << "application:\n"
+                                     << "  complete-configuration: 0\n"
+                                     << "ds-playtracker:\n"
+                                     << "  enable: 1\n"
+                                     << "  config-file: " << tracker_base_path.string() << "\n";
+  const fs::path incomplete_game_dir = games / "materialize-incomplete";
+  fs::create_directories(incomplete_game_dir);
+  const fs::path runtime_root = root / "runtime";
+  fs::create_directories(runtime_root);
+  ::setenv("XDG_RUNTIME_DIR", runtime_root.c_str(), 1);
+  if (bundled_baseline.ok()) {
+    hm::Configurator incomplete_configurator(
+        "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+    const bool incomplete_loaded = incomplete_configurator.configure().ok() &&
+        incomplete_configurator.underlay_config("pipeline", incomplete_pipeline.string());
+    const absl::Status incomplete_status = incomplete_loaded
+        ? incomplete_configurator.complete_configuration(
+              /*force=*/false,
+              /*clean_stitching_artifacts=*/false,
+              /*clean_stitching_from_control_points=*/false,
+              /*clean_expected_invalidation_id=*/{},
+              /*show_render_sink=*/false,
+              /*show_render_scale=*/-1.0,
+              incomplete_pipeline.parent_path())
+        : absl::InternalError("incomplete materialization fixture did not load");
+    const fs::path incomplete_effective_path = incomplete_status.ok()
+        ? fs::path(incomplete_configurator.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+        : fs::path();
+    YAML::Node incomplete_effective = incomplete_status.ok() && fs::is_regular_file(incomplete_effective_path)
+        ? YAML::LoadFile(incomplete_effective_path.string())
+        : YAML::Node();
+    ok &= expect(
+        incomplete_status.ok() && incomplete_effective_path.parent_path() == incomplete_game_dir / ".hstream-runtime" &&
+            incomplete_effective["play-tracker"]["preserve-custom-root"].as<bool>() &&
+            !incomplete_effective["play-tracker"]["no-wide-start"].as<bool>() &&
+            incomplete_effective["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() ==
+                9.5 &&
+            incomplete_effective["play-tracker"]["live-boxes"][0]["time-to-dest-speed-limit-frames"].as<int>() == 20,
+        "complete-configuration=false must still underlay every missing tracker field from bundled baseline");
+
+    hm::Configurator raw_configurator("", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+    const bool raw_loaded =
+        raw_configurator.configure().ok() && raw_configurator.underlay_config("pipeline", incomplete_pipeline.string());
+    const absl::Status raw_status = raw_loaded ? raw_configurator.complete_configuration(
+                                                     /*force=*/false,
+                                                     /*clean_stitching_artifacts=*/false,
+                                                     /*clean_stitching_from_control_points=*/false,
+                                                     /*clean_expected_invalidation_id=*/{},
+                                                     /*show_render_sink=*/false,
+                                                     /*show_render_scale=*/-1.0,
+                                                     incomplete_pipeline.parent_path())
+                                               : absl::InternalError("raw materialization fixture did not load");
+    const fs::path raw_effective_path = raw_status.ok()
+        ? fs::path(raw_configurator.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+        : fs::path();
+    ok &= expect(
+        raw_status.ok() && raw_effective_path.parent_path() == runtime_root / "hstream" &&
+            fs::is_regular_file(raw_effective_path) && raw_effective_path.parent_path() != fs::current_path(),
+        "No-game raw launches must materialize baseline-backed tracker config in a per-user runtime directory");
+
+    fs::last_write_time(incomplete_effective_path, fs::file_time_type::clock::now() - std::chrono::hours(48));
+    const fs::path game_runtime_dir = incomplete_effective_path.parent_path();
+    for (int index = 0; index < 12; ++index) {
+      std::ostringstream stale_name;
+      stale_name << "play_tracker_config-" << std::hex << (0x1000 + index) << ".yaml";
+      const fs::path stale = game_runtime_dir / stale_name.str();
+      std::ofstream(stale) << "stale: " << index << '\n';
+      fs::last_write_time(
+          stale, fs::file_time_type::clock::now() - std::chrono::hours(47) + std::chrono::minutes(index));
+    }
+    hm::Configurator retention_configurator(
+        "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+    const bool retention_loaded = retention_configurator.configure().ok() &&
+        retention_configurator.underlay_config("pipeline", incomplete_pipeline.string()) &&
+        retention_configurator.apply_config_item("rink.camera.sticky_translation_gaussian_mult", "6.0").ok();
+    const absl::Status retention_status = retention_loaded
+        ? retention_configurator.complete_configuration(
+              /*force=*/false,
+              /*clean_stitching_artifacts=*/false,
+              /*clean_stitching_from_control_points=*/false,
+              /*clean_expected_invalidation_id=*/{},
+              /*show_render_sink=*/false,
+              /*show_render_scale=*/-1.0,
+              incomplete_pipeline.parent_path())
+        : absl::InternalError("retention materialization fixture did not load");
+    size_t retained_yaml_count = 0;
+    for (const fs::directory_entry& entry : fs::directory_iterator(game_runtime_dir)) {
+      if (entry.is_regular_file() && entry.path().filename().string().rfind("play_tracker_config-", 0) == 0 &&
+          entry.path().extension() == ".yaml") {
+        ++retained_yaml_count;
+      }
+    }
+    ok &= expect(
+        retention_status.ok() && fs::is_regular_file(incomplete_effective_path) && retained_yaml_count <= 9,
+        "Tracker runtime retention must prune stale generations while preserving a file locked by an active run");
+  } else {
+    ok &= expect(false, bundled_baseline.status().ToString().c_str());
+  }
+
   hm::Configurator configurator("first-save", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto loaded = configurator.load_config();
   ok &= expect(loaded.ok(), "Configurator must load when the private config is initially absent");
@@ -313,7 +497,7 @@ play-tracker:
   ok &= expect(
       hm::stitching::publish_game_config(stitch_override_dir, YAML::Dump(stitch_override_config) + "\n").ok(),
       "stitch-frame override fixture must publish");
-  hm::Configurator stitch_override("stitch-override", "", hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator stitch_override("stitch-override", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto stitch_override_loaded = stitch_override.load_config();
   const absl::Status zero_override_status = stitch_override.persist_stitch_frame_time_override({});
   auto after_zero_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
@@ -351,7 +535,7 @@ play-tracker:
               "file:///camera/chapter-1.mp4",
               "file:///camera/chapter-highest-bitrate.mp4",
               "file:///camera/chapter-1.mp4"},
-       "Bitrate discovery must inspect every enabled uri_list chapter, including later higher-bitrate entries");
+      "Bitrate discovery must inspect every enabled uri_list chapter, including later higher-bitrate entries");
 
   YAML::Node explicit_roles(YAML::NodeType::Map);
   explicit_roles["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010001.MP4");
@@ -767,5 +951,9 @@ play-tracker:
     ::unsetenv("HM_OUTPUT_WORK_DIR");
   else
     ::setenv("HM_OUTPUT_WORK_DIR", original_output_root.c_str(), 1);
+  if (original_xdg_runtime_dir.empty())
+    ::unsetenv("XDG_RUNTIME_DIR");
+  else
+    ::setenv("XDG_RUNTIME_DIR", original_xdg_runtime_dir.c_str(), 1);
   return ok ? 0 : 1;
 }
