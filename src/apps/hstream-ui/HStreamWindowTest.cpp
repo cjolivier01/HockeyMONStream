@@ -4139,6 +4139,44 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
 
+  {
+    const fs::path rotation_only_rink_mask = fs::path(window->gameDirectoryText().toStdString()) / "rink_mask_0.png";
+    YAML::Node rotation_only = YAML::LoadFile(config.string());
+    rotation_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    rotation_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    rotation_only["rink"]["ice_contours_mask_count"] = 1;
+    {
+      std::ofstream out(config);
+      out << rotation_only << "\n";
+    }
+    {
+      std::ofstream out(rotation_only_rink_mask);
+      out << "rotation-only-mask";
+    }
+    activate(create);
+    rotate->setValue(rotate->value() - 1);
+    activate(save);
+    const YAML::Node after_rotation_only_save = YAML::LoadFile(config.string());
+    const YAML::Node rotation_only_calibration = after_rotation_only_save["hstream_ui"]["stitching_calibration"];
+    if (!expect(
+            !fs::exists(rotation_only_rink_mask), "A rotation-only preset save should remove the stale rink mask") ||
+        !expect(
+            rotation_only_calibration["status"].as<std::string>("") == "complete",
+            "A rotation-only preset save should preserve completed stitch-map status") ||
+        !expect(
+            rotation_only_calibration["rink_mask_status"].as<std::string>("") == "pending",
+            "A rotation-only preset save should mark the removed rink mask pending")) {
+      return false;
+    }
+  }
+  {
+    YAML::Node existing(YAML::NodeType::Map);
+    existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
+    std::ofstream out(config);
+    out << existing << "\n";
+  }
+  activate(create);
+
   const QString loaded_game_id = game_id->text();
   stop_delay->setValue(1);
   if (!expect(save->isEnabled(), "Changing a loaded preset should enable Save Preset")) {

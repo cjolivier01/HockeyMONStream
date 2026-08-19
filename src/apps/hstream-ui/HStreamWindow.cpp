@@ -6492,6 +6492,7 @@ bool HStreamWindow::applySavedControlConfig(
   }
   if (rotation_changed_for_artifacts) {
     const ArtifactInvalidationResult invalidation = invalidate_rotation_dependent_artifacts(config);
+    config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
     if (invalidate_rink_masks) {
       *invalidate_rink_masks = true;
     }
