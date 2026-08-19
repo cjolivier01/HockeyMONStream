@@ -824,6 +824,37 @@ absl::Status PipelineApplication::configureInstances(
         return absl::InternalError("Failed to merge in config file");
       }
 
+      auto apply_pipeline_options = [&]() -> absl::Status {
+        if (pipeline_options_.empty() || current_stage_ < 0) {
+          return absl::OkStatus();
+        }
+        for (const std::map<std::string, std::string>& options : pipeline_options_) {
+          for (const auto& kv_item : options) {
+            HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+          }
+        }
+        return absl::OkStatus();
+      };
+
+      if (clean_only_requested) {
+        // Decide whether this context can own cleanup before expanding source
+        // or sink subconfigs. Missing or malformed runtime-only sidecars in an
+        // incomplete context must not prevent a later eligible context from
+        // deleting stitching artifacts. Apply CLI options first because they
+        // may intentionally change complete-configuration eligibility.
+        HM_RETURN_IF_ERROR(apply_pipeline_options());
+        bool preliminary_complete_configuration_enabled = false;
+        try {
+          preliminary_complete_configuration_enabled = hm::get_node_value(
+              app_ctx->configurator().config(), "pipeline.application.complete-configuration", false);
+        } catch (const std::exception& error) {
+          return absl::InvalidArgumentError(TO_STRING("Invalid complete-configuration setting: " << error.what()));
+        }
+        if (!preliminary_complete_configuration_enabled) {
+          continue;
+        }
+      }
+
       // Run enable-source-types in case we have any subconfigs that have 'type' set
       if (!enabled_source_types_.empty()) {
         if (stage_index) {
@@ -868,17 +899,11 @@ absl::Status PipelineApplication::configureInstances(
       // }
 
       // Finally, command-line config overrides (pipeline or otherwise)
-      if (!pipeline_options_.empty()) {
-        // Historically we avoided applying pipeline options to stage -1 (stitch config), but we do want them for the
-        // main stage (stage >= 0). This also ensures single-stage runs (only stage 0) get CLI options.
-        if (current_stage_ >= 0) {
-          for (const std::map<std::string, std::string>& options : pipeline_options_) {
-            for (const auto& kv_item : options) {
-              HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
-            }
-          }
-        }
-      }
+      // Historically we avoided applying pipeline options to stage -1 (stitch
+      // config), but stage >= 0 and single-stage runs must receive them. A
+      // clean-only eligible context reapplies them here so CLI source/sink
+      // values still win over loaded subconfigs.
+      HM_RETURN_IF_ERROR(apply_pipeline_options());
 
       bool complete_configuration_enabled = false;
       try {

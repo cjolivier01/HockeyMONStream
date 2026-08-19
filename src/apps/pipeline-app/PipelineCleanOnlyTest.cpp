@@ -105,6 +105,14 @@ int main(int argc, char** argv) {
       run_clean("clean-only-test", {"--clean"}, nullptr, &incomplete_malformed_config) &&
       !fs::exists(full_game / "seam_file.png");
 
+  const fs::path incomplete_missing_subconfig = root / "incomplete-missing-subconfig.yaml";
+  std::ofstream(incomplete_missing_subconfig) << "application:\n  stage: -1\n  complete-configuration: 0\n"
+                                              << "source0:\n  enable: 1\n  config-file: missing-source-sidecar.yaml\n";
+  std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
+  const bool incomplete_subconfig_skipped =
+      run_clean("clean-only-test", {"--clean"}, nullptr, &incomplete_missing_subconfig) &&
+      !fs::exists(full_game / "seam_file.png");
+
   const fs::path malformed_camera_game = root / "games" / "malformed-camera-clean-only-test";
   fs::create_directories(malformed_camera_game);
   std::ofstream(malformed_camera_game / "seam_file.png") << "generated artifact\n";
@@ -124,8 +132,8 @@ int main(int argc, char** argv) {
   const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hstream" / "models");
   fs::remove_all(root);
   if (!full_clean_ok || !partial_clean_ok || !synchronization_preserved || !combined_clean_ok ||
-      !mismatched_runtime_token_rejected || !incomplete_context_skipped || !malformed_camera_ignored ||
-      !missing_tracker_ignored || !no_asset_download) {
+      !mismatched_runtime_token_rejected || !incomplete_context_skipped || !incomplete_subconfig_skipped ||
+      !malformed_camera_ignored || !missing_tracker_ignored || !no_asset_download) {
     std::cerr << "FAIL: clean-only modes must respect dependency boundaries without downloading pretrained models\n";
     return 1;
   }

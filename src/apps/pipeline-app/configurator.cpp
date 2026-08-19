@@ -831,18 +831,22 @@ std::vector<std::string> configurator_internal::enabled_source_video_uris(const 
       continue;
     }
 
-    const YAML::Node uri_list = item.second["uri-list"].IsDefined() ? item.second["uri-list"] : item.second["uri_list"];
-    if (uri_list.IsSequence()) {
-      for (const YAML::Node& uri : uri_list) {
+    std::optional<YAML::Node> uri_list = get_node(item.second, "uri-list");
+    if (!uri_list.has_value() || !uri_list->IsDefined()) {
+      uri_list = get_node(item.second, "uri_list");
+    }
+    if (uri_list.has_value() && uri_list->IsSequence()) {
+      for (const YAML::Node& uri : *uri_list) {
         uris.emplace_back(uri.as<std::string>());
       }
-    } else if (uri_list.IsScalar()) {
-      for (const absl::string_view uri : absl::StrSplit(uri_list.as<std::string>(), ';', absl::SkipEmpty())) {
+    } else if (uri_list.has_value() && uri_list->IsScalar()) {
+      for (const absl::string_view uri : absl::StrSplit(uri_list->as<std::string>(), ';', absl::SkipEmpty())) {
         uris.emplace_back(uri.data(), uri.size());
       }
     }
-    if (item.second["uri"].IsScalar()) {
-      uris.emplace_back(item.second["uri"].as<std::string>());
+    const std::optional<YAML::Node> uri = get_node(item.second, "uri");
+    if (uri.has_value() && uri->IsScalar()) {
+      uris.emplace_back(uri->as<std::string>());
     }
   }
   return uris;
@@ -1566,6 +1570,53 @@ absl::Status Configurator::map_common_config_keys() {
     return absl::OkStatus();
   };
 
+  auto map_bool_or = [&](const std::string& first_source_path,
+                         const std::string& second_source_path,
+                         const std::string& destination_path,
+                         YAML::Node destination,
+                         const char* key) -> absl::Status {
+    const std::optional<YAML::Node> first = get_node(config_, first_source_path);
+    const std::optional<YAML::Node> second = get_node(config_, second_source_path);
+    if (!first.has_value() || !first->IsDefined())
+      return absl::InvalidArgumentError("Effective baseline is missing supported key " + first_source_path);
+    if (!second.has_value() || !second->IsDefined())
+      return absl::InvalidArgumentError("Effective baseline is missing supported key " + second_source_path);
+
+    const int first_rank = std::max(0, explicit_value_rank(first_source_path));
+    const int second_rank = std::max(0, explicit_value_rank(second_source_path));
+    const int destination_rank = explicit_value_rank(destination_path);
+    const int maximum_source_rank = std::max(first_rank, second_rank);
+    if (destination_rank >= maximum_source_rank && destination_rank >= 1)
+      return absl::OkStatus();
+    if (destination[key].IsDefined() && !destination[key].IsNull() && maximum_source_rank == 0 &&
+        destination_rank < 0) {
+      return absl::OkStatus();
+    }
+
+    auto parse = [](const YAML::Node& value, const std::string& path) -> absl::StatusOr<bool> {
+      if (value.IsNull() || !value.IsScalar())
+        return absl::InvalidArgumentError(path + " must be a non-null boolean");
+      try {
+        return value.as<bool>();
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError("Invalid " + path + ": " + error.what());
+      }
+    };
+    bool first_value = false;
+    bool second_value = false;
+    HM_ASSIGN_OR_RETURN(first_value, parse(*first, first_source_path));
+    HM_ASSIGN_OR_RETURN(second_value, parse(*second, second_source_path));
+    const bool mapped_value = first_value || second_value;
+    const int mapped_rank =
+        mapped_value ? std::max(first_value ? first_rank : -1, second_value ? second_rank : -1) : maximum_source_rank;
+    if (destination_rank >= mapped_rank && destination_rank >= 1)
+      return absl::OkStatus();
+    if (destination[key].IsDefined() && !destination[key].IsNull() && mapped_rank == 0 && destination_rank < 0)
+      return absl::OkStatus();
+    destination[key] = mapped_value ? 1 : 0;
+    return absl::OkStatus();
+  };
+
   if (pipeline["hmstitcher"].IsMap()) {
     YAML::Node stitcher = pipeline["hmstitcher"];
     HM_RETURN_IF_ERROR(map_bool("stitching.enabled", "pipeline.hmstitcher.enable", stitcher, "enable"));
@@ -1655,9 +1706,14 @@ absl::Status Configurator::map_common_config_keys() {
     YAML::Node cropper = pipeline["hmplaycropper"];
     HM_RETURN_IF_ERROR(
         map_bool("apply_camera.crop_output_image", "pipeline.hmplaycropper.no-crop", cropper, "no-crop", true));
-    HM_RETURN_IF_ERROR(
-        map_bool("plot.plot_moving_boxes", "pipeline.hmplaycropper.plot-play-tracking", cropper, "plot-play-tracking"));
-    HM_RETURN_IF_ERROR(map_bool(
+    HM_RETURN_IF_ERROR(map_bool_or(
+        "plot.debug_play_tracker",
+        "plot.plot_moving_boxes",
+        "pipeline.hmplaycropper.plot-play-tracking",
+        cropper,
+        "plot-play-tracking"));
+    HM_RETURN_IF_ERROR(map_bool_or(
+        "plot.debug_play_tracker",
         "plot.plot_individual_player_tracking",
         "pipeline.hmplaycropper.plot-player-tracking",
         cropper,
@@ -1666,7 +1722,8 @@ absl::Status Configurator::map_common_config_keys() {
 
   if (pipeline["ds-playtracker"].IsMap()) {
     YAML::Node tracker = pipeline["ds-playtracker"];
-    HM_RETURN_IF_ERROR(map_bool("plot.debug_play_tracker", "pipeline.ds-playtracker.draw", tracker, "draw"));
+    HM_RETURN_IF_ERROR(map_bool_or(
+        "plot.debug_play_tracker", "plot.plot_moving_boxes", "pipeline.ds-playtracker.draw", tracker, "draw"));
   }
 
   if (pipeline["ds-fieldmask"].IsMap()) {
@@ -1979,6 +2036,14 @@ absl::Status Configurator::materialize_playtracker_config(
   YAML::Node section = pipeline["ds-playtracker"];
   if (!section.IsDefined())
     return absl::OkStatus();
+  bool enabled = false;
+  try {
+    enabled = get_node_value(section, "enable", false);
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Invalid pipeline.ds-playtracker.enable: " + std::string(error.what()));
+  }
+  if (!enabled)
+    return absl::OkStatus();
   YAML::Node configured_file = section["config-file"];
   if (!configured_file.IsScalar())
     return absl::InvalidArgumentError("pipeline.ds-playtracker.config-file must name a base YAML file");
@@ -1988,13 +2053,33 @@ absl::Status Configurator::materialize_playtracker_config(
   if (configured_path.is_absolute()) {
     candidates.push_back(configured_path);
   } else {
-    if (!game_dir.empty())
-      candidates.push_back(game_dir / configured_path);
-    if (!pipeline_config_dir.empty())
-      candidates.push_back(pipeline_config_dir / configured_path);
-    candidates.push_back(fs::path(config_root_dir_) / configured_path);
-    candidates.push_back(fs::current_path() / configured_path);
-    candidates.push_back(fs::current_path() / "configs" / configured_path);
+    auto append_candidate = [&](const fs::path& root) {
+      if (root.empty())
+        return;
+      const fs::path candidate = root / configured_path;
+      if (std::find(candidates.begin(), candidates.end(), candidate) == candidates.end())
+        candidates.push_back(candidate);
+    };
+    const int configured_file_rank = explicit_value_rank("pipeline.ds-playtracker.config-file");
+    if (configured_file_rank == 3) {
+      append_candidate(fs::current_path());
+    } else if (configured_file_rank == 2) {
+      append_candidate(game_dir);
+    } else if (configured_file_rank == 1) {
+      const auto user_config_path = user_config::file_path();
+      if (user_config_path.ok())
+        append_candidate(user_config_path->parent_path());
+    } else {
+      // Structural app defaults are owned by the app config, not by an
+      // arbitrary same-named file left in the selected game directory.
+      append_candidate(pipeline_config_dir);
+      append_candidate(fs::path(config_root_dir_));
+    }
+    append_candidate(pipeline_config_dir);
+    append_candidate(fs::path(config_root_dir_));
+    append_candidate(game_dir);
+    append_candidate(fs::current_path());
+    append_candidate(fs::current_path() / "configs");
   }
   fs::path base_path;
   for (const fs::path& candidate : candidates) {
@@ -2402,9 +2487,11 @@ absl::Status Configurator::set_output_dimensions(
       }
       ++num_video_sources;
     }
-    auto wh_tuple = cap_output(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
+    if (ww && hh) {
+      auto wh_tuple = cap_output(ww, hh);
+      pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
+      pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
+    }
   } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
     StitcherSizingConfig sizing_cfg = ParseStitcherSizingConfig(pipeline);
     std::optional<std::tuple<int, int>> canvas_size_result;
@@ -2464,9 +2551,11 @@ absl::Status Configurator::set_output_dimensions(
         }
       }
     }
-    auto wh_tuple = cap_output(ww, hh);
-    pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
-    pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
+    if (ww && hh) {
+      auto wh_tuple = cap_output(ww, hh);
+      pipeline["hmplaycropper"]["output-width"] = std::to_string(round_down_even(std::get<0>(wh_tuple)));
+      pipeline["hmplaycropper"]["output-height"] = std::to_string(round_down_even(std::get<1>(wh_tuple)));
+    }
   }
 
   if (area) {

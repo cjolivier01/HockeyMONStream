@@ -1789,7 +1789,14 @@ void HStreamWindow::loadBaselineDefaults() {
 
   const YAML::Node fixed_rotation = require("rink.camera.fixed_edge_rotation_angle");
   try {
-    if (fixed_rotation.IsSequence() && fixed_rotation.size() == 2) {
+    if (fixed_rotation.IsNull()) {
+      // An explicit null suppresses the canonical native-property mapping.
+      // Show a neutral value without turning it into an explicit 0-degree
+      // override when an unrelated preset field is saved.
+      checked("Link_Fixed_Edge_Rotation_Left_Right", 1, 0, 1);
+      checked("Left_Fixed_Edge_Rotation_Angle_x10", 0, 0, kFixedEdgeRotationMaximumX10);
+      checked("Right_Fixed_Edge_Rotation_Angle_x10", 0, 0, kFixedEdgeRotationMaximumX10);
+    } else if (fixed_rotation.IsSequence() && fixed_rotation.size() == 2) {
       checked("Link_Fixed_Edge_Rotation_Left_Right", 0, 0, 1);
       checked(
           "Left_Fixed_Edge_Rotation_Angle_x10",
@@ -1808,7 +1815,7 @@ void HStreamWindow::loadBaselineDefaults() {
       checked("Right_Fixed_Edge_Rotation_Angle_x10", value, 0, kFixedEdgeRotationMaximumX10);
     } else {
       throw std::runtime_error(
-          "Bundled baseline rink.camera.fixed_edge_rotation_angle must be numeric or [left, right]");
+          "Effective baseline rink.camera.fixed_edge_rotation_angle must be null, numeric, or [left, right]");
     }
   } catch (const YAML::Exception& error) {
     throw std::runtime_error(
@@ -6470,7 +6477,11 @@ void HStreamWindow::loadSavedControlConfig() {
       auto angle_x10 = [&rounded_control](const YAML::Node& value, const QString& path) {
         return rounded_control(path, value.as<double>() * 10.0);
       };
-      if (fixed_edge_rotation.IsSequence() && fixed_edge_rotation.size() == 2) {
+      if (fixed_edge_rotation.IsNull()) {
+        stage_control("Link_Fixed_Edge_Rotation_Left_Right", 1);
+        stage_control("Left_Fixed_Edge_Rotation_Angle_x10", 0);
+        stage_control("Right_Fixed_Edge_Rotation_Angle_x10", 0);
+      } else if (fixed_edge_rotation.IsSequence() && fixed_edge_rotation.size() == 2) {
         stage_control("Link_Fixed_Edge_Rotation_Left_Right", 0);
         stage_control(
             "Left_Fixed_Edge_Rotation_Angle_x10",
@@ -6484,7 +6495,7 @@ void HStreamWindow::loadSavedControlConfig() {
         stage_control("Left_Fixed_Edge_Rotation_Angle_x10", value);
         stage_control("Right_Fixed_Edge_Rotation_Angle_x10", value);
       } else {
-        appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected one value or [left, right]");
+        appendLog("ignored invalid rink.camera.fixed_edge_rotation_angle; expected null, one value, or [left, right]");
       }
     }
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
@@ -6565,6 +6576,10 @@ bool HStreamWindow::applySavedControlConfig(
   YAML::Node previous_stitch_rotation;
   const bool previous_stitch_rotation_found =
       lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &previous_stitch_rotation);
+  YAML::Node previous_fixed_edge_rotation;
+  const bool previous_fixed_edge_rotation_was_null =
+      lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &previous_fixed_edge_rotation) &&
+      previous_fixed_edge_rotation.IsNull();
   if (yaml_defined(previous_generated) && previous_generated.IsSequence()) {
     for (const auto& item : previous_generated) {
       const QString path = QString::fromStdString(item.as<std::string>());
@@ -6682,7 +6697,19 @@ bool HStreamWindow::applySavedControlConfig(
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
       has_control(controls, "Right_Fixed_Edge_Rotation_Angle_x10");
-  if (fixed_edge_rotation_changed) {
+  auto fixed_edge_control_matches_saved = [this](const QString& id) {
+    const auto slider = camera_sliders_.find(id);
+    const auto saved = saved_camera_controls_.find(id);
+    return slider != camera_sliders_.end() && slider->second && saved != saved_camera_controls_.end() &&
+        slider->second->value() == saved->second;
+  };
+  const bool preserve_fixed_edge_null = previous_fixed_edge_rotation_was_null &&
+      fixed_edge_control_matches_saved("Link_Fixed_Edge_Rotation_Left_Right") &&
+      fixed_edge_control_matches_saved("Left_Fixed_Edge_Rotation_Angle_x10") &&
+      fixed_edge_control_matches_saved("Right_Fixed_Edge_Rotation_Angle_x10");
+  if (preserve_fixed_edge_null) {
+    config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
+  } else if (fixed_edge_rotation_changed) {
     const double left_angle = slider_value("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
     const double right_angle = slider_value("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
     if (slider_value("Link_Fixed_Edge_Rotation_Left_Right") != 0) {

@@ -346,8 +346,11 @@ play-tracker:
       ? mapping_primary_app.apply_supported_baseline_mappings()
       : absl::InternalError("primary app mapping fixture did not load");
   ok &= expect(
-      mapping_primary_status.ok() && mapping_primary_app.config()["pipeline"]["ds-playtracker"]["draw"].as<int>() == 1,
-      "The primary app config must take plot.debug_play_tracker from the canonical baseline");
+      mapping_primary_status.ok() &&
+          mapping_primary_app.config()["pipeline"]["ds-playtracker"]["draw"].as<int>() == 1 &&
+          mapping_primary_app.config()["pipeline"]["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
+          mapping_primary_app.config()["pipeline"]["hmplaycropper"]["plot-player-tracking"].as<int>() == 1,
+      "The primary app config must derive every native debug plot control from the canonical baseline");
 
   const fs::path structural_custom_path = root / "mapping-structural-custom.yaml";
   YAML::Node structural_custom = YAML::Clone(mapping_structure);
@@ -438,7 +441,7 @@ play-tracker:
           mapped_canonical["hmplaycropper"]["no-crop"].as<int>() == 1 &&
           mapped_canonical["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
           mapped_canonical["hmplaycropper"]["plot-player-tracking"].as<int>() == 1 &&
-          mapped_canonical["ds-playtracker"]["draw"].as<int>() == 0 &&
+          mapped_canonical["ds-playtracker"]["draw"].as<int>() == 1 &&
           mapped_canonical["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.4 &&
           mapped_canonical["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.45 &&
           !mapped_canonical["hmplaycropper"]["fixed-edge-rotation-angle"].IsDefined() &&
@@ -482,6 +485,40 @@ play-tracker:
           mapping_native_precedence.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 0,
       "A higher-ranked canonical CLI value must replace a lower-ranked direct native game value");
 
+  fs::create_directories(games / "mapping-plot-or");
+  hm::Configurator mapping_plot_or("mapping-plot-or", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_plot_or_loaded = mapping_plot_or.configure().ok() &&
+      mapping_plot_or.underlay_config("pipeline", mapping_structure_path.string()) &&
+      mapping_plot_or.apply_config_item("plot.debug_play_tracker", "false").ok() &&
+      mapping_plot_or.apply_config_item("plot.plot_moving_boxes", "true").ok() &&
+      mapping_plot_or.apply_config_item("plot.plot_individual_player_tracking", "false").ok();
+  const absl::Status mapping_plot_or_status = mapping_plot_or_loaded
+      ? mapping_plot_or.apply_supported_baseline_mappings()
+      : absl::InternalError("plot OR mapping fixture did not load");
+  ok &= expect(
+      mapping_plot_or_status.ok() && mapping_plot_or.config()["pipeline"]["ds-playtracker"]["draw"].as<int>() == 1 &&
+          mapping_plot_or.config()["pipeline"]["hmplaycropper"]["plot-play-tracking"].as<int>() == 1 &&
+          mapping_plot_or.config()["pipeline"]["hmplaycropper"]["plot-player-tracking"].as<int>() == 0,
+      "Moving-box plotting must enable its native producer and consumer without enabling player tracking");
+
+  fs::create_directories(games / "mapping-plot-native-precedence");
+  hm::Configurator mapping_plot_native_precedence(
+      "mapping-plot-native-precedence", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_plot_native_precedence_loaded = mapping_plot_native_precedence.configure().ok() &&
+      mapping_plot_native_precedence.underlay_config("pipeline", mapping_structure_path.string()) &&
+      mapping_plot_native_precedence.apply_config_item("plot.debug_play_tracker", "true").ok() &&
+      mapping_plot_native_precedence.apply_config_item("pipeline.ds-playtracker.draw", "0").ok() &&
+      mapping_plot_native_precedence.apply_config_item("pipeline.hmplaycropper.plot-play-tracking", "0").ok();
+  const absl::Status mapping_plot_native_precedence_status = mapping_plot_native_precedence_loaded
+      ? mapping_plot_native_precedence.apply_supported_baseline_mappings()
+      : absl::InternalError("plot native-precedence fixture did not load");
+  ok &= expect(
+      mapping_plot_native_precedence_status.ok() &&
+          mapping_plot_native_precedence.config()["pipeline"]["ds-playtracker"]["draw"].as<int>() == 0 &&
+          mapping_plot_native_precedence.config()["pipeline"]["hmplaycropper"]["plot-play-tracking"].as<int>() == 0 &&
+          mapping_plot_native_precedence.config()["pipeline"]["hmplaycropper"]["plot-player-tracking"].as<int>() == 1,
+      "Direct native plot values must win same-rank ties while other derived debug properties remain enabled");
+
   const fs::path disabled_stitching_game_dir = games / "disabled-stitching";
   fs::create_directories(disabled_stitching_game_dir);
   YAML::Node disabled_stitching_game(YAML::NodeType::Map);
@@ -493,7 +530,13 @@ play-tracker:
   const fs::path disabled_stitching_pipeline_path = root / "disabled-stitching-pipeline.yaml";
   std::ofstream(disabled_stitching_pipeline_path) << "application:\n  complete-configuration: 1\n"
                                                   << "hmstitcher: {}\n"
-                                                  << "streammux: {}\n";
+                                                  << "hmplaycropper: {}\n"
+                                                  << "streammux: {}\n"
+                                                  << "source0:\n"
+                                                  << "  enable: 1\n"
+                                                  << "  type: 2\n"
+                                                  << "  uri: file:///missing-runtime-sized-input.mp4\n"
+                                                  << "  source-id: 0\n";
   hm::Configurator disabled_stitching(
       "disabled-stitching", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool disabled_stitching_loaded = disabled_stitching.configure().ok() &&
@@ -511,8 +554,10 @@ play-tracker:
   ok &= expect(
       disabled_stitching_status.ok() &&
           disabled_stitching.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 0 &&
+          !disabled_stitching.config()["pipeline"]["hmplaycropper"]["output-width"].IsDefined() &&
+          !disabled_stitching.config()["pipeline"]["hmplaycropper"]["output-height"].IsDefined() &&
           fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
-      "stitching.enabled=false must skip runtime discovery, calibration, and artifact mutation");
+      "stitching.enabled=false must skip runtime discovery and preserve negotiated source dimensions");
 
   const fs::path clear_game_dir = games / "mapping-explicit-clear";
   fs::create_directories(clear_game_dir);
@@ -626,6 +671,73 @@ play-tracker:
   fs::create_directories(runtime_root);
   ::setenv("XDG_RUNTIME_DIR", runtime_root.c_str(), 1);
   if (bundled_baseline.ok()) {
+    const fs::path structural_tracker_dir = root / "structural-tracker-config";
+    fs::create_directories(structural_tracker_dir);
+    std::ofstream(structural_tracker_dir / "play_tracker_config.yaml") << R"(play-tracker:
+  structural-owner: true
+  live-boxes:
+    - name: current_roi
+    - name: current_roi_aspect
+)";
+    const fs::path collision_game_dir = games / "tracker-structural-path-collision";
+    fs::create_directories(collision_game_dir);
+    std::ofstream(collision_game_dir / "play_tracker_config.yaml") << "stale-game-owner: true\n";
+    const fs::path structural_tracker_pipeline = structural_tracker_dir / "pipeline.yaml";
+    std::ofstream(structural_tracker_pipeline) << "application:\n  complete-configuration: 0\n"
+                                               << "ds-playtracker:\n"
+                                               << "  enable: 1\n"
+                                               << "  config-file: play_tracker_config.yaml\n";
+    hm::Configurator structural_tracker(
+        "tracker-structural-path-collision", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+    const bool structural_tracker_loaded = structural_tracker.configure().ok() &&
+        structural_tracker.underlay_config("pipeline", structural_tracker_pipeline.string());
+    const absl::Status structural_tracker_status = structural_tracker_loaded
+        ? structural_tracker.complete_configuration(
+              /*force=*/false,
+              /*clean_stitching_artifacts=*/false,
+              /*clean_stitching_from_control_points=*/false,
+              /*clean_expected_invalidation_id=*/{},
+              /*show_render_sink=*/false,
+              /*show_render_scale=*/-1.0,
+              structural_tracker_pipeline.parent_path())
+        : absl::InternalError("structural tracker path fixture did not load");
+    const fs::path structural_tracker_effective_path = structural_tracker_status.ok()
+        ? fs::path(structural_tracker.config()["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+        : fs::path();
+    const YAML::Node structural_tracker_effective =
+        structural_tracker_status.ok() && fs::is_regular_file(structural_tracker_effective_path)
+        ? YAML::LoadFile(structural_tracker_effective_path.string())
+        : YAML::Node();
+    ok &= expect(
+        structural_tracker_status.ok() && structural_tracker_effective["play-tracker"]["structural-owner"].as<bool>(),
+        "A structural relative tracker config must resolve beside its pipeline config before the game directory");
+
+    const fs::path disabled_tracker_game_dir = games / "tracker-disabled";
+    fs::create_directories(disabled_tracker_game_dir);
+    const fs::path disabled_tracker_pipeline = root / "disabled-tracker-pipeline.yaml";
+    std::ofstream(disabled_tracker_pipeline) << "application:\n  complete-configuration: 0\n"
+                                             << "ds-playtracker:\n"
+                                             << "  enable: 0\n";
+    hm::Configurator disabled_tracker(
+        "tracker-disabled", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
+    const bool disabled_tracker_loaded = disabled_tracker.configure().ok() &&
+        disabled_tracker.underlay_config("pipeline", disabled_tracker_pipeline.string());
+    const absl::Status disabled_tracker_status = disabled_tracker_loaded
+        ? disabled_tracker.complete_configuration(
+              /*force=*/false,
+              /*clean_stitching_artifacts=*/false,
+              /*clean_stitching_from_control_points=*/false,
+              /*clean_expected_invalidation_id=*/{},
+              /*show_render_sink=*/false,
+              /*show_render_scale=*/-1.0,
+              disabled_tracker_pipeline.parent_path())
+        : absl::InternalError("disabled tracker fixture did not load");
+    ok &= expect(
+        disabled_tracker_status.ok() &&
+            !disabled_tracker.config()["pipeline"]["ds-playtracker"]["config-file"].IsDefined() &&
+            !fs::exists(disabled_tracker_game_dir / ".hstream-runtime"),
+        "A disabled tracker must not require or materialize a runtime sidecar");
+
     hm::Configurator incomplete_configurator(
         "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
     const bool incomplete_loaded = incomplete_configurator.configure().ok() &&
