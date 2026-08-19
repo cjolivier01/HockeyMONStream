@@ -63,6 +63,7 @@ namespace {
 
 constexpr guint kWebRtcPayloadType = 96;
 constexpr guint kDefaultWebRtcPort = 8080;
+constexpr guint kNvEncPresetP2 = 2;
 
 struct FileEncoderBitrateScale {
   GstElement* encoder{nullptr};
@@ -1392,6 +1393,11 @@ static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
   }
 
   if (config->enc_type == NV_DS_ENCODER_TYPE_HW) {
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(bin->encoder), "preset-id")) {
+      g_object_set(G_OBJECT(bin->encoder), "preset-id", kNvEncPresetP2, NULL);
+    } else {
+      GST_WARNING_OBJECT(bin->encoder, "Hardware file encoder does not expose preset-id; cannot select NVENC P2");
+    }
     g_object_set(G_OBJECT(bin->encoder), "profile", profile, NULL);
     g_object_set(G_OBJECT(bin->encoder), "iframeinterval", config->iframeinterval, NULL);
     g_object_set(G_OBJECT(bin->encoder), "bitrate", bitrate, NULL);
