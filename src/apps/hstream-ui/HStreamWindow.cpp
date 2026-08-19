@@ -6443,11 +6443,14 @@ void HStreamWindow::loadSavedControlConfig() {
               "rink.camera.breakaway_detection.overshoot_scale_speed_ratio", overshoot_ratio.as<double>() * 100.0));
     }
     YAML::Node stitch_rotation;
-    if (lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &stitch_rotation) &&
-        !stitch_rotation.IsNull()) {
-      stage_control(
-          "Stitch_Rotate_Degrees",
-          rounded_control("stitching.post_stitch_rotate_degrees", 90.0 - stitch_rotation.as<double>()));
+    if (lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &stitch_rotation)) {
+      if (stitch_rotation.IsNull()) {
+        stage_control("Stitch_Rotate_Degrees", 90);
+      } else {
+        stage_control(
+            "Stitch_Rotate_Degrees",
+            rounded_control("stitching.post_stitch_rotate_degrees", 90.0 - stitch_rotation.as<double>()));
+      }
     }
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
@@ -6576,6 +6579,7 @@ bool HStreamWindow::applySavedControlConfig(
   YAML::Node previous_stitch_rotation;
   const bool previous_stitch_rotation_found =
       lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &previous_stitch_rotation);
+  const bool previous_stitch_rotation_was_null = previous_stitch_rotation_found && previous_stitch_rotation.IsNull();
   YAML::Node previous_fixed_edge_rotation;
   const bool previous_fixed_edge_rotation_was_null =
       lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &previous_fixed_edge_rotation) &&
@@ -6690,7 +6694,14 @@ bool HStreamWindow::applySavedControlConfig(
     const auto it = camera_sliders_.find(id);
     return it == camera_sliders_.end() ? 0 : it->second->value();
   };
-  if (has_control(controls, "Stitch_Rotate_Degrees")) {
+  const auto saved_stitch_rotation = saved_camera_controls_.find("Stitch_Rotate_Degrees");
+  const auto stitch_rotation_slider = camera_sliders_.find("Stitch_Rotate_Degrees");
+  const bool preserve_stitch_rotation_null = previous_stitch_rotation_was_null &&
+      saved_stitch_rotation != saved_camera_controls_.end() && stitch_rotation_slider != camera_sliders_.end() &&
+      stitch_rotation_slider->second && stitch_rotation_slider->second->value() == saved_stitch_rotation->second;
+  if (preserve_stitch_rotation_null) {
+    config["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
+  } else if (has_control(controls, "Stitch_Rotate_Degrees")) {
     config["stitching"]["post_stitch_rotate_degrees"] = 90 - slider_value("Stitch_Rotate_Degrees");
     mark_runtime_key("stitching.post_stitch_rotate_degrees");
   }

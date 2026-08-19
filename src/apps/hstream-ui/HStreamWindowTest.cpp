@@ -5135,6 +5135,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     return false;
   YAML::Node user_config(YAML::NodeType::Map);
   user_config["stitching"]["stitch_frame_time"] = "00:00:08";
+  user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
   user_config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
   {
     std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
@@ -5162,6 +5163,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       fs::is_regular_file(copied_config) ? YAML::LoadFile(copied_config.string()) : YAML::Node(YAML::NodeType::Map);
   if (copied_config_node["stitching"] && copied_config_node["stitching"].IsMap())
     copied_config_node["stitching"].remove("stitch_frame_time");
+  copied_config_node["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
   if (copied_config_node["rink"] && copied_config_node["rink"].IsMap() && copied_config_node["rink"]["camera"] &&
       copied_config_node["rink"]["camera"].IsMap()) {
     copied_config_node["rink"]["camera"].remove("fixed_edge_rotation_angle");
@@ -5180,17 +5182,19 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* stop = require_child<QPushButton>(&user_default_window, "stopPipelineButton");
     auto* mode = require_child<QComboBox>(&user_default_window, "runModeCombo");
     auto* stitch_frame_time = require_child<QTimeEdit>(&user_default_window, "stitchFrameTimeEdit");
+    auto* stitch_rotation = require_child<QSlider>(&user_default_window, "cameraSlider_Stitch_Rotate_Degrees");
     auto* fixed_edge_left =
         require_child<QSlider>(&user_default_window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
     auto* fixed_edge_right =
         require_child<QSlider>(&user_default_window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
-    ok = game_id && create && save && start && stop && mode && stitch_frame_time && fixed_edge_left && fixed_edge_right;
+    ok = game_id && create && save && start && stop && mode && stitch_frame_time && stitch_rotation &&
+        fixed_edge_left && fixed_edge_right;
     if (ok) {
       game_id->setText("ui-user-stitch-default");
       activate(create);
       ok &= expect(
-          stitch_frame_time->time() == QTime(0, 0, 8) && fixed_edge_left->value() == 0 &&
-              fixed_edge_right->value() == 0 && !save->isEnabled(),
+          stitch_frame_time->time() == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
+              fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 && !save->isEnabled(),
           "User-level scalar and null defaults must initialize the UI and clean preset snapshot");
       stitch_frame_time->setTime(QTime(0, 0, 0));
       QApplication::processEvents();
@@ -5199,9 +5203,10 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       const YAML::Node saved_zero = YAML::LoadFile(copied_config.string());
       ok &= expect(
           saved_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
+              saved_zero["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
               !lookup_yaml_path(saved_zero, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr) &&
               !save->isEnabled(),
-          "Saving against user defaults must persist the scalar override without materializing the null default");
+          "Saving against user defaults must preserve game null semantics without materializing a user null default");
 
       mode->setCurrentIndex(mode->findData("program"));
       const int zero_argument_count = user_default_window.logText().count("--stitch-frame-time=00:00:00");
