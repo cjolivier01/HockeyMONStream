@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -139,6 +140,32 @@ bool corrupt_png_pixel_offset_without_updating_crc(const std::filesystem::path& 
   return output.good();
 }
 
+bool move_png_pixel_offset_after_first_image_data(const std::filesystem::path& path) {
+  std::vector<unsigned char> png = read_binary_file(path);
+  const std::array<unsigned char, 4> offset_type = {'o', 'F', 'F', 's'};
+  auto offset = std::search(png.begin(), png.end(), offset_type.begin(), offset_type.end());
+  if (offset == png.end() || std::distance(png.begin(), offset) < 4 || std::distance(offset, png.end()) < 17)
+    return false;
+  auto chunk_begin = offset - 4;
+  std::vector<unsigned char> chunk(chunk_begin, chunk_begin + 21);
+  png.erase(chunk_begin, chunk_begin + 21);
+
+  const std::array<unsigned char, 4> image_data_type = {'I', 'D', 'A', 'T'};
+  const auto image_data = std::search(png.begin(), png.end(), image_data_type.begin(), image_data_type.end());
+  if (image_data == png.end() || std::distance(png.begin(), image_data) < 4)
+    return false;
+  const auto length = static_cast<size_t>(static_cast<uint32_t>(*(image_data - 4)) << 24) |
+      static_cast<size_t>(static_cast<uint32_t>(*(image_data - 3)) << 16) |
+      static_cast<size_t>(static_cast<uint32_t>(*(image_data - 2)) << 8) |
+      static_cast<size_t>(static_cast<uint32_t>(*(image_data - 1)));
+  if (length > static_cast<size_t>(std::distance(image_data, png.end())) - 8)
+    return false;
+  png.insert(image_data + 8 + static_cast<std::ptrdiff_t>(length), chunk.begin(), chunk.end());
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
+}
+
 } // namespace
 
 int main() {
@@ -242,6 +269,15 @@ int main() {
   ok &= expect(
       absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(duplicate_offset, 42, 32)),
       "duplicate oFFs chunks must fail closed");
+
+  const fs::path late_offset = seam_validation / "late-offset.png";
+  ok &= expect(cv::imwrite(late_offset.string(), seam), "late-offset fixture must be encoded");
+  ok &= expect(
+      add_png_pixel_offset(late_offset, 1, 1) && move_png_pixel_offset_after_first_image_data(late_offset),
+      "late-offset fixture must carry its oFFs chunk after IDAT");
+  ok &= expect(
+      absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(late_offset, 42, 32)),
+      "an oFFs chunk after image data must fail closed instead of being ignored");
 
   const fs::path interrupted_normalization = seam_validation / "interrupted-normalization.png";
   ok &= expect(

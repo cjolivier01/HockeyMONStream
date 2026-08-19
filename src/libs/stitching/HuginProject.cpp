@@ -497,6 +497,8 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
   PngLayout layout;
   bool have_header = false;
   bool have_offset = false;
+  bool have_image_data = false;
+  bool have_end = false;
   bool first_chunk = true;
   while (input) {
     std::array<unsigned char, 8> chunk_header{};
@@ -527,7 +529,7 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
       have_header = true;
       expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
     } else if (type == "oFFs") {
-      if (!have_header || have_offset || length != 9)
+      if (!have_header || have_offset || have_image_data || length != 9)
         return absl::FailedPreconditionError("Invalid PNG oFFs chunk: " + path.string());
       std::array<unsigned char, 9> data{};
       input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
@@ -554,11 +556,17 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
       return absl::FailedPreconditionError("Truncated PNG chunk CRC: " + path.string());
     if (expected_crc.has_value() && big_endian_u32(crc.data()) != *expected_crc)
       return absl::FailedPreconditionError("PNG " + type + " chunk has an invalid CRC: " + path.string());
-    if (type == "IDAT" || type == "IEND")
+    if (type == "IDAT")
+      have_image_data = true;
+    if (type == "IEND") {
+      have_end = true;
       break;
+    }
   }
   if (!have_header)
     return absl::FailedPreconditionError("PNG is missing its IHDR chunk: " + path.string());
+  if (!have_end)
+    return absl::FailedPreconditionError("PNG is missing its IEND chunk: " + path.string());
   return layout;
 }
 
@@ -613,6 +621,14 @@ absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, 
       }
     }
   } cleanup{descriptor, temporary};
+
+  struct stat source_metadata{};
+  if (::stat(path.c_str(), &source_metadata) != 0)
+    return absl::InternalError("Unable to read normalized seam source mode: " + std::string(std::strerror(errno)));
+  if (!S_ISREG(source_metadata.st_mode))
+    return absl::FailedPreconditionError("Normalized seam source is not a regular file: " + path.string());
+  if (::fchmod(descriptor, source_metadata.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) != 0)
+    return absl::InternalError("Unable to preserve normalized seam mode: " + std::string(std::strerror(errno)));
 
   size_t written = 0;
   while (written < encoded.size()) {
