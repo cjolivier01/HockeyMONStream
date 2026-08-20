@@ -3,6 +3,7 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
 #include "RuntimePropertyAllowlist.h"
 #include "RuntimePropertyValueParser.h"
@@ -593,6 +594,9 @@ absl::Status stage_bazel_runtime_libraries(
 }
 
 absl::Status configure_pipeline_runtime_environment(const char* argv0) {
+  if (!hm::pipeline_internal::configure_streammux_runtime_environment())
+    return absl::InternalError("Could not select DeepStream's replacement nvstreammux implementation");
+
   std::error_code error;
   const fs::path working_directory = fs::current_path(error);
   const fs::path executable = running_executable_path(argv0).value_or(argv0 ? fs::path(argv0) : fs::path());
