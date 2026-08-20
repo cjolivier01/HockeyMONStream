@@ -1034,6 +1034,11 @@ absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_co
   HM_RETURN_IF_ERROR(copy_global("max-accel-ratio-y", "rink.camera.max_accel_ratio_y", ScalarType::kDouble));
   HM_RETURN_IF_ERROR(
       copy_global("follower-box-min-height-ratio", "rink.camera.follower_box_min_height_ratio", ScalarType::kDouble));
+  HM_RETURN_IF_ERROR(copy_global("zoom-in-aggressiveness", "rink.camera.zoom_in_aggressiveness", ScalarType::kInt));
+  const int zoom_in_aggressiveness = play_tracker["zoom-in-aggressiveness"].as<int>();
+  if (zoom_in_aggressiveness < 0 || zoom_in_aggressiveness > 100) {
+    return absl::InvalidArgumentError("rink.camera.zoom_in_aggressiveness must be from 0 through 100");
+  }
 
   for (size_t index = 0; index < live_boxes.size(); ++index) {
     YAML::Node box = live_boxes[index];

@@ -734,6 +734,17 @@ bool write_fake_runner(const QString& path) {
       "generation, "
       "flush=True)\n");
   file.write("        return\n");
+  file.write("    if line.startswith('@seek '):\n");
+  file.write("        _, position_ns, generation = line.rstrip('\\n').split(' ', 2)\n");
+  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=rejected generation=' + generation + "
+      "' reason=nonlocal-output-active', flush=True)\n");
+  file.write("        else:\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=ok generation=' + generation + ' position_ns=' + position_ns, "
+      "flush=True)\n");
+  file.write("        return\n");
   file.write("    if line.startswith('@set-preview-active '):\n");
   file.write("        _, channel, generation = line.rstrip('\\n').split(' ', 2)\n");
   file.write("        preview_activation_count += 1\n");
@@ -2063,6 +2074,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* program_focus = require_child<QPushButton>(window, "programFocusButton");
   auto* top_bar = require_child<QWidget>(window, "topBarPanel");
   auto* playback_progress = require_child<QProgressBar>(window, "playbackProgress");
+  auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
+  auto* seek_back = require_child<QPushButton>(window, "playbackSeekBack10Button");
+  auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
+  auto* seek_position = require_child<QLabel>(window, "playbackSeekPosition");
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
@@ -2073,7 +2088,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface || !external_notice ||
       !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle || !stitched_controls ||
       !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel ||
-      !playback_progress || !pipeline_process) {
+      !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2408,6 +2423,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "An active run should show exact backend playback progress without adding protocol noise to the log")) {
     return false;
   }
+  if (!expect(
+          seek_slider->isEnabled() && seek_back->isEnabled() && seek_forward->isEnabled() &&
+              seek_position->text() == "00:00:42 / 00:10:00",
+          "Local-render-only Program playback should expose position seeking after duration is known")) {
+    return false;
+  }
+  activate(seek_forward);
+  for (int i = 0; i < 100 && !window->logText().contains("playback seek complete at 00:00:52"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().contains("stdin:@seek 52000000000 1") &&
+              window->logText().contains("playback seek complete at 00:00:52"),
+          "The +10s control should issue an acknowledged absolute seek without restarting the pipeline")) {
+    return false;
+  }
   const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   const YAML::Node fresh_program_saved = YAML::LoadFile(fresh_program_config.string());
   YAML::Node fresh_program_status;
@@ -2454,7 +2486,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           !render_video->isChecked() && render_video->isEnabled() && preview_target->isHidden() &&
-              program_focus->isHidden() && setup_preview_splitter->sizes().at(0) > 0 &&
+              program_focus->isHidden() && !seek_slider->isEnabled() && setup_preview_splitter->sizes().at(0) > 0 &&
               window->logText().contains("stdin:@set-preview-active none") &&
               window->logText().contains("stdin:@set-render-audio-muted 1") &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
@@ -3687,7 +3719,10 @@ bool test_output_controls(HStreamWindow* window) {
   auto* add_rtsp = require_child<QPushButton>(window, "addRtspButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
-  if (!spare || !archive || !archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop) {
+  auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
+  auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
+  if (!spare || !archive || !archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop ||
+      !seek_slider || !seek_forward) {
     return false;
   }
 
@@ -3777,6 +3812,13 @@ bool test_output_controls(HStreamWindow* window) {
           window->logText().contains(QString("HM_OUTPUT_WORK_DIR=%1").arg(output_root.path())) &&
           window->logText().contains(QRegularExpression("HSTREAM_ARCHIVE_RUN_ID=[0-9]+-[0-9a-f-]+")),
       "Archive playback should show the backend's exact resolved path and pass a deterministic output directory");
+  const int seek_commands_before_nonlocal_click = window->logText().count("stdin:@seek ");
+  activate(seek_forward);
+  QApplication::processEvents();
+  const bool nonlocal_seek_blocked = expect(
+      !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
+          window->logText().count("stdin:@seek ") == seek_commands_before_nonlocal_click,
+      "Archive/RTMP/RTSP playback must disable seeking and send no seek command");
   QFile recovered_interrupted_archive(restarted_recovery_path);
   const bool recovered_interrupted_archive_opened = recovered_interrupted_archive.open(QIODevice::ReadOnly);
   const bool interrupted_archive_preserved = expect(
@@ -3961,8 +4003,9 @@ bool test_output_controls(HStreamWindow* window) {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
-      interrupted_archive_preserved && missing_new_output_reported && finalization_visible && archive_deployed &&
-      durability_sync_responsive && failed_archive_retained && unsafe_retry_blocked && retry_unblocked_after_recovery;
+      nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && finalization_visible &&
+      archive_deployed && durability_sync_responsive && failed_archive_retained && unsafe_retry_blocked &&
+      retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
@@ -3975,6 +4018,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
+  auto* zoom_in_aggressiveness = require_child<QSlider>(window, "cameraSlider_Zoom_In_Aggressiveness");
   auto* apply_to_fast = require_child<QSlider>(window, "cameraSlider_Apply_To_Fast_Box");
   auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -3989,9 +4033,9 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
-  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !apply_to_fast ||
-      !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !lift_shadow_black_point || !reset ||
-      !save || !create || !game_id || !start || !stop || !mode || !stitch_frame_time) {
+  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !zoom_in_aggressiveness ||
+      !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !lift_shadow_black_point ||
+      !reset || !save || !create || !game_id || !start || !stop || !mode || !stitch_frame_time) {
     return false;
   }
 
@@ -4027,6 +4071,10 @@ bool test_camera_controls(HStreamWindow* window) {
       "programControlsToggle",
       "stitchedControlsToggle",
       "cameraSlider_Stitch_Rotate_Degrees",
+      "playbackSeekSlider",
+      "playbackSeekBack10Button",
+      "playbackSeekForward10Button",
+      "cameraSlider_Zoom_In_Aggressiveness",
       "cameraSlider_Stop_Direction_Change_Delay_Frames",
       "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10",
       "cameraSlider_Bring_Up_Shadows",
@@ -4049,6 +4097,7 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 2 &&
               window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 2 &&
               window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 20 &&
+              window->cameraControlValue("Zoom_In_Aggressiveness") == 25 &&
               window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 6 &&
               window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 6 &&
               window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 70 &&
@@ -4104,6 +4153,7 @@ bool test_camera_controls(HStreamWindow* window) {
     direct_overrides["rink"]["camera"]["stop_cancel_hysteresis_frames"] = 4;
     direct_overrides["rink"]["camera"]["stop_delay_cooldown_frames"] = 5;
     direct_overrides["rink"]["camera"]["time_to_dest_speed_limit_frames"] = 30;
+    direct_overrides["rink"]["camera"]["zoom_in_aggressiveness"] = 80;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 8;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["post_nonstop_stop_delay_count"] = 9;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_scale_speed_ratio"] = 0.83;
@@ -4120,6 +4170,7 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 4 &&
               window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 5 &&
               window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 30 &&
+              window->cameraControlValue("Zoom_In_Aggressiveness") == 80 &&
               window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 8 &&
               window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 9 &&
               window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 83 &&
@@ -4130,8 +4181,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(reset);
   if (!expect(
-          stop_delay->value() == 10 && rotate->value() == 90 && bring_up_shadows->value() == 0 &&
-              !lift_shadow_black_point->isChecked() && save->isEnabled(),
+          stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
+              bring_up_shadows->value() == 0 && !lift_shadow_black_point->isChecked() && save->isEnabled(),
           "Reset should stage removal of direct per-game canonical overrides")) {
     return false;
   }
@@ -4139,6 +4190,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const YAML::Node after_direct_reset = YAML::LoadFile(config.string());
   if (!expect(
           !lookup_yaml_path(after_direct_reset, {"rink", "camera", "stop_on_dir_change_delay"}, nullptr) &&
+              !lookup_yaml_path(after_direct_reset, {"rink", "camera", "zoom_in_aggressiveness"}, nullptr) &&
               !lookup_yaml_path(after_direct_reset, {"stitching", "post_stitch_rotate_degrees"}, nullptr) &&
               !lookup_yaml_path(
                   after_direct_reset, {"pipeline", "hmplaycropper", "properties", "shadow-lift"}, nullptr) &&
@@ -4149,8 +4201,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          stop_delay->value() == 10 && rotate->value() == 90 && bring_up_shadows->value() == 0 &&
-              !lift_shadow_black_point->isChecked() && !save->isEnabled(),
+          stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
+              bring_up_shadows->value() == 0 && !lift_shadow_black_point->isChecked() && !save->isEnabled(),
           "Reload after Reset plus Save should remain on bundled defaults")) {
     return false;
   }
@@ -5067,6 +5119,25 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(live_preserved_follower_y_speed, "Live playtracker update should preserve untouched motion limits") ||
       !expect(native_runtime_tuning_ok, "The native playtracker loader should accept the exact UI runtime sidecar")) {
     std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+  zoom_in_aggressiveness->setValue(75);
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Zoom_In_Aggressiveness=75 apply=live"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const fs::path live_zoom_config_path = newest_live_playtracker_config();
+  const YAML::Node live_zoom_config =
+      fs::exists(live_zoom_config_path) ? YAML::LoadFile(live_zoom_config_path.string()) : YAML::Node();
+  YAML::Node live_zoom_value;
+  const bool live_zoom_written = lookup_yaml_path(
+      live_zoom_config, {"play-tracker", "hstream-runtime-tuning", "zoom-in-aggressiveness"}, &live_zoom_value);
+  if (!expect(
+          window->logText().contains("camera control Zoom_In_Aggressiveness=75 apply=pending") &&
+              window->logText().contains("camera control Zoom_In_Aggressiveness=75 apply=live") && live_zoom_written &&
+              live_zoom_value.IsScalar() && live_zoom_value.as<int>() == 75,
+          "Zoom-in aggressiveness should publish an acknowledged sparse live follower tuning update")) {
     activate(stop);
     return false;
   }

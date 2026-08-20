@@ -76,7 +76,8 @@ class PipelineProcess {
       const fs::path& executable,
       const fs::path& config,
       const std::string& source_type = "URI",
-      const std::string& sink_type = "FAKE") {
+      const std::string& sink_type = "FAKE",
+      bool headless_render_video = false) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -102,6 +103,9 @@ class PipelineProcess {
           "--enable-sources=" + source_type,
           "--enable-sinks=" + sink_type,
       };
+      if (headless_render_video) {
+        arguments.push_back("--headless-render-video");
+      }
       std::vector<char*> argv;
       for (std::string& argument : arguments) {
         argv.push_back(argument.data());
@@ -287,6 +291,13 @@ bool write_config(
          << "  sync: 1\n"
          << "  source-id: 0\n"
          << "  gpu-id: 0\n"
+         << "sink2:\n"
+         << "  enable: 0\n"
+         << "  sink-id: 2\n"
+         << "  type: 2\n"
+         << "  sync: 0\n"
+         << "  source-id: 0\n"
+         << "  gpu-id: 0\n"
          << "streammux:\n"
          << "  width: 256\n"
          << "  height: 144\n"
@@ -394,6 +405,11 @@ int main(int argc, char** argv) {
   ok &= expect(
       process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
       "pipeline-app must advance its video position before controls");
+  size_t seek_rejection_mark = process.Mark();
+  ok &= expect(process.Send("@seek 10000000000 1\n"), "nonlocal seek command must be delivered");
+  ok &= expect(
+      process.WaitFor("HSTREAM_SEEK status=rejected generation=1 reason=nonlocal-output-active", seek_rejection_mark),
+      "pipeline-app must reject seeking when the active sink is not local rendering");
 
   for (int iteration = 0; iteration < 3 && ok; ++iteration) {
     size_t mark = process.Mark();
@@ -415,11 +431,27 @@ int main(int argc, char** argv) {
 
   PipelineProcess relaunched_process;
   if (ok) {
-    ok &= expect(relaunched_process.Start(argv[1], config), "pipeline-app must relaunch after a clean stop");
-    ok &= expect(relaunched_process.WaitFor("Pipeline running"), "relaunched pipeline-app must reach PLAYING");
     ok &= expect(
-        relaunched_process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
-        "relaunched pipeline-app must advance its video position");
+        relaunched_process.Start(argv[1], config, "URI", "RENDER", true),
+        "pipeline-app must relaunch with a headless local-render sink after a clean stop");
+    ok &= expect(relaunched_process.WaitFor("Pipeline running"), "relaunched pipeline-app must reach PLAYING");
+    size_t pause_mark = relaunched_process.Mark();
+    ok &= expect(relaunched_process.Send("p"), "local-render pipeline pause command must be delivered");
+    ok &= expect(relaunched_process.WaitFor("Pipeline paused", pause_mark), "local-render pipeline must reach PAUSED");
+    const size_t paused_seek_mark = relaunched_process.Mark();
+    ok &= expect(relaunched_process.Send("@seek 10000000000 1\n"), "paused seek command must be delivered");
+    ok &= expect(
+        relaunched_process.WaitFor(
+            "HSTREAM_SEEK status=rejected generation=1 reason=pipeline-not-playing", paused_seek_mark),
+        "backend must reject a seek while local playback is paused");
+    const size_t resume_mark = relaunched_process.Mark();
+    ok &= expect(relaunched_process.Send("r"), "local-render pipeline resume command must be delivered");
+    ok &= expect(relaunched_process.WaitFor("Pipeline running", resume_mark), "local-render pipeline must resume");
+    const size_t seek_mark = relaunched_process.Mark();
+    ok &= expect(relaunched_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
+    ok &= expect(
+        relaunched_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
+        "local-render-only playback must accept an accurate flushing seek");
     ok &= expect(relaunched_process.Send("q"), "quit command must be delivered to relaunched pipeline-app");
     exit_code = -1;
     ok &= expect(relaunched_process.WaitForExit(&exit_code), "relaunched pipeline-app must stop promptly after q");

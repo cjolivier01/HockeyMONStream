@@ -238,6 +238,16 @@ BufferResult PlayTrackerPriv::ProcessBuffer(GstBuffer* inbuf) {
   return Super::ProcessBuffer(inbuf);
 }
 
+bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
+  if (event && GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    DsPlayTrackerCtxResetTracking(pt_context_);
+    prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
+    frame_counter_ = 0;
+  }
+  return Super::HandleEvent(event);
+}
+
 absl::Status PlayTrackerPriv::GenerateOutput(
     NvDsBatchMeta* batch_meta,
     NvBufSurface* in_surface,

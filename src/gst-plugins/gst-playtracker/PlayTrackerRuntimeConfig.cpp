@@ -4,8 +4,20 @@
 #include "absl/strings/str_cat.h"
 #include "yaml-cpp/yaml.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
+
+float DsPlayTrackerZoomInThresholdMultiplier(int aggressiveness) {
+  aggressiveness = std::clamp(aggressiveness, kMinimumZoomInAggressiveness, kMaximumZoomInAggressiveness);
+  if (aggressiveness <= kDefaultZoomInAggressiveness) {
+    return 2.0f - static_cast<float>(aggressiveness) / static_cast<float>(kDefaultZoomInAggressiveness);
+  }
+  constexpr float kMinimumMultiplier = 0.1f;
+  const float normalized = static_cast<float>(aggressiveness - kDefaultZoomInAggressiveness) /
+      static_cast<float>(kMaximumZoomInAggressiveness - kDefaultZoomInAggressiveness);
+  return 1.0f - normalized * (1.0f - kMinimumMultiplier);
+}
 
 absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file) {
   if (config_file.empty())
@@ -46,6 +58,12 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const 
     const bool apply_to_follower = read_bool(play_tracker, "hstream-apply-to-follower-box", true);
     const YAML::Node live_boxes = play_tracker["live-boxes"];
     const size_t live_box_count = live_boxes && live_boxes.IsSequence() ? live_boxes.size() : 0;
+    const std::optional<int> zoom_in_aggressiveness = read_int(runtime, "zoom-in-aggressiveness");
+    if (zoom_in_aggressiveness.has_value() &&
+        (*zoom_in_aggressiveness < kMinimumZoomInAggressiveness ||
+         *zoom_in_aggressiveness > kMaximumZoomInAggressiveness)) {
+      return absl::InvalidArgumentError("zoom-in-aggressiveness must be from 0 through 100");
+    }
     if (apply_to_fast && live_box_count < 1)
       return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
     if (apply_to_follower && live_box_count < 1)
@@ -65,6 +83,7 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const 
         .max_speed_y = read_float(runtime, "max-speed-y"),
         .max_accel_x = read_float(runtime, "max-accel-x"),
         .max_accel_y = read_float(runtime, "max-accel-y"),
+        .zoom_in_aggressiveness = zoom_in_aggressiveness,
         .apply_to_fast_box = apply_to_fast,
         .apply_to_follower_box = apply_to_follower,
         .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical"),

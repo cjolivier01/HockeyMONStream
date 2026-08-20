@@ -3187,6 +3187,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
       "\t@set-render-audio-muted <0|1>: Mute or restore only the local render-audio branch\n"
+      "\t@seek <position-ns> <generation>: Seek local-render-only playback to an absolute video position\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
@@ -3879,8 +3880,23 @@ bool PipelineApplication::set_element_properties_runtime(
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
+  constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
+  if (trimmed_line.rfind(std::string(kSeekCommand), 0) == 0 && trimmed_line.size() > kSeekCommand.size() &&
+      std::isspace(static_cast<unsigned char>(trimmed_line[kSeekCommand.size()]))) {
+    const std::string arguments = trim_ascii(trimmed_line.substr(kSeekCommand.size()));
+    const size_t separator = arguments.find_first_of(" \t");
+    guint64 target_ns = 0;
+    guint64 generation = 0;
+    if (separator == std::string::npos ||
+        !parse_uint64_strict(trim_ascii(arguments.substr(0, separator)), &target_ns) ||
+        !parse_uint64_strict(trim_ascii(arguments.substr(separator)), &generation) || generation == 0) {
+      g_printerr("runtime command failed: seek requires position-ns and a positive generation\n");
+      return false;
+    }
+    return seek_runtime(target_ns, generation);
+  }
   if (trimmed_line.rfind(std::string(kRenderAudioMutedCommand), 0) == 0 &&
       trimmed_line.size() > kRenderAudioMutedCommand.size() &&
       std::isspace(static_cast<unsigned char>(trimmed_line[kRenderAudioMutedCommand.size()]))) {
@@ -3928,11 +3944,136 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
         "set-render-window <xid>, set-render-audio-muted <0|1>, capture-preview-frame <main|stitched|sourceN> "
-        "<jpg-path>, set-properties "
+        "<jpg-path>, seek <position-ns> <generation>, set-properties "
         "<element property=value;...>, reset-progress-rate <generation>, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
+}
+
+bool PipelineApplication::runtime_seek_is_local_render_only() const {
+  auto is_render_type = [](NvDsSinkType type) {
+#if defined(IS_TEGRA)
+    return type == NV_DS_SINK_RENDER_3D || type == NV_DS_SINK_RENDER_DRM;
+#else
+    return type == NV_DS_SINK_RENDER_EGL || type == NV_DS_SINK_RENDER_DRM;
+#endif
+  };
+  bool requested_render = false;
+  if (enabled_sink_types_.empty()) {
+    return false;
+  }
+  for (const auto& stage_types : enabled_sink_types_) {
+    if (stage_types.empty()) {
+      return false;
+    }
+    for (const NvDsSinkType type : stage_types) {
+      if (!is_render_type(type)) {
+        return false;
+      }
+      requested_render = true;
+    }
+  }
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (!requested_render || stage == stage_app_contexts_.end() || stage->second.empty()) {
+    return false;
+  }
+  bool active_render = false;
+  for (const auto& app_context : stage->second) {
+    if (!app_context) {
+      continue;
+    }
+    for (guint index = 0; index < app_context->config.num_sink_sub_bins; ++index) {
+      const NvDsSinkSubBinConfig& sink = app_context->config.sink_bin_sub_bin_config[index];
+      if (!sink.enable) {
+        continue;
+      }
+      if (!is_render_type(sink.type)) {
+        return false;
+      }
+      active_render = true;
+    }
+  }
+  return active_render;
+}
+
+bool PipelineApplication::seek_runtime(uint64_t target_ns, uint64_t generation) {
+  auto reject = [generation](const char* status, const char* reason) {
+    g_print("HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " reason=%s\n", status, generation, reason);
+    return false;
+  };
+  if (!runtime_seek_is_local_render_only()) {
+    return reject("rejected", "nonlocal-output-active");
+  }
+  if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return reject("rejected", "stitching-calibration-active");
+  }
+  if (!ui_preview_window_ids_.empty() && active_ui_preview_channel_.empty()) {
+    return reject("rejected", "local-render-disabled");
+  }
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.empty()) {
+    return reject("failed", "pipeline-unavailable");
+  }
+
+  uint64_t clamped_target_ns = target_ns;
+  if (time_limit_seconds_ > 0) {
+    clamped_target_ns = std::min(clamped_target_ns, static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND);
+  }
+  std::vector<GstElement*> pipelines;
+  for (const auto& app_context : stage->second) {
+    GstElement* pipeline = app_context ? app_context->pipeline.pipeline : nullptr;
+    if (!pipeline) {
+      return reject("failed", "pipeline-unavailable");
+    }
+    GstState current_state = GST_STATE_NULL;
+    GstState pending_state = GST_STATE_VOID_PENDING;
+    const GstStateChangeReturn state_result = gst_element_get_state(pipeline, &current_state, &pending_state, 0);
+    if (state_result == GST_STATE_CHANGE_FAILURE || current_state != GST_STATE_PLAYING) {
+      return reject("rejected", "pipeline-not-playing");
+    }
+    GstQuery* query = gst_query_new_seeking(GST_FORMAT_TIME);
+    gboolean seekable = FALSE;
+    gint64 seek_start = 0;
+    gint64 seek_end = -1;
+    const gboolean queried = gst_element_query(pipeline, query);
+    if (queried) {
+      GstFormat format = GST_FORMAT_UNDEFINED;
+      gst_query_parse_seeking(query, &format, &seekable, &seek_start, &seek_end);
+      if (format != GST_FORMAT_TIME) {
+        seekable = FALSE;
+      }
+    }
+    gst_query_unref(query);
+    if (!queried || !seekable) {
+      return reject("rejected", "source-not-seekable");
+    }
+    if (seek_end >= 0) {
+      const uint64_t absolute_end = static_cast<uint64_t>(seek_end);
+      const uint64_t relative_end = absolute_end > start_time_ns_ ? absolute_end - start_time_ns_ : 0;
+      clamped_target_ns = std::min(clamped_target_ns, relative_end);
+    }
+    pipelines.push_back(pipeline);
+  }
+  if (clamped_target_ns > static_cast<uint64_t>(G_MAXINT64) - start_time_ns_) {
+    return reject("failed", "position-overflow");
+  }
+  const gint64 absolute_target_ns = static_cast<gint64>(clamped_target_ns + start_time_ns_);
+  for (GstElement* pipeline : pipelines) {
+    if (!gst_element_seek_simple(
+            pipeline,
+            GST_FORMAT_TIME,
+            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+            absolute_target_ns)) {
+      return reject("failed", "gstreamer-seek-failed");
+    }
+  }
+  reset_playback_timing_state(current_stage_);
+  g_print(
+      "HSTREAM_SEEK status=ok generation=%" G_GUINT64_FORMAT " position_ns=%" G_GUINT64_FORMAT "\n",
+      generation,
+      clamped_target_ns);
+  return true;
 }
 
 void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {

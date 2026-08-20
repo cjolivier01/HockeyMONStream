@@ -31,6 +31,7 @@ max-speed-ratio-y: 3.0
 max-accel-ratio-x: 4.0
 max-accel-ratio-y: 5.0
 follower-box-min-height-ratio: 0.3
+zoom-in-aggressiveness: 25
 min-considered-group-velocity: 3.0
 group-ratio-threshold: 0.5
 group-velocity-speed-ratio: 0.3
@@ -86,6 +87,26 @@ live-boxes:
           near(follower.max_accel_w, 4.0f) && near(follower.max_accel_h, 5.0f),
       "Baseline speed and acceleration ratios should scale native arena-derived constraints");
   ok &= expect(near(follower.min_height, 300.0f), "Follower minimum height ratio should use the arena height");
+  ok &= expect(
+      near(follower.size_ratio_thresh_shrink_dw, 0.08f) && near(follower.size_ratio_thresh_shrink_dh, 0.10f),
+      "Default zoom-in aggressiveness must preserve the native sticky shrink thresholds exactly");
+
+  YAML::Node eager_zoom_yaml = YAML::Clone(yaml);
+  eager_zoom_yaml["zoom-in-aggressiveness"] = 100;
+  const auto eager_zoom_config =
+      gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), eager_zoom_yaml);
+  ok &= expect(
+      near(eager_zoom_config.living_boxes.back().size_ratio_thresh_shrink_dw, 0.008f) &&
+          near(eager_zoom_config.living_boxes.back().size_ratio_thresh_shrink_dh, 0.010f),
+      "Maximum zoom-in aggressiveness should lower follower shrink hysteresis to one tenth");
+  YAML::Node reluctant_zoom_yaml = YAML::Clone(yaml);
+  reluctant_zoom_yaml["zoom-in-aggressiveness"] = 0;
+  const auto reluctant_zoom_config =
+      gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), reluctant_zoom_yaml);
+  ok &= expect(
+      near(reluctant_zoom_config.living_boxes.back().size_ratio_thresh_shrink_dw, 0.16f) &&
+          near(reluctant_zoom_config.living_boxes.back().size_ratio_thresh_shrink_dh, 0.20f),
+      "Minimum zoom-in aggressiveness should double follower shrink hysteresis");
   ok &= expect(
       fast.time_to_dest_speed_limit_frames == 20 && near(fast.time_to_dest_stop_speed_threshold, 0.25f) &&
           fast.resizing_stop_on_dir_change_delay == 4 && fast.resizing_cancel_stop_on_opposite_dir &&
@@ -149,6 +170,18 @@ live-boxes:
       hm::BBox(100, 100, 300, 300), hm::BBox(400, 100, 600, 300), hm::BBox(700, 100, 900, 300)};
   const absl::Status draw_status = DsPlayTrackerDrawToDisplayMeta(&draw_context, draw_frame);
   ok &= expect(draw_status.ok(), "Display drawing must support more than two live boxes");
+  DsPlayTrackerRuntimeTuning zoom_tuning;
+  zoom_tuning.apply_to_fast_box = false;
+  zoom_tuning.apply_to_follower_box = false;
+  zoom_tuning.update_motion_tuning = false;
+  zoom_tuning.zoom_in_aggressiveness = 100;
+  const absl::Status zoom_status = DsPlayTrackerCtxApplyRuntimeTuning(&draw_context, zoom_tuning);
+  ok &= expect(
+      zoom_status.ok() &&
+          near(draw_tracker.play_tracker_config.living_boxes.back().size_ratio_thresh_shrink_dw, 0.008f) &&
+          near(draw_tracker.play_tracker_config.living_boxes.back().size_ratio_thresh_shrink_dh, 0.010f) &&
+          near(draw_tracker.play_tracker_config.living_boxes.front().size_ratio_thresh_shrink_dw, 0.08f),
+      "Live zoom tuning must update only the follower shrink decision without recreating the tracker");
   nvds_destroy_batch_meta(draw_batch);
 
   YAML::Node one_box_yaml = YAML::Clone(yaml);
@@ -179,9 +212,13 @@ live-boxes:
   document["play-tracker"]["no-wide-start"] = "not-a-boolean";
   std::ofstream(validation_path) << YAML::Dump(document) << '\n';
   const absl::Status malformed_status = DsPlayTrackerValidateConfigFile(validation_path.string());
+  document["play-tracker"] = YAML::Clone(yaml);
+  document["play-tracker"]["zoom-in-aggressiveness"] = 101;
+  std::ofstream(validation_path) << YAML::Dump(document) << '\n';
+  const absl::Status invalid_zoom_status = DsPlayTrackerValidateConfigFile(validation_path.string());
   std::filesystem::remove(validation_path);
   ok &= expect(
-      valid_status.ok() && one_box_status.ok() && !malformed_status.ok(),
+      valid_status.ok() && one_box_status.ok() && !malformed_status.ok() && !invalid_zoom_status.ok(),
       "Native validation must accept one-box compatibility and type-check every baseline-backed tracker field");
   return ok ? 0 : 1;
 }

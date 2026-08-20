@@ -146,6 +146,7 @@ play-tracker:
             play_tracker["max-accel-ratio-x"].as<double>() == 1.0 &&
             play_tracker["max-accel-ratio-y"].as<double>() == 1.0 &&
             play_tracker["follower-box-min-height-ratio"].as<double>() == 0.2 &&
+            play_tracker["zoom-in-aggressiveness"].as<int>() == 25 &&
             fast["time-to-dest-speed-limit-frames"].as<int>() == 20 &&
             fast["time-to-dest-stop-speed-threshold"].as<double>() == 0.25 &&
             fast["resizing-stop-on-dir-change-delay"].as<int>() == 4 &&
@@ -170,9 +171,11 @@ play-tracker:
   if (bundled_baseline.ok()) {
     YAML::Node overlaid = YAML::Clone(bundled_baseline->values);
     overlaid["rink"]["camera"]["stop_on_dir_change_delay"] = 17;
+    overlaid["rink"]["camera"]["zoom_in_aggressiveness"] = 75;
     overlaid["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 12;
     const hm::configurator_internal::ConfigLeafRanks explicit_overrides = {
         {"rink.camera.stop_on_dir_change_delay", 1},
+        {"rink.camera.zoom_in_aggressiveness", 1},
         {"rink.camera.breakaway_detection.overshoot_stop_delay_count", 1},
     };
     const auto overlaid_playtracker = hm::configurator_internal::build_effective_playtracker_config(
@@ -180,6 +183,7 @@ play-tracker:
     ok &= expect(
         overlaid_playtracker.ok() &&
             (*overlaid_playtracker)["play-tracker"]["overshoot-stop-delay-count"].as<int>() == 12 &&
+            (*overlaid_playtracker)["play-tracker"]["zoom-in-aggressiveness"].as<int>() == 75 &&
             (*overlaid_playtracker)["play-tracker"]["live-boxes"][1]["stop-translation-on-dir-change-delay"]
                     .as<int>() == 17,
         "Merged user/game/CLI values must replace bundled defaults in the materialized native tracker config");
@@ -250,9 +254,15 @@ play-tracker:
     malformed_native["play-tracker"]["no-wide-start"] = "not-a-boolean";
     const auto malformed_custom = hm::configurator_internal::build_effective_playtracker_config(
         bundled_baseline->values, {}, /*native_base_rank=*/0, malformed_native);
+    YAML::Node invalid_zoom = YAML::Clone(bundled_baseline->values);
+    invalid_zoom["rink"]["camera"]["zoom_in_aggressiveness"] = 101;
+    const hm::configurator_internal::ConfigLeafRanks invalid_zoom_explicit = {
+        {"rink.camera.zoom_in_aggressiveness", 1}};
+    const auto invalid_zoom_config = hm::configurator_internal::build_effective_playtracker_config(
+        invalid_zoom, invalid_zoom_explicit, /*native_base_rank=*/0, playtracker_base);
     ok &= expect(
-        !malformed_canonical.ok() && !malformed_custom.ok(),
-        "Malformed baseline-backed canonical and custom-native scalar types must fail materialization");
+        !malformed_canonical.ok() && !malformed_custom.ok() && absl::IsInvalidArgument(invalid_zoom_config.status()),
+        "Malformed baseline-backed scalars and out-of-range zoom aggressiveness must fail materialization");
   }
 
   auto first_user_config = hm::user_config::load_or_create();

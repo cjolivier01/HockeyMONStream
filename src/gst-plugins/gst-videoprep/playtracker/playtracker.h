@@ -21,6 +21,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
 
   // -DSCustomLibraryBase
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
+  bool HandleEvent(GstEvent* event) override;
   bool SetProperty(const Property& prop) override;
   // DSCustomLibraryBase-
 

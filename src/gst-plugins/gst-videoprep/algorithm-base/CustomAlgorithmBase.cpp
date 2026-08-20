@@ -424,6 +424,20 @@ char* CustomAlgorithmBase::QueryProperties() {
 
 bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
   switch (GST_EVENT_TYPE(event)) {
+    case GST_EVENT_FLUSH_START: {
+      // A seek invalidates every frame that was queued on the old segment.
+      // The one in-flight frame is ordered before FLUSH_STOP by the derived
+      // algorithm's state lock; release all remaining retained buffers here.
+      std::queue<PacketInfo> pending;
+      {
+        std::lock_guard<std::mutex> lock(m_processLock);
+        pending.swap(m_processQ);
+      }
+      while (!pending.empty()) {
+        gst_buffer_unref(pending.front().inbuf);
+        pending.pop();
+      }
+    } break;
     case GST_EVENT_EOS: {
       std::unique_lock<std::mutex> lock(m_processLock);
       m_stop = TRUE;

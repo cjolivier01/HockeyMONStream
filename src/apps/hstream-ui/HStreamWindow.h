@@ -149,10 +149,13 @@ class HStreamWindow : public QMainWindow {
   void readPipelineOutput();
   bool handleStartupProgressOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
+  bool handlePlaybackSeekOutput(const QString& line);
   void setPlaybackStartupStage(const QString& stage, const QString& detail);
   void resetPlaybackProgress(bool starting);
   void setPlaybackProgressState(PlaybackProgressState state, const QString& detail = {});
   void updatePlaybackProgressPresentation();
+  void updatePlaybackSeekControls();
+  void requestPlaybackSeek(qint64 target_ns);
   void beginPlaybackProgressReset();
   void sendPlaybackProgressReset(quint64 generation);
   int playbackProgressResetTimeoutMs() const;
@@ -306,6 +309,11 @@ class HStreamWindow : public QMainWindow {
   QLabel* backend_mode_{nullptr};
   QLabel* pipeline_state_{nullptr};
   QProgressBar* playback_progress_{nullptr};
+  QWidget* playback_seek_controls_{nullptr};
+  QSlider* playback_seek_slider_{nullptr};
+  QPushButton* playback_seek_back_button_{nullptr};
+  QPushButton* playback_seek_forward_button_{nullptr};
+  QLabel* playback_seek_position_{nullptr};
   QLabel* preview_status_{nullptr};
   QLabel* stitched_status_{nullptr};
   QLabel* preview_external_notice_{nullptr};
@@ -377,6 +385,11 @@ class HStreamWindow : public QMainWindow {
   quint64 playback_reset_generation_{0};
   quint64 pending_playback_reset_generation_{0};
   int playback_reset_attempts_{0};
+  qint64 playback_position_ns_{0};
+  qint64 playback_duration_ns_{0};
+  quint64 playback_seek_generation_{0};
+  quint64 pending_playback_seek_generation_{0};
+  bool active_run_local_render_only_{false};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   bool calibration_waiting_for_playback_restart_{false};

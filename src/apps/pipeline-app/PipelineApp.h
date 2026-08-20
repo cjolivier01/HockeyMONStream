@@ -128,6 +128,8 @@ class PipelineApplication {
   bool read_runtime_command_line(std::string* line);
   bool handle_runtime_command_line(const std::string& line);
   void reset_playback_progress_rates(uint64_t generation);
+  bool runtime_seek_is_local_render_only() const;
+  bool seek_runtime(uint64_t target_ns, uint64_t generation);
   bool set_render_window_runtime(guint64 window_id);
   bool set_preview_active_runtime(const std::string& channel, guint64 generation);
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
