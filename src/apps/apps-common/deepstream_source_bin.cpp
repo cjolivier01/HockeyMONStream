@@ -1978,50 +1978,80 @@ static GstPadProbeReturn block_uri_playlist_initial_seek_buffer(
   return GST_PAD_PROBE_OK;
 }
 
-enum class InitialSeekBlockerResult { kNotRequired, kInstalled, kFailed };
+enum class UriDecodePadLinkStatus { kLinked, kSecondary, kBlockerFailed, kLinkFailed };
 
-static InitialSeekBlockerResult replace_uri_playlist_initial_seek_blocker(
-    NvDsSrcBin* bin,
-    GstPad* pad,
-    gboolean is_video) {
+struct UriDecodePadLinkResult {
+  UriDecodePadLinkStatus status{UriDecodePadLinkStatus::kLinkFailed};
+  gboolean initial_seek_blocked{FALSE};
+};
+
+static UriDecodePadLinkResult link_uri_decode_pad(NvDsSrcBin* bin, GstPad* pad, GstPad* sinkpad, gboolean is_video) {
   NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
-  if (!parent || !pad) {
-    return InitialSeekBlockerResult::kNotRequired;
+  if (!bin || !pad || !sinkpad) {
+    return {};
   }
   GstPad* retired_pad = nullptr;
   gulong retired_probe_id = 0;
-  InitialSeekBlockerResult result = InitialSeekBlockerResult::kNotRequired;
-  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
-  if (parent->uri_playlist_initial_seek_pending) {
-    GstPad*& blocked_pad =
-        is_video ? bin->uri_playlist_initial_seek_video_pad : bin->uri_playlist_initial_seek_audio_pad;
-    gulong& probe_id =
-        is_video ? bin->uri_playlist_initial_seek_video_probe : bin->uri_playlist_initial_seek_audio_probe;
-    if (blocked_pad == pad && probe_id != 0) {
-      result = InitialSeekBlockerResult::kInstalled;
-    } else {
-      const gulong replacement_probe_id = gst_pad_add_probe(
+  GstPad* candidate_blocked_pad = nullptr;
+  gulong candidate_probe_id = 0;
+  UriDecodePadLinkResult result;
+  GMutex* mutex = uri_playlist_mutex(bin);
+  g_mutex_lock(mutex);
+  if (gst_pad_is_linked(sinkpad)) {
+    result.status = UriDecodePadLinkStatus::kSecondary;
+  } else {
+    const gboolean initial_seek_pending = parent && parent->uri_playlist_initial_seek_pending;
+    if (initial_seek_pending) {
+      candidate_probe_id = gst_pad_add_probe(
           pad,
           static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BLOCK | GST_PAD_PROBE_TYPE_BUFFER),
           block_uri_playlist_initial_seek_buffer,
           nullptr,
           nullptr);
-      retired_pad = blocked_pad;
-      retired_probe_id = probe_id;
-      blocked_pad = nullptr;
-      probe_id = 0;
-      if (replacement_probe_id != 0) {
-        blocked_pad = GST_PAD(gst_object_ref(pad));
-        probe_id = replacement_probe_id;
-        result = InitialSeekBlockerResult::kInstalled;
+      if (candidate_probe_id == 0) {
+        result.status = UriDecodePadLinkStatus::kBlockerFailed;
       } else {
-        result = InitialSeekBlockerResult::kFailed;
+        candidate_blocked_pad = GST_PAD(gst_object_ref(pad));
+      }
+    }
+    if (result.status != UriDecodePadLinkStatus::kBlockerFailed) {
+      const GstPadLinkReturn link_result = gst_pad_link(pad, sinkpad);
+      if (link_result == GST_PAD_LINK_OK) {
+        result.status = UriDecodePadLinkStatus::kLinked;
+      } else {
+        result.status = link_result == GST_PAD_LINK_WAS_LINKED ? UriDecodePadLinkStatus::kSecondary
+                                                               : UriDecodePadLinkStatus::kLinkFailed;
       }
     }
   }
-  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
-  // A replacement is installed only while the logical branch has no linked
-  // peer, so retiring the preceding pad cannot admit stale media downstream.
+  if (result.status == UriDecodePadLinkStatus::kLinked) {
+    if (!is_video && bin->uri_list && bin->num_uri_list >= 1) {
+      // The audio event probe cannot observe a linked branch until this state
+      // is committed because it takes the same playlist mutex.
+      bin->uri_audio_has_pad = TRUE;
+    }
+    if (candidate_blocked_pad && candidate_probe_id != 0) {
+      GstPad*& blocked_pad =
+          is_video ? bin->uri_playlist_initial_seek_video_pad : bin->uri_playlist_initial_seek_audio_pad;
+      gulong& probe_id =
+          is_video ? bin->uri_playlist_initial_seek_video_probe : bin->uri_playlist_initial_seek_audio_probe;
+      retired_pad = blocked_pad;
+      retired_probe_id = probe_id;
+      blocked_pad = candidate_blocked_pad;
+      probe_id = candidate_probe_id;
+      candidate_blocked_pad = nullptr;
+      candidate_probe_id = 0;
+      result.initial_seek_blocked = TRUE;
+    }
+  }
+  g_mutex_unlock(mutex);
+  if (candidate_blocked_pad && candidate_probe_id != 0) {
+    gst_pad_remove_probe(candidate_blocked_pad, candidate_probe_id);
+    gst_object_unref(candidate_blocked_pad);
+  }
+  // The replacement blocker becomes visible under the playlist mutex only
+  // after its pad is the committed tee peer, so readiness cannot observe the
+  // retired blocker during the link handoff.
   if (retired_pad && retired_probe_id != 0) {
     gst_pad_remove_probe(retired_pad, retired_probe_id);
     gst_object_unref(retired_pad);
@@ -2052,8 +2082,10 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
   if (!strncmp(name, "video", 5)) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
+    g_mutex_lock(&bin->uri_decode_pad_selection_mutex);
     GstPad* sinkpad = gst_element_get_static_pad(bin->tee, "sink");
     if (!sinkpad) {
+      g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
       gst_caps_unref(caps);
       return;
     }
@@ -2065,10 +2097,11 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
         g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=video\n", bin->source_id);
       }
       gst_object_unref(sinkpad);
+      g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
       gst_caps_unref(caps);
       return;
     }
-    InitialSeekBlockerResult initial_seek_blocker = InitialSeekBlockerResult::kNotRequired;
+    gulong event_probe_id = 0;
     if (bin->uri_list && bin->num_uri_list >= 1) {
       auto* probe_data = g_new0(UriListPadProbeData, 1);
       probe_data->bin = bin;
@@ -2079,16 +2112,27 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       probe_data->initial_offset = uri_playlist_initial_offset(bin, TRUE);
       g_mutex_unlock(mutex);
       probe_data->is_video = TRUE;
-      gst_pad_add_probe(
+      event_probe_id = gst_pad_add_probe(
           pad,
           (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
           uri_list_video_pad_event_probe,
           probe_data,
           reinterpret_cast<GDestroyNotify>(g_free));
     }
-    initial_seek_blocker = replace_uri_playlist_initial_seek_blocker(bin, pad, TRUE);
-    const gboolean linked = gst_pad_link(pad, sinkpad) == GST_PAD_LINK_OK;
-    if (!linked || initial_seek_blocker == InitialSeekBlockerResult::kFailed) {
+    const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, TRUE);
+    if (link_result.status != UriDecodePadLinkStatus::kLinked && event_probe_id != 0) {
+      gst_pad_remove_probe(pad, event_probe_id);
+    }
+    gst_object_unref(sinkpad);
+    g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+    if (link_result.status == UriDecodePadLinkStatus::kSecondary) {
+      if (g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK")) {
+        g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=video\n", bin->source_id);
+      }
+      gst_caps_unref(caps);
+      return;
+    }
+    if (link_result.status != UriDecodePadLinkStatus::kLinked) {
       NVGSTDS_ERR_MSG_V("Failed to link decodebin to pipeline");
       cancel_uri_playlist_source(bin, TRUE);
       release_uri_playlist_initial_seek_blockers(bin->parent_bin);
@@ -2096,8 +2140,8 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
           bin->src_elem,
           STREAM,
           FAILED,
-          (initial_seek_blocker == InitialSeekBlockerResult::kFailed ? "Failed to guard replacement decoded video"
-                                                                     : "Failed to link decoded video"),
+          (link_result.status == UriDecodePadLinkStatus::kBlockerFailed ? "Failed to guard replacement decoded video"
+                                                                        : "Failed to link decoded video"),
           ("source=%u", bin->source_id));
     } else {
       NvDsSourceConfig* config = (NvDsSourceConfig*)g_object_get_data(G_OBJECT(bin->cap_filter), SRC_CONFIG_KEY);
@@ -2108,8 +2152,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
-    gst_object_unref(sinkpad);
-    if (linked && initial_seek_blocker == InitialSeekBlockerResult::kInstalled) {
+    if (link_result.status == UriDecodePadLinkStatus::kLinked && link_result.initial_seek_blocked) {
       gst_element_post_message(
           bin->src_elem,
           gst_message_new_application(
@@ -2119,8 +2162,10 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
 
     if (bin->uri_audio_tee) {
+      g_mutex_lock(&bin->uri_decode_pad_selection_mutex);
       GstPad* sinkpad = gst_element_get_static_pad(bin->uri_audio_tee, "sink");
       if (!sinkpad) {
+        g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
         gst_caps_unref(caps);
         return;
       }
@@ -2129,9 +2174,11 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
           g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=audio\n", bin->source_id);
         }
         gst_object_unref(sinkpad);
+        g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
         gst_caps_unref(caps);
         return;
       }
+      gulong event_probe_id = 0;
       if (bin->uri_list && bin->num_uri_list >= 1) {
         auto* probe_data = g_new0(UriListPadProbeData, 1);
         probe_data->bin = bin;
@@ -2142,22 +2189,27 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
         probe_data->initial_offset = uri_playlist_initial_offset(bin, FALSE);
         g_mutex_unlock(mutex);
         probe_data->is_video = FALSE;
-        gst_pad_add_probe(
+        event_probe_id = gst_pad_add_probe(
             pad,
             (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
             uri_list_audio_pad_event_probe,
             probe_data,
             reinterpret_cast<GDestroyNotify>(g_free));
       }
-      if (bin->uri_list && bin->num_uri_list >= 1) {
-        GMutex* mutex = uri_playlist_mutex(bin);
-        g_mutex_lock(mutex);
-        bin->uri_audio_has_pad = TRUE;
-        g_mutex_unlock(mutex);
+      const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, FALSE);
+      if (link_result.status != UriDecodePadLinkStatus::kLinked && event_probe_id != 0) {
+        gst_pad_remove_probe(pad, event_probe_id);
       }
-
-      const InitialSeekBlockerResult initial_seek_blocker = replace_uri_playlist_initial_seek_blocker(bin, pad, FALSE);
-      if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK || initial_seek_blocker == InitialSeekBlockerResult::kFailed) {
+      gst_object_unref(sinkpad);
+      g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+      if (link_result.status == UriDecodePadLinkStatus::kSecondary) {
+        if (g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK")) {
+          g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=audio\n", bin->source_id);
+        }
+        gst_caps_unref(caps);
+        return;
+      }
+      if (link_result.status != UriDecodePadLinkStatus::kLinked) {
         NVGSTDS_ERR_MSG_V("Failed to link URI decodebin audio pad to audio tee");
         cancel_uri_playlist_source(bin, TRUE);
         release_uri_playlist_initial_seek_blockers(bin->parent_bin);
@@ -2165,11 +2217,10 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
             bin->src_elem,
             STREAM,
             FAILED,
-            (initial_seek_blocker == InitialSeekBlockerResult::kFailed ? "Failed to guard replacement decoded audio"
-                                                                       : "Failed to link decoded audio"),
+            (link_result.status == UriDecodePadLinkStatus::kBlockerFailed ? "Failed to guard replacement decoded audio"
+                                                                          : "Failed to link decoded audio"),
             ("source=%u", bin->source_id));
       }
-      gst_object_unref(sinkpad);
       gst_caps_unref(caps);
       return;
     }
@@ -2307,6 +2358,11 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   }
   g_mutex_init(&bin->uri_playlist_mutex);
   bin->uri_playlist_mutex_initialized = TRUE;
+  if (bin->uri_decode_pad_selection_mutex_initialized) {
+    g_mutex_clear(&bin->uri_decode_pad_selection_mutex);
+  }
+  g_mutex_init(&bin->uri_decode_pad_selection_mutex);
+  bin->uri_decode_pad_selection_mutex_initialized = TRUE;
   // This runs only after the preceding generation has reached NULL. Publishing
   // enabled here lets the newly created decoder own callbacks without ever
   // resetting the generation fence or its atomically managed source IDs.
@@ -4197,7 +4253,16 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
   gboolean ready = pending;
   for (guint source_id = 0; source_id < bin->num_bins && ready; ++source_id) {
     const NvDsSrcBin* source = &bin->sub_bins[source_id];
-    ready = source->uri_playlist_initial_seek_video_pad && source->uri_playlist_initial_seek_video_probe != 0;
+    GstPad* sinkpad = source->tee ? gst_element_get_static_pad(source->tee, "sink") : nullptr;
+    GstPad* peer = sinkpad ? gst_pad_get_peer(sinkpad) : nullptr;
+    ready = peer && peer == source->uri_playlist_initial_seek_video_pad &&
+        source->uri_playlist_initial_seek_video_probe != 0;
+    if (peer) {
+      gst_object_unref(peer);
+    }
+    if (sinkpad) {
+      gst_object_unref(sinkpad);
+    }
   }
   g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
   if (!pending) {

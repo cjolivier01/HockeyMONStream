@@ -165,6 +165,9 @@ typedef struct {
   /** Guards URI playlist lifecycle fields when this source is not owned by a multi-source parent. */
   GMutex uri_playlist_mutex;
   gboolean uri_playlist_mutex_initialized;
+  /** Serializes decodebin video/audio pad selection before either logical tee accepts a peer. */
+  GMutex uri_decode_pad_selection_mutex;
+  gboolean uri_decode_pad_selection_mutex_initialized;
   /** Optional playlist state (for file sources). */
   gchar** uri_list;
   guint num_uri_list;
