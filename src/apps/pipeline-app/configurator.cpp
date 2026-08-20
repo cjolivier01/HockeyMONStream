@@ -3742,8 +3742,17 @@ absl::Status Configurator::prepare_initial_pipeline_position(
     }
     return absl::OkStatus();
   }
-  // Other source topologies retain the established PAUSED/seek path in post_config_pipeline(). Decoded-pad trimming
-  // is deliberately exclusive to exact two-camera URI playlists because only those sources share the frame barrier.
+  const bool all_sources_are_playlists = pipeline.multi_src_bin.num_bins > 0 &&
+      std::all_of(pipeline.multi_src_bin.sub_bins,
+                  pipeline.multi_src_bin.sub_bins + pipeline.multi_src_bin.num_bins,
+                  [](const NvDsSrcBin& source) { return source.uri_list && source.num_uri_list > 0; });
+  if (start_time_ns && all_sources_are_playlists) {
+    if (!configure_uri_playlist_initial_position(&pipeline.multi_src_bin, start_time_ns)) {
+      return absl::FailedPreconditionError("Could not configure URI playlist position before preroll");
+    }
+    return absl::OkStatus();
+  }
+  // Non-playlist source topologies retain the established PAUSED/seek path in post_config_pipeline().
   return absl::OkStatus();
 }
 
@@ -3773,6 +3782,16 @@ absl::Status Configurator::post_config_pipeline(
     }
     for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
       if (pipeline.instance_bins[i].hmaudio_bin.bin &&
+          !seek_element(pipeline.instance_bins[i].hmaudio_bin.bin, start_time_ns)) {
+        return absl::InternalError("Failed to seek standalone audio to the requested start time");
+      }
+    }
+    return absl::OkStatus();
+  }
+  if (pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
+    for (size_t i = 0; i < MAX_SOURCE_BINS; ++i) {
+      if (pipeline.instance_bins[i].hmaudio_bin.bin && config.hmaudio_config[i].enable &&
+          config.hmaudio_config[i].src == SRC_FILE &&
           !seek_element(pipeline.instance_bins[i].hmaudio_bin.bin, start_time_ns)) {
         return absl::InternalError("Failed to seek standalone audio to the requested start time");
       }

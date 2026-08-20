@@ -3602,6 +3602,104 @@ gboolean configure_uri_playlist_initial_offsets(
   return configured;
 }
 
+gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 start_time_ns) {
+  if (!bin || bin->uri_playlist_exact_pairing_enabled || bin->num_bins == 0 || start_time_ns == 0) {
+    return FALSE;
+  }
+  GstState state = GST_STATE_VOID_PENDING;
+  GstState pending = GST_STATE_VOID_PENDING;
+  (void)gst_element_get_state(bin->bin, &state, &pending, 0);
+  if (state > GST_STATE_READY || (pending != GST_STATE_VOID_PENDING && pending > GST_STATE_READY)) {
+    return FALSE;
+  }
+
+  struct InitialChapterPlan {
+    guint index{0};
+    GstClockTime skipped_base{0};
+  } plans[MAX_SOURCE_BINS];
+  for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+    NvDsSrcBin* source = &bin->sub_bins[source_id];
+    if (!source->uri_list || source->num_uri_list == 0 || !source->config) {
+      return FALSE;
+    }
+    while (plans[source_id].index < source->num_uri_list) {
+      GError* error = nullptr;
+      GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
+      GstDiscovererInfo* info = discoverer
+          ? gst_discoverer_discover_uri(discoverer, source->uri_list[plans[source_id].index], &error)
+          : nullptr;
+      const GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
+      const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
+      if (info) {
+        gst_discoverer_info_unref(info);
+      }
+      if (discoverer) {
+        g_object_unref(discoverer);
+      }
+      if (error) {
+        g_error_free(error);
+      }
+      if (result != GST_DISCOVERER_OK || !GST_CLOCK_TIME_IS_VALID(duration) || duration == 0 ||
+          duration > G_MAXUINT64 - plans[source_id].skipped_base) {
+        return FALSE;
+      }
+      if (plans[source_id].skipped_base + duration > start_time_ns) {
+        break;
+      }
+      if (plans[source_id].index + 1 == source->num_uri_list) {
+        return FALSE;
+      }
+      plans[source_id].skipped_base += duration;
+      ++plans[source_id].index;
+    }
+  }
+
+  gboolean configured = FALSE;
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  const gboolean pristine = !bin->uri_playlist_initial_offsets_configured && !bin->uri_playlist_terminal &&
+      bin->uri_playlist_next_frame_sequence == 0 && !GST_CLOCK_TIME_IS_VALID(bin->uri_playlist_paired_video_end);
+  if (pristine) {
+    configured = TRUE;
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      if (source->uri_list_decoded_frame_count != 0 || source->uri_list_initial_positioned_frame_count != 0 ||
+          source->uri_list_mux_delivered_sequence != G_MAXUINT64 ||
+          source->uri_list_frame_ready_sequence != G_MAXUINT64 ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_list_released_video_end) ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_playlist_video_origin_ns)) {
+        configured = FALSE;
+        break;
+      }
+    }
+  }
+  if (configured) {
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      source->uri_playlist_initial_video_offset_ns = start_time_ns;
+      source->uri_playlist_initial_audio_offset_ns = start_time_ns;
+      source->uri_playlist_video_origin_ns = GST_CLOCK_TIME_NONE;
+      source->uri_playlist_audio_origin_ns = start_time_ns;
+      source->uri_list_index = plans[source_id].index;
+      source->uri_playlist_initial_uri_index = plans[source_id].index;
+      source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
+      source->prev_accumulated_base = plans[source_id].skipped_base;
+      source->accumulated_base = plans[source_id].skipped_base;
+      g_free(source->config->uri);
+      source->config->uri = g_strdup(source->uri_list[plans[source_id].index]);
+    }
+    bin->uri_playlist_initial_offsets_configured = TRUE;
+  }
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+
+  if (configured) {
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      g_object_set(G_OBJECT(source->src_elem), "uri", source->config->uri, NULL);
+    }
+  }
+  return configured;
+}
+
 static void set_properties_nvuribin(GstElement* element_, NvDsSourceConfig const* config) {
   GstElementFactory* factory = GST_ELEMENT_GET_CLASS(element_)->elementfactory;
   if (!g_strcmp0(GST_OBJECT_NAME(factory), "nvurisrcbin"))

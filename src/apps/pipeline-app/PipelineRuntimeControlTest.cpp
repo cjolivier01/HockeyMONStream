@@ -372,6 +372,61 @@ bool write_playlist_error_config(
   return output.good();
 }
 
+bool write_playlist_seek_config(const fs::path& config, const fs::path& video) {
+  std::ofstream output(config);
+  output << "application:\n"
+         << "  stage: 0\n"
+         << "  enable-perf-measurement: 1\n"
+         << "  perf-measurement-interval-sec: 1\n"
+         << "tiled-display:\n"
+         << "  enable: 0\n";
+  for (int source_id = 0; source_id < 2; ++source_id) {
+    output << "source" << source_id << ":\n"
+           << "  enable: 1\n"
+           << "  type: 3\n"
+           << "  uri: file://" << video.string() << "\n"
+           << "  uri-list:\n"
+           << "    - file://" << video.string() << "\n"
+           << "    - file://" << video.string() << "\n"
+           << "  source-id: " << source_id << "\n"
+           << "  gpu-id: 0\n"
+           << "  cuda-memory-type: 0\n";
+  }
+  output << "sink0:\n"
+         << "  enable: 1\n"
+         << "  sink-id: 0\n"
+         << "  type: 1\n"
+         << "  sync: 1\n"
+         << "  source-id: 0\n"
+         << "  gpu-id: 0\n"
+         << "sink2:\n"
+         << "  enable: 0\n"
+         << "  sink-id: 2\n"
+         << "  type: 2\n"
+         << "  sync: 1\n"
+         << "  source-id: 0\n"
+         << "  gpu-id: 0\n"
+         << "streammux:\n"
+         << "  width: 256\n"
+         << "  height: 144\n"
+         << "  batch-size: 2\n"
+         << "  live-source: 0\n"
+         << "  batched-push-timeout: 40000\n"
+         << "  buffer-pool-size: 8\n"
+         << "  num-surfaces-per-frame: 1\n"
+         << "  gpu-id: 0\n"
+         << "tracker:\n"
+         << "  enable: 1\n"
+         << "  tracker-width: 256\n"
+         << "  tracker-height: 128\n"
+         << "  ll-lib-file: /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so\n"
+         << "  ll-config-file: "
+            "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml\n"
+         << "  gpu-id: 0\n"
+         << "  display-tracking-id: 1\n";
+  return output.good();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -390,6 +445,7 @@ int main(int argc, char** argv) {
   const fs::path video = root / "input.mp4";
   const fs::path config = root / "pipeline.yaml";
   const fs::path tracker_config = root / "pipeline-tracker.yaml";
+  const fs::path playlist_seek_config = root / "pipeline-playlist-seek.yaml";
   const fs::path recreate_config = root / "pipeline-recreate.yaml";
   const fs::path error_config = root / "pipeline-error.yaml";
   const fs::path archive = root / "archive.mkv";
@@ -408,6 +464,9 @@ int main(int argc, char** argv) {
   ok &= expect(
       write_config(tracker_config, video, archive, false, true),
       "pipeline-app native-tracker seek config must be written");
+  ok &= expect(
+      write_playlist_seek_config(playlist_seek_config, video),
+      "pipeline-app multi-chapter native-tracker seek config must be written");
   ok &=
       expect(write_config(recreate_config, video, archive, true), "pipeline-app recreate test config must be written");
   ok &= expect(
@@ -475,14 +534,17 @@ int main(int argc, char** argv) {
   PipelineProcess seek_process;
   if (ok) {
     ok &= expect(
-        seek_process.Start(argv[1], tracker_config, "URI", "RENDER", true),
-        "pipeline-app seek process must start with a headless local-render sink and native tracker");
+        seek_process.Start(argv[1], playlist_seek_config, "URI-MULTIPLE", "RENDER", true),
+        "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
     const size_t seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
     ok &= expect(
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
-        "local-render-only playback must acknowledge an accurate flushing seek after it completes");
+        "local-render-only playback must acknowledge the first processed frame after a replacement seek");
+    ok &= expect(
+        seek_process.WaitForProgressAtOrBeyond(10, seek_mark, std::chrono::seconds(12)),
+        "post-seek progress must come from media at or beyond the requested position");
     const size_t relative_seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek-relative 10000000000 3\n"), "relative local seek command must be delivered");
     const std::string relative_response = "HSTREAM_SEEK status=ok generation=3 position_ns=";
@@ -498,8 +560,15 @@ int main(int argc, char** argv) {
         relative_position >= 20'000'000'000ULL && relative_position <= 1'800'000'000'000ULL,
         "relative +10s seek must use a valid fresh position after the prior 10s absolute seek");
 
+    const uint64_t repeated_targets_ns[] = {
+        5'000'000'000ULL,
+        35'000'000'000ULL,
+        12'000'000'000ULL,
+        45'000'000'000ULL,
+        8'000'000'000ULL,
+    };
     for (uint64_t generation = 4; generation < 9 && ok; ++generation) {
-      const uint64_t target_ns = (generation - 1) * 10'000'000'000ULL;
+      const uint64_t target_ns = repeated_targets_ns[generation - 4];
       const size_t repeated_seek_mark = seek_process.Mark();
       ok &= expect(
           seek_process.Send("@seek " + std::to_string(target_ns) + " " + std::to_string(generation) + "\n"),
@@ -512,15 +581,47 @@ int main(int argc, char** argv) {
           "repeated seek must complete without wedging runtime controls");
     }
 
-    const size_t near_end_seek_mark = seek_process.Mark();
-    ok &= expect(seek_process.Send("@seek 1650000000000 9\n"), "near-end seek command must be delivered");
+    const size_t cross_chapter_seek_mark = seek_process.Mark();
+    ok &= expect(seek_process.Send("@seek 1810000000000 9\n"), "cross-chapter seek command must be delivered");
     ok &= expect(
-        seek_process.WaitFor("HSTREAM_SEEK status=ok generation=9 position_ns=1650000000000", near_end_seek_mark),
-        "near-end seek must complete while the pipeline remains responsive");
+        seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=9 position_ns=1810000000000",
+            cross_chapter_seek_mark,
+            std::chrono::seconds(20)),
+        "seek must select the next physical chapter and complete from pristine exact-pair state");
+    ok &= expect(
+        seek_process.WaitForProgressAtOrBeyond(1810, cross_chapter_seek_mark, std::chrono::seconds(12)),
+        "cross-chapter progress must report the achieved logical playlist position");
+    const size_t backward_chapter_seek_mark = seek_process.Mark();
+    ok &= expect(seek_process.Send("@seek 20000000000 10\n"), "backward chapter seek command must be delivered");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=10 position_ns=20000000000",
+            backward_chapter_seek_mark,
+            std::chrono::seconds(20)),
+        "backward seek from chapter two must reset exact-pair and tracker state");
     ok &= expect(seek_process.Send("q"), "quit command must be delivered to seek pipeline-app");
     exit_code = -1;
     ok &= expect(seek_process.WaitForExit(&exit_code), "seek pipeline-app must stop promptly after q");
     ok &= expect(exit_code == 0, "seek pipeline-app must exit successfully");
+  }
+
+  PipelineProcess single_seek_process;
+  if (ok) {
+    ok &= expect(
+        single_seek_process.Start(argv[1], tracker_config, "URI", "RENDER", true),
+        "single-URI native-tracker seek process must start");
+    ok &= expect(single_seek_process.WaitFor("Pipeline running"), "single-URI seek pipeline must reach PLAYING");
+    const size_t single_seek_mark = single_seek_process.Mark();
+    ok &= expect(single_seek_process.Send("@seek 10000000000 11\n"), "single-URI seek command must be delivered");
+    ok &= expect(
+        single_seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=11 position_ns=10000000000", single_seek_mark, std::chrono::seconds(20)),
+        "single URI must use pre-preroll decoded-pad positioning instead of a PAUSED flushing seek");
+    ok &= expect(single_seek_process.Send("q"), "single-URI quit command must be delivered");
+    exit_code = -1;
+    ok &= expect(single_seek_process.WaitForExit(&exit_code), "single-URI seek process must stop promptly after q");
+    ok &= expect(exit_code == 0, "single-URI seek process must exit successfully");
   }
 
   PipelineProcess failed_process;
@@ -568,6 +669,9 @@ int main(int argc, char** argv) {
     }
     if (!seek_process.output().empty()) {
       seek_process.DumpOutput();
+    }
+    if (!single_seek_process.output().empty()) {
+      single_seek_process.DumpOutput();
     }
     if (!failed_process.output().empty()) {
       failed_process.DumpOutput();

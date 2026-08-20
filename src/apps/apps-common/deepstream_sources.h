@@ -238,6 +238,9 @@ gboolean configure_uri_playlist_initial_offsets(
     guint64 right_video_offset_ns,
     guint audio_source_id,
     guint64 start_time_ns);
+
+/** Configure a non-paired URI playlist to begin at a logical timestamp before preroll. */
+gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 start_time_ns);
 /** Cancel exact-pair waits and close every logical URI-playlist branch with synthetic EOS. */
 void stop_uri_playlist_sources_gracefully(NvDsSrcParentBin* bin);
 
