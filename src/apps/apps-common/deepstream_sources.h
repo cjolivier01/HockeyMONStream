@@ -175,6 +175,11 @@ typedef struct {
   guint64 uri_playlist_initial_skipped_base_ns;
   /** Chapter-local keyframe seek applied before decoded-pad trimming begins. */
   guint64 uri_playlist_initial_seek_ns;
+  /** Temporary decoded-pad blockers that preserve the first buffer until runtime chapter seeks complete. */
+  GstPad* uri_playlist_initial_seek_video_pad;
+  gulong uri_playlist_initial_seek_video_probe;
+  GstPad* uri_playlist_initial_seek_audio_pad;
+  gulong uri_playlist_initial_seek_audio_probe;
   guint uri_switch_count;
   gboolean uri_switch_pending;
   /**

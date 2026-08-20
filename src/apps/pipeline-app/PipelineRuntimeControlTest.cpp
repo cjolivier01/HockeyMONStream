@@ -641,6 +641,8 @@ int main(int argc, char** argv) {
                 {"HM_TEST_RUNTIME_SEEK_INJECT_REPLACEMENT_PLAYLIST_CALLBACK", "1"},
                 {"HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
                 {"HM_TEST_RUNTIME_SEEK_READER_DELAY_MS", "400"},
+                {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_FAIL_ONCE", "1"},
+                {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_INTER_SOURCE_DELAY_MS", "250"},
             }),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
@@ -680,9 +682,11 @@ int main(int argc, char** argv) {
         "pipeline replacement must proceed after the shared reader fence is released");
     ok &= expect(
         seek_process.WaitFor(
-            "HSTREAM_URI_PLAYLIST_CALLBACK status=replacement-fenced action=replacement-switch source=0",
-            seek_mark),
+            "HSTREAM_URI_PLAYLIST_CALLBACK status=replacement-fenced action=replacement-switch source=0", seek_mark),
         "replacement playlist callbacks must remain non-dispatchable while the worker owns AppCtx");
+    ok &= expect(
+        seek_process.WaitFor("falling back to exact decoded trimming", seek_mark),
+        "a rejected accelerated seek must preserve the decoded-trimming fallback");
     const std::string& reader_output = seek_process.output();
     const size_t reader_released = reader_output.find("HSTREAM_PIPELINE_READER status=released", seek_mark);
     const size_t reader_destroy = reader_output.find("Destroy pipeline", seek_mark);

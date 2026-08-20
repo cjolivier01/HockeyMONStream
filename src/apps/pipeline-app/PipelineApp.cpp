@@ -5069,6 +5069,13 @@ void PipelineApplication::handle_bus_message_static(AppCtx* app_ctx, GstMessage*
 }
 
 void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* message) {
+  if (app_ctx && message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
+    const GstStructure* structure = gst_message_get_structure(message);
+    if (structure && gst_structure_has_name(structure, "hstream-uri-playlist-initial-seek-ready")) {
+      (void)seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin);
+      return;
+    }
+  }
   if (!runtime_seek_pending_ || !message || runtime_seek_pending_->app_ctx != app_ctx) {
     return;
   }
@@ -5078,30 +5085,6 @@ void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* messag
   if (!app_ctx || runtime_seek_pending_->pipeline != app_ctx->pipeline.pipeline) {
     finish_runtime_seek("failed", "pipeline-replaced");
     return;
-  }
-  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_STATE_CHANGED &&
-      GST_ELEMENT(GST_MESSAGE_SRC(message)) == app_ctx->pipeline.pipeline &&
-      app_ctx->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
-      !runtime_seek_pending_->chapter_seek_applied) {
-    GstState new_state = GST_STATE_VOID_PENDING;
-    gst_message_parse_state_changed(message, nullptr, &new_state, nullptr);
-    if (new_state == GST_STATE_PLAYING) {
-      if (!seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin)) {
-        runtime_seek_frame_generation_.store(0, std::memory_order_release);
-        finish_runtime_seek("failed", "chapter-seek-failed");
-        cancel_uri_playlist_frame_barrier(&app_ctx->pipeline.multi_src_bin);
-        app_ctx->return_value = -1;
-        app_ctx->quit = TRUE;
-        quit_ = TRUE;
-        if (main_loop_) {
-          g_main_loop_quit(main_loop_);
-        }
-        return;
-      }
-      runtime_seek_pending_->chapter_seek_applied = true;
-      runtime_seek_pending_->deadline =
-          std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms());
-    }
   }
   if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
     const GstStructure* structure = gst_message_get_structure(message);
@@ -6378,6 +6361,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
 
   if (!result.success || !attach_pipeline_bus_watch(result.app_ctx)) {
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
     if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
         runtime_seek_pending_->generation == result.generation) {
       finish_runtime_seek("failed", result.success ? "pipeline-bus-unavailable" : "pipeline-recreate-failed");
@@ -6417,11 +6401,13 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
   // disabled. Publication above establishes the main-context ownership and
   // acknowledgement state that playlist actions are allowed to observe.
   resume_uri_playlist_main_context_callbacks(&result.app_ctx->pipeline.multi_src_bin);
-  if (gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+  const GstStateChangeReturn play_result = gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING);
+  if (play_result == GST_STATE_CHANGE_FAILURE) {
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
     if (runtime_seek_pending_) {
       finish_runtime_seek("failed", "pipeline-play-failed");
     }
+    cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
     result.app_ctx->return_value = -1;
     result.app_ctx->quit = TRUE;
     quit_ = TRUE;
