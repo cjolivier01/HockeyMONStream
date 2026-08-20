@@ -2333,6 +2333,19 @@ void destroy_pipeline(AppCtx* appCtx) {
   if (!appCtx)
     return;
 
+  if (g_getenv("HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK")) {
+    queue_uri_playlist_switch_callback_for_test(&appCtx->pipeline.multi_src_bin, 0, 5000);
+  }
+  // The performance timeout calls back into application code that queries
+  // appCtx->pipeline. Remove it before any GstPipeline pointer can be cleared
+  // or replaced; recreation installs a fresh timeout after publication.
+  pause_perf_measurement(&appCtx->perf_struct);
+  // Main-context URI work owns pointers into multi_src_bin. Fence it before
+  // final teardown and every in-place recreation so no old-generation source
+  // can run after GstElements or playlist mutexes have been replaced. Runtime
+  // seek already does this before handing AppCtx to its worker; the operation
+  // is deliberately idempotent for that path.
+  suspend_uri_playlist_main_context_callbacks(&appCtx->pipeline.multi_src_bin);
   stop_pipeline_gracefully(appCtx, 5 * GST_SECOND);
 
   g_mutex_lock(&appCtx->app_lock);

@@ -636,6 +636,7 @@ int main(int argc, char** argv) {
             {
                 {"HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS", "400"},
                 {"HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
+                {"HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
             }),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
@@ -731,10 +732,21 @@ int main(int argc, char** argv) {
             backward_chapter_seek_mark,
             std::chrono::seconds(20)),
         "backward seek from chapter two must reset exact-pair and tracker state");
+    const size_t final_teardown_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("q"), "quit command must be delivered to seek pipeline-app");
     exit_code = -1;
     ok &= expect(seek_process.WaitForExit(&exit_code), "seek pipeline-app must stop promptly after q");
     ok &= expect(exit_code == 0, "seek pipeline-app must exit successfully");
+    ok &= expect(
+        seek_process.output().find(
+            "HSTREAM_URI_PLAYLIST_CALLBACK status=queued action=switch source=0", final_teardown_mark) !=
+            std::string::npos,
+        "final teardown regression must queue a callback owned by the last pipeline generation");
+    ok &= expect(
+        seek_process.output().find(
+            "HSTREAM_URI_PLAYLIST_CALLBACK status=cancelled action=switch source=0", final_teardown_mark) !=
+            std::string::npos,
+        "central pipeline destruction must cancel last-generation URI callbacks before AppCtx release");
   }
 
   PipelineProcess unequal_seek_process;
@@ -759,6 +771,7 @@ int main(int argc, char** argv) {
 
   PipelineProcess single_seek_process;
   PipelineProcess interrupted_seek_process;
+  PipelineProcess unavailable_worker_seek_process;
   PipelineProcess timed_out_seek_process;
   if (ok) {
     ok &= expect(
@@ -768,7 +781,11 @@ int main(int argc, char** argv) {
             "URI",
             "RENDER",
             true,
-            {{"HM_TEST_RUNTIME_SEEK_TIMEOUT_MS", "150"}, {"HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS", "500"}}),
+            {
+                {"HM_TEST_RUNTIME_SEEK_TIMEOUT_MS", "150"},
+                {"HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS", "500"},
+                {"HM_TEST_RUNTIME_SEEK_POST_CREATE_DELAY_MS", "1500"},
+            }),
         "delayed-recreation seek process must start");
     ok &= expect(
         timed_out_seek_process.WaitFor("Pipeline running"), "delayed-recreation seek pipeline must reach PLAYING");
@@ -795,12 +812,44 @@ int main(int argc, char** argv) {
         timed_out_recreated_at != std::string::npos &&
             timed_out_seek_process.WaitFor("Pipeline running", timed_out_recreated_at, std::chrono::seconds(8)),
         "timed-out replacement must resume local playback before accepting more commands");
+    ok &= expect(
+        timed_out_recreated_at != std::string::npos &&
+            timed_out_seek_process.WaitForProgressAtOrBeyond(10, timed_out_recreated_at, std::chrono::seconds(8)),
+        "replacement performance timer must continue publishing progress after slow reconstruction");
     ok &= expect(timed_out_seek_process.Send("q"), "timed-out seek process quit command must be delivered");
     exit_code = -1;
     ok &= expect(
         timed_out_seek_process.WaitForExit(&exit_code, std::chrono::seconds(12)),
         "timed-out seek process must remain controllable after worker completion");
     ok &= expect(exit_code == 0, "timed-out local seek must leave a cleanly stoppable render pipeline");
+  }
+
+  if (ok) {
+    ok &= expect(
+        unavailable_worker_seek_process.Start(
+            argv[1], tracker_config, "URI", "RENDER", true, {{"HM_TEST_RUNTIME_SEEK_WORKER_UNAVAILABLE", "1"}}),
+        "worker-unavailable seek process must start");
+    ok &= expect(
+        unavailable_worker_seek_process.WaitFor("Pipeline running"),
+        "worker-unavailable seek pipeline must reach PLAYING");
+    const size_t unavailable_worker_mark = unavailable_worker_seek_process.Mark();
+    ok &= expect(
+        unavailable_worker_seek_process.Send("@seek 10000000000 15\n"),
+        "worker-unavailable seek command must be delivered");
+    ok &= expect(
+        unavailable_worker_seek_process.WaitFor(
+            "HSTREAM_SEEK status=failed generation=15 reason=pipeline-recreate-worker-unavailable",
+            unavailable_worker_mark,
+            std::chrono::seconds(3)),
+        "worker construction failure must complete the public seek transaction");
+    exit_code = 0;
+    ok &= expect(
+        unavailable_worker_seek_process.WaitForExit(&exit_code, std::chrono::seconds(8)),
+        "worker construction failure must discard and stop the fenced local generation promptly");
+    ok &= expect(exit_code != 0, "worker construction failure must not claim a healthy playback process");
+    ok &= expect(
+        unavailable_worker_seek_process.output().find("Pipeline EOS finalization timed out") == std::string::npos,
+        "worker construction failure must not enter local-render EOS finalization timeout");
   }
 
   if (ok) {
@@ -907,6 +956,9 @@ int main(int argc, char** argv) {
     }
     if (!interrupted_seek_process.output().empty()) {
       interrupted_seek_process.DumpOutput();
+    }
+    if (!unavailable_worker_seek_process.output().empty()) {
+      unavailable_worker_seek_process.DumpOutput();
     }
     if (!failed_process.output().empty()) {
       failed_process.DumpOutput();

@@ -4548,24 +4548,44 @@ bool PipelineApplication::seek_runtime_impl(
   // context. Invalidate and remove that generation before the worker can
   // clear mutexes or replace GstElements in the reused AppCtx.
   suspend_uri_playlist_main_context_callbacks(&app_context->pipeline.multi_src_bin);
+  if (app_context->config.enable_perf_measurement) {
+    // perf_cb queries app_context->pipeline from an independent GLib timeout;
+    // remove it on the main context before the worker owns that storage.
+    pause_perf_measurement(&app_context->perf_struct);
+  }
   app_context->defer_bus_watch = TRUE;
   detach_pipeline_bus_watch(app_context);
   runtime_seek_recreation_active_.store(true, std::memory_order_release);
   try {
+    if (g_getenv("HM_TEST_RUNTIME_SEEK_WORKER_UNAVAILABLE")) {
+      throw std::runtime_error("injected runtime seek worker construction failure");
+    }
     runtime_seek_recreation_thread_ = std::thread(
         &PipelineApplication::runtime_seek_recreation_worker, this, app_context, clamped_target_ns, generation);
   } catch (const std::exception& error) {
     runtime_seek_recreation_active_.store(false, std::memory_order_release);
     app_context->defer_bus_watch = FALSE;
-    if (!attach_pipeline_bus_watch(app_context)) {
-      app_context->return_value = -1;
-      app_context->quit = TRUE;
-      quit_ = TRUE;
-      if (main_loop_) {
-        g_main_loop_quit(main_loop_);
-      }
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    // Callback cancellation may have consumed a pending physical-boundary
+    // transition, so the original generation cannot be advertised as healthy.
+    // Seeking is local-render-only: discard it directly and stop with an
+    // explicit failure instead of risking a later playlist wedge.
+    app_context->eos_received = TRUE;
+    cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
+    const bool stopped = !app_context->pipeline.pipeline ||
+        gst_element_set_state(app_context->pipeline.pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+    if (!stopped) {
+      g_printerr("Runtime seek worker failure left a local-render pipeline that could not be stopped\n");
     }
-    finish_runtime_seek("failed", "pipeline-recreate-worker-unavailable");
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-recreate-worker-unavailable");
+    }
+    app_context->return_value = -1;
+    app_context->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
     g_printerr("runtime seek could not start its recreation worker: %s\n", error.what());
     return false;
   }
@@ -5999,6 +6019,15 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
     return FALSE;
   }
+  if (runtime_seek_restart && app_ctx_ptr->config.enable_perf_measurement) {
+    // create_pipeline starts its timer by default. Keep the replacement timer
+    // removed until the main context publishes the rebuilt AppCtx.
+    pause_perf_measurement(&app_ctx_ptr->perf_struct);
+    const guint post_create_delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_POST_CREATE_DELAY_MS");
+    if (post_create_delay_ms > 0) {
+      g_usleep(static_cast<gulong>(post_create_delay_ms) * 1000);
+    }
+  }
   auto* hm_app = static_cast<HmApp*>(app_ctx_ptr);
   const uint64_t initial_position_ns = initial_pipeline_position_ns(hm_app);
   const absl::Status position_status =
@@ -6167,9 +6196,14 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     if (main_loop_) {
       g_main_loop_quit(main_loop_);
     }
-  } else if (recreation_timed_out) {
-    g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", result.generation);
-    std::fflush(stdout);
+  } else {
+    if (result.app_ctx->config.enable_perf_measurement) {
+      resume_perf_measurement(&result.app_ctx->perf_struct);
+    }
+    if (recreation_timed_out) {
+      g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", result.generation);
+      std::fflush(stdout);
+    }
   }
   runtime_seek_recreation_active_.store(false, std::memory_order_release);
   return G_SOURCE_REMOVE;

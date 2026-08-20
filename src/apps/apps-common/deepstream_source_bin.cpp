@@ -494,7 +494,13 @@ void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
     // Disable scheduling first, then advance the fence. A decoder thread that
     // was already between those reads either declines to attach or publishes
     // an old-generation source that can only self-discard.
-    g_atomic_int_set(&source->uri_playlist_callbacks_enabled, FALSE);
+    // Async runtime seek performs this on the main context before its worker
+    // starts. destroy_pipeline calls it again centrally; the exchange makes
+    // that worker-side call a no-op while preserving coverage for synchronous
+    // recreation and final teardown.
+    if (!g_atomic_int_compare_and_exchange(&source->uri_playlist_callbacks_enabled, TRUE, FALSE)) {
+      continue;
+    }
     g_atomic_int_inc(&source->uri_playlist_callback_generation);
     struct CallbackSlot {
       gint* source_id;
