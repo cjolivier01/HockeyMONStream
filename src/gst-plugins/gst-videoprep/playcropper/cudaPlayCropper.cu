@@ -27,7 +27,8 @@ __global__ void cropRotateResizeKernel(
     float box_width,
     float box_height,
     int num_channels,
-    float shadow_lift_percent) {
+    float shadow_lift_percent,
+    bool lift_shadow_black_point) {
   // Calculate output pixel coordinates
   const int x_out = blockIdx.x * blockDim.x + threadIdx.x;
   const int y_out = blockIdx.y * blockDim.y + threadIdx.y;
@@ -82,9 +83,10 @@ __global__ void cropRotateResizeKernel(
       float result = p0 * (1.0f - dy_frac) + p1 * dy_frac;
       const bool is_alpha = num_channels == 4 && c == 3;
       const float normalized_result = result / 255.0f;
-      if (!is_alpha && shadow_lift_percent > 0.0f && normalized_result > 0.0f &&
-          normalized_result < kShadowLiftVideoStart) {
-        result = evaluate_shadow_lift_curve(normalized_result, shadow_lift_percent) * 255.0f + 0.5f;
+      if (!is_alpha && shadow_lift_percent > 0.0f && normalized_result < kShadowLiftVideoStart &&
+          (normalized_result > 0.0f || lift_shadow_black_point)) {
+        result =
+            evaluate_shadow_lift_curve(normalized_result, shadow_lift_percent, lift_shadow_black_point) * 255.0f + 0.5f;
       }
 
       // Write to output
@@ -105,6 +107,7 @@ cudaError_t combinedTransform(
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
     float shadow_lift_percent,
+    bool lift_shadow_black_point,
     cudaStream_t stream) {
   // Determine number of channels based on color format
   int num_channels = 0;
@@ -155,7 +158,8 @@ cudaError_t combinedTransform(
       crop_box.width(),
       crop_box.height(),
       num_channels,
-      shadow_lift_percent);
+      shadow_lift_percent,
+      lift_shadow_black_point);
 
   // Check for errors
   return cudaGetLastError();

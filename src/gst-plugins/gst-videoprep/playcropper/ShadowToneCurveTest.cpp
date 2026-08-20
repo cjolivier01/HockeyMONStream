@@ -35,21 +35,23 @@ int main() {
     }
   }
 
-  for (float amount : std::array<float, 4>{25.0f, 50.0f, 75.0f, 100.0f}) {
-    float previous = evaluate_shadow_lift_curve(0.0f, amount);
-    for (int sample = 1; sample <= 65535; ++sample) {
-      const float value = static_cast<float>(sample) / 65535.0f;
-      const float lifted = evaluate_shadow_lift_curve(value, amount);
-      if (!expect(std::isfinite(lifted), "Shadow lift must remain finite across the full signal range") ||
-          !expect(lifted + kTolerance >= previous, "Shadow lift must not introduce a tone reversal") ||
-          !expect(lifted + kTolerance >= value, "A positive shadow lift must not darken the input") ||
-          !expect(lifted <= 1.0f + kTolerance, "Shadow lift must remain inside the video signal range") ||
-          !expect(
-              value < hm::playcropper::kShadowLiftVideoStart || std::abs(lifted - value) <= kTolerance,
-              "Shadow lift must leave midtones and highlights unchanged")) {
-        return 1;
+  for (bool lift_black_point : {false, true}) {
+    for (float amount : std::array<float, 4>{25.0f, 50.0f, 75.0f, 100.0f}) {
+      float previous = evaluate_shadow_lift_curve(0.0f, amount, lift_black_point);
+      for (int sample = 1; sample <= 65535; ++sample) {
+        const float value = static_cast<float>(sample) / 65535.0f;
+        const float lifted = evaluate_shadow_lift_curve(value, amount, lift_black_point);
+        if (!expect(std::isfinite(lifted), "Shadow lift must remain finite across the full signal range") ||
+            !expect(lifted + kTolerance >= previous, "Shadow lift must not introduce a tone reversal") ||
+            !expect(lifted + kTolerance >= value, "A positive shadow lift must not darken the input") ||
+            !expect(lifted <= 1.0f + kTolerance, "Shadow lift must remain inside the video signal range") ||
+            !expect(
+                value < hm::playcropper::kShadowLiftVideoStart || std::abs(lifted - value) <= kTolerance,
+                "Shadow lift must leave midtones and highlights unchanged")) {
+          return 1;
+        }
+        previous = lifted;
       }
-      previous = lifted;
     }
   }
 
@@ -76,6 +78,23 @@ int main() {
           std::abs(evaluate_shadow_lift_curve(dark_sample, 150.0f) - evaluate_shadow_lift_curve(dark_sample, 100.0f)) <=
               kTolerance,
           "Out-of-range positive input must clamp to the validated maximum")) {
+    return 1;
+  }
+  if (!expect(
+          evaluate_shadow_lift_curve(0.0f, 0.0f, true) == 0.0f,
+          "The black-point toggle must remain an identity when shadow lift is zero") ||
+      !expect(
+          std::abs(evaluate_shadow_lift_curve(0.0f, 100.0f, true) - hm::playcropper::kShadowLiftMaximumBlackPoint) <=
+              kTolerance,
+          "The black-point toggle must reach its documented maximum at full lift") ||
+      !expect(
+          evaluate_shadow_lift_curve(dark_sample, 100.0f, true) >
+              evaluate_shadow_lift_curve(dark_sample, 100.0f, false),
+          "The black-point toggle must visibly strengthen deep-shadow recovery") ||
+      !expect(
+          evaluate_shadow_lift_curve(hm::playcropper::kShadowLiftVideoStart, 100.0f, true) ==
+              hm::playcropper::kShadowLiftVideoStart,
+          "The black-point toe must fade to zero at the protected shadow boundary")) {
     return 1;
   }
   return 0;

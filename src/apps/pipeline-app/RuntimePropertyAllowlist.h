@@ -13,7 +13,8 @@ inline bool is_allowlisted_runtime_property(std::string_view element_name, std::
         property_name == "dynamic-acceleration-scaling")) ||
       ((element_name == "playcropper0" || element_name == "playcropper") &&
        (property_name == "fixed-edge-rotation-angle" || property_name == "fixed-edge-rotation-angle-left" ||
-        property_name == "fixed-edge-rotation-angle-right" || property_name == "shadow-lift"));
+        property_name == "fixed-edge-rotation-angle-right" || property_name == "shadow-lift" ||
+        property_name == "shadow-lift-black-point"));
 }
 
 } // namespace pipeline

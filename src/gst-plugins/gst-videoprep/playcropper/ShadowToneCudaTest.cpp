@@ -24,7 +24,8 @@ bool transform_sample(
     float sample_x,
     float sample_y,
     float lift_percent,
-    std::array<uint8_t, 4>* output) {
+    std::array<uint8_t, 4>* output,
+    bool lift_black_point = false) {
   if (!output) {
     return false;
   }
@@ -69,6 +70,7 @@ bool transform_sample(
                           &output_params,
                           hm::BBox(0, 0, 1, 1),
                           lift_percent,
+                          lift_black_point,
                           stream),
                       "combinedTransform") &&
       cuda_ok(cudaMemcpyAsync(output->data(), device_output, output->size(), cudaMemcpyDeviceToHost, stream),
@@ -81,16 +83,21 @@ bool transform_sample(
   return ok;
 }
 
-bool transform_pixel(const std::array<uint8_t, 4>& pixel, float lift_percent, std::array<uint8_t, 4>* output) {
+bool transform_pixel(
+    const std::array<uint8_t, 4>& pixel,
+    float lift_percent,
+    std::array<uint8_t, 4>* output,
+    bool lift_black_point = false) {
   std::array<uint8_t, 16> input{};
   for (size_t offset = 0; offset < input.size(); offset += pixel.size()) {
     std::copy(pixel.begin(), pixel.end(), input.begin() + offset);
   }
-  return transform_sample(input, 0.0f, 0.0f, lift_percent, output);
+  return transform_sample(input, 0.0f, 0.0f, lift_percent, output, lift_black_point);
 }
 
-uint8_t lifted_channel(uint8_t value, float lift_percent) {
-  const float lifted = hm::playcropper::evaluate_shadow_lift_curve(value / 255.0f, lift_percent) * 255.0f + 0.5f;
+uint8_t lifted_channel(uint8_t value, float lift_percent, bool lift_black_point = false) {
+  const float lifted =
+      hm::playcropper::evaluate_shadow_lift_curve(value / 255.0f, lift_percent, lift_black_point) * 255.0f + 0.5f;
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(lifted, 0.0f, 255.0f));
 }
 
@@ -120,6 +127,19 @@ int main() {
   const std::array<uint8_t, 4> protected_input = {0, 153, 255, 203};
   if (!transform_pixel(protected_input, 100.0f, &output) || output != protected_input) {
     std::cerr << "CUDA shadow lift must preserve black, the shadow boundary, white, and alpha\n";
+    return 1;
+  }
+
+  const std::array<uint8_t, 4> black_point_input = {0, 16, 153, 203};
+  const std::array<uint8_t, 4> black_point_expected = {
+      lifted_channel(black_point_input[0], 100.0f, true),
+      lifted_channel(black_point_input[1], 100.0f, true),
+      black_point_input[2],
+      black_point_input[3],
+  };
+  if (!transform_pixel(black_point_input, 100.0f, &output, true) || output != black_point_expected || output[0] == 0 ||
+      output[1] <= lifted_channel(black_point_input[1], 100.0f, false)) {
+    std::cerr << "CUDA black-point lift must visibly raise the toe while protecting the boundary and alpha\n";
     return 1;
   }
 

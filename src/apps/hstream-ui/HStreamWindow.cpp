@@ -1836,6 +1836,7 @@ void HStreamWindow::loadBaselineDefaults() {
   camera_defaults_["Max_Speed_Y_x10"] = 0;
   camera_defaults_["Max_Accel_X_x10"] = 0;
   camera_defaults_["Max_Accel_Y_x10"] = 0;
+  camera_defaults_["Lift_Shadow_Black_Point"] = 0;
 }
 
 HStreamWindow::~HStreamWindow() {
@@ -1917,8 +1918,12 @@ int HStreamWindow::videoSetCount() const {
 }
 
 int HStreamWindow::cameraControlValue(const QString& id) const {
-  const auto it = camera_sliders_.find(id);
-  return it == camera_sliders_.end() ? 0 : it->second->value();
+  const auto slider = camera_sliders_.find(id);
+  if (slider != camera_sliders_.end() && slider->second) {
+    return slider->second->value();
+  }
+  const auto checkbox = camera_checkboxes_.find(id);
+  return checkbox != camera_checkboxes_.end() && checkbox->second && checkbox->second->isChecked() ? 1 : 0;
 }
 
 int HStreamWindow::cameraTabCount() const {
@@ -2566,9 +2571,11 @@ void HStreamWindow::configureControlHelp() {
       {"Apply_To_Fast_Box", "Apply saved tracking and motion tuning to the fast/current-ROI tracking box."},
       {"Apply_To_Follower_Box", "Apply saved tracking and motion tuning to the follower/aspect tracking box."},
       {"Bring_Up_Shadows",
-       "Reveal detail in dark Program areas with a monotone, black-anchored VIDEO grading curve. Midtones, "
-       "highlights, overlays, and alpha are protected. Zero bypasses the grade; 100 is the strongest validated "
-       "lift."},
+       "Reveal detail in dark Program areas with a monotone VIDEO grading curve. Midtones, highlights, overlays, "
+       "and alpha are protected. Zero bypasses the grade; 100 is the strongest validated lift."},
+      {"Lift_Shadow_Black_Point",
+       "Allow Bring up shadows to raise exact black for a visibly stronger Resolve-style toe lift. At 100%, black "
+       "rises to 15% video level and rolls smoothly back to the protected shadow boundary. Disabled by default."},
       {"Overshoot_Stop_Delay_Frames", "Frames to delay stopping when tracking motion overshoots its destination."},
       {"Post_Nonstop_Stop_Delay_Frames", "Frames to delay stopping after a continuous non-stop movement segment."},
       {"Overshoot_Speed_Ratio_x100",
@@ -2589,9 +2596,8 @@ void HStreamWindow::configureControlHelp() {
        "Right fixed-edge crop rotation in tenths of a degree; 250 means 25.0 degrees."},
   };
   for (const auto& [id, description] : camera_help) {
-    help(
-        "cameraSlider_" + id,
-        description + " Changes apply live where supported; Save Preset stores the value for this game.");
+    const QString object_name = id == "Lift_Shadow_Black_Point" ? "cameraCheck_" + id : "cameraSlider_" + id;
+    help(object_name, description + " Changes apply live where supported; Save Preset stores the value for this game.");
   }
   updatePresetDirtyState();
 }
@@ -2628,7 +2634,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   else
     stitched_control_tabs_ = control_tabs;
 
-  auto add_slider_tab = [this](const std::vector<CameraSliderSpec>& specs) {
+  auto add_slider_tab = [this, &default_value](
+                            const std::vector<CameraSliderSpec>& specs, bool include_black_point_toggle) {
     auto* page = new QWidget();
     page->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* page_layout = new QVBoxLayout(page);
@@ -2642,6 +2649,13 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* content_layout = new QVBoxLayout(content);
     for (const CameraSliderSpec& spec : specs) {
       addSlider(content_layout, spec.id, spec.label, spec.minimum, spec.maximum, spec.default_value);
+    }
+    if (include_black_point_toggle) {
+      addCameraCheckBox(
+          content_layout,
+          "Lift_Shadow_Black_Point",
+          "Lift black point too (stronger)",
+          default_value("Lift_Shadow_Black_Point") != 0);
     }
     content_layout->addStretch(1);
     scroll->setWidget(content);
@@ -2714,14 +2728,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
 
   if (program_stage) {
-    control_tabs->addTab(add_slider_tab(tracking_controls), "Tracking");
-    control_tabs->addTab(add_slider_tab(motion_controls), "Motion");
-    control_tabs->addTab(add_slider_tab(color_controls), "Color");
+    control_tabs->addTab(add_slider_tab(tracking_controls, false), "Tracking");
+    control_tabs->addTab(add_slider_tab(motion_controls, false), "Motion");
+    control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
-    control_tabs->addTab(add_slider_tab(crop_controls), "Crop Rotation");
+    control_tabs->addTab(add_slider_tab(crop_controls, false), "Crop Rotation");
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
-    control_tabs->addTab(add_slider_tab(rotation_controls), "Rotation");
+    control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
   }
   layout->addWidget(control_tabs);
   parent->addWidget(group);
@@ -3767,6 +3781,8 @@ QStringList HStreamWindow::pipelineArguments() const {
   if (!isCalibrationRun()) {
     args << QString("--options=pipeline.hmplaycropper.properties.shadow-lift=%1")
                 .arg(cameraControlValue("Bring_Up_Shadows"));
+    args << QString("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=%1")
+                .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
@@ -6350,6 +6366,11 @@ void HStreamWindow::resetCameraControls() {
     const auto it = camera_sliders_.find(id);
     if (it != camera_sliders_.end()) {
       it->second->setValue(value);
+      continue;
+    }
+    const auto checkbox = camera_checkboxes_.find(id);
+    if (checkbox != camera_checkboxes_.end() && checkbox->second) {
+      checkbox->second->setChecked(value != 0);
     }
   }
   if (stitch_frame_time_edit_) {
@@ -6385,9 +6406,9 @@ void HStreamWindow::resetCameraControls() {
 
 void HStreamWindow::captureSavedControlState() {
   saved_camera_controls_.clear();
-  for (const auto& [id, slider] : camera_sliders_) {
-    if (slider)
-      saved_camera_controls_[id] = slider->value();
+  for (const auto& [id, default_value] : camera_defaults_) {
+    Q_UNUSED(default_value);
+    saved_camera_controls_[id] = cameraControlValue(id);
   }
   saved_stitch_frame_time_ = stitchFrameTime();
   updatePresetDirtyState();
@@ -6398,12 +6419,13 @@ void HStreamWindow::updatePresetDirtyState() {
     return;
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
-  bool dirty = retry_required || saved_camera_controls_.size() != camera_sliders_.size() ||
+  bool dirty = retry_required || saved_camera_controls_.size() != camera_defaults_.size() ||
       saved_stitch_frame_time_ != stitchFrameTime();
   if (!dirty) {
-    for (const auto& [id, slider] : camera_sliders_) {
+    for (const auto& [id, default_value] : camera_defaults_) {
+      Q_UNUSED(default_value);
       const auto saved = saved_camera_controls_.find(id);
-      if (!slider || saved == saved_camera_controls_.end() || saved->second != slider->value()) {
+      if (saved == saved_camera_controls_.end() || saved->second != cameraControlValue(id)) {
         dirty = true;
         break;
       }
@@ -6442,6 +6464,12 @@ void HStreamWindow::loadSavedControlConfig() {
   for (const auto& [id, value] : camera_defaults_) {
     const auto slider_it = camera_sliders_.find(id);
     if (slider_it == camera_sliders_.end()) {
+      const auto checkbox = camera_checkboxes_.find(id);
+      if (checkbox != camera_checkboxes_.end() && checkbox->second) {
+        const bool blocked = checkbox->second->blockSignals(true);
+        checkbox->second->setChecked(value != 0);
+        checkbox->second->blockSignals(blocked);
+      }
       continue;
     }
     const bool blocked = slider_it->second->blockSignals(true);
@@ -6468,13 +6496,15 @@ void HStreamWindow::loadSavedControlConfig() {
   try {
     YAML::Node config = **loaded_config;
     std::map<QString, int> staged_controls;
-    for (const auto& [id, slider] : camera_sliders_) {
-      if (slider)
-        staged_controls[id] = slider->value();
+    for (const auto& [id, default_value] : camera_defaults_) {
+      Q_UNUSED(default_value);
+      staged_controls[id] = cameraControlValue(id);
     }
     auto stage_control = [this, &staged_controls](const QString& id, int value) {
       const auto slider = camera_sliders_.find(id);
-      if (slider == camera_sliders_.end() || !slider->second) {
+      const auto checkbox = camera_checkboxes_.find(id);
+      if ((slider == camera_sliders_.end() || !slider->second) &&
+          (checkbox == camera_checkboxes_.end() || !checkbox->second)) {
         return false;
       }
       staged_controls[id] = value;
@@ -6587,6 +6617,7 @@ void HStreamWindow::loadSavedControlConfig() {
           "Bring_Up_Shadows",
           bounded_integer_control("pipeline.hmplaycropper.properties.shadow-lift", shadow_lift, 0, 100));
     }
+    stage_boolean_path("pipeline.hmplaycropper.properties.shadow-lift-black-point", "Lift_Shadow_Black_Point");
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
     int loaded = 0;
     if (controls && controls.IsMap()) {
@@ -6596,11 +6627,13 @@ void HStreamWindow::loadSavedControlConfig() {
             ? bounded_integer_control("hstream_ui.camera_controls.Bring_Up_Shadows", entry.second, 0, 100)
             : entry.second.as<int>();
         if ((id == "Link_Fixed_Edge_Rotation_Left_Right" || id == "Apply_To_Fast_Box" ||
-             id == "Apply_To_Follower_Box") &&
+             id == "Apply_To_Follower_Box" || id == "Lift_Shadow_Black_Point") &&
             value != 0 && value != 1) {
           throw std::invalid_argument(QString("%1 must be 0 or 1").arg(id).toStdString());
         }
-        if (camera_sliders_.find(id) != camera_sliders_.end() && stage_control(id, value)) {
+        if ((camera_sliders_.find(id) != camera_sliders_.end() ||
+             camera_checkboxes_.find(id) != camera_checkboxes_.end()) &&
+            stage_control(id, value)) {
           ++loaded;
         }
       }
@@ -6622,8 +6655,15 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     for (const auto& [id, value] : staged_controls) {
       const auto slider_it = camera_sliders_.find(id);
-      if (slider_it == camera_sliders_.end() || !slider_it->second)
+      if (slider_it == camera_sliders_.end() || !slider_it->second) {
+        const auto checkbox = camera_checkboxes_.find(id);
+        if (checkbox != camera_checkboxes_.end() && checkbox->second) {
+          const bool blocked = checkbox->second->blockSignals(true);
+          checkbox->second->setChecked(value != 0);
+          checkbox->second->blockSignals(blocked);
+        }
         continue;
+      }
       const bool blocked = slider_it->second->blockSignals(true);
       slider_it->second->setRange(
           std::min(slider_it->second->minimum(), value), std::max(slider_it->second->maximum(), value));
@@ -6720,6 +6760,7 @@ bool HStreamWindow::applySavedControlConfig(
   for (const char* path : {
            "stitching.post_stitch_rotate_degrees",
            "pipeline.hmplaycropper.properties.shadow-lift",
+           "pipeline.hmplaycropper.properties.shadow-lift-black-point",
            "rink.camera.fixed_edge_rotation_angle",
            "rink.camera.stop_on_dir_change_delay",
            "rink.camera.cancel_stop_on_opposite_dir",
@@ -6746,13 +6787,13 @@ bool HStreamWindow::applySavedControlConfig(
 
   YAML::Node controls(YAML::NodeType::Map);
   int changed = 0;
-  for (const auto& [id, slider] : camera_sliders_) {
-    const auto default_it = camera_defaults_.find(id);
-    if (!slider || default_it == camera_defaults_.end() || slider->value() == default_it->second) {
+  for (const auto& [id, default_value] : camera_defaults_) {
+    const int value = cameraControlValue(id);
+    if (value == default_value) {
       continue;
     }
     const std::string key = id.toStdString();
-    controls[key.c_str()] = slider->value();
+    controls[key.c_str()] = value;
     ++changed;
   }
   config["hstream_ui"]["camera_controls"] = controls;
@@ -6780,10 +6821,7 @@ bool HStreamWindow::applySavedControlConfig(
                   .arg(stitch_frame_time));
   }
 
-  auto slider_value = [this](const QString& id) -> int {
-    const auto it = camera_sliders_.find(id);
-    return it == camera_sliders_.end() ? 0 : it->second->value();
-  };
+  auto slider_value = [this](const QString& id) -> int { return cameraControlValue(id); };
   const auto saved_stitch_rotation = saved_camera_controls_.find("Stitch_Rotate_Degrees");
   const auto stitch_rotation_slider = camera_sliders_.find("Stitch_Rotate_Degrees");
   const bool preserve_stitch_rotation_null = previous_stitch_rotation_was_null &&
@@ -6798,6 +6836,11 @@ bool HStreamWindow::applySavedControlConfig(
   if (has_control(controls, "Bring_Up_Shadows")) {
     config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = slider_value("Bring_Up_Shadows");
     mark_runtime_key("pipeline.hmplaycropper.properties.shadow-lift");
+  }
+  if (has_control(controls, "Lift_Shadow_Black_Point")) {
+    config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift-black-point"] =
+        slider_value("Lift_Shadow_Black_Point") != 0;
+    mark_runtime_key("pipeline.hmplaycropper.properties.shadow-lift-black-point");
   }
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
@@ -8644,7 +8687,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     schedulePlaytrackerRuntimeControl(id, value);
     return false;
   }
-  if (id == "Bring_Up_Shadows") {
+  if (id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point") {
     schedulePlaycropperRuntimeControl(id, value);
     return false;
   }
@@ -8739,6 +8782,10 @@ void HStreamWindow::flushScheduledRuntimeControls() {
     std::vector<RuntimePropertyCommand> commands;
     if (controls.count("Bring_Up_Shadows")) {
       commands.push_back({"playcropper0", "shadow-lift", QString::number(cameraControlValue("Bring_Up_Shadows"))});
+    }
+    if (controls.count("Lift_Shadow_Black_Point")) {
+      commands.push_back(
+          {"playcropper0", "shadow-lift-black-point", QString::number(cameraControlValue("Lift_Shadow_Black_Point"))});
     }
     publishRuntimeControlBatch(controls, commands);
     return;
@@ -8837,4 +8884,30 @@ QSlider* HStreamWindow::addSlider(
   row->addWidget(slider, 1, 0, 1, 2);
   layout->addLayout(row);
   return slider;
+}
+
+QCheckBox* HStreamWindow::addCameraCheckBox(
+    QVBoxLayout* layout,
+    const QString& id,
+    const QString& label,
+    bool checked) {
+  auto* checkbox = new QCheckBox(label);
+  checkbox->setObjectName("cameraCheck_" + id);
+  checkbox->setChecked(checked);
+  camera_checkboxes_[id] = checkbox;
+  camera_defaults_[id] = checked ? 1 : 0;
+  connect(checkbox, &QCheckBox::toggled, this, [this, id](bool enabled) {
+    const int new_value = enabled ? 1 : 0;
+    const bool sent_live = sendLiveCameraControl(id, new_value);
+    if (sent_live) {
+      appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
+    } else if (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value) {
+      // The scheduler already reported the coalesced live update.
+    } else {
+      appendLog(QString("camera control %1=%2 apply=save/restart").arg(id).arg(new_value));
+    }
+    updatePresetDirtyState();
+  });
+  layout->addWidget(checkbox);
+  return checkbox;
 }

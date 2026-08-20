@@ -73,6 +73,30 @@ bool parse_finite_float(const std::string& value, float* out) {
   return true;
 }
 
+bool parse_boolean(const std::string& value, bool* out) {
+  if (!out) {
+    return false;
+  }
+  const size_t begin = value.find_first_not_of(" \t\r\n");
+  if (begin == std::string::npos) {
+    return false;
+  }
+  const size_t end = value.find_last_not_of(" \t\r\n");
+  std::string normalized = value.substr(begin, end - begin + 1);
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (normalized == "1" || normalized == "true") {
+    *out = true;
+    return true;
+  }
+  if (normalized == "0" || normalized == "false") {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
 size_t round_down_even(size_t value) {
   if (value <= 2) {
     return 2;
@@ -395,6 +419,11 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       return false;
     }
     shadow_lift_percent_ = shadow_lift_percent;
+  } else if (key == "shadow-lift-black-point") {
+    if (!parse_boolean(prop.value, &lift_shadow_black_point_)) {
+      std::cerr << "Invalid shadow black-point toggle: " << prop.value << std::endl;
+      return false;
+    }
   } else if (key == "no-crop") {
     // TODO: implement, needs to change caps too
     no_crop_ = !!std::atoi(prop.value.c_str());
@@ -595,6 +624,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           outgoing_surface.get_mutable(),
           output_rect,
           shadow_lift_percent_,
+          lift_shadow_black_point_,
           cuda_stream_));
     } else {
       // assert(false);

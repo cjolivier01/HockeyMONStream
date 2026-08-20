@@ -18,6 +18,7 @@ cudaError_t combinedTransform(
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
     float shadow_lift_percent,
+    bool lift_shadow_black_point,
     cudaStream_t stream);
 
 }

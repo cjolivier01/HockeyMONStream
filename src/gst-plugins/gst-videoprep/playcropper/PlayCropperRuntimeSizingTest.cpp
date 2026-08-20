@@ -100,6 +100,15 @@ int main() {
     std::cerr << "Shadow lift should accept finite percentages from 0 through 100 only" << std::endl;
     return 1;
   }
+  if (!cropper.SetProperty({"shadow-lift-black-point", "true"}) ||
+      !cropper.SetProperty({"shadow-lift-black-point", "FALSE"}) ||
+      !cropper.SetProperty({"shadow-lift-black-point", " 1 "}) ||
+      !cropper.SetProperty({"shadow-lift-black-point", "0"}) ||
+      cropper.SetProperty({"shadow-lift-black-point", "yes"}) ||
+      cropper.SetProperty({"shadow-lift-black-point", "2"}) || cropper.SetProperty({"shadow-lift-black-point", ""})) {
+    std::cerr << "Shadow black-point lift should accept only true, false, 1, or 0" << std::endl;
+    return 1;
+  }
   if (!expect_size(
           cropper,
           /*input_width=*/12102,

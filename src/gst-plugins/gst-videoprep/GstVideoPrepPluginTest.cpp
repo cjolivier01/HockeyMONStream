@@ -30,6 +30,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"fixed-edge-rotation-angle-right", G_TYPE_DOUBLE, true},
           {"dynamic-acceleration-scaling", G_TYPE_DOUBLE, true},
           {"shadow-lift", G_TYPE_DOUBLE, true},
+          {"shadow-lift-black-point", G_TYPE_BOOLEAN, true},
           {"runtime-tuning-config-file", G_TYPE_STRING, false},
           {"last-property-set-ok", G_TYPE_BOOLEAN, false},
       },
@@ -135,6 +136,7 @@ int main(int argc, char** argv) {
               {"fixed-edge-rotation-angle-right", "75.0"},
               {"dynamic-acceleration-scaling", "1.25"},
               {"shadow-lift", "42.5"},
+              {"shadow-lift-black-point", "true"},
           })) {
     gst_object_unref(element);
     return 1;
@@ -150,6 +152,7 @@ int main(int argc, char** argv) {
   gdouble fixed_edge_rotation_angle_right = 0.0;
   gdouble dynamic_acceleration_scaling = 0.0;
   gdouble shadow_lift = 0.0;
+  gboolean shadow_lift_black_point = FALSE;
   gboolean last_property_set_ok = FALSE;
   g_object_get(
       G_OBJECT(element),
@@ -173,6 +176,8 @@ int main(int argc, char** argv) {
       &dynamic_acceleration_scaling,
       "shadow-lift",
       &shadow_lift,
+      "shadow-lift-black-point",
+      &shadow_lift_black_point,
       "last-property-set-ok",
       &last_property_set_ok,
       NULL);
@@ -182,12 +187,16 @@ int main(int argc, char** argv) {
       std::string(private_config) == "show=1;runtime-output-max-width=3840" &&
       std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 && std::abs(fixed_edge_rotation_angle_left - 25.0) < 1e-6 &&
       std::abs(fixed_edge_rotation_angle_right - 75.0) < 1e-6 && std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 &&
-      std::abs(shadow_lift - 42.5) < 1e-6 && last_property_set_ok == TRUE;
+      std::abs(shadow_lift - 42.5) < 1e-6 && shadow_lift_black_point == TRUE && last_property_set_ok == TRUE;
+  GParamSpec* shadow_black_point_spec =
+      g_object_class_find_property(G_OBJECT_GET_CLASS(element), "shadow-lift-black-point");
+  const bool black_point_mutable_while_playing =
+      shadow_black_point_spec && (shadow_black_point_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
   g_free(plugin_type);
   g_free(private_config);
   gst_object_unref(element);
 
-  if (!ok) {
+  if (!ok || !black_point_mutable_while_playing) {
     std::cerr << "videoprep property roundtrip failed\n";
     return 1;
   }
