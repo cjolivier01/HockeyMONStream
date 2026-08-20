@@ -112,13 +112,27 @@ guint stitch_frame_restart_timeout_ms() {
 
 guint runtime_seek_transition_timeout_ms() {
   constexpr guint kDefaultTimeoutMs = 10'000;
-  const char* configured = g_getenv("HM_TEST_RUNTIME_SEEK_TIMEOUT_MS");
+  const char* configured = g_getenv("HM_TEST_RUNTIME_SEEK_TRANSITION_TIMEOUT_MS");
+  if (!configured || !*configured) {
+    configured = g_getenv("HM_TEST_RUNTIME_SEEK_TIMEOUT_MS");
+  }
   if (!configured || !*configured) {
     return kDefaultTimeoutMs;
   }
   gchar* end = nullptr;
   const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
   return end && *end == '\0' && parsed > 0 && parsed <= G_MAXUINT ? static_cast<guint>(parsed) : kDefaultTimeoutMs;
+}
+
+guint runtime_seek_fallback_timeout_ms(guint64 fallback_ns) {
+  constexpr guint64 kMaximumTimeoutMs = 300'000;
+  const guint64 fallback_ms = fallback_ns / GST_MSECOND + (fallback_ns % GST_MSECOND != 0 ? 1 : 0);
+  // A rejected keyframe seek must decode from the selected chapter start. Give
+  // that rare path up to twice its media duration (0.5x realtime), while
+  // retaining both the normal lower bound and an explicit five-minute cap.
+  const guint64 decoded_trim_budget_ms = fallback_ms > kMaximumTimeoutMs / 2 ? kMaximumTimeoutMs : fallback_ms * 2;
+  return static_cast<guint>(
+      std::max<guint64>(runtime_seek_transition_timeout_ms(), std::min(decoded_trim_budget_ms, kMaximumTimeoutMs)));
 }
 
 guint runtime_seek_recreation_timeout_ms() {
@@ -4615,6 +4629,7 @@ bool PipelineApplication::seek_runtime_impl(
   };
   runtime_seek_recreation_timed_out_ = false;
   runtime_seek_shutdown_requested_ = false;
+  runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
   if (g_getenv("HM_TEST_URI_PLAYLIST_SCHEDULE_SUSPEND_RACE")) {
     if (!exercise_uri_playlist_schedule_suspend_race_for_test(&app_context->pipeline.multi_src_bin, 0, 5000)) {
       g_printerr("URI-playlist schedule/suspend ownership regression failed\n");
@@ -5072,7 +5087,40 @@ void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* messag
   if (app_ctx && message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
     const GstStructure* structure = gst_message_get_structure(message);
     if (structure && gst_structure_has_name(structure, "hstream-uri-playlist-initial-seek-ready")) {
-      (void)seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin);
+      if (seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin)) {
+        const guint64 fallback_ns = uri_playlist_initial_seek_fallback_ns(&app_ctx->pipeline.multi_src_bin);
+        if (fallback_ns > 0 && runtime_seek_pending_ && runtime_seek_pending_->app_ctx == app_ctx &&
+            runtime_seek_pending_->phase == RuntimeSeekPhase::kWaitingForFrame) {
+          const guint fallback_timeout_ms = runtime_seek_fallback_timeout_ms(fallback_ns);
+          runtime_seek_pending_->deadline =
+              std::chrono::steady_clock::now() + std::chrono::milliseconds(fallback_timeout_ms);
+          g_print(
+              "HSTREAM_SEEK_FALLBACK status=active generation=%" G_GUINT64_FORMAT " decoded_trim_ns=%" G_GUINT64_FORMAT
+              " timeout_ms=%u\n",
+              runtime_seek_pending_->generation,
+              fallback_ns,
+              fallback_timeout_ms);
+          std::fflush(stdout);
+        }
+      }
+      return;
+    }
+    guint64 recovery_generation = 0;
+    if (structure && gst_structure_has_name(structure, "hstream-runtime-seek-recovery-frame") &&
+        gst_structure_get_uint64(structure, "generation", &recovery_generation) && recovery_generation != 0) {
+      GstState current_state = GST_STATE_NULL;
+      GstState pending_state = GST_STATE_VOID_PENDING;
+      const GstStateChangeReturn state_result =
+          gst_element_get_state(app_ctx->pipeline.pipeline, &current_state, &pending_state, 0);
+      if (state_result == GST_STATE_CHANGE_FAILURE || current_state != GST_STATE_PLAYING ||
+          app_ctx->observed_pipeline_state != GST_STATE_PLAYING) {
+        uint64_t expected = 0;
+        (void)runtime_seek_recovery_frame_generation_.compare_exchange_strong(
+            expected, recovery_generation, std::memory_order_acq_rel, std::memory_order_acquire);
+        return;
+      }
+      g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", recovery_generation);
+      std::fflush(stdout);
       return;
     }
   }
@@ -5974,6 +6022,26 @@ gboolean PipelineApplication::overlay_graphics(
       gst_structure_free(structure);
     }
   }
+  uint64_t recovery_generation = runtime_seek_recovery_frame_generation_.load(std::memory_order_acquire);
+  if (recovery_generation != 0 && GST_CLOCK_TIME_IS_VALID(seek_frame_pts) &&
+      runtime_seek_recovery_frame_generation_.compare_exchange_strong(
+          recovery_generation, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    GstStructure* structure = gst_structure_new(
+        "hstream-runtime-seek-recovery-frame",
+        "generation",
+        G_TYPE_UINT64,
+        recovery_generation,
+        "pts-ns",
+        G_TYPE_UINT64,
+        static_cast<guint64>(seek_frame_pts),
+        nullptr);
+    GstElement* pipeline = app_ctx ? app_ctx->pipeline.pipeline : nullptr;
+    if (pipeline) {
+      gst_element_post_message(pipeline, gst_message_new_application(GST_OBJECT(pipeline), structure));
+    } else {
+      gst_structure_free(structure);
+    }
+  }
   if (time_limit_seconds_ > 0 && batch_meta &&
       hm::pipeline_internal::stitch_frame_should_account_playback(
           stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
@@ -6188,14 +6256,12 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
     return FALSE;
   }
-  if (runtime_seek_restart &&
-      !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {
+  if (runtime_seek_restart && !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {
     NVGSTDS_ERR_MSG_V("Failed to defer replacement URI-playlist callbacks before preroll");
     return FALSE;
   }
   if (runtime_seek_restart && g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_REPLACEMENT_PLAYLIST_CALLBACK")) {
-    const gboolean queued =
-        queue_uri_playlist_switch_callback_for_test(&app_ctx_ptr->pipeline.multi_src_bin, 0, 1);
+    const gboolean queued = queue_uri_playlist_switch_callback_for_test(&app_ctx_ptr->pipeline.multi_src_bin, 0, 1);
     g_print(
         "HSTREAM_URI_PLAYLIST_CALLBACK status=%s action=replacement-switch source=0\n",
         queued ? "unsafe-queued" : "replacement-fenced");
@@ -6336,6 +6402,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     // has no muxed or network output to finalize. Discard it directly instead
     // of asking a PAUSED pipeline to deliver EOS and waiting five seconds.
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
     suspend_uri_playlist_main_context_callbacks(&result.app_ctx->pipeline.multi_src_bin);
     cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
     result.app_ctx->eos_received = TRUE;
@@ -6361,6 +6428,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
 
   if (!result.success || !attach_pipeline_bus_watch(result.app_ctx)) {
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
     cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
     if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
         runtime_seek_pending_->generation == result.generation) {
@@ -6401,9 +6469,15 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
   // disabled. Publication above establishes the main-context ownership and
   // acknowledgement state that playlist actions are allowed to observe.
   resume_uri_playlist_main_context_callbacks(&result.app_ctx->pipeline.multi_src_bin);
+  if (recreation_timed_out) {
+    // The public request already failed, but the UI must remain fenced until
+    // actual replacement media reaches the application after PLAYING.
+    runtime_seek_recovery_frame_generation_.store(result.generation, std::memory_order_release);
+  }
   const GstStateChangeReturn play_result = gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING);
   if (play_result == GST_STATE_CHANGE_FAILURE) {
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
     if (runtime_seek_pending_) {
       finish_runtime_seek("failed", "pipeline-play-failed");
     }
@@ -6417,10 +6491,6 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
   } else {
     if (result.app_ctx->config.enable_perf_measurement) {
       resume_perf_measurement(&result.app_ctx->perf_struct);
-    }
-    if (recreation_timed_out) {
-      g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", result.generation);
-      std::fflush(stdout);
     }
   }
   end_pipeline_recreation();

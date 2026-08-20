@@ -798,6 +798,8 @@ bool write_fake_runner(const QString& path) {
       "            print('HSTREAM_SEEK status=failed generation=' + generation + "
       "' reason=pipeline-recreate-timeout', flush=True)\n");
   file.write("            time.sleep(0.25)\n");
+  file.write("            print('Pipeline running', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
   file.write("            print('HSTREAM_SEEK_RECOVERY status=ready generation=' + generation, flush=True)\n");
   file.write("            return\n");
   file.write("        if stall_next_seek:\n");
@@ -822,6 +824,8 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "            print('HSTREAM_SEEK status=failed generation=' + generation + "
       "' reason=pipeline-recreate-timeout', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
+  file.write("            print('Pipeline running', flush=True)\n");
   file.write("            time.sleep(0.25)\n");
   file.write("            print('HSTREAM_SEEK_RECOVERY status=ready generation=' + generation, flush=True)\n");
   file.write("            return\n");
@@ -2561,6 +2565,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "restore Pause")) {
     return false;
   }
+  const int pipeline_running_count_before_seek_recovery = window->logText().count("Pipeline running");
   pipeline_process->write("@test-timeout-seek\n");
   for (int i = 0; i < 100 && !window->logText().contains("test seek reconstruction timeout armed"); ++i) {
     QApplication::processEvents();
@@ -2575,6 +2580,18 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           !pause->isEnabled() && !seek_slider->isEnabled() && !seek_back->isEnabled() && !seek_forward->isEnabled() &&
               !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
           "A reconstruction timeout must keep transport and live tuning disabled until AppCtx recovery")) {
+    return false;
+  }
+  for (int i = 0; i < 100 && window->logText().count("Pipeline running") <= pipeline_running_count_before_seek_recovery;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("Pipeline running") > pipeline_running_count_before_seek_recovery &&
+              !pause->isEnabled() && !seek_slider->isEnabled() && !program_control_tabs->isEnabled() &&
+              !window->logText().contains("playback recovered after a timed-out seek reconstruction"),
+          "A PLAYING transition alone must not clear recovery before replacement media is processed")) {
     return false;
   }
   for (int i = 0; i < 100 && !window->logText().contains("playback recovered after a timed-out seek reconstruction");
@@ -5726,8 +5743,7 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
   auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
   auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
-  if (!start || !pause || !mode || !seek_slider || !seek_forward || !program_control_tabs ||
-      !stitched_control_tabs) {
+  if (!start || !pause || !mode || !seek_slider || !seek_forward || !program_control_tabs || !stitched_control_tabs) {
     return false;
   }
   mode->setCurrentIndex(mode->findData("program"));

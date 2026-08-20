@@ -529,9 +529,11 @@ int main(int argc, char** argv) {
   }
   const fs::path root(pattern);
   const fs::path video = root / "input.mp4";
+  const fs::path multi_track_video = root / "input-multi-track.mp4";
   const fs::path config = root / "pipeline.yaml";
   const fs::path tracker_config = root / "pipeline-tracker.yaml";
   const fs::path playlist_seek_config = root / "pipeline-playlist-seek.yaml";
+  const fs::path multi_track_playlist_seek_config = root / "pipeline-playlist-multi-track-seek.yaml";
   const fs::path unequal_playlist_seek_config = root / "pipeline-playlist-unequal-seek.yaml";
   const fs::path playtracker_config = root / "playtracker.yaml";
   const fs::path playtracker_runtime_config = root / "playtracker-runtime.yaml";
@@ -549,6 +551,24 @@ int main(int argc, char** argv) {
           "-pix_fmt",  "yuv420p",      video.string(),
       }),
       "synthetic seekable input must be generated");
+  ok &= expect(
+      run_command({
+          "ffmpeg",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-y",
+          "-i",
+          video.string(),
+          "-map",
+          "0:v:0",
+          "-map",
+          "0:v:0",
+          "-c:v",
+          "copy",
+          multi_track_video.string(),
+      }),
+      "synthetic multi-video-track input must be generated");
   ok &= expect(write_config(config, video, archive), "pipeline-app test config must be written");
   ok &= expect(
       write_config(tracker_config, video, archive, false, true),
@@ -559,6 +579,9 @@ int main(int argc, char** argv) {
   ok &= expect(
       write_playlist_seek_config(playlist_seek_config, video, playtracker_config),
       "pipeline-app multi-chapter native-tracker seek config must be written");
+  ok &= expect(
+      write_playlist_seek_config(multi_track_playlist_seek_config, multi_track_video, playtracker_config),
+      "pipeline-app multi-track seek config must be written");
   ok &= expect(
       write_playlist_seek_config(unequal_playlist_seek_config, video, playtracker_config, 1),
       "pipeline-app unequal exact-pair seek config must be written");
@@ -774,6 +797,84 @@ int main(int argc, char** argv) {
         "central pipeline destruction must cancel last-generation URI callbacks before AppCtx release");
   }
 
+  PipelineProcess fallback_seek_process;
+  if (ok) {
+    ok &= expect(
+        fallback_seek_process.Start(
+            argv[1],
+            playlist_seek_config,
+            "URI-MULTIPLE",
+            "RENDER",
+            true,
+            {
+                {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_FAIL_ONCE", "1"},
+                {"HM_TEST_RUNTIME_SEEK_TRANSITION_TIMEOUT_MS", "150"},
+            }),
+        "decoded-trimming fallback seek process must start");
+    ok &= expect(
+        fallback_seek_process.WaitFor("Pipeline running"), "decoded-trimming fallback pipeline must reach PLAYING");
+    ok &= expect(
+        fallback_seek_process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
+        "decoded-trimming fallback pipeline must process media before seeking");
+    const size_t fallback_seek_mark = fallback_seek_process.Mark();
+    ok &= expect(
+        fallback_seek_process.Send("@seek 10000000000 20\n"),
+        "long decoded-trimming fallback seek command must be delivered");
+    ok &= expect(
+        fallback_seek_process.WaitFor(
+            "HSTREAM_SEEK_FALLBACK status=active generation=20 decoded_trim_ns=10000000000 timeout_ms=20000",
+            fallback_seek_mark,
+            std::chrono::seconds(12)),
+        "rejected acceleration must publish a deadline derived from its decoded distance");
+    ok &= expect(
+        fallback_seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=20 position_ns=10000000000",
+            fallback_seek_mark,
+            std::chrono::seconds(30)),
+        "a long healthy decoded-trimming fallback must outlive the ordinary first-frame deadline");
+    ok &= expect(fallback_seek_process.Send("q"), "fallback seek quit command must be delivered");
+    exit_code = -1;
+    ok &= expect(fallback_seek_process.WaitForExit(&exit_code), "decoded-trimming fallback process must stop promptly");
+    ok &= expect(exit_code == 0, "decoded-trimming fallback process must exit successfully");
+  }
+
+  PipelineProcess multi_track_seek_process;
+  if (ok) {
+    ok &= expect(
+        multi_track_seek_process.Start(
+            argv[1],
+            multi_track_playlist_seek_config,
+            "URI-MULTIPLE",
+            "RENDER",
+            true,
+            {
+                {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_INTER_SOURCE_DELAY_MS", "250"},
+                {"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK", "1"},
+            }),
+        "multi-video-track seek process must start");
+    ok &= expect(multi_track_seek_process.WaitFor("Pipeline running"), "multi-track pipeline must reach PLAYING");
+    const size_t multi_track_seek_mark = multi_track_seek_process.Mark();
+    ok &= expect(
+        multi_track_seek_process.Send("@seek 10000000000 21\n"),
+        "multi-track replacement seek command must be delivered");
+    ok &= expect(
+        multi_track_seek_process.WaitFor(
+            "HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=0 media=video",
+            multi_track_seek_mark,
+            std::chrono::seconds(12)),
+        "initial-seek admission must explicitly ignore a secondary raw video track");
+    ok &= expect(
+        multi_track_seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=21 position_ns=10000000000",
+            multi_track_seek_mark,
+            std::chrono::seconds(20)),
+        "multi-track pad replacement must preserve exact-pair seek admission");
+    ok &= expect(multi_track_seek_process.Send("q"), "multi-track seek quit command must be delivered");
+    exit_code = -1;
+    ok &= expect(multi_track_seek_process.WaitForExit(&exit_code), "multi-track seek process must stop promptly");
+    ok &= expect(exit_code == 0, "multi-track seek process must exit successfully");
+  }
+
   PipelineProcess unequal_seek_process;
   if (ok) {
     ok &= expect(
@@ -836,7 +937,15 @@ int main(int argc, char** argv) {
         timed_out_recreated_at != std::string::npos &&
             timed_out_seek_process.WaitFor(
                 "HSTREAM_SEEK_RECOVERY status=ready generation=13", timed_out_recreated_at, std::chrono::seconds(8)),
-        "timed-out reconstruction must publish when the AppCtx is safe for runtime controls again");
+        "timed-out reconstruction must publish after replacement media makes the AppCtx safe for controls again");
+    const std::string& recovery_output = timed_out_seek_process.output();
+    const size_t recovery_playing = recovery_output.find("Pipeline running", timed_out_recreated_at);
+    const size_t recovery_ready =
+        recovery_output.find("HSTREAM_SEEK_RECOVERY status=ready generation=13", timed_out_recreated_at);
+    ok &= expect(
+        recovery_playing != std::string::npos && recovery_ready != std::string::npos &&
+            recovery_playing < recovery_ready,
+        "timed-out reconstruction must not re-enable controls before the replacement reaches PLAYING media");
     ok &= expect(
         timed_out_recreated_at != std::string::npos &&
             timed_out_seek_process.WaitFor("Pipeline running", timed_out_recreated_at, std::chrono::seconds(8)),
@@ -933,12 +1042,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok &= expect(
         published_interrupt_seek_process.Start(
-            argv[1],
-            tracker_config,
-            "URI",
-            "RENDER",
-            true,
-            {{"HM_TEST_RUNTIME_SEEK_SUPPRESS_FIRST_FRAME_ACK", "1"}}),
+            argv[1], tracker_config, "URI", "RENDER", true, {{"HM_TEST_RUNTIME_SEEK_SUPPRESS_FIRST_FRAME_ACK", "1"}}),
         "post-publication interrupt seek process must start");
     ok &= expect(
         published_interrupt_seek_process.WaitFor("Pipeline running"),
@@ -990,9 +1094,7 @@ int main(int argc, char** argv) {
         "post-publication timed-stop seek must be delivered");
     ok &= expect(
         published_timed_seek_process.WaitFor(
-            "HSTREAM_SEEK_RECREATION status=published generation=19",
-            published_timed_mark,
-            std::chrono::seconds(12)),
+            "HSTREAM_SEEK_RECREATION status=published generation=19", published_timed_mark, std::chrono::seconds(12)),
         "timed-stop regression must reach waiting-for-frame after publication");
     exit_code = -1;
     ok &= expect(
@@ -1137,6 +1239,12 @@ int main(int argc, char** argv) {
     }
     if (!seek_process.output().empty()) {
       seek_process.DumpOutput();
+    }
+    if (!fallback_seek_process.output().empty()) {
+      fallback_seek_process.DumpOutput();
+    }
+    if (!multi_track_seek_process.output().empty()) {
+      multi_track_seek_process.DumpOutput();
     }
     if (!unequal_seek_process.output().empty()) {
       unequal_seek_process.DumpOutput();

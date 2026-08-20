@@ -339,6 +339,7 @@ class PipelineApplication {
   std::mutex pipeline_access_mu_;
   bool runtime_seek_recreation_timed_out_{false};
   bool runtime_seek_shutdown_requested_{false};
+  std::atomic<uint64_t> runtime_seek_recovery_frame_generation_{0};
   struct RuntimePropertyOverride {
     std::string element_name;
     std::string property_name;
