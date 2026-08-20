@@ -3,8 +3,8 @@
 #include <cuda_runtime.h>
 
 // #include "deepstream/sources/includes/nvbufsurface.h"
-#include "nvbufsurface.h"
 #include "hockeymom/csrc/play_tracker/BoxUtils.h"
+#include "nvbufsurface.h"
 
 namespace hm {
 namespace playcropper {
@@ -17,7 +17,9 @@ cudaError_t combinedTransform(
     const hm::BBox& crop_box,
     NvBufSurfaceParams* out_params,
     const hm::BBox& output_rect,
+    float shadow_lift_percent,
+    bool lift_shadow_black_point,
     cudaStream_t stream);
 
 }
-}
+} // namespace hm

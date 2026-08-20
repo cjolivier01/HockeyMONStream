@@ -73,6 +73,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::unique_ptr<hm::CudaMat<uchar4>> display_surface_;
   float fixed_edge_rotation_angle_left_{10.0};
   float fixed_edge_rotation_angle_right_{10.0};
+  float shadow_lift_percent_{0.0};
+  bool lift_shadow_black_point_{false};
   bool show_scoreboard_{false};
   float scoreboard_width_ratio_{1.0 / 8};
   float scoreboard_height_ratio_{1.0 / 8};

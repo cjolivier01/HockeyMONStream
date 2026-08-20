@@ -71,6 +71,31 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "shadow_tone_curve_test",
+    srcs = ["ShadowToneCurveTest.cpp"],
+    deps = [":shadow_tone_curve"],
+)
+
+cc_test(
+    name = "shadow_tone_cuda_test",
+    srcs = ["ShadowToneCudaTest.cpp"],
+    deps = [
+        ":play_cropper_cuda_lib",
+        ":play_cropper_cuda_lib_h",
+        ":shadow_tone_curve",
+        "@deepstream//:deepstream_lib",
+        "//toolchains/jetson:cuda_runtime",
+    ],
+)
+
+cc_library(
+    name = "shadow_tone_curve",
+    hdrs = ["ShadowToneCurve.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
 cuda_library(
     name = "play_cropper_cuda_lib",
     srcs = [
@@ -94,6 +119,7 @@ cuda_library(
     visibility = ["//visibility:private"],
     deps = [
         ":play_cropper_cuda_lib_h",
+        ":shadow_tone_curve",
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "//toolchains/jetson:cuda_runtime",

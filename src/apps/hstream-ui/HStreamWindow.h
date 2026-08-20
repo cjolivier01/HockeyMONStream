@@ -251,6 +251,7 @@ class HStreamWindow : public QMainWindow {
   void appendLog(const QString& message);
   QString writePlaytrackerRuntimeConfig();
   void schedulePlaytrackerRuntimeControl(const QString& id, int value);
+  void schedulePlaycropperRuntimeControl(const QString& id, int value);
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
@@ -300,6 +301,7 @@ class HStreamWindow : public QMainWindow {
   void handleRuntimeControlResponse(const QString& line);
   void failPendingRuntimeControls(const QString& reason);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
+  QCheckBox* addCameraCheckBox(QVBoxLayout* layout, const QString& id, const QString& label, bool checked);
 
   QLabel* backend_mode_{nullptr};
   QLabel* pipeline_state_{nullptr};
@@ -446,6 +448,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> output_states_;
   std::map<QString, QCheckBox*> output_toggles_;
   std::map<QString, QSlider*> camera_sliders_;
+  std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, int> camera_defaults_;
   YAML::Node baseline_config_;
@@ -461,13 +464,16 @@ class HStreamWindow : public QMainWindow {
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;
   std::map<QString, int> scheduled_rotation_controls_;
   std::map<QString, int> scheduled_playtracker_controls_;
+  std::map<QString, int> scheduled_playcropper_controls_;
   bool scheduled_rotation_controls_ready_{false};
   bool scheduled_playtracker_controls_ready_{false};
+  bool scheduled_playcropper_controls_ready_{false};
   std::optional<std::map<QString, int>> publishing_playtracker_controls_;
   bool scheduled_playtracker_force_all_targets_{false};
   bool publishing_playtracker_force_all_targets_{false};
   quint64 next_runtime_control_batch_id_{0};
   quint64 scheduled_rotation_control_generation_{0};
   quint64 scheduled_playtracker_control_generation_{0};
+  quint64 scheduled_playcropper_control_generation_{0};
   QString last_playtracker_runtime_snapshot_;
 };

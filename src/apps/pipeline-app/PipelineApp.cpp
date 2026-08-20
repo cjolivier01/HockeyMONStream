@@ -4,6 +4,8 @@
 
 #include "PipelineApp.h"
 #include "PipelineRuntimePaths.h"
+#include "RuntimePropertyAllowlist.h"
+#include "RuntimePropertyValueParser.h"
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
 
@@ -3234,17 +3236,6 @@ bool PipelineApplication::read_runtime_command_line(std::string* line) {
 }
 
 namespace {
-bool is_allowlisted_runtime_property(const std::string& element_name, const std::string& property_name) {
-  return (element_name == "hmstitcher0" && property_name == "post-stitch-rotate-degrees") ||
-      (element_name == "dsplaytracker0" &&
-       (property_name == "runtime-tuning-config-file" || property_name == "fixed-edge-rotation-angle" ||
-        property_name == "fixed-edge-rotation-angle-left" || property_name == "fixed-edge-rotation-angle-right" ||
-        property_name == "dynamic-acceleration-scaling")) ||
-      ((element_name == "playcropper0" || element_name == "playcropper") &&
-       (property_name == "fixed-edge-rotation-angle" || property_name == "fixed-edge-rotation-angle-left" ||
-        property_name == "fixed-edge-rotation-angle-right"));
-}
-
 std::string trim_ascii(std::string value) {
   const auto first = value.find_first_not_of(" \t");
   if (first == std::string::npos) {
@@ -3607,15 +3598,12 @@ bool set_gvalue_from_string(GValue* gvalue, GParamSpec* pspec, const std::string
     return true;
   }
   if (value_type == G_TYPE_BOOLEAN) {
-    if (value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "on") {
-      g_value_set_boolean(gvalue, true);
-      return true;
+    bool parsed = false;
+    if (!hm::pipeline::parse_runtime_boolean_property_value(pspec->name, value, &parsed)) {
+      return false;
     }
-    if (value == "0" || value == "false" || value == "FALSE" || value == "no" || value == "off") {
-      g_value_set_boolean(gvalue, false);
-      return true;
-    }
-    return false;
+    g_value_set_boolean(gvalue, parsed);
+    return true;
   }
   if (value_type == G_TYPE_DOUBLE) {
     gdouble parsed = 0.0;
@@ -3709,7 +3697,7 @@ bool PipelineApplication::set_element_property_runtime(
     g_printerr("runtime command failed: missing element or property\n");
     return false;
   }
-  if (!is_allowlisted_runtime_property(element_name, property_name)) {
+  if (!hm::pipeline::is_allowlisted_runtime_property(element_name, property_name)) {
     g_printerr(
         "runtime command failed: property is not live-mutable here: %s.%s\n",
         element_name.c_str(),
@@ -3803,7 +3791,7 @@ bool PipelineApplication::set_element_properties_runtime(
   });
   auto& app_ctx = stage_app_contexts_.at(current_stage_);
   for (const auto& [element_name, property_name, value] : assignments) {
-    if (!is_allowlisted_runtime_property(element_name, property_name)) {
+    if (!hm::pipeline::is_allowlisted_runtime_property(element_name, property_name)) {
       g_printerr(
           "runtime command failed: property is not live-mutable here: %s.%s\n",
           element_name.c_str(),
