@@ -27,6 +27,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
 #include "hstream/src/apps/apps-common/HStreamLosslessMux.h"
+#include "hstream/src/apps/apps-common/UriPlaylistDiscovery.h"
 
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
@@ -290,6 +291,17 @@ static GstPadProbeReturn trim_initial_uri_playlist_buffer(
 
 static GMutex* uri_playlist_mutex(NvDsSrcBin* bin) {
   return bin && bin->parent_bin ? &bin->parent_bin->uri_playlist_barrier_mutex : &bin->uri_playlist_mutex;
+}
+
+static gboolean uri_playlist_initial_seek_pending(NvDsSrcBin* bin) {
+  NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
+  if (!parent) {
+    return FALSE;
+  }
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  const gboolean pending = parent->uri_playlist_initial_seek_pending;
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  return pending;
 }
 
 static gboolean uri_playlist_terminal_locked(const NvDsSrcBin* bin) {
@@ -1592,6 +1604,13 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
   }
 
   if ((info->type & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+    // Runtime positioning first selects the physical chapter while the pipeline is in READY, then issues a
+    // chapter-local keyframe seek once the decoder reaches PLAYING. Fast decoders can expose buffers between those
+    // operations. Keep those pre-seek buffers out of sequence accounting so the flushing seek cannot invalidate an
+    // already committed exact pair.
+    if (uri_playlist_initial_seek_pending(bin)) {
+      return GST_PAD_PROBE_DROP;
+    }
     const GstPadProbeReturn initial_trim_result = trim_initial_uri_playlist_buffer(pad, info, probe_data);
     if (initial_trim_result != GST_PAD_PROBE_OK) {
       return initial_trim_result;
@@ -2209,6 +2228,7 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_list_index = 0;
   bin->uri_playlist_initial_uri_index = 0;
   bin->uri_playlist_initial_skipped_base_ns = 0;
+  bin->uri_playlist_initial_seek_ns = 0;
   bin->uri_switch_count = 0;
   bin->uri_switch_pending = FALSE;
   bin->uri_list_decoded_frame_count = 0;
@@ -3643,6 +3663,7 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   bin->uri_playlist_barrier_failed = FALSE;
   bin->uri_playlist_delivery_aborted = FALSE;
   bin->uri_playlist_initial_offsets_configured = FALSE;
+  bin->uri_playlist_initial_seek_pending = FALSE;
 
   bin->bin = gst_bin_new("multi_src_bin");
   if (!bin->bin) {
@@ -3801,6 +3822,7 @@ gboolean configure_uri_playlist_initial_offsets(
   struct InitialChapterPlan {
     guint index{0};
     GstClockTime skipped_base{0};
+    GstClockTime target{0};
   } plans[2];
   for (guint source_id = 0; source_id < 2; ++source_id) {
     NvDsSrcBin* source = &bin->sub_bins[source_id];
@@ -3808,6 +3830,7 @@ gboolean configure_uri_playlist_initial_offsets(
     // A source that owns selected audio cannot skip past the common audio epoch merely because its camera has a
     // positive synchronization offset. Decode that residual video range so audio remains continuous from time zero.
     const GstClockTime target = source_id == audio_source_id ? std::min(video_target, start_time_ns) : video_target;
+    plans[source_id].target = target;
     while (plans[source_id].index < source->num_uri_list) {
       GError* error = nullptr;
       GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
@@ -3825,7 +3848,7 @@ gboolean configure_uri_playlist_initial_offsets(
       if (error) {
         g_error_free(error);
       }
-      if (result != GST_DISCOVERER_OK || !GST_CLOCK_TIME_IS_VALID(duration) || duration == 0 ||
+      if (!hm::uri_playlist_internal::discovery_has_usable_duration(result, duration) ||
           duration > G_MAXUINT64 - plans[source_id].skipped_base) {
         break;
       }
@@ -3869,6 +3892,7 @@ gboolean configure_uri_playlist_initial_offsets(
       source->uri_list_index = plans[source_id].index;
       source->uri_playlist_initial_uri_index = plans[source_id].index;
       source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
+      source->uri_playlist_initial_seek_ns = plans[source_id].target - plans[source_id].skipped_base;
       source->prev_accumulated_base = plans[source_id].skipped_base;
       source->accumulated_base = plans[source_id].skipped_base;
       g_free(source->config->uri);
@@ -3923,7 +3947,7 @@ gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 
       if (error) {
         g_error_free(error);
       }
-      if (result != GST_DISCOVERER_OK || !GST_CLOCK_TIME_IS_VALID(duration) || duration == 0 ||
+      if (!hm::uri_playlist_internal::discovery_has_usable_duration(result, duration) ||
           duration > G_MAXUINT64 - plans[source_id].skipped_base) {
         return FALSE;
       }
@@ -3966,6 +3990,7 @@ gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 
       source->uri_list_index = plans[source_id].index;
       source->uri_playlist_initial_uri_index = plans[source_id].index;
       source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
+      source->uri_playlist_initial_seek_ns = start_time_ns - plans[source_id].skipped_base;
       source->prev_accumulated_base = plans[source_id].skipped_base;
       source->accumulated_base = plans[source_id].skipped_base;
       g_free(source->config->uri);
@@ -3982,6 +4007,82 @@ gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 
     }
   }
   return configured;
+}
+
+gboolean arm_uri_playlist_initial_seeks(NvDsSrcParentBin* bin) {
+  if (!bin || !bin->uri_playlist_initial_offsets_configured) {
+    return FALSE;
+  }
+  gboolean can_arm = TRUE;
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  const gboolean pristine = !bin->uri_playlist_terminal && bin->uri_playlist_next_frame_sequence == 0 &&
+      !GST_CLOCK_TIME_IS_VALID(bin->uri_playlist_paired_video_end);
+  if (pristine) {
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      const NvDsSrcBin* source = &bin->sub_bins[source_id];
+      if (source->uri_list_decoded_frame_count != 0 || source->uri_list_initial_positioned_frame_count != 0 ||
+          source->uri_list_mux_delivered_sequence != G_MAXUINT64 ||
+          source->uri_list_frame_ready_sequence != G_MAXUINT64 ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_list_released_video_end) ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_playlist_video_origin_ns)) {
+        can_arm = FALSE;
+        break;
+      }
+    }
+  } else {
+    can_arm = FALSE;
+  }
+  if (can_arm) {
+    bin->uri_playlist_initial_seek_pending = FALSE;
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      bin->uri_playlist_initial_seek_pending =
+          bin->uri_playlist_initial_seek_pending || bin->sub_bins[source_id].uri_playlist_initial_seek_ns > 0;
+    }
+  }
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+  return can_arm;
+}
+
+gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
+  if (!bin || !bin->uri_playlist_initial_offsets_configured) {
+    return FALSE;
+  }
+  gboolean seek_succeeded = TRUE;
+  for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+    NvDsSrcBin* source = &bin->sub_bins[source_id];
+    if (source->uri_playlist_initial_seek_ns == 0) {
+      continue;
+    }
+    if (!source->src_elem) {
+      seek_succeeded = FALSE;
+      break;
+    }
+    if (!gst_element_seek(
+            source->src_elem,
+            1.0,
+            GST_FORMAT_TIME,
+            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+            GST_SEEK_TYPE_SET,
+            static_cast<gint64>(source->uri_playlist_initial_seek_ns),
+            GST_SEEK_TYPE_NONE,
+            GST_CLOCK_TIME_NONE)) {
+      g_printerr(
+          "Could not seek URI-playlist source %u to chapter-local position %" GST_TIME_FORMAT "\n",
+          source_id,
+          GST_TIME_ARGS(source->uri_playlist_initial_seek_ns));
+      seek_succeeded = FALSE;
+      break;
+    }
+    g_print(
+        "URI-playlist source %u selected chapter %u at local position %" GST_TIME_FORMAT "\n",
+        source_id,
+        source->uri_playlist_initial_uri_index,
+        GST_TIME_ARGS(source->uri_playlist_initial_seek_ns));
+  }
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  bin->uri_playlist_initial_seek_pending = FALSE;
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+  return seek_succeeded;
 }
 
 static void set_properties_nvuribin(GstElement* element_, NvDsSourceConfig const* config) {

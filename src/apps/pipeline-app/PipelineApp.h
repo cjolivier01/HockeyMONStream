@@ -328,6 +328,7 @@ class PipelineApplication {
     uint64_t generation{0};
     uint64_t target_ns{0};
     RuntimeSeekPhase phase{RuntimeSeekPhase::kRecreating};
+    bool chapter_seek_applied{false};
     std::chrono::steady_clock::time_point deadline;
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;

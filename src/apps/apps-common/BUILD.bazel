@@ -103,6 +103,7 @@ cc_library(
     ],
     hdrs = [
         "HmGpuPreview.h",
+        "UriPlaylistDiscovery.h",
         "deepstream_app_version.h",
         "deepstream_audio_classifier.h",
         "deepstream_c2d_msg.h",
@@ -171,6 +172,15 @@ cc_binary(
     srcs = ["UriPlaylistSwitchTest.cpp"],
     deps = [
         ":deepstream_apps_common",
+    ],
+)
+
+cc_test(
+    name = "uri_playlist_discovery_test",
+    srcs = ["UriPlaylistDiscoveryTest.cpp"],
+    deps = [
+        ":deepstream_apps_common",
+        "@gstreamer",
     ],
 )
 

@@ -173,6 +173,8 @@ typedef struct {
   guint uri_playlist_initial_uri_index;
   /** Exact duration of complete physical chapters skipped before decoding begins. */
   guint64 uri_playlist_initial_skipped_base_ns;
+  /** Chapter-local keyframe seek applied before decoded-pad trimming begins. */
+  guint64 uri_playlist_initial_seek_ns;
   guint uri_switch_count;
   gboolean uri_switch_pending;
   /**
@@ -236,6 +238,8 @@ struct NvDsSrcParentBin {
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
   gboolean uri_playlist_delivery_aborted;
   gboolean uri_playlist_initial_offsets_configured;
+  /** Drop decoded buffers until every selected chapter has received its initial keyframe seek. */
+  gboolean uri_playlist_initial_seek_pending;
   gulong nvstreammux_eosmonitor_probe;
 };
 
@@ -252,6 +256,10 @@ gboolean configure_uri_playlist_initial_offsets(
 
 /** Configure a non-paired URI playlist to begin at a logical timestamp before preroll. */
 gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 start_time_ns);
+/** Gate replacement-pipeline decoded buffers until their chapter-local seeks have completed. */
+gboolean arm_uri_playlist_initial_seeks(NvDsSrcParentBin* bin);
+/** Seek each selected physical chapter near its trim frontier before replacement-pipeline sequence admission. */
+gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin);
 /** Cancel exact-pair waits and close every logical URI-playlist branch with synthetic EOS. */
 void stop_uri_playlist_sources_gracefully(NvDsSrcParentBin* bin);
 

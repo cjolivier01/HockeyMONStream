@@ -5079,6 +5079,30 @@ void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* messag
     finish_runtime_seek("failed", "pipeline-replaced");
     return;
   }
+  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_STATE_CHANGED &&
+      GST_ELEMENT(GST_MESSAGE_SRC(message)) == app_ctx->pipeline.pipeline &&
+      app_ctx->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
+      !runtime_seek_pending_->chapter_seek_applied) {
+    GstState new_state = GST_STATE_VOID_PENDING;
+    gst_message_parse_state_changed(message, nullptr, &new_state, nullptr);
+    if (new_state == GST_STATE_PLAYING) {
+      if (!seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin)) {
+        runtime_seek_frame_generation_.store(0, std::memory_order_release);
+        finish_runtime_seek("failed", "chapter-seek-failed");
+        cancel_uri_playlist_frame_barrier(&app_ctx->pipeline.multi_src_bin);
+        app_ctx->return_value = -1;
+        app_ctx->quit = TRUE;
+        quit_ = TRUE;
+        if (main_loop_) {
+          g_main_loop_quit(main_loop_);
+        }
+        return;
+      }
+      runtime_seek_pending_->chapter_seek_applied = true;
+      runtime_seek_pending_->deadline =
+          std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms());
+    }
+  }
   if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
     const GstStructure* structure = gst_message_get_structure(message);
     guint64 generation = 0;
@@ -6211,6 +6235,11 @@ gboolean PipelineApplication::recreate_pipeline_impl(
       hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, initial_position_ns);
   if (!position_status.ok()) {
     NVGSTDS_ERR_MSG_V("Failed to restore initial pipeline position: %s", position_status.ToString().c_str());
+    return FALSE;
+  }
+  if (runtime_seek_restart && app_ctx_ptr->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
+      !arm_uri_playlist_initial_seeks(&app_ctx_ptr->pipeline.multi_src_bin)) {
+    NVGSTDS_ERR_MSG_V("Failed to arm replacement URI-playlist chapter seeks before preroll");
     return FALSE;
   }
   if (!ui_preview_window_ids_.empty()) {
