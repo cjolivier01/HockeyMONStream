@@ -3200,6 +3200,7 @@ void PipelineApplication::print_runtime_commands() const {
       "frame\n"
       "\t@set-render-audio-muted <0|1>: Mute or restore only the local render-audio branch\n"
       "\t@seek <position-ns> <generation>: Seek local-render-only playback relative to the configured run start\n"
+      "\t@seek-relative <delta-ns> <generation>: Jump from the pipeline's current playback position\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
@@ -3892,9 +3893,25 @@ bool PipelineApplication::set_element_properties_runtime(
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
+  constexpr absl::string_view kSeekRelativeCommand = "seek-relative";
   constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
+  if (trimmed_line.rfind(std::string(kSeekRelativeCommand), 0) == 0 &&
+      trimmed_line.size() > kSeekRelativeCommand.size() &&
+      std::isspace(static_cast<unsigned char>(trimmed_line[kSeekRelativeCommand.size()]))) {
+    const std::string arguments = trim_ascii(trimmed_line.substr(kSeekRelativeCommand.size()));
+    const size_t separator = arguments.find_first_of(" \t");
+    gint64 delta_ns = 0;
+    guint64 generation = 0;
+    if (separator == std::string::npos || !parse_int64_strict(trim_ascii(arguments.substr(0, separator)), &delta_ns) ||
+        delta_ns == 0 || !parse_uint64_strict(trim_ascii(arguments.substr(separator)), &generation) ||
+        generation == 0) {
+      g_printerr("runtime command failed: seek-relative requires nonzero delta-ns and a positive generation\n");
+      return false;
+    }
+    return seek_runtime_relative(delta_ns, generation);
+  }
   if (trimmed_line.rfind(std::string(kSeekCommand), 0) == 0 && trimmed_line.size() > kSeekCommand.size() &&
       std::isspace(static_cast<unsigned char>(trimmed_line[kSeekCommand.size()]))) {
     const std::string arguments = trim_ascii(trimmed_line.substr(kSeekCommand.size()));
@@ -3956,7 +3973,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
         "set-render-window <xid>, set-render-audio-muted <0|1>, capture-preview-frame <main|stitched|sourceN> "
-        "<jpg-path>, seek <position-ns> <generation>, set-properties "
+        "<jpg-path>, seek <position-ns> <generation>, seek-relative <delta-ns> <generation>, set-properties "
         "<element property=value;...>, reset-progress-rate <generation>, or set-property <element> <property=value>\n");
     return false;
   }
@@ -4009,8 +4026,20 @@ bool PipelineApplication::runtime_seek_is_local_render_only() const {
 }
 
 bool PipelineApplication::seek_runtime(uint64_t target_ns, uint64_t generation) {
+  return seek_runtime_impl(target_ns, std::nullopt, generation);
+}
+
+bool PipelineApplication::seek_runtime_relative(gint64 delta_ns, uint64_t generation) {
+  return seek_runtime_impl(0, delta_ns, generation);
+}
+
+bool PipelineApplication::seek_runtime_impl(
+    uint64_t target_ns,
+    std::optional<gint64> relative_delta_ns,
+    uint64_t generation) {
   auto reject = [generation](const char* status, const char* reason) {
     g_print("HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " reason=%s\n", status, generation, reason);
+    std::fflush(stdout);
     return false;
   };
   if (!runtime_seek_is_local_render_only()) {
@@ -4033,10 +4062,6 @@ bool PipelineApplication::seek_runtime(uint64_t target_ns, uint64_t generation) 
     return reject("rejected", "multiple-pipelines-unsupported");
   }
 
-  uint64_t clamped_target_ns = target_ns;
-  if (time_limit_seconds_ > 0) {
-    clamped_target_ns = std::min(clamped_target_ns, static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND);
-  }
   AppCtx* app_context = stage->second.front().get();
   GstElement* pipeline = app_context->pipeline.pipeline;
   if (!pipeline) {
@@ -4047,6 +4072,27 @@ bool PipelineApplication::seek_runtime(uint64_t target_ns, uint64_t generation) 
   const GstStateChangeReturn state_result = gst_element_get_state(pipeline, &current_state, &pending_state, 0);
   if (state_result == GST_STATE_CHANGE_FAILURE || current_state != GST_STATE_PLAYING) {
     return reject("rejected", "pipeline-not-playing");
+  }
+  uint64_t clamped_target_ns = target_ns;
+  if (relative_delta_ns.has_value()) {
+    gint64 absolute_position_ns = -1;
+    if (!gst_element_query_position(pipeline, GST_FORMAT_TIME, &absolute_position_ns) || absolute_position_ns < 0) {
+      return reject("failed", "position-unavailable");
+    }
+    const uint64_t absolute_position = static_cast<uint64_t>(absolute_position_ns);
+    const uint64_t relative_position = absolute_position > start_time_ns_ ? absolute_position - start_time_ns_ : 0;
+    const gint64 delta_ns = *relative_delta_ns;
+    if (delta_ns > 0) {
+      const uint64_t forward_ns = static_cast<uint64_t>(delta_ns);
+      clamped_target_ns = forward_ns > G_MAXUINT64 - relative_position ? G_MAXUINT64 : relative_position + forward_ns;
+    } else {
+      const uint64_t backward_ns =
+          delta_ns == G_MININT64 ? static_cast<uint64_t>(G_MAXINT64) + 1 : static_cast<uint64_t>(-delta_ns);
+      clamped_target_ns = backward_ns >= relative_position ? 0 : relative_position - backward_ns;
+    }
+  }
+  if (time_limit_seconds_ > 0) {
+    clamped_target_ns = std::min(clamped_target_ns, static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND);
   }
   GstQuery* query = gst_query_new_seeking(GST_FORMAT_TIME);
   gboolean seekable = FALSE;

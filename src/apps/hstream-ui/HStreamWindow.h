@@ -156,6 +156,7 @@ class HStreamWindow : public QMainWindow {
   void updatePlaybackProgressPresentation();
   void updatePlaybackSeekControls();
   void requestPlaybackSeek(qint64 target_ns);
+  void requestPlaybackSeekRelative(qint64 delta_ns);
   void beginPlaybackProgressReset();
   void sendPlaybackProgressReset(quint64 generation);
   int playbackProgressResetTimeoutMs() const;

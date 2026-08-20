@@ -246,12 +246,16 @@ static GstBusSyncReply bus_sync_callback(GstBus* /*bus*/, GstMessage* message, g
  */
 static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
   AppCtx* appCtx = (AppCtx*)data;
+  const gboolean isolated_preview_error =
+      GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && message_source_is_ui_preview(message);
   GST_CAT_DEBUG(
       NVDS_APP,
       "Received message on bus: source %s, msg_type %s",
       GST_MESSAGE_SRC_NAME(message),
       GST_MESSAGE_TYPE_NAME(message));
-  if (appCtx && appCtx->bus_message_cb) {
+  // Preview branches are observational and their errors are isolated below.
+  // Do not let an isolated error cancel an unrelated in-flight seek.
+  if (appCtx && appCtx->bus_message_cb && !isolated_preview_error) {
     appCtx->bus_message_cb(appCtx, message);
   }
   switch (GST_MESSAGE_TYPE(message)) {
@@ -289,7 +293,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       // GPU previews are observational branches behind hmpreviewisolation.
       // Converter/X11 errors must disable that preview without tearing down
       // decoding, stitching, audio, or encoded outputs.
-      if (message_source_is_ui_preview(message)) {
+      if (isolated_preview_error) {
         g_printerr(
             "HSTREAM_PREVIEW status=isolated-error source=%s message=%s\n",
             GST_OBJECT_NAME(message->src),

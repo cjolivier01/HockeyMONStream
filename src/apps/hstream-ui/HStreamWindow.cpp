@@ -2008,10 +2008,10 @@ void HStreamWindow::buildUi() {
   seek_layout->addWidget(playback_seek_forward_button_);
   seek_layout->addWidget(playback_seek_position_);
   connect(playback_seek_back_button_, &QPushButton::clicked, this, [this]() {
-    requestPlaybackSeek(playback_position_ns_ - 10LL * 1000000000LL);
+    requestPlaybackSeekRelative(-10LL * 1000000000LL);
   });
   connect(playback_seek_forward_button_, &QPushButton::clicked, this, [this]() {
-    requestPlaybackSeek(playback_position_ns_ + 10LL * 1000000000LL);
+    requestPlaybackSeekRelative(10LL * 1000000000LL);
   });
   connect(playback_seek_slider_, &QSlider::sliderReleased, this, [this]() {
     if (!playback_seek_slider_ || playback_duration_ns_ <= 0)
@@ -4771,6 +4771,29 @@ void HStreamWindow::requestPlaybackSeek(qint64 target_ns) {
   updatePlaybackSeekControls();
 }
 
+void HStreamWindow::requestPlaybackSeekRelative(qint64 delta_ns) {
+  updatePlaybackSeekControls();
+  const bool enabled = playback_seek_slider_ && playback_seek_slider_->isEnabled();
+  if (!enabled || !pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    appendLog("relative playback seek ignored because this run is not local-render-only and seekable");
+    return;
+  }
+  if (delta_ns == 0) {
+    return;
+  }
+  const quint64 generation = ++playback_seek_generation_;
+  pending_playback_seek_generation_ = generation;
+  const QByteArray command = QString("@seek-relative %1 %2\n").arg(delta_ns).arg(generation).toUtf8();
+  if (pipeline_process_->write(command) != command.size()) {
+    pending_playback_seek_generation_ = 0;
+    appendLog("relative playback seek failed because the pipeline command could not be written");
+    updatePlaybackSeekControls();
+    return;
+  }
+  appendLog(QString("playback jump requested %1 seconds").arg(static_cast<double>(delta_ns) / 1000000000.0));
+  updatePlaybackSeekControls();
+}
+
 void HStreamWindow::updatePlaybackSeekControls() {
   if (!playback_seek_controls_ || !playback_seek_slider_) {
     return;
@@ -4788,9 +4811,9 @@ void HStreamWindow::updatePlaybackSeekControls() {
       !calibration_pending_ && rendering && playback_duration_ns_ > 0 && pending_playback_seek_generation_ == 0;
   playback_seek_slider_->setEnabled(allowed);
   if (playback_seek_back_button_)
-    playback_seek_back_button_->setEnabled(allowed && playback_position_ns_ > 0);
+    playback_seek_back_button_->setEnabled(allowed);
   if (playback_seek_forward_button_)
-    playback_seek_forward_button_->setEnabled(allowed && playback_position_ns_ < playback_duration_ns_);
+    playback_seek_forward_button_->setEnabled(allowed);
   if (!playback_seek_slider_->isSliderDown() && playback_duration_ns_ > 0) {
     const long double fraction =
         static_cast<long double>(std::clamp<qint64>(playback_position_ns_, 0, playback_duration_ns_)) /

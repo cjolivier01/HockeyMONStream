@@ -467,6 +467,20 @@ int main(int argc, char** argv) {
     ok &= expect(
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
         "local-render-only playback must acknowledge an accurate flushing seek after it completes");
+    const size_t relative_seek_mark = seek_process.Mark();
+    ok &= expect(seek_process.Send("@seek-relative 10000000000 3\n"), "relative local seek command must be delivered");
+    const std::string relative_response = "HSTREAM_SEEK status=ok generation=3 position_ns=";
+    ok &= expect(
+        seek_process.WaitFor(relative_response, relative_seek_mark),
+        "relative seek must acknowledge a target derived from the live pipeline position");
+    const std::string& seek_output = seek_process.output();
+    const size_t relative_response_offset = seek_output.find(relative_response, relative_seek_mark);
+    const uint64_t relative_position = relative_response_offset == std::string::npos
+        ? 0
+        : std::strtoull(seek_output.c_str() + relative_response_offset + relative_response.size(), nullptr, 10);
+    ok &= expect(
+        relative_position >= 20'000'000'000ULL && relative_position <= 300'000'000'000ULL,
+        "relative +10s seek must use a valid fresh position after the prior 10s absolute seek");
     ok &= expect(seek_process.Send("q"), "quit command must be delivered to seek pipeline-app");
     exit_code = -1;
     ok &= expect(seek_process.WaitForExit(&exit_code), "seek pipeline-app must stop promptly after q");

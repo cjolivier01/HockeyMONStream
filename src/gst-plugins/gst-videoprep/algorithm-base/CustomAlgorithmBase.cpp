@@ -539,6 +539,10 @@ NvDsBatchMeta* CustomAlgorithmBase::GetNVDS_BatchMeta(GstBuffer* buffer) {
 
 /* Process Buffer */
 BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
+  // Capture the segment generation before doing any mapping or preprocessing.
+  // FLUSH_START can run concurrently with this method; reading the generation
+  // only when enqueueing could relabel an old-segment buffer as new.
+  const guint64 packet_flush_generation = flush_generation_.load(std::memory_order_acquire);
   GstMapInfo in_map_info;
   NvBufSurface* in_surf;
   // BuffferResult result;
@@ -583,6 +587,7 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   PacketInfo packetInfo;
   packetInfo.inbuf = inbuf;
   packetInfo.frame_num = m_frameNum;
+  packetInfo.flush_generation = packet_flush_generation;
 
   // Add custom preprocessing logic if required, here
   // Pass the buffer to output_loop for further processing and pusing to next component
@@ -597,8 +602,8 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   bool accepted = false;
   {
     std::lock_guard<std::mutex> lock(m_processLock);
-    if (!shutdown_requested_.load(std::memory_order_acquire) && !outputthread_stopped && !m_stop) {
-      packetInfo.flush_generation = flush_generation_.load(std::memory_order_relaxed);
+    if (packetInfo.flush_generation == flush_generation_.load(std::memory_order_relaxed) &&
+        !shutdown_requested_.load(std::memory_order_acquire) && !outputthread_stopped && !m_stop) {
       m_processQ.push(packetInfo);
       accepted = true;
       m_processCV.notify_all();
