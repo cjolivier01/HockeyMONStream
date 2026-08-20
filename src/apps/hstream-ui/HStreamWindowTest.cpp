@@ -675,7 +675,8 @@ bool write_fake_runner(const QString& path) {
   file.write("def handle_stdin_line(line):\n");
   file.write(
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
-      "delayed_progress_generation, drop_progress_resets\n");
+      "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
+      "delayed_seek_generation\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-stall-preview-disable'):\n");
   file.write("        preview_disable_stalled = True\n");
@@ -696,6 +697,18 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-resume-preview-disable'):\n");
   file.write("        preview_disable_stalled = False\n");
   file.write("        print('test preview disable resumed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-stall-seek'):\n");
+  file.write("        stall_next_seek = True\n");
+  file.write("        print('test seek acknowledgement stalled', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-complete-seek'):\n");
+  file.write("        if delayed_seek_generation:\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=ok generation=' + delayed_seek_generation + ' position_ns=' + "
+      "delayed_seek_position, flush=True)\n");
+  file.write("            delayed_seek_position = ''\n");
+  file.write("            delayed_seek_generation = ''\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-preview-status '):\n");
   file.write("        _, channel, status, generation = line.rstrip('\\n').split(' ', 3)\n");
@@ -736,6 +749,11 @@ bool write_fake_runner(const QString& path) {
   file.write("        return\n");
   file.write("    if line.startswith('@seek '):\n");
   file.write("        _, position_ns, generation = line.rstrip('\\n').split(' ', 2)\n");
+  file.write("        if stall_next_seek:\n");
+  file.write("            stall_next_seek = False\n");
+  file.write("            delayed_seek_position = position_ns\n");
+  file.write("            delayed_seek_generation = generation\n");
+  file.write("            return\n");
   file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
   file.write(
       "            print('HSTREAM_SEEK status=rejected generation=' + generation + "
@@ -786,6 +804,9 @@ bool write_fake_runner(const QString& path) {
   file.write("stall_next_progress_reset = False\n");
   file.write("delayed_progress_generation = ''\n");
   file.write("drop_progress_resets = False\n");
+  file.write("stall_next_seek = False\n");
+  file.write("delayed_seek_position = ''\n");
+  file.write("delayed_seek_generation = ''\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -2429,15 +2450,31 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Local-render-only Program playback should expose position seeking after duration is known")) {
     return false;
   }
+  pipeline_process->write("@test-stall-seek\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test seek acknowledgement stalled"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   activate(seek_forward);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@seek 52000000000 1"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !pause->isEnabled() && !seek_slider->isEnabled() && !seek_back->isEnabled() && !seek_forward->isEnabled() &&
+              !window->logText().contains("playback seek complete at 00:00:52"),
+          "A pending asynchronous seek should disable Pause and every transport control until completion")) {
+    return false;
+  }
+  pipeline_process->write("@test-complete-seek\n");
   for (int i = 0; i < 100 && !window->logText().contains("playback seek complete at 00:00:52"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(
           window->logText().contains("stdin:@seek 52000000000 1") &&
-              window->logText().contains("playback seek complete at 00:00:52"),
-          "The +10s control should issue an acknowledged absolute seek without restarting the pipeline")) {
+              window->logText().contains("playback seek complete at 00:00:52") && pause->isEnabled(),
+          "The +10s control should complete only after backend acknowledgement, then restore Pause")) {
     return false;
   }
   const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";

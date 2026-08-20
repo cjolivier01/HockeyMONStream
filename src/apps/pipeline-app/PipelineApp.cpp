@@ -773,6 +773,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     app_ctx->index = i;
     app_ctx->active_source_index = -1;
     app_ctx->element_message_cb = handle_element_message_static;
+    app_ctx->bus_message_cb = handle_bus_message_static;
     app_ctx->defer_eos_cb = should_defer_eos_static;
     app_ctx->fatal_pipeline_error_cb = handle_fatal_pipeline_error_static;
     if (show_bbox_text_)
@@ -1677,6 +1678,17 @@ absl::Status PipelineApplication::createMainLoop(
 
   const uint64_t main_loop_generation = ++main_loop_generation_;
   cleanup_stack.push([this, main_loop_generation] { cancel_stitch_frame_rewind(main_loop_generation); });
+  cleanup_stack.push([this, contexts = app_contexts] {
+    if (!runtime_seek_pending_) {
+      return;
+    }
+    const bool pending_context_is_stopping = std::any_of(contexts.begin(), contexts.end(), [this](const auto& context) {
+      return context && context.get() == runtime_seek_pending_->app_ctx;
+    });
+    if (pending_context_is_stopping) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
+  });
 
   std::vector<AppCtx*> stage_calibration_contexts;
   for (const auto& context : app_contexts) {
@@ -3187,7 +3199,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
       "\t@set-render-audio-muted <0|1>: Mute or restore only the local render-audio branch\n"
-      "\t@seek <position-ns> <generation>: Seek local-render-only playback to an absolute video position\n"
+      "\t@seek <position-ns> <generation>: Seek local-render-only playback relative to the configured run start\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
@@ -3959,23 +3971,22 @@ bool PipelineApplication::runtime_seek_is_local_render_only() const {
     return type == NV_DS_SINK_RENDER_EGL || type == NV_DS_SINK_RENDER_DRM;
 #endif
   };
-  bool requested_render = false;
   if (enabled_sink_types_.empty()) {
     return false;
   }
-  for (const auto& stage_types : enabled_sink_types_) {
-    if (stage_types.empty()) {
-      return false;
-    }
-    for (const NvDsSinkType type : stage_types) {
-      if (!is_render_type(type)) {
-        return false;
-      }
-      requested_render = true;
-    }
-  }
   const auto stage = stage_app_contexts_.find(current_stage_);
-  if (!requested_render || stage == stage_app_contexts_.end() || stage->second.empty()) {
+  if (stage == stage_app_contexts_.end() || stage->second.empty()) {
+    return false;
+  }
+  const size_t stage_index = static_cast<size_t>(std::distance(stage_app_contexts_.cbegin(), stage));
+  if (enabled_sink_types_.size() != 1 && stage_index >= enabled_sink_types_.size()) {
+    return false;
+  }
+  const auto& requested_types =
+      enabled_sink_types_.size() == 1 ? enabled_sink_types_.front() : enabled_sink_types_.at(stage_index);
+  const bool requested_render =
+      !requested_types.empty() && std::all_of(requested_types.begin(), requested_types.end(), is_render_type);
+  if (!requested_render) {
     return false;
   }
   bool active_render = false;
@@ -4005,6 +4016,9 @@ bool PipelineApplication::seek_runtime(uint64_t target_ns, uint64_t generation) 
   if (!runtime_seek_is_local_render_only()) {
     return reject("rejected", "nonlocal-output-active");
   }
+  if (runtime_seek_pending_) {
+    return reject("rejected", "seek-in-progress");
+  }
   if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
     return reject("rejected", "stitching-calibration-active");
   }
@@ -4015,65 +4029,113 @@ bool PipelineApplication::seek_runtime(uint64_t target_ns, uint64_t generation) 
   if (stage == stage_app_contexts_.end() || stage->second.empty()) {
     return reject("failed", "pipeline-unavailable");
   }
+  if (stage->second.size() != 1 || !stage->second.front()) {
+    return reject("rejected", "multiple-pipelines-unsupported");
+  }
 
   uint64_t clamped_target_ns = target_ns;
   if (time_limit_seconds_ > 0) {
     clamped_target_ns = std::min(clamped_target_ns, static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND);
   }
-  std::vector<GstElement*> pipelines;
-  for (const auto& app_context : stage->second) {
-    GstElement* pipeline = app_context ? app_context->pipeline.pipeline : nullptr;
-    if (!pipeline) {
-      return reject("failed", "pipeline-unavailable");
+  AppCtx* app_context = stage->second.front().get();
+  GstElement* pipeline = app_context->pipeline.pipeline;
+  if (!pipeline) {
+    return reject("failed", "pipeline-unavailable");
+  }
+  GstState current_state = GST_STATE_NULL;
+  GstState pending_state = GST_STATE_VOID_PENDING;
+  const GstStateChangeReturn state_result = gst_element_get_state(pipeline, &current_state, &pending_state, 0);
+  if (state_result == GST_STATE_CHANGE_FAILURE || current_state != GST_STATE_PLAYING) {
+    return reject("rejected", "pipeline-not-playing");
+  }
+  GstQuery* query = gst_query_new_seeking(GST_FORMAT_TIME);
+  gboolean seekable = FALSE;
+  gint64 seek_start = 0;
+  gint64 seek_end = -1;
+  const gboolean queried = gst_element_query(pipeline, query);
+  if (queried) {
+    GstFormat format = GST_FORMAT_UNDEFINED;
+    gst_query_parse_seeking(query, &format, &seekable, &seek_start, &seek_end);
+    if (format != GST_FORMAT_TIME) {
+      seekable = FALSE;
     }
-    GstState current_state = GST_STATE_NULL;
-    GstState pending_state = GST_STATE_VOID_PENDING;
-    const GstStateChangeReturn state_result = gst_element_get_state(pipeline, &current_state, &pending_state, 0);
-    if (state_result == GST_STATE_CHANGE_FAILURE || current_state != GST_STATE_PLAYING) {
-      return reject("rejected", "pipeline-not-playing");
+  }
+  gst_query_unref(query);
+  if (!queried || !seekable) {
+    return reject("rejected", "source-not-seekable");
+  }
+  const uint64_t relative_start = seek_start > 0 && static_cast<uint64_t>(seek_start) > start_time_ns_
+      ? static_cast<uint64_t>(seek_start) - start_time_ns_
+      : 0;
+  clamped_target_ns = std::max(clamped_target_ns, relative_start);
+  if (seek_end >= 0) {
+    const uint64_t absolute_end = static_cast<uint64_t>(seek_end);
+    const uint64_t relative_end = absolute_end > start_time_ns_ ? absolute_end - start_time_ns_ : 0;
+    if (relative_start > relative_end) {
+      return reject("failed", "empty-seek-range");
     }
-    GstQuery* query = gst_query_new_seeking(GST_FORMAT_TIME);
-    gboolean seekable = FALSE;
-    gint64 seek_start = 0;
-    gint64 seek_end = -1;
-    const gboolean queried = gst_element_query(pipeline, query);
-    if (queried) {
-      GstFormat format = GST_FORMAT_UNDEFINED;
-      gst_query_parse_seeking(query, &format, &seekable, &seek_start, &seek_end);
-      if (format != GST_FORMAT_TIME) {
-        seekable = FALSE;
-      }
-    }
-    gst_query_unref(query);
-    if (!queried || !seekable) {
-      return reject("rejected", "source-not-seekable");
-    }
-    if (seek_end >= 0) {
-      const uint64_t absolute_end = static_cast<uint64_t>(seek_end);
-      const uint64_t relative_end = absolute_end > start_time_ns_ ? absolute_end - start_time_ns_ : 0;
-      clamped_target_ns = std::min(clamped_target_ns, relative_end);
-    }
-    pipelines.push_back(pipeline);
+    clamped_target_ns = std::min(clamped_target_ns, relative_end);
   }
   if (clamped_target_ns > static_cast<uint64_t>(G_MAXINT64) - start_time_ns_) {
     return reject("failed", "position-overflow");
   }
   const gint64 absolute_target_ns = static_cast<gint64>(clamped_target_ns + start_time_ns_);
-  for (GstElement* pipeline : pipelines) {
-    if (!gst_element_seek_simple(
-            pipeline,
-            GST_FORMAT_TIME,
-            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
-            absolute_target_ns)) {
-      return reject("failed", "gstreamer-seek-failed");
-    }
+  // Quiesce the DeepStream graph before flushing it. In particular, the UI's
+  // headless render terminator is intentionally unsynchronized; seeking a
+  // fully PLAYING graph can otherwise let already-scheduled old-segment work
+  // reach EOS before the new segment prerolls. Drain the pause messages before
+  // arming the seek so an earlier ASYNC_DONE cannot acknowledge this request.
+  if (!pause_pipeline(app_context)) {
+    return reject("failed", "pipeline-pause-failed");
+  }
+  if (!dispatch_pending_pipeline_bus_messages(app_context)) {
+    resume_pipeline(app_context);
+    return reject("failed", "pipeline-failed-while-pausing");
+  }
+  runtime_seek_pending_ = RuntimeSeekPending{
+      .app_ctx = app_context,
+      .generation = generation,
+      .target_ns = clamped_target_ns,
+  };
+  if (!gst_element_seek_simple(
+          pipeline,
+          GST_FORMAT_TIME,
+          static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+          absolute_target_ns)) {
+    runtime_seek_pending_.reset();
+    resume_pipeline(app_context);
+    return reject("failed", "gstreamer-seek-failed");
   }
   reset_playback_timing_state(current_stage_);
-  g_print(
-      "HSTREAM_SEEK status=ok generation=%" G_GUINT64_FORMAT " position_ns=%" G_GUINT64_FORMAT "\n",
-      generation,
-      clamped_target_ns);
+  const GstStateChangeReturn resume_result = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+  if (resume_result == GST_STATE_CHANGE_FAILURE) {
+    runtime_seek_pending_.reset();
+    return reject("failed", "pipeline-resume-failed");
+  }
+  if (resume_result == GST_STATE_CHANGE_SUCCESS || resume_result == GST_STATE_CHANGE_NO_PREROLL) {
+    resume_perf_measurement(&app_context->perf_struct);
+    finish_runtime_seek("ok");
+  }
   return true;
+}
+
+void PipelineApplication::finish_runtime_seek(const char* status, const char* reason) {
+  if (!runtime_seek_pending_) {
+    return;
+  }
+  const RuntimeSeekPending completed = *runtime_seek_pending_;
+  runtime_seek_pending_.reset();
+  if (reason) {
+    g_print(
+        "HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " reason=%s\n", status, completed.generation, reason);
+  } else {
+    g_print(
+        "HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " position_ns=%" G_GUINT64_FORMAT "\n",
+        status,
+        completed.generation,
+        completed.target_ns);
+  }
+  std::fflush(stdout);
 }
 
 void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {
@@ -4356,6 +4418,34 @@ uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx)
 
 gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, GstMessage* message) {
   return instance_ ? instance_->handle_element_message(app_ctx, message) : FALSE;
+}
+
+void PipelineApplication::handle_bus_message_static(AppCtx* app_ctx, GstMessage* message) {
+  if (instance_) {
+    instance_->handle_bus_message(app_ctx, message);
+  }
+}
+
+void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* message) {
+  if (!runtime_seek_pending_ || !message || runtime_seek_pending_->app_ctx != app_ctx) {
+    return;
+  }
+  switch (GST_MESSAGE_TYPE(message)) {
+    case GST_MESSAGE_ASYNC_DONE:
+      if (app_ctx && GST_MESSAGE_SRC(message) == GST_OBJECT(app_ctx->pipeline.pipeline)) {
+        resume_perf_measurement(&app_ctx->perf_struct);
+        finish_runtime_seek("ok");
+      }
+      break;
+    case GST_MESSAGE_ERROR:
+      finish_runtime_seek("failed", "pipeline-error");
+      break;
+    case GST_MESSAGE_EOS:
+      finish_runtime_seek("failed", "end-of-stream");
+      break;
+    default:
+      break;
+  }
 }
 
 void PipelineApplication::handle_fatal_pipeline_error_static(AppCtx* app_ctx) {

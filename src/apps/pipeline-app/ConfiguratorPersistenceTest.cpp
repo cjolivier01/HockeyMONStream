@@ -260,9 +260,25 @@ play-tracker:
         {"rink.camera.zoom_in_aggressiveness", 1}};
     const auto invalid_zoom_config = hm::configurator_internal::build_effective_playtracker_config(
         invalid_zoom, invalid_zoom_explicit, /*native_base_rank=*/0, playtracker_base);
+    YAML::Node negative_zoom = YAML::Clone(bundled_baseline->values);
+    negative_zoom["rink"]["camera"]["zoom_in_aggressiveness"] = -1;
+    const auto negative_zoom_config = hm::configurator_internal::build_effective_playtracker_config(
+        negative_zoom, invalid_zoom_explicit, /*native_base_rank=*/0, playtracker_base);
+    YAML::Node minimum_zoom = YAML::Clone(bundled_baseline->values);
+    minimum_zoom["rink"]["camera"]["zoom_in_aggressiveness"] = 0;
+    const auto minimum_zoom_config = hm::configurator_internal::build_effective_playtracker_config(
+        minimum_zoom, invalid_zoom_explicit, /*native_base_rank=*/0, playtracker_base);
+    YAML::Node maximum_zoom = YAML::Clone(bundled_baseline->values);
+    maximum_zoom["rink"]["camera"]["zoom_in_aggressiveness"] = 100;
+    const auto maximum_zoom_config = hm::configurator_internal::build_effective_playtracker_config(
+        maximum_zoom, invalid_zoom_explicit, /*native_base_rank=*/0, playtracker_base);
     ok &= expect(
-        !malformed_canonical.ok() && !malformed_custom.ok() && absl::IsInvalidArgument(invalid_zoom_config.status()),
-        "Malformed baseline-backed scalars and out-of-range zoom aggressiveness must fail materialization");
+        !malformed_canonical.ok() && !malformed_custom.ok() && absl::IsInvalidArgument(invalid_zoom_config.status()) &&
+            absl::IsInvalidArgument(negative_zoom_config.status()) && minimum_zoom_config.ok() &&
+            maximum_zoom_config.ok() &&
+            (*minimum_zoom_config)["play-tracker"]["zoom-in-aggressiveness"].as<int>() == 0 &&
+            (*maximum_zoom_config)["play-tracker"]["zoom-in-aggressiveness"].as<int>() == 100,
+        "Zoom aggressiveness must accept both boundaries and reject values below zero or above one hundred");
   }
 
   auto first_user_config = hm::user_config::load_or_create();

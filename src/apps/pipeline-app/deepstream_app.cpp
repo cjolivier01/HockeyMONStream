@@ -251,6 +251,9 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       "Received message on bus: source %s, msg_type %s",
       GST_MESSAGE_SRC_NAME(message),
       GST_MESSAGE_TYPE_NAME(message));
+  if (appCtx && appCtx->bus_message_cb) {
+    appCtx->bus_message_cb(appCtx, message);
+  }
   switch (GST_MESSAGE_TYPE(message)) {
     case GST_MESSAGE_INFO: {
       GError* error = NULL;

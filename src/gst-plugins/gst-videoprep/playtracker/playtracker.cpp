@@ -240,10 +240,16 @@ BufferResult PlayTrackerPriv::ProcessBuffer(GstBuffer* inbuf) {
 
 bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
   if (event && GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP) {
+    // Let the async base worker retire every old-generation frame while the
+    // src pad is still flushing, then reset tracking before the new segment.
+    // Waiting in the opposite order can deadlock with GenerateOutput(), which
+    // owns this same context mutex.
+    const bool handled = Super::HandleEvent(event);
     std::lock_guard<std::mutex> lk(context_mu_);
     DsPlayTrackerCtxResetTracking(pt_context_);
     prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
     frame_counter_ = 0;
+    return handled;
   }
   return Super::HandleEvent(event);
 }

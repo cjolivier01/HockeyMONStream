@@ -57,6 +57,7 @@ static GQuark _dsmeta_quark = g_quark_from_static_string(NVDS_META_STRING);
 struct PacketInfo {
   GstBuffer* inbuf;
   guint frame_num;
+  guint64 flush_generation;
 };
 
 class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
@@ -117,6 +118,8 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   /* Insert Custom Frame */
   virtual absl::Status InsertCustomFrame(PacketInfo* packetInfo);
 
+  bool PacketGenerationIsCurrent(const PacketInfo& packet_info) const;
+
   void update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt);
 
  public:
@@ -144,6 +147,8 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   std::queue<PacketInfo> m_processQ;
   std::mutex m_processLock;
   std::condition_variable m_processCV;
+  std::atomic<guint64> flush_generation_{0};
+  std::atomic<guint64> in_flight_flush_generation_{G_MAXUINT64};
   std::mutex m_runtimeOutputLock;
   bool runtime_output_shutdown_{false};
   std::atomic<size_t> runtime_output_width_{0};

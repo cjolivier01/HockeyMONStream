@@ -144,6 +144,9 @@ class PipelineApplication {
   gboolean event_thread_func();
   static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
   gboolean handle_element_message(AppCtx* app_ctx, GstMessage* message);
+  static void handle_bus_message_static(AppCtx* app_ctx, GstMessage* message);
+  void handle_bus_message(AppCtx* app_ctx, GstMessage* message);
+  void finish_runtime_seek(const char* status, const char* reason = nullptr);
   static void handle_fatal_pipeline_error_static(AppCtx* app_ctx);
   void handle_fatal_pipeline_error(AppCtx* app_ctx);
   static gboolean should_defer_eos_static(AppCtx* app_ctx);
@@ -274,6 +277,12 @@ class PipelineApplication {
   bool runtime_command_active_{false};
   bool config_selection_active_{false};
   std::string runtime_command_buffer_;
+  struct RuntimeSeekPending {
+    AppCtx* app_ctx{nullptr};
+    uint64_t generation{0};
+    uint64_t target_ns{0};
+  };
+  std::optional<RuntimeSeekPending> runtime_seek_pending_;
   static constexpr const char* default_config_file_name_ = "configs/ds_hockey_app_config.yaml";
   static PipelineApplication* instance_;
 };

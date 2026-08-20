@@ -2553,8 +2553,9 @@ void HStreamWindow::configureControlHelp() {
       "Pause or resume the running pipeline without discarding its current processing position.");
   help(
       "playbackSeekSlider",
-      "Seek within the current video for rapid play-tracking tests. Seeking is enabled only while a Program run has "
-      "local rendering as its sole output; archive, RTMP/YouTube, RTSP, and other outputs disable it.");
+      "Seek relative to the configured run start for rapid play-tracking tests. Seeking is enabled only while a "
+      "Program run has local rendering as its sole output; archive, RTMP/YouTube, RTSP, and other outputs disable "
+      "it.");
   help("playbackSeekBack10Button", "Seek ten seconds earlier during local-render-only Program playback.");
   help("playbackSeekForward10Button", "Seek ten seconds later during local-render-only Program playback.");
   help(
@@ -3536,6 +3537,7 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
   }
 
   calibration_pending_ = true;
+  updatePlaybackSeekControls();
   appendLog(QString("running pipeline discovered stitching calibration at stage %1; opening progress window")
                 .arg(active_calibration_start_stage_));
   showStitchingCalibrationDialog();
@@ -4189,6 +4191,10 @@ void HStreamWindow::pauseOrResumePipeline() {
     appendLog("pause requested but pipeline is not running");
     return;
   }
+  if (pending_playback_seek_generation_ != 0) {
+    appendLog("pause requested while a playback seek is still completing");
+    return;
+  }
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   if (pid <= 0) {
@@ -4763,14 +4769,6 @@ void HStreamWindow::requestPlaybackSeek(qint64 target_ns) {
   }
   appendLog(QString("playback seek requested at %1").arg(format_video_time_ns(target_ns)));
   updatePlaybackSeekControls();
-  QTimer::singleShot(kRuntimeControlAckTimeoutMs, this, [this, generation]() {
-    if (pending_playback_seek_generation_ != generation) {
-      return;
-    }
-    pending_playback_seek_generation_ = 0;
-    appendLog("playback seek failed: acknowledgement timeout");
-    updatePlaybackSeekControls();
-  });
 }
 
 void HStreamWindow::updatePlaybackSeekControls() {
@@ -4778,6 +4776,9 @@ void HStreamWindow::updatePlaybackSeekControls() {
     return;
   }
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (pause_button_) {
+    pause_button_->setEnabled(running && pending_playback_seek_generation_ == 0);
+  }
   playback_seek_controls_->setVisible(running);
   if (QWidget* transport = playback_seek_controls_->parentWidget()) {
     transport->setVisible(running || (playback_progress_ && !playback_progress_->isHidden()));
@@ -4822,7 +4823,9 @@ void HStreamWindow::updatePlaybackSeekControls() {
   } else if (pipeline_paused_) {
     reason = "Resume playback before seeking.";
   } else {
-    reason = "Drag to seek, or jump ten seconds backward or forward. Local rendering is the only active output.";
+    reason =
+        "Drag to seek relative to the configured run start, or jump ten seconds backward or forward. Local "
+        "rendering is the only active output.";
   }
   set_control_help(playback_seek_controls_, reason);
   set_control_help(playback_seek_slider_, reason);
@@ -6371,7 +6374,7 @@ void HStreamWindow::updateRunControls() {
     start_button_->setEnabled(!running && !finalizing && !archive_recovery_blocked);
   }
   if (pause_button_) {
-    pause_button_->setEnabled(running);
+    pause_button_->setEnabled(running && pending_playback_seek_generation_ == 0);
     pause_button_->setText(pipeline_paused_ ? "Resume" : "Pause");
   }
   if (stop_button_) {

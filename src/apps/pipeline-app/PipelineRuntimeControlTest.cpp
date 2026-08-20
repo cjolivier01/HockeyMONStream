@@ -295,7 +295,7 @@ bool write_config(
          << "  enable: 0\n"
          << "  sink-id: 2\n"
          << "  type: 2\n"
-         << "  sync: 0\n"
+         << "  sync: 1\n"
          << "  source-id: 0\n"
          << "  gpu-id: 0\n"
          << "streammux:\n"
@@ -385,7 +385,7 @@ int main(int argc, char** argv) {
           "ffmpeg",    "-hide_banner", "-loglevel",
           "error",     "-y",           "-f",
           "lavfi",     "-i",           "testsrc2=size=256x144:rate=15,format=yuv420p",
-          "-t",        "30",           "-an",
+          "-t",        "300",          "-an",
           "-c:v",      "libx264",      "-preset",
           "ultrafast", "-g",           "15",
           "-pix_fmt",  "yuv420p",      video.string(),
@@ -447,18 +447,30 @@ int main(int argc, char** argv) {
     const size_t resume_mark = relaunched_process.Mark();
     ok &= expect(relaunched_process.Send("r"), "local-render pipeline resume command must be delivered");
     ok &= expect(relaunched_process.WaitFor("Pipeline running", resume_mark), "local-render pipeline must resume");
-    const size_t seek_mark = relaunched_process.Mark();
-    ok &= expect(relaunched_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
-    ok &= expect(
-        relaunched_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
-        "local-render-only playback must accept an accurate flushing seek");
-    ok &= expect(relaunched_process.Send("q"), "quit command must be delivered to relaunched pipeline-app");
+    ok &= expect(relaunched_process.Interrupt(), "local-render pipeline SIGINT stop must be delivered");
     exit_code = -1;
-    ok &= expect(relaunched_process.WaitForExit(&exit_code), "relaunched pipeline-app must stop promptly after q");
+    ok &= expect(relaunched_process.WaitForExit(&exit_code), "relaunched pipeline-app must stop promptly after SIGINT");
     ok &= expect(exit_code == 0, "relaunched pipeline-app must exit successfully");
     ok &= expect(
         relaunched_process.output().find("App run successful") != std::string::npos,
         "relaunched pipeline-app must report successful completion");
+  }
+
+  PipelineProcess seek_process;
+  if (ok) {
+    ok &= expect(
+        seek_process.Start(argv[1], config, "URI", "RENDER", true),
+        "pipeline-app seek process must start with a headless local-render sink");
+    ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
+    const size_t seek_mark = seek_process.Mark();
+    ok &= expect(seek_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
+    ok &= expect(
+        seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
+        "local-render-only playback must acknowledge an accurate flushing seek after it completes");
+    ok &= expect(seek_process.Send("q"), "quit command must be delivered to seek pipeline-app");
+    exit_code = -1;
+    ok &= expect(seek_process.WaitForExit(&exit_code), "seek pipeline-app must stop promptly after q");
+    ok &= expect(exit_code == 0, "seek pipeline-app must exit successfully");
   }
 
   PipelineProcess failed_process;
@@ -503,6 +515,9 @@ int main(int argc, char** argv) {
     process.DumpOutput();
     if (!relaunched_process.output().empty()) {
       relaunched_process.DumpOutput();
+    }
+    if (!seek_process.output().empty()) {
+      seek_process.DumpOutput();
     }
     if (!failed_process.output().empty()) {
       failed_process.DumpOutput();
