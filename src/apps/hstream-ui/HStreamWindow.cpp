@@ -4325,6 +4325,9 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   publishing_playtracker_controls_.reset();
   scheduled_playtracker_force_all_targets_ = false;
   publishing_playtracker_force_all_targets_ = false;
+  pending_playback_seek_generation_ = 0;
+  playback_seek_recovery_generation_ = 0;
+  playback_seek_channel_available_ = false;
   readPipelineOutput();
   if (!pipeline_stdout_buffer_.isEmpty()) {
     appendLog(pipeline_stdout_buffer_.trimmed());
@@ -4481,13 +4484,13 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (error != QProcess::FailedToStart && error != QProcess::Crashed) {
     if (error == QProcess::WriteError || error == QProcess::ReadError) {
       failPendingRuntimeControls(error == QProcess::WriteError ? "pipeline-write-error" : "pipeline-read-error");
-      if (pending_playback_seek_generation_ != 0) {
+      if (pending_playback_seek_generation_ != 0 || playback_seek_recovery_generation_ != 0) {
         appendLog(
             error == QProcess::WriteError ? "playback seek failed: pipeline command channel write error"
                                           : "playback seek failed: pipeline command channel read error");
-        pending_playback_seek_generation_ = 0;
-        playback_seek_recovery_generation_ = 0;
       }
+      pending_playback_seek_generation_ = 0;
+      playback_seek_recovery_generation_ = 0;
       playback_seek_channel_available_ = false;
       if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked() &&
           pending_preview_channel_ == "none" && pending_preview_generation_ != 0) {

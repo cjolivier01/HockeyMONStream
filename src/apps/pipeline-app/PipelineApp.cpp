@@ -2119,6 +2119,9 @@ absl::Status PipelineApplication::playPipelines(
     }
     dispatch_runtime_seek_recreation_completion();
   }
+  if (runtime_seek_pending_) {
+    finish_runtime_seek("failed", "pipeline-stopped");
+  }
   // Quiesce every streaming/X reader before final EOS/state teardown. Keep
   // the fence raised through stage cleanup, which releases the last element
   // references before clearing it.
@@ -3333,6 +3336,9 @@ gboolean PipelineApplication::check_for_interrupt() {
       // leave the pipeline in a destructible state before quitting the loop.
       return TRUE;
     }
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
@@ -3357,6 +3363,9 @@ gboolean PipelineApplication::check_for_interrupt() {
       g_printerr(
           "Timed run saw no video-time progress for %d wall-clock seconds; stopping\n",
           kTimedRunNoProgressTimeoutSeconds);
+      if (runtime_seek_pending_) {
+        finish_runtime_seek("failed", "pipeline-stopped");
+      }
       quit_ = TRUE;
       if (main_loop_) {
         g_main_loop_quit(main_loop_);
@@ -5643,6 +5652,9 @@ gboolean PipelineApplication::event_thread_func() {
     return TRUE;
   }
   if (timed_run_stop_requested_.exchange(false, std::memory_order_acq_rel)) {
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
     quit_ = TRUE;
     if (main_loop_) {
       g_main_loop_quit(main_loop_);
@@ -5935,7 +5947,8 @@ gboolean PipelineApplication::overlay_graphics(
   }
   uint64_t seek_generation = runtime_seek_frame_generation_.load(std::memory_order_acquire);
   const GstClockTime seek_frame_pts = buf ? GST_BUFFER_PTS(buf) : GST_CLOCK_TIME_NONE;
-  if (seek_generation != 0 && GST_CLOCK_TIME_IS_VALID(seek_frame_pts) &&
+  if (!g_getenv("HM_TEST_RUNTIME_SEEK_SUPPRESS_FIRST_FRAME_ACK") && seek_generation != 0 &&
+      GST_CLOCK_TIME_IS_VALID(seek_frame_pts) &&
       runtime_seek_frame_generation_.compare_exchange_strong(
           seek_generation, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
     GstStructure* structure = gst_structure_new(
@@ -6168,6 +6181,21 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
     return FALSE;
   }
+  if (runtime_seek_restart &&
+      !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {
+    NVGSTDS_ERR_MSG_V("Failed to defer replacement URI-playlist callbacks before preroll");
+    return FALSE;
+  }
+  if (runtime_seek_restart && g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_REPLACEMENT_PLAYLIST_CALLBACK")) {
+    const gboolean queued =
+        queue_uri_playlist_switch_callback_for_test(&app_ctx_ptr->pipeline.multi_src_bin, 0, 1);
+    g_print(
+        "HSTREAM_URI_PLAYLIST_CALLBACK status=%s action=replacement-switch source=0\n",
+        queued ? "unsafe-queued" : "replacement-fenced");
+    if (queued) {
+      return FALSE;
+    }
+  }
   if (runtime_seek_restart && app_ctx_ptr->config.enable_perf_measurement) {
     // create_pipeline starts its timer by default. Keep the replacement timer
     // removed until the main context publishes the rebuilt AppCtx.
@@ -6347,6 +6375,8 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     pending.deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms());
     runtime_seek_frame_generation_.store(pending.generation, std::memory_order_release);
+    g_print("HSTREAM_SEEK_RECREATION status=published generation=%" G_GUINT64_FORMAT "\n", pending.generation);
+    std::fflush(stdout);
   } else {
     // A reconstruction deadline or user stop may have completed the public
     // transaction while the worker was still returning the AppCtx to a valid
@@ -6354,6 +6384,10 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
   }
 
+  // The worker created and prerolled this generation with callback scheduling
+  // disabled. Publication above establishes the main-context ownership and
+  // acknowledgement state that playlist actions are allowed to observe.
+  resume_uri_playlist_main_context_callbacks(&result.app_ctx->pipeline.multi_src_bin);
   if (gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
     if (runtime_seek_pending_) {

@@ -80,6 +80,16 @@ struct HStreamWindowTestAccess {
   static void reportPipelineError(HStreamWindow* window, QProcess::ProcessError error) {
     window->handlePipelineError(error);
   }
+
+  static void beginTimedOutPlaybackSeekRecovery(HStreamWindow* window, quint64 generation) {
+    beginPendingPlaybackSeek(window, generation);
+    window->handlePlaybackSeekOutput(
+        QString("HSTREAM_SEEK status=failed generation=%1 reason=pipeline-recreate-timeout").arg(generation));
+  }
+
+  static qint64 requestPipelineProcessExit(HStreamWindow* window) {
+    return window->pipeline_process_ ? window->pipeline_process_->write("@test-exit\n") : -1;
+  }
 };
 
 namespace fs = std::filesystem;
@@ -698,6 +708,9 @@ bool write_fake_runner(const QString& path) {
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
       "delayed_seek_generation, timeout_next_seek, backend_seek_position\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
+  file.write("    if line.startswith('@test-exit'):\n");
+  file.write("        print('test process exit requested', flush=True)\n");
+  file.write("        sys.exit(0)\n");
   file.write("    if line.startswith('@test-stall-preview-disable'):\n");
   file.write("        preview_disable_stalled = True\n");
   file.write("        print('test preview disable stalled', flush=True)\n");
@@ -5711,7 +5724,10 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
-  if (!start || !pause || !mode || !seek_slider || !seek_forward) {
+  auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
+  auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+  if (!start || !pause || !mode || !seek_slider || !seek_forward || !program_control_tabs ||
+      !stitched_control_tabs) {
     return false;
   }
   mode->setCurrentIndex(mode->findData("program"));
@@ -5737,6 +5753,47 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
           !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
               seek_slider->toolTip().contains("command channel failed"),
           "A command-channel write failure should permanently disable seeking for the run")) {
+    return false;
+  }
+
+  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1000);
+  if (!expect(
+          !pause->isEnabled() && !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
+          "A timed-out reconstruction should keep transport and tuning disabled before command-channel failure")) {
+    return false;
+  }
+  HStreamWindowTestAccess::reportPipelineError(window, QProcess::ReadError);
+  QApplication::processEvents();
+  if (!expect(
+          window->logText().contains("playback seek failed: pipeline command channel read error") &&
+              pause->isEnabled() && program_control_tabs->isEnabled() && stitched_control_tabs->isEnabled(),
+          "A terminal command-channel error after reconstruction timeout must release every seek-recovery lock") ||
+      !expect(
+          !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
+              seek_slider->toolTip().contains("command channel failed"),
+          "Recovery cleanup must not advertise seeking after the command channel has failed")) {
+    return false;
+  }
+
+  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1001);
+  if (!expect(
+          !pause->isEnabled() && !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
+          "A second timed-out reconstruction should lock controls before process completion")) {
+    return false;
+  }
+  if (!expect(
+          HStreamWindowTestAccess::requestPipelineProcessExit(window) == 11,
+          "The fake pipeline process must accept its exit command")) {
+    return false;
+  }
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->pipelineStateText() == "STOPPED" && !pause->isEnabled() && program_control_tabs->isEnabled() &&
+              stitched_control_tabs->isEnabled(),
+          "Process completion after reconstruction timeout must clear recovery state for the next run")) {
     return false;
   }
   const bool closed = window->close();

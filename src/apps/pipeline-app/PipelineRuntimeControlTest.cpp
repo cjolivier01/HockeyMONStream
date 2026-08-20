@@ -638,6 +638,7 @@ int main(int argc, char** argv) {
             {
                 {"HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS", "400"},
                 {"HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
+                {"HM_TEST_RUNTIME_SEEK_INJECT_REPLACEMENT_PLAYLIST_CALLBACK", "1"},
                 {"HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
                 {"HM_TEST_RUNTIME_SEEK_READER_DELAY_MS", "400"},
             }),
@@ -677,6 +678,11 @@ int main(int argc, char** argv) {
     ok &= expect(
         seek_process.WaitFor("Destroy pipeline", seek_mark),
         "pipeline replacement must proceed after the shared reader fence is released");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_URI_PLAYLIST_CALLBACK status=replacement-fenced action=replacement-switch source=0",
+            seek_mark),
+        "replacement playlist callbacks must remain non-dispatchable while the worker owns AppCtx");
     const std::string& reader_output = seek_process.output();
     const size_t reader_released = reader_output.find("HSTREAM_PIPELINE_READER status=released", seek_mark);
     const size_t reader_destroy = reader_output.find("Destroy pipeline", seek_mark);
@@ -790,6 +796,8 @@ int main(int argc, char** argv) {
   PipelineProcess timed_out_seek_process;
   PipelineProcess timed_run_seek_process;
   PipelineProcess callback_race_seek_process;
+  PipelineProcess published_interrupt_seek_process;
+  PipelineProcess published_timed_seek_process;
   if (ok) {
     ok &= expect(
         timed_out_seek_process.Start(
@@ -916,6 +924,84 @@ int main(int argc, char** argv) {
     exit_code = -1;
     ok &= expect(callback_race_seek_process.WaitForExit(&exit_code), "callback-race seek process must stop promptly");
     ok &= expect(exit_code == 0, "callback-race seek process must exit successfully");
+  }
+
+  if (ok) {
+    ok &= expect(
+        published_interrupt_seek_process.Start(
+            argv[1],
+            tracker_config,
+            "URI",
+            "RENDER",
+            true,
+            {{"HM_TEST_RUNTIME_SEEK_SUPPRESS_FIRST_FRAME_ACK", "1"}}),
+        "post-publication interrupt seek process must start");
+    ok &= expect(
+        published_interrupt_seek_process.WaitFor("Pipeline running"),
+        "post-publication interrupt pipeline must reach PLAYING");
+    const size_t published_interrupt_mark = published_interrupt_seek_process.Mark();
+    ok &= expect(
+        published_interrupt_seek_process.Send("@seek 10000000000 18\n"),
+        "post-publication interrupt seek must be delivered");
+    ok &= expect(
+        published_interrupt_seek_process.WaitFor(
+            "HSTREAM_SEEK_RECREATION status=published generation=18",
+            published_interrupt_mark,
+            std::chrono::seconds(12)),
+        "SIGINT regression must wait until the replacement is published but still awaiting its first frame");
+    ok &= expect(
+        published_interrupt_seek_process.Interrupt(),
+        "SIGINT must be delivered while the published seek awaits first-frame acknowledgement");
+    exit_code = -1;
+    ok &= expect(
+        published_interrupt_seek_process.WaitForExit(&exit_code, std::chrono::seconds(8)),
+        "SIGINT after replacement publication must stop promptly");
+    ok &= expect(exit_code == 0, "SIGINT after replacement publication must exit successfully");
+    const std::string& output = published_interrupt_seek_process.output();
+    const size_t terminal_seek =
+        output.find("HSTREAM_SEEK status=failed generation=18 reason=pipeline-stopped", published_interrupt_mark);
+    const size_t app_success = output.find("App run successful", published_interrupt_mark);
+    ok &= expect(
+        terminal_seek != std::string::npos && app_success != std::string::npos && terminal_seek < app_success,
+        "SIGINT must terminally publish an accepted waiting-for-frame seek before final success");
+  }
+
+  if (ok) {
+    ok &= expect(
+        published_timed_seek_process.Start(
+            argv[1],
+            tracker_config,
+            "URI",
+            "RENDER",
+            true,
+            {{"HM_TEST_RUNTIME_SEEK_SUPPRESS_FIRST_FRAME_ACK", "1"}},
+            {"-t=3"}),
+        "post-publication timed-stop seek process must start");
+    ok &= expect(
+        published_timed_seek_process.WaitFor("Pipeline running"),
+        "post-publication timed-stop pipeline must reach PLAYING");
+    const size_t published_timed_mark = published_timed_seek_process.Mark();
+    ok &= expect(
+        published_timed_seek_process.Send("@seek 1000000000 19\n"),
+        "post-publication timed-stop seek must be delivered");
+    ok &= expect(
+        published_timed_seek_process.WaitFor(
+            "HSTREAM_SEEK_RECREATION status=published generation=19",
+            published_timed_mark,
+            std::chrono::seconds(12)),
+        "timed-stop regression must reach waiting-for-frame after publication");
+    exit_code = -1;
+    ok &= expect(
+        published_timed_seek_process.WaitForExit(&exit_code, std::chrono::seconds(12)),
+        "time limit must stop a published seek that is still awaiting its first-frame acknowledgement");
+    ok &= expect(exit_code == 0, "timed stop after replacement publication must exit successfully");
+    const std::string& output = published_timed_seek_process.output();
+    const size_t terminal_seek =
+        output.find("HSTREAM_SEEK status=failed generation=19 reason=pipeline-stopped", published_timed_mark);
+    const size_t app_success = output.find("App run successful", published_timed_mark);
+    ok &= expect(
+        terminal_seek != std::string::npos && app_success != std::string::npos && terminal_seek < app_success,
+        "timed stop must terminally publish an accepted waiting-for-frame seek before final success");
   }
 
   if (ok) {

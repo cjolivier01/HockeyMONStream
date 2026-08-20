@@ -284,6 +284,16 @@ void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* bin);
  */
 void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
 
+/**
+ * Disable callback scheduling on a freshly created, still-NULL source bin.
+ * This is safe on a reconstruction worker only before decoder streaming can
+ * begin and fails if any callback source has already been attached.
+ */
+gboolean defer_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
+
+/** Re-enable callback scheduling after the replacement AppCtx is published on its owning main context. */
+void resume_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
+
 /** Queue a delayed physical-boundary switch for the runtime recreation regression test. */
 gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* bin, guint source_id, guint delay_ms);
 

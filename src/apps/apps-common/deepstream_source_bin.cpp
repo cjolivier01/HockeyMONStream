@@ -550,6 +550,39 @@ void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
   }
 }
 
+gboolean defer_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
+  if (!parent) {
+    return FALSE;
+  }
+  // Runtime reconstruction calls this immediately after create_pipeline,
+  // while every element is still NULL. Preflight all slots before changing
+  // any source so a violated lifecycle invariant cannot leave a partial fence.
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    const NvDsSrcBin* source = &parent->sub_bins[source_index];
+    if (g_atomic_int_get(&source->uri_loop_seek_source_id) != 0 ||
+        g_atomic_int_get(&source->uri_switch_source_id) != 0 ||
+        g_atomic_int_get(&source->uri_terminal_audio_drain_source_id) != 0) {
+      return FALSE;
+    }
+  }
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    NvDsSrcBin* source = &parent->sub_bins[source_index];
+    if (g_atomic_int_compare_and_exchange(&source->uri_playlist_callbacks_enabled, TRUE, FALSE)) {
+      g_atomic_int_inc(&source->uri_playlist_callback_generation);
+    }
+  }
+  return TRUE;
+}
+
+void resume_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
+  if (!parent) {
+    return;
+  }
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    g_atomic_int_set(&parent->sub_bins[source_index].uri_playlist_callbacks_enabled, TRUE);
+  }
+}
+
 gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* parent, guint source_id, guint delay_ms) {
   if (!parent || source_id >= parent->num_bins) {
     return FALSE;
