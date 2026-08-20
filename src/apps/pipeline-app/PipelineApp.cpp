@@ -1813,6 +1813,7 @@ absl::Status PipelineApplication::createMainLoop(
 
   auto owned_windows = std::make_shared<std::set<Window>>();
   cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
+    begin_pipeline_recreation();
     for (const auto& context : contexts) {
       if (!context) {
         continue;
@@ -1845,6 +1846,7 @@ absl::Status PipelineApplication::createMainLoop(
       XCloseDisplay(display_);
       display_ = nullptr;
     }
+    end_pipeline_recreation();
   });
   // This cleanup is pushed after pipeline destruction so it runs first. A
   // pending recreation worker owns the reused AppCtx, so it must finish before
@@ -1854,6 +1856,7 @@ absl::Status PipelineApplication::createMainLoop(
     if (runtime_seek_recreation_thread_.joinable()) {
       runtime_seek_recreation_thread_.join();
     }
+    dispatch_runtime_seek_recreation_completion();
     runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (!runtime_seek_pending_) {
       return;
@@ -2054,9 +2057,31 @@ absl::Status PipelineApplication::playPipelines(
     if (dump_pipeline_dot_) {
       hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
     }
-    if (app_contexts[i]->config.pipeline_recreate_sec)
-      g_timeout_add_seconds(
-          app_contexts[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_contexts[i].get());
+    if (app_contexts[i]->config.pipeline_recreate_sec) {
+      AppCtx* app_ctx = app_contexts[i].get();
+      app_ctx->pipeline_recreate_source_id =
+          g_timeout_add_seconds(app_ctx->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_ctx);
+      if (app_ctx->pipeline_recreate_source_id == 0) {
+        return absl::InternalError("could not schedule periodic pipeline recreation");
+      }
+      // This source belongs to the stage's default main context. Remove it
+      // before stopPipeline or AppCtx destruction so a later stage's loop can
+      // never dispatch a callback with the previous stage's raw pointer.
+      cleanup_stack.push([this, context = app_contexts[i]] {
+        const guint source_id = context->pipeline_recreate_source_id;
+        context->pipeline_recreate_source_id = 0;
+        if (source_id == 0) {
+          return;
+        }
+        GMainContext* main_context = main_loop_ ? g_main_loop_get_context(main_loop_) : g_main_context_default();
+        if (GSource* source = g_main_context_find_source_by_id(main_context, source_id)) {
+          g_source_destroy(source);
+          if (g_getenv("HM_TEST_VERIFY_PIPELINE_RECREATE_SOURCE_CLEANUP")) {
+            g_print("HSTREAM_PIPELINE_RECREATE_TIMER status=cancelled source_id=%u\n", source_id);
+          }
+        }
+      });
+    }
   }
 
   print_runtime_commands();
@@ -2079,6 +2104,25 @@ absl::Status PipelineApplication::playPipelines(
   }
   g_main_loop_run(main_loop_);
   changemode(0);
+
+  // No path may stop or inspect the reused AppCtx while the reconstruction
+  // worker owns it. Most stop requests stay in the loop until publication;
+  // this is the final backstop for an unexpected loop quit from another
+  // source or a future stop condition.
+  if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+    runtime_seek_shutdown_requested_ = true;
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
+    if (runtime_seek_recreation_thread_.joinable()) {
+      runtime_seek_recreation_thread_.join();
+    }
+    dispatch_runtime_seek_recreation_completion();
+  }
+  // Quiesce every streaming/X reader before final EOS/state teardown. Keep
+  // the fence raised through stage cleanup, which releases the last element
+  // references before clearing it.
+  begin_pipeline_recreation();
 
   // Finalize muxers before reporting success or allowing cleanup to set the
   // pipeline to NULL. In particular, a UI Stop/SIGINT must leave a playable
@@ -2749,6 +2793,14 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 //------------------------------------------------------------------------------
 
 void PipelineApplication::all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index) {
+  PipelineApplication* application = instance_;
+  if (!application || application->pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::lock_guard<std::mutex> pipeline_lock(application->pipeline_access_mu_);
+  if (application->pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
   guint num_male = 0;
   guint num_female = 0;
   guint num_objects[128];
@@ -2824,6 +2876,7 @@ void PipelineApplication::reset_playback_timing_state(long stage) {
   have_first_frame_by_source_.fill(false);
   first_frame_numbers_by_source_.fill(0);
   timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
+  timed_run_stop_requested_.store(false, std::memory_order_release);
   timed_run_last_progress_wall_ = time_limit_seconds_ > 0 &&
           hm::pipeline_internal::stitch_frame_should_account_playback(
                                       stitch_frame_calibration_active_.load(std::memory_order_acquire))
@@ -2842,6 +2895,12 @@ void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
     timed_run_last_progress_ns_ = processed_ns;
     timed_run_last_progress_wall_ = std::chrono::steady_clock::now();
   }
+}
+
+void PipelineApplication::request_timed_run_stop() {
+  timed_run_stop_requested_.store(true, std::memory_order_release);
+  GMainContext* context = main_loop_ ? g_main_loop_get_context(main_loop_) : g_main_context_default();
+  g_main_context_wakeup(context);
 }
 
 uint64_t PipelineApplication::playback_horizon_ns(AppCtx* app_ctx) const {
@@ -2929,10 +2988,7 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
   if (time_limit_seconds_ > 0) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (processed_ns >= limit_ns && !quit_) {
-      quit_ = TRUE;
-      if (main_loop_) {
-        g_main_loop_quit(main_loop_);
-      }
+      request_timed_run_stop();
     }
   }
   if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
@@ -3143,6 +3199,13 @@ hm::TerminalProgressGraphSnapshot PipelineApplication::build_progress_graph_snap
 }
 
 void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
   static guint header_print_cnt = 0;
   guint i;
   AppCtx* app_ctx = reinterpret_cast<AppCtx*>(context);
@@ -3274,6 +3337,9 @@ gboolean PipelineApplication::check_for_interrupt() {
     if (main_loop_)
       g_main_loop_quit(main_loop_);
     return FALSE;
+  }
+  if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
   }
   std::chrono::steady_clock::time_point last_progress_wall;
   {
@@ -4540,13 +4606,61 @@ bool PipelineApplication::seek_runtime_impl(
   };
   runtime_seek_recreation_timed_out_ = false;
   runtime_seek_shutdown_requested_ = false;
-  if (g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK") &&
+  if (g_getenv("HM_TEST_URI_PLAYLIST_SCHEDULE_SUSPEND_RACE")) {
+    if (!exercise_uri_playlist_schedule_suspend_race_for_test(&app_context->pipeline.multi_src_bin, 0, 5000)) {
+      g_printerr("URI-playlist schedule/suspend ownership regression failed\n");
+      finish_runtime_seek("failed", "playlist-callback-fence-failed");
+      return false;
+    }
+    g_print("HSTREAM_URI_PLAYLIST_CALLBACK status=race-fenced action=switch source=0\n");
+  } else if (
+      g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK") &&
       !queue_uri_playlist_switch_callback_for_test(&app_context->pipeline.multi_src_bin, 0, 5000)) {
     g_printerr("Could not queue the requested URI-playlist boundary callback for lifecycle testing\n");
   }
   // Decoder streaming threads schedule physical-boundary work on this main
   // context. Invalidate and remove that generation before the worker can
   // clear mutexes or replace GstElements in the reused AppCtx.
+  std::thread test_pipeline_reader;
+  std::atomic<bool> test_pipeline_reader_entered{false};
+  const guint test_reader_delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_READER_DELAY_MS");
+  if (test_reader_delay_ms > 0) {
+    test_pipeline_reader = std::thread([this, app_context, test_reader_delay_ms, &test_pipeline_reader_entered] {
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+        return;
+      }
+      std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+        return;
+      }
+      test_pipeline_reader_entered.store(true, std::memory_order_release);
+      g_print("HSTREAM_PIPELINE_READER status=entered\n");
+      GstState state = GST_STATE_NULL;
+      GstState pending = GST_STATE_VOID_PENDING;
+      if (app_context->pipeline.pipeline) {
+        gst_element_get_state(app_context->pipeline.pipeline, &state, &pending, 0);
+      }
+      g_usleep(static_cast<gulong>(test_reader_delay_ms) * 1000);
+      g_print("HSTREAM_PIPELINE_READER status=released\n");
+    });
+    while (!test_pipeline_reader_entered.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  }
+  runtime_seek_recreation_active_.store(true, std::memory_order_release);
+  begin_pipeline_recreation();
+  if (test_pipeline_reader.joinable()) {
+    test_pipeline_reader.join();
+  }
+  // A streaming callback may have reached the timed-run limit while this
+  // main-context command waited to quiesce it. The already-earned stop wins;
+  // do not let a new seek reset and erase that request.
+  if (quit_ || timed_run_stop_requested_.load(std::memory_order_acquire)) {
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    finish_runtime_seek("failed", "pipeline-stopping");
+    return false;
+  }
   suspend_uri_playlist_main_context_callbacks(&app_context->pipeline.multi_src_bin);
   if (app_context->config.enable_perf_measurement) {
     // perf_cb queries app_context->pipeline from an independent GLib timeout;
@@ -4555,7 +4669,6 @@ bool PipelineApplication::seek_runtime_impl(
   }
   app_context->defer_bus_watch = TRUE;
   detach_pipeline_bus_watch(app_context);
-  runtime_seek_recreation_active_.store(true, std::memory_order_release);
   try {
     if (g_getenv("HM_TEST_RUNTIME_SEEK_WORKER_UNAVAILABLE")) {
       throw std::runtime_error("injected runtime seek worker construction failure");
@@ -4563,7 +4676,6 @@ bool PipelineApplication::seek_runtime_impl(
     runtime_seek_recreation_thread_ = std::thread(
         &PipelineApplication::runtime_seek_recreation_worker, this, app_context, clamped_target_ns, generation);
   } catch (const std::exception& error) {
-    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     app_context->defer_bus_watch = FALSE;
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
     // Callback cancellation may have consumed a pending physical-boundary
@@ -4574,6 +4686,8 @@ bool PipelineApplication::seek_runtime_impl(
     cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
     const bool stopped = !app_context->pipeline.pipeline ||
         gst_element_set_state(app_context->pipeline.pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (!stopped) {
       g_printerr("Runtime seek worker failure left a local-render pipeline that could not be stopped\n");
     }
@@ -4593,6 +4707,10 @@ bool PipelineApplication::seek_runtime_impl(
 }
 
 void PipelineApplication::advance_runtime_seek() {
+  // The worker only publishes its result into protected storage. Polling it
+  // from this recurring main-context callback guarantees that AppCtx
+  // publication and thread joining can never run inline on the worker.
+  dispatch_runtime_seek_recreation_completion();
   if (!runtime_seek_pending_) {
     return;
   }
@@ -5521,8 +5639,15 @@ gboolean PipelineApplication::event_thread_func() {
   // GstPipeline generations. Keep dispatching the GLib loop (including the
   // seek deadline), but do not inspect that mutable state or consume another
   // runtime command until the completed transaction is published here.
-  if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
     return TRUE;
+  }
+  if (timed_run_stop_requested_.exchange(false, std::memory_order_acq_rel)) {
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return FALSE;
   }
 
   auto& app_ctx = stage_app_contexts_.at(current_stage_);
@@ -5699,7 +5824,11 @@ gpointer PipelineApplication::nvds_x_event_thread() {
     memset(&e, 0, sizeof(XEvent));
     while (!quit_ && display_ && XPending(display_)) {
       XNextEvent(display_, &e);
-      if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+        continue;
+      }
+      std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
         continue;
       }
       auto& app_ctx = stage_app_contexts_.at(current_stage_);
@@ -5797,6 +5926,13 @@ gboolean PipelineApplication::overlay_graphics(
     GstBuffer* buf,
     NvDsBatchMeta* batch_meta,
     guint index) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
   uint64_t seek_generation = runtime_seek_frame_generation_.load(std::memory_order_acquire);
   const GstClockTime seek_frame_pts = buf ? GST_BUFFER_PTS(buf) : GST_CLOCK_TIME_NONE;
   if (seek_generation != 0 && GST_CLOCK_TIME_IS_VALID(seek_frame_pts) &&
@@ -5843,12 +5979,7 @@ gboolean PipelineApplication::overlay_graphics(
         if (have_elapsed) {
           record_timed_run_progress(elapsed_ns);
           if (elapsed_ns >= limit_ns) {
-            if (!quit_) {
-              quit_ = TRUE;
-              if (main_loop_) {
-                g_main_loop_quit(main_loop_);
-              }
-            }
+            request_timed_run_stop();
             return TRUE;
           }
         }
@@ -5889,12 +6020,7 @@ gboolean PipelineApplication::overlay_graphics(
     }
     record_timed_run_progress(elapsed_from_frames_ns);
     if (elapsed_from_frames_ns >= limit_ns) {
-      if (!quit_) {
-        quit_ = TRUE;
-        if (main_loop_) {
-          g_main_loop_quit(main_loop_);
-        }
-      }
+      request_timed_run_stop();
     }
   }
 
@@ -5935,7 +6061,12 @@ gboolean PipelineApplication::overlay_graphics(
 }
 
 gboolean PipelineApplication::recreate_pipeline_thread_func_static(gpointer arg) {
-  return instance_ ? instance_->recreate_pipeline_thread_func(arg) : FALSE;
+  auto* app_ctx = static_cast<AppCtx*>(arg);
+  const gboolean keep = instance_ && app_ctx ? instance_->recreate_pipeline_thread_func(app_ctx) : FALSE;
+  if (!keep && app_ctx) {
+    app_ctx->pipeline_recreate_source_id = 0;
+  }
+  return keep;
 }
 
 gboolean PipelineApplication::inject_stitching_calibration_error_static(gpointer /*arg*/) {
@@ -5987,7 +6118,25 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     g_print("Deferring periodic pipeline recreation until the active playback seek completes\n");
     return TRUE;
   }
-  return recreate_pipeline_impl(app_ctx_ptr, calibration_restart, false, 0, 0);
+  begin_pipeline_recreation();
+  const gboolean recreated = recreate_pipeline_impl(app_ctx_ptr, calibration_restart, false, 0, 0);
+  end_pipeline_recreation();
+  return recreated;
+}
+
+void PipelineApplication::begin_pipeline_recreation() {
+  // Readers perform the inverse double-check while holding this mutex. Taking
+  // it before publishing the fence waits out readers already inside; readers
+  // that raced the first check then observe true and leave without touching
+  // AppCtx. Do not hold the mutex through a GStreamer state transition because
+  // state teardown waits for streaming callbacks to return.
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  pipeline_recreation_active_.store(true, std::memory_order_release);
+}
+
+void PipelineApplication::end_pipeline_recreation() {
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  pipeline_recreation_active_.store(false, std::memory_order_release);
 }
 
 gboolean PipelineApplication::recreate_pipeline_impl(
@@ -6096,23 +6245,40 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
     g_print("HSTREAM_SEEK_RECREATION status=started generation=%" G_GUINT64_FORMAT "\n", generation);
     std::fflush(stdout);
   }
-  auto* result = new RuntimeSeekRecreationResult{
+  gboolean success = FALSE;
+  try {
+    success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation);
+  } catch (const std::exception& error) {
+    g_printerr("Runtime seek reconstruction threw an exception: %s\n", error.what());
+  } catch (...) {
+    g_printerr("Runtime seek reconstruction threw an unknown exception\n");
+  }
+  RuntimeSeekRecreationResult result{
       .application = this,
       .app_ctx = app_ctx,
       .generation = generation,
-      .success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation),
+      .success = success,
   };
+  {
+    std::lock_guard<std::mutex> lock(runtime_seek_recreation_result_mu_);
+    runtime_seek_recreation_result_ = std::move(result);
+  }
   GMainContext* context = main_loop_ ? g_main_loop_get_context(main_loop_) : g_main_context_default();
-  g_main_context_invoke_full(
-      context, G_PRIORITY_DEFAULT, complete_runtime_seek_recreation_static, result, [](gpointer data) {
-        delete static_cast<RuntimeSeekRecreationResult*>(data);
-      });
+  g_main_context_wakeup(context);
 }
 
-gboolean PipelineApplication::complete_runtime_seek_recreation_static(gpointer data) {
-  const auto* result = static_cast<RuntimeSeekRecreationResult*>(data);
-  return result && result->application ? result->application->complete_runtime_seek_recreation(*result)
-                                       : G_SOURCE_REMOVE;
+bool PipelineApplication::dispatch_runtime_seek_recreation_completion() {
+  std::optional<RuntimeSeekRecreationResult> result;
+  {
+    std::lock_guard<std::mutex> lock(runtime_seek_recreation_result_mu_);
+    if (!runtime_seek_recreation_result_) {
+      return false;
+    }
+    result = std::move(runtime_seek_recreation_result_);
+    runtime_seek_recreation_result_.reset();
+  }
+  complete_runtime_seek_recreation(std::move(*result));
+  return true;
 }
 
 gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecreationResult result) {
@@ -6135,7 +6301,6 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     result.app_ctx->eos_received = TRUE;
     const bool stopped = !result.app_ctx->pipeline.pipeline ||
         gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
-    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
         runtime_seek_pending_->generation == result.generation) {
       finish_runtime_seek("failed", "pipeline-stopped");
@@ -6146,6 +6311,8 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     }
     result.app_ctx->quit = TRUE;
     quit_ = TRUE;
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (main_loop_) {
       g_main_loop_quit(main_loop_);
     }
@@ -6153,7 +6320,6 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
   }
 
   if (!result.success || !attach_pipeline_bus_watch(result.app_ctx)) {
-    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
     if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
         runtime_seek_pending_->generation == result.generation) {
@@ -6162,15 +6328,19 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     result.app_ctx->return_value = -1;
     result.app_ctx->quit = TRUE;
     quit_ = TRUE;
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (main_loop_) {
       g_main_loop_quit(main_loop_);
     }
     return G_SOURCE_REMOVE;
   }
 
+  // Every successful replacement begins a new media epoch, even if the public
+  // request already timed out while the worker was reconstructing it.
+  reset_playback_timing_state(current_stage_);
   if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
       runtime_seek_pending_->generation == result.generation) {
-    reset_playback_timing_state(current_stage_);
     RuntimeSeekPending& pending = *runtime_seek_pending_;
     pending.pipeline = GST_ELEMENT(gst_object_ref(result.app_ctx->pipeline.pipeline));
     pending.phase = RuntimeSeekPhase::kWaitingForFrame;
@@ -6185,7 +6355,6 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
   }
 
   if (gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
     if (runtime_seek_pending_) {
       finish_runtime_seek("failed", "pipeline-play-failed");
@@ -6205,6 +6374,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
       std::fflush(stdout);
     }
   }
+  end_pipeline_recreation();
   runtime_seek_recreation_active_.store(false, std::memory_order_release);
   return G_SOURCE_REMOVE;
 }

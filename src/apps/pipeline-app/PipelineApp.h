@@ -112,6 +112,7 @@ class PipelineApplication {
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str);
   void perf_cb(gpointer context, NvDsAppPerfStruct* str);
   void record_timed_run_progress(uint64_t processed_ns);
+  void request_timed_run_stop();
   uint64_t playback_horizon_ns(AppCtx* app_ctx) const;
   hm::PlaybackProgressMetrics collect_progress_metrics(AppCtx* app_ctx);
   std::string format_progress_status(const hm::PlaybackProgressMetrics& metrics) const;
@@ -204,8 +205,10 @@ class PipelineApplication {
     gboolean success{FALSE};
   };
   void runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation);
-  static gboolean complete_runtime_seek_recreation_static(gpointer data);
+  bool dispatch_runtime_seek_recreation_completion();
   gboolean complete_runtime_seek_recreation(RuntimeSeekRecreationResult result);
+  void begin_pipeline_recreation();
+  void end_pipeline_recreation();
   static gboolean inject_stitching_calibration_error_static(gpointer arg);
   gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
@@ -287,6 +290,7 @@ class PipelineApplication {
   std::mutex playback_timing_mu_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
   uint64_t timed_run_last_progress_ns_{GST_CLOCK_TIME_NONE};
+  std::atomic<bool> timed_run_stop_requested_{false};
   // Display / event loop
   Display* display_ ABSL_GUARDED_BY(disp_lock_){nullptr};
   GThread* x_event_thread_;
@@ -328,7 +332,11 @@ class PipelineApplication {
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;
   std::thread runtime_seek_recreation_thread_;
+  std::mutex runtime_seek_recreation_result_mu_;
+  std::optional<RuntimeSeekRecreationResult> runtime_seek_recreation_result_;
   std::atomic<bool> runtime_seek_recreation_active_{false};
+  std::atomic<bool> pipeline_recreation_active_{false};
+  std::mutex pipeline_access_mu_;
   bool runtime_seek_recreation_timed_out_{false};
   bool runtime_seek_shutdown_requested_{false};
   struct RuntimePropertyOverride {

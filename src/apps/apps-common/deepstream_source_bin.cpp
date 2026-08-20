@@ -78,6 +78,15 @@ constexpr gint64 kUriPlaylistBarrierDiagnosticIntervalUs = 30 * G_TIME_SPAN_SECO
 
 static GMutex* uri_playlist_mutex(NvDsSrcBin* bin);
 
+// Deterministic test-only rendezvous for the scheduler/suspender source-
+// ownership race. It is armed for one exact callback slot, so production
+// decoder scheduling never waits here.
+static GMutex uri_playlist_suspend_race_mutex;
+static GCond uri_playlist_suspend_race_cond;
+static gint* uri_playlist_suspend_race_slot = nullptr;
+static gboolean uri_playlist_suspend_race_published = FALSE;
+static gboolean uri_playlist_suspend_race_release = FALSE;
+
 static void release_uri_playlist_main_context_callback(gpointer data) {
   auto* callback = static_cast<UriPlaylistMainContextCallback*>(data);
   if (!callback) {
@@ -148,13 +157,25 @@ static gboolean schedule_uri_playlist_main_context_callback(
     return FALSE;
   }
   g_atomic_int_set(source_id_slot, static_cast<gint>(source_id));
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  if (uri_playlist_suspend_race_slot == source_id_slot) {
+    uri_playlist_suspend_race_published = TRUE;
+    g_cond_broadcast(&uri_playlist_suspend_race_cond);
+    while (!uri_playlist_suspend_race_release) {
+      g_cond_wait(&uri_playlist_suspend_race_cond, &uri_playlist_suspend_race_mutex);
+    }
+  }
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
   const gboolean still_current = g_atomic_int_get(&bin->uri_playlist_callbacks_enabled) &&
       generation == g_atomic_int_get(&bin->uri_playlist_callback_generation);
   if (still_current) {
     const gint64 now = g_get_monotonic_time();
     const gint64 delay_us = static_cast<gint64>(std::max(delay_ms, 1U)) * G_TIME_SPAN_MILLISECOND;
     g_source_set_ready_time(source, delay_us > G_MAXINT64 - now ? G_MAXINT64 : now + delay_us);
-  } else {
+  } else if (g_atomic_int_compare_and_exchange(source_id_slot, static_cast<gint>(source_id), 0)) {
+    // Whichever side clears the published slot owns source destruction. A
+    // concurrent suspend may already have claimed it; in that case leave the
+    // context attachment intact until the suspending main thread destroys it.
     g_source_destroy(source);
   }
   g_source_unref(source);
@@ -512,9 +533,12 @@ void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
     };
     for (const CallbackSlot& slot : slots) {
       const gint source_id = g_atomic_int_get(slot.source_id);
-      if (source_id <= 0) {
+      if (source_id <= 0 || !g_atomic_int_compare_and_exchange(slot.source_id, source_id, 0)) {
         continue;
       }
+      // Claim the slot before borrowing the context-owned source. The
+      // scheduling thread checks the same claim before destroying its local
+      // source, so its final unref cannot invalidate this pointer.
       GSource* pending = g_main_context_find_source_by_id(context, static_cast<guint>(source_id));
       if (pending) {
         g_source_destroy(pending);
@@ -548,6 +572,68 @@ gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* parent, g
   }
   g_print("HSTREAM_URI_PLAYLIST_CALLBACK status=queued action=switch source=%u\n", source_id);
   return TRUE;
+}
+
+gboolean exercise_uri_playlist_schedule_suspend_race_for_test(
+    NvDsSrcParentBin* parent,
+    guint source_id,
+    guint delay_ms) {
+  if (!parent || source_id >= parent->num_bins) {
+    return FALSE;
+  }
+  NvDsSrcBin* source = &parent->sub_bins[source_id];
+  struct ScheduleRequest {
+    NvDsSrcParentBin* parent;
+    guint source_id;
+    guint delay_ms;
+    gboolean queued;
+  } request{parent, source_id, delay_ms, FALSE};
+
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  uri_playlist_suspend_race_slot = &source->uri_switch_source_id;
+  uri_playlist_suspend_race_published = FALSE;
+  uri_playlist_suspend_race_release = FALSE;
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+
+  GThread* scheduler = g_thread_new(
+      "uri-playlist-suspend-race",
+      [](gpointer data) -> gpointer {
+        auto* request = static_cast<ScheduleRequest*>(data);
+        request->queued =
+            queue_uri_playlist_switch_callback_for_test(request->parent, request->source_id, request->delay_ms);
+        return nullptr;
+      },
+      &request);
+  if (!scheduler) {
+    g_mutex_lock(&uri_playlist_suspend_race_mutex);
+    uri_playlist_suspend_race_slot = nullptr;
+    g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+    return FALSE;
+  }
+
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  const gint64 deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+  while (!uri_playlist_suspend_race_published &&
+         g_cond_wait_until(&uri_playlist_suspend_race_cond, &uri_playlist_suspend_race_mutex, deadline)) {
+  }
+  const gboolean published = uri_playlist_suspend_race_published;
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+
+  if (published) {
+    suspend_uri_playlist_main_context_callbacks(parent);
+  }
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  uri_playlist_suspend_race_release = TRUE;
+  g_cond_broadcast(&uri_playlist_suspend_race_cond);
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+  g_thread_join(scheduler);
+
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  uri_playlist_suspend_race_slot = nullptr;
+  uri_playlist_suspend_race_published = FALSE;
+  uri_playlist_suspend_race_release = FALSE;
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+  return published && !request.queued && g_atomic_int_get(&source->uri_switch_source_id) == 0;
 }
 
 static gboolean configure_lossless_uri_playlist_mux(NvDsSrcParentBin* parent) {

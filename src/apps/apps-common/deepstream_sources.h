@@ -287,6 +287,9 @@ void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
 /** Queue a delayed physical-boundary switch for the runtime recreation regression test. */
 gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* bin, guint source_id, guint delay_ms);
 
+/** Exercise scheduler publication racing callback suspension; test-only. */
+gboolean exercise_uri_playlist_schedule_suspend_race_for_test(NvDsSrcParentBin* bin, guint source_id, guint delay_ms);
+
 /**
  * Commit one decoded URI-playlist frame only after the other camera reaches
  * the identical sequence. This wait has no frame-dropping wall-clock timeout;

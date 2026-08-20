@@ -230,6 +230,7 @@ struct _AppCtx {
   defer_eos_callback defer_eos_cb{nullptr};
   fatal_pipeline_error_callback fatal_pipeline_error_cb{nullptr};
   gboolean defer_bus_watch{false};
+  guint pipeline_recreate_source_id{0};
   NvDsFrameLatencyInfo* latency_info{nullptr};
   GMutex latency_lock{
       0,

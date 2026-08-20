@@ -78,7 +78,8 @@ class PipelineProcess {
       const std::string& source_type = "URI",
       const std::string& sink_type = "FAKE",
       bool headless_render_video = false,
-      const std::vector<std::pair<std::string, std::string>>& environment = {}) {
+      const std::vector<std::pair<std::string, std::string>>& environment = {},
+      const std::vector<std::string>& extra_arguments = {}) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -110,6 +111,7 @@ class PipelineProcess {
       if (headless_render_video) {
         arguments.push_back("--headless-render-video");
       }
+      arguments.insert(arguments.end(), extra_arguments.begin(), extra_arguments.end());
       std::vector<char*> argv;
       for (std::string& argument : arguments) {
         argv.push_back(argument.data());
@@ -637,6 +639,7 @@ int main(int argc, char** argv) {
                 {"HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS", "400"},
                 {"HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
                 {"HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
+                {"HM_TEST_RUNTIME_SEEK_READER_DELAY_MS", "400"},
             }),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
@@ -668,6 +671,18 @@ int main(int argc, char** argv) {
     ok &= expect(
         seek_process.WaitFor("HSTREAM_URI_PLAYLIST_CALLBACK status=cancelled action=switch source=0", seek_mark),
         "recreation must remove a pending physical-boundary callback before handing AppCtx to the worker");
+    ok &= expect(
+        seek_process.WaitFor("HSTREAM_PIPELINE_READER status=released", seek_mark),
+        "recreation must wait for an in-flight pipeline reader before destroying its generation");
+    ok &= expect(
+        seek_process.WaitFor("Destroy pipeline", seek_mark),
+        "pipeline replacement must proceed after the shared reader fence is released");
+    const std::string& reader_output = seek_process.output();
+    const size_t reader_released = reader_output.find("HSTREAM_PIPELINE_READER status=released", seek_mark);
+    const size_t reader_destroy = reader_output.find("Destroy pipeline", seek_mark);
+    ok &= expect(
+        reader_released != std::string::npos && reader_destroy != std::string::npos && reader_released < reader_destroy,
+        "pipeline replacement must begin only after the shared reader fence is released");
     ok &= expect(
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
         "local-render-only playback must acknowledge the first processed frame after a replacement seek");
@@ -773,6 +788,8 @@ int main(int argc, char** argv) {
   PipelineProcess interrupted_seek_process;
   PipelineProcess unavailable_worker_seek_process;
   PipelineProcess timed_out_seek_process;
+  PipelineProcess timed_run_seek_process;
+  PipelineProcess callback_race_seek_process;
   if (ok) {
     ok &= expect(
         timed_out_seek_process.Start(
@@ -823,6 +840,82 @@ int main(int argc, char** argv) {
         timed_out_seek_process.WaitForExit(&exit_code, std::chrono::seconds(12)),
         "timed-out seek process must remain controllable after worker completion");
     ok &= expect(exit_code == 0, "timed-out local seek must leave a cleanly stoppable render pipeline");
+  }
+
+  if (ok) {
+    ok &= expect(
+        timed_run_seek_process.Start(
+            argv[1],
+            tracker_config,
+            "URI",
+            "RENDER",
+            true,
+            {{"HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS", "4000"}},
+            {"-t=3"}),
+        "timed-run reconstruction seek process must start");
+    ok &= expect(timed_run_seek_process.WaitFor("Pipeline running"), "timed-run seek pipeline must reach PLAYING");
+    const size_t timed_run_seek_mark = timed_run_seek_process.Mark();
+    ok &= expect(
+        timed_run_seek_process.Send("@seek 1000000000 16\n"),
+        "timed-run delayed reconstruction seek command must be delivered");
+    ok &= expect(
+        timed_run_seek_process.WaitFor(
+            "HSTREAM_SEEK_RECREATION status=started generation=16", timed_run_seek_mark, std::chrono::seconds(3)),
+        "timed-run seek worker must begin while the old generation can reach its limit");
+    ok &= expect(
+        timed_run_seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=16 position_ns=1000000000",
+            timed_run_seek_mark,
+            std::chrono::seconds(10)),
+        "timed-run limit must not stop or tear down worker-owned AppCtx before replacement publication");
+    exit_code = -1;
+    ok &= expect(
+        timed_run_seek_process.WaitForExit(&exit_code, std::chrono::seconds(10)),
+        "timed run must stop cleanly after accounting a fresh replacement epoch");
+    ok &= expect(exit_code == 0, "timed-run seek must not self-join, abort, or report pipeline failure");
+    const std::string& timed_run_output = timed_run_seek_process.output();
+    const size_t timed_seek_completed =
+        timed_run_output.find("HSTREAM_SEEK status=ok generation=16 position_ns=1000000000", timed_run_seek_mark);
+    const size_t timed_run_success = timed_run_output.find("App run successful", timed_run_seek_mark);
+    ok &= expect(
+        timed_seek_completed != std::string::npos && timed_run_success != std::string::npos &&
+            timed_seek_completed < timed_run_success,
+        "timed run must publish reconstruction before reporting final success");
+  }
+
+  if (ok) {
+    ok &= expect(
+        callback_race_seek_process.Start(
+            argv[1],
+            playlist_seek_config,
+            "URI-MULTIPLE",
+            "RENDER",
+            true,
+            {{"HM_TEST_URI_PLAYLIST_SCHEDULE_SUSPEND_RACE", "1"}}),
+        "URI callback schedule/suspend race process must start");
+    ok &= expect(
+        callback_race_seek_process.WaitFor("Pipeline running"),
+        "URI callback schedule/suspend race pipeline must reach PLAYING");
+    const size_t callback_race_mark = callback_race_seek_process.Mark();
+    ok &= expect(
+        callback_race_seek_process.Send("@seek 10000000000 17\n"),
+        "URI callback schedule/suspend race seek must be delivered");
+    ok &= expect(
+        callback_race_seek_process.WaitFor(
+            "HSTREAM_URI_PLAYLIST_CALLBACK status=race-fenced action=switch source=0",
+            callback_race_mark,
+            std::chrono::seconds(8)),
+        "callback suspension must exclusively claim and destroy a concurrently published GLib source");
+    ok &= expect(
+        callback_race_seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=17 position_ns=10000000000",
+            callback_race_mark,
+            std::chrono::seconds(20)),
+        "pipeline must remain seekable after the schedule/suspend ownership race");
+    ok &= expect(callback_race_seek_process.Send("q"), "callback-race seek process quit must be delivered");
+    exit_code = -1;
+    ok &= expect(callback_race_seek_process.WaitForExit(&exit_code), "callback-race seek process must stop promptly");
+    ok &= expect(exit_code == 0, "callback-race seek process must exit successfully");
   }
 
   if (ok) {
@@ -904,7 +997,13 @@ int main(int argc, char** argv) {
   PipelineProcess archive_process;
   if (ok) {
     ok &= expect(
-        archive_process.Start(argv[1], recreate_config, "URI", "ENCODE_FILE"),
+        archive_process.Start(
+            argv[1],
+            recreate_config,
+            "URI",
+            "ENCODE_FILE",
+            false,
+            {{"HM_TEST_VERIFY_PIPELINE_RECREATE_SOURCE_CLEANUP", "1"}}),
         "pipeline-app archive process must start");
     ok &= expect(archive_process.WaitFor("Pipeline running"), "archive pipeline must reach PLAYING");
     const size_t recreate_mark = archive_process.Mark();
@@ -921,6 +1020,9 @@ int main(int argc, char** argv) {
     exit_code = -1;
     ok &= expect(archive_process.WaitForExit(&exit_code), "archive pipeline must stop promptly after SIGINT");
     ok &= expect(exit_code == 0, "archive pipeline must exit successfully after EOS finalization");
+    ok &= expect(
+        archive_process.output().find("HSTREAM_PIPELINE_RECREATE_TIMER status=cancelled") != std::string::npos,
+        "stage cleanup must remove its repeating pipeline recreation source before AppCtx destruction");
     ok &= expect(fs::is_regular_file(archive) && fs::file_size(archive) > 0, "archive output must be written");
     ok &= expect(run_command({"ffprobe", "-v", "error", archive.string()}), "user-stopped archive must be playable");
   }
@@ -954,6 +1056,12 @@ int main(int argc, char** argv) {
     }
     if (!timed_out_seek_process.output().empty()) {
       timed_out_seek_process.DumpOutput();
+    }
+    if (!timed_run_seek_process.output().empty()) {
+      timed_run_seek_process.DumpOutput();
+    }
+    if (!callback_race_seek_process.output().empty()) {
+      callback_race_seek_process.DumpOutput();
     }
     if (!interrupted_seek_process.output().empty()) {
       interrupted_seek_process.DumpOutput();

@@ -4750,6 +4750,7 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
     }
     playback_seek_recovery_generation_ = 0;
     appendLog("playback recovered after a timed-out seek reconstruction");
+    beginPlaybackProgressReset();
     updatePlaybackSeekControls();
     flushScheduledRuntimeControls();
     return true;
