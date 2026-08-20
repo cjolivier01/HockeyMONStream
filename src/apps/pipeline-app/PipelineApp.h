@@ -111,6 +111,7 @@ class PipelineApplication {
   static void perf_cb_static(gpointer context, NvDsAppPerfStruct* str);
   void perf_cb(gpointer context, NvDsAppPerfStruct* str);
   void record_timed_run_progress(uint64_t processed_ns);
+  uint64_t playback_horizon_ns(AppCtx* app_ctx) const;
   hm::PlaybackProgressMetrics collect_progress_metrics(AppCtx* app_ctx);
   std::string format_progress_status(const hm::PlaybackProgressMetrics& metrics) const;
   hm::TerminalProgressSnapshot make_terminal_progress_snapshot(
@@ -132,6 +133,8 @@ class PipelineApplication {
   bool seek_runtime(uint64_t target_ns, uint64_t generation);
   bool seek_runtime_relative(gint64 delta_ns, uint64_t generation);
   bool seek_runtime_impl(uint64_t target_ns, std::optional<gint64> relative_delta_ns, uint64_t generation);
+  void advance_runtime_seek();
+  void start_runtime_seek_worker();
   bool set_render_window_runtime(guint64 window_id);
   bool set_preview_active_runtime(const std::string& channel, guint64 generation);
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
@@ -279,12 +282,24 @@ class PipelineApplication {
   bool runtime_command_active_{false};
   bool config_selection_active_{false};
   std::string runtime_command_buffer_;
+  enum class RuntimeSeekPhase { kDispatching, kResuming };
+  struct RuntimeSeekWorkerState {
+    std::atomic<bool> complete{false};
+    std::atomic<bool> success{false};
+  };
   struct RuntimeSeekPending {
     AppCtx* app_ctx{nullptr};
+    GstElement* pipeline{nullptr};
     uint64_t generation{0};
     uint64_t target_ns{0};
+    gint64 absolute_target_ns{0};
+    RuntimeSeekPhase phase{RuntimeSeekPhase::kDispatching};
+    std::chrono::steady_clock::time_point deadline;
+    std::shared_ptr<RuntimeSeekWorkerState> worker_state;
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;
+  std::unique_ptr<std::thread> runtime_seek_thread_;
+  bool runtime_seek_worker_stalled_{false};
   static constexpr const char* default_config_file_name_ = "configs/ds_hockey_app_config.yaml";
   static PipelineApplication* instance_;
 };

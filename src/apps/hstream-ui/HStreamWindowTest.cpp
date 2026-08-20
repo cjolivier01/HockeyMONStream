@@ -62,6 +62,26 @@
 #include <unistd.h>
 #endif
 
+struct HStreamWindowTestAccess {
+  static void beginPendingPlaybackSeek(HStreamWindow* window, quint64 generation) {
+    window->active_run_local_render_only_ = true;
+    window->active_run_is_calibration_ = false;
+    window->calibration_pending_ = false;
+    window->pipeline_paused_ = false;
+    window->playback_duration_ns_ = 600'000'000'000LL;
+    if (window->render_video_toggle_) {
+      window->render_video_toggle_->setChecked(true);
+    }
+    window->pending_playback_seek_generation_ = generation;
+    window->playback_seek_channel_available_ = true;
+    window->updatePlaybackSeekControls();
+  }
+
+  static void reportPipelineError(HStreamWindow* window, QProcess::ProcessError error) {
+    window->handlePipelineError(error);
+  }
+};
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -5639,8 +5659,11 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
 
 bool test_window_close_stops_pipeline(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* pause = require_child<QPushButton>(window, "pausePipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!start || !mode) {
+  auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
+  auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
+  if (!start || !pause || !mode || !seek_slider || !seek_forward) {
     return false;
   }
   mode->setCurrentIndex(mode->findData("program"));
@@ -5650,6 +5673,22 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(window->pipelineStateText() == "PLAYING", "Close-event test pipeline should start")) {
+    return false;
+  }
+  HStreamWindowTestAccess::beginPendingPlaybackSeek(window, 999);
+  if (!expect(!pause->isEnabled(), "A pending playback seek should disable Pause before channel failure")) {
+    return false;
+  }
+  HStreamWindowTestAccess::reportPipelineError(window, QProcess::WriteError);
+  QApplication::processEvents();
+  if (!expect(
+          window->logText().contains("playback seek failed: pipeline command channel write error"),
+          "A pending seek should report a command-channel write failure") ||
+      !expect(pause->isEnabled(), "A command-channel write failure should restore Pause") ||
+      !expect(
+          !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
+              seek_slider->toolTip().contains("command channel failed"),
+          "A command-channel write failure should permanently disable seeking for the run")) {
     return false;
   }
   const bool closed = window->close();

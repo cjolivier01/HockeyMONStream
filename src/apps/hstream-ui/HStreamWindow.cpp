@@ -4481,6 +4481,13 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (error != QProcess::FailedToStart && error != QProcess::Crashed) {
     if (error == QProcess::WriteError || error == QProcess::ReadError) {
       failPendingRuntimeControls(error == QProcess::WriteError ? "pipeline-write-error" : "pipeline-read-error");
+      if (pending_playback_seek_generation_ != 0) {
+        appendLog(
+            error == QProcess::WriteError ? "playback seek failed: pipeline command channel write error"
+                                          : "playback seek failed: pipeline command channel read error");
+        pending_playback_seek_generation_ = 0;
+      }
+      playback_seek_channel_available_ = false;
       if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked() &&
           pending_preview_channel_ == "none" && pending_preview_generation_ != 0) {
         recoverPreviewDisableFailure("the pipeline command channel reported a write error");
@@ -4497,6 +4504,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (calibration_pending_ && !calibration_dialog_failed_)
     failStitchingCalibration(QString("The calibration process could not continue: %1").arg(error_message));
   pipeline_paused_ = false;
+  pending_playback_seek_generation_ = 0;
+  playback_seek_channel_available_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
   pipeline_stop_requested_ = false;
@@ -4808,7 +4817,8 @@ void HStreamWindow::updatePlaybackSeekControls() {
   }
   const bool rendering = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool allowed = running && !pipeline_paused_ && active_run_local_render_only_ && !active_run_is_calibration_ &&
-      !calibration_pending_ && rendering && playback_duration_ns_ > 0 && pending_playback_seek_generation_ == 0;
+      !calibration_pending_ && rendering && playback_seek_channel_available_ && playback_duration_ns_ > 0 &&
+      pending_playback_seek_generation_ == 0;
   playback_seek_slider_->setEnabled(allowed);
   if (playback_seek_back_button_)
     playback_seek_back_button_->setEnabled(allowed);
@@ -4837,6 +4847,8 @@ void HStreamWindow::updatePlaybackSeekControls() {
     reason = "Seeking is disabled because this run includes a nonlocal output or is not Program playback.";
   } else if (!rendering) {
     reason = "Enable Render video to seek.";
+  } else if (!playback_seek_channel_available_) {
+    reason = "Seeking is unavailable because the pipeline command channel failed.";
   } else if (calibration_pending_) {
     reason = "Seeking becomes available after one-pass stitching calibration finishes.";
   } else if (playback_duration_ns_ <= 0) {
@@ -4924,6 +4936,7 @@ void HStreamWindow::resetPlaybackProgress(bool starting) {
   playback_position_ns_ = 0;
   playback_duration_ns_ = 0;
   pending_playback_seek_generation_ = 0;
+  playback_seek_channel_available_ = starting;
   if (playback_progress_) {
     playback_progress_->setRange(0, starting ? 0 : 1000);
     playback_progress_->setValue(0);

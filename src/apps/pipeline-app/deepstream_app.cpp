@@ -2387,22 +2387,30 @@ void destroy_pipeline_for_recreate(AppCtx* appCtx) {
 }
 
 gboolean pause_pipeline(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return FALSE;
+  }
   GstState cur;
   GstState pending;
   GstStateChangeReturn ret;
-  GstClockTime timeout = 5 * GST_SECOND / 1000;
+  constexpr GstClockTime timeout = 5 * GST_SECOND;
 
-  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
-
-  if (ret == GST_STATE_CHANGE_ASYNC) {
+  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, 0);
+  if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC) {
     return FALSE;
   }
 
   if (cur == GST_STATE_PAUSED) {
     return TRUE;
   } else if (cur == GST_STATE_PLAYING) {
-    gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PAUSED);
-    gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
+    if (gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      return FALSE;
+    }
+    ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
+    if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC || cur != GST_STATE_PAUSED ||
+        (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PAUSED)) {
+      return FALSE;
+    }
     pause_perf_measurement(&appCtx->perf_struct);
     return TRUE;
   } else {
@@ -2411,22 +2419,30 @@ gboolean pause_pipeline(AppCtx* appCtx) {
 }
 
 gboolean resume_pipeline(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return FALSE;
+  }
   GstState cur;
   GstState pending;
   GstStateChangeReturn ret;
-  GstClockTime timeout = 5 * GST_SECOND / 1000;
+  constexpr GstClockTime timeout = 5 * GST_SECOND;
 
-  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
-
-  if (ret == GST_STATE_CHANGE_ASYNC) {
+  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, 0);
+  if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC) {
     return FALSE;
   }
 
   if (cur == GST_STATE_PLAYING) {
     return TRUE;
   } else if (cur == GST_STATE_PAUSED) {
-    gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PLAYING);
-    gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
+    if (gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      return FALSE;
+    }
+    ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
+    if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC || cur != GST_STATE_PLAYING ||
+        (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PLAYING)) {
+      return FALSE;
+    }
     resume_perf_measurement(&appCtx->perf_struct);
     return TRUE;
   } else {

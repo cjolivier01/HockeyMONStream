@@ -256,7 +256,8 @@ bool write_config(
     const fs::path& config,
     const fs::path& video,
     const fs::path& archive,
-    bool recreate_pipeline = false) {
+    bool recreate_pipeline = false,
+    bool native_tracker = false) {
   std::ofstream output(config);
   output << "application:\n"
          << "  stage: 0\n"
@@ -307,6 +308,17 @@ bool write_config(
          << "  buffer-pool-size: 8\n"
          << "  num-surfaces-per-frame: 1\n"
          << "  gpu-id: 0\n";
+  if (native_tracker) {
+    output << "tracker:\n"
+           << "  enable: 1\n"
+           << "  tracker-width: 256\n"
+           << "  tracker-height: 128\n"
+           << "  ll-lib-file: /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so\n"
+           << "  ll-config-file: "
+              "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml\n"
+           << "  gpu-id: 0\n"
+           << "  display-tracking-id: 1\n";
+  }
   if (recreate_pipeline) {
     output << "tests:\n"
            << "  pipeline-recreate-sec: 5\n";
@@ -377,6 +389,7 @@ int main(int argc, char** argv) {
   const fs::path root(pattern);
   const fs::path video = root / "input.mp4";
   const fs::path config = root / "pipeline.yaml";
+  const fs::path tracker_config = root / "pipeline-tracker.yaml";
   const fs::path recreate_config = root / "pipeline-recreate.yaml";
   const fs::path error_config = root / "pipeline-error.yaml";
   const fs::path archive = root / "archive.mkv";
@@ -385,13 +398,16 @@ int main(int argc, char** argv) {
           "ffmpeg",    "-hide_banner", "-loglevel",
           "error",     "-y",           "-f",
           "lavfi",     "-i",           "testsrc2=size=256x144:rate=15,format=yuv420p",
-          "-t",        "300",          "-an",
+          "-t",        "1800",         "-an",
           "-c:v",      "libx264",      "-preset",
           "ultrafast", "-g",           "15",
           "-pix_fmt",  "yuv420p",      video.string(),
       }),
       "synthetic seekable input must be generated");
   ok &= expect(write_config(config, video, archive), "pipeline-app test config must be written");
+  ok &= expect(
+      write_config(tracker_config, video, archive, false, true),
+      "pipeline-app native-tracker seek config must be written");
   ok &=
       expect(write_config(recreate_config, video, archive, true), "pipeline-app recreate test config must be written");
   ok &= expect(
@@ -459,8 +475,8 @@ int main(int argc, char** argv) {
   PipelineProcess seek_process;
   if (ok) {
     ok &= expect(
-        seek_process.Start(argv[1], config, "URI", "RENDER", true),
-        "pipeline-app seek process must start with a headless local-render sink");
+        seek_process.Start(argv[1], tracker_config, "URI", "RENDER", true),
+        "pipeline-app seek process must start with a headless local-render sink and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
     const size_t seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
@@ -479,8 +495,28 @@ int main(int argc, char** argv) {
         ? 0
         : std::strtoull(seek_output.c_str() + relative_response_offset + relative_response.size(), nullptr, 10);
     ok &= expect(
-        relative_position >= 20'000'000'000ULL && relative_position <= 300'000'000'000ULL,
+        relative_position >= 20'000'000'000ULL && relative_position <= 1'800'000'000'000ULL,
         "relative +10s seek must use a valid fresh position after the prior 10s absolute seek");
+
+    for (uint64_t generation = 4; generation < 9 && ok; ++generation) {
+      const uint64_t target_ns = (generation - 1) * 10'000'000'000ULL;
+      const size_t repeated_seek_mark = seek_process.Mark();
+      ok &= expect(
+          seek_process.Send("@seek " + std::to_string(target_ns) + " " + std::to_string(generation) + "\n"),
+          "repeated seek command must be delivered");
+      ok &= expect(
+          seek_process.WaitFor(
+              "HSTREAM_SEEK status=ok generation=" + std::to_string(generation) +
+                  " position_ns=" + std::to_string(target_ns),
+              repeated_seek_mark),
+          "repeated seek must complete without wedging runtime controls");
+    }
+
+    const size_t near_end_seek_mark = seek_process.Mark();
+    ok &= expect(seek_process.Send("@seek 1650000000000 9\n"), "near-end seek command must be delivered");
+    ok &= expect(
+        seek_process.WaitFor("HSTREAM_SEEK status=ok generation=9 position_ns=1650000000000", near_end_seek_mark),
+        "near-end seek must complete while the pipeline remains responsive");
     ok &= expect(seek_process.Send("q"), "quit command must be delivered to seek pipeline-app");
     exit_code = -1;
     ok &= expect(seek_process.WaitForExit(&exit_code), "seek pipeline-app must stop promptly after q");

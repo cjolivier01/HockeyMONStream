@@ -62,6 +62,8 @@ QString missing_development_runtime_artifact(const QString& bazel_bin_path);
 } // namespace hm::ui_internal
 
 class HStreamWindow : public QMainWindow {
+  friend struct HStreamWindowTestAccess;
+
  public:
   explicit HStreamWindow(QWidget* parent = nullptr);
   ~HStreamWindow() override;
@@ -390,6 +392,7 @@ class HStreamWindow : public QMainWindow {
   qint64 playback_duration_ns_{0};
   quint64 playback_seek_generation_{0};
   quint64 pending_playback_seek_generation_{0};
+  bool playback_seek_channel_available_{false};
   bool active_run_local_render_only_{false};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
