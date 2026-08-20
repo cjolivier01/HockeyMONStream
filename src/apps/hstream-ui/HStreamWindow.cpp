@@ -6532,10 +6532,24 @@ void HStreamWindow::loadSavedControlConfig() {
       if (lookup_yaml_path(config, path, &value))
         stage_control(id, value.as<int>());
     };
-    auto stage_boolean_path = [&config, &stage_control](const QString& path, const QString& id) {
+    auto strict_boolean_control = [](const QString& path, const YAML::Node& value) {
+      if (!value.IsScalar()) {
+        throw std::invalid_argument(QString("%1 must be true, false, 1, or 0").arg(path).toStdString());
+      }
+      const QString normalized = QString::fromStdString(value.as<std::string>()).trimmed().toLower();
+      if (normalized == "true" || normalized == "1") {
+        return 1;
+      }
+      if (normalized == "false" || normalized == "0") {
+        return 0;
+      }
+      throw std::invalid_argument(QString("%1 must be true, false, 1, or 0").arg(path).toStdString());
+    };
+    auto stage_boolean_path = [&config, &stage_control, &strict_boolean_control](
+                                  const QString& path, const QString& id) {
       YAML::Node value;
       if (lookup_yaml_path(config, path, &value))
-        stage_control(id, value.as<bool>() ? 1 : 0);
+        stage_control(id, strict_boolean_control(path, value));
     };
     stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
     stage_boolean_path("rink.camera.cancel_stop_on_opposite_dir", "Cancel_Stop_On_Opposite_Direction");

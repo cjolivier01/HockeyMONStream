@@ -4172,6 +4172,33 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  for (const int numeric_value : {1, 0}) {
+    YAML::Node numeric_black_point(YAML::NodeType::Map);
+    numeric_black_point["pipeline"]["hmplaycropper"]["properties"]["shadow-lift-black-point"] = numeric_value;
+    std::ofstream out(config);
+    out << numeric_black_point << "\n";
+    out.close();
+    activate(create);
+    if (!expect(
+            lift_shadow_black_point->isChecked() == (numeric_value != 0) && !save->isEnabled(),
+            "Canonical black-point lift should load strict numeric 1 and 0 forms")) {
+      return false;
+    }
+  }
+
+  {
+    YAML::Node invalid_black_point(YAML::NodeType::Map);
+    invalid_black_point["pipeline"]["hmplaycropper"]["properties"]["shadow-lift-black-point"] = 2;
+    std::ofstream out(config);
+    out << invalid_black_point << "\n";
+  }
+  activate(create);
+  if (!expect(
+          !lift_shadow_black_point->isChecked() && save->isEnabled(),
+          "Canonical black-point lift should reject non-boolean numerics without overriding the default")) {
+    return false;
+  }
+
   {
     YAML::Node invalid_shadow_lift(YAML::NodeType::Map);
     invalid_shadow_lift["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 101;

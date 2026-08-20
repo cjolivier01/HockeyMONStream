@@ -192,11 +192,15 @@ int main(int argc, char** argv) {
       g_object_class_find_property(G_OBJECT_GET_CLASS(element), "shadow-lift-black-point");
   const bool black_point_mutable_while_playing =
       shadow_black_point_spec && (shadow_black_point_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
+  const bool invalid_black_point_rejected =
+      !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"shadow-lift-black-point", "2"}});
+  gboolean black_point_after_invalid = FALSE;
+  g_object_get(G_OBJECT(element), "shadow-lift-black-point", &black_point_after_invalid, NULL);
   g_free(plugin_type);
   g_free(private_config);
   gst_object_unref(element);
 
-  if (!ok || !black_point_mutable_while_playing) {
+  if (!ok || !black_point_mutable_while_playing || !invalid_black_point_rejected || black_point_after_invalid != TRUE) {
     std::cerr << "videoprep property roundtrip failed\n";
     return 1;
   }

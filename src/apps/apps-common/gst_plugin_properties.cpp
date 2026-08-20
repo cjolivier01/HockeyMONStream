@@ -41,6 +41,17 @@ bool parse_bool(const std::string& value) {
   return parse_int64_exact(lowered) != 0;
 }
 
+bool parse_strict_bool(const std::string& value) {
+  const std::string lowered = to_lower(trim(value));
+  if (lowered == "1" || lowered == "true") {
+    return true;
+  }
+  if (lowered == "0" || lowered == "false") {
+    return false;
+  }
+  throw std::invalid_argument("expected true, false, 1, or 0");
+}
+
 std::string yaml_scalar_to_string(const YAML::Node& value) {
   if (value.IsScalar()) {
     return value.as<std::string>();
@@ -138,7 +149,8 @@ gboolean set_typed_value(GObject* object, GParamSpec* pspec, const std::string& 
   try {
     const GType value_type = G_VALUE_TYPE(&value);
     if (value_type == G_TYPE_BOOLEAN) {
-      g_value_set_boolean(&value, parse_bool(raw_value));
+      const bool strict_boolean = std::string(pspec->name) == "shadow-lift-black-point";
+      g_value_set_boolean(&value, strict_boolean ? parse_strict_bool(raw_value) : parse_bool(raw_value));
     } else if (value_type == G_TYPE_INT) {
       const gint64 parsed = parse_int64_exact(raw_value);
       GParamSpecInt* int_spec = G_PARAM_SPEC_INT(pspec);
