@@ -57,6 +57,7 @@ int main(int argc, char** argv) {
   };
 
   const fs::path full_game = root / "games" / "clean-only-test";
+  fs::create_directories(root / "home");
   fs::create_directories(root / "config-root");
   fs::copy_file(argv[3], root / "config-root" / "baseline.yaml");
   fs::create_directories(full_game);
