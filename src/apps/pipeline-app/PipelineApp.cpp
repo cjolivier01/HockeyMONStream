@@ -5,6 +5,7 @@
 #include "PipelineApp.h"
 #include "PipelineRuntimePaths.h"
 #include "RuntimePropertyAllowlist.h"
+#include "RuntimePropertyValueParser.h"
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
 
@@ -3597,15 +3598,12 @@ bool set_gvalue_from_string(GValue* gvalue, GParamSpec* pspec, const std::string
     return true;
   }
   if (value_type == G_TYPE_BOOLEAN) {
-    if (value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "on") {
-      g_value_set_boolean(gvalue, true);
-      return true;
+    bool parsed = false;
+    if (!hm::pipeline::parse_runtime_boolean_property_value(pspec->name, value, &parsed)) {
+      return false;
     }
-    if (value == "0" || value == "false" || value == "FALSE" || value == "no" || value == "off") {
-      g_value_set_boolean(gvalue, false);
-      return true;
-    }
-    return false;
+    g_value_set_boolean(gvalue, parsed);
+    return true;
   }
   if (value_type == G_TYPE_DOUBLE) {
     gdouble parsed = 0.0;
