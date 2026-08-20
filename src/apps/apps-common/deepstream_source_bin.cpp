@@ -52,7 +52,18 @@ struct UriListPadProbeData {
   GstClockTime initial_offset;
 };
 
+struct UriPlaylistMainContextCallback {
+  NvDsSrcBin* bin;
+  gint generation;
+  gint* source_id_slot;
+  gboolean (*action)(gpointer);
+  const char* action_name;
+  guint bin_source_id;
+  guint glib_source_id;
+};
+
 static gboolean send_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure);
+static gboolean seek_decode(gpointer data);
 static gboolean switch_to_next_uri(gpointer data);
 static gboolean finish_uri_terminal_audio_drain(gpointer data);
 static void cancel_uri_playlist_source(NvDsSrcBin* bin, gboolean barrier_failed);
@@ -66,6 +77,89 @@ static GstPadProbeReturn fail_uri_playlist_initial_positioning(NvDsSrcBin* bin, 
 constexpr gint64 kUriPlaylistBarrierDiagnosticIntervalUs = 30 * G_TIME_SPAN_SECOND;
 
 static GMutex* uri_playlist_mutex(NvDsSrcBin* bin);
+
+static void release_uri_playlist_main_context_callback(gpointer data) {
+  auto* callback = static_cast<UriPlaylistMainContextCallback*>(data);
+  if (!callback) {
+    return;
+  }
+  if (callback->source_id_slot && callback->glib_source_id > 0) {
+    g_atomic_int_compare_and_exchange(
+        callback->source_id_slot, static_cast<gint>(callback->glib_source_id), static_cast<gint>(0));
+  }
+  delete callback;
+}
+
+static gboolean dispatch_uri_playlist_main_context_callback(gpointer data) {
+  auto* callback = static_cast<UriPlaylistMainContextCallback*>(data);
+  if (!callback || !callback->bin || !callback->action) {
+    return G_SOURCE_REMOVE;
+  }
+  const gboolean current = g_atomic_int_get(&callback->bin->uri_playlist_callbacks_enabled) &&
+      g_atomic_int_get(&callback->bin->uri_playlist_callback_generation) == callback->generation;
+  if (!current) {
+    if (g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK")) {
+      g_print(
+          "HSTREAM_URI_PLAYLIST_CALLBACK status=stale action=%s source=%u\n",
+          callback->action_name,
+          callback->bin_source_id);
+    }
+    return G_SOURCE_REMOVE;
+  }
+  return callback->action(callback->bin);
+}
+
+static gboolean schedule_uri_playlist_main_context_callback(
+    NvDsSrcBin* bin,
+    guint delay_ms,
+    gboolean (*action)(gpointer),
+    const char* action_name,
+    gint* source_id_slot) {
+  if (!bin || !action || !source_id_slot || !g_atomic_int_get(&bin->uri_playlist_callbacks_enabled)) {
+    return FALSE;
+  }
+  const gint generation = g_atomic_int_get(&bin->uri_playlist_callback_generation);
+  if (!g_atomic_int_get(&bin->uri_playlist_callbacks_enabled) ||
+      generation != g_atomic_int_get(&bin->uri_playlist_callback_generation) ||
+      !g_atomic_int_compare_and_exchange(source_id_slot, 0, -1)) {
+    return FALSE;
+  }
+
+  auto* callback = new UriPlaylistMainContextCallback{
+      .bin = bin,
+      .generation = generation,
+      .source_id_slot = source_id_slot,
+      .action = action,
+      .action_name = action_name,
+      .bin_source_id = bin->source_id,
+      .glib_source_id = 0,
+  };
+  GSource* source = g_timeout_source_new(std::max(delay_ms, 1U));
+  // Do not make the source dispatchable until its ID is published. Decoder
+  // threads can schedule this while the main context is active.
+  g_source_set_ready_time(source, G_MAXINT64);
+  g_source_set_callback(
+      source, dispatch_uri_playlist_main_context_callback, callback, release_uri_playlist_main_context_callback);
+  const guint source_id = g_source_attach(source, g_main_context_default());
+  callback->glib_source_id = source_id;
+  if (source_id == 0) {
+    g_atomic_int_compare_and_exchange(source_id_slot, -1, 0);
+    g_source_unref(source);
+    return FALSE;
+  }
+  g_atomic_int_set(source_id_slot, static_cast<gint>(source_id));
+  const gboolean still_current = g_atomic_int_get(&bin->uri_playlist_callbacks_enabled) &&
+      generation == g_atomic_int_get(&bin->uri_playlist_callback_generation);
+  if (still_current) {
+    const gint64 now = g_get_monotonic_time();
+    const gint64 delay_us = static_cast<gint64>(std::max(delay_ms, 1U)) * G_TIME_SPAN_MILLISECOND;
+    g_source_set_ready_time(source, delay_us > G_MAXINT64 - now ? G_MAXINT64 : now + delay_us);
+  } else {
+    g_source_destroy(source);
+  }
+  g_source_unref(source);
+  return still_current;
+}
 
 static GstClockTime uri_playlist_initial_offset(const NvDsSrcBin* bin, gboolean is_video) {
   if (!bin) {
@@ -388,6 +482,66 @@ void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* parent) {
   }
   g_cond_broadcast(&parent->uri_playlist_barrier_cond);
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+}
+
+void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
+  if (!parent) {
+    return;
+  }
+  GMainContext* context = g_main_context_default();
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    NvDsSrcBin* source = &parent->sub_bins[source_index];
+    // Disable scheduling first, then advance the fence. A decoder thread that
+    // was already between those reads either declines to attach or publishes
+    // an old-generation source that can only self-discard.
+    g_atomic_int_set(&source->uri_playlist_callbacks_enabled, FALSE);
+    g_atomic_int_inc(&source->uri_playlist_callback_generation);
+    struct CallbackSlot {
+      gint* source_id;
+      const char* action;
+    } slots[] = {
+        {&source->uri_loop_seek_source_id, "loop-seek"},
+        {&source->uri_switch_source_id, "switch"},
+        {&source->uri_terminal_audio_drain_source_id, "terminal-audio-drain"},
+    };
+    for (const CallbackSlot& slot : slots) {
+      const gint source_id = g_atomic_int_get(slot.source_id);
+      if (source_id <= 0) {
+        continue;
+      }
+      GSource* pending = g_main_context_find_source_by_id(context, static_cast<guint>(source_id));
+      if (pending) {
+        g_source_destroy(pending);
+        if (g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK")) {
+          g_print("HSTREAM_URI_PLAYLIST_CALLBACK status=cancelled action=%s source=%u\n", slot.action, source_index);
+        }
+      }
+    }
+  }
+}
+
+gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* parent, guint source_id, guint delay_ms) {
+  if (!parent || source_id >= parent->num_bins) {
+    return FALSE;
+  }
+  NvDsSrcBin* source = &parent->sub_bins[source_id];
+  if (!source->uri_list || source->num_uri_list < 2) {
+    return FALSE;
+  }
+  GMutex* mutex = uri_playlist_mutex(source);
+  g_mutex_lock(mutex);
+  source->uri_switch_pending = TRUE;
+  g_mutex_unlock(mutex);
+  const gboolean queued = schedule_uri_playlist_main_context_callback(
+      source, delay_ms, switch_to_next_uri, "switch", &source->uri_switch_source_id);
+  if (!queued) {
+    g_mutex_lock(mutex);
+    source->uri_switch_pending = FALSE;
+    g_mutex_unlock(mutex);
+    return FALSE;
+  }
+  g_print("HSTREAM_URI_PLAYLIST_CALLBACK status=queued action=switch source=%u\n", source_id);
+  return TRUE;
 }
 
 static gboolean configure_lossless_uri_playlist_mux(NvDsSrcParentBin* parent) {
@@ -813,7 +967,7 @@ static void maybe_complete_uri_playlist_boundary(NvDsSrcBin* bin, guint uri_inde
   }
   g_mutex_unlock(mutex);
   if (schedule_switch) {
-    g_timeout_add(1, switch_to_next_uri, bin);
+    schedule_uri_playlist_main_context_callback(bin, 1, switch_to_next_uri, "switch", &bin->uri_switch_source_id);
   } else if (end_playlist) {
     mark_uri_playlist_terminal(bin);
   }
@@ -1671,7 +1825,8 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
     g_mutex_unlock(mutex);
     if (is_current_uri) {
       if (terminal_drain_pending) {
-        g_idle_add(finish_uri_terminal_audio_drain, bin);
+        schedule_uri_playlist_main_context_callback(
+            bin, 1, finish_uri_terminal_audio_drain, "terminal-audio-drain", &bin->uri_terminal_audio_drain_source_id);
       } else {
         maybe_complete_uri_playlist_boundary(bin, probe_data->uri_index);
       }
@@ -1900,6 +2055,10 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   }
   g_mutex_init(&bin->uri_playlist_mutex);
   bin->uri_playlist_mutex_initialized = TRUE;
+  // This runs only after the preceding generation has reached NULL. Publishing
+  // enabled here lets the newly created decoder own callbacks without ever
+  // resetting the generation fence or its atomically managed source IDs.
+  g_atomic_int_set(&bin->uri_playlist_callbacks_enabled, TRUE);
   if (bin->uri_list) {
     for (guint i = 0; i < bin->num_uri_list; ++i) {
       g_free(bin->uri_list[i]);
@@ -1950,7 +2109,6 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_list_video_eos_seen = FALSE;
   bin->uri_list_pads_complete = FALSE;
   bin->uri_list_boundary_handled = FALSE;
-
   // Keep config->uri in sync with the current entry to match file/live detection elsewhere.
   g_free(config->uri);
   config->uri = g_strdup(bin->uri_list[0]);
@@ -2100,7 +2258,8 @@ static void cb_no_more_pads(GstElement* decodebin, gpointer data) {
   g_mutex_unlock(mutex);
   // If video EOS raced ahead of no-more-pads, this is what proves that the URI truly has no audio pad.
   if (terminal_drain_without_audio) {
-    g_idle_add(finish_uri_terminal_audio_drain, bin);
+    schedule_uri_playlist_main_context_callback(
+        bin, 1, finish_uri_terminal_audio_drain, "terminal-audio-drain", &bin->uri_terminal_audio_drain_source_id);
   } else {
     maybe_complete_uri_playlist_boundary(bin, uri_index);
   }
@@ -2119,7 +2278,7 @@ static GstPadProbeReturn restart_stream_buf_prob(GstPad* pad, GstPadProbeInfo* i
   }
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_BOTH)) {
     if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
-      g_timeout_add(1, seek_decode, bin);
+      schedule_uri_playlist_main_context_callback(bin, 1, seek_decode, "loop-seek", &bin->uri_loop_seek_source_id);
     }
 
     if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {

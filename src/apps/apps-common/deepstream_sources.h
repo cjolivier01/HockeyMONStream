@@ -175,6 +175,17 @@ typedef struct {
   guint64 uri_playlist_initial_skipped_base_ns;
   guint uri_switch_count;
   gboolean uri_switch_pending;
+  /**
+   * Main-context work scheduled by decoder streaming threads must not outlive
+   * the GstPipeline generation that scheduled it. These fields are accessed
+   * with GLib atomic operations, not the playlist mutex: runtime seek
+   * recreation deliberately clears that mutex after invalidating callbacks.
+   */
+  gint uri_playlist_callbacks_enabled;
+  gint uri_playlist_callback_generation;
+  gint uri_loop_seek_source_id;
+  gint uri_switch_source_id;
+  gint uri_terminal_audio_drain_source_id;
   /** Video frames admitted after initial positioning across every URI. Never resets at chapter boundaries. */
   guint64 uri_list_decoded_frame_count;
   /** Logical end timestamp of the latest decoded video buffer released by the exact-pair barrier. */
@@ -265,6 +276,16 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
 
 /** Wake every URI-playlist frame waiter before an error/stop transitions the pipeline to NULL. */
 void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* bin);
+
+/**
+ * Fence and remove URI-playlist callbacks owned by the current pipeline
+ * generation. Must run on the owning GLib main context before an asynchronous
+ * recreation worker is allowed to mutate the reused source-bin storage.
+ */
+void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
+
+/** Queue a delayed physical-boundary switch for the runtime recreation regression test. */
+gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* bin, guint source_id, guint delay_ms);
 
 /**
  * Commit one decoded URI-playlist frame only after the other camera reaches

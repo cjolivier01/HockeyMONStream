@@ -4540,6 +4540,14 @@ bool PipelineApplication::seek_runtime_impl(
   };
   runtime_seek_recreation_timed_out_ = false;
   runtime_seek_shutdown_requested_ = false;
+  if (g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK") &&
+      !queue_uri_playlist_switch_callback_for_test(&app_context->pipeline.multi_src_bin, 0, 5000)) {
+    g_printerr("Could not queue the requested URI-playlist boundary callback for lifecycle testing\n");
+  }
+  // Decoder streaming threads schedule physical-boundary work on this main
+  // context. Invalidate and remove that generation before the worker can
+  // clear mutexes or replace GstElements in the reused AppCtx.
+  suspend_uri_playlist_main_context_callbacks(&app_context->pipeline.multi_src_bin);
   app_context->defer_bus_watch = TRUE;
   detach_pipeline_bus_watch(app_context);
   runtime_seek_recreation_active_.store(true, std::memory_order_release);
@@ -6055,6 +6063,10 @@ gboolean PipelineApplication::recreate_pipeline_impl(
 }
 
 void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation) {
+  if (g_getenv("HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS")) {
+    g_print("HSTREAM_SEEK_RECREATION status=started generation=%" G_GUINT64_FORMAT "\n", generation);
+    std::fflush(stdout);
+  }
   auto* result = new RuntimeSeekRecreationResult{
       .application = this,
       .app_ctx = app_ctx,
@@ -6079,6 +6091,37 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     runtime_seek_recreation_thread_.join();
   }
   result.app_ctx->defer_bus_watch = FALSE;
+
+  const bool recreation_timed_out = runtime_seek_recreation_timed_out_;
+  const bool shutdown_requested = runtime_seek_shutdown_requested_;
+  runtime_seek_recreation_timed_out_ = false;
+  runtime_seek_shutdown_requested_ = false;
+  if (shutdown_requested) {
+    // Runtime seeking is restricted to local rendering, so this replacement
+    // has no muxed or network output to finalize. Discard it directly instead
+    // of asking a PAUSED pipeline to deliver EOS and waiting five seconds.
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    suspend_uri_playlist_main_context_callbacks(&result.app_ctx->pipeline.multi_src_bin);
+    cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
+    result.app_ctx->eos_received = TRUE;
+    const bool stopped = !result.app_ctx->pipeline.pipeline ||
+        gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
+        runtime_seek_pending_->generation == result.generation) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
+    if (!stopped) {
+      result.app_ctx->return_value = -1;
+      g_printerr("Interrupted local-render replacement could not be stopped\n");
+    }
+    result.app_ctx->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return G_SOURCE_REMOVE;
+  }
 
   if (!result.success || !attach_pipeline_bus_watch(result.app_ctx)) {
     runtime_seek_recreation_active_.store(false, std::memory_order_release);
@@ -6112,22 +6155,6 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     runtime_seek_frame_generation_.store(0, std::memory_order_release);
   }
 
-  const bool recreation_timed_out = runtime_seek_recreation_timed_out_;
-  const bool shutdown_requested = runtime_seek_shutdown_requested_;
-  runtime_seek_recreation_timed_out_ = false;
-  runtime_seek_shutdown_requested_ = false;
-  if (shutdown_requested) {
-    runtime_seek_recreation_active_.store(false, std::memory_order_release);
-    if (runtime_seek_pending_) {
-      finish_runtime_seek("failed", "pipeline-stopped");
-    }
-    result.app_ctx->quit = TRUE;
-    quit_ = TRUE;
-    if (main_loop_) {
-      g_main_loop_quit(main_loop_);
-    }
-    return G_SOURCE_REMOVE;
-  }
   if (gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     runtime_seek_recreation_active_.store(false, std::memory_order_release);
     runtime_seek_frame_generation_.store(0, std::memory_order_release);

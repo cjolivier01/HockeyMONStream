@@ -633,7 +633,10 @@ int main(int argc, char** argv) {
             "URI-MULTIPLE",
             "RENDER",
             true,
-            {{"HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS", "400"}}),
+            {
+                {"HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS", "400"},
+                {"HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK", "1"},
+            }),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
     const std::string runtime_tuning_response_prefix = "runtime property dsplaytracker0 runtime-tuning-config-file=";
@@ -658,6 +661,12 @@ int main(int argc, char** argv) {
         "captured live zoom tuning must be acknowledged with its original UI path");
     const size_t seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
+    ok &= expect(
+        seek_process.WaitFor("HSTREAM_URI_PLAYLIST_CALLBACK status=queued action=switch source=0", seek_mark),
+        "seek regression must queue an old-generation physical-boundary callback");
+    ok &= expect(
+        seek_process.WaitFor("HSTREAM_URI_PLAYLIST_CALLBACK status=cancelled action=switch source=0", seek_mark),
+        "recreation must remove a pending physical-boundary callback before handing AppCtx to the worker");
     ok &= expect(
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
         "local-render-only playback must acknowledge the first processed frame after a replacement seek");
@@ -749,6 +758,7 @@ int main(int argc, char** argv) {
   }
 
   PipelineProcess single_seek_process;
+  PipelineProcess interrupted_seek_process;
   PipelineProcess timed_out_seek_process;
   if (ok) {
     ok &= expect(
@@ -791,6 +801,36 @@ int main(int argc, char** argv) {
         timed_out_seek_process.WaitForExit(&exit_code, std::chrono::seconds(12)),
         "timed-out seek process must remain controllable after worker completion");
     ok &= expect(exit_code == 0, "timed-out local seek must leave a cleanly stoppable render pipeline");
+  }
+
+  if (ok) {
+    ok &= expect(
+        interrupted_seek_process.Start(
+            argv[1], tracker_config, "URI", "RENDER", true, {{"HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS", "2000"}}),
+        "interrupt-during-recreation seek process must start");
+    ok &= expect(
+        interrupted_seek_process.WaitFor("Pipeline running"),
+        "interrupt-during-recreation seek pipeline must reach PLAYING");
+    const size_t interrupted_seek_mark = interrupted_seek_process.Mark();
+    ok &= expect(
+        interrupted_seek_process.Send("@seek 10000000000 14\n"),
+        "interrupt-during-recreation seek command must be delivered");
+    ok &= expect(
+        interrupted_seek_process.WaitFor(
+            "HSTREAM_SEEK_RECREATION status=started generation=14", interrupted_seek_mark, std::chrono::seconds(3)),
+        "seek worker must own AppCtx before interruption");
+    ok &= expect(interrupted_seek_process.Interrupt(), "SIGINT must be delivered while seek recreation is active");
+    exit_code = -1;
+    ok &= expect(
+        interrupted_seek_process.WaitForExit(&exit_code, std::chrono::seconds(8)),
+        "SIGINT during seek recreation must stop promptly after the worker returns");
+    ok &= expect(exit_code == 0, "SIGINT during local-render recreation must exit successfully");
+    ok &= expect(
+        interrupted_seek_process.output().find("Pipeline EOS finalization timed out") == std::string::npos,
+        "discarded local-render replacement must not enter EOS finalization timeout");
+    ok &= expect(
+        interrupted_seek_process.output().find("INTERNAL: App run failed") == std::string::npos,
+        "SIGINT during local-render recreation must not report an internal failure");
   }
 
   if (ok) {
@@ -864,6 +904,9 @@ int main(int argc, char** argv) {
     }
     if (!timed_out_seek_process.output().empty()) {
       timed_out_seek_process.DumpOutput();
+    }
+    if (!interrupted_seek_process.output().empty()) {
+      interrupted_seek_process.DumpOutput();
     }
     if (!failed_process.output().empty()) {
       failed_process.DumpOutput();
