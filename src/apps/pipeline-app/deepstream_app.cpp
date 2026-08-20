@@ -2215,7 +2215,8 @@ gboolean create_pipeline(
           appCtx->perf_struct.aggregate_output_fps ? 1 : config->max_batch_size,
           config->perf_measurement_interval_sec,
           config->multi_source_config[0].dewarper_config.num_surfaces_per_frame,
-          perf_cb);
+          perf_cb,
+          !appCtx->defer_bus_watch);
     } else {
       enable_perf_measurement(
           &appCtx->perf_struct,
@@ -2223,7 +2224,8 @@ gboolean create_pipeline(
           perf_num_instances,
           config->perf_measurement_interval_sec,
           config->multi_source_config[0].dewarper_config.num_surfaces_per_frame,
-          perf_cb);
+          perf_cb,
+          !appCtx->defer_bus_watch);
     }
   }
 

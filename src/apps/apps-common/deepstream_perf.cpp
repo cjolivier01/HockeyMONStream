@@ -260,7 +260,8 @@ gboolean enable_perf_measurement(
     guint num_sources,
     gulong interval_sec,
     guint num_surfaces_per_frame,
-    perf_callback callback) {
+    perf_callback callback,
+    gboolean start_immediately) {
   guint i;
   g_disable_perf_measurement = false;
 
@@ -286,7 +287,9 @@ gboolean enable_perf_measurement(
   str->sink_bin_pad = sink_bin_pad;
   str->fps_measure_probe_id = gst_pad_add_probe(sink_bin_pad, GST_PAD_PROBE_TYPE_BUFFER, sink_bin_buf_probe, str, NULL);
 
-  resume_perf_measurement(str);
+  if (start_immediately) {
+    resume_perf_measurement(str);
+  }
 
   return TRUE;
 }

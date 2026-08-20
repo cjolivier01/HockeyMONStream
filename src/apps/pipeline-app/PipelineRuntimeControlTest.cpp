@@ -812,9 +812,10 @@ int main(int argc, char** argv) {
         timed_out_recreated_at != std::string::npos &&
             timed_out_seek_process.WaitFor("Pipeline running", timed_out_recreated_at, std::chrono::seconds(8)),
         "timed-out replacement must resume local playback before accepting more commands");
+    const size_t recovered_progress_mark = timed_out_seek_process.Mark();
     ok &= expect(
         timed_out_recreated_at != std::string::npos &&
-            timed_out_seek_process.WaitForProgressAtOrBeyond(10, timed_out_recreated_at, std::chrono::seconds(8)),
+            timed_out_seek_process.WaitForProgressAtOrBeyond(10, recovered_progress_mark, std::chrono::seconds(8)),
         "replacement performance timer must continue publishing progress after slow reconstruction");
     ok &= expect(timed_out_seek_process.Send("q"), "timed-out seek process quit command must be delivered");
     exit_code = -1;

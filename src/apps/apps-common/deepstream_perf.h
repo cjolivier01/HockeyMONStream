@@ -81,7 +81,8 @@ gboolean enable_perf_measurement(
     guint num_sources,
     gulong interval_sec,
     guint num_surfaces_per_frame,
-    perf_callback callback);
+    perf_callback callback,
+    gboolean start_immediately);
 
 void pause_perf_measurement(NvDsAppPerfStructInt* str);
 void resume_perf_measurement(NvDsAppPerfStructInt* str);
