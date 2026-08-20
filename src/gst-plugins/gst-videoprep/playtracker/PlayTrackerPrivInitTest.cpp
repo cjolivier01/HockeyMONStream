@@ -148,6 +148,7 @@ int main() {
   const fs::path tmpdir = fs::temp_directory_path() / "vpplaytracker_priv_init_test";
   fs::remove_all(tmpdir);
   const fs::path cfg = write_minimal_config(tmpdir);
+  const fs::path runtime_cfg = write_runtime_config(tmpdir);
   const std::string cfg_str = cfg.string();
 
   cudaStream_t stream = nullptr;
@@ -170,6 +171,10 @@ int main() {
   if (!status.ok()) {
     std::cerr << "PreCapsInit failed: " << status << std::endl;
     return 1;
+  }
+  if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", runtime_cfg.string()))) {
+    std::cerr << "vpplaytracker rejected runtime tuning before caps initialization\n";
+    return 18;
   }
 
   status = priv.PostCapsInit(&params);
@@ -245,7 +250,6 @@ int main() {
   }
   tracker_before->set_bboxes({hm::BBox(120, 100, 520, 360), hm::BBox(80, 60, 720, 420)});
   const hm::BBox follower_before = tracker_before->get_live_box(1)->bounding_box();
-  const fs::path runtime_cfg = write_runtime_config(tmpdir);
   if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", runtime_cfg.string()))) {
     std::cerr << "vpplaytracker rejected valid runtime tuning config\n";
     return 4;

@@ -692,6 +692,30 @@ uint64_t duration_for_source_ns(const NvDsSourceConfig& source_config) {
   return total_ns;
 }
 
+uint64_t frame_duration_for_source_ns(const NvDsSourceConfig& source_config) {
+  std::vector<std::string> uris = split_uri_list(source_config.uri_list);
+  if (uris.empty() && source_config.uri && *source_config.uri) {
+    uris.emplace_back(source_config.uri);
+  }
+  uint64_t longest_frame_ns = GST_CLOCK_TIME_NONE;
+  for (const std::string& uri : uris) {
+    const std::optional<std::string> path = file_uri_to_path(uri.c_str());
+    if (!path) {
+      continue;
+    }
+    const hm::Videoinfo info = hm::getVideoInfo(*path);
+    if (!std::isfinite(info.fps) || info.fps <= 0.0) {
+      continue;
+    }
+    const uint64_t frame_ns = static_cast<uint64_t>(static_cast<double>(GST_SECOND) / info.fps);
+    if (frame_ns == 0) {
+      continue;
+    }
+    longest_frame_ns = longest_frame_ns == GST_CLOCK_TIME_NONE ? frame_ns : std::max(longest_frame_ns, frame_ns);
+  }
+  return longest_frame_ns;
+}
+
 uint64_t hmstitcher_source_offset_ns(const HmStitcherConfig& stitcher_config, guint source_index) {
   if (source_index == 0) {
     return stitcher_config.left_frame_offset_ns;
@@ -2748,6 +2772,7 @@ uint64_t PipelineApplication::playback_horizon_ns(AppCtx* app_ctx) const {
   source_durations.reserve(app_ctx->config.num_source_sub_bins);
   guint enabled_uri_sources = 0;
   const bool stitched_output = app_ctx->config.hmsticher_config.enable;
+  const bool exact_paired_sources = app_ctx->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled;
   for (guint i = 0; i < app_ctx->config.num_source_sub_bins; ++i) {
     const NvDsSourceConfig& source_config = app_ctx->config.multi_source_config[i];
     if (!source_config.enable ||
@@ -2766,13 +2791,14 @@ uint64_t PipelineApplication::playback_horizon_ns(AppCtx* app_ctx) const {
   }
 
   uint64_t horizon_ns = GST_CLOCK_TIME_NONE;
-  const bool have_complete_stitched_source_durations =
-      stitched_output && enabled_uri_sources > 0 && source_durations.size() == enabled_uri_sources;
-  if (!source_durations.empty() && (!stitched_output || have_complete_stitched_source_durations)) {
-    horizon_ns = stitched_output && source_durations.size() > 1
+  const bool complete_source_durations = enabled_uri_sources > 0 && source_durations.size() == enabled_uri_sources;
+  const bool require_complete_source_durations = stitched_output || exact_paired_sources;
+  const bool use_shortest_source = stitched_output || exact_paired_sources;
+  if (!source_durations.empty() && (!require_complete_source_durations || complete_source_durations)) {
+    horizon_ns = use_shortest_source && source_durations.size() > 1
         ? *std::min_element(source_durations.begin(), source_durations.end())
         : *std::max_element(source_durations.begin(), source_durations.end());
-  } else if (!stitched_output) {
+  } else if (!require_complete_source_durations) {
     gint64 queried_duration = 0;
     if (gst_element_query_duration(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_duration) &&
         queried_duration > 0) {
@@ -2809,9 +2835,8 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
       queried_position >= 0) {
     processed_ns = static_cast<uint64_t>(queried_position);
     if (app_ctx->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
-      processed_ns = processed_ns > G_MAXUINT64 - runtime_playback_offset_ns_
-          ? G_MAXUINT64
-          : processed_ns + runtime_playback_offset_ns_;
+      const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
+      processed_ns = processed_ns > G_MAXUINT64 - runtime_offset_ns ? G_MAXUINT64 : processed_ns + runtime_offset_ns;
     } else if (start_time_ns_ > 0 && processed_ns >= start_time_ns_) {
       processed_ns -= start_time_ns_;
     }
@@ -3794,6 +3819,13 @@ bool PipelineApplication::set_element_property_runtime(
       }
     }
     gst_object_unref(element);
+    if (!replaying_runtime_properties_ && !remember_runtime_property(element_name, property_name, value)) {
+      g_printerr(
+          "runtime command failed: could not retain %s.%s for pipeline recreation\n",
+          element_name.c_str(),
+          property_name.c_str());
+      return false;
+    }
     g_print("runtime property %s %s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
     return true;
   }
@@ -3905,11 +3937,155 @@ bool PipelineApplication::set_element_properties_runtime(
     return false;
   }
   for (const PendingAssignment& assignment : pending) {
+    if (!replaying_runtime_properties_ &&
+        !remember_runtime_property(assignment.element_name, assignment.property_name, assignment.value)) {
+      g_printerr(
+          "runtime command failed: could not retain %s.%s for pipeline recreation\n",
+          assignment.element_name.c_str(),
+          assignment.property_name.c_str());
+      return false;
+    }
     g_print(
         "runtime property %s %s=%s\n",
         assignment.element_name.c_str(),
         assignment.property_name.c_str(),
         assignment.value.c_str());
+  }
+  return true;
+}
+
+bool PipelineApplication::remember_runtime_property(
+    const std::string& element_name,
+    const std::string& property_name,
+    const std::string& value) {
+  std::optional<std::string> replay_file_contents;
+  std::optional<std::string> replay_group;
+  if (property_name == "runtime-tuning-config-file") {
+    gchar* contents = nullptr;
+    gsize size = 0;
+    GError* error = nullptr;
+    if (!g_file_get_contents(value.c_str(), &contents, &size, &error)) {
+      g_printerr(
+          "runtime command failed: could not snapshot %s for recreation: %s\n",
+          value.c_str(),
+          error ? error->message : "unknown error");
+      if (error) {
+        g_error_free(error);
+      }
+      return false;
+    }
+    replay_file_contents.emplace(contents, size);
+    g_free(contents);
+
+    // Sparse tuning deltas with the same target set and fields supersede one
+    // another. This keeps rapid slider motion bounded without discarding
+    // independent earlier adjustments that must be replayed in order.
+    try {
+      const YAML::Node document = YAML::Load(*replay_file_contents);
+      const YAML::Node play_tracker = document["play-tracker"];
+      const YAML::Node tuning = play_tracker["hstream-runtime-tuning"];
+      std::vector<std::string> keys;
+      if (tuning && tuning.IsMap()) {
+        for (const auto& entry : tuning) {
+          keys.push_back(entry.first.as<std::string>());
+        }
+      }
+      std::sort(keys.begin(), keys.end());
+      std::ostringstream group;
+      group << (play_tracker["hstream-apply-to-fast-box"] ? play_tracker["hstream-apply-to-fast-box"].as<bool>()
+                                                          : false)
+            << ':'
+            << (play_tracker["hstream-apply-to-follower-box"] ? play_tracker["hstream-apply-to-follower-box"].as<bool>()
+                                                              : true);
+      for (const std::string& key : keys) {
+        group << ':' << key;
+      }
+      replay_group = group.str();
+    } catch (const std::exception& error) {
+      g_printerr("runtime command failed: could not index runtime tuning for recreation: %s\n", error.what());
+      return false;
+    }
+  }
+
+  runtime_property_overrides_.erase(
+      std::remove_if(
+          runtime_property_overrides_.begin(),
+          runtime_property_overrides_.end(),
+          [&](const RuntimePropertyOverride& assignment) {
+            if (assignment.element_name != element_name || assignment.property_name != property_name) {
+              return false;
+            }
+            return !replay_group.has_value() || assignment.replay_group == replay_group;
+          }),
+      runtime_property_overrides_.end());
+  runtime_property_overrides_.push_back(
+      {element_name, property_name, value, std::move(replay_file_contents), std::move(replay_group)});
+  return true;
+}
+
+bool PipelineApplication::reapply_runtime_properties() {
+  replaying_runtime_properties_ = true;
+  auto replay_cleanup = absl::MakeCleanup([this]() { replaying_runtime_properties_ = false; });
+  for (const RuntimePropertyOverride& assignment : runtime_property_overrides_) {
+    std::string replay_value = assignment.value;
+    std::optional<std::string> replay_path;
+    if (assignment.replay_file_contents.has_value()) {
+      GError* error = nullptr;
+      gchar* path = nullptr;
+      const gint fd = g_file_open_tmp("hstream-runtime-tuning-XXXXXX.yaml", &path, &error);
+      if (fd < 0 || !path) {
+        g_printerr(
+            "runtime command failed: could not create replay file for %s.%s: %s\n",
+            assignment.element_name.c_str(),
+            assignment.property_name.c_str(),
+            error ? error->message : "unknown error");
+        if (error) {
+          g_error_free(error);
+        }
+        if (fd >= 0) {
+          ::close(fd);
+        }
+        g_free(path);
+        return false;
+      }
+      replay_path = path;
+      g_free(path);
+      size_t written = 0;
+      while (written < assignment.replay_file_contents->size()) {
+        const ssize_t result = ::write(
+            fd, assignment.replay_file_contents->data() + written, assignment.replay_file_contents->size() - written);
+        if (result > 0) {
+          written += static_cast<size_t>(result);
+          continue;
+        }
+        if (result < 0 && errno == EINTR) {
+          continue;
+        }
+        break;
+      }
+      const int close_result = ::close(fd);
+      if (written != assignment.replay_file_contents->size() || close_result != 0) {
+        g_printerr(
+            "runtime command failed: could not materialize replay file for %s.%s: %s\n",
+            assignment.element_name.c_str(),
+            assignment.property_name.c_str(),
+            std::strerror(errno));
+        ::unlink(replay_path->c_str());
+        return false;
+      }
+      replay_value = *replay_path;
+    }
+    const bool applied = set_element_property_runtime(assignment.element_name, assignment.property_name, replay_value);
+    if (replay_path.has_value()) {
+      ::unlink(replay_path->c_str());
+    }
+    if (!applied) {
+      g_printerr(
+          "runtime command failed: could not restore %s.%s after pipeline recreation\n",
+          assignment.element_name.c_str(),
+          assignment.property_name.c_str());
+      return false;
+    }
   }
   return true;
 }
@@ -4120,9 +4296,9 @@ bool PipelineApplication::seek_runtime_impl(
     const uint64_t queried_position = static_cast<uint64_t>(pipeline_position_ns);
     uint64_t relative_position = 0;
     if (app_context->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
-      relative_position = queried_position > G_MAXUINT64 - runtime_playback_offset_ns_
-          ? G_MAXUINT64
-          : runtime_playback_offset_ns_ + queried_position;
+      const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
+      relative_position =
+          queried_position > G_MAXUINT64 - runtime_offset_ns ? G_MAXUINT64 : runtime_offset_ns + queried_position;
     } else {
       relative_position = queried_position > start_time_ns_ ? queried_position - start_time_ns_ : 0;
     }
@@ -4140,10 +4316,32 @@ bool PipelineApplication::seek_runtime_impl(
     clamped_target_ns = std::min(clamped_target_ns, static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND);
   }
   const uint64_t playback_horizon = playback_horizon_ns(app_context);
-  if (playback_horizon == GST_CLOCK_TIME_NONE) {
+  if (playback_horizon == GST_CLOCK_TIME_NONE || playback_horizon == 0) {
     return reject("rejected", "duration-unavailable");
   }
-  clamped_target_ns = std::min(clamped_target_ns, playback_horizon);
+  // Media durations are exclusive endpoints. The initial playlist planners
+  // correctly reject a target at permanent EOS, while the UI slider can
+  // naturally emit its maximum. Leave at least one second (or two frames for
+  // very low frame-rate media) for the exact-pair barrier and downstream frame
+  // acknowledgement before decoder EOS arrives.
+  uint64_t endpoint_margin_ns = GST_SECOND;
+  for (guint source_index = 0; source_index < app_context->config.num_source_sub_bins; ++source_index) {
+    const NvDsSourceConfig& source = app_context->config.multi_source_config[source_index];
+    if (!source.enable) {
+      continue;
+    }
+    const uint64_t frame_duration_ns = source.camera_fps_n > 0 && source.camera_fps_d > 0
+        ? gst_util_uint64_scale(GST_SECOND, source.camera_fps_d, source.camera_fps_n)
+        : frame_duration_for_source_ns(source);
+    if (frame_duration_ns == GST_CLOCK_TIME_NONE || frame_duration_ns == 0) {
+      continue;
+    }
+    endpoint_margin_ns =
+        std::max(endpoint_margin_ns, frame_duration_ns > G_MAXUINT64 / 2 ? G_MAXUINT64 : frame_duration_ns * 2);
+  }
+  const uint64_t last_seekable_position_ns =
+      playback_horizon > endpoint_margin_ns ? playback_horizon - endpoint_margin_ns : 0;
+  clamped_target_ns = std::min(clamped_target_ns, last_seekable_position_ns);
   if (clamped_target_ns > static_cast<uint64_t>(G_MAXINT64) - start_time_ns_) {
     return reject("failed", "position-overflow");
   }
@@ -4182,7 +4380,6 @@ bool PipelineApplication::seek_runtime_impl(
       .phase = RuntimeSeekPhase::kRecreating,
       .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms()),
   };
-  runtime_playback_offset_ns_ = clamped_target_ns;
   if (!recreate_pipeline_thread_func(app_context) || !runtime_seek_pending_ ||
       runtime_seek_pending_->phase != RuntimeSeekPhase::kWaitingForFrame) {
     if (runtime_seek_pending_) {
@@ -4530,9 +4727,8 @@ uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx)
       stitch_frame_time_ns_,
       app_ctx && app_ctx->configurator().stitching_calibration_required(),
       app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0);
-  return runtime_playback_offset_ns_ > G_MAXUINT64 - configured_position
-      ? G_MAXUINT64
-      : configured_position + runtime_playback_offset_ns_;
+  const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
+  return runtime_offset_ns > G_MAXUINT64 - configured_position ? G_MAXUINT64 : configured_position + runtime_offset_ns;
 }
 
 gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, GstMessage* message) {
@@ -5592,6 +5788,9 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   } else {
     destroy_pipeline(app_ctx_ptr);
   }
+  if (runtime_seek_restart) {
+    runtime_playback_offset_ns_.store(runtime_seek_pending_->target_ns, std::memory_order_release);
+  }
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
@@ -5625,6 +5824,10 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
       hm_app->configurator().post_config_pipeline(hm_app->pipeline, hm_app->config, initial_position_ns);
   if (!post_config_status.ok()) {
     NVGSTDS_ERR_MSG_V("Failed to restore post-configuration position: %s", post_config_status.ToString().c_str());
+    return FALSE;
+  }
+  if (!reapply_runtime_properties()) {
+    NVGSTDS_ERR_MSG_V("Failed to restore live runtime properties");
     return FALSE;
   }
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {

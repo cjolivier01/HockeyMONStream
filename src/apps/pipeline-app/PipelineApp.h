@@ -24,6 +24,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <string>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -144,6 +145,11 @@ class PipelineApplication {
       const std::string& value);
   bool set_element_properties_runtime(
       const std::vector<std::tuple<std::string, std::string, std::string>>& assignments);
+  bool remember_runtime_property(
+      const std::string& element_name,
+      const std::string& property_name,
+      const std::string& value);
+  bool reapply_runtime_properties();
   static gboolean event_thread_func_static(gpointer arg);
   gboolean event_thread_func();
   static gboolean handle_element_message_static(AppCtx* app_ctx, GstMessage* message);
@@ -294,7 +300,16 @@ class PipelineApplication {
     std::chrono::steady_clock::time_point deadline;
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;
-  uint64_t runtime_playback_offset_ns_{0};
+  struct RuntimePropertyOverride {
+    std::string element_name;
+    std::string property_name;
+    std::string value;
+    std::optional<std::string> replay_file_contents;
+    std::optional<std::string> replay_group;
+  };
+  std::vector<RuntimePropertyOverride> runtime_property_overrides_;
+  bool replaying_runtime_properties_{false};
+  std::atomic<uint64_t> runtime_playback_offset_ns_{0};
   std::atomic<uint64_t> runtime_seek_frame_generation_{0};
   static constexpr const char* default_config_file_name_ = "configs/ds_hockey_app_config.yaml";
   static PipelineApplication* instance_;

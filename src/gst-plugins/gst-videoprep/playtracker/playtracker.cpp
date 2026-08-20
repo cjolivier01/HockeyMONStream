@@ -126,6 +126,13 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
   if (!next_context) {
     return absl::InternalError("Failed to reload vpplaytracker context");
   }
+  for (const DsPlayTrackerRuntimeTuning& tuning : runtime_tuning_history_) {
+    const absl::Status status = DsPlayTrackerCtxApplyRuntimeTuning(next_context, tuning);
+    if (!status.ok()) {
+      DsPlayTrackerCtxDeinit(next_context);
+      return status;
+    }
+  }
   if (pt_context_) {
     DsPlayTrackerCtxDeinit(pt_context_);
   }
@@ -202,14 +209,14 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     std::lock_guard<std::mutex> lk(context_mu_);
-    if (!pt_context_) {
-      return false;
+    if (pt_context_) {
+      const absl::Status status = DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, *tuning);
+      if (!status.ok()) {
+        std::cerr << status << std::endl;
+        return false;
+      }
     }
-    const absl::Status status = DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, *tuning);
-    if (!status.ok()) {
-      std::cerr << status << std::endl;
-      return false;
-    }
+    runtime_tuning_history_.push_back(*tuning);
     return true;
   } else if (key == "config-file") {
     // This property changes the next-start base configuration. Runtime tuning

@@ -372,7 +372,78 @@ bool write_playlist_error_config(
   return output.good();
 }
 
-bool write_playlist_seek_config(const fs::path& config, const fs::path& video) {
+bool write_playtracker_config(const fs::path& config) {
+  std::ofstream output(config);
+  output << R"yaml(play-tracker:
+  camera-name: GoPro
+  no-wide-start: true
+  ignore-largest-bbox: true
+  fps-speed-scale: 1.0
+  min-considered-group-velocity: 3.0
+  group-ratio-threshold: 0.5
+  group-velocity-speed-ratio: 0.3
+  scale-speed-constraints: 3.0
+  nonstop-delay-count: 2
+  overshoot-scale-speed-ratio: 0.7
+  overshoot-stop-delay-count: 6
+  max-speed-ratio-x: 1.0
+  max-speed-ratio-y: 1.0
+  max-accel-ratio-x: 1.0
+  max-accel-ratio-y: 1.0
+  follower-box-min-height-ratio: 0.2
+  zoom-in-aggressiveness: 25
+  live-boxes:
+    - name: current_roi
+      time-to-dest-speed-limit-frames: 20
+      time-to-dest-stop-speed-threshold: 0.25
+      resizing-stop-on-dir-change-delay: 4
+      resizing-cancel-stop-on-opposite-dir: true
+      resizing-stop-cancel-hysteresis-frames: 10
+      resizing-stop-delay-cooldown-frames: 2
+      resizing-time-to-dest-speed-limit-frames: 10
+      resizing-time-to-dest-stop-speed-threshold: 0.25
+    - name: current_roi_aspect
+      stop-translation-on-dir-change-delay: 10
+      cancel-stop-on-opposite-dir: true
+      cancel-stop-hysteresis-frames: 2
+      stop-delay-cooldown-frames: 2
+      post-nonstop-stop-delay-count: 6
+      time-to-dest-speed-limit-frames: 20
+      time-to-dest-stop-speed-threshold: 0.25
+      resizing-stop-on-dir-change-delay: 4
+      resizing-cancel-stop-on-opposite-dir: true
+      resizing-stop-cancel-hysteresis-frames: 10
+      resizing-stop-delay-cooldown-frames: 2
+      resizing-time-to-dest-speed-limit-frames: 10
+      resizing-time-to-dest-stop-speed-threshold: 0.25
+      sticky-size-ratio-to-frame-width: 10.0
+      sticky-translation-gaussian-mult: 5.0
+      unsticky-translation-size-ratio: 0.75
+      scale-dest-width: 1.45
+      scale-dest-height: 1.45
+)yaml";
+  return output.good();
+}
+
+bool write_playtracker_runtime_config(const fs::path& config) {
+  std::ofstream output(config);
+  output << R"yaml(play-tracker:
+  hstream-apply-to-fast-box: false
+  hstream-apply-to-follower-box: false
+  hstream-runtime-tuning:
+    zoom-in-aggressiveness: 75
+  live-boxes:
+    - name: current_roi
+    - name: current_roi_aspect
+)yaml";
+  return output.good();
+}
+
+bool write_playlist_seek_config(
+    const fs::path& config,
+    const fs::path& video,
+    const fs::path& playtracker_config,
+    int second_source_chapter_count = 2) {
   std::ofstream output(config);
   output << "application:\n"
          << "  stage: 0\n"
@@ -385,10 +456,12 @@ bool write_playlist_seek_config(const fs::path& config, const fs::path& video) {
            << "  enable: 1\n"
            << "  type: 3\n"
            << "  uri: file://" << video.string() << "\n"
-           << "  uri-list:\n"
-           << "    - file://" << video.string() << "\n"
-           << "    - file://" << video.string() << "\n"
-           << "  source-id: " << source_id << "\n"
+           << "  uri-list:\n";
+    const int chapter_count = source_id == 1 ? second_source_chapter_count : 2;
+    for (int chapter = 0; chapter < chapter_count; ++chapter) {
+      output << "    - file://" << video.string() << "\n";
+    }
+    output << "  source-id: " << source_id << "\n"
            << "  gpu-id: 0\n"
            << "  cuda-memory-type: 0\n";
   }
@@ -424,6 +497,13 @@ bool write_playlist_seek_config(const fs::path& config, const fs::path& video) {
             "/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_perf.yml\n"
          << "  gpu-id: 0\n"
          << "  display-tracking-id: 1\n";
+  output << "ds-playtracker:\n"
+         << "  enable: 1\n"
+         << "  gpu-id: 0\n"
+         << "  unique-id: 75\n"
+         << "  show: 0\n"
+         << "  plugin-type: vpplaytracker\n"
+         << "  config-file: " << playtracker_config.string() << "\n";
   return output.good();
 }
 
@@ -446,6 +526,9 @@ int main(int argc, char** argv) {
   const fs::path config = root / "pipeline.yaml";
   const fs::path tracker_config = root / "pipeline-tracker.yaml";
   const fs::path playlist_seek_config = root / "pipeline-playlist-seek.yaml";
+  const fs::path unequal_playlist_seek_config = root / "pipeline-playlist-unequal-seek.yaml";
+  const fs::path playtracker_config = root / "playtracker.yaml";
+  const fs::path playtracker_runtime_config = root / "playtracker-runtime.yaml";
   const fs::path recreate_config = root / "pipeline-recreate.yaml";
   const fs::path error_config = root / "pipeline-error.yaml";
   const fs::path archive = root / "archive.mkv";
@@ -464,9 +547,15 @@ int main(int argc, char** argv) {
   ok &= expect(
       write_config(tracker_config, video, archive, false, true),
       "pipeline-app native-tracker seek config must be written");
+  ok &= expect(write_playtracker_config(playtracker_config), "playtracker base config must be written");
   ok &= expect(
-      write_playlist_seek_config(playlist_seek_config, video),
+      write_playtracker_runtime_config(playtracker_runtime_config), "playtracker live tuning config must be written");
+  ok &= expect(
+      write_playlist_seek_config(playlist_seek_config, video, playtracker_config),
       "pipeline-app multi-chapter native-tracker seek config must be written");
+  ok &= expect(
+      write_playlist_seek_config(unequal_playlist_seek_config, video, playtracker_config, 1),
+      "pipeline-app unequal exact-pair seek config must be written");
   ok &=
       expect(write_config(recreate_config, video, archive, true), "pipeline-app recreate test config must be written");
   ok &= expect(
@@ -537,11 +626,24 @@ int main(int argc, char** argv) {
         seek_process.Start(argv[1], playlist_seek_config, "URI-MULTIPLE", "RENDER", true),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
+    const std::string runtime_tuning_response_prefix = "runtime property dsplaytracker0 runtime-tuning-config-file=";
+    const std::string runtime_tuning_response = runtime_tuning_response_prefix + playtracker_runtime_config.string();
+    const size_t runtime_tuning_mark = seek_process.Mark();
+    ok &= expect(
+        seek_process.Send(
+            "@set-property dsplaytracker0 runtime-tuning-config-file=" + playtracker_runtime_config.string() + "\n"),
+        "live zoom tuning command must be delivered");
+    ok &= expect(
+        seek_process.WaitFor(runtime_tuning_response, runtime_tuning_mark),
+        "live zoom tuning must be acknowledged before seeking");
     const size_t seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
     ok &= expect(
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
         "local-render-only playback must acknowledge the first processed frame after a replacement seek");
+    ok &= expect(
+        seek_process.WaitFor(runtime_tuning_response_prefix, seek_mark),
+        "replacement pipeline must restore acknowledged live zoom tuning before completing the seek");
     ok &= expect(
         seek_process.WaitForProgressAtOrBeyond(10, seek_mark, std::chrono::seconds(12)),
         "post-seek progress must come from media at or beyond the requested position");
@@ -604,6 +706,26 @@ int main(int argc, char** argv) {
     exit_code = -1;
     ok &= expect(seek_process.WaitForExit(&exit_code), "seek pipeline-app must stop promptly after q");
     ok &= expect(exit_code == 0, "seek pipeline-app must exit successfully");
+  }
+
+  PipelineProcess unequal_seek_process;
+  if (ok) {
+    ok &= expect(
+        unequal_seek_process.Start(argv[1], unequal_playlist_seek_config, "URI-MULTIPLE", "RENDER", true),
+        "unequal exact-pair seek process must start");
+    ok &= expect(unequal_seek_process.WaitFor("Pipeline running"), "unequal exact-pair pipeline must reach PLAYING");
+    const size_t end_seek_mark = unequal_seek_process.Mark();
+    ok &= expect(
+        unequal_seek_process.Send("@seek 1800000000000 12\n"), "exact-pair endpoint seek command must be delivered");
+    ok &= expect(
+        unequal_seek_process.WaitFor(
+            "HSTREAM_SEEK status=ok generation=12 position_ns=1799000000000", end_seek_mark, std::chrono::seconds(20)),
+        "endpoint seek must use the shorter exact-paired source and remain before EOS");
+    exit_code = -1;
+    ok &= expect(
+        unequal_seek_process.WaitForExit(&exit_code, std::chrono::seconds(20)),
+        "endpoint seek process must complete promptly after rendering the final frames");
+    ok &= expect(exit_code == 0, "endpoint seek must complete cleanly instead of becoming a fatal reconstruction");
   }
 
   PipelineProcess single_seek_process;
@@ -669,6 +791,9 @@ int main(int argc, char** argv) {
     }
     if (!seek_process.output().empty()) {
       seek_process.DumpOutput();
+    }
+    if (!unequal_seek_process.output().empty()) {
+      unequal_seek_process.DumpOutput();
     }
     if (!single_seek_process.output().empty()) {
       single_seek_process.DumpOutput();
