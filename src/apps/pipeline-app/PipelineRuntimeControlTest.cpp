@@ -77,7 +77,8 @@ class PipelineProcess {
       const fs::path& config,
       const std::string& source_type = "URI",
       const std::string& sink_type = "FAKE",
-      bool headless_render_video = false) {
+      bool headless_render_video = false,
+      const std::vector<std::pair<std::string, std::string>>& environment = {}) {
     int input_pipe[2];
     int output_pipe[2];
     if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
@@ -96,6 +97,9 @@ class PipelineProcess {
       ::setenv("GST_DEBUG", "NVDS_APP:4", 1);
       ::setenv("USE_NEW_NVSTREAMMUX", "yes", 1);
       ::setenv("HSTREAM_RUNTIME_CONTROL_TEST_ROOT", config.parent_path().c_str(), 1);
+      for (const auto& [name, value] : environment) {
+        ::setenv(name.c_str(), value.c_str(), 1);
+      }
       std::vector<std::string> arguments = {
           executable.string(),
           "-c",
@@ -623,7 +627,13 @@ int main(int argc, char** argv) {
   PipelineProcess seek_process;
   if (ok) {
     ok &= expect(
-        seek_process.Start(argv[1], playlist_seek_config, "URI-MULTIPLE", "RENDER", true),
+        seek_process.Start(
+            argv[1],
+            playlist_seek_config,
+            "URI-MULTIPLE",
+            "RENDER",
+            true,
+            {{"HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS", "400"}}),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
     const std::string runtime_tuning_response_prefix = "runtime property dsplaytracker0 runtime-tuning-config-file=";
@@ -634,8 +644,18 @@ int main(int argc, char** argv) {
             "@set-property dsplaytracker0 runtime-tuning-config-file=" + playtracker_runtime_config.string() + "\n"),
         "live zoom tuning command must be delivered");
     ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_RUNTIME_PROPERTY status=captured element=dsplaytracker0 "
+            "property=runtime-tuning-config-file original=" +
+                playtracker_runtime_config.string(),
+            runtime_tuning_mark),
+        "backend must capture live tuning before plugin mutation");
+    ok &= expect(
+        fs::remove(playtracker_runtime_config),
+        "UI-owned live tuning file must be removable while plugin mutation is delayed");
+    ok &= expect(
         seek_process.WaitFor(runtime_tuning_response, runtime_tuning_mark),
-        "live zoom tuning must be acknowledged before seeking");
+        "captured live zoom tuning must be acknowledged with its original UI path");
     const size_t seek_mark = seek_process.Mark();
     ok &= expect(seek_process.Send("@seek 10000000000 2\n"), "local seek command must be delivered");
     ok &= expect(
@@ -729,6 +749,50 @@ int main(int argc, char** argv) {
   }
 
   PipelineProcess single_seek_process;
+  PipelineProcess timed_out_seek_process;
+  if (ok) {
+    ok &= expect(
+        timed_out_seek_process.Start(
+            argv[1],
+            tracker_config,
+            "URI",
+            "RENDER",
+            true,
+            {{"HM_TEST_RUNTIME_SEEK_TIMEOUT_MS", "150"}, {"HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS", "500"}}),
+        "delayed-recreation seek process must start");
+    ok &= expect(
+        timed_out_seek_process.WaitFor("Pipeline running"), "delayed-recreation seek pipeline must reach PLAYING");
+    const size_t timed_out_seek_mark = timed_out_seek_process.Mark();
+    ok &= expect(
+        timed_out_seek_process.Send("@seek 10000000000 13\n"), "delayed reconstruction seek command must be delivered");
+    ok &= expect(
+        timed_out_seek_process.WaitFor(
+            "HSTREAM_SEEK status=failed generation=13 reason=pipeline-recreate-timeout",
+            timed_out_seek_mark,
+            std::chrono::seconds(3)),
+        "reconstruction deadline must be dispatched while the worker is still delayed");
+    ok &= expect(
+        timed_out_seek_process.WaitFor("Recreate pipeline", timed_out_seek_mark, std::chrono::seconds(8)),
+        "timed-out worker must still return AppCtx in a valid replacement generation");
+    const size_t timed_out_recreated_at =
+        timed_out_seek_process.output().find("Recreate pipeline", timed_out_seek_mark);
+    ok &= expect(
+        timed_out_recreated_at != std::string::npos &&
+            timed_out_seek_process.WaitFor(
+                "HSTREAM_SEEK_RECOVERY status=ready generation=13", timed_out_recreated_at, std::chrono::seconds(8)),
+        "timed-out reconstruction must publish when the AppCtx is safe for runtime controls again");
+    ok &= expect(
+        timed_out_recreated_at != std::string::npos &&
+            timed_out_seek_process.WaitFor("Pipeline running", timed_out_recreated_at, std::chrono::seconds(8)),
+        "timed-out replacement must resume local playback before accepting more commands");
+    ok &= expect(timed_out_seek_process.Send("q"), "timed-out seek process quit command must be delivered");
+    exit_code = -1;
+    ok &= expect(
+        timed_out_seek_process.WaitForExit(&exit_code, std::chrono::seconds(12)),
+        "timed-out seek process must remain controllable after worker completion");
+    ok &= expect(exit_code == 0, "timed-out local seek must leave a cleanly stoppable render pipeline");
+  }
+
   if (ok) {
     ok &= expect(
         single_seek_process.Start(argv[1], tracker_config, "URI", "RENDER", true),
@@ -797,6 +861,9 @@ int main(int argc, char** argv) {
     }
     if (!single_seek_process.output().empty()) {
       single_seek_process.DumpOutput();
+    }
+    if (!timed_out_seek_process.output().empty()) {
+      timed_out_seek_process.DumpOutput();
     }
     if (!failed_process.output().empty()) {
       failed_process.DumpOutput();

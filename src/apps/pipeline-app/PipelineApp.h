@@ -145,10 +145,22 @@ class PipelineApplication {
       const std::string& value);
   bool set_element_properties_runtime(
       const std::vector<std::tuple<std::string, std::string, std::string>>& assignments);
-  bool remember_runtime_property(
+  struct PreparedRuntimeProperty {
+    std::string original_value;
+    std::string applied_value;
+    std::optional<std::string> owned_file_path;
+    std::optional<std::string> replay_file_contents;
+    std::optional<std::string> replay_group;
+  };
+  bool prepare_runtime_property(
       const std::string& element_name,
       const std::string& property_name,
-      const std::string& value);
+      const std::string& value,
+      PreparedRuntimeProperty* prepared);
+  void commit_runtime_property(
+      const std::string& element_name,
+      const std::string& property_name,
+      const PreparedRuntimeProperty& prepared);
   bool reapply_runtime_properties();
   static gboolean event_thread_func_static(gpointer arg);
   gboolean event_thread_func();
@@ -179,6 +191,21 @@ class PipelineApplication {
   gboolean overlay_graphics(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static gboolean recreate_pipeline_thread_func_static(gpointer arg);
   gboolean recreate_pipeline_thread_func(gpointer arg);
+  gboolean recreate_pipeline_impl(
+      AppCtx* app_ctx,
+      bool calibration_restart,
+      bool runtime_seek_restart,
+      uint64_t runtime_seek_target_ns,
+      uint64_t runtime_seek_generation);
+  struct RuntimeSeekRecreationResult {
+    PipelineApplication* application{nullptr};
+    AppCtx* app_ctx{nullptr};
+    uint64_t generation{0};
+    gboolean success{FALSE};
+  };
+  void runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation);
+  static gboolean complete_runtime_seek_recreation_static(gpointer data);
+  gboolean complete_runtime_seek_recreation(RuntimeSeekRecreationResult result);
   static gboolean inject_stitching_calibration_error_static(gpointer arg);
   gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
@@ -300,6 +327,10 @@ class PipelineApplication {
     std::chrono::steady_clock::time_point deadline;
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;
+  std::thread runtime_seek_recreation_thread_;
+  std::atomic<bool> runtime_seek_recreation_active_{false};
+  bool runtime_seek_recreation_timed_out_{false};
+  bool runtime_seek_shutdown_requested_{false};
   struct RuntimePropertyOverride {
     std::string element_name;
     std::string property_name;

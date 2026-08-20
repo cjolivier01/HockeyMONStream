@@ -19,11 +19,10 @@ float DsPlayTrackerZoomInThresholdMultiplier(int aggressiveness) {
   return 1.0f - normalized * (1.0f - kMinimumMultiplier);
 }
 
-absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file) {
-  if (config_file.empty())
-    return absl::InvalidArgumentError("playtracker runtime config-file is empty");
+namespace {
+
+absl::StatusOr<DsPlayTrackerRuntimeTuning> parse_runtime_tuning(const YAML::Node& document) {
   try {
-    const YAML::Node document = YAML::LoadFile(config_file);
     const YAML::Node play_tracker = document["play-tracker"];
     if (!play_tracker || !play_tracker.IsMap())
       return absl::InvalidArgumentError("playtracker runtime config must contain a play-tracker map");
@@ -89,6 +88,28 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const 
         .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical"),
         .dynamic_acceleration_scaling = read_float(runtime, "dynamic-acceleration-scaling"),
     };
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(absl::StrCat("invalid playtracker runtime config: ", error.what()));
+  }
+}
+
+} // namespace
+
+absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file) {
+  if (config_file.empty())
+    return absl::InvalidArgumentError("playtracker runtime config-file is empty");
+  try {
+    return parse_runtime_tuning(YAML::LoadFile(config_file));
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(absl::StrCat("invalid playtracker runtime config: ", error.what()));
+  }
+}
+
+absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuningContents(const std::string& contents) {
+  if (contents.empty())
+    return absl::InvalidArgumentError("playtracker runtime config is empty");
+  try {
+    return parse_runtime_tuning(YAML::Load(contents));
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(absl::StrCat("invalid playtracker runtime config: ", error.what()));
   }

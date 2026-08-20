@@ -229,6 +229,7 @@ struct _AppCtx {
   bus_message_callback bus_message_cb{nullptr};
   defer_eos_callback defer_eos_cb{nullptr};
   fatal_pipeline_error_callback fatal_pipeline_error_cb{nullptr};
+  gboolean defer_bus_watch{false};
   NvDsFrameLatencyInfo* latency_info{nullptr};
   GMutex latency_lock{
       0,
@@ -334,6 +335,8 @@ void toggle_show_bbox_text(AppCtx* appCtx);
 
 void destroy_pipeline(AppCtx* appCtx);
 void destroy_pipeline_for_recreate(AppCtx* appCtx);
+gboolean attach_pipeline_bus_watch(AppCtx* appCtx);
+void detach_pipeline_bus_watch(AppCtx* appCtx);
 gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx);
 gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout);
 void restart_pipeline(AppCtx* appCtx);

@@ -696,7 +696,7 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
-      "delayed_seek_generation, backend_seek_position\n");
+      "delayed_seek_generation, timeout_next_seek, backend_seek_position\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-stall-preview-disable'):\n");
   file.write("        preview_disable_stalled = True\n");
@@ -721,6 +721,10 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-stall-seek'):\n");
   file.write("        stall_next_seek = True\n");
   file.write("        print('test seek acknowledgement stalled', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-timeout-seek'):\n");
+  file.write("        timeout_next_seek = True\n");
+  file.write("        print('test seek reconstruction timeout armed', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-set-backend-position '):\n");
   file.write("        backend_seek_position = int(line.rstrip('\\n').split(' ', 1)[1])\n");
@@ -775,6 +779,14 @@ bool write_fake_runner(const QString& path) {
   file.write("        _, delta_ns, generation = line.rstrip('\\n').split(' ', 2)\n");
   file.write("        backend_seek_position = max(0, min(600000000000, backend_seek_position + int(delta_ns)))\n");
   file.write("        position_ns = str(backend_seek_position)\n");
+  file.write("        if timeout_next_seek:\n");
+  file.write("            timeout_next_seek = False\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=failed generation=' + generation + "
+      "' reason=pipeline-recreate-timeout', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
+  file.write("            print('HSTREAM_SEEK_RECOVERY status=ready generation=' + generation, flush=True)\n");
+  file.write("            return\n");
   file.write("        if stall_next_seek:\n");
   file.write("            stall_next_seek = False\n");
   file.write("            delayed_seek_position = position_ns\n");
@@ -792,6 +804,14 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@seek '):\n");
   file.write("        _, position_ns, generation = line.rstrip('\\n').split(' ', 2)\n");
   file.write("        backend_seek_position = int(position_ns)\n");
+  file.write("        if timeout_next_seek:\n");
+  file.write("            timeout_next_seek = False\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=failed generation=' + generation + "
+      "' reason=pipeline-recreate-timeout', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
+  file.write("            print('HSTREAM_SEEK_RECOVERY status=ready generation=' + generation, flush=True)\n");
+  file.write("            return\n");
   file.write("        if stall_next_seek:\n");
   file.write("            stall_next_seek = False\n");
   file.write("            delayed_seek_position = position_ns\n");
@@ -850,6 +870,7 @@ bool write_fake_runner(const QString& path) {
   file.write("stall_next_seek = False\n");
   file.write("delayed_seek_position = ''\n");
   file.write("delayed_seek_generation = ''\n");
+  file.write("timeout_next_seek = False\n");
   file.write("backend_seek_position = 42000000000\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
@@ -2525,6 +2546,33 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains("playback seek complete at 00:00:57") && pause->isEnabled(),
           "The +10s control should use the backend's fresh 47-second position, complete at 57 seconds, and then "
           "restore Pause")) {
+    return false;
+  }
+  pipeline_process->write("@test-timeout-seek\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test seek reconstruction timeout armed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  activate(seek_forward);
+  for (int i = 0; i < 100 && !window->logText().contains("playback seek failed: pipeline-recreate-timeout"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !pause->isEnabled() && !seek_slider->isEnabled() && !seek_back->isEnabled() && !seek_forward->isEnabled() &&
+              !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
+          "A reconstruction timeout must keep transport and live tuning disabled until AppCtx recovery")) {
+    return false;
+  }
+  for (int i = 0; i < 100 && !window->logText().contains("playback recovered after a timed-out seek reconstruction");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          pause->isEnabled() && seek_slider->isEnabled() && seek_back->isEnabled() && seek_forward->isEnabled() &&
+              program_control_tabs->isEnabled() && stitched_control_tabs->isEnabled(),
+          "The explicit reconstruction recovery event must safely restore transport and live tuning")) {
     return false;
   }
   const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";

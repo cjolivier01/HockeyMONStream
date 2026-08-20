@@ -35,3 +35,4 @@ struct DsPlayTrackerRuntimeTuning {
 };
 
 absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuning(const std::string& config_file);
+absl::StatusOr<DsPlayTrackerRuntimeTuning> DsPlayTrackerLoadRuntimeTuningContents(const std::string& contents);

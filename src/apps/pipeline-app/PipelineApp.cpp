@@ -8,6 +8,7 @@
 #include "RuntimePropertyValueParser.h"
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -24,6 +25,7 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
@@ -117,6 +119,79 @@ guint runtime_seek_transition_timeout_ms() {
   gchar* end = nullptr;
   const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
   return end && *end == '\0' && parsed > 0 && parsed <= G_MAXUINT ? static_cast<guint>(parsed) : kDefaultTimeoutMs;
+}
+
+guint runtime_seek_recreation_timeout_ms() {
+  constexpr guint kDefaultTimeoutMs = 30'000;
+  const char* configured = g_getenv("HM_TEST_RUNTIME_SEEK_TIMEOUT_MS");
+  if (!configured || !*configured) {
+    return kDefaultTimeoutMs;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  return end && *end == '\0' && parsed > 0 && parsed <= G_MAXUINT ? static_cast<guint>(parsed) : kDefaultTimeoutMs;
+}
+
+guint test_delay_ms(const char* variable) {
+  const char* configured = g_getenv(variable);
+  if (!configured || !*configured) {
+    return 0;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  return end && *end == '\0' && parsed <= G_MAXUINT ? static_cast<guint>(parsed) : 0;
+}
+
+bool materialize_secure_runtime_file(
+    const std::string& contents,
+    std::string* output_path,
+    std::string* failure_reason) {
+  GError* error = nullptr;
+  gchar* path = nullptr;
+  const gint fd = g_file_open_tmp("hstream-runtime-tuning-XXXXXX.yaml", &path, &error);
+  if (fd < 0 || !path) {
+    if (failure_reason) {
+      *failure_reason = error ? error->message : "could not create temporary file";
+    }
+    if (error) {
+      g_error_free(error);
+    }
+    if (fd >= 0) {
+      ::close(fd);
+    }
+    g_free(path);
+    return false;
+  }
+  std::string owned_path(path);
+  g_free(path);
+  bool ok = ::fchmod(fd, S_IRUSR | S_IWUSR) == 0;
+  size_t written = 0;
+  while (ok && written < contents.size()) {
+    const ssize_t result = ::write(fd, contents.data() + written, contents.size() - written);
+    if (result > 0) {
+      written += static_cast<size_t>(result);
+    } else if (result < 0 && errno == EINTR) {
+      continue;
+    } else {
+      ok = false;
+    }
+  }
+  int saved_errno = ok ? 0 : errno;
+  if (::close(fd) != 0) {
+    if (ok) {
+      saved_errno = errno;
+    }
+    ok = false;
+  }
+  if (!ok || written != contents.size()) {
+    if (failure_reason) {
+      *failure_reason = saved_errno != 0 ? std::strerror(saved_errno) : "incomplete temporary-file write";
+    }
+    ::unlink(owned_path.c_str());
+    return false;
+  }
+  *output_path = std::move(owned_path);
+  return true;
 }
 
 absl::StatusOr<uint64_t> parse_time_option(const char* option, const char* value) {
@@ -1772,9 +1847,14 @@ absl::Status PipelineApplication::createMainLoop(
     }
   });
   // This cleanup is pushed after pipeline destruction so it runs first. A
-  // pending worker holds its own element references, but the transaction must
-  // be cancelled before AppCtx replaces or destroys its pipeline pointers.
+  // pending recreation worker owns the reused AppCtx, so it must finish before
+  // the ordinary stage cleanup destroys that pipeline a final time.
   cleanup_stack.push([this, contexts = app_contexts] {
+    runtime_seek_shutdown_requested_ = true;
+    if (runtime_seek_recreation_thread_.joinable()) {
+      runtime_seek_recreation_thread_.join();
+    }
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (!runtime_seek_pending_) {
       return;
     }
@@ -3181,6 +3261,15 @@ gboolean PipelineApplication::check_for_interrupt() {
     return FALSE;
   if (cintr_) {
     cintr_ = FALSE;
+    if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+      runtime_seek_shutdown_requested_ = true;
+      if (runtime_seek_pending_) {
+        finish_runtime_seek("failed", "pipeline-stopped");
+      }
+      // AppCtx is still owned by the worker. Its completion callback will
+      // leave the pipeline in a destructible state before quitting the loop.
+      return TRUE;
+    }
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
@@ -3766,6 +3855,15 @@ bool PipelineApplication::set_element_property_runtime(
         property_name.c_str());
     return false;
   }
+  PreparedRuntimeProperty prepared;
+  if (!prepare_runtime_property(element_name, property_name, value, &prepared)) {
+    return false;
+  }
+  auto prepared_cleanup = absl::MakeCleanup([&prepared]() {
+    if (prepared.owned_file_path.has_value()) {
+      ::unlink(prepared.owned_file_path->c_str());
+    }
+  });
   auto& app_ctx = stage_app_contexts_.at(current_stage_);
   for (const auto& app : app_ctx) {
     if (!app || !app->pipeline.pipeline) {
@@ -3783,7 +3881,7 @@ bool PipelineApplication::set_element_property_runtime(
       return false;
     }
     GValue gvalue = G_VALUE_INIT;
-    if (!set_gvalue_from_string(&gvalue, pspec, value)) {
+    if (!set_gvalue_from_string(&gvalue, pspec, prepared.applied_value)) {
       if (G_IS_VALUE(&gvalue)) {
         g_value_unset(&gvalue);
       }
@@ -3799,8 +3897,18 @@ bool PipelineApplication::set_element_property_runtime(
           "runtime command failed: value out of range for %s.%s=%s\n",
           element_name.c_str(),
           property_name.c_str(),
-          value.c_str());
+          prepared.original_value.c_str());
       return false;
+    }
+    const guint apply_delay_ms = test_delay_ms("HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS");
+    if (!replaying_runtime_properties_ && apply_delay_ms > 0 && prepared.owned_file_path.has_value()) {
+      g_print(
+          "HSTREAM_RUNTIME_PROPERTY status=captured element=%s property=%s original=%s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          prepared.original_value.c_str());
+      std::fflush(stdout);
+      g_usleep(static_cast<gulong>(apply_delay_ms) * 1000);
     }
     g_object_set_property(G_OBJECT(element), property_name.c_str(), &gvalue);
     g_value_unset(&gvalue);
@@ -3814,19 +3922,16 @@ bool PipelineApplication::set_element_property_runtime(
             "runtime command failed: plugin rejected %s.%s=%s\n",
             element_name.c_str(),
             property_name.c_str(),
-            value.c_str());
+            prepared.original_value.c_str());
         return false;
       }
     }
     gst_object_unref(element);
-    if (!replaying_runtime_properties_ && !remember_runtime_property(element_name, property_name, value)) {
-      g_printerr(
-          "runtime command failed: could not retain %s.%s for pipeline recreation\n",
-          element_name.c_str(),
-          property_name.c_str());
-      return false;
+    if (!replaying_runtime_properties_) {
+      commit_runtime_property(element_name, property_name, prepared);
     }
-    g_print("runtime property %s %s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+    g_print(
+        "runtime property %s %s=%s\n", element_name.c_str(), property_name.c_str(), prepared.original_value.c_str());
     return true;
   }
   g_printerr("runtime command failed: element not found: %s\n", element_name.c_str());
@@ -3839,7 +3944,7 @@ bool PipelineApplication::set_element_properties_runtime(
     GstElement* element{nullptr};
     std::string element_name;
     std::string property_name;
-    std::string value;
+    PreparedRuntimeProperty prepared;
     GParamSpec* pspec{nullptr};
     GValue requested = G_VALUE_INIT;
     GValue previous = G_VALUE_INIT;
@@ -3855,6 +3960,9 @@ bool PipelineApplication::set_element_properties_runtime(
       }
       if (assignment.element) {
         gst_object_unref(assignment.element);
+      }
+      if (assignment.prepared.owned_file_path.has_value()) {
+        ::unlink(assignment.prepared.owned_file_path->c_str());
       }
     }
   });
@@ -3882,9 +3990,14 @@ bool PipelineApplication::set_element_properties_runtime(
     assignment.element = element;
     assignment.element_name = element_name;
     assignment.property_name = property_name;
-    assignment.value = value;
+    if (!prepare_runtime_property(element_name, property_name, value, &assignment.prepared)) {
+      assignment.prepared.original_value = value;
+      pending.push_back(std::move(assignment));
+      return false;
+    }
     assignment.pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
-    if (!assignment.pspec || !set_gvalue_from_string(&assignment.requested, assignment.pspec, value) ||
+    if (!assignment.pspec ||
+        !set_gvalue_from_string(&assignment.requested, assignment.pspec, assignment.prepared.applied_value) ||
         g_param_value_validate(assignment.pspec, &assignment.requested)) {
       pending.push_back(std::move(assignment));
       g_printerr(
@@ -3907,6 +4020,25 @@ bool PipelineApplication::set_element_properties_runtime(
       g_object_get_property(G_OBJECT(element), property_name.c_str(), &assignment.previous);
     }
     pending.push_back(std::move(assignment));
+  }
+  const guint apply_delay_ms = test_delay_ms("HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS");
+  if (!replaying_runtime_properties_ && apply_delay_ms > 0) {
+    bool captured_file = false;
+    for (const PendingAssignment& assignment : pending) {
+      if (!assignment.prepared.owned_file_path.has_value()) {
+        continue;
+      }
+      captured_file = true;
+      g_print(
+          "HSTREAM_RUNTIME_PROPERTY status=captured element=%s property=%s original=%s\n",
+          assignment.element_name.c_str(),
+          assignment.property_name.c_str(),
+          assignment.prepared.original_value.c_str());
+    }
+    if (captured_file) {
+      std::fflush(stdout);
+      g_usleep(static_cast<gulong>(apply_delay_ms) * 1000);
+    }
   }
   size_t applied = 0;
   for (; applied < pending.size(); ++applied) {
@@ -3933,33 +4065,32 @@ bool PipelineApplication::set_element_properties_runtime(
         "runtime command failed: plugin rejected %s.%s=%s\n",
         failed.element_name.c_str(),
         failed.property_name.c_str(),
-        failed.value.c_str());
+        failed.prepared.original_value.c_str());
     return false;
   }
   for (const PendingAssignment& assignment : pending) {
-    if (!replaying_runtime_properties_ &&
-        !remember_runtime_property(assignment.element_name, assignment.property_name, assignment.value)) {
-      g_printerr(
-          "runtime command failed: could not retain %s.%s for pipeline recreation\n",
-          assignment.element_name.c_str(),
-          assignment.property_name.c_str());
-      return false;
+    if (!replaying_runtime_properties_) {
+      commit_runtime_property(assignment.element_name, assignment.property_name, assignment.prepared);
     }
     g_print(
         "runtime property %s %s=%s\n",
         assignment.element_name.c_str(),
         assignment.property_name.c_str(),
-        assignment.value.c_str());
+        assignment.prepared.original_value.c_str());
   }
   return true;
 }
 
-bool PipelineApplication::remember_runtime_property(
+bool PipelineApplication::prepare_runtime_property(
     const std::string& element_name,
     const std::string& property_name,
-    const std::string& value) {
-  std::optional<std::string> replay_file_contents;
-  std::optional<std::string> replay_group;
+    const std::string& value,
+    PreparedRuntimeProperty* prepared) {
+  if (!prepared) {
+    return false;
+  }
+  prepared->original_value = value;
+  prepared->applied_value = value;
   if (property_name == "runtime-tuning-config-file") {
     gchar* contents = nullptr;
     gsize size = 0;
@@ -3974,14 +4105,24 @@ bool PipelineApplication::remember_runtime_property(
       }
       return false;
     }
-    replay_file_contents.emplace(contents, size);
+    prepared->replay_file_contents.emplace(contents, size);
     g_free(contents);
+
+    const auto tuning_status = DsPlayTrackerLoadRuntimeTuningContents(*prepared->replay_file_contents);
+    if (!tuning_status.ok()) {
+      g_printerr(
+          "runtime command failed: invalid runtime tuning for %s.%s: %s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          tuning_status.status().ToString().c_str());
+      return false;
+    }
 
     // Sparse tuning deltas with the same target set and fields supersede one
     // another. This keeps rapid slider motion bounded without discarding
     // independent earlier adjustments that must be replayed in order.
     try {
-      const YAML::Node document = YAML::Load(*replay_file_contents);
+      const YAML::Node document = YAML::Load(*prepared->replay_file_contents);
       const YAML::Node play_tracker = document["play-tracker"];
       const YAML::Node tuning = play_tracker["hstream-runtime-tuning"];
       std::vector<std::string> keys;
@@ -4000,13 +4141,31 @@ bool PipelineApplication::remember_runtime_property(
       for (const std::string& key : keys) {
         group << ':' << key;
       }
-      replay_group = group.str();
+      prepared->replay_group = group.str();
     } catch (const std::exception& error) {
       g_printerr("runtime command failed: could not index runtime tuning for recreation: %s\n", error.what());
       return false;
     }
+    std::string failure_reason;
+    std::string owned_path;
+    if (!materialize_secure_runtime_file(*prepared->replay_file_contents, &owned_path, &failure_reason)) {
+      g_printerr(
+          "runtime command failed: could not materialize owned tuning for %s.%s: %s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          failure_reason.c_str());
+      return false;
+    }
+    prepared->owned_file_path = owned_path;
+    prepared->applied_value = std::move(owned_path);
   }
+  return true;
+}
 
+void PipelineApplication::commit_runtime_property(
+    const std::string& element_name,
+    const std::string& property_name,
+    const PreparedRuntimeProperty& prepared) {
   runtime_property_overrides_.erase(
       std::remove_if(
           runtime_property_overrides_.begin(),
@@ -4015,12 +4174,11 @@ bool PipelineApplication::remember_runtime_property(
             if (assignment.element_name != element_name || assignment.property_name != property_name) {
               return false;
             }
-            return !replay_group.has_value() || assignment.replay_group == replay_group;
+            return !prepared.replay_group.has_value() || assignment.replay_group == prepared.replay_group;
           }),
       runtime_property_overrides_.end());
   runtime_property_overrides_.push_back(
-      {element_name, property_name, value, std::move(replay_file_contents), std::move(replay_group)});
-  return true;
+      {element_name, property_name, prepared.original_value, prepared.replay_file_contents, prepared.replay_group});
 }
 
 bool PipelineApplication::reapply_runtime_properties() {
@@ -4244,7 +4402,7 @@ bool PipelineApplication::seek_runtime_impl(
   if (!runtime_seek_is_local_render_only()) {
     return reject("rejected", "nonlocal-output-active");
   }
-  if (runtime_seek_pending_) {
+  if (runtime_seek_pending_ || runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
     return reject("rejected", "seek-in-progress");
   }
   if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
@@ -4378,19 +4536,29 @@ bool PipelineApplication::seek_runtime_impl(
       .generation = generation,
       .target_ns = clamped_target_ns,
       .phase = RuntimeSeekPhase::kRecreating,
-      .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms()),
+      .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_recreation_timeout_ms()),
   };
-  if (!recreate_pipeline_thread_func(app_context) || !runtime_seek_pending_ ||
-      runtime_seek_pending_->phase != RuntimeSeekPhase::kWaitingForFrame) {
-    if (runtime_seek_pending_) {
-      finish_runtime_seek("failed", "pipeline-recreate-failed");
+  runtime_seek_recreation_timed_out_ = false;
+  runtime_seek_shutdown_requested_ = false;
+  app_context->defer_bus_watch = TRUE;
+  detach_pipeline_bus_watch(app_context);
+  runtime_seek_recreation_active_.store(true, std::memory_order_release);
+  try {
+    runtime_seek_recreation_thread_ = std::thread(
+        &PipelineApplication::runtime_seek_recreation_worker, this, app_context, clamped_target_ns, generation);
+  } catch (const std::exception& error) {
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    app_context->defer_bus_watch = FALSE;
+    if (!attach_pipeline_bus_watch(app_context)) {
+      app_context->return_value = -1;
+      app_context->quit = TRUE;
+      quit_ = TRUE;
+      if (main_loop_) {
+        g_main_loop_quit(main_loop_);
+      }
     }
-    app_context->return_value = -1;
-    app_context->quit = TRUE;
-    quit_ = TRUE;
-    if (main_loop_) {
-      g_main_loop_quit(main_loop_);
-    }
+    finish_runtime_seek("failed", "pipeline-recreate-worker-unavailable");
+    g_printerr("runtime seek could not start its recreation worker: %s\n", error.what());
     return false;
   }
   return true;
@@ -4404,6 +4572,10 @@ void PipelineApplication::advance_runtime_seek() {
   AppCtx* app_context = pending.app_ctx;
   GstElement* pipeline = pending.pipeline;
   if (pending.phase == RuntimeSeekPhase::kRecreating) {
+    if (std::chrono::steady_clock::now() >= pending.deadline) {
+      runtime_seek_recreation_timed_out_ = true;
+      finish_runtime_seek("failed", "pipeline-recreate-timeout");
+    }
     return;
   }
   if (!app_context || !pipeline || app_context->pipeline.pipeline != pipeline) {
@@ -5317,6 +5489,13 @@ gboolean PipelineApplication::event_thread_func() {
   gboolean ret = TRUE;
 
   advance_runtime_seek();
+  // The recreation worker exclusively owns the reused AppCtx and its old/new
+  // GstPipeline generations. Keep dispatching the GLib loop (including the
+  // seek deadline), but do not inspect that mutable state or consume another
+  // runtime command until the completed transaction is published here.
+  if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
 
   auto& app_ctx = stage_app_contexts_.at(current_stage_);
   for (i = 0; i < app_ctx.size(); i++) {
@@ -5492,6 +5671,9 @@ gpointer PipelineApplication::nvds_x_event_thread() {
     memset(&e, 0, sizeof(XEvent));
     while (!quit_ && display_ && XPending(display_)) {
       XNextEvent(display_, &e);
+      if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+        continue;
+      }
       auto& app_ctx = stage_app_contexts_.at(current_stage_);
       switch (e.type) {
         case ButtonPress: {
@@ -5762,13 +5944,9 @@ gboolean PipelineApplication::inject_stitching_calibration_error() {
 }
 
 gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
-  guint i;
-  gboolean ret = TRUE;
   AppCtx* app_ctx_ptr = reinterpret_cast<AppCtx*>(arg);
   const bool calibration_context = one_pass_calibration_contexts_.count(app_ctx_ptr) != 0;
   const bool calibration_restart = calibration_context && stitch_frame_rewound_contexts_.count(app_ctx_ptr) != 0;
-  const bool runtime_seek_restart = runtime_seek_pending_ && runtime_seek_pending_->app_ctx == app_ctx_ptr &&
-      runtime_seek_pending_->phase == RuntimeSeekPhase::kRecreating;
   if (stitch_frame_restart_awaiting_playing_) {
     g_print("Deferring periodic pipeline recreation until stitch-frame playback restart completes\n");
     return TRUE;
@@ -5777,9 +5955,26 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     g_print("Deferring periodic pipeline recreation until stitching calibration completes\n");
     return TRUE;
   }
-  if (runtime_seek_pending_ && !runtime_seek_restart) {
+  if (runtime_seek_pending_ || runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
     g_print("Deferring periodic pipeline recreation until the active playback seek completes\n");
     return TRUE;
+  }
+  return recreate_pipeline_impl(app_ctx_ptr, calibration_restart, false, 0, 0);
+}
+
+gboolean PipelineApplication::recreate_pipeline_impl(
+    AppCtx* app_ctx_ptr,
+    bool calibration_restart,
+    bool runtime_seek_restart,
+    uint64_t runtime_seek_target_ns,
+    uint64_t /*runtime_seek_generation*/) {
+  guint i;
+  gboolean ret = TRUE;
+  if (runtime_seek_restart) {
+    const guint delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS");
+    if (delay_ms > 0) {
+      g_usleep(static_cast<gulong>(delay_ms) * 1000);
+    }
   }
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
@@ -5789,7 +5984,7 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     destroy_pipeline(app_ctx_ptr);
   }
   if (runtime_seek_restart) {
-    runtime_playback_offset_ns_.store(runtime_seek_pending_->target_ns, std::memory_order_release);
+    runtime_playback_offset_ns_.store(runtime_seek_target_ns, std::memory_order_release);
   }
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
@@ -5843,18 +6038,11 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     return ret;
   }
   if (runtime_seek_restart) {
-    reset_playback_timing_state(current_stage_);
-    RuntimeSeekPending& pending = *runtime_seek_pending_;
-    pending.pipeline = GST_ELEMENT(gst_object_ref(app_ctx_ptr->pipeline.pipeline));
-    pending.phase = RuntimeSeekPhase::kWaitingForFrame;
-    pending.deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms());
-    runtime_seek_frame_generation_.store(pending.generation, std::memory_order_release);
+    // Publish the replacement and its seek acknowledgement state on the main
+    // context before allowing the first post-preroll frame to run.
+    return ret;
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-    if (runtime_seek_restart) {
-      runtime_seek_frame_generation_.store(0, std::memory_order_release);
-    }
     g_print("\ncan't set pipeline to playing state.\n");
     return FALSE;
   }
@@ -5864,6 +6052,100 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
         app_ctx_ptr->pipeline.pipeline, gst_message_new_eos(GST_OBJECT(app_ctx_ptr->pipeline.pipeline)));
   }
   return ret;
+}
+
+void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation) {
+  auto* result = new RuntimeSeekRecreationResult{
+      .application = this,
+      .app_ctx = app_ctx,
+      .generation = generation,
+      .success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation),
+  };
+  GMainContext* context = main_loop_ ? g_main_loop_get_context(main_loop_) : g_main_context_default();
+  g_main_context_invoke_full(
+      context, G_PRIORITY_DEFAULT, complete_runtime_seek_recreation_static, result, [](gpointer data) {
+        delete static_cast<RuntimeSeekRecreationResult*>(data);
+      });
+}
+
+gboolean PipelineApplication::complete_runtime_seek_recreation_static(gpointer data) {
+  const auto* result = static_cast<RuntimeSeekRecreationResult*>(data);
+  return result && result->application ? result->application->complete_runtime_seek_recreation(*result)
+                                       : G_SOURCE_REMOVE;
+}
+
+gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecreationResult result) {
+  if (runtime_seek_recreation_thread_.joinable()) {
+    runtime_seek_recreation_thread_.join();
+  }
+  result.app_ctx->defer_bus_watch = FALSE;
+
+  if (!result.success || !attach_pipeline_bus_watch(result.app_ctx)) {
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
+        runtime_seek_pending_->generation == result.generation) {
+      finish_runtime_seek("failed", result.success ? "pipeline-bus-unavailable" : "pipeline-recreate-failed");
+    }
+    result.app_ctx->return_value = -1;
+    result.app_ctx->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return G_SOURCE_REMOVE;
+  }
+
+  if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
+      runtime_seek_pending_->generation == result.generation) {
+    reset_playback_timing_state(current_stage_);
+    RuntimeSeekPending& pending = *runtime_seek_pending_;
+    pending.pipeline = GST_ELEMENT(gst_object_ref(result.app_ctx->pipeline.pipeline));
+    pending.phase = RuntimeSeekPhase::kWaitingForFrame;
+    pending.deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms());
+    runtime_seek_frame_generation_.store(pending.generation, std::memory_order_release);
+  } else {
+    // A reconstruction deadline or user stop may have completed the public
+    // transaction while the worker was still returning the AppCtx to a valid
+    // generation. Do not let a late frame acknowledge that closed request.
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+  }
+
+  const bool recreation_timed_out = runtime_seek_recreation_timed_out_;
+  const bool shutdown_requested = runtime_seek_shutdown_requested_;
+  runtime_seek_recreation_timed_out_ = false;
+  runtime_seek_shutdown_requested_ = false;
+  if (shutdown_requested) {
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
+    result.app_ctx->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return G_SOURCE_REMOVE;
+  }
+  if (gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-play-failed");
+    }
+    result.app_ctx->return_value = -1;
+    result.app_ctx->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+  } else if (recreation_timed_out) {
+    g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", result.generation);
+    std::fflush(stdout);
+  }
+  runtime_seek_recreation_active_.store(false, std::memory_order_release);
+  return G_SOURCE_REMOVE;
 }
 
 //------------------------------------------------------------------------------

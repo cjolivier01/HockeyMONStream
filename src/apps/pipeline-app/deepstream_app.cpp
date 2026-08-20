@@ -539,6 +539,29 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
   return TRUE;
 }
 
+gboolean attach_pipeline_bus_watch(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return FALSE;
+  }
+  if (appCtx->pipeline.bus_id != 0) {
+    return TRUE;
+  }
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
+  appCtx->pipeline.bus_id = gst_bus_add_watch(bus, bus_callback, appCtx);
+  gst_object_unref(bus);
+  return appCtx->pipeline.bus_id != 0;
+}
+
+void detach_pipeline_bus_watch(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline || appCtx->pipeline.bus_id == 0) {
+    return;
+  }
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
+  gst_bus_remove_watch(bus);
+  gst_object_unref(bus);
+  appCtx->pipeline.bus_id = 0;
+}
+
 gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx) {
   if (!appCtx || !appCtx->pipeline.pipeline) {
     return TRUE;
@@ -1806,9 +1829,10 @@ gboolean create_pipeline(
     goto done;
   }
 
-  bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline->pipeline));
-  pipeline->bus_id = gst_bus_add_watch(bus, bus_callback, appCtx);
-  gst_object_unref(bus);
+  if (!appCtx->defer_bus_watch && !attach_pipeline_bus_watch(appCtx)) {
+    NVGSTDS_ERR_MSG_V("Failed to attach pipeline bus watch");
+    goto done;
+  }
 
   if (config->file_loop) {
     /* Let each source bin know it needs to loop. */
@@ -2348,7 +2372,10 @@ void destroy_pipeline(AppCtx* appCtx) {
   if (appCtx->pipeline.pipeline) {
     bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
     gst_bus_set_sync_handler(bus, NULL, NULL, NULL);
-    gst_bus_remove_watch(bus);
+    if (appCtx->pipeline.bus_id != 0) {
+      gst_bus_remove_watch(bus);
+      appCtx->pipeline.bus_id = 0;
+    }
     gst_object_unref(bus);
     gst_object_unref(appCtx->pipeline.pipeline);
     appCtx->pipeline.pipeline = NULL;

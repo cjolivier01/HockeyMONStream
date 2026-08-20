@@ -392,6 +392,7 @@ class HStreamWindow : public QMainWindow {
   qint64 playback_duration_ns_{0};
   quint64 playback_seek_generation_{0};
   quint64 pending_playback_seek_generation_{0};
+  quint64 playback_seek_recovery_generation_{0};
   bool playback_seek_channel_available_{false};
   bool active_run_local_render_only_{false};
   bool calibration_pending_{false};

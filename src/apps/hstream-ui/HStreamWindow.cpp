@@ -4486,6 +4486,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
             error == QProcess::WriteError ? "playback seek failed: pipeline command channel write error"
                                           : "playback seek failed: pipeline command channel read error");
         pending_playback_seek_generation_ = 0;
+        playback_seek_recovery_generation_ = 0;
       }
       playback_seek_channel_available_ = false;
       if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked() &&
@@ -4505,6 +4506,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     failStitchingCalibration(QString("The calibration process could not continue: %1").arg(error_message));
   pipeline_paused_ = false;
   pending_playback_seek_generation_ = 0;
+  playback_seek_recovery_generation_ = 0;
   playback_seek_channel_available_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
@@ -4726,11 +4728,14 @@ bool HStreamWindow::handlePlaybackProgressOutput(const QString& line) {
 
 bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
   static const QString prefix = QStringLiteral("HSTREAM_SEEK ");
-  if (!line.startsWith(prefix)) {
+  static const QString recovery_prefix = QStringLiteral("HSTREAM_SEEK_RECOVERY ");
+  const bool recovery = line.startsWith(recovery_prefix);
+  if (!recovery && !line.startsWith(prefix)) {
     return false;
   }
   std::map<QString, QString> fields;
-  for (const QString& token : line.mid(prefix.size()).split(' ', Qt::SkipEmptyParts)) {
+  const qsizetype prefix_size = recovery ? recovery_prefix.size() : prefix.size();
+  for (const QString& token : line.mid(prefix_size).split(' ', Qt::SkipEmptyParts)) {
     const qsizetype separator = token.indexOf('=');
     if (separator > 0 && separator + 1 < token.size()) {
       fields[token.left(separator)] = token.mid(separator + 1);
@@ -4738,6 +4743,17 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
   }
   bool generation_ok = false;
   const quint64 generation = fields["generation"].toULongLong(&generation_ok);
+  if (recovery) {
+    if (!generation_ok || generation != playback_seek_recovery_generation_) {
+      appendLog(QString("ignored stale playback seek recovery: %1").arg(line));
+      return true;
+    }
+    playback_seek_recovery_generation_ = 0;
+    appendLog("playback recovered after a timed-out seek reconstruction");
+    updatePlaybackSeekControls();
+    flushScheduledRuntimeControls();
+    return true;
+  }
   if (!generation_ok || generation != pending_playback_seek_generation_) {
     appendLog(QString("ignored stale playback seek response: %1").arg(line));
     return true;
@@ -4753,9 +4769,15 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
     appendLog(QString("playback seek complete at %1").arg(format_video_time_ns(playback_position_ns_)));
     beginPlaybackProgressReset();
   } else {
+    if (fields["reason"] == "pipeline-recreate-timeout") {
+      playback_seek_recovery_generation_ = generation;
+    }
     appendLog(QString("playback seek %1: %2").arg(status, fields["reason"]));
   }
   updatePlaybackSeekControls();
+  if (playback_seek_recovery_generation_ == 0) {
+    flushScheduledRuntimeControls();
+  }
   return true;
 }
 
@@ -4809,7 +4831,16 @@ void HStreamWindow::updatePlaybackSeekControls() {
   }
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (pause_button_) {
-    pause_button_->setEnabled(running && pending_playback_seek_generation_ == 0);
+    pause_button_->setEnabled(
+        running && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
+  }
+  if (program_control_tabs_) {
+    program_control_tabs_->setEnabled(
+        pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
+  }
+  if (stitched_control_tabs_) {
+    stitched_control_tabs_->setEnabled(
+        pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
   }
   playback_seek_controls_->setVisible(running);
   if (QWidget* transport = playback_seek_controls_->parentWidget()) {
@@ -4818,7 +4849,7 @@ void HStreamWindow::updatePlaybackSeekControls() {
   const bool rendering = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool allowed = running && !pipeline_paused_ && active_run_local_render_only_ && !active_run_is_calibration_ &&
       !calibration_pending_ && rendering && playback_seek_channel_available_ && playback_duration_ns_ > 0 &&
-      pending_playback_seek_generation_ == 0;
+      pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
   playback_seek_slider_->setEnabled(allowed);
   if (playback_seek_back_button_)
     playback_seek_back_button_->setEnabled(allowed);
@@ -4855,6 +4886,8 @@ void HStreamWindow::updatePlaybackSeekControls() {
     reason = "Waiting for the video duration before enabling seek.";
   } else if (pending_playback_seek_generation_ != 0) {
     reason = "Waiting for the current seek to finish.";
+  } else if (playback_seek_recovery_generation_ != 0) {
+    reason = "The seek timed out; waiting for the backend reconstruction worker to return safely.";
   } else if (pipeline_paused_) {
     reason = "Resume playback before seeking.";
   } else {
@@ -4936,6 +4969,7 @@ void HStreamWindow::resetPlaybackProgress(bool starting) {
   playback_position_ns_ = 0;
   playback_duration_ns_ = 0;
   pending_playback_seek_generation_ = 0;
+  playback_seek_recovery_generation_ = 0;
   playback_seek_channel_available_ = starting;
   if (playback_progress_) {
     playback_progress_->setRange(0, starting ? 0 : 1000);
@@ -6410,7 +6444,8 @@ void HStreamWindow::updateRunControls() {
     start_button_->setEnabled(!running && !finalizing && !archive_recovery_blocked);
   }
   if (pause_button_) {
-    pause_button_->setEnabled(running && pending_playback_seek_generation_ == 0);
+    pause_button_->setEnabled(
+        running && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0);
     pause_button_->setText(pipeline_paused_ ? "Resume" : "Pause");
   }
   if (stop_button_) {
@@ -9019,7 +9054,8 @@ void HStreamWindow::schedulePlaycropperRuntimeControl(const QString& id, int val
 }
 
 void HStreamWindow::flushScheduledRuntimeControls() {
-  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !runtime_control_batches_.empty()) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !runtime_control_batches_.empty() ||
+      pending_playback_seek_generation_ != 0 || playback_seek_recovery_generation_ != 0) {
     return;
   }
   if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {
