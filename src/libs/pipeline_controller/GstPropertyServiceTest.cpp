@@ -3,11 +3,147 @@
 #include <gst/gst.h>
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <vector>
 
 namespace {
+
+struct RejectingTestElement {
+  GstElement parent;
+  gdouble level;
+  gfloat float_level;
+  gboolean last_property_set_ok;
+  guint sensitive_get_count;
+};
+
+struct RejectingTestElementClass {
+  GstElementClass parent_class;
+};
+
+enum RejectingTestProperty {
+  kRejectingPropertyNone,
+  kRejectingPropertyLevel,
+  kRejectingPropertyFloatLevel,
+  kRejectingPropertyLastSetOk,
+  kRejectingPropertyUserPassword,
+  kRejectingPropertyExtraHeaders,
+  kRejectingPropertyCookies,
+  kRejectingPropertyClientKey,
+};
+
+G_DEFINE_TYPE(RejectingTestElement, rejecting_test_element, GST_TYPE_ELEMENT)
+
+void rejecting_test_element_set_property(GObject* object, guint property_id, const GValue* value, GParamSpec* pspec) {
+  auto* element = reinterpret_cast<RejectingTestElement*>(object);
+  switch (property_id) {
+    case kRejectingPropertyLevel: {
+      const gdouble requested = g_value_get_double(value);
+      element->last_property_set_ok = std::isfinite(requested) && requested <= 0.5;
+      if (element->last_property_set_ok) {
+        element->level = requested;
+      }
+      return;
+    }
+    case kRejectingPropertyFloatLevel: {
+      const gfloat requested = g_value_get_float(value);
+      element->last_property_set_ok = std::isfinite(requested) && requested <= 0.5F;
+      if (element->last_property_set_ok) {
+        element->float_level = requested;
+      }
+      return;
+    }
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
+  }
+}
+
+void rejecting_test_element_get_property(GObject* object, guint property_id, GValue* value, GParamSpec* pspec) {
+  auto* element = reinterpret_cast<RejectingTestElement*>(object);
+  switch (property_id) {
+    case kRejectingPropertyLevel:
+      g_value_set_double(value, element->level);
+      return;
+    case kRejectingPropertyFloatLevel:
+      g_value_set_float(value, element->float_level);
+      return;
+    case kRejectingPropertyLastSetOk:
+      g_value_set_boolean(value, element->last_property_set_ok);
+      return;
+    case kRejectingPropertyUserPassword:
+      ++element->sensitive_get_count;
+      g_value_set_string(value, "current-user-password");
+      return;
+    case kRejectingPropertyExtraHeaders:
+      ++element->sensitive_get_count;
+      g_value_set_string(value, "Authorization: Bearer current-token");
+      return;
+    case kRejectingPropertyCookies:
+      ++element->sensitive_get_count;
+      g_value_set_string(value, "session=current-cookie");
+      return;
+    case kRejectingPropertyClientKey:
+      ++element->sensitive_get_count;
+      g_value_set_string(value, "current-private-key");
+      return;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
+  }
+}
+
+void rejecting_test_element_class_init(RejectingTestElementClass* klass) {
+  GObjectClass* object_class = G_OBJECT_CLASS(klass);
+  object_class->set_property = rejecting_test_element_set_property;
+  object_class->get_property = rejecting_test_element_get_property;
+  const auto live_flags = static_cast<GParamFlags>(G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING);
+  g_object_class_install_property(
+      object_class,
+      kRejectingPropertyLevel,
+      g_param_spec_double("level", "Level", "Reject values above 0.5", 0.0, 1.0, 0.0, live_flags));
+  g_object_class_install_property(
+      object_class,
+      kRejectingPropertyFloatLevel,
+      g_param_spec_float("float-level", "Float level", "Reject values above 0.5", 0.0F, 1.0F, 0.0F, live_flags));
+  g_object_class_install_property(
+      object_class,
+      kRejectingPropertyLastSetOk,
+      g_param_spec_boolean(
+          "last-property-set-ok",
+          "Last property set OK",
+          "Whether the plugin accepted its last value",
+          TRUE,
+          G_PARAM_READABLE));
+  g_object_class_install_property(
+      object_class,
+      kRejectingPropertyUserPassword,
+      g_param_spec_string(
+          "user-pw", "User password", "Authentication password", "default-user-password", G_PARAM_READABLE));
+  g_object_class_install_property(
+      object_class,
+      kRejectingPropertyExtraHeaders,
+      g_param_spec_string(
+          "extra-headers",
+          "Extra headers",
+          "HTTP request headers",
+          "Authorization: Bearer default-token",
+          G_PARAM_READABLE));
+  g_object_class_install_property(
+      object_class,
+      kRejectingPropertyCookies,
+      g_param_spec_string("cookies", "Cookies", "HTTP cookies", "session=default-cookie", G_PARAM_READABLE));
+  g_object_class_install_property(
+      object_class,
+      kRejectingPropertyClientKey,
+      g_param_spec_string("client-key", "Client key", "TLS client key", "default-private-key", G_PARAM_READABLE));
+}
+
+void rejecting_test_element_init(RejectingTestElement* element) {
+  element->level = 0.0;
+  element->float_level = 0.0F;
+  element->last_property_set_ok = TRUE;
+  element->sensitive_get_count = 0;
+}
 
 bool expect(bool condition, const std::string& message) {
   if (!condition) {
@@ -31,6 +167,7 @@ bool test_list_and_set_identity_properties() {
 
   bool found_silent = false;
   bool found_sleep_time = false;
+  bool found_name = false;
   for (const hm::pipeline::GstPropertyInfo& property : *properties_or) {
     if (property.name == "silent") {
       found_silent = true;
@@ -56,6 +193,14 @@ bool test_list_and_set_identity_properties() {
         gst_object_unref(identity);
         return false;
       }
+    } else if (property.name == "name") {
+      found_name = true;
+      if (!expect(property.secret, "string properties must fail closed during inspection") ||
+          !expect(property.serialized_value == "[redacted]", "string current values must be redacted") ||
+          !expect(property.default_value == "[redacted]", "string default values must be redacted")) {
+        gst_object_unref(identity);
+        return false;
+      }
     }
   }
   if (!expect(found_silent, "identity.silent was not listed")) {
@@ -63,6 +208,10 @@ bool test_list_and_set_identity_properties() {
     return false;
   }
   if (!expect(found_sleep_time, "identity.sleep-time was not listed")) {
+    gst_object_unref(identity);
+    return false;
+  }
+  if (!expect(found_name, "identity.name was not listed")) {
     gst_object_unref(identity);
     return false;
   }
@@ -153,11 +302,47 @@ bool test_invalid_values_are_rejected() {
   return true;
 }
 
+bool test_non_finite_and_plugin_rejected_values_are_rejected() {
+  GstElement* element = GST_ELEMENT(g_object_new(rejecting_test_element_get_type(), nullptr));
+  if (!expect(element != nullptr, "Failed to create rejecting test element")) {
+    return false;
+  }
+
+  const absl::Status finite = hm::pipeline::setElementPropertyFromString(element, "level", "0.5");
+  const absl::Status rejected = hm::pipeline::setElementPropertyFromString(element, "level", "0.75");
+  const absl::Status nan = hm::pipeline::setElementPropertyFromString(element, "level", "nan");
+  const absl::Status infinity = hm::pipeline::setElementPropertyFromString(element, "float-level", "inf");
+  gdouble level = 0.0;
+  g_object_get(G_OBJECT(element), "level", &level, nullptr);
+  const bool ok = expect(finite.ok(), finite.ToString()) &&
+      expect(!rejected.ok(), "last-property-set-ok rejection must be returned to the caller") &&
+      expect(!nan.ok(), "non-finite double values must be rejected") &&
+      expect(!infinity.ok(), "non-finite float values must be rejected") &&
+      expect(std::abs(level - 0.5) < 1e-9, "a plugin-rejected value must not appear accepted");
+  gst_object_unref(element);
+  return ok;
+}
+
 bool test_sensitive_values_are_redacted() {
   const std::string secret = "rtmp://a.rtmp.youtube.com/live2/abcd-efgh-secret-key";
-  if (!expect(hm::pipeline::isSensitivePropertyName("location"), "location should be treated as sensitive") ||
-      !expect(hm::pipeline::isSensitivePropertyName("rtsp-pwd"), "rtsp-pwd should be treated as sensitive") ||
-      !expect(
+  const std::vector<std::string> sensitive_names = {
+      "location",
+      "rtsp-pwd",
+      "user-pw",
+      "proxy-pw",
+      "passphrase",
+      "cookies",
+      "extra-headers",
+      "Authorization",
+      "private-key",
+      "client-key",
+  };
+  for (const std::string& name : sensitive_names) {
+    if (!expect(hm::pipeline::isSensitivePropertyName(name), name + " should be treated as sensitive")) {
+      return false;
+    }
+  }
+  if (!expect(
           hm::pipeline::redactSensitiveValueForDisplay("location", secret) == "[redacted]",
           "location value should be redacted") ||
       !expect(
@@ -166,6 +351,36 @@ bool test_sensitive_values_are_redacted() {
     return false;
   }
   return true;
+}
+
+bool test_sensitive_current_and_default_values_are_never_read() {
+  GstElement* element = GST_ELEMENT(g_object_new(rejecting_test_element_get_type(), nullptr));
+  if (!expect(element != nullptr, "Failed to create sensitive-property test element")) {
+    return false;
+  }
+  auto properties_or = hm::pipeline::listElementProperties(element);
+  if (!expect(properties_or.ok(), properties_or.status().ToString())) {
+    gst_object_unref(element);
+    return false;
+  }
+
+  const std::vector<std::string> expected = {"user-pw", "extra-headers", "cookies", "client-key"};
+  bool ok = true;
+  for (const std::string& property_name : expected) {
+    const auto property = std::find_if(properties_or->begin(), properties_or->end(), [&](const auto& candidate) {
+      return candidate.name == property_name;
+    });
+    ok &= expect(property != properties_or->end(), property_name + " should be listed");
+    if (property != properties_or->end()) {
+      ok &= expect(property->secret, property_name + " must be marked sensitive");
+      ok &= expect(property->serialized_value == "[redacted]", property_name + " current value must be redacted");
+      ok &= expect(property->default_value == "[redacted]", property_name + " default value must be redacted");
+    }
+  }
+  const auto* storage = reinterpret_cast<const RejectingTestElement*>(element);
+  ok &= expect(storage->sensitive_get_count == 0, "sensitive getters must not run before redaction");
+  gst_object_unref(element);
+  return ok;
 }
 
 bool test_live_mutability_flags() {
@@ -250,8 +465,9 @@ bool test_structured_graph_and_exact_path_lookup() {
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   if (!test_list_and_set_identity_properties() || !test_enum_metadata_and_parsing() ||
-      !test_invalid_values_are_rejected() || !test_sensitive_values_are_redacted() || !test_live_mutability_flags() ||
-      !test_structured_graph_and_exact_path_lookup()) {
+      !test_invalid_values_are_rejected() || !test_non_finite_and_plugin_rejected_values_are_rejected() ||
+      !test_sensitive_values_are_redacted() || !test_sensitive_current_and_default_values_are_never_read() ||
+      !test_live_mutability_flags() || !test_structured_graph_and_exact_path_lookup()) {
     return 1;
   }
   return 0;

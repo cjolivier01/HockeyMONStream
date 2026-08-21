@@ -2105,6 +2105,12 @@ absl::Status PipelineApplication::playPipelines(
     }
   }
 
+  g_print(
+      "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+      "\"stage\":%ld,\"generation\":%" G_GUINT64_FORMAT "}\n",
+      current_stage_,
+      main_loop_generation_);
+  std::fflush(stdout);
   print_runtime_commands();
   changemode(1);
   g_timeout_add(40, event_thread_func_static, nullptr);
@@ -3435,9 +3441,11 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@seek <position-ns> <generation>: Seek local-render-only playback relative to the configured run start\n"
       "\t@seek-relative <delta-ns> <generation>: Jump from the pipeline's current playback position\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
-      "\t@inspect-pipeline <request-id>: Return structured live pipeline topology\n"
-      "\t@inspect-properties <request-id> <app-index> <base64-element-path>: Return selected-node properties\n"
-      "\t@inspect-set-property <request-id> <app-index> <base64-path> <base64-property> <base64-value>: "
+      "\t@inspect-pipeline <request-id> <stage> <main-loop-generation>: Return bound live pipeline topology\n"
+      "\t@inspect-properties <request-id> <stage> <generation> <app-index> <base64-element-path>: Return "
+      "selected-node properties\n"
+      "\t@inspect-set-property <request-id> <stage> <generation> <app-index> <base64-path> <base64-property> "
+      "<base64-value>: "
       "Set a backend-approved live property\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
@@ -3552,12 +3560,15 @@ enum class InspectorCommandKind { kGraph, kProperties, kSetProperty };
 struct InspectorCommand {
   InspectorCommandKind kind{InspectorCommandKind::kGraph};
   guint64 request_id{0};
+  long stage{0};
+  guint64 generation{0};
   size_t app_index{0};
   std::string element_path;
   std::string property_name;
   std::string value;
 };
 
+bool parse_int64_strict(const std::string& value, gint64* out);
 bool parse_uint64_strict(const std::string& value, guint64* out);
 
 bool decode_inspector_token(const std::string& token, std::string* value) {
@@ -3603,21 +3614,31 @@ bool parse_inspector_command(const std::string& line, InspectorCommand* command)
   }
   std::istringstream input(trim_ascii(line));
   std::string verb;
+  std::string request_id;
+  std::string stage;
+  std::string generation;
   std::string app_index;
   std::string path;
   std::string property;
   std::string value;
   std::string extra;
-  input >> verb;
-  if (verb == "inspect-pipeline") {
-    input >> command->request_id;
-    command->kind = InspectorCommandKind::kGraph;
-    return command->request_id > 0 && command->request_id <= G_MAXINT64 && !(input >> extra);
+  input >> verb >> request_id >> stage >> generation;
+  gint64 parsed_stage = 0;
+  if (!parse_uint64_strict(request_id, &command->request_id) || command->request_id == 0 ||
+      command->request_id > G_MAXINT64 || !parse_int64_strict(stage, &parsed_stage) ||
+      parsed_stage < std::numeric_limits<long>::min() || parsed_stage > std::numeric_limits<long>::max() ||
+      !parse_uint64_strict(generation, &command->generation) || command->generation == 0 ||
+      command->generation > G_MAXINT64) {
+    return false;
   }
-  input >> command->request_id >> app_index >> path;
+  command->stage = static_cast<long>(parsed_stage);
+  if (verb == "inspect-pipeline") {
+    command->kind = InspectorCommandKind::kGraph;
+    return !(input >> extra);
+  }
+  input >> app_index >> path;
   guint64 parsed_app_index = 0;
-  if (command->request_id == 0 || command->request_id > G_MAXINT64 ||
-      !parse_uint64_strict(app_index, &parsed_app_index) || parsed_app_index > std::numeric_limits<size_t>::max() ||
+  if (!parse_uint64_strict(app_index, &parsed_app_index) || parsed_app_index > std::numeric_limits<size_t>::max() ||
       !decode_inspector_token(path, &command->element_path)) {
     return false;
   }
@@ -4087,8 +4108,17 @@ void finish_inspector_response(JsonBuilder* builder) {
   g_object_unref(builder);
 }
 
-void emit_inspector_error(const char* kind, guint64 request_id, const std::string& message) {
+void emit_inspector_error(
+    const char* kind,
+    guint64 request_id,
+    const std::string& message,
+    std::optional<long> stage = std::nullopt,
+    std::optional<guint64> generation = std::nullopt) {
   JsonBuilder* builder = begin_inspector_response(kind, request_id, "error");
+  if (stage.has_value() && generation.has_value()) {
+    json_add_int_member(builder, "stage", *stage);
+    json_add_int_member(builder, "generation", static_cast<gint64>(*generation));
+  }
   json_add_string_member(builder, "message", bounded_inspector_value(message));
   finish_inspector_response(builder);
 }
@@ -4126,24 +4156,32 @@ bool PipelineApplication::set_render_audio_muted_runtime(bool muted) {
   return true;
 }
 
-bool PipelineApplication::inspect_pipeline_graph_runtime(uint64_t request_id) {
+bool PipelineApplication::inspect_pipeline_graph_runtime(
+    uint64_t request_id,
+    long expected_stage,
+    uint64_t expected_generation) {
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
-    emit_inspector_error("graph", request_id, "Pipeline reconstruction is in progress; refresh when it completes");
+    emit_inspector_error(
+        "graph",
+        request_id,
+        "Pipeline reconstruction is in progress; refresh when it completes",
+        expected_stage,
+        expected_generation);
     return false;
   }
   std::vector<hm::pipeline::GstPipelineGraphInfo> graphs;
-  long inspected_stage = current_stage_;
   std::string snapshot_error;
   {
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
       snapshot_error = "Pipeline reconstruction is in progress; refresh when it completes";
+    } else if (current_stage_ != expected_stage || main_loop_generation_ != expected_generation) {
+      snapshot_error = "Stale pipeline inspector stage/generation; wait for the current session and refresh";
     } else {
-      const auto stage = stage_app_contexts_.find(current_stage_);
+      const auto stage = stage_app_contexts_.find(expected_stage);
       if (stage == stage_app_contexts_.end()) {
         snapshot_error = "No active pipeline stage is available";
       } else {
-        inspected_stage = current_stage_;
         graphs.resize(stage->second.size());
         for (size_t app_index = 0; app_index < stage->second.size(); ++app_index) {
           const auto& app = stage->second[app_index];
@@ -4155,12 +4193,13 @@ bool PipelineApplication::inspect_pipeline_graph_runtime(uint64_t request_id) {
     }
   }
   if (!snapshot_error.empty()) {
-    emit_inspector_error("graph", request_id, snapshot_error);
+    emit_inspector_error("graph", request_id, snapshot_error, expected_stage, expected_generation);
     return false;
   }
 
   JsonBuilder* builder = begin_inspector_response("graph", request_id, "ok");
-  json_add_int_member(builder, "stage", inspected_stage);
+  json_add_int_member(builder, "stage", expected_stage);
+  json_add_int_member(builder, "generation", static_cast<gint64>(expected_generation));
   json_builder_set_member_name(builder, "nodes");
   json_builder_begin_array(builder);
   for (size_t app_index = 0; app_index < graphs.size(); ++app_index) {
@@ -4203,10 +4242,13 @@ bool PipelineApplication::inspect_pipeline_graph_runtime(uint64_t request_id) {
 
 bool PipelineApplication::inspect_element_properties_runtime(
     uint64_t request_id,
+    long expected_stage,
+    uint64_t expected_generation,
     size_t app_index,
     const std::string& element_path) {
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
-    emit_inspector_error("properties", request_id, "Pipeline reconstruction is in progress");
+    emit_inspector_error(
+        "properties", request_id, "Pipeline reconstruction is in progress", expected_stage, expected_generation);
     return false;
   }
   std::optional<std::vector<hm::pipeline::GstPropertyInfo>> properties;
@@ -4215,8 +4257,10 @@ bool PipelineApplication::inspect_element_properties_runtime(
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
       snapshot_error = "Pipeline reconstruction is in progress";
+    } else if (current_stage_ != expected_stage || main_loop_generation_ != expected_generation) {
+      snapshot_error = "Stale pipeline inspector stage/generation; refresh the graph";
     } else {
-      const auto stage = stage_app_contexts_.find(current_stage_);
+      const auto stage = stage_app_contexts_.find(expected_stage);
       if (stage == stage_app_contexts_.end() || app_index >= stage->second.size() || !stage->second[app_index] ||
           !stage->second[app_index]->pipeline.pipeline) {
         snapshot_error = "The selected pipeline instance is unavailable";
@@ -4238,11 +4282,13 @@ bool PipelineApplication::inspect_element_properties_runtime(
     }
   }
   if (!properties.has_value()) {
-    emit_inspector_error("properties", request_id, snapshot_error);
+    emit_inspector_error("properties", request_id, snapshot_error, expected_stage, expected_generation);
     return false;
   }
 
   JsonBuilder* builder = begin_inspector_response("properties", request_id, "ok");
+  json_add_int_member(builder, "stage", expected_stage);
+  json_add_int_member(builder, "generation", static_cast<gint64>(expected_generation));
   json_add_int_member(builder, "appIndex", static_cast<gint64>(app_index));
   json_add_string_member(builder, "path", element_path);
   json_add_string_member(builder, "nodeId", std::to_string(app_index) + ":" + element_path);
@@ -4293,12 +4339,15 @@ bool PipelineApplication::inspect_element_properties_runtime(
 
 bool PipelineApplication::set_inspected_element_property_runtime(
     uint64_t request_id,
+    long expected_stage,
+    uint64_t expected_generation,
     size_t app_index,
     const std::string& element_path,
     const std::string& property_name,
     const std::string& value) {
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
-    emit_inspector_error("set-result", request_id, "Pipeline reconstruction is in progress");
+    emit_inspector_error(
+        "set-result", request_id, "Pipeline reconstruction is in progress", expected_stage, expected_generation);
     return false;
   }
   std::string mutation_error;
@@ -4306,8 +4355,10 @@ bool PipelineApplication::set_inspected_element_property_runtime(
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
       mutation_error = "Pipeline reconstruction is in progress";
+    } else if (current_stage_ != expected_stage || main_loop_generation_ != expected_generation) {
+      mutation_error = "Stale pipeline inspector stage/generation; refresh the graph";
     } else {
-      const auto stage = stage_app_contexts_.find(current_stage_);
+      const auto stage = stage_app_contexts_.find(expected_stage);
       if (stage == stage_app_contexts_.end() || app_index >= stage->second.size() || !stage->second[app_index] ||
           !stage->second[app_index]->pipeline.pipeline) {
         mutation_error = "The selected pipeline instance is unavailable";
@@ -4339,10 +4390,12 @@ bool PipelineApplication::set_inspected_element_property_runtime(
     }
   }
   if (!mutation_error.empty()) {
-    emit_inspector_error("set-result", request_id, mutation_error);
+    emit_inspector_error("set-result", request_id, mutation_error, expected_stage, expected_generation);
     return false;
   }
   JsonBuilder* builder = begin_inspector_response("set-result", request_id, "ok");
+  json_add_int_member(builder, "stage", expected_stage);
+  json_add_int_member(builder, "generation", static_cast<gint64>(expected_generation));
   json_add_int_member(builder, "appIndex", static_cast<gint64>(app_index));
   json_add_string_member(builder, "path", element_path);
   json_add_string_member(builder, "nodeId", std::to_string(app_index) + ":" + element_path);
@@ -4773,12 +4826,19 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     }
     switch (command.kind) {
       case InspectorCommandKind::kGraph:
-        return inspect_pipeline_graph_runtime(command.request_id);
+        return inspect_pipeline_graph_runtime(command.request_id, command.stage, command.generation);
       case InspectorCommandKind::kProperties:
-        return inspect_element_properties_runtime(command.request_id, command.app_index, command.element_path);
+        return inspect_element_properties_runtime(
+            command.request_id, command.stage, command.generation, command.app_index, command.element_path);
       case InspectorCommandKind::kSetProperty:
         return set_inspected_element_property_runtime(
-            command.request_id, command.app_index, command.element_path, command.property_name, command.value);
+            command.request_id,
+            command.stage,
+            command.generation,
+            command.app_index,
+            command.element_path,
+            command.property_name,
+            command.value);
     }
   }
   if (trimmed_line.rfind(std::string(kSeekRelativeCommand), 0) == 0 &&

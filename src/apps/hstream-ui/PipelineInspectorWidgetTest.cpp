@@ -42,11 +42,19 @@ int main(int argc, char** argv) {
   });
   inspector.setPipelineRunning(true);
   inspector.requestRefresh();
-  bool ok = expect(commands.size() == 1 && commands.back() == "@inspect-pipeline 1\n", "refresh command mismatch");
+  bool ok = expect(commands.empty(), "inspector must not issue unbound requests before the session is announced");
+
+  const QString initial_session = QStringLiteral(
+      "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+      "\"stage\":-1,\"generation\":7}");
+  ok &= expect(inspector.handleBackendLine(initial_session), "session response must be consumed");
+  ok &= expect(
+      commands.size() == 1 && commands.back() == "@inspect-pipeline 1 -1 7\n",
+      "session-bound refresh command mismatch");
 
   const QString graph = QStringLiteral(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":1,\"status\":\"ok\","
-      "\"stage\":0,\"nodes\":["
+      "\"stage\":-1,\"generation\":7,\"nodes\":["
       "{\"id\":\"0:pipeline\",\"appIndex\":0,\"path\":\"pipeline\",\"parentId\":\"\","
       "\"name\":\"pipeline\",\"factory\":\"pipeline\",\"type\":\"GstPipeline\",\"state\":\"PLAYING\","
       "\"bin\":true},"
@@ -76,12 +84,12 @@ int main(int argc, char** argv) {
   }
   ok &= expect(inspector.selectedNodeId() == "0:pipeline.source", "selected node id mismatch");
   ok &= expect(
-      commands.size() == 2 && commands.back() == "@inspect-properties 2 0 cGlwZWxpbmUuc291cmNl\n",
+      commands.size() == 2 && commands.back() == "@inspect-properties 2 -1 7 0 cGlwZWxpbmUuc291cmNl\n",
       "property request must carry canonical base64 path");
 
   const QString properties = QStringLiteral(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"properties\",\"requestId\":2,"
-      "\"status\":\"ok\",\"nodeId\":\"0:pipeline.source\",\"appIndex\":0,"
+      "\"status\":\"ok\",\"stage\":-1,\"generation\":7,\"nodeId\":\"0:pipeline.source\",\"appIndex\":0,"
       "\"path\":\"pipeline.source\",\"properties\":["
       "{\"name\":\"is-live\",\"label\":\"Is live\",\"description\":\"Act as a live source\","
       "\"type\":\"gboolean\",\"kind\":\"toggle\",\"applyMode\":\"playing\",\"value\":\"false\","
@@ -109,17 +117,41 @@ int main(int argc, char** argv) {
   }
   ok &= expect(
       commands.size() == 3 &&
-          commands.back() == "@inspect-set-property 3 0 cGlwZWxpbmUuc291cmNl aXMtbGl2ZQ== dHJ1ZQ==\n",
+          commands.back() == "@inspect-set-property 3 -1 7 0 cGlwZWxpbmUuc291cmNl aXMtbGl2ZQ== dHJ1ZQ==\n",
       "live property command must encode path, name, and value");
 
   const QString set_result = QStringLiteral(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":3,"
-      "\"status\":\"ok\",\"nodeId\":\"0:pipeline.source\",\"appIndex\":0,"
+      "\"status\":\"ok\",\"stage\":-1,\"generation\":7,\"nodeId\":\"0:pipeline.source\",\"appIndex\":0,"
       "\"path\":\"pipeline.source\",\"property\":\"is-live\"}");
   ok &= expect(inspector.handleBackendLine(set_result), "set result must be consumed");
   ok &= expect(
-      commands.size() == 4 && commands.back() == "@inspect-properties 4 0 cGlwZWxpbmUuc291cmNl\n",
+      commands.size() == 4 && commands.back() == "@inspect-properties 4 -1 7 0 cGlwZWxpbmUuc291cmNl\n",
       "successful mutation must read the value back");
+
+  const QString next_session = QStringLiteral(
+      "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+      "\"stage\":0,\"generation\":8}");
+  ok &= expect(inspector.handleBackendLine(next_session), "new stage session must be consumed");
+  ok &= expect(
+      inspector.nodeCount() == 0 && inspector.selectedNodeId().isEmpty(),
+      "a stage/generation change must clear stale graph and selection state");
+  ok &= expect(
+      commands.size() == 5 && commands.back() == "@inspect-pipeline 5 0 8\n",
+      "a stage/generation change must refresh with the new binding");
+  ok &= expect(
+      inspector.handleBackendLine(properties) && inspector.nodeCount() == 0,
+      "a delayed property response from the previous stage must remain ignored");
+  const QString stale_error = QStringLiteral(
+      "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"properties\",\"requestId\":4,\"status\":\"error\","
+      "\"stage\":-1,\"generation\":7,\"message\":\"Stale pipeline inspector stage/generation\"}");
+  ok &= expect(inspector.handleBackendLine(stale_error), "old-session errors must be consumed");
+  QString current_graph = graph;
+  current_graph.replace("\"requestId\":1", "\"requestId\":5");
+  current_graph.replace("\"stage\":-1,\"generation\":7", "\"stage\":0,\"generation\":8");
+  ok &= expect(
+      inspector.handleBackendLine(current_graph) && inspector.nodeCount() == 2,
+      "an old-session error must not cancel the current bound graph refresh");
 
   auto* status = require_child<QLabel>(&inspector, "pipelineInspectorStatus");
   ok &= expect(

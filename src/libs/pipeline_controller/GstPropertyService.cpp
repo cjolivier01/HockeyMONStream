@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -99,6 +100,9 @@ double parse_double_exact(const std::string& raw_value) {
   }
   if (errno == ERANGE) {
     throw std::out_of_range("floating-point value is out of range");
+  }
+  if (!std::isfinite(parsed)) {
+    throw std::invalid_argument("floating-point value must be finite");
   }
   return parsed;
 }
@@ -422,6 +426,15 @@ absl::Status set_typed_value(GObject* object, GParamSpec* pspec, const std::stri
 
   g_object_set_property(object, pspec->name, &value);
   g_value_unset(&value);
+
+  GParamSpec* acceptance = g_object_class_find_property(G_OBJECT_GET_CLASS(object), "last-property-set-ok");
+  if (acceptance && (acceptance->flags & G_PARAM_READABLE) && G_PARAM_SPEC_VALUE_TYPE(acceptance) == G_TYPE_BOOLEAN) {
+    gboolean accepted = TRUE;
+    g_object_get(object, "last-property-set-ok", &accepted, nullptr);
+    if (!accepted) {
+      return absl::FailedPreconditionError(absl::StrCat("Plugin rejected property '", pspec->name, "' value"));
+    }
+  }
   return absl::OkStatus();
 }
 
@@ -633,10 +646,30 @@ bool isSensitivePropertyName(const std::string& property_name) {
   return name.find("password") != std::string::npos || name.find("passwd") != std::string::npos ||
       name.find("pwd") != std::string::npos || name.find("secret") != std::string::npos ||
       name.find("token") != std::string::npos || name.find("credential") != std::string::npos ||
+      name.find("passphrase") != std::string::npos || name.find("cookie") != std::string::npos ||
+      name.find("authorization") != std::string::npos || name.find("extra-header") != std::string::npos ||
+      name.find("private-key") != std::string::npos || name.find("private_key") != std::string::npos ||
+      name.find("client-key") != std::string::npos || name.find("client_key") != std::string::npos ||
+      name == "user-pw" || name == "user_pw" || name == "proxy-pw" || name == "proxy_pw" ||
       name.find("stream-key") != std::string::npos || name.find("stream_key") != std::string::npos || name == "key" ||
       name == "uri" || name.find("-uri") != std::string::npos || name.find("_uri") != std::string::npos ||
       name.find("location") != std::string::npos || name.find("url") != std::string::npos;
 }
+
+namespace {
+
+bool property_value_safe_for_inspection(GParamSpec* pspec) {
+  if (!pspec || isSensitivePropertyName(safe_string(pspec->name))) {
+    return false;
+  }
+  const GType value_type = G_PARAM_SPEC_VALUE_TYPE(pspec);
+  return value_type == G_TYPE_BOOLEAN || value_type == G_TYPE_INT || value_type == G_TYPE_UINT ||
+      value_type == G_TYPE_LONG || value_type == G_TYPE_ULONG || value_type == G_TYPE_INT64 ||
+      value_type == G_TYPE_UINT64 || value_type == G_TYPE_FLOAT || value_type == G_TYPE_DOUBLE ||
+      G_TYPE_IS_ENUM(value_type);
+}
+
+} // namespace
 
 std::string redactSensitiveValueForDisplay(const std::string& property_name, const std::string& value) {
   if (value.empty()) {
@@ -664,7 +697,11 @@ absl::StatusOr<std::vector<GstPropertyInfo>> listElementProperties(GstElement* e
     const bool writable = pspec->flags & G_PARAM_WRITABLE;
     const bool construct = pspec->flags & G_PARAM_CONSTRUCT;
     const bool construct_only = pspec->flags & G_PARAM_CONSTRUCT_ONLY;
-    const bool secret = isSensitivePropertyName(safe_string(pspec->name));
+    // Inspection is deliberately fail-closed: only supported primitive
+    // scalar/enum values are exposed. Strings can contain credentials even
+    // when a third-party plugin gives the property an unfamiliar name, and
+    // boxed/object/flags values can embed headers, cookies, or key material.
+    const bool secret = !property_value_safe_for_inspection(pspec);
     const bool runtime_writable = writable && !construct_only;
     const RuntimeControlApplyMode apply_mode = propertyApplyMode(pspec);
     const bool live_writable = runtime_writable && apply_mode == RuntimeControlApplyMode::Live;

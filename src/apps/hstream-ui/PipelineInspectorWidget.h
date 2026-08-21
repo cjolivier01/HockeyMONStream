@@ -60,6 +60,8 @@ class PipelineInspectorWidget : public QWidget {
 
   bool writeCommand(const QByteArray& command);
   uint64_t nextRequestId();
+  void clearInspectionState();
+  bool responseMatchesSession(const QJsonObject& response) const;
   void requestProperties(const NodeData& node);
   void applySelectedProperty();
   void renderGraph();
@@ -72,6 +74,9 @@ class PipelineInspectorWidget : public QWidget {
 
   CommandWriter command_writer_;
   bool pipeline_running_{false};
+  bool have_session_{false};
+  qint64 session_stage_{0};
+  uint64_t session_generation_{0};
   uint64_t next_request_id_{0};
   uint64_t pending_graph_request_{0};
   uint64_t pending_property_request_{0};

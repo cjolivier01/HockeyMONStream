@@ -236,20 +236,29 @@ void PipelineInspectorWidget::setCommandWriter(CommandWriter writer) {
 void PipelineInspectorWidget::setPipelineRunning(bool running) {
   pipeline_running_ = running;
   if (!running) {
-    pending_graph_request_ = 0;
-    pending_property_request_ = 0;
-    pending_set_request_ = 0;
-    nodes_.clear();
-    edges_.clear();
-    selected_node_id_.clear();
-    graph_scene_->clear();
-    node_items_.clear();
-    property_table_->setRowCount(0);
-    displayed_properties_.clear();
-    selected_node_label_->setText("Select a pipeline node");
-    updatePropertyEditor();
+    have_session_ = false;
+    session_stage_ = 0;
+    session_generation_ = 0;
+    clearInspectionState();
     updateStatus("Start the pipeline, then refresh to inspect its live GStreamer graph.");
+  } else if (!have_session_) {
+    updateStatus("Waiting for the live pipeline inspector session…");
   }
+}
+
+void PipelineInspectorWidget::clearInspectionState() {
+  pending_graph_request_ = 0;
+  pending_property_request_ = 0;
+  pending_set_request_ = 0;
+  nodes_.clear();
+  edges_.clear();
+  selected_node_id_.clear();
+  graph_scene_->clear();
+  node_items_.clear();
+  property_table_->setRowCount(0);
+  displayed_properties_.clear();
+  selected_node_label_->setText("Select a pipeline node");
+  updatePropertyEditor();
 }
 
 bool PipelineInspectorWidget::writeCommand(const QByteArray& command) {
@@ -276,8 +285,20 @@ QByteArray PipelineInspectorWidget::encodeToken(const QString& value) {
 }
 
 void PipelineInspectorWidget::requestRefresh() {
+  if (!pipeline_running_) {
+    updateStatus("The live pipeline is not running.", true);
+    return;
+  }
+  if (!have_session_ || session_generation_ == 0) {
+    updateStatus("Waiting for the live pipeline inspector session…");
+    return;
+  }
   const uint64_t request_id = nextRequestId();
-  if (writeCommand(QString("@inspect-pipeline %1\n").arg(request_id).toUtf8())) {
+  if (writeCommand(QString("@inspect-pipeline %1 %2 %3\n")
+                       .arg(request_id)
+                       .arg(session_stage_)
+                       .arg(session_generation_)
+                       .toUtf8())) {
     pending_graph_request_ = request_id;
     updateStatus("Reading live GStreamer topology…");
   }
@@ -285,8 +306,10 @@ void PipelineInspectorWidget::requestRefresh() {
 
 void PipelineInspectorWidget::requestProperties(const NodeData& node) {
   const uint64_t request_id = nextRequestId();
-  const QByteArray command = QString("@inspect-properties %1 %2 %3\n")
+  const QByteArray command = QString("@inspect-properties %1 %2 %3 %4 %5\n")
                                  .arg(request_id)
+                                 .arg(session_stage_)
+                                 .arg(session_generation_)
                                  .arg(node.app_index)
                                  .arg(QString::fromLatin1(encodeToken(node.path)))
                                  .toUtf8();
@@ -314,7 +337,35 @@ bool PipelineInspectorWidget::handleBackendLine(const QString& line) {
   }
   const QString kind = response.value("kind").toString();
   const uint64_t request_id = static_cast<uint64_t>(response.value("requestId").toInteger());
+  if (kind == "session") {
+    const qint64 stage = response.value("stage").toInteger(std::numeric_limits<qint64>::min());
+    const qint64 generation = response.value("generation").toInteger(0);
+    if (response.value("status").toString() != "ok" || stage == std::numeric_limits<qint64>::min() || generation <= 0) {
+      clearInspectionState();
+      have_session_ = false;
+      updateStatus("Invalid live pipeline inspector session.", true);
+      return true;
+    }
+    const uint64_t next_generation = static_cast<uint64_t>(generation);
+    const bool changed = !have_session_ || session_stage_ != stage || session_generation_ != next_generation;
+    have_session_ = true;
+    session_stage_ = stage;
+    session_generation_ = next_generation;
+    if (changed) {
+      clearInspectionState();
+      updateStatus(QString("Pipeline inspector session changed to stage %1, generation %2; refreshing…")
+                       .arg(session_stage_)
+                       .arg(session_generation_));
+      if (pipeline_running_) {
+        requestRefresh();
+      }
+    }
+    return true;
+  }
   if (response.value("status").toString() != "ok") {
+    if (response.contains("stage") && response.contains("generation") && !responseMatchesSession(response)) {
+      return true;
+    }
     if (kind == "graph" && request_id == pending_graph_request_) {
       pending_graph_request_ = 0;
     } else if (kind == "properties" && request_id == pending_property_request_) {
@@ -323,11 +374,20 @@ bool PipelineInspectorWidget::handleBackendLine(const QString& line) {
       pending_set_request_ = 0;
       updatePropertyEditor();
     }
-    updateStatus(response.value("message").toString("Pipeline inspector request failed."), true);
+    const QString message = response.value("message").toString("Pipeline inspector request failed.");
+    if (message.startsWith("Stale pipeline inspector", Qt::CaseInsensitive)) {
+      clearInspectionState();
+    }
+    updateStatus(message, true);
     return true;
   }
   if (kind == "graph") {
-    if (pending_graph_request_ != 0 && request_id < pending_graph_request_) {
+    if (request_id != pending_graph_request_) {
+      return true;
+    }
+    if (!responseMatchesSession(response)) {
+      clearInspectionState();
+      updateStatus("Ignored a graph from a stale pipeline inspector session.", true);
       return true;
     }
     pending_graph_request_ = 0;
@@ -370,7 +430,8 @@ bool PipelineInspectorWidget::handleBackendLine(const QString& line) {
     return true;
   }
   if (kind == "properties") {
-    if (request_id != pending_property_request_ || response.value("nodeId").toString() != selected_node_id_) {
+    if (request_id != pending_property_request_ || !responseMatchesSession(response) ||
+        response.value("nodeId").toString() != selected_node_id_) {
       return true;
     }
     pending_property_request_ = 0;
@@ -378,7 +439,7 @@ bool PipelineInspectorWidget::handleBackendLine(const QString& line) {
     return true;
   }
   if (kind == "set-result") {
-    if (request_id != pending_set_request_) {
+    if (request_id != pending_set_request_ || !responseMatchesSession(response)) {
       return true;
     }
     pending_set_request_ = 0;
@@ -391,6 +452,11 @@ bool PipelineInspectorWidget::handleBackendLine(const QString& line) {
   }
   updateStatus(QString("Unknown pipeline inspector response kind: %1").arg(kind), true);
   return true;
+}
+
+bool PipelineInspectorWidget::responseMatchesSession(const QJsonObject& response) const {
+  return have_session_ && response.value("stage").toInteger(std::numeric_limits<qint64>::min()) == session_stage_ &&
+      response.value("generation").toInteger(0) == static_cast<qint64>(session_generation_);
 }
 
 void PipelineInspectorWidget::renderGraph() {
@@ -646,8 +712,10 @@ void PipelineInspectorWidget::applySelectedProperty() {
     return;
   }
   const uint64_t request_id = nextRequestId();
-  const QByteArray command = QString("@inspect-set-property %1 %2 %3 %4 %5\n")
+  const QByteArray command = QString("@inspect-set-property %1 %2 %3 %4 %5 %6 %7\n")
                                  .arg(request_id)
+                                 .arg(session_stage_)
+                                 .arg(session_generation_)
                                  .arg(node->second.app_index)
                                  .arg(QString::fromLatin1(encodeToken(node->second.path)))
                                  .arg(QString::fromLatin1(encodeToken(property.value("name").toString())))
