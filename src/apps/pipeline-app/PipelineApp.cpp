@@ -41,6 +41,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -81,6 +82,17 @@ namespace fs = std::filesystem;
 GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
+
+void emit_preview_protocol(const char* message) {
+  g_print("%s", message);
+  std::fflush(stdout);
+}
+
+template <typename... Args>
+void emit_preview_protocol(const char* format, Args... args) {
+  g_print(format, args...);
+  std::fflush(stdout);
+}
 
 struct StitchFrameRewindRequest {
   long stage;
@@ -1724,7 +1736,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     for (const auto& [channel, window_id] : ui_preview_window_ids_) {
       if (channel.rfind("source", 0) == 0 && !ui_preview_channels_.count(channel)) {
-        g_print(
+        emit_preview_protocol(
             "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
             " message=no active camera source for XID %" G_GUINT64_FORMAT "\n",
             channel.c_str(),
@@ -1742,7 +1754,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       return absl::InternalError("Could not apply the initial GPU preview overlay state");
     if (!has_overlay_sink)
       update_preview_overlay_producers();
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW_MEMORY image-bytes=%" G_GUINT64_FORMAT " budget-bytes=%" G_GUINT64_FORMAT "\n",
         preview_image_bytes,
         kPreviewImageBudgetBytes);
@@ -2330,7 +2342,7 @@ absl::Status PipelineApplication::playPipelines(
     const std::string channel =
         active_ui_preview_channel_.empty() ? initial_ui_preview_channel_ : active_ui_preview_channel_;
     const guint64 generation = active_ui_preview_generation_ + 1;
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=%" G_GUINT64_FORMAT "\n",
         channel.c_str(),
         generation);
@@ -5029,7 +5041,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   if (hm::pipeline_internal::is_preview_overlay_command(trimmed_line)) {
     hm::pipeline_internal::PreviewOverlayCommand command;
     if (!hm::pipeline_internal::parse_preview_overlay_command(trimmed_line, &command)) {
-      g_print(
+      emit_preview_protocol(
           "HSTREAM_PREVIEW_OVERLAYS status=failed generation=0 players=0 play=0 rink=0 "
           "reason=malformed-command\n");
       return false;
@@ -5690,7 +5702,7 @@ bool PipelineApplication::update_preview_overlay_producers() {
 bool PipelineApplication::set_preview_overlays_runtime(const hm::pipeline_internal::PreviewOverlayCommand& command) {
   const auto& selection = command.selection;
   auto emit = [&](const char* status, const char* reason = nullptr) {
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW_OVERLAYS status=%s generation=%" G_GUINT64_FORMAT " players=%u play=%u rink=%u%s%s\n",
         status,
         static_cast<guint64>(command.generation),
@@ -5728,7 +5740,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     return false;
   }
   if (generation <= active_ui_preview_generation_) {
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=stale generation=%" G_GUINT64_FORMAT
         " message=activation generation is not newer than %" G_GUINT64_FORMAT "\n",
         channel.c_str(),
@@ -5751,14 +5763,14 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
         !hm::gpu_preview::isolation_active(previous->second.isolation)) {
       active_ui_preview_channel_.clear();
       update_preview_overlay_producers();
-      g_print(
+      emit_preview_protocol(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
           " message=the selected GPU preview channel cannot be re-armed\n",
           channel.c_str(),
           generation);
       return true;
     }
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
         " message=GPU preview branch re-armed\n",
         channel.c_str(),
@@ -5775,7 +5787,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
       active_ui_preview_channel_.clear();
       active_ui_preview_generation_ = generation;
       update_preview_overlay_producers();
-      g_print(
+      emit_preview_protocol(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
           " message=could not quiesce the previous preview channel\n",
           channel.c_str(),
@@ -5788,7 +5800,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   active_ui_preview_generation_ = generation;
   if (channel == "none") {
     update_preview_overlay_producers();
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=none status=deactivated generation=%" G_GUINT64_FORMAT
         " message=all GPU preview branches are inactive\n",
         generation);
@@ -5798,7 +5810,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   const auto target = ui_preview_channels_.find(channel);
   if (target == ui_preview_channels_.end()) {
     update_preview_overlay_producers();
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
         " message=the requested camera source is unavailable\n",
         channel.c_str(),
@@ -5823,14 +5835,14 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     hm::gpu_preview::quiesce(target->second.sink, generation);
     active_ui_preview_channel_.clear();
     update_preview_overlay_producers();
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
         " message=the requested GPU preview channel has failed locally\n",
         channel.c_str(),
         generation);
     return true;
   }
-  g_print(
+  emit_preview_protocol(
       "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
       " message=GPU preview branch activated\n",
       channel.c_str(),

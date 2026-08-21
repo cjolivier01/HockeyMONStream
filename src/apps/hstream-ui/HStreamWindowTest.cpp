@@ -2869,13 +2869,28 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   const int confirmed_overlay_logs_before_late_ack =
       window->logText().count("preview overlays players=1 play=1 rink=1 apply=live");
+  const int overlay_delay_arms_before_reconciliation = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       window->logText().count("test preview overlay delay armed") == overlay_delay_arms_before_reconciliation;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   pipeline_process->write("@test-complete-preview-overlays\n");
   for (int i = 0; i < 100 &&
        (!window->logText().contains(
             "preview overlay acknowledgement arrived after rollback generation=7; reconciling") ||
         !window->logText().contains("stdin:@set-preview-overlays 8 1 1 1") ||
-        window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") ==
-            confirmed_overlay_logs_before_late_ack);
+        window->logText().count(overlay_timeout_log) < overlay_timeouts_before_delay + 2);
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       !window->logText().contains(
+           "late preview overlay acknowledgement matches confirmed state generation=8; settled");
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -2886,10 +2901,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains(
                   "preview overlay acknowledgement arrived after rollback generation=7; reconciling") &&
               window->logText().contains("stdin:@set-preview-overlays 8 1 1 1") &&
-              window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") >
+              window->logText().contains(
+                  "late preview overlay acknowledgement matches confirmed state generation=8; settled") &&
+              window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") ==
                   confirmed_overlay_logs_before_late_ack &&
+              !window->logText().contains("stdin:@set-preview-overlays 9 ") &&
               !window->logText().contains("preview overlays players=1 play=1 rink=0 apply=live"),
-          "A late applied acknowledgement must not resurrect a rolled-back choice and must reconcile the backend")) {
+          "Two successive late acknowledgements must restore the backend once without resurrecting the choice or "
+          "creating an unbounded reconciliation loop")) {
     return false;
   }
 

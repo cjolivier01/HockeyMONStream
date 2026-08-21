@@ -196,7 +196,7 @@ class HStreamWindow : public QMainWindow {
   void recoverPreviewDisableFailure(const QString& reason, bool force = false);
   int previewDisableTimeoutMs() const;
   bool setRuntimeRenderAudioMuted(bool muted);
-  void setRuntimePreviewOverlays();
+  void setRuntimePreviewOverlays(bool reconciliation = false);
   void restoreConfirmedPreviewOverlays(const QString& reason);
   void timeoutPreviewOverlayRequest(quint64 generation);
   void setRuntimeVideoRendering(bool enabled);
@@ -381,6 +381,7 @@ class HStreamWindow : public QMainWindow {
   quint64 preview_overlay_generation_{0};
   quint64 pending_preview_overlay_generation_{0};
   bool preview_overlay_stale_apply_observed_{false};
+  int preview_overlay_reconciliation_attempts_{0};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};

@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -26,6 +27,12 @@
 namespace {
 
 constexpr const char* kStatusStructureName = "hstream-preview-status";
+
+template <typename... Args>
+void emit_preview_protocol(const char* format, Args... args) noexcept {
+  g_print(format, args...);
+  std::fflush(stdout);
+}
 
 void post_preview_status(
     GstElement* element,
@@ -52,7 +59,7 @@ void post_preview_status(
       nullptr);
   if (structure)
     gst_element_post_message(element, gst_message_new_application(GST_OBJECT(element), structure));
-  g_print(
+  emit_preview_protocol(
       "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
       safe_channel,
       status,
@@ -1220,7 +1227,7 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
   state->rink_mask_failure_reported = false;
   state->rink_mask_consecutive_failures = 0;
   state->rink_mask_retry_after = {};
-  g_print(
+  emit_preview_protocol(
       "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=loaded\n",
       state->channel.c_str(),
       state->rink_mask_file.c_str());
