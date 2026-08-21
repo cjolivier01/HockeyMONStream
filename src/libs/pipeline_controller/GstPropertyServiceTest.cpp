@@ -460,6 +460,114 @@ bool test_structured_graph_and_exact_path_lookup() {
   return graph_ok && lookup_ok;
 }
 
+bool test_length_prefixed_paths_do_not_collide() {
+  GstElement* pipeline = gst_pipeline_new("collision-root");
+  GstElement* dotted = gst_element_factory_make("identity", "a.b");
+  GstElement* bin = gst_bin_new("a");
+  GstElement* nested = gst_element_factory_make("identity", "b");
+  if (!expect(pipeline && dotted && bin && nested, "Failed to create path-collision graph")) {
+    if (pipeline) {
+      gst_object_unref(pipeline);
+    }
+    return false;
+  }
+  gst_bin_add(GST_BIN(bin), nested);
+  gst_bin_add_many(GST_BIN(pipeline), dotted, bin, nullptr);
+
+  const hm::pipeline::GstPipelineGraphInfo graph = hm::pipeline::inspectPipelineGraph(pipeline);
+  const auto dotted_info = std::find_if(
+      graph.elements.begin(), graph.elements.end(), [](const auto& element) { return element.name == "a.b"; });
+  const auto nested_info = std::find_if(graph.elements.begin(), graph.elements.end(), [](const auto& element) {
+    return element.name == "b" && element.parent_path.find("1:a") != std::string::npos;
+  });
+  bool ok = expect(dotted_info != graph.elements.end(), "Dotted sibling must be present") &&
+      expect(nested_info != graph.elements.end(), "Nested element must be present") &&
+      expect(dotted_info != graph.elements.end() && nested_info != graph.elements.end() &&
+                 dotted_info->path != nested_info->path,
+             "Length-prefixed component paths must distinguish sibling a.b from nested a/b");
+
+  GstElement* dotted_target =
+      dotted_info == graph.elements.end() ? nullptr : hm::pipeline::findElementByPath(pipeline, dotted_info->path);
+  GstElement* nested_target =
+      nested_info == graph.elements.end() ? nullptr : hm::pipeline::findElementByPath(pipeline, nested_info->path);
+  if (dotted_target && nested_target) {
+    const absl::Status status = hm::pipeline::setElementPropertyFromString(dotted_target, "silent", "false");
+    gboolean dotted_silent = TRUE;
+    gboolean nested_silent = TRUE;
+    g_object_get(G_OBJECT(dotted_target), "silent", &dotted_silent, nullptr);
+    g_object_get(G_OBJECT(nested_target), "silent", &nested_silent, nullptr);
+    ok &= expect(status.ok(), status.ToString()) &&
+        expect(!dotted_silent && nested_silent, "Exact encoded lookup/edit must target only the dotted sibling");
+  } else {
+    ok = false;
+  }
+  if (dotted_target) {
+    gst_object_unref(dotted_target);
+  }
+  if (nested_target) {
+    gst_object_unref(nested_target);
+  }
+  gst_object_unref(pipeline);
+  return ok;
+}
+
+bool test_negotiated_caps_are_not_exposed() {
+  GError* error = nullptr;
+  GstElement* pipeline = gst_parse_launch(
+      "videotestsrc num-buffers=30 ! capsfilter name=sensitive_caps "
+      "caps=\"video/x-raw,width=16,height=16,uri=(string)secret-uri,"
+      "authorization=(string)Bearer-secret,client-key=(string)private-key,codec_data=(buffer)00112233\" "
+      "! fakesink sync=false",
+      &error);
+  if (!expect(pipeline != nullptr, error ? error->message : "Failed to create sensitive-caps graph")) {
+    if (error) {
+      g_error_free(error);
+    }
+    return false;
+  }
+  if (error) {
+    g_error_free(error);
+  }
+  gst_element_set_state(pipeline, GST_STATE_PAUSED);
+  gst_element_get_state(pipeline, nullptr, nullptr, GST_SECOND * 2);
+  GstElement* filter = gst_bin_get_by_name(GST_BIN(pipeline), "sensitive_caps");
+  GstPad* pad = filter ? gst_element_get_static_pad(filter, "src") : nullptr;
+  GstCaps* caps = pad ? gst_pad_get_current_caps(pad) : nullptr;
+  gchar* serialized_caps = caps ? gst_caps_to_string(caps) : nullptr;
+  const std::string negotiated = serialized_caps ? serialized_caps : "";
+  bool ok = expect(
+      negotiated.find("secret-uri") != std::string::npos && negotiated.find("Bearer-secret") != std::string::npos &&
+          negotiated.find("private-key") != std::string::npos && negotiated.find("codec_data") != std::string::npos,
+      "Sensitive URI/header/key/buffer-like fields must be present in the negotiated test caps");
+
+  const hm::pipeline::GstPipelineGraphInfo graph = hm::pipeline::inspectPipelineGraph(pipeline);
+  std::string exposed;
+  for (const auto& element : graph.elements) {
+    exposed += element.path + element.parent_path + element.name + element.type_name + element.factory_name;
+  }
+  for (const auto& edge : graph.connections) {
+    exposed += edge.source_path + edge.source_pad + edge.sink_path + edge.sink_pad;
+  }
+  ok &= expect(
+      exposed.find("secret-uri") == std::string::npos && exposed.find("Bearer-secret") == std::string::npos &&
+          exposed.find("private-key") == std::string::npos && exposed.find("00112233") == std::string::npos,
+      "Negotiated caps contents must never enter inspector graph metadata");
+
+  g_free(serialized_caps);
+  if (caps) {
+    gst_caps_unref(caps);
+  }
+  if (pad) {
+    gst_object_unref(pad);
+  }
+  if (filter) {
+    gst_object_unref(filter);
+  }
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(pipeline);
+  return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -467,7 +575,8 @@ int main(int argc, char** argv) {
   if (!test_list_and_set_identity_properties() || !test_enum_metadata_and_parsing() ||
       !test_invalid_values_are_rejected() || !test_non_finite_and_plugin_rejected_values_are_rejected() ||
       !test_sensitive_values_are_redacted() || !test_sensitive_current_and_default_values_are_never_read() ||
-      !test_live_mutability_flags() || !test_structured_graph_and_exact_path_lookup()) {
+      !test_live_mutability_flags() || !test_structured_graph_and_exact_path_lookup() ||
+      !test_length_prefixed_paths_do_not_collide() || !test_negotiated_caps_are_not_exposed()) {
     return 1;
   }
   return 0;

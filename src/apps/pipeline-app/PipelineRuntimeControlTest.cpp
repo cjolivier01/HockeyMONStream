@@ -615,9 +615,9 @@ int main(int argc, char** argv) {
   ok &= expect(
       graph_output.find("\"stage\":0,\"generation\":1") != std::string::npos &&
           graph_output.find("\"nodes\":[") != std::string::npos &&
-          graph_output.find("\"edges\":[") != std::string::npos,
-      "pipeline graph response must include nodes and pad connections");
-  constexpr const char* kQueuePath = "cGlwZWxpbmUubXVsdGlfc3JjX2Jpbi5zcmNfc3ViX2JpbjAucXVldWU=";
+          graph_output.find("\"edges\":[") != std::string::npos && graph_output.find("\"caps\":") == std::string::npos,
+      "pipeline graph response must include nodes/pad connections without negotiated caps");
+  constexpr const char* kQueuePath = "ODpwaXBlbGluZS8xMzptdWx0aV9zcmNfYmluLzEyOnNyY19zdWJfYmluMC81OnF1ZXVl";
   constexpr const char* kSilentProperty = "c2lsZW50";
   const size_t properties_mark = process.Mark();
   ok &= expect(
@@ -762,6 +762,11 @@ int main(int argc, char** argv) {
             }),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":1}"),
+        "seek pipeline must announce its initial inspector topology generation");
     const std::string runtime_tuning_response_prefix = "runtime property dsplaytracker0 runtime-tuning-config-file=";
     const std::string runtime_tuning_response = runtime_tuning_response_prefix + playtracker_runtime_config.string();
     const size_t runtime_tuning_mark = seek_process.Mark();
@@ -815,6 +820,35 @@ int main(int argc, char** argv) {
     ok &= expect(
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
         "local-render-only playback must acknowledge the first processed frame after a replacement seek");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":2}",
+            seek_mark),
+        "successful seek recreation must publish a new inspector topology generation");
+    const std::string queued_pre_recreation_command =
+        std::string("@inspect-set-property 150 0 1 0 ") + kQueuePath + " " + kSilentProperty + " dHJ1ZQ==\n";
+    const size_t stale_seek_inspector_mark = seek_process.Mark();
+    ok &= expect(
+        seek_process.Send(queued_pre_recreation_command),
+        "a property command retained from the pre-recreation graph must be delivered");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":150,"
+            "\"status\":\"error\",\"stage\":0,\"generation\":1,"
+            "\"message\":\"Stale pipeline inspector stage/generation",
+            stale_seek_inspector_mark),
+        "a queued pre-recreation property command must not reach the replacement topology");
+    const size_t replacement_graph_mark = seek_process.Mark();
+    ok &= expect(
+        seek_process.Send("@inspect-pipeline 151 0 2\n"),
+        "replacement topology graph request must be delivered with the new generation");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":151,"
+            "\"status\":\"ok\",\"stage\":0,\"generation\":2",
+            replacement_graph_mark),
+        "the newly published inspector generation must accept fresh graph requests");
     ok &= expect(
         seek_process.WaitFor(runtime_tuning_response_prefix, seek_mark),
         "replacement pipeline must restore acknowledged live zoom tuning before completing the seek");
@@ -1329,6 +1363,11 @@ int main(int argc, char** argv) {
             {{"HM_TEST_VERIFY_PIPELINE_RECREATE_SOURCE_CLEANUP", "1"}}),
         "pipeline-app archive process must start");
     ok &= expect(archive_process.WaitFor("Pipeline running"), "archive pipeline must reach PLAYING");
+    ok &= expect(
+        archive_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":1}"),
+        "periodic-recreation pipeline must announce its initial topology generation");
     const size_t recreate_mark = archive_process.Mark();
     ok &= expect(
         archive_process.WaitFor("Recreate pipeline", recreate_mark, std::chrono::seconds(12)),
@@ -1338,6 +1377,14 @@ int main(int argc, char** argv) {
         recreated_at != std::string::npos &&
             archive_process.WaitFor("Pipeline running", recreated_at, std::chrono::seconds(12)),
         "recreated archive pipeline must return to PLAYING");
+    ok &= expect(
+        recreated_at != std::string::npos &&
+            archive_process.WaitFor(
+                "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,"
+                "\"status\":\"ok\",\"stage\":0,\"generation\":2}",
+                recreated_at,
+                std::chrono::seconds(12)),
+        "periodic pipeline replacement must publish a new inspector topology generation");
     std::this_thread::sleep_for(std::chrono::milliseconds(750));
     ok &= expect(archive_process.Interrupt(), "archive pipeline SIGINT stop must be delivered");
     exit_code = -1;

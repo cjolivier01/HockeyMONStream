@@ -154,10 +154,11 @@ std::string element_name(GstElement* element) {
 
 std::string element_path(GstElement* element, const std::string& parent_path) {
   const std::string name = element_name(element);
+  const std::string component = std::to_string(name.size()) + ":" + name;
   if (parent_path.empty()) {
-    return name;
+    return component;
   }
-  return parent_path + "." + name;
+  return parent_path + "/" + component;
 }
 
 std::string factory_name(GstElement* element) {
@@ -537,23 +538,6 @@ void collect_referenced_elements(
   gst_iterator_free(iterator);
 }
 
-std::string current_pad_caps(GstPad* pad) {
-  GstCaps* caps = pad ? gst_pad_get_current_caps(pad) : nullptr;
-  if (!caps) {
-    return "";
-  }
-  gchar* serialized = gst_caps_to_string(caps);
-  std::string result = safe_string(serialized);
-  g_free(serialized);
-  gst_caps_unref(caps);
-  constexpr size_t kMaximumCapsCharacters = 512;
-  if (result.size() > kMaximumCapsCharacters) {
-    result.resize(kMaximumCapsCharacters);
-    result += "...";
-  }
-  return result;
-}
-
 absl::StatusOr<GstState> effective_element_state(GstElement* element) {
   GstState current_state = GST_STATE_NULL;
   GstState pending_state = GST_STATE_VOID_PENDING;
@@ -801,7 +785,6 @@ GstPipelineGraphInfo inspectPipelineGraph(GstElement* root) {
                 .source_pad = safe_string(source_name),
                 .sink_path = sink_path->second,
                 .sink_pad = safe_string(sink_name),
-                .caps = current_pad_caps(source_pad),
             });
             g_free(source_name);
             g_free(sink_name);

@@ -55,14 +55,14 @@ int main(int argc, char** argv) {
   const QString graph = QStringLiteral(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":1,\"status\":\"ok\","
       "\"stage\":-1,\"generation\":7,\"nodes\":["
-      "{\"id\":\"0:pipeline\",\"appIndex\":0,\"path\":\"pipeline\",\"parentId\":\"\","
+      "{\"id\":\"0:8:pipeline\",\"appIndex\":0,\"path\":\"8:pipeline\",\"parentId\":\"\","
       "\"name\":\"pipeline\",\"factory\":\"pipeline\",\"type\":\"GstPipeline\",\"state\":\"PLAYING\","
       "\"bin\":true},"
-      "{\"id\":\"0:pipeline.source\",\"appIndex\":0,\"path\":\"pipeline.source\","
-      "\"parentId\":\"0:pipeline\",\"name\":\"source\",\"factory\":\"videotestsrc\","
+      "{\"id\":\"0:8:pipeline/6:source\",\"appIndex\":0,\"path\":\"8:pipeline/6:source\","
+      "\"parentId\":\"0:8:pipeline\",\"name\":\"source\",\"factory\":\"videotestsrc\","
       "\"type\":\"GstVideoTestSrc\",\"state\":\"PLAYING\",\"bin\":false}],"
-      "\"edges\":[{\"source\":\"0:pipeline.source\",\"sourcePad\":\"src\",\"sink\":\"0:pipeline\","
-      "\"sinkPad\":\"sink\",\"caps\":\"video/x-raw\"}]}");
+      "\"edges\":[{\"source\":\"0:8:pipeline/6:source\",\"sourcePad\":\"src\","
+      "\"sink\":\"0:8:pipeline\",\"sinkPad\":\"sink\"}]}");
   ok &= expect(inspector.handleBackendLine(graph), "graph response must be consumed");
   ok &= expect(inspector.nodeCount() == 2 && inspector.edgeCount() == 1, "graph counts mismatch");
 
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
   if (view) {
     for (QGraphicsItem* item : view->scene()->items()) {
       auto* rectangle = dynamic_cast<QGraphicsRectItem*>(item);
-      if (rectangle && rectangle->data(1).toString() == "0:pipeline.source") {
+      if (rectangle && rectangle->data(1).toString() == "0:8:pipeline/6:source") {
         source_item = rectangle;
         break;
       }
@@ -82,15 +82,15 @@ int main(int argc, char** argv) {
     source_item->setSelected(true);
     QApplication::processEvents();
   }
-  ok &= expect(inspector.selectedNodeId() == "0:pipeline.source", "selected node id mismatch");
+  ok &= expect(inspector.selectedNodeId() == "0:8:pipeline/6:source", "selected node id mismatch");
   ok &= expect(
-      commands.size() == 2 && commands.back() == "@inspect-properties 2 -1 7 0 cGlwZWxpbmUuc291cmNl\n",
+      commands.size() == 2 && commands.back() == "@inspect-properties 2 -1 7 0 ODpwaXBlbGluZS82OnNvdXJjZQ==\n",
       "property request must carry canonical base64 path");
 
   const QString properties = QStringLiteral(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"properties\",\"requestId\":2,"
-      "\"status\":\"ok\",\"stage\":-1,\"generation\":7,\"nodeId\":\"0:pipeline.source\",\"appIndex\":0,"
-      "\"path\":\"pipeline.source\",\"properties\":["
+      "\"status\":\"ok\",\"stage\":-1,\"generation\":7,\"nodeId\":\"0:8:pipeline/6:source\","
+      "\"appIndex\":0,\"path\":\"8:pipeline/6:source\",\"properties\":["
       "{\"name\":\"is-live\",\"label\":\"Is live\",\"description\":\"Act as a live source\","
       "\"type\":\"gboolean\",\"kind\":\"toggle\",\"applyMode\":\"playing\",\"value\":\"false\","
       "\"default\":\"false\",\"minimum\":\"\",\"maximum\":\"\",\"readable\":true,"
@@ -117,16 +117,16 @@ int main(int argc, char** argv) {
   }
   ok &= expect(
       commands.size() == 3 &&
-          commands.back() == "@inspect-set-property 3 -1 7 0 cGlwZWxpbmUuc291cmNl aXMtbGl2ZQ== dHJ1ZQ==\n",
+          commands.back() == "@inspect-set-property 3 -1 7 0 ODpwaXBlbGluZS82OnNvdXJjZQ== aXMtbGl2ZQ== dHJ1ZQ==\n",
       "live property command must encode path, name, and value");
 
   const QString set_result = QStringLiteral(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":3,"
-      "\"status\":\"ok\",\"stage\":-1,\"generation\":7,\"nodeId\":\"0:pipeline.source\",\"appIndex\":0,"
-      "\"path\":\"pipeline.source\",\"property\":\"is-live\"}");
+      "\"status\":\"ok\",\"stage\":-1,\"generation\":7,\"nodeId\":\"0:8:pipeline/6:source\","
+      "\"appIndex\":0,\"path\":\"8:pipeline/6:source\",\"property\":\"is-live\"}");
   ok &= expect(inspector.handleBackendLine(set_result), "set result must be consumed");
   ok &= expect(
-      commands.size() == 4 && commands.back() == "@inspect-properties 4 -1 7 0 cGlwZWxpbmUuc291cmNl\n",
+      commands.size() == 4 && commands.back() == "@inspect-properties 4 -1 7 0 ODpwaXBlbGluZS82OnNvdXJjZQ==\n",
       "successful mutation must read the value back");
 
   const QString next_session = QStringLiteral(

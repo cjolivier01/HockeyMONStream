@@ -417,7 +417,6 @@ bool PipelineInspectorWidget::handleBackendLine(const QString& line) {
           .source_pad = object.value("sourcePad").toString(),
           .sink = object.value("sink").toString(),
           .sink_pad = object.value("sinkPad").toString(),
-          .caps = object.value("caps").toString(),
       };
       if (nodes_.count(edge.source) && nodes_.count(edge.sink)) {
         edges_.push_back(std::move(edge));
@@ -544,7 +543,7 @@ void PipelineInspectorWidget::renderGraph() {
     const QPointF end = positions[edge.sink] + QPointF(0.0, kNodeHeight / 2.0);
     auto* line = graph_scene_->addLine(QLineF(start, end), edge_pen);
     line->setZValue(-2.0);
-    line->setToolTip(QString("%1 → %2\n%3").arg(edge.source_pad, edge.sink_pad, edge.caps));
+    line->setToolTip(QString("%1 → %2").arg(edge.source_pad, edge.sink_pad));
     const QLineF direction(start, end);
     if (direction.length() > 1.0) {
       const qreal angle = std::atan2(-direction.dy(), direction.dx());

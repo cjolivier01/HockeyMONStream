@@ -285,6 +285,15 @@ void emit_ui_startup(const char* stage, const char* message) {
   std::fflush(stdout);
 }
 
+void emit_pipeline_inspector_session(long stage, uint64_t topology_generation) {
+  g_print(
+      "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+      "\"stage\":%ld,\"generation\":%" G_GUINT64_FORMAT "}\n",
+      stage,
+      topology_generation);
+  std::fflush(stdout);
+}
+
 std::vector<std::string> normalize_cli_args(int argc, char* argv[]) {
   std::vector<std::string> args;
   args.reserve(argc);
@@ -2105,12 +2114,7 @@ absl::Status PipelineApplication::playPipelines(
     }
   }
 
-  g_print(
-      "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
-      "\"stage\":%ld,\"generation\":%" G_GUINT64_FORMAT "}\n",
-      current_stage_,
-      main_loop_generation_);
-  std::fflush(stdout);
+  publish_inspector_topology();
   print_runtime_commands();
   changemode(1);
   g_timeout_add(40, event_thread_func_static, nullptr);
@@ -3441,7 +3445,7 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@seek <position-ns> <generation>: Seek local-render-only playback relative to the configured run start\n"
       "\t@seek-relative <delta-ns> <generation>: Jump from the pipeline's current playback position\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
-      "\t@inspect-pipeline <request-id> <stage> <main-loop-generation>: Return bound live pipeline topology\n"
+      "\t@inspect-pipeline <request-id> <stage> <topology-generation>: Return bound live pipeline topology\n"
       "\t@inspect-properties <request-id> <stage> <generation> <app-index> <base64-element-path>: Return "
       "selected-node properties\n"
       "\t@inspect-set-property <request-id> <stage> <generation> <app-index> <base64-path> <base64-property> "
@@ -4175,7 +4179,7 @@ bool PipelineApplication::inspect_pipeline_graph_runtime(
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
       snapshot_error = "Pipeline reconstruction is in progress; refresh when it completes";
-    } else if (current_stage_ != expected_stage || main_loop_generation_ != expected_generation) {
+    } else if (current_stage_ != expected_stage || inspector_topology_generation_ != expected_generation) {
       snapshot_error = "Stale pipeline inspector stage/generation; wait for the current session and refresh";
     } else {
       const auto stage = stage_app_contexts_.find(expected_stage);
@@ -4231,7 +4235,6 @@ bool PipelineApplication::inspect_pipeline_graph_runtime(
       json_add_string_member(builder, "sourcePad", edge.source_pad);
       json_add_string_member(builder, "sink", std::to_string(app_index) + ":" + edge.sink_path);
       json_add_string_member(builder, "sinkPad", edge.sink_pad);
-      json_add_string_member(builder, "caps", edge.caps);
       json_builder_end_object(builder);
     }
   }
@@ -4257,7 +4260,7 @@ bool PipelineApplication::inspect_element_properties_runtime(
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
       snapshot_error = "Pipeline reconstruction is in progress";
-    } else if (current_stage_ != expected_stage || main_loop_generation_ != expected_generation) {
+    } else if (current_stage_ != expected_stage || inspector_topology_generation_ != expected_generation) {
       snapshot_error = "Stale pipeline inspector stage/generation; refresh the graph";
     } else {
       const auto stage = stage_app_contexts_.find(expected_stage);
@@ -4355,7 +4358,7 @@ bool PipelineApplication::set_inspected_element_property_runtime(
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
       mutation_error = "Pipeline reconstruction is in progress";
-    } else if (current_stage_ != expected_stage || main_loop_generation_ != expected_generation) {
+    } else if (current_stage_ != expected_stage || inspector_topology_generation_ != expected_generation) {
       mutation_error = "Stale pipeline inspector stage/generation; refresh the graph";
     } else {
       const auto stage = stage_app_contexts_.find(expected_stage);
@@ -6708,8 +6711,19 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
   }
   begin_pipeline_recreation();
   const gboolean recreated = recreate_pipeline_impl(app_ctx_ptr, calibration_restart, false, 0, 0);
-  end_pipeline_recreation();
+  end_pipeline_recreation(recreated == TRUE);
   return recreated;
+}
+
+void PipelineApplication::publish_inspector_topology() {
+  long published_stage = 0;
+  uint64_t published_generation = 0;
+  {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    published_stage = current_stage_;
+    published_generation = ++inspector_topology_generation_;
+  }
+  emit_pipeline_inspector_session(published_stage, published_generation);
 }
 
 void PipelineApplication::begin_pipeline_recreation() {
@@ -6722,9 +6736,18 @@ void PipelineApplication::begin_pipeline_recreation() {
   pipeline_recreation_active_.store(true, std::memory_order_release);
 }
 
-void PipelineApplication::end_pipeline_recreation() {
-  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
-  pipeline_recreation_active_.store(false, std::memory_order_release);
+void PipelineApplication::end_pipeline_recreation(bool topology_replaced) {
+  std::optional<std::pair<long, uint64_t>> published_session;
+  {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    if (topology_replaced) {
+      published_session = std::make_pair(current_stage_, ++inspector_topology_generation_);
+    }
+    pipeline_recreation_active_.store(false, std::memory_order_release);
+  }
+  if (published_session.has_value()) {
+    emit_pipeline_inspector_session(published_session->first, published_session->second);
+  }
 }
 
 gboolean PipelineApplication::recreate_pipeline_impl(
@@ -6993,7 +7016,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
       resume_perf_measurement(&result.app_ctx->perf_struct);
     }
   }
-  end_pipeline_recreation();
+  end_pipeline_recreation(play_result != GST_STATE_CHANGE_FAILURE);
   runtime_seek_recreation_active_.store(false, std::memory_order_release);
   return G_SOURCE_REMOVE;
 }

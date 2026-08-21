@@ -222,8 +222,9 @@ class PipelineApplication {
   void runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation);
   bool dispatch_runtime_seek_recreation_completion();
   gboolean complete_runtime_seek_recreation(RuntimeSeekRecreationResult result);
+  void publish_inspector_topology();
   void begin_pipeline_recreation();
-  void end_pipeline_recreation();
+  void end_pipeline_recreation(bool topology_replaced = false);
   static gboolean inject_stitching_calibration_error_static(gpointer arg);
   gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
@@ -352,6 +353,7 @@ class PipelineApplication {
   std::atomic<bool> runtime_seek_recreation_active_{false};
   std::atomic<bool> pipeline_recreation_active_{false};
   std::mutex pipeline_access_mu_;
+  uint64_t inspector_topology_generation_ ABSL_GUARDED_BY(pipeline_access_mu_){0};
   bool runtime_seek_recreation_timed_out_{false};
   bool runtime_seek_shutdown_requested_{false};
   std::atomic<uint64_t> runtime_seek_recovery_frame_generation_{0};

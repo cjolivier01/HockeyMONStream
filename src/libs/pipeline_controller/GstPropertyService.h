@@ -57,7 +57,6 @@ struct GstConnectionInfo {
   std::string source_pad;
   std::string sink_path;
   std::string sink_pad;
-  std::string caps;
 };
 
 struct GstPipelineGraphInfo {

@@ -55,7 +55,6 @@ class PipelineInspectorWidget : public QWidget {
     QString source_pad;
     QString sink;
     QString sink_pad;
-    QString caps;
   };
 
   bool writeCommand(const QByteArray& command);
