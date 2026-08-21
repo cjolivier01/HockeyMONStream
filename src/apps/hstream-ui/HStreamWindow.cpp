@@ -6092,12 +6092,16 @@ bool HStreamWindow::handlePreviewOverlayResponse(const QString& line) {
     const bool play = match.captured(4) == "1";
     const bool rink = match.captured(5) == "1";
     if (generation != pending_preview_overlay_generation_) {
+      const bool resolves_reconciliation = generation == unresolved_preview_overlay_reconciliation_generation_;
+      if (resolves_reconciliation)
+        unresolved_preview_overlay_reconciliation_generation_ = 0;
       // A newer request still in flight will supersede this state in command
       // order. If the latest request already timed out, however, the backend
       // has just applied a choice that the UI rolled back. Re-send the
       // confirmed checkbox state with a new generation so the two sides
       // converge without presenting the stale acknowledgement as success.
-      if (pending_preview_overlay_generation_ == 0 && generation == preview_overlay_generation_) {
+      if (pending_preview_overlay_generation_ == 0 &&
+          (generation == preview_overlay_generation_ || resolves_reconciliation)) {
         preview_overlay_stale_apply_observed_ = false;
         const bool matches_confirmed = players == confirmed_show_player_tracking_ &&
             play == confirmed_show_play_tracking_ && rink == confirmed_show_rink_mask_;
@@ -6147,13 +6151,21 @@ bool HStreamWindow::handlePreviewOverlayResponse(const QString& line) {
     restoreConfirmedPreviewOverlays(reason);
     if (reconcile_stale_apply) {
       setRuntimePreviewOverlays(true);
-    } else {
+    } else if (unresolved_preview_overlay_reconciliation_generation_ == 0) {
       resetPreviewOverlayReconciliationState();
     }
   } else if (
-      pending_preview_overlay_generation_ == 0 && generation == timed_out_preview_overlay_reconciliation_generation_) {
-    adoptPreviewOverlayReconciliationFallback(
-        match.captured(6).isEmpty() ? "late-backend-rejected" : "late-" + match.captured(6));
+      generation == unresolved_preview_overlay_reconciliation_generation_ &&
+      preview_overlay_reconciliation_fallback_valid_) {
+    unresolved_preview_overlay_reconciliation_generation_ = 0;
+    if (pending_preview_overlay_generation_ == 0) {
+      adoptPreviewOverlayReconciliationFallback(
+          match.captured(6).isEmpty() ? "late-backend-rejected" : "late-" + match.captured(6));
+    } else {
+      preview_overlay_stale_apply_observed_ = true;
+      appendLog(QString("late failed preview overlay reconciliation generation=%1; preserving backend state")
+                    .arg(generation));
+    }
   }
   return true;
 }
@@ -6341,6 +6353,7 @@ void HStreamWindow::recoverPreviewDisableFailure(const QString& reason, bool for
     return;
   }
   QString channel = selectedPipelinePreviewChannel();
+  const bool inspector_idle = channel.isEmpty();
   if (channel.isEmpty())
     channel = active_preview_channel_;
   pending_preview_channel_.clear();
@@ -6350,7 +6363,22 @@ void HStreamWindow::recoverPreviewDisableFailure(const QString& reason, bool for
     const QSignalBlocker blocker(render_video_toggle_);
     render_video_toggle_->setChecked(true);
   }
+  for (QCheckBox* toggle : {show_player_tracking_toggle_, show_play_tracking_toggle_, show_rink_mask_toggle_}) {
+    if (toggle)
+      toggle->setEnabled(!isCalibrationRun());
+  }
   setRuntimeRenderAudioMuted(false);
+  updatePlaybackSeekControls();
+  if (inspector_idle) {
+    setPreviewRenderingLayout(false);
+    if (preview_status_)
+      preview_status_->setText("Pipeline inspector is waiting for GPU preview to quiesce");
+    appendLog(QString("GPU preview disable failed (%1) while Pipeline inspector is selected; continuing idle retries")
+                  .arg(reason));
+    if (!requestPipelinePreviewChannel("none", PreviewRequestReason::kRecovery))
+      scheduleInspectorPreviewIdleRetry(previewDisableTimeoutMs());
+    return;
+  }
   setPreviewRenderingLayout(true);
   if (QWidget* surface = previewSurfaceForChannel(channel))
     surface->show();
@@ -6390,8 +6418,6 @@ void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
       return;
     }
     ++preview_overlay_reconciliation_attempts_;
-  } else {
-    resetPreviewOverlayReconciliationState();
   }
   const bool players = show_player_tracking_toggle_ && show_player_tracking_toggle_->isChecked();
   const bool play = show_play_tracking_toggle_ && show_play_tracking_toggle_->isChecked();
@@ -6409,8 +6435,12 @@ void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
     return;
   }
   if (!pipeline_render_embedded_) {
-    if (!reconciliation || !adoptPreviewOverlayReconciliationFallback("embedded-preview-unavailable"))
+    if (!reconciliation) {
+      resetPreviewOverlayReconciliationState();
       restoreConfirmedPreviewOverlays("embedded-preview-unavailable");
+    } else if (!adoptPreviewOverlayReconciliationFallback("embedded-preview-unavailable")) {
+      restoreConfirmedPreviewOverlays("embedded-preview-unavailable");
+    }
     return;
   }
   const quint64 generation = ++preview_overlay_generation_;
@@ -6425,9 +6455,12 @@ void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
       restoreConfirmedPreviewOverlays("pipeline-command-write");
     return;
   }
+  if (!reconciliation)
+    preparePreviewOverlayUserRequest();
   pending_preview_overlay_generation_ = generation;
   pending_preview_overlay_is_reconciliation_ = reconciliation;
-  timed_out_preview_overlay_reconciliation_generation_ = 0;
+  if (reconciliation)
+    unresolved_preview_overlay_reconciliation_generation_ = 0;
   appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=pending")
                 .arg(players ? 1 : 0)
                 .arg(play ? 1 : 0)
@@ -6451,10 +6484,22 @@ void HStreamWindow::setConfirmedPreviewOverlays(bool players, bool play, bool ri
     show_rink_mask_toggle_->setChecked(rink);
 }
 
+void HStreamWindow::preparePreviewOverlayUserRequest() {
+  if (pending_preview_overlay_is_reconciliation_ && pending_preview_overlay_generation_ != 0 &&
+      preview_overlay_reconciliation_fallback_valid_) {
+    unresolved_preview_overlay_reconciliation_generation_ = pending_preview_overlay_generation_;
+  }
+  preview_overlay_stale_apply_observed_ = false;
+  pending_preview_overlay_is_reconciliation_ = false;
+  if (!preview_overlay_reconciliation_fallback_valid_)
+    unresolved_preview_overlay_reconciliation_generation_ = 0;
+  preview_overlay_reconciliation_attempts_ = 0;
+}
+
 void HStreamWindow::resetPreviewOverlayReconciliationState() {
   preview_overlay_stale_apply_observed_ = false;
   pending_preview_overlay_is_reconciliation_ = false;
-  timed_out_preview_overlay_reconciliation_generation_ = 0;
+  unresolved_preview_overlay_reconciliation_generation_ = 0;
   preview_overlay_reconciliation_fallback_valid_ = false;
   preview_overlay_reconciliation_fallback_players_ = false;
   preview_overlay_reconciliation_fallback_play_ = false;
@@ -6503,11 +6548,11 @@ void HStreamWindow::timeoutPreviewOverlayRequest(quint64 generation) {
   preview_overlay_stale_apply_observed_ = false;
   pending_preview_overlay_generation_ = 0;
   pending_preview_overlay_is_reconciliation_ = false;
-  timed_out_preview_overlay_reconciliation_generation_ = timed_out_reconciliation ? generation : 0;
+  unresolved_preview_overlay_reconciliation_generation_ = timed_out_reconciliation ? generation : 0;
   restoreConfirmedPreviewOverlays("acknowledgement-timeout");
   if (reconcile_stale_apply) {
     setRuntimePreviewOverlays(true);
-  } else if (!timed_out_reconciliation) {
+  } else if (!timed_out_reconciliation && unresolved_preview_overlay_reconciliation_generation_ == 0) {
     resetPreviewOverlayReconciliationState();
   }
 }

@@ -707,7 +707,7 @@ bool write_fake_runner(const QString& path) {
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
       "delayed_seek_generation, timeout_next_seek, backend_seek_position, reject_next_preview_overlays, "
-      "delay_next_preview_overlays, delayed_preview_overlay_response\n");
+      "delay_next_preview_overlays, delayed_preview_overlay_responses\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-exit'):\n");
   file.write("        print('test process exit requested', flush=True)\n");
@@ -725,9 +725,8 @@ bool write_fake_runner(const QString& path) {
   file.write("        print('test preview overlay delay armed', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-complete-preview-overlays'):\n");
-  file.write("        if delayed_preview_overlay_response:\n");
-  file.write("            print(delayed_preview_overlay_response, flush=True)\n");
-  file.write("            delayed_preview_overlay_response = ''\n");
+  file.write("        if delayed_preview_overlay_responses:\n");
+  file.write("            print(delayed_preview_overlay_responses.pop(0), flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-drop-progress-resets'):\n");
   file.write("        drop_progress_resets = True\n");
@@ -893,7 +892,7 @@ bool write_fake_runner(const QString& path) {
   file.write("        if status == 'failed': response += ' reason=injected-rejection'\n");
   file.write("        if delay_next_preview_overlays:\n");
   file.write("            delay_next_preview_overlays = False\n");
-  file.write("            delayed_preview_overlay_response = response\n");
+  file.write("            delayed_preview_overlay_responses.append(response)\n");
   file.write("            return\n");
   file.write("        print(response, flush=True)\n");
   file.write("        return\n");
@@ -926,7 +925,7 @@ bool write_fake_runner(const QString& path) {
   file.write("backend_seek_position = 42000000000\n");
   file.write("reject_next_preview_overlays = False\n");
   file.write("delay_next_preview_overlays = False\n");
-  file.write("delayed_preview_overlay_response = ''\n");
+  file.write("delayed_preview_overlay_responses = []\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -2716,6 +2715,24 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "A stalled Pipeline inspector transition must retry GPU quiescence without waking hidden Program video")) {
     return false;
   }
+  const int preview_deactivations_before_stalled_inspector_render_off =
+      window->logText().count("stdin:@set-preview-active none");
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  for (int i = 0;
+       i < 100 && !window->logText().contains("while Pipeline inspector is selected; continuing idle retries");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          render_video->isChecked() && preview_tabs->currentIndex() == pipeline_inspector_index &&
+              window->logText().count("stdin:@set-preview-active none") >=
+                  preview_deactivations_before_stalled_inspector_render_off + 4 &&
+              window->logText().contains("while Pipeline inspector is selected; continuing idle retries") &&
+              window->logText().count("stdin:@set-preview-active program") == program_activations_before_inspector,
+          "Render-off recovery on a stalled Pipeline inspector must resume idle retries without waking Program")) {
+    return false;
+  }
   pipeline_process->write("@test-resume-preview-disable\n");
   for (int i = 0; i < 100 &&
        (!window->logText().contains("test preview disable resumed") ||
@@ -2731,12 +2748,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Pipeline inspector retries must settle in an acknowledged idle state once the backend resumes")) {
     return false;
   }
+  const int preview_deactivations_before_runtime_recreation = window->logText().count("stdin:@set-preview-active none");
   pipeline_process->write("@test-preview-runtime-ready program 900\n");
   for (int i = 0; i < 100 &&
-       window->logText().count("stdin:@set-preview-active none") < preview_deactivations_before_inspector + 2;
+       window->logText().count("stdin:@set-preview-active none") < preview_deactivations_before_runtime_recreation + 1;
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("stdin:@set-preview-active none") >=
+                  preview_deactivations_before_runtime_recreation + 1 &&
+              window->logText().count("stdin:@set-preview-active program") == program_activations_before_inspector,
+          "A recreated backend must be returned to inspector idle without transiently reactivating Program")) {
+    return false;
   }
   const int preview_deactivations_before_inspector_render_cycle =
       window->logText().count("stdin:@set-preview-active none");
@@ -3025,6 +3050,37 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "200");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       window->logText().count("test preview overlay delay armed") < overlay_delay_arms_before_late_rejection + 3;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") < 4; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@set-preview-overlays 14 1 1 0"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") < 5; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       !window->logText().contains(
+           "late failed preview overlay reconciliation generation=13; preserving backend state");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   pipeline_process->write("@test-complete-preview-overlays\n");
   for (int i = 0; i < 100 &&
        window->logText().count("preview overlays players=1 play=1 rink=0 apply=backend-state") ==
@@ -3040,10 +3096,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           show_player_tracking->isChecked() && show_play_tracking->isChecked() && !show_rink_mask->isChecked() &&
               window->logText().contains("stdin:@set-preview-overlays 12 1 1 0") &&
               window->logText().contains("stdin:@set-preview-overlays 13 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 14 1 1 0") &&
+              window->logText().contains("stdin:@set-preview-overlays 15 1 1 1") &&
               window->logText().contains(
-                  "preview overlays players=1 play=1 rink=0 apply=backend-state reason=late-injected-rejection") &&
-              !window->logText().contains("stdin:@set-preview-overlays 14 "),
-          "A reconciliation rejected after its timeout must adopt the known backend state without another retry")) {
+                  "late failed preview overlay reconciliation generation=13; preserving backend state") &&
+              window->logText().contains(
+                  "preview overlays players=1 play=1 rink=0 apply=backend-state reason=injected-rejection") &&
+              !window->logText().contains("stdin:@set-preview-overlays 16 "),
+          "A superseding user request and its rejected restore must preserve the unresolved backend fallback without "
+          "looping")) {
     return false;
   }
 

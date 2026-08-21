@@ -199,6 +199,7 @@ class HStreamWindow : public QMainWindow {
   bool setRuntimeRenderAudioMuted(bool muted);
   void setRuntimePreviewOverlays(bool reconciliation = false);
   void setConfirmedPreviewOverlays(bool players, bool play, bool rink);
+  void preparePreviewOverlayUserRequest();
   void resetPreviewOverlayReconciliationState();
   bool adoptPreviewOverlayReconciliationFallback(const QString& reason);
   void restoreConfirmedPreviewOverlays(const QString& reason);
@@ -386,7 +387,7 @@ class HStreamWindow : public QMainWindow {
   quint64 pending_preview_overlay_generation_{0};
   bool preview_overlay_stale_apply_observed_{false};
   bool pending_preview_overlay_is_reconciliation_{false};
-  quint64 timed_out_preview_overlay_reconciliation_generation_{0};
+  quint64 unresolved_preview_overlay_reconciliation_generation_{0};
   bool preview_overlay_reconciliation_fallback_valid_{false};
   bool preview_overlay_reconciliation_fallback_players_{false};
   bool preview_overlay_reconciliation_fallback_play_{false};
