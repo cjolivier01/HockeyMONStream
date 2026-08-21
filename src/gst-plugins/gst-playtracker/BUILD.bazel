@@ -98,3 +98,11 @@ cc_test(
         "@yaml-cpp",
     ],
 )
+
+cc_test(
+    name = "playtracker_stop_delay_test",
+    srcs = ["PlayTrackerStopDelayTest.cpp"],
+    deps = [
+        "@hm//hockeymom/csrc/play_tracker",
+    ],
+)

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtCore/QCoreApplication>
@@ -2463,6 +2464,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_layout->addWidget(camera_status);
     preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
   }
+  pipeline_inspector_ = new PipelineInspectorWidget();
+  pipeline_inspector_->setCommandWriter([this](const QByteArray& command) {
+    return pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning &&
+        pipeline_process_->write(command) == command.size();
+  });
+  pipeline_inspector_tab_index_ = preview_tabs_->addTab(pipeline_inspector_, "Pipeline");
+  preview_tabs_->setTabToolTip(
+      pipeline_inspector_tab_index_,
+      "Inspect the structured live GStreamer graph, select elements, and edit explicitly live-mutable properties.");
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
     if (preview_focus_mode_) {
       if (!canFocusPreview(tab_index)) {
@@ -2476,6 +2486,12 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         if (host)
           host->setFocused(static_cast<int>(index) == tab_index);
       }
+    }
+    if (tab_index == pipeline_inspector_tab_index_) {
+      if (pipeline_inspector_ && pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+        pipeline_inspector_->requestRefresh();
+      }
+      return;
     }
     switchPipelineRenderTarget(tab_index);
   });
@@ -4282,6 +4298,12 @@ void HStreamWindow::stopPipeline() {
 }
 
 void HStreamWindow::handlePipelineStarted() {
+  if (pipeline_inspector_) {
+    pipeline_inspector_->setPipelineRunning(true);
+    if (preview_tabs_ && preview_tabs_->currentIndex() == pipeline_inspector_tab_index_) {
+      pipeline_inspector_->requestRefresh();
+    }
+  }
   pipeline_state_->setText("PLAYING");
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   if (active_run_is_calibration_) {
@@ -4352,6 +4374,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     appendLog(pipeline_stderr_buffer_.trimmed());
     pipeline_stderr_buffer_.clear();
   }
+  if (pipeline_inspector_)
+    pipeline_inspector_->setPipelineRunning(false);
   const bool stopped_by_user = pipeline_stop_requested_;
   const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
   const bool completed_successfully =
@@ -4516,6 +4540,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     updateRunControls();
     return;
   }
+  if (pipeline_inspector_)
+    pipeline_inspector_->setPipelineRunning(false);
   if (pipeline_stop_requested_) {
     appendLog(error_message + "; pipeline is stopping at the user's request");
     return;
@@ -4592,6 +4618,9 @@ void HStreamWindow::readPipelineOutput() {
           continue;
         }
         if (handleGpuPreviewStatus(trimmed)) {
+          continue;
+        }
+        if (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed)) {
           continue;
         }
         handleArchiveOutputStatus(trimmed);

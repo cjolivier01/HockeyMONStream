@@ -2160,6 +2160,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* setup_preview_splitter = require_child<QSplitter>(window, "setupPreviewSplitter");
   auto* output_routing = require_child<QWidget>(window, "outputRoutingGroup");
   auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
+  auto* pipeline_inspector = require_child<QWidget>(window, "pipelineInspectorWidget");
   auto* program_host = require_child<QWidget>(window, "programLetterboxHost");
   auto* preview_surface = require_child<QWidget>(window, "previewSurface");
   auto* preview_target = require_child<QWidget>(window, "previewRenderTarget");
@@ -2191,12 +2192,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time || !game_id || !rotate ||
       !max_speed_x || !bring_up_shadows || !render_video || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
-      !setup_preview_splitter || !output_routing || !preview_tabs || !program_host || !preview_surface ||
-      !preview_target || !stitched_surface || !stitched_target || !camera1_host || !camera1_surface ||
-      !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface || !external_notice ||
-      !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle || !stitched_controls ||
-      !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel ||
-      !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
+      !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
+      !preview_surface || !preview_target || !stitched_surface || !stitched_target || !camera1_host ||
+      !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
+      !external_notice || !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle ||
+      !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar ||
+      !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position ||
+      !pipeline_process) {
+    return false;
+  }
+
+  const int pipeline_inspector_index = preview_tabs->indexOf(pipeline_inspector);
+  if (!expect(
+          pipeline_inspector_index >= 0 && preview_tabs->tabText(pipeline_inspector_index) == "Pipeline",
+          "The live GStreamer pipeline inspector should be available as a preview workspace tab")) {
     return false;
   }
 

@@ -598,7 +598,96 @@ int main(int argc, char** argv) {
   PipelineProcess process;
   ok &= expect(process.Start(argv[1], config), "hstream-cli process must start");
   ok &= expect(process.WaitFor("Pipeline running"), "pipeline-app must reach PLAYING");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+          "\"stage\":0,\"generation\":1}"),
+      "pipeline-app must announce the active inspector stage/generation binding");
   ok &= expect(process.running(), "pipeline-app must keep processing after reaching PLAYING");
+  const size_t graph_mark = process.Mark();
+  ok &= expect(process.Send("@inspect-pipeline 101 0 1\n"), "pipeline graph inspection command must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":101,\"status\":\"ok\"",
+          graph_mark),
+      "backend must return a versioned structured pipeline graph");
+  const std::string graph_output = process.output().substr(graph_mark);
+  ok &= expect(
+      graph_output.find("\"stage\":0,\"generation\":1") != std::string::npos &&
+          graph_output.find("\"nodes\":[") != std::string::npos &&
+          graph_output.find("\"edges\":[") != std::string::npos && graph_output.find("\"caps\":") == std::string::npos,
+      "pipeline graph response must include nodes/pad connections without negotiated caps");
+  constexpr const char* kQueuePath = "ODpwaXBlbGluZS8xMzptdWx0aV9zcmNfYmluLzEyOnNyY19zdWJfYmluMC81OnF1ZXVl";
+  constexpr const char* kSilentProperty = "c2lsZW50";
+  const size_t properties_mark = process.Mark();
+  ok &= expect(
+      process.Send(std::string("@inspect-properties 102 0 1 0 ") + kQueuePath + "\n"),
+      "pipeline element property inspection command must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"properties\",\"requestId\":102,"
+          "\"status\":\"ok\"",
+          properties_mark),
+      "backend must return selected-node property names, types, values, and mutability");
+  const std::string properties_output = process.output().substr(properties_mark);
+  ok &= expect(
+      properties_output.find("\"name\":\"silent\"") != std::string::npos &&
+          properties_output.find("\"editable\":true") != std::string::npos,
+      "a queue property explicitly mutable while PLAYING must be advertised as safely editable");
+  const size_t stale_property_mark = process.Mark();
+  ok &= expect(
+      process.Send(
+          std::string("@inspect-set-property 103 -1 1 0 ") + kQueuePath + " " + kSilentProperty + " dHJ1ZQ==\n"),
+      "stale-stage inspector property mutation must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":103,"
+          "\"status\":\"error\",\"stage\":-1,\"generation\":1,"
+          "\"message\":\"Stale pipeline inspector stage/generation",
+          stale_property_mark),
+      "backend must reject a mutation bound to a previous stage before touching the element");
+  const size_t property_set_mark = process.Mark();
+  ok &= expect(
+      process.Send(
+          std::string("@inspect-set-property 104 0 1 0 ") + kQueuePath + " " + kSilentProperty + " dHJ1ZQ==\n"),
+      "approved inspector property mutation must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":104,"
+          "\"status\":\"ok\"",
+          property_set_mark),
+      "backend must accept an explicitly live-mutable scalar property");
+  const size_t property_restore_mark = process.Mark();
+  ok &= expect(
+      process.Send(
+          std::string("@inspect-set-property 105 0 1 0 ") + kQueuePath + " " + kSilentProperty + " ZmFsc2U=\n"),
+      "inspector property restoration must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":105,"
+          "\"status\":\"ok\"",
+          property_restore_mark),
+      "backend must restore the live property through the guarded setter");
+  const size_t unsafe_property_mark = process.Mark();
+  ok &= expect(
+      process.Send(std::string("@inspect-set-property 106 0 1 0 ") + kQueuePath + " bmFtZQ== aGFja2Vk\n"),
+      "unsafe inspector property request must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":106,"
+          "\"status\":\"error\"",
+          unsafe_property_mark),
+      "backend must reject writable properties that are not explicitly safe while PLAYING");
+  const size_t malformed_inspector_mark = process.Mark();
+  ok &= expect(
+      process.Send("@inspect-properties 107 0 1 0 not-base64\n"),
+      "malformed pipeline inspector command must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"command\",\"requestId\":0,"
+          "\"status\":\"error\"",
+          malformed_inspector_mark),
+      "backend must reject malformed inspector tokens without executing a lookup");
   ok &= expect(
       process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
       "pipeline-app must advance its video position before controls");
@@ -673,6 +762,11 @@ int main(int argc, char** argv) {
             }),
         "pipeline-app seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek pipeline-app must reach PLAYING");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":1}"),
+        "seek pipeline must announce its initial inspector topology generation");
     const std::string runtime_tuning_response_prefix = "runtime property dsplaytracker0 runtime-tuning-config-file=";
     const std::string runtime_tuning_response = runtime_tuning_response_prefix + playtracker_runtime_config.string();
     const size_t runtime_tuning_mark = seek_process.Mark();
@@ -726,6 +820,35 @@ int main(int argc, char** argv) {
     ok &= expect(
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
         "local-render-only playback must acknowledge the first processed frame after a replacement seek");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":2}",
+            seek_mark),
+        "successful seek recreation must publish a new inspector topology generation");
+    const std::string queued_pre_recreation_command =
+        std::string("@inspect-set-property 150 0 1 0 ") + kQueuePath + " " + kSilentProperty + " dHJ1ZQ==\n";
+    const size_t stale_seek_inspector_mark = seek_process.Mark();
+    ok &= expect(
+        seek_process.Send(queued_pre_recreation_command),
+        "a property command retained from the pre-recreation graph must be delivered");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":150,"
+            "\"status\":\"error\",\"stage\":0,\"generation\":1,"
+            "\"message\":\"Stale pipeline inspector stage/generation",
+            stale_seek_inspector_mark),
+        "a queued pre-recreation property command must not reach the replacement topology");
+    const size_t replacement_graph_mark = seek_process.Mark();
+    ok &= expect(
+        seek_process.Send("@inspect-pipeline 151 0 2\n"),
+        "replacement topology graph request must be delivered with the new generation");
+    ok &= expect(
+        seek_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":151,"
+            "\"status\":\"ok\",\"stage\":0,\"generation\":2",
+            replacement_graph_mark),
+        "the newly published inspector generation must accept fresh graph requests");
     ok &= expect(
         seek_process.WaitFor(runtime_tuning_response_prefix, seek_mark),
         "replacement pipeline must restore acknowledged live zoom tuning before completing the seek");
@@ -1229,6 +1352,8 @@ int main(int argc, char** argv) {
 
   PipelineProcess failed_process;
   PipelineProcess archive_process;
+  PipelineProcess destroyed_recreation_process;
+  PipelineProcess partial_recreation_process;
   if (ok) {
     ok &= expect(
         archive_process.Start(
@@ -1240,6 +1365,11 @@ int main(int argc, char** argv) {
             {{"HM_TEST_VERIFY_PIPELINE_RECREATE_SOURCE_CLEANUP", "1"}}),
         "pipeline-app archive process must start");
     ok &= expect(archive_process.WaitFor("Pipeline running"), "archive pipeline must reach PLAYING");
+    ok &= expect(
+        archive_process.WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":1}"),
+        "periodic-recreation pipeline must announce its initial topology generation");
     const size_t recreate_mark = archive_process.Mark();
     ok &= expect(
         archive_process.WaitFor("Recreate pipeline", recreate_mark, std::chrono::seconds(12)),
@@ -1249,6 +1379,14 @@ int main(int argc, char** argv) {
         recreated_at != std::string::npos &&
             archive_process.WaitFor("Pipeline running", recreated_at, std::chrono::seconds(12)),
         "recreated archive pipeline must return to PLAYING");
+    ok &= expect(
+        recreated_at != std::string::npos &&
+            archive_process.WaitFor(
+                "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,"
+                "\"status\":\"ok\",\"stage\":0,\"generation\":2}",
+                recreated_at,
+                std::chrono::seconds(12)),
+        "periodic pipeline replacement must publish a new inspector topology generation");
     std::this_thread::sleep_for(std::chrono::milliseconds(750));
     ok &= expect(archive_process.Interrupt(), "archive pipeline SIGINT stop must be delivered");
     exit_code = -1;
@@ -1260,6 +1398,62 @@ int main(int argc, char** argv) {
     ok &= expect(fs::is_regular_file(archive) && fs::file_size(archive) > 0, "archive output must be written");
     ok &= expect(run_command({"ffprobe", "-v", "error", archive.string()}), "user-stopped archive must be playable");
   }
+
+  const auto verify_failed_recreation_generation = [&](PipelineProcess* recreation_process,
+                                                       const char* injected_environment,
+                                                       const char* failure_phase,
+                                                       uint64_t request_id) {
+    if (!ok) {
+      return;
+    }
+    ok &= expect(
+        recreation_process->Start(argv[1], recreate_config, "URI", "FAKE", false, {{injected_environment, "1"}}),
+        "injected-failure periodic recreation process must start");
+    ok &= expect(
+        recreation_process->WaitFor("Pipeline running"),
+        "injected-failure periodic recreation must reach initial PLAYING");
+    ok &= expect(
+        recreation_process->WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":1}"),
+        "injected-failure recreation must announce its initial inspector generation");
+    const size_t recreation_mark = recreation_process->Mark();
+    const std::string failure_marker =
+        std::string("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=") + failure_phase;
+    ok &= expect(
+        recreation_process->WaitFor(failure_marker, recreation_mark, std::chrono::seconds(12)),
+        "periodic recreation must reach the requested post-destruction failure phase");
+    ok &= expect(
+        recreation_process->WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":2}",
+            recreation_mark),
+        "a failed recreation that changed topology must publish a new inspector generation");
+    const size_t stale_command_mark = recreation_process->Mark();
+    ok &= expect(
+        recreation_process->Send(
+            "@inspect-set-property " + std::to_string(request_id) + " 0 1 0 " + kQueuePath + " " + kSilentProperty +
+            " dHJ1ZQ==\n"),
+        "a property command retained from the destroyed topology must be delivered");
+    ok &= expect(
+        recreation_process->WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":" +
+                std::to_string(request_id) +
+                ",\"status\":\"error\",\"stage\":0,\"generation\":1,\"message\":\"Stale pipeline inspector "
+                "stage/generation",
+            stale_command_mark),
+        "the old inspector generation must not mutate a destroyed or partial replacement topology");
+    ok &= expect(recreation_process->Interrupt(), "injected-failure recreation SIGINT must be delivered");
+    int recreation_exit_code = -1;
+    ok &= expect(
+        recreation_process->WaitForExit(&recreation_exit_code, std::chrono::seconds(12)),
+        "injected-failure recreation process must stop promptly");
+  };
+
+  verify_failed_recreation_generation(
+      &destroyed_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY", "after-destroy", 160);
+  verify_failed_recreation_generation(
+      &partial_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE", "after-create", 161);
 
   if (ok) {
     ok &=
@@ -1317,6 +1511,12 @@ int main(int argc, char** argv) {
     }
     if (!archive_process.output().empty()) {
       archive_process.DumpOutput();
+    }
+    if (!destroyed_recreation_process.output().empty()) {
+      destroyed_recreation_process.DumpOutput();
+    }
+    if (!partial_recreation_process.output().empty()) {
+      partial_recreation_process.DumpOutput();
     }
     std::cerr << "fixture retained at " << root << '\n';
   } else {

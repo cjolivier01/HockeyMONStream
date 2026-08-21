@@ -36,6 +36,7 @@ class QProgressBar;
 class QSplitter;
 class QTimer;
 class QToolButton;
+class PipelineInspectorWidget;
 class ScoreboardSelectionDialog;
 
 namespace hm::ui_internal {
@@ -339,6 +340,8 @@ class HStreamWindow : public QMainWindow {
   QRadioButton* role_right_{nullptr};
   QTextEdit* log_{nullptr};
   QTabWidget* preview_tabs_{nullptr};
+  PipelineInspectorWidget* pipeline_inspector_{nullptr};
+  int pipeline_inspector_tab_index_{-1};
   QWidget* top_bar_{nullptr};
   QWidget* setup_panel_{nullptr};
   QWidget* log_panel_{nullptr};
