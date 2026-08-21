@@ -710,6 +710,9 @@ int main(int argc, char** argv) {
     ok &= expect(
         seek_process.WaitFor("falling back to exact decoded trimming", seek_mark),
         "a rejected accelerated seek must preserve the decoded-trimming fallback");
+    ok &= expect(
+        seek_process.WaitFor("URI-playlist source 1 reset NVIDIA decoder after preroll seek", seek_mark),
+        "an accelerated hardware-decoder seek must rebuild NVDEC before admitting post-seek pixels");
     const std::string& reader_output = seek_process.output();
     const size_t reader_released = reader_output.find("HSTREAM_PIPELINE_READER status=released", seek_mark);
     const size_t reader_destroy = reader_output.find("Destroy pipeline", seek_mark);

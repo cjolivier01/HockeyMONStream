@@ -1985,6 +1985,26 @@ struct UriDecodePadLinkResult {
   gboolean initial_seek_blocked{FALSE};
 };
 
+static GstElement* hardware_decoder_for_decode_pad(GstPad* exposed_pad) {
+  GstPad* current = exposed_pad ? GST_PAD(gst_object_ref(exposed_pad)) : nullptr;
+  while (current) {
+    GstElement* parent = gst_pad_get_parent_element(current);
+    GstElementFactory* factory = parent ? gst_element_get_factory(parent) : nullptr;
+    const gchar* factory_name = factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)) : nullptr;
+    if (factory_name && g_strcmp0(factory_name, "nvv4l2decoder") == 0) {
+      gst_object_unref(current);
+      return parent;
+    }
+    if (parent) {
+      gst_object_unref(parent);
+    }
+    GstPad* target = GST_IS_GHOST_PAD(current) ? gst_ghost_pad_get_target(GST_GHOST_PAD(current)) : nullptr;
+    gst_object_unref(current);
+    current = target;
+  }
+  return nullptr;
+}
+
 static UriDecodePadLinkResult link_uri_decode_pad(NvDsSrcBin* bin, GstPad* pad, GstPad* sinkpad, gboolean is_video) {
   NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
   if (!bin || !pad || !sinkpad) {
@@ -2122,6 +2142,21 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
     const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, TRUE);
     if (link_result.status != UriDecodePadLinkStatus::kLinked && event_probe_id != 0) {
       gst_pad_remove_probe(pad, event_probe_id);
+    }
+    if (link_result.status == UriDecodePadLinkStatus::kLinked && bin->src_elem) {
+      GstElement* decoder = hardware_decoder_for_decode_pad(pad);
+      if (decoder) {
+        auto* retained_decoder = static_cast<GstElement*>(
+            g_object_get_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder"));
+        if (retained_decoder != decoder) {
+          g_object_set_data_full(
+              G_OBJECT(bin->src_elem),
+              "hstream-uri-playlist-video-decoder",
+              gst_object_ref(decoder),
+              reinterpret_cast<GDestroyNotify>(gst_object_unref));
+        }
+        gst_object_unref(decoder);
+      }
     }
     gst_object_unref(sinkpad);
     g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
@@ -4278,7 +4313,7 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
     }
     const gboolean inject_failure = source_id == 0 && g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_FAIL_ONCE") &&
         g_atomic_int_compare_and_exchange(&uri_playlist_initial_seek_failure_injected, FALSE, TRUE);
-    const gboolean accelerated = !inject_failure && source->src_elem &&
+    gboolean accelerated = !inject_failure && source->src_elem &&
         gst_element_seek(
             source->src_elem,
             1.0,
@@ -4288,6 +4323,37 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
             static_cast<gint64>(source->uri_playlist_initial_seek_ns),
             GST_SEEK_TYPE_NONE,
             GST_CLOCK_TIME_NONE);
+    if (accelerated) {
+      g_mutex_lock(&source->uri_decode_pad_selection_mutex);
+      auto* hardware_decoder = static_cast<GstElement*>(
+          g_object_get_data(G_OBJECT(source->src_elem), "hstream-uri-playlist-video-decoder"));
+      if (hardware_decoder) {
+        gst_object_ref(hardware_decoder);
+      }
+      g_mutex_unlock(&source->uri_decode_pad_selection_mutex);
+      if (hardware_decoder) {
+        // nvv4l2decoder can retain a partially initialized 8K HEVC output surface after a flushing seek performed
+        // once preroll has reached the decoded pad. That surface presents as persistent green/corrupt image regions.
+        // The first seek positions the demuxer; retire the selected hardware decoder, restart it under its parent,
+        // then repeat the keyframe seek so the pristine decoder begins at the selected random-access point.
+        accelerated = gst_element_set_state(hardware_decoder, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE &&
+            gst_element_sync_state_with_parent(hardware_decoder);
+        accelerated = accelerated &&
+            gst_element_seek(
+                source->src_elem,
+                1.0,
+                GST_FORMAT_TIME,
+                static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+                GST_SEEK_TYPE_SET,
+                static_cast<gint64>(source->uri_playlist_initial_seek_ns),
+                GST_SEEK_TYPE_NONE,
+                GST_CLOCK_TIME_NONE);
+        if (accelerated) {
+          g_print("URI-playlist source %u reset NVIDIA decoder after preroll seek\n", source_id);
+        }
+        gst_object_unref(hardware_decoder);
+      }
+    }
     if (!accelerated) {
       g_mutex_lock(&bin->uri_playlist_barrier_mutex);
       bin->uri_playlist_initial_seek_fallback_ns =
