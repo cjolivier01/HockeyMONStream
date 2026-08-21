@@ -5016,7 +5016,9 @@ bool PipelineApplication::seek_runtime_impl(
       std::any_of(app_context->config.dsplaytracker_config.private_properties.begin(),
                   app_context->config.dsplaytracker_config.private_properties.end(),
                   [](const hm::gst::PluginProperty& property) {
-                    return property.name == "telemetry-csv-dir" && !trim_ascii(property.value).empty();
+                    std::string normalized_name = property.name;
+                    std::replace(normalized_name.begin(), normalized_name.end(), '_', '-');
+                    return normalized_name == "telemetry-csv-dir" && !property.value.empty();
                   });
   if (telemetry_capture_active) {
     // Runtime seek replaces the complete GStreamer graph, including the
