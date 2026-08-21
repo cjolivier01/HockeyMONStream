@@ -17,6 +17,7 @@ bool expect(bool condition, const char* message) {
 int main() {
   using hm::pipeline_internal::is_preview_overlay_command;
   using hm::pipeline_internal::parse_preview_overlay_command;
+  using hm::pipeline_internal::preview_channel_for_pipeline_start;
   using hm::pipeline_internal::preview_overlay_channel_supports_diagnostics;
   using hm::pipeline_internal::PreviewOverlayCommand;
   using hm::pipeline_internal::PreviewOverlayRuntimeState;
@@ -63,6 +64,11 @@ int main() {
           !preview_overlay_channel_supports_diagnostics("source0") &&
           !preview_overlay_channel_supports_diagnostics("none"),
       "overlay selection must target Program/Stitched sinks, never camera previews");
+  ok &= expect(
+      preview_channel_for_pipeline_start("", "program", true) == "none" &&
+          preview_channel_for_pipeline_start("", "program", false) == "program" &&
+          preview_channel_for_pipeline_start("stitched", "program", false) == "stitched",
+      "an explicit none selection must survive later pipeline stages without being confused with an unset channel");
 
   PreviewOverlayRuntimeState state(PreviewOverlaySelection{true, false, false});
   const PreviewOverlayCommand first{1, {false, true, true}};

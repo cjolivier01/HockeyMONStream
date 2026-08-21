@@ -31,6 +31,15 @@ inline bool preview_overlay_channel_supports_diagnostics(std::string_view channe
   return channel == "program" || channel == "stitched";
 }
 
+inline std::string preview_channel_for_pipeline_start(
+    std::string_view active_channel,
+    std::string_view initial_channel,
+    bool explicitly_disabled) {
+  if (explicitly_disabled)
+    return "none";
+  return std::string(active_channel.empty() ? initial_channel : active_channel);
+}
+
 inline bool is_preview_overlay_command(std::string_view line) {
   std::istringstream input{std::string(line)};
   std::string verb;

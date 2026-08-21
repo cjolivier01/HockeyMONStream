@@ -1744,8 +1744,10 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             window_id);
       }
     }
-    if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_))
+    if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_)) {
       active_ui_preview_channel_.clear();
+      ui_preview_channel_explicitly_disabled_ = false;
+    }
     const bool has_overlay_sink =
         std::any_of(ui_preview_channels_.begin(), ui_preview_channels_.end(), [](const auto& channel) {
           return hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel.first);
@@ -2339,8 +2341,8 @@ absl::Status PipelineApplication::playPipelines(
   if (!ui_preview_channels_.empty()) {
     // Re-arm the initial channel directly after PLAYING. Startup must not race
     // an external command against installation of the GLib stdin poll.
-    const std::string channel =
-        active_ui_preview_channel_.empty() ? initial_ui_preview_channel_ : active_ui_preview_channel_;
+    const std::string channel = hm::pipeline_internal::preview_channel_for_pipeline_start(
+        active_ui_preview_channel_, initial_ui_preview_channel_, ui_preview_channel_explicitly_disabled_);
     const guint64 generation = active_ui_preview_generation_ + 1;
     emit_preview_protocol(
         "HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=%" G_GUINT64_FORMAT "\n",
@@ -2806,7 +2808,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     if (initial_ui_preview_channel_ != "none" && !ui_preview_window_ids_.count(initial_ui_preview_channel_)) {
       return absl::InvalidArgumentError("--ui-preview-active must name a channel present in --ui-preview-windows");
     }
-    active_ui_preview_channel_ = initial_ui_preview_channel_ == "none" ? std::string() : initial_ui_preview_channel_;
+    ui_preview_channel_explicitly_disabled_ = initial_ui_preview_channel_ == "none";
+    active_ui_preview_channel_ = ui_preview_channel_explicitly_disabled_ ? std::string() : initial_ui_preview_channel_;
     active_ui_preview_generation_ = 1;
   }
   set_embedded_gpu_preview_video_mode(headless_render_video_ || !ui_preview_window_ids_.empty());
@@ -5762,6 +5765,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     if (!hm::gpu_preview::isolation_active(previous->second.ingress_isolation) ||
         !hm::gpu_preview::isolation_active(previous->second.isolation)) {
       active_ui_preview_channel_.clear();
+      ui_preview_channel_explicitly_disabled_ = false;
       update_preview_overlay_producers();
       emit_preview_protocol(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
@@ -5785,6 +5789,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     hm::gpu_preview::set_isolation_active(previous->second.isolation, false, generation);
     if (!hm::gpu_preview::quiesce(previous->second.sink, generation)) {
       active_ui_preview_channel_.clear();
+      ui_preview_channel_explicitly_disabled_ = false;
       active_ui_preview_generation_ = generation;
       update_preview_overlay_producers();
       emit_preview_protocol(
@@ -5797,8 +5802,10 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   }
 
   active_ui_preview_channel_.clear();
+  ui_preview_channel_explicitly_disabled_ = false;
   active_ui_preview_generation_ = generation;
   if (channel == "none") {
+    ui_preview_channel_explicitly_disabled_ = true;
     update_preview_overlay_producers();
     emit_preview_protocol(
         "HSTREAM_PREVIEW channel=none status=deactivated generation=%" G_GUINT64_FORMAT
@@ -5822,6 +5829,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   // admitted Program/Stitched frame already has the requested immutable
   // snapshot (and Program crop transform, when needed).
   active_ui_preview_channel_ = channel;
+  ui_preview_channel_explicitly_disabled_ = false;
   update_preview_overlay_producers();
   g_object_set(G_OBJECT(target->second.sink), "generation", generation, nullptr);
   // Arm the drain barrier before opening the ingress gate. A newly enqueued
@@ -5834,6 +5842,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     hm::gpu_preview::set_isolation_active(target->second.isolation, false, generation);
     hm::gpu_preview::quiesce(target->second.sink, generation);
     active_ui_preview_channel_.clear();
+    ui_preview_channel_explicitly_disabled_ = false;
     update_preview_overlay_producers();
     emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT

@@ -274,6 +274,7 @@ class PipelineApplication {
   };
   std::map<std::string, UiPreviewChannel> ui_preview_channels_;
   std::string active_ui_preview_channel_;
+  bool ui_preview_channel_explicitly_disabled_{false};
   guint64 active_ui_preview_generation_{1};
   hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
   std::vector<GstElement*> preview_overlay_producers_;

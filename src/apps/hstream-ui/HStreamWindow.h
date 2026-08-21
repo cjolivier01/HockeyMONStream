@@ -193,10 +193,14 @@ class HStreamWindow : public QMainWindow {
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
   void schedulePreviewDisableTimeout(quint64 generation, int timeout_ms);
+  void scheduleInspectorPreviewIdleRetry(int timeout_ms);
   void recoverPreviewDisableFailure(const QString& reason, bool force = false);
   int previewDisableTimeoutMs() const;
   bool setRuntimeRenderAudioMuted(bool muted);
   void setRuntimePreviewOverlays(bool reconciliation = false);
+  void setConfirmedPreviewOverlays(bool players, bool play, bool rink);
+  void resetPreviewOverlayReconciliationState();
+  bool adoptPreviewOverlayReconciliationFallback(const QString& reason);
   void restoreConfirmedPreviewOverlays(const QString& reason);
   void timeoutPreviewOverlayRequest(quint64 generation);
   void setRuntimeVideoRendering(bool enabled);
@@ -381,6 +385,12 @@ class HStreamWindow : public QMainWindow {
   quint64 preview_overlay_generation_{0};
   quint64 pending_preview_overlay_generation_{0};
   bool preview_overlay_stale_apply_observed_{false};
+  bool pending_preview_overlay_is_reconciliation_{false};
+  quint64 timed_out_preview_overlay_reconciliation_generation_{0};
+  bool preview_overlay_reconciliation_fallback_valid_{false};
+  bool preview_overlay_reconciliation_fallback_players_{false};
+  bool preview_overlay_reconciliation_fallback_play_{false};
+  bool preview_overlay_reconciliation_fallback_rink_{false};
   int preview_overlay_reconciliation_attempts_{0};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
