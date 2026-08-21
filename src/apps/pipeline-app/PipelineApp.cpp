@@ -120,14 +120,12 @@ GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpoi
     auto* frame_meta = static_cast<NvDsFrameMeta*>(item->data);
     if (!frame_meta)
       continue;
-    // Attach both user-meta records before tee fan-out. Playcropper updates
-    // the transform record in place on the Program branch, avoiding a shared
-    // frame-user-meta list mutation while Stitched reads its snapshot.
-    const bool transform_ready = hm::preview_overlay::find_playcropper_transform_meta(frame_meta) ||
-        hm::preview_overlay::add_playcropper_transform_meta(frame_meta, {});
+    // Only immutable metadata crosses the tee. Playcropper attaches its
+    // transform to the copied metadata on the Program output buffer after the
+    // transform is known, so the Stitched branch cannot race a mutation.
     const bool snapshot_ready = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) ||
         hm::preview_overlay::add_overlay_snapshot_meta(frame_meta);
-    snapshot_failed = snapshot_failed || !transform_ready || !snapshot_ready;
+    snapshot_failed = snapshot_failed || !snapshot_ready;
   }
   auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
   if (snapshot_failed && state && !state->failure_reported.exchange(true)) {

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
@@ -284,6 +285,19 @@ bool run_two_stage_disabled_path_test() {
   return passed;
 }
 
+bool run_capture_geometry_budget_test() {
+  const auto unchanged = hm::gpu_preview::bounded_capture_dimensions(1920, 1080);
+  const auto bounded = hm::gpu_preview::bounded_capture_dimensions(16384, 16384);
+  const std::uint64_t bounded_bytes = static_cast<std::uint64_t>(bounded.first) * bounded.second * 4U;
+  const double bounded_aspect = static_cast<double>(bounded.first) / bounded.second;
+  if (unchanged != std::pair<unsigned, unsigned>{1920, 1080} || bounded.first >= 16384 || bounded.second >= 16384 ||
+      bounded_bytes > hm::gpu_preview::kMaximumPresentedFrameCaptureBytes || std::abs(bounded_aspect - 1.0) > 0.001) {
+    std::cerr << "Presented-frame capture geometry exceeded its byte budget or distorted the source\n";
+    return false;
+  }
+  return true;
+}
+
 bool run_renderer_test(Display* display, Window window) {
   GError* error = nullptr;
   GstElement* pipeline = gst_parse_launch(
@@ -342,6 +356,14 @@ bool run_renderer_test(Display* display, Window window) {
   std::string capture_error;
   sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
   const bool captured = hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error);
+  XResizeWindow(display, window, 4096, 2160);
+  XSync(display, False);
+  std::vector<std::uint8_t> bounded_rgba;
+  unsigned bounded_width = 0;
+  unsigned bounded_height = 0;
+  std::string bounded_capture_error;
+  const bool bounded_capture = hm::gpu_preview::capture_presented_frame(
+      sink, &bounded_rgba, &bounded_width, &bounded_height, &bounded_capture_error);
   gst_object_unref(sink);
   const auto [minimum, maximum] = rgba.empty()
       ? std::pair<std::uint8_t, std::uint8_t>{0, 0}
@@ -350,9 +372,13 @@ bool run_renderer_test(Display* display, Window window) {
   gst_object_unref(bus);
   gst_element_set_state(pipeline, GST_STATE_NULL);
   gst_object_unref(pipeline);
-  if (!ready || !captured || width != 640 || height != 360 || maximum == minimum) {
+  const bool bounded_capture_ok = bounded_capture && bounded_width < 4096 && bounded_height < 2160 &&
+      bounded_rgba.size() <= hm::gpu_preview::kMaximumPresentedFrameCaptureBytes;
+  if (!ready || !captured || width != 640 || height != 360 || maximum == minimum || !bounded_capture_ok) {
     std::cerr << "GPU preview did not expose its presented texture: ready=" << ready << " captured=" << captured
-              << " range=" << static_cast<int>(maximum - minimum) << " error=" << capture_error << '\n';
+              << " range=" << static_cast<int>(maximum - minimum) << " error=" << capture_error
+              << " bounded-capture=" << bounded_capture << " bounded-size=" << bounded_width << 'x' << bounded_height
+              << " bounded-error=" << bounded_capture_error << '\n';
     return false;
   }
   return true;
@@ -372,6 +398,8 @@ int main(int argc, char** argv) {
   if (!run_deactivation_barrier_test())
     return 1;
   if (!run_two_stage_disabled_path_test())
+    return 1;
+  if (!run_capture_geometry_budget_test())
     return 1;
   if (!gst_element_factory_find("nvvideoconvert") || !std::getenv("DISPLAY")) {
     std::cout << "NVMM conversion or X11 display unavailable; skipping\n";

@@ -2,6 +2,7 @@
 
 #include <nvdsmeta.h>
 
+#include <array>
 #include <vector>
 
 namespace hm::preview_overlay {
@@ -49,6 +50,11 @@ struct OverlaySnapshot {
 Point input_to_output(const PlayCropperTransform& transform, Point point);
 Point metadata_to_output(const PlayCropperTransform& transform, Point point);
 Point output_to_input(const PlayCropperTransform& transform, Point point);
+std::vector<std::array<Point, 3>> arrow_head_triangles(
+    Point start,
+    Point end,
+    float shaft_width,
+    NvOSD_Arrow_Head_Direction direction);
 
 NvDsMetaType playcropper_transform_meta_type();
 bool add_playcropper_transform_meta(NvDsFrameMeta* frame_meta, const PlayCropperTransform& transform);

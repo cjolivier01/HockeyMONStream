@@ -1,5 +1,6 @@
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -84,6 +85,37 @@ Point output_to_input(const PlayCropperTransform& transform, Point point) {
   return Point{crop_space.x + transform.source_left, crop_space.y + transform.source_top};
 }
 
+std::vector<std::array<Point, 3>> arrow_head_triangles(
+    Point start,
+    Point end,
+    float shaft_width,
+    NvOSD_Arrow_Head_Direction direction) {
+  const float dx = end.x - start.x;
+  const float dy = end.y - start.y;
+  const float length = std::hypot(dx, dy);
+  if (length <= 0.001F)
+    return {};
+  const Point unit{dx / length, dy / length};
+  const Point normal{-unit.y, unit.x};
+  const float head_length = std::min(length * 0.5F, std::max(8.0F, 4.0F * shaft_width));
+  const float head_half_width = std::min(length * 0.25F, std::max(4.0F, 2.0F * shaft_width));
+  std::vector<std::array<Point, 3>> triangles;
+  triangles.reserve(direction == BOTH_HEAD ? 2U : 1U);
+  auto add_head = [&](Point tip, Point toward_shaft) {
+    const Point base{tip.x + toward_shaft.x * head_length, tip.y + toward_shaft.y * head_length};
+    triangles.push_back({
+        tip,
+        Point{base.x + normal.x * head_half_width, base.y + normal.y * head_half_width},
+        Point{base.x - normal.x * head_half_width, base.y - normal.y * head_half_width},
+    });
+  };
+  if (direction == START_HEAD || direction == BOTH_HEAD)
+    add_head(start, unit);
+  if (direction == END_HEAD || direction == BOTH_HEAD)
+    add_head(end, Point{-unit.x, -unit.y});
+  return triangles;
+}
+
 NvDsMetaType playcropper_transform_meta_type() {
   static const NvDsMetaType type = nvds_get_user_meta_type(const_cast<gchar*>("HSTREAM.PLAYCROPPER_TRANSFORM"));
   return type;
@@ -92,16 +124,17 @@ NvDsMetaType playcropper_transform_meta_type() {
 bool add_playcropper_transform_meta(NvDsFrameMeta* frame_meta, const PlayCropperTransform& transform) {
   if (!frame_meta || !frame_meta->base_meta.batch_meta)
     return false;
-  if (const auto* existing = find_playcropper_transform_meta(frame_meta)) {
-    *const_cast<PlayCropperTransform*>(existing) = transform;
-    return true;
-  }
+  if (find_playcropper_transform_meta(frame_meta))
+    return false;
+  gpointer payload = g_memdup2(&transform, sizeof(transform));
+  if (!payload)
+    return false;
   NvDsUserMeta* user_meta = nvds_acquire_user_meta_from_pool(frame_meta->base_meta.batch_meta);
-  if (!user_meta)
+  if (!user_meta) {
+    g_free(payload);
     return false;
-  user_meta->user_meta_data = g_memdup2(&transform, sizeof(transform));
-  if (!user_meta->user_meta_data)
-    return false;
+  }
+  user_meta->user_meta_data = payload;
   user_meta->base_meta.meta_type = playcropper_transform_meta_type();
   user_meta->base_meta.copy_func = copy_transform_meta;
   user_meta->base_meta.release_func = release_transform_meta;

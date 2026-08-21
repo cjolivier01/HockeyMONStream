@@ -150,7 +150,10 @@ cc_library(
 cc_test(
     name = "preview_overlay_meta_test",
     srcs = ["PreviewOverlayMetaTest.cpp"],
-    deps = [":preview_overlay_meta"],
+    deps = [
+        ":preview_overlay_meta",
+        "@gstreamer",
+    ],
 )
 
 cc_test(

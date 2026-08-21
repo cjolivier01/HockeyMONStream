@@ -5,6 +5,7 @@
 #include <gst/base/gstbasesink.h>
 #include <gst/video/video.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -279,7 +280,6 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 #include <nvdsmeta.h>
 #include <opencv2/imgcodecs.hpp>
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <optional>
@@ -736,17 +736,33 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
           });
     };
     auto add_play_arrow = [&](const NvOSD_ArrowParams& arrow) {
+      const OverlayColor color = overlay_color(arrow.arrow_color);
+      const float width = static_cast<float>(arrow.arrow_width);
       overlays.paths.push_back(
           OverlayPath{
               transform_points(
                   {{static_cast<float>(arrow.x1), static_cast<float>(arrow.y1)},
                    {static_cast<float>(arrow.x2), static_cast<float>(arrow.y2)}},
                   program_transform),
-              overlay_color(arrow.arrow_color),
-              static_cast<float>(arrow.arrow_width),
+              color,
+              width,
               false,
               false,
           });
+      for (const auto& triangle : hm::preview_overlay::arrow_head_triangles(
+               {static_cast<float>(arrow.x1), static_cast<float>(arrow.y1)},
+               {static_cast<float>(arrow.x2), static_cast<float>(arrow.y2)},
+               width,
+               arrow.arrow_head)) {
+        overlays.paths.push_back(
+            OverlayPath{
+                transform_points(
+                    std::vector<hm::preview_overlay::Point>(triangle.begin(), triangle.end()), program_transform),
+                color,
+                1.0F,
+                true,
+                true});
+      }
     };
     auto add_play_circle = [&](const NvOSD_CircleParams& circle) {
       constexpr int kCircleSegments = 48;
@@ -831,7 +847,7 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
           state->rink_mask_file.c_str());
       state->rink_mask_failure_reported = true;
     }
-    state->rink_mask_dirty = false;
+    state->rink_mask_retry_after = now + kRetryInterval;
     return false;
   }
   glGenTextures(1, &state->rink_mask_texture);
@@ -1449,6 +1465,27 @@ bool quiesce(GstElement* sink, std::uint64_t generation) {
 #endif
 }
 
+std::pair<unsigned, unsigned> bounded_capture_dimensions(unsigned width, unsigned height) {
+  if (width == 0 || height == 0)
+    return {0, 0};
+  constexpr std::uint64_t kBytesPerPixel = 4;
+  constexpr std::uint64_t kMaximumPixels = kMaximumPresentedFrameCaptureBytes / kBytesPerPixel;
+  const std::uint64_t source_pixels = static_cast<std::uint64_t>(width) * height;
+  if (source_pixels <= kMaximumPixels)
+    return {width, height};
+  const long double scale = std::sqrt(static_cast<long double>(kMaximumPixels) / source_pixels);
+  unsigned bounded_width = std::max(1U, static_cast<unsigned>(std::floor(width * scale)));
+  unsigned bounded_height = std::max(1U, static_cast<unsigned>(std::floor(height * scale)));
+  if (static_cast<std::uint64_t>(bounded_width) * bounded_height > kMaximumPixels) {
+    if (bounded_width >= bounded_height) {
+      bounded_width = std::max(1U, static_cast<unsigned>(kMaximumPixels / bounded_height));
+    } else {
+      bounded_height = std::max(1U, static_cast<unsigned>(kMaximumPixels / bounded_width));
+    }
+  }
+  return {bounded_width, bounded_height};
+}
+
 bool capture_presented_frame(
     GstElement* sink,
     std::vector<std::uint8_t>* rgba,
@@ -1491,31 +1528,92 @@ bool capture_presented_frame(
       *error = "preview window geometry is unavailable";
     return false;
   }
-  const size_t row_bytes = static_cast<size_t>(attributes.width) * 4U;
-  const size_t byte_count = row_bytes * static_cast<size_t>(attributes.height);
+  const auto [capture_width, capture_height] =
+      bounded_capture_dimensions(static_cast<unsigned>(attributes.width), static_cast<unsigned>(attributes.height));
+  const size_t row_bytes = static_cast<size_t>(capture_width) * 4U;
+  const size_t byte_count = row_bytes * static_cast<size_t>(capture_height);
   rgba->resize(byte_count);
-  glReadBuffer(GL_FRONT);
+  for (int stale_error = 0; stale_error < 16 && glGetError() != GL_NO_ERROR; ++stale_error) {
+  }
+  GLuint capture_texture = 0;
+  GLuint capture_framebuffer = 0;
+  bool capture_target_ready = true;
+  const bool downsample = capture_width != static_cast<unsigned>(attributes.width) ||
+      capture_height != static_cast<unsigned>(attributes.height);
+  if (downsample) {
+    glGenTextures(1, &capture_texture);
+    glBindTexture(GL_TEXTURE_2D, capture_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA8,
+        static_cast<GLsizei>(capture_width),
+        static_cast<GLsizei>(capture_height),
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        nullptr);
+    glGenFramebuffers(1, &capture_framebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, capture_framebuffer);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capture_texture, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_FRONT);
+    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+      glBlitFramebuffer(
+          0,
+          0,
+          attributes.width,
+          attributes.height,
+          0,
+          0,
+          static_cast<GLint>(capture_width),
+          static_cast<GLint>(capture_height),
+          GL_COLOR_BUFFER_BIT,
+          GL_LINEAR);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, capture_framebuffer);
+      glReadBuffer(GL_COLOR_ATTACHMENT0);
+    } else {
+      capture_target_ready = false;
+    }
+  } else {
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_FRONT);
+  }
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  glReadPixels(0, 0, attributes.width, attributes.height, GL_RGBA, GL_UNSIGNED_BYTE, rgba->data());
+  if (capture_target_ready) {
+    glReadPixels(
+        0,
+        0,
+        static_cast<GLsizei>(capture_width),
+        static_cast<GLsizei>(capture_height),
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        rgba->data());
+  }
   glFinish();
   const GLenum gl_error = glGetError();
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  if (capture_framebuffer)
+    glDeleteFramebuffers(1, &capture_framebuffer);
+  if (capture_texture)
+    glDeleteTextures(1, &capture_texture);
   release_context(state);
-  if (gl_error != GL_NO_ERROR) {
+  if (!capture_target_ready || gl_error != GL_NO_ERROR) {
     rgba->clear();
     if (error)
       *error = "OpenGL presented-frame readback failed";
     return false;
   }
-  std::vector<std::uint8_t> row(row_bytes);
-  for (int top = 0, bottom = attributes.height - 1; top < bottom; ++top, --bottom) {
+  for (unsigned top = 0, bottom = capture_height - 1; top < bottom; ++top, --bottom) {
     auto* top_row = rgba->data() + static_cast<size_t>(top) * row_bytes;
     auto* bottom_row = rgba->data() + static_cast<size_t>(bottom) * row_bytes;
-    std::copy(top_row, top_row + row_bytes, row.begin());
-    std::copy(bottom_row, bottom_row + row_bytes, top_row);
-    std::copy(row.begin(), row.end(), bottom_row);
+    std::swap_ranges(top_row, top_row + row_bytes, bottom_row);
   }
-  *width = static_cast<unsigned>(attributes.width);
-  *height = static_cast<unsigned>(attributes.height);
+  *width = capture_width;
+  *height = capture_height;
   if (error)
     error->clear();
   return true;
