@@ -90,6 +90,10 @@ struct HStreamWindowTestAccess {
   static qint64 requestPipelineProcessExit(HStreamWindow* window) {
     return window->pipeline_process_ ? window->pipeline_process_->write("@test-exit\n") : -1;
   }
+
+  static QStringList pipelineArguments(HStreamWindow* window) {
+    return window->pipelineArguments();
+  }
 };
 
 namespace fs = std::filesystem;
@@ -2149,6 +2153,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* bring_up_shadows = require_child<QSlider>(window, "cameraSlider_Bring_Up_Shadows");
   auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* clear_log = require_child<QPushButton>(window, "clearLogButton");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
@@ -2185,7 +2190,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time || !game_id || !rotate ||
-      !max_speed_x || !bring_up_shadows || !render_video || !log || !clear_log || !main_log_splitter ||
+      !max_speed_x || !bring_up_shadows || !render_video || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
       !setup_preview_splitter || !output_routing || !preview_tabs || !program_host || !preview_surface ||
       !preview_target || !stitched_surface || !stitched_target || !camera1_host || !camera1_surface ||
       !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface || !external_notice ||
@@ -2337,6 +2342,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   game_id->setText(valid_game_id);
+  if (!expect(!drivegpt_csv->isChecked(), "DriveGPT CSV export must remain opt-in")) {
+    return false;
+  }
+  drivegpt_csv->setChecked(true);
+  const QString expected_telemetry_option =
+      QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
+          .arg(QDir::cleanPath(window->gameDirectoryText()));
+  if (!expect(
+          HStreamWindowTestAccess::pipelineArguments(window).contains(expected_telemetry_option),
+          "The DriveGPT checkbox should route metadata export into the selected HM game directory")) {
+    return false;
+  }
+  drivegpt_csv->setChecked(false);
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500") ||
       !expect(
           stitch_frame_time->time() == QTime(0, 0, 0) &&

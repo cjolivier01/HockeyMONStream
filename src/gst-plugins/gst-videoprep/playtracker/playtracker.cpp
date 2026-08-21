@@ -15,6 +15,7 @@
 #include "absl/strings/str_cat.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
+#include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/TempFile.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
@@ -53,6 +54,7 @@ bool parse_finite_float(const std::string& value, float* out) {
 } // namespace
 
 PlayTrackerPriv::~PlayTrackerPriv() {
+  telemetry_csv_.Stop();
   std::lock_guard<std::mutex> lk(context_mu_);
   if (pt_context_) {
     DsPlayTrackerCtxDeinit(pt_context_);
@@ -81,7 +83,16 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     std::lock_guard<std::mutex> lk(context_mu_);
     HM_RETURN_IF_ERROR(ReloadContextFromConfig());
   }
-  return Super::PostCapsInit(params);
+  if (!telemetry_csv_dir_.empty()) {
+    HM_RETURN_IF_ERROR(telemetry_csv_.Start(
+        telemetry_csv_dir_, play_tracker_config_source_file_, init_params_.play_tracker_config_file));
+    std::cout << "Playtracker telemetry CSV export: " << telemetry_csv_.output_manifest() << std::endl;
+  }
+  const absl::Status status = Super::PostCapsInit(params);
+  if (!status.ok()) {
+    telemetry_csv_.Stop();
+  }
+  return status;
 }
 
 absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
@@ -163,6 +174,12 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     show_ = !!std::atol(prop.value.c_str());
   } else if (key == "draw") {
     init_params_.draw = !!std::atol(prop.value.c_str());
+  } else if (key == "telemetry-csv-dir") {
+    if (telemetry_csv_.active() && prop.value != telemetry_csv_dir_) {
+      std::cerr << "telemetry-csv-dir can only be changed before the pipeline starts" << std::endl;
+      return false;
+    }
+    telemetry_csv_dir_ = prop.value;
   } else if (key == "fixed-edge-rotation-angle") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {
@@ -173,6 +190,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     }
     fixed_edge_rotation_angle_left_ = angle;
     fixed_edge_rotation_angle_right_ = angle;
+    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-left") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {
@@ -182,6 +200,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
+    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-right") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {
@@ -191,6 +210,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     fixed_edge_rotation_angle_right_ = angle;
+    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "dynamic-acceleration-scaling") {
     float dynamic_acceleration_scaling = 0.0f;
     if (!parse_finite_float(prop.value, &dynamic_acceleration_scaling)) {
@@ -200,10 +220,12 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     dynamic_acceleration_scaling_ = dynamic_acceleration_scaling;
+    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "runtime-tuning-config-file") {
     // Parse outside the streaming mutex so disk I/O and YAML conversion never
     // stall GenerateOutput(). Only the small in-place mutation is serialized.
     auto tuning = DsPlayTrackerLoadRuntimeTuning(prop.value);
+    const std::string tuning_contents = ReadTelemetryConfigArtifact(prop.value);
     if (!tuning.ok()) {
       std::cerr << tuning.status() << std::endl;
       return false;
@@ -217,6 +239,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       }
     }
     runtime_tuning_history_.push_back(*tuning);
+    telemetry_csv_.TryRecordConfigEvent(
+        {"runtime-tuning", key, prop.value, "play_tracker_runtime_tuning", tuning_contents});
     return true;
   } else if (key == "config-file") {
     // This property changes the next-start base configuration. Runtime tuning
@@ -224,6 +248,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     reload_context = true;
   }
   if (reload_context) {
+    const std::string config_contents = ReadTelemetryConfigArtifact(prop.value);
     std::lock_guard<std::mutex> lk(context_mu_);
     const std::string previous_config_source_file = play_tracker_config_source_file_;
     if (key == "config-file") {
@@ -237,6 +262,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
         return false;
       }
     }
+    telemetry_csv_.TryRecordConfigEvent({"base-config", key, prop.value, "play_tracker_source", config_contents});
   }
   return true;
 }
@@ -256,6 +282,9 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
     DsPlayTrackerCtxResetTracking(pt_context_);
     prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
     frame_counter_ = 0;
+    ++telemetry_seek_epoch_;
+    telemetry_csv_.TryRecordConfigEvent(
+        {"seek", "flush-stop", std::to_string(telemetry_seek_epoch_), /*artifact_stem=*/{}, /*artifact_contents=*/{}});
     return handled;
   }
   return Super::HandleEvent(event);
@@ -276,6 +305,51 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     assert(frame.batch_index < in_surface->numFilled);
     frame.frame_meta = (NvDsFrameMeta*)fl->data;
     frame.input_surf_params = &in_surface->surfaceList[frame.batch_index];
+    TelemetrySample telemetry_sample;
+    const bool export_telemetry = telemetry_csv_.active();
+    if (export_telemetry) {
+      telemetry_sample.source_id = frame.frame_meta->source_id;
+      telemetry_sample.source_frame = frame.frame_meta->frame_num;
+      telemetry_sample.seek_epoch = telemetry_seek_epoch_;
+      telemetry_sample.width = frame.frame_meta->source_frame_width;
+      telemetry_sample.height = frame.frame_meta->source_frame_height;
+      if (frame.frame_meta->buf_pts != GST_CLOCK_TIME_NONE) {
+        telemetry_sample.pts_ns = frame.frame_meta->buf_pts;
+      }
+      if (frame.frame_meta->ntp_timestamp != 0) {
+        telemetry_sample.ntp_ns = frame.frame_meta->ntp_timestamp;
+      }
+      const std::optional<DecodedFrameSequence> decoded_sequence = hm::decoded_frame_sequence(frame.frame_meta);
+      if (decoded_sequence.has_value()) {
+        telemetry_sample.decoded_source_id = decoded_sequence->source_id;
+        telemetry_sample.decoded_sequence = decoded_sequence->sequence;
+      }
+
+      const double scale_x = frame.input_surf_params->width > 0
+          ? static_cast<double>(frame.frame_meta->source_frame_width) / frame.input_surf_params->width
+          : 1.0;
+      const double scale_y = frame.input_surf_params->height > 0
+          ? static_cast<double>(frame.frame_meta->source_frame_height) / frame.input_surf_params->height
+          : 1.0;
+      for (NvDsMetaList* item = frame.frame_meta->obj_meta_list; item; item = item->next) {
+        const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
+        if (!object || object->class_id != 0 || object->object_id == UNTRACKED_OBJECT_ID) {
+          continue;
+        }
+        const NvBbox_Coords& bbox = object->tracker_bbox_info.org_bbox_coords;
+        const float score = object->tracker_confidence >= 0.0f ? object->tracker_confidence : object->confidence;
+        telemetry_sample.tracks.push_back(
+            TelemetryTrack{
+                object->object_id,
+                static_cast<float>(bbox.left * scale_x),
+                static_cast<float>(bbox.top * scale_y),
+                static_cast<float>(bbox.width * scale_x),
+                static_cast<float>(bbox.height * scale_y),
+                score,
+                object->class_id,
+            });
+      }
+    }
     if (frame_counter_ % frame_calculation_interval_ == 0) {
       if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
         return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
@@ -291,6 +365,21 @@ absl::Status PlayTrackerPriv::GenerateOutput(
         HM_RETURN_IF_ERROR(DsPlayTrackerDrawToDisplayMeta(pt_context_, frame));
       }
       DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
+    }
+    if (export_telemetry) {
+      telemetry_sample.policy_boxes.reserve(frame.play_tracker_results.tracking_boxes.size());
+      for (const hm::BBox& box : frame.play_tracker_results.tracking_boxes) {
+        telemetry_sample.policy_boxes.push_back(
+            TelemetryBox{
+                static_cast<float>(box.left),
+                static_cast<float>(box.top),
+                static_cast<float>(box.width()),
+                static_cast<float>(box.height()),
+            });
+      }
+      if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample)) && telemetry_csv_.dropped_samples() == 1) {
+        std::cerr << "Playtracker telemetry writer queue is full; dropping complete metadata samples" << std::endl;
+      }
     }
     if (show_) {
       NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;

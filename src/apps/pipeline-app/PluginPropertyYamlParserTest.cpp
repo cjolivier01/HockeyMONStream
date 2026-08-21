@@ -77,6 +77,7 @@ ds-playtracker:
     source-id: 2
   private-properties:
     show: true
+    telemetry-csv-dir: /tmp/hm-game
 )yaml");
 
   HmPlayCropperConfig playcropper{};
@@ -119,7 +120,8 @@ ds-playtracker:
     return 1;
   }
   if (!expect_property(playtracker.plugin_properties, "source-id", "2") ||
-      !expect_property(playtracker.private_properties, "show", "true")) {
+      !expect_property(playtracker.private_properties, "show", "true") ||
+      !expect_property(playtracker.private_properties, "telemetry-csv-dir", "/tmp/hm-game")) {
     return 1;
   }
   if (!playtracker.fixed_edge_rotation_angle_left_set || !playtracker.fixed_edge_rotation_angle_right_set ||

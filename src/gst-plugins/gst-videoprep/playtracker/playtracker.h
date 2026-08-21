@@ -2,6 +2,7 @@
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
 
 #include <mutex>
 #include <vector>
@@ -39,8 +40,11 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
 
   DsPlayTrackerInitParams init_params_;
   std::string play_tracker_config_source_file_;
+  std::string telemetry_csv_dir_;
   std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
+  PlayTrackerTelemetryCsv telemetry_csv_;
+  uint64_t telemetry_seek_epoch_{0};
   std::vector<DsPlayTrackerRuntimeTuning> runtime_tuning_history_;
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
   float fixed_edge_rotation_angle_left_{10.0};
