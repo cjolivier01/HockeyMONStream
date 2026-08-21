@@ -278,8 +278,8 @@ gboolean isolation_query(GstPad*, GstObject* parent, GstQuery* query) noexcept {
 
 void isolation_set_property(GObject* object, guint property_id, const GValue* value, GParamSpec* spec) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(object);
+  IsolationState* state = self ? self->state : nullptr;
   try {
-    IsolationState* state = self ? self->state : nullptr;
     if (!state)
       return;
     inject_callback_exception(
@@ -310,10 +310,38 @@ void isolation_set_property(GObject* object, guint property_id, const GValue* va
       default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
     }
+    return;
   } catch (const std::exception& error) {
     log_callback_exception("isolation-set-property", error.what());
   } catch (...) {
     log_callback_exception("isolation-set-property", nullptr);
+  }
+  if (!state)
+    return;
+  // A property callback failure makes the gate state unknowable to its
+  // caller. Close it before waiting so new buffers cannot enter, then acquire
+  // the same barrier used by active=false. Once the lock has been observed,
+  // no previously admitted buffer remains downstream on its way to a renderer
+  // that the caller may now destroy.
+  state->failed.store(true, std::memory_order_release);
+  state->active.store(false, std::memory_order_release);
+  try {
+    std::lock_guard<std::mutex> lock(state->flow_mutex);
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-set-property-barrier", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-set-property-barrier", nullptr);
+  }
+  try {
+    auto* failure_peer = static_cast<GObject*>(g_weak_ref_get(&state->failure_peer));
+    if (failure_peer) {
+      g_object_set(failure_peer, "active", FALSE, nullptr);
+      g_object_unref(failure_peer);
+    }
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-set-property-peer", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-set-property-peer", nullptr);
   }
 }
 
@@ -463,6 +491,7 @@ struct PreviewOverlays {
   float coordinate_width{0.0F};
   float coordinate_height{0.0F};
   std::string stitched_output_generation;
+  bool diagnostic_coordinates_valid{true};
 };
 
 struct RendererState {
@@ -881,6 +910,19 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   const auto* snapshot = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta);
   const auto* attached_transform =
       state->channel == "program" ? hm::preview_overlay::find_playcropper_transform_meta(frame_meta) : nullptr;
+  if (state->channel == "program" && !attached_transform) {
+    // Snapshot geometry is captured before playcropper, while this sink sees
+    // the cropped/rotated Program surface. If the bounded DeepStream user-meta
+    // pool could not provide a transform slot, drawing either the snapshot or
+    // the stitched rink mask in that input coordinate space is misleading.
+    // Object/display metadata also has no proof of its coordinate space
+    // without the transform's object_meta_transformed marker, so fail closed
+    // for every diagnostic layer on this frame while continuing to show video.
+    overlays.coordinate_width = static_cast<float>(state->negotiated_width);
+    overlays.coordinate_height = static_cast<float>(state->negotiated_height);
+    overlays.diagnostic_coordinates_valid = false;
+    return overlays;
+  }
   if (state->channel == "program" && attached_transform) {
     overlays.program_transform = *attached_transform;
     overlays.coordinate_width = attached_transform->output_width;
@@ -1177,7 +1219,8 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
 
 void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
-  if (!state->show_rink_mask.load() || !ensure_rink_mask_texture(self, overlays))
+  if (!overlays.diagnostic_coordinates_valid || !state->show_rink_mask.load() ||
+      !ensure_rink_mask_texture(self, overlays))
     return;
   std::array<hm::preview_overlay::Point, 4> texture_points = {
       hm::preview_overlay::Point{0.0F, overlays.coordinate_height},
@@ -1618,6 +1661,19 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
     state->rink_mask_texture = 0;
     release_context(state);
   }
+  // GL texture names cease to exist with their context. Invalidate both the
+  // loaded and requested identity so a same-generation channel reactivation
+  // cannot mistake a deleted name for a clean cache hit.
+  state->rink_mask_dirty = true;
+  state->rink_mask_width = 0;
+  state->rink_mask_height = 0;
+  state->rink_mask_output_generation.clear();
+  state->requested_rink_mask_width = 0;
+  state->requested_rink_mask_height = 0;
+  state->requested_rink_mask_output_generation.clear();
+  state->rink_mask_failure_reported = false;
+  state->rink_mask_consecutive_failures = 0;
+  state->rink_mask_retry_after = {};
   if (state->display && state->context)
     glXDestroyContext(state->display, state->context);
   state->context = nullptr;
@@ -2248,6 +2304,66 @@ void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptio
 #else
   (void)sink;
   (void)injection;
+#endif
+}
+
+PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, GstBuffer* buffer) {
+#if defined(__x86_64__)
+  if (!sink || !buffer || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return {};
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  if (!self->state)
+    return {};
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  const PreviewOverlays overlays = collect_preview_overlays(self, buffer);
+  return {overlays.paths.size(), overlays.diagnostic_coordinates_valid};
+#else
+  (void)sink;
+  (void)buffer;
+  return {};
+#endif
+}
+
+bool renderer_rink_mask_loaded_for_test(
+    GstElement* sink,
+    const std::string& output_generation,
+    unsigned width,
+    unsigned height) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return false;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  if (!self->state)
+    return false;
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  const RendererState* state = self->state;
+  return state->rink_mask_texture != 0 && !state->rink_mask_dirty && state->rink_mask_width == width &&
+      state->rink_mask_height == height && state->rink_mask_output_generation == output_generation;
+#else
+  (void)sink;
+  (void)output_generation;
+  (void)width;
+  (void)height;
+  return false;
+#endif
+}
+
+bool renderer_rink_mask_cache_cleared_for_test(GstElement* sink) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return false;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  if (!self->state)
+    return false;
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  const RendererState* state = self->state;
+  return state->rink_mask_texture == 0 && state->rink_mask_dirty && state->rink_mask_width == 0 &&
+      state->rink_mask_height == 0 && state->rink_mask_output_generation.empty() &&
+      state->requested_rink_mask_width == 0 && state->requested_rink_mask_height == 0 &&
+      state->requested_rink_mask_output_generation.empty();
+#else
+  (void)sink;
+  return true;
 #endif
 }
 

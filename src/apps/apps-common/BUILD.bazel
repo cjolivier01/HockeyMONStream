@@ -43,7 +43,14 @@ cc_test(
     }),
     deps = [
         ":deepstream_apps_common",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/common:utils",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:stitching",
+        "@deepstream//:deepstream_lib",
         "@gstreamer",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
     ],
 )
 

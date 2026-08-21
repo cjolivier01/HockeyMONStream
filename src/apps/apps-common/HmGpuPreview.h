@@ -40,6 +40,11 @@ enum class CallbackPoint {
   kSinkUnlockStop,
 };
 
+struct PreviewOverlayInspection {
+  std::size_t path_count{0};
+  bool diagnostic_coordinates_valid{false};
+};
+
 inline constexpr std::size_t kMaximumPresentedFrameCaptureBytes = 32U * 1024U * 1024U;
 
 // Registers hmpreviewisolation and hmgpupreviewsink as process-local
@@ -90,6 +95,13 @@ void set_callback_exception_injection_for_test(
     CallbackPoint point,
     CallbackExceptionInjection injection);
 void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptionInjection injection);
+PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, GstBuffer* buffer);
+bool renderer_rink_mask_loaded_for_test(
+    GstElement* sink,
+    const std::string& output_generation,
+    unsigned width,
+    unsigned height);
+bool renderer_rink_mask_cache_cleared_for_test(GstElement* sink);
 bool renderer_resources_released_for_test(GstElement* sink);
 
 } // namespace hm::gpu_preview
