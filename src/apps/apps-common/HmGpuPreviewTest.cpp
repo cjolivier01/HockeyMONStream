@@ -6,6 +6,7 @@
 #include <gst/gst.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -328,6 +329,128 @@ bool run_render_exception_boundary_test() {
   return true;
 }
 
+bool run_callback_exception_boundary_test() {
+  GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "callback_isolation");
+  GstPad* upstream = gst_pad_new("callback_upstream", GST_PAD_SRC);
+  GstPad* isolation_sink = isolation ? gst_element_get_static_pad(isolation, "sink") : nullptr;
+  if (!isolation || !upstream || !isolation_sink) {
+    std::cerr << "Could not construct isolation callback-boundary fixture\n";
+    return false;
+  }
+  gst_pad_set_active(upstream, TRUE);
+  gst_pad_set_active(isolation_sink, TRUE);
+  const bool linked = gst_pad_link(upstream, isolation_sink) == GST_PAD_LINK_OK;
+  hm::gpu_preview::set_isolation_active(isolation, true, 1);
+
+  hm::gpu_preview::set_callback_exception_injection_for_test(
+      isolation,
+      hm::gpu_preview::CallbackPoint::kIsolationChain,
+      hm::gpu_preview::CallbackExceptionInjection::kBadAlloc);
+  const GstFlowReturn chain_result = linked ? gst_pad_push(upstream, gst_buffer_new()) : GST_FLOW_ERROR;
+
+  GstBufferList* list = gst_buffer_list_new();
+  gst_buffer_list_add(list, gst_buffer_new());
+  hm::gpu_preview::set_callback_exception_injection_for_test(
+      isolation,
+      hm::gpu_preview::CallbackPoint::kIsolationChainList,
+      hm::gpu_preview::CallbackExceptionInjection::kLengthError);
+  const GstFlowReturn list_result = linked ? gst_pad_push_list(upstream, list) : GST_FLOW_ERROR;
+  if (!linked)
+    gst_buffer_list_unref(list);
+
+  hm::gpu_preview::set_callback_exception_injection_for_test(
+      isolation,
+      hm::gpu_preview::CallbackPoint::kIsolationEvent,
+      hm::gpu_preview::CallbackExceptionInjection::kUnknown);
+  const bool event_result = linked && gst_pad_push_event(upstream, gst_event_new_stream_start("callback-test"));
+
+  GstQuery* query = gst_query_new_position(GST_FORMAT_TIME);
+  hm::gpu_preview::set_callback_exception_injection_for_test(
+      isolation,
+      hm::gpu_preview::CallbackPoint::kIsolationQuery,
+      hm::gpu_preview::CallbackExceptionInjection::kBadAlloc);
+  const bool query_result = gst_pad_query(isolation_sink, query);
+  gst_query_unref(query);
+
+  hm::gpu_preview::set_callback_exception_injection_for_test(
+      isolation,
+      hm::gpu_preview::CallbackPoint::kIsolationSetProperty,
+      hm::gpu_preview::CallbackExceptionInjection::kLengthError);
+  g_object_set(G_OBJECT(isolation), "generation", static_cast<guint64>(2), nullptr);
+  hm::gpu_preview::set_callback_exception_injection_for_test(
+      isolation,
+      hm::gpu_preview::CallbackPoint::kIsolationGetProperty,
+      hm::gpu_preview::CallbackExceptionInjection::kUnknown);
+  guint64 generation = 0;
+  g_object_get(G_OBJECT(isolation), "generation", &generation, nullptr);
+
+  gst_pad_unlink(upstream, isolation_sink);
+  gst_object_unref(isolation_sink);
+  gst_object_unref(upstream);
+  gst_object_unref(isolation);
+  if (chain_result != GST_FLOW_OK || list_result != GST_FLOW_OK || !event_result || query_result) {
+    std::cerr << "Isolation callback exception escaped or returned an unsafe ownership result\n";
+    return false;
+  }
+
+  const std::array<std::pair<hm::gpu_preview::CallbackPoint, hm::gpu_preview::CallbackExceptionInjection>, 8>
+      sink_callbacks = {{
+          {hm::gpu_preview::CallbackPoint::kSinkStart, hm::gpu_preview::CallbackExceptionInjection::kBadAlloc},
+          {hm::gpu_preview::CallbackPoint::kSinkSetCaps, hm::gpu_preview::CallbackExceptionInjection::kLengthError},
+          {hm::gpu_preview::CallbackPoint::kSinkStop, hm::gpu_preview::CallbackExceptionInjection::kUnknown},
+          {hm::gpu_preview::CallbackPoint::kSinkSetProperty, hm::gpu_preview::CallbackExceptionInjection::kBadAlloc},
+          {hm::gpu_preview::CallbackPoint::kSinkGetProperty, hm::gpu_preview::CallbackExceptionInjection::kLengthError},
+          {hm::gpu_preview::CallbackPoint::kSinkUnlock, hm::gpu_preview::CallbackExceptionInjection::kUnknown},
+          {hm::gpu_preview::CallbackPoint::kSinkUnlockStop, hm::gpu_preview::CallbackExceptionInjection::kBadAlloc},
+          {hm::gpu_preview::CallbackPoint::kSinkSetCaps, hm::gpu_preview::CallbackExceptionInjection::kUnknown},
+      }};
+  for (const auto& [point, injection] : sink_callbacks) {
+    GstElement* sink = gst_element_factory_make("hmgpupreviewsink", nullptr);
+    if (!sink)
+      return false;
+    hm::gpu_preview::set_callback_exception_injection_for_test(sink, point, injection);
+    auto* sink_class = GST_BASE_SINK_GET_CLASS(sink);
+    gboolean callback_result = TRUE;
+    switch (point) {
+      case hm::gpu_preview::CallbackPoint::kSinkStart:
+        callback_result = sink_class->start(GST_BASE_SINK(sink));
+        break;
+      case hm::gpu_preview::CallbackPoint::kSinkSetCaps: {
+        GstCaps* caps = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA,width=1,height=1,framerate=1/1");
+        callback_result = sink_class->set_caps(GST_BASE_SINK(sink), caps);
+        gst_caps_unref(caps);
+        break;
+      }
+      case hm::gpu_preview::CallbackPoint::kSinkStop:
+        callback_result = sink_class->stop(GST_BASE_SINK(sink));
+        break;
+      case hm::gpu_preview::CallbackPoint::kSinkSetProperty:
+        g_object_set(G_OBJECT(sink), "channel", "injected", nullptr);
+        break;
+      case hm::gpu_preview::CallbackPoint::kSinkGetProperty: {
+        guint gpu_id = 0;
+        g_object_get(G_OBJECT(sink), "gpu-id", &gpu_id, nullptr);
+        break;
+      }
+      case hm::gpu_preview::CallbackPoint::kSinkUnlock:
+        callback_result = sink_class->unlock(GST_BASE_SINK(sink));
+        break;
+      case hm::gpu_preview::CallbackPoint::kSinkUnlockStop:
+        callback_result = sink_class->unlock_stop(GST_BASE_SINK(sink));
+        break;
+      default:
+        callback_result = FALSE;
+        break;
+    }
+    gst_object_unref(sink);
+    if (!callback_result) {
+      std::cerr << "Preview-sink callback exception escaped or propagated into the main pipeline\n";
+      return false;
+    }
+  }
+  return true;
+}
+
 bool run_renderer_test(Display* display, Window window) {
   GError* error = nullptr;
   GstElement* pipeline = gst_parse_launch(
@@ -386,6 +509,20 @@ bool run_renderer_test(Display* display, Window window) {
   std::string capture_error;
   sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
   const bool captured = hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error);
+  hm::gpu_preview::set_capture_exception_injection_for_test(
+      sink, hm::gpu_preview::CallbackExceptionInjection::kBadAlloc);
+  std::vector<std::uint8_t> failed_capture_rgba;
+  unsigned failed_capture_width = 0;
+  unsigned failed_capture_height = 0;
+  std::string failed_capture_error;
+  const bool injected_capture = hm::gpu_preview::capture_presented_frame(
+      sink, &failed_capture_rgba, &failed_capture_width, &failed_capture_height, &failed_capture_error);
+  std::vector<std::uint8_t> recovered_capture_rgba;
+  unsigned recovered_capture_width = 0;
+  unsigned recovered_capture_height = 0;
+  std::string recovered_capture_error;
+  const bool recovered_capture = hm::gpu_preview::capture_presented_frame(
+      sink, &recovered_capture_rgba, &recovered_capture_width, &recovered_capture_height, &recovered_capture_error);
   XResizeWindow(display, window, 4096, 2160);
   XSync(display, False);
   std::vector<std::uint8_t> bounded_rgba;
@@ -394,7 +531,6 @@ bool run_renderer_test(Display* display, Window window) {
   std::string bounded_capture_error;
   const bool bounded_capture = hm::gpu_preview::capture_presented_frame(
       sink, &bounded_rgba, &bounded_width, &bounded_height, &bounded_capture_error);
-  gst_object_unref(sink);
   const auto [minimum, maximum] = rgba.empty()
       ? std::pair<std::uint8_t, std::uint8_t>{0, 0}
       : std::minmax({*std::min_element(rgba.begin(), rgba.end()), *std::max_element(rgba.begin(), rgba.end())});
@@ -411,19 +547,22 @@ bool run_renderer_test(Display* display, Window window) {
   XDestroyWindow(display, window);
   XSync(display, False);
   gst_object_unref(bus);
+  hm::gpu_preview::set_callback_exception_injection_for_test(
+      sink, hm::gpu_preview::CallbackPoint::kSinkStop, hm::gpu_preview::CallbackExceptionInjection::kUnknown);
   gst_element_set_state(pipeline, GST_STATE_NULL);
-  sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
   const bool stale_xid_cleanup = hm::gpu_preview::renderer_resources_released_for_test(sink);
   gst_object_unref(sink);
   gst_object_unref(pipeline);
   const bool bounded_capture_ok = bounded_capture && bounded_width < 4096 && bounded_height < 2160 &&
       bounded_rgba.size() <= hm::gpu_preview::kMaximumPresentedFrameCaptureBytes;
-  if (!ready || !eos || !captured || width != 640 || height != 360 || maximum == minimum || !bounded_capture_ok ||
-      !stale_xid_cleanup) {
+  const bool capture_recovery_ok = !injected_capture && !failed_capture_error.empty() && recovered_capture &&
+      recovered_capture_width == 640 && recovered_capture_height == 360 && !recovered_capture_rgba.empty();
+  if (!ready || !eos || !captured || width != 640 || height != 360 || maximum == minimum || !capture_recovery_ok ||
+      !bounded_capture_ok || !stale_xid_cleanup) {
     std::cerr << "GPU preview did not expose its presented texture: ready=" << ready << " captured=" << captured
               << " range=" << static_cast<int>(maximum - minimum) << " error=" << capture_error
               << " bounded-capture=" << bounded_capture << " bounded-size=" << bounded_width << 'x' << bounded_height
-              << " bounded-error=" << bounded_capture_error << '\n';
+              << " bounded-error=" << bounded_capture_error << " capture-recovery=" << capture_recovery_ok << '\n';
     return false;
   }
   return true;
@@ -447,6 +586,8 @@ int main(int argc, char** argv) {
   if (!run_capture_geometry_budget_test())
     return 1;
   if (!run_render_exception_boundary_test())
+    return 1;
+  if (!run_callback_exception_boundary_test())
     return 1;
   if (!gst_element_factory_find("nvvideoconvert") || !std::getenv("DISPLAY")) {
     std::cout << "NVMM conversion or X11 display unavailable; skipping\n";

@@ -54,6 +54,11 @@ enum class OverlaySnapshotExceptionInjection {
   kUnknown,
 };
 
+enum class PlayCropperTransformAttachmentInjection {
+  kNone,
+  kPoolExhausted,
+};
+
 Point input_to_output(const PlayCropperTransform& transform, Point point);
 Point metadata_to_output(const PlayCropperTransform& transform, Point point);
 Point output_to_input(const PlayCropperTransform& transform, Point point);
@@ -64,7 +69,10 @@ std::vector<std::array<Point, 3>> arrow_head_triangles(
     NvOSD_Arrow_Head_Direction direction);
 
 NvDsMetaType playcropper_transform_meta_type();
-bool add_playcropper_transform_meta(NvDsFrameMeta* frame_meta, const PlayCropperTransform& transform);
+bool add_playcropper_transform_meta(
+    NvDsFrameMeta* frame_meta,
+    const PlayCropperTransform& transform,
+    PlayCropperTransformAttachmentInjection injection = PlayCropperTransformAttachmentInjection::kNone) noexcept;
 const PlayCropperTransform* find_playcropper_transform_meta(const NvDsFrameMeta* frame_meta);
 
 NvDsMetaType overlay_snapshot_meta_type();

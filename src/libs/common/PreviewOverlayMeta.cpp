@@ -19,14 +19,14 @@ Point rotate(Point point, Point anchor, float angle_degrees) {
   return Point{anchor.x + dx * cosine - dy * sine, anchor.y + dx * sine + dy * cosine};
 }
 
-gpointer copy_transform_meta(gpointer data, gpointer) {
+gpointer copy_transform_meta(gpointer data, gpointer) noexcept {
   auto* user_meta = static_cast<NvDsUserMeta*>(data);
   if (!user_meta || !user_meta->user_meta_data)
     return nullptr;
   return g_memdup2(user_meta->user_meta_data, sizeof(PlayCropperTransform));
 }
 
-void release_transform_meta(gpointer data, gpointer) {
+void release_transform_meta(gpointer data, gpointer) noexcept {
   auto* user_meta = static_cast<NvDsUserMeta*>(data);
   if (!user_meta)
     return;
@@ -144,25 +144,36 @@ NvDsMetaType playcropper_transform_meta_type() {
   return type;
 }
 
-bool add_playcropper_transform_meta(NvDsFrameMeta* frame_meta, const PlayCropperTransform& transform) {
-  if (!frame_meta || !frame_meta->base_meta.batch_meta)
+bool add_playcropper_transform_meta(
+    NvDsFrameMeta* frame_meta,
+    const PlayCropperTransform& transform,
+    PlayCropperTransformAttachmentInjection injection) noexcept {
+  try {
+    if (!frame_meta || !frame_meta->base_meta.batch_meta)
+      return false;
+    if (find_playcropper_transform_meta(frame_meta))
+      return false;
+    gpointer payload = g_memdup2(&transform, sizeof(transform));
+    if (!payload)
+      return false;
+    NvDsUserMeta* user_meta = injection == PlayCropperTransformAttachmentInjection::kPoolExhausted
+        ? nullptr
+        : nvds_acquire_user_meta_from_pool(frame_meta->base_meta.batch_meta);
+    if (!user_meta) {
+      g_free(payload);
+      return false;
+    }
+    user_meta->user_meta_data = payload;
+    user_meta->base_meta.meta_type = playcropper_transform_meta_type();
+    user_meta->base_meta.copy_func = copy_transform_meta;
+    user_meta->base_meta.release_func = release_transform_meta;
+    nvds_add_user_meta_to_frame(frame_meta, user_meta);
+    return true;
+  } catch (const std::exception&) {
     return false;
-  if (find_playcropper_transform_meta(frame_meta))
-    return false;
-  gpointer payload = g_memdup2(&transform, sizeof(transform));
-  if (!payload)
-    return false;
-  NvDsUserMeta* user_meta = nvds_acquire_user_meta_from_pool(frame_meta->base_meta.batch_meta);
-  if (!user_meta) {
-    g_free(payload);
+  } catch (...) {
     return false;
   }
-  user_meta->user_meta_data = payload;
-  user_meta->base_meta.meta_type = playcropper_transform_meta_type();
-  user_meta->base_meta.copy_func = copy_transform_meta;
-  user_meta->base_meta.release_func = release_transform_meta;
-  nvds_add_user_meta_to_frame(frame_meta, user_meta);
-  return true;
 }
 
 const PlayCropperTransform* find_playcropper_transform_meta(const NvDsFrameMeta* frame_meta) {

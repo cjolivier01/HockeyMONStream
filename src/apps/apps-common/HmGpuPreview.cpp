@@ -32,7 +32,7 @@ void post_preview_status(
     const char* channel,
     const char* status,
     std::uint64_t generation,
-    const char* message) {
+    const char* message) noexcept {
   const char* safe_channel = channel && *channel ? channel : "unknown";
   const char* safe_message = message ? message : "";
   GstStructure* structure = gst_structure_new(
@@ -50,13 +50,44 @@ void post_preview_status(
       G_TYPE_STRING,
       safe_message,
       nullptr);
-  gst_element_post_message(element, gst_message_new_application(GST_OBJECT(element), structure));
+  if (structure)
+    gst_element_post_message(element, gst_message_new_application(GST_OBJECT(element), structure));
   g_print(
       "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
       safe_channel,
       status,
       static_cast<guint64>(generation),
       safe_message);
+}
+
+void log_callback_exception(const char* callback, const char* message) noexcept {
+  g_printerr(
+      "HSTREAM_PREVIEW_CALLBACK_EXCEPTION callback=%s message=%s\n",
+      callback ? callback : "unknown",
+      message ? message : "unknown exception");
+}
+
+void inject_callback_exception(
+    std::atomic<int>* requested_point,
+    std::atomic<int>* requested_injection,
+    hm::gpu_preview::CallbackPoint point) {
+  if (!requested_point || !requested_injection ||
+      requested_point->load(std::memory_order_acquire) != static_cast<int>(point)) {
+    return;
+  }
+  requested_point->store(-1, std::memory_order_release);
+  const auto injection = static_cast<hm::gpu_preview::CallbackExceptionInjection>(
+      requested_injection->exchange(static_cast<int>(hm::gpu_preview::CallbackExceptionInjection::kNone)));
+  switch (injection) {
+    case hm::gpu_preview::CallbackExceptionInjection::kNone:
+      return;
+    case hm::gpu_preview::CallbackExceptionInjection::kBadAlloc:
+      throw std::bad_alloc();
+    case hm::gpu_preview::CallbackExceptionInjection::kLengthError:
+      throw std::length_error("injected preview callback length failure");
+    case hm::gpu_preview::CallbackExceptionInjection::kUnknown:
+      throw 7;
+  }
 }
 
 struct IsolationState {
@@ -71,6 +102,8 @@ struct IsolationState {
   std::atomic<bool> active{false};
   std::atomic<bool> failed{false};
   std::atomic<std::uint64_t> generation{0};
+  std::atomic<int> callback_exception_point{-1};
+  std::atomic<int> callback_exception_injection{static_cast<int>(hm::gpu_preview::CallbackExceptionInjection::kNone)};
   // Serializes active-state changes with buffers crossing the gate. When an
   // active=false property update returns, no buffer can still be downstream
   // of this element on its way to the converter or renderer.
@@ -100,132 +133,234 @@ enum IsolationProperty {
   kIsolationPropertyGeneration,
 };
 
-const char* isolation_channel(IsolationState* state, std::string* storage) {
-  std::lock_guard<std::mutex> lock(state->channel_mutex);
-  *storage = state->channel;
-  return storage->c_str();
-}
-
-void fail_isolation(GstHmPreviewIsolation* self, GstFlowReturn flow) {
+void fail_isolation(GstHmPreviewIsolation* self, GstFlowReturn flow) noexcept {
   IsolationState* state = self->state;
+  if (!state)
+    return;
   bool expected = false;
   if (!state->failed.compare_exchange_strong(expected, true))
     return;
   state->active = false;
-  auto* failure_peer = static_cast<GObject*>(g_weak_ref_get(&state->failure_peer));
-  if (failure_peer) {
-    g_object_set(failure_peer, "active", FALSE, nullptr);
-    g_object_unref(failure_peer);
+  try {
+    auto* failure_peer = static_cast<GObject*>(g_weak_ref_get(&state->failure_peer));
+    if (failure_peer) {
+      g_object_set(failure_peer, "active", FALSE, nullptr);
+      g_object_unref(failure_peer);
+    }
+    char message[160]{};
+    g_snprintf(message, sizeof(message), "downstream preview flow failed: %s", gst_flow_get_name(flow));
+    std::lock_guard<std::mutex> channel_lock(state->channel_mutex);
+    post_preview_status(GST_ELEMENT(self), state->channel.c_str(), "failed", state->generation.load(), message);
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-failure", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-failure", nullptr);
   }
-  std::string channel;
-  const std::string message = "downstream preview flow failed: " + std::string(gst_flow_get_name(flow));
-  post_preview_status(
-      GST_ELEMENT(self), isolation_channel(state, &channel), "failed", state->generation.load(), message.c_str());
 }
 
-GstFlowReturn isolation_chain(GstPad*, GstObject* parent, GstBuffer* buffer) {
+GstFlowReturn isolation_chain(GstPad*, GstObject* parent, GstBuffer* buffer) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(parent);
-  if (self->state->failed.load(std::memory_order_relaxed) || !self->state->active.load(std::memory_order_acquire)) {
-    gst_buffer_unref(buffer);
+  bool owns_buffer = true;
+  try {
+    IsolationState* state = self ? self->state : nullptr;
+    if (!state) {
+      gst_buffer_unref(buffer);
+      return GST_FLOW_OK;
+    }
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kIsolationChain);
+    if (state->failed.load(std::memory_order_relaxed) || !state->active.load(std::memory_order_acquire)) {
+      gst_buffer_unref(buffer);
+      return GST_FLOW_OK;
+    }
+    std::lock_guard<std::mutex> lock(state->flow_mutex);
+    if (state->failed.load() || !state->active.load()) {
+      gst_buffer_unref(buffer);
+      return GST_FLOW_OK;
+    }
+    const GstFlowReturn flow = gst_pad_push(self->src_pad, buffer);
+    owns_buffer = false;
+    if (flow != GST_FLOW_OK && flow != GST_FLOW_FLUSHING)
+      fail_isolation(self, flow);
     return GST_FLOW_OK;
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-chain", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-chain", nullptr);
   }
-  std::lock_guard<std::mutex> lock(self->state->flow_mutex);
-  if (self->state->failed.load() || !self->state->active.load()) {
+  if (owns_buffer && buffer)
     gst_buffer_unref(buffer);
-    return GST_FLOW_OK;
-  }
-  const GstFlowReturn flow = gst_pad_push(self->src_pad, buffer);
-  // FLUSHING is expected while the application performs its startup seek or
-  // changes state. It is not a preview failure and must not permanently close
-  // the observational branch.
-  if (flow == GST_FLOW_OK || flow == GST_FLOW_FLUSHING)
-    return GST_FLOW_OK;
-  fail_isolation(self, flow);
   return GST_FLOW_OK;
 }
 
-GstFlowReturn isolation_chain_list(GstPad*, GstObject* parent, GstBufferList* buffers) {
+GstFlowReturn isolation_chain_list(GstPad*, GstObject* parent, GstBufferList* buffers) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(parent);
-  if (self->state->failed.load(std::memory_order_relaxed) || !self->state->active.load(std::memory_order_acquire)) {
-    gst_buffer_list_unref(buffers);
+  bool owns_buffers = true;
+  try {
+    IsolationState* state = self ? self->state : nullptr;
+    if (!state) {
+      gst_buffer_list_unref(buffers);
+      return GST_FLOW_OK;
+    }
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kIsolationChainList);
+    if (state->failed.load(std::memory_order_relaxed) || !state->active.load(std::memory_order_acquire)) {
+      gst_buffer_list_unref(buffers);
+      return GST_FLOW_OK;
+    }
+    std::lock_guard<std::mutex> lock(state->flow_mutex);
+    if (state->failed.load() || !state->active.load()) {
+      gst_buffer_list_unref(buffers);
+      return GST_FLOW_OK;
+    }
+    const GstFlowReturn flow = gst_pad_push_list(self->src_pad, buffers);
+    owns_buffers = false;
+    if (flow != GST_FLOW_OK && flow != GST_FLOW_FLUSHING)
+      fail_isolation(self, flow);
     return GST_FLOW_OK;
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-chain-list", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-chain-list", nullptr);
   }
-  std::lock_guard<std::mutex> lock(self->state->flow_mutex);
-  if (self->state->failed.load() || !self->state->active.load()) {
+  if (owns_buffers && buffers)
     gst_buffer_list_unref(buffers);
-    return GST_FLOW_OK;
-  }
-  const GstFlowReturn flow = gst_pad_push_list(self->src_pad, buffers);
-  if (flow == GST_FLOW_OK || flow == GST_FLOW_FLUSHING)
-    return GST_FLOW_OK;
-  fail_isolation(self, flow);
   return GST_FLOW_OK;
 }
 
-gboolean isolation_event(GstPad*, GstObject* parent, GstEvent* event) {
+gboolean isolation_event(GstPad*, GstObject* parent, GstEvent* event) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(parent);
-  gst_pad_push_event(self->src_pad, event);
-  // Preview descendants are observational. Event rejection must never
-  // prevent global negotiation, FLUSH, or EOS completion upstream.
+  bool owns_event = true;
+  try {
+    IsolationState* state = self ? self->state : nullptr;
+    if (state) {
+      inject_callback_exception(
+          &state->callback_exception_point,
+          &state->callback_exception_injection,
+          hm::gpu_preview::CallbackPoint::kIsolationEvent);
+    }
+    if (self && self->src_pad) {
+      gst_pad_push_event(self->src_pad, event);
+      owns_event = false;
+    }
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-event", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-event", nullptr);
+  }
+  if (owns_event && event)
+    gst_event_unref(event);
   return TRUE;
 }
 
-gboolean isolation_query(GstPad*, GstObject* parent, GstQuery* query) {
+gboolean isolation_query(GstPad*, GstObject* parent, GstQuery* query) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(parent);
-  return gst_pad_peer_query(self->src_pad, query);
+  try {
+    IsolationState* state = self ? self->state : nullptr;
+    if (state) {
+      inject_callback_exception(
+          &state->callback_exception_point,
+          &state->callback_exception_injection,
+          hm::gpu_preview::CallbackPoint::kIsolationQuery);
+    }
+    return self && self->src_pad ? gst_pad_peer_query(self->src_pad, query) : FALSE;
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-query", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-query", nullptr);
+  }
+  return FALSE;
 }
 
-void isolation_set_property(GObject* object, guint property_id, const GValue* value, GParamSpec* spec) {
+void isolation_set_property(GObject* object, guint property_id, const GValue* value, GParamSpec* spec) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(object);
-  switch (property_id) {
-    case kIsolationPropertyActive: {
-      if (!g_value_get_boolean(value)) {
-        auto* test_probe =
-            static_cast<std::atomic<bool>*>(g_object_get_data(object, "hstream-preview-test-active-setter-entered"));
-        if (test_probe)
-          test_probe->store(true, std::memory_order_release);
+  try {
+    IsolationState* state = self ? self->state : nullptr;
+    if (!state)
+      return;
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kIsolationSetProperty);
+    switch (property_id) {
+      case kIsolationPropertyActive: {
+        if (!g_value_get_boolean(value)) {
+          auto* test_probe =
+              static_cast<std::atomic<bool>*>(g_object_get_data(object, "hstream-preview-test-active-setter-entered"));
+          if (test_probe)
+            test_probe->store(true, std::memory_order_release);
+        }
+        std::lock_guard<std::mutex> lock(state->flow_mutex);
+        if (!state->failed.load())
+          state->active = g_value_get_boolean(value);
+        break;
       }
-      std::lock_guard<std::mutex> lock(self->state->flow_mutex);
-      if (!self->state->failed.load())
-        self->state->active = g_value_get_boolean(value);
-      break;
+      case kIsolationPropertyChannel: {
+        std::lock_guard<std::mutex> lock(state->channel_mutex);
+        state->channel = g_value_get_string(value) ? g_value_get_string(value) : "unknown";
+        break;
+      }
+      case kIsolationPropertyGeneration:
+        state->generation = g_value_get_uint64(value);
+        break;
+      default:
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
     }
-    case kIsolationPropertyChannel: {
-      std::lock_guard<std::mutex> lock(self->state->channel_mutex);
-      self->state->channel = g_value_get_string(value) ? g_value_get_string(value) : "unknown";
-      break;
-    }
-    case kIsolationPropertyGeneration:
-      self->state->generation = g_value_get_uint64(value);
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-set-property", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-set-property", nullptr);
   }
 }
 
-void isolation_get_property(GObject* object, guint property_id, GValue* value, GParamSpec* spec) {
+void isolation_get_property(GObject* object, guint property_id, GValue* value, GParamSpec* spec) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(object);
-  switch (property_id) {
-    case kIsolationPropertyActive:
-      g_value_set_boolean(value, self->state->active.load());
-      break;
-    case kIsolationPropertyChannel: {
-      std::lock_guard<std::mutex> lock(self->state->channel_mutex);
-      g_value_set_string(value, self->state->channel.c_str());
-      break;
+  try {
+    IsolationState* state = self ? self->state : nullptr;
+    if (!state)
+      return;
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kIsolationGetProperty);
+    switch (property_id) {
+      case kIsolationPropertyActive:
+        g_value_set_boolean(value, state->active.load());
+        break;
+      case kIsolationPropertyChannel: {
+        std::lock_guard<std::mutex> lock(state->channel_mutex);
+        g_value_set_string(value, state->channel.c_str());
+        break;
+      }
+      case kIsolationPropertyGeneration:
+        g_value_set_uint64(value, state->generation.load());
+        break;
+      default:
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
     }
-    case kIsolationPropertyGeneration:
-      g_value_set_uint64(value, self->state->generation.load());
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-get-property", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-get-property", nullptr);
   }
 }
 
-void isolation_finalize(GObject* object) {
+void isolation_finalize(GObject* object) noexcept {
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(object);
-  delete self->state;
-  self->state = nullptr;
+  IsolationState* state = self ? self->state : nullptr;
+  if (self)
+    self->state = nullptr;
+  try {
+    delete state;
+  } catch (const std::exception& error) {
+    log_callback_exception("isolation-finalize", error.what());
+  } catch (...) {
+    log_callback_exception("isolation-finalize", nullptr);
+  }
   G_OBJECT_CLASS(gst_hm_preview_isolation_parent_class)->finalize(object);
 }
 
@@ -261,7 +396,15 @@ void gst_hm_preview_isolation_class_init(GstHmPreviewIsolationClass* klass) {
 }
 
 void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
-  self->state = new IsolationState();
+  try {
+    self->state = new IsolationState();
+  } catch (const std::exception& error) {
+    self->state = nullptr;
+    log_callback_exception("isolation-init", error.what());
+  } catch (...) {
+    self->state = nullptr;
+    log_callback_exception("isolation-init", nullptr);
+  }
   GstPadTemplate* sink_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(self), "sink");
   GstPadTemplate* src_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(self), "src");
   self->sink_pad = gst_pad_new_from_template(sink_template, "sink");
@@ -328,6 +471,9 @@ struct RendererState {
   std::atomic<bool> failed{false};
   std::atomic<bool> failure_reported{false};
   std::atomic<int> render_exception_injection{static_cast<int>(hm::gpu_preview::RenderExceptionInjection::kNone)};
+  std::atomic<int> callback_exception_point{-1};
+  std::atomic<int> callback_exception_injection{static_cast<int>(hm::gpu_preview::CallbackExceptionInjection::kNone)};
+  std::atomic<int> capture_exception_injection{static_cast<int>(hm::gpu_preview::CallbackExceptionInjection::kNone)};
   std::atomic<std::uint64_t> x_error_serial{0};
   std::string channel{"unknown"};
   guint64 window_id{0};
@@ -392,7 +538,7 @@ enum SinkProperty {
 
 thread_local RendererState* current_x_error_target = nullptr;
 
-int preview_x_error_handler(Display* display, XErrorEvent* event) {
+int preview_x_error_handler(Display* display, XErrorEvent* event) noexcept {
   if (current_x_error_target) {
     current_x_error_target->failed = true;
     ++current_x_error_target->x_error_serial;
@@ -420,7 +566,9 @@ void initialize_xlib_once() {
   });
 }
 
-void post_sink_failure(GstHmGpuPreviewSink* self, const char* message) {
+void post_sink_failure(GstHmGpuPreviewSink* self, const char* message) noexcept {
+  if (!self || !self->state)
+    return;
   RendererState* state = self->state;
   state->failed = true;
   bool expected = false;
@@ -434,11 +582,12 @@ void post_sink_failure(GstHmGpuPreviewSink* self, const char* message) {
   }
 }
 
-bool cuda_succeeded(GstHmGpuPreviewSink* self, cudaError_t result, const char* operation) {
+bool cuda_succeeded(GstHmGpuPreviewSink* self, cudaError_t result, const char* operation) noexcept {
   if (result == cudaSuccess)
     return true;
-  const std::string message = std::string(operation) + ": " + cudaGetErrorString(result);
-  post_sink_failure(self, message.c_str());
+  char message[512]{};
+  g_snprintf(message, sizeof(message), "%s: %s", operation ? operation : "CUDA operation", cudaGetErrorString(result));
+  post_sink_failure(self, message);
   return false;
 }
 
@@ -1139,32 +1288,61 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
     post_sink_failure(self, "preview window rejected OpenGL presentation");
 }
 
-gboolean preview_sink_start(GstBaseSink* base_sink) {
+gboolean preview_sink_start(GstBaseSink* base_sink) noexcept {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
-  self->state->stopping = false;
+  try {
+    if (!self || !self->state)
+      return TRUE;
+    inject_callback_exception(
+        &self->state->callback_exception_point,
+        &self->state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kSinkStart);
+    self->state->stopping = false;
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-start", error.what());
+    post_sink_failure(self, "GPU preview start callback failed");
+  } catch (...) {
+    log_callback_exception("preview-sink-start", nullptr);
+    post_sink_failure(self, "GPU preview start callback failed");
+  }
   return TRUE;
 }
 
-gboolean preview_sink_set_caps(GstBaseSink* base_sink, GstCaps* caps) {
+gboolean preview_sink_set_caps(GstBaseSink* base_sink, GstCaps* caps) noexcept {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
-  RendererState* state = self->state;
-  if (!caps || gst_caps_get_size(caps) != 1) {
-    post_sink_failure(self, "preview requires one fixed RGBA NVMM caps structure");
+  try {
+    RendererState* state = self ? self->state : nullptr;
+    if (!state)
+      return TRUE;
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kSinkSetCaps);
+    if (!caps || gst_caps_get_size(caps) != 1) {
+      post_sink_failure(self, "preview requires one fixed RGBA NVMM caps structure");
+      return TRUE;
+    }
+    const GstCapsFeatures* features = gst_caps_get_features(caps, 0);
+    GstVideoInfo info{};
+    if (!features || !gst_caps_features_contains(features, "memory:NVMM") || !gst_video_info_from_caps(&info, caps) ||
+        GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_RGBA || GST_VIDEO_INFO_WIDTH(&info) <= 0 ||
+        GST_VIDEO_INFO_HEIGHT(&info) <= 0) {
+      post_sink_failure(self, "preview negotiated non-RGBA or non-NVMM video");
+      return TRUE;
+    }
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->video_info = info;
+    state->negotiated_width = GST_VIDEO_INFO_WIDTH(&info);
+    state->negotiated_height = GST_VIDEO_INFO_HEIGHT(&info);
+    state->have_caps = true;
     return TRUE;
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-set-caps", error.what());
+    post_sink_failure(self, "GPU preview caps callback failed");
+  } catch (...) {
+    log_callback_exception("preview-sink-set-caps", nullptr);
+    post_sink_failure(self, "GPU preview caps callback failed");
   }
-  const GstCapsFeatures* features = gst_caps_get_features(caps, 0);
-  GstVideoInfo info{};
-  if (!features || !gst_caps_features_contains(features, "memory:NVMM") || !gst_video_info_from_caps(&info, caps) ||
-      GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_RGBA || GST_VIDEO_INFO_WIDTH(&info) <= 0 ||
-      GST_VIDEO_INFO_HEIGHT(&info) <= 0) {
-    post_sink_failure(self, "preview negotiated non-RGBA or non-NVMM video");
-    return TRUE;
-  }
-  std::lock_guard<std::mutex> lock(state->mutex);
-  state->video_info = info;
-  state->negotiated_width = GST_VIDEO_INFO_WIDTH(&info);
-  state->negotiated_height = GST_VIDEO_INFO_HEIGHT(&info);
-  state->have_caps = true;
   return TRUE;
 }
 
@@ -1210,6 +1388,48 @@ class ScopedCurrentContext {
  private:
   RendererState* state_{nullptr};
 };
+
+class ScopedCaptureGlObjects {
+ public:
+  ScopedCaptureGlObjects() = default;
+  ~ScopedCaptureGlObjects() noexcept {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (framebuffer)
+      glDeleteFramebuffers(1, &framebuffer);
+    if (texture)
+      glDeleteTextures(1, &texture);
+  }
+  ScopedCaptureGlObjects(const ScopedCaptureGlObjects&) = delete;
+  ScopedCaptureGlObjects& operator=(const ScopedCaptureGlObjects&) = delete;
+
+  GLuint texture{0};
+  GLuint framebuffer{0};
+};
+
+void set_capture_error(std::string* error, const char* message) noexcept {
+  if (!error)
+    return;
+  try {
+    *error = message ? message : "capture failed";
+  } catch (...) {
+  }
+}
+
+void inject_capture_exception(RendererState* state) {
+  const auto injection =
+      static_cast<hm::gpu_preview::CallbackExceptionInjection>(state->capture_exception_injection.exchange(
+          static_cast<int>(hm::gpu_preview::CallbackExceptionInjection::kNone)));
+  switch (injection) {
+    case hm::gpu_preview::CallbackExceptionInjection::kNone:
+      return;
+    case hm::gpu_preview::CallbackExceptionInjection::kBadAlloc:
+      throw std::bad_alloc();
+    case hm::gpu_preview::CallbackExceptionInjection::kLengthError:
+      throw std::length_error("injected presented-frame capture length failure");
+    case hm::gpu_preview::CallbackExceptionInjection::kUnknown:
+      throw 7;
+  }
+}
 
 void inject_render_exception(GstHmGpuPreviewSink* self) {
   const auto injection =
@@ -1306,6 +1526,8 @@ GstFlowReturn preview_sink_render_impl(GstBaseSink* base_sink, GstBuffer* buffer
 
 GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) noexcept {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
+  if (!self || !self->state)
+    return GST_FLOW_ERROR;
   try {
     inject_render_exception(self);
     return preview_sink_render_impl(base_sink, buffer);
@@ -1322,15 +1544,43 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) noe
   return GST_FLOW_ERROR;
 }
 
-gboolean preview_sink_unlock(GstBaseSink* base_sink) {
+gboolean preview_sink_unlock(GstBaseSink* base_sink) noexcept {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
-  self->state->stopping = true;
+  try {
+    if (!self || !self->state)
+      return TRUE;
+    inject_callback_exception(
+        &self->state->callback_exception_point,
+        &self->state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kSinkUnlock);
+    self->state->stopping = true;
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-unlock", error.what());
+    if (self && self->state)
+      self->state->stopping = true;
+  } catch (...) {
+    log_callback_exception("preview-sink-unlock", nullptr);
+    if (self && self->state)
+      self->state->stopping = true;
+  }
   return TRUE;
 }
 
-gboolean preview_sink_unlock_stop(GstBaseSink* base_sink) {
+gboolean preview_sink_unlock_stop(GstBaseSink* base_sink) noexcept {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
-  self->state->stopping = false;
+  try {
+    if (!self || !self->state)
+      return TRUE;
+    inject_callback_exception(
+        &self->state->callback_exception_point,
+        &self->state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kSinkUnlockStop);
+    self->state->stopping = false;
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-unlock-stop", error.what());
+  } catch (...) {
+    log_callback_exception("preview-sink-unlock-stop", nullptr);
+  }
   return TRUE;
 }
 
@@ -1383,121 +1633,181 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
   return true;
 }
 
-gboolean preview_sink_stop(GstBaseSink* base_sink) {
+gboolean preview_sink_stop(GstBaseSink* base_sink) noexcept {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
-  RendererState* state = self->state;
+  RendererState* state = self ? self->state : nullptr;
+  if (!state)
+    return TRUE;
   state->stopping = true;
-  std::lock_guard<std::mutex> lock(state->mutex);
-  destroy_renderer_locked(self);
+  try {
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kSinkStop);
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-stop", error.what());
+  } catch (...) {
+    log_callback_exception("preview-sink-stop", nullptr);
+  }
+  try {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    destroy_renderer_locked(self);
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-stop-cleanup", error.what());
+  } catch (...) {
+    log_callback_exception("preview-sink-stop-cleanup", nullptr);
+  }
   return TRUE;
 }
 
-void preview_sink_set_property(GObject* object, guint property_id, const GValue* value, GParamSpec* spec) {
+void preview_sink_set_property(GObject* object, guint property_id, const GValue* value, GParamSpec* spec) noexcept {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
-  RendererState* state = self->state;
-  if (property_id == kSinkPropertyGeneration) {
-    state->generation = g_value_get_uint64(value);
-    return;
-  }
-  if (property_id == kSinkPropertyShowPlayerTracking) {
-    state->show_player_tracking = g_value_get_boolean(value);
-    return;
-  }
-  if (property_id == kSinkPropertyShowPlayTracking) {
-    state->show_play_tracking = g_value_get_boolean(value);
-    return;
-  }
-  if (property_id == kSinkPropertyShowRinkMask) {
-    state->show_rink_mask = g_value_get_boolean(value);
-    return;
-  }
-  std::lock_guard<std::mutex> lock(state->mutex);
-  switch (property_id) {
-    case kSinkPropertyWindowId:
-      state->window_id = g_value_get_uint64(value);
-      break;
-    case kSinkPropertyGpuId:
-      state->gpu_id = g_value_get_uint(value);
-      break;
-    case kSinkPropertyChannel:
-      state->channel = g_value_get_string(value) ? g_value_get_string(value) : "unknown";
-      break;
-    case kSinkPropertySourceWidth:
-      state->source_width = g_value_get_uint(value);
-      break;
-    case kSinkPropertySourceHeight:
-      state->source_height = g_value_get_uint(value);
-      break;
-    case kSinkPropertyRinkMaskFile:
-      state->rink_mask_file = g_value_get_string(value) ? g_value_get_string(value) : "";
-      state->rink_mask_dirty = true;
-      state->requested_rink_mask_output_generation.clear();
-      state->requested_rink_mask_width = 0;
-      state->requested_rink_mask_height = 0;
-      state->rink_mask_failure_reported = false;
-      state->rink_mask_consecutive_failures = 0;
-      state->rink_mask_retry_after = {};
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
-  }
-}
-
-void preview_sink_get_property(GObject* object, guint property_id, GValue* value, GParamSpec* spec) {
-  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
-  RendererState* state = self->state;
-  if (property_id == kSinkPropertyGeneration) {
-    g_value_set_uint64(value, state->generation.load());
-    return;
-  }
-  if (property_id == kSinkPropertyShowPlayerTracking) {
-    g_value_set_boolean(value, state->show_player_tracking.load());
-    return;
-  }
-  if (property_id == kSinkPropertyShowPlayTracking) {
-    g_value_set_boolean(value, state->show_play_tracking.load());
-    return;
-  }
-  if (property_id == kSinkPropertyShowRinkMask) {
-    g_value_set_boolean(value, state->show_rink_mask.load());
-    return;
-  }
-  std::lock_guard<std::mutex> lock(state->mutex);
-  switch (property_id) {
-    case kSinkPropertyWindowId:
-      g_value_set_uint64(value, state->window_id);
-      break;
-    case kSinkPropertyGpuId:
-      g_value_set_uint(value, state->gpu_id);
-      break;
-    case kSinkPropertyChannel:
-      g_value_set_string(value, state->channel.c_str());
-      break;
-    case kSinkPropertySourceWidth:
-      g_value_set_uint(value, state->source_width);
-      break;
-    case kSinkPropertySourceHeight:
-      g_value_set_uint(value, state->source_height);
-      break;
-    case kSinkPropertyRinkMaskFile:
-      g_value_set_string(value, state->rink_mask_file.c_str());
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
-  }
-}
-
-void preview_sink_finalize(GObject* object) {
-  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
-  {
-    std::lock_guard<std::mutex> lock(self->state->mutex);
-    if (!destroy_renderer_locked(self)) {
-      g_printerr("HSTREAM_PREVIEW_FATAL message=renderer resources remained live during finalization\n");
-      std::_Exit(87);
+  try {
+    RendererState* state = self ? self->state : nullptr;
+    if (!state)
+      return;
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kSinkSetProperty);
+    if (property_id == kSinkPropertyGeneration) {
+      state->generation = g_value_get_uint64(value);
+      return;
     }
+    if (property_id == kSinkPropertyShowPlayerTracking) {
+      state->show_player_tracking = g_value_get_boolean(value);
+      return;
+    }
+    if (property_id == kSinkPropertyShowPlayTracking) {
+      state->show_play_tracking = g_value_get_boolean(value);
+      return;
+    }
+    if (property_id == kSinkPropertyShowRinkMask) {
+      state->show_rink_mask = g_value_get_boolean(value);
+      return;
+    }
+    std::lock_guard<std::mutex> lock(state->mutex);
+    switch (property_id) {
+      case kSinkPropertyWindowId:
+        state->window_id = g_value_get_uint64(value);
+        break;
+      case kSinkPropertyGpuId:
+        state->gpu_id = g_value_get_uint(value);
+        break;
+      case kSinkPropertyChannel:
+        state->channel = g_value_get_string(value) ? g_value_get_string(value) : "unknown";
+        break;
+      case kSinkPropertySourceWidth:
+        state->source_width = g_value_get_uint(value);
+        break;
+      case kSinkPropertySourceHeight:
+        state->source_height = g_value_get_uint(value);
+        break;
+      case kSinkPropertyRinkMaskFile:
+        state->rink_mask_file = g_value_get_string(value) ? g_value_get_string(value) : "";
+        state->rink_mask_dirty = true;
+        state->requested_rink_mask_output_generation.clear();
+        state->requested_rink_mask_width = 0;
+        state->requested_rink_mask_height = 0;
+        state->rink_mask_failure_reported = false;
+        state->rink_mask_consecutive_failures = 0;
+        state->rink_mask_retry_after = {};
+        break;
+      default:
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
+    }
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-set-property", error.what());
+    post_sink_failure(self, "GPU preview property callback failed");
+  } catch (...) {
+    log_callback_exception("preview-sink-set-property", nullptr);
+    post_sink_failure(self, "GPU preview property callback failed");
   }
-  delete self->state;
-  self->state = nullptr;
+}
+
+void preview_sink_get_property(GObject* object, guint property_id, GValue* value, GParamSpec* spec) noexcept {
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
+  try {
+    RendererState* state = self ? self->state : nullptr;
+    if (!state)
+      return;
+    inject_callback_exception(
+        &state->callback_exception_point,
+        &state->callback_exception_injection,
+        hm::gpu_preview::CallbackPoint::kSinkGetProperty);
+    if (property_id == kSinkPropertyGeneration) {
+      g_value_set_uint64(value, state->generation.load());
+      return;
+    }
+    if (property_id == kSinkPropertyShowPlayerTracking) {
+      g_value_set_boolean(value, state->show_player_tracking.load());
+      return;
+    }
+    if (property_id == kSinkPropertyShowPlayTracking) {
+      g_value_set_boolean(value, state->show_play_tracking.load());
+      return;
+    }
+    if (property_id == kSinkPropertyShowRinkMask) {
+      g_value_set_boolean(value, state->show_rink_mask.load());
+      return;
+    }
+    std::lock_guard<std::mutex> lock(state->mutex);
+    switch (property_id) {
+      case kSinkPropertyWindowId:
+        g_value_set_uint64(value, state->window_id);
+        break;
+      case kSinkPropertyGpuId:
+        g_value_set_uint(value, state->gpu_id);
+        break;
+      case kSinkPropertyChannel:
+        g_value_set_string(value, state->channel.c_str());
+        break;
+      case kSinkPropertySourceWidth:
+        g_value_set_uint(value, state->source_width);
+        break;
+      case kSinkPropertySourceHeight:
+        g_value_set_uint(value, state->source_height);
+        break;
+      case kSinkPropertyRinkMaskFile:
+        g_value_set_string(value, state->rink_mask_file.c_str());
+        break;
+      default:
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
+    }
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-get-property", error.what());
+  } catch (...) {
+    log_callback_exception("preview-sink-get-property", nullptr);
+  }
+}
+
+void preview_sink_finalize(GObject* object) noexcept {
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
+  RendererState* state = self ? self->state : nullptr;
+  bool released = state == nullptr;
+  try {
+    if (state) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      released = destroy_renderer_locked(self);
+    }
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-finalize", error.what());
+  } catch (...) {
+    log_callback_exception("preview-sink-finalize", nullptr);
+  }
+  if (!released) {
+    g_printerr("HSTREAM_PREVIEW_FATAL message=renderer resources remained live during finalization\n");
+    std::_Exit(87);
+  }
+  if (self)
+    self->state = nullptr;
+  try {
+    delete state;
+  } catch (const std::exception& error) {
+    log_callback_exception("preview-sink-state-delete", error.what());
+  } catch (...) {
+    log_callback_exception("preview-sink-state-delete", nullptr);
+  }
   G_OBJECT_CLASS(gst_hm_gpu_preview_sink_parent_class)->finalize(object);
 }
 
@@ -1582,7 +1892,15 @@ void gst_hm_gpu_preview_sink_class_init(GstHmGpuPreviewSinkClass* klass) {
 }
 
 void gst_hm_gpu_preview_sink_init(GstHmGpuPreviewSink* self) {
-  self->state = new RendererState();
+  try {
+    self->state = new RendererState();
+  } catch (const std::exception& error) {
+    self->state = nullptr;
+    log_callback_exception("preview-sink-init", error.what());
+  } catch (...) {
+    self->state = nullptr;
+    log_callback_exception("preview-sink-init", nullptr);
+  }
   gst_base_sink_set_sync(GST_BASE_SINK(self), FALSE);
   gst_base_sink_set_async_enabled(GST_BASE_SINK(self), FALSE);
   gst_base_sink_set_qos_enabled(GST_BASE_SINK(self), FALSE);
@@ -1644,6 +1962,8 @@ void set_isolation_failure_peer(GstElement* isolation, GstElement* ingress) {
   if (!isolation || !G_TYPE_CHECK_INSTANCE_TYPE(isolation, gst_hm_preview_isolation_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmPreviewIsolation*>(isolation);
+  if (!self->state)
+    return;
   g_weak_ref_set(&self->state->failure_peer, ingress ? G_OBJECT(ingress) : nullptr);
 }
 
@@ -1725,137 +2045,155 @@ bool capture_presented_frame(
     unsigned* height,
     std::string* error) {
 #if defined(__x86_64__)
-  if (!sink || !rgba || !width || !height || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type())) {
-    if (error)
-      *error = "GPU preview renderer is unavailable";
-    return false;
-  }
-  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
-  RendererState* state = self->state;
-  std::lock_guard<std::mutex> lock(state->mutex);
-  if (state->failed.load() || !state->context || !state->texture || state->negotiated_width == 0 ||
-      state->negotiated_height == 0) {
-    if (error)
-      *error = "GPU preview has not presented a frame";
-    return false;
-  }
-  if (!make_context_current(self)) {
-    if (error)
-      *error = "could not activate the preview OpenGL context";
-    return false;
-  }
-  XWindowAttributes attributes{};
-  const std::uint64_t error_serial = state->x_error_serial.load();
-  current_x_error_target = state;
-  const int attributes_status =
-      XGetWindowAttributes(state->display, static_cast<Window>(state->window_id), &attributes);
-  XSync(state->display, False);
-  current_x_error_target = nullptr;
-  constexpr int kMaximumCaptureDimension = 16384;
-  if (!attributes_status || state->x_error_serial.load() != error_serial || attributes.width <= 0 ||
-      attributes.height <= 0 || attributes.width > kMaximumCaptureDimension ||
-      attributes.height > kMaximumCaptureDimension) {
-    release_context(state);
-    if (error)
-      *error = "preview window geometry is unavailable";
-    return false;
-  }
-  const auto [capture_width, capture_height] =
-      bounded_capture_dimensions(static_cast<unsigned>(attributes.width), static_cast<unsigned>(attributes.height));
-  const size_t row_bytes = static_cast<size_t>(capture_width) * 4U;
-  const size_t byte_count = row_bytes * static_cast<size_t>(capture_height);
-  rgba->resize(byte_count);
-  for (int stale_error = 0; stale_error < 16 && glGetError() != GL_NO_ERROR; ++stale_error) {
-  }
-  GLuint capture_texture = 0;
-  GLuint capture_framebuffer = 0;
-  bool capture_target_ready = true;
-  const bool downsample = capture_width != static_cast<unsigned>(attributes.width) ||
-      capture_height != static_cast<unsigned>(attributes.height);
-  if (downsample) {
-    glGenTextures(1, &capture_texture);
-    glBindTexture(GL_TEXTURE_2D, capture_texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(
-        GL_TEXTURE_2D,
-        0,
-        GL_RGBA8,
-        static_cast<GLsizei>(capture_width),
-        static_cast<GLsizei>(capture_height),
-        0,
-        GL_RGBA,
-        GL_UNSIGNED_BYTE,
-        nullptr);
-    glGenFramebuffers(1, &capture_framebuffer);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, capture_framebuffer);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capture_texture, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glReadBuffer(GL_FRONT);
-    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
-      glBlitFramebuffer(
-          0,
-          0,
-          attributes.width,
-          attributes.height,
-          0,
-          0,
-          static_cast<GLint>(capture_width),
-          static_cast<GLint>(capture_height),
-          GL_COLOR_BUFFER_BIT,
-          GL_LINEAR);
-      glBindFramebuffer(GL_READ_FRAMEBUFFER, capture_framebuffer);
-      glReadBuffer(GL_COLOR_ATTACHMENT0);
-    } else {
-      capture_target_ready = false;
+  try {
+    if (!sink || !rgba || !width || !height || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type())) {
+      set_capture_error(error, "GPU preview renderer is unavailable");
+      return false;
     }
-  } else {
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glReadBuffer(GL_FRONT);
-  }
-  glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  if (capture_target_ready) {
-    glReadPixels(
-        0,
-        0,
-        static_cast<GLsizei>(capture_width),
-        static_cast<GLsizei>(capture_height),
-        GL_RGBA,
-        GL_UNSIGNED_BYTE,
-        rgba->data());
-  }
-  glFinish();
-  const GLenum gl_error = glGetError();
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
-  if (capture_framebuffer)
-    glDeleteFramebuffers(1, &capture_framebuffer);
-  if (capture_texture)
-    glDeleteTextures(1, &capture_texture);
-  release_context(state);
-  if (!capture_target_ready || gl_error != GL_NO_ERROR) {
-    rgba->clear();
+    auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+    RendererState* state = self->state;
+    if (!state) {
+      set_capture_error(error, "GPU preview renderer is unavailable");
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->failed.load() || !state->context || !state->texture || state->negotiated_width == 0 ||
+        state->negotiated_height == 0) {
+      set_capture_error(error, "GPU preview has not presented a frame");
+      return false;
+    }
+    if (!make_context_current(self)) {
+      set_capture_error(error, "could not activate the preview OpenGL context");
+      return false;
+    }
+    ScopedCurrentContext current_context(state);
+    inject_capture_exception(state);
+    XWindowAttributes attributes{};
+    const std::uint64_t error_serial = state->x_error_serial.load();
+    current_x_error_target = state;
+    const int attributes_status =
+        XGetWindowAttributes(state->display, static_cast<Window>(state->window_id), &attributes);
+    XSync(state->display, False);
+    current_x_error_target = nullptr;
+    constexpr int kMaximumCaptureDimension = 16384;
+    if (!attributes_status || state->x_error_serial.load() != error_serial || attributes.width <= 0 ||
+        attributes.height <= 0 || attributes.width > kMaximumCaptureDimension ||
+        attributes.height > kMaximumCaptureDimension) {
+      set_capture_error(error, "preview window geometry is unavailable");
+      return false;
+    }
+    const auto [capture_width, capture_height] =
+        bounded_capture_dimensions(static_cast<unsigned>(attributes.width), static_cast<unsigned>(attributes.height));
+    const size_t row_bytes = static_cast<size_t>(capture_width) * 4U;
+    const size_t byte_count = row_bytes * static_cast<size_t>(capture_height);
+    std::vector<std::uint8_t> captured_rgba(byte_count);
+    for (int stale_error = 0; stale_error < 16 && glGetError() != GL_NO_ERROR; ++stale_error) {
+    }
+    ScopedCaptureGlObjects capture_objects;
+    bool capture_target_ready = true;
+    const bool downsample = capture_width != static_cast<unsigned>(attributes.width) ||
+        capture_height != static_cast<unsigned>(attributes.height);
+    if (downsample) {
+      glGenTextures(1, &capture_objects.texture);
+      glBindTexture(GL_TEXTURE_2D, capture_objects.texture);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexImage2D(
+          GL_TEXTURE_2D,
+          0,
+          GL_RGBA8,
+          static_cast<GLsizei>(capture_width),
+          static_cast<GLsizei>(capture_height),
+          0,
+          GL_RGBA,
+          GL_UNSIGNED_BYTE,
+          nullptr);
+      glGenFramebuffers(1, &capture_objects.framebuffer);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, capture_objects.framebuffer);
+      glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capture_objects.texture, 0);
+      glDrawBuffer(GL_COLOR_ATTACHMENT0);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+      glReadBuffer(GL_FRONT);
+      if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        glBlitFramebuffer(
+            0,
+            0,
+            attributes.width,
+            attributes.height,
+            0,
+            0,
+            static_cast<GLint>(capture_width),
+            static_cast<GLint>(capture_height),
+            GL_COLOR_BUFFER_BIT,
+            GL_LINEAR);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, capture_objects.framebuffer);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+      } else {
+        capture_target_ready = false;
+      }
+    } else {
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+      glReadBuffer(GL_FRONT);
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    if (capture_target_ready) {
+      glReadPixels(
+          0,
+          0,
+          static_cast<GLsizei>(capture_width),
+          static_cast<GLsizei>(capture_height),
+          GL_RGBA,
+          GL_UNSIGNED_BYTE,
+          captured_rgba.data());
+    }
+    glFinish();
+    const GLenum gl_error = glGetError();
+    if (!capture_target_ready || gl_error != GL_NO_ERROR) {
+      set_capture_error(error, "OpenGL presented-frame readback failed");
+      return false;
+    }
+    for (unsigned top = 0, bottom = capture_height - 1; top < bottom; ++top, --bottom) {
+      auto* top_row = captured_rgba.data() + static_cast<size_t>(top) * row_bytes;
+      auto* bottom_row = captured_rgba.data() + static_cast<size_t>(bottom) * row_bytes;
+      std::swap_ranges(top_row, top_row + row_bytes, bottom_row);
+    }
+    rgba->swap(captured_rgba);
+    *width = capture_width;
+    *height = capture_height;
     if (error)
-      *error = "OpenGL presented-frame readback failed";
-    return false;
+      error->clear();
+    return true;
+  } catch (const std::bad_alloc&) {
+    if (rgba)
+      rgba->clear();
+    set_capture_error(error, "presented-frame capture allocation failed");
+  } catch (const std::length_error&) {
+    if (rgba)
+      rgba->clear();
+    set_capture_error(error, "presented-frame capture exceeded its bounded container capacity");
+  } catch (const std::exception& exception) {
+    if (rgba)
+      rgba->clear();
+    log_callback_exception("presented-frame-capture", exception.what());
+    set_capture_error(error, "presented-frame capture failed with a C++ exception");
+  } catch (...) {
+    if (rgba)
+      rgba->clear();
+    log_callback_exception("presented-frame-capture", nullptr);
+    set_capture_error(error, "presented-frame capture failed with an unknown exception");
   }
-  for (unsigned top = 0, bottom = capture_height - 1; top < bottom; ++top, --bottom) {
-    auto* top_row = rgba->data() + static_cast<size_t>(top) * row_bytes;
-    auto* bottom_row = rgba->data() + static_cast<size_t>(bottom) * row_bytes;
-    std::swap_ranges(top_row, top_row + row_bytes, bottom_row);
-  }
-  *width = capture_width;
-  *height = capture_height;
-  if (error)
-    error->clear();
-  return true;
+  return false;
 #else
   (void)sink;
   (void)rgba;
   (void)width;
   (void)height;
-  if (error)
-    *error = "GPU preview renderer is unavailable on this platform";
+  if (error) {
+    try {
+      *error = "GPU preview renderer is unavailable on this platform";
+    } catch (...) {
+    }
+  }
   return false;
 #endif
 }
@@ -1866,6 +2204,47 @@ void set_render_exception_injection_for_test(GstElement* sink, RenderExceptionIn
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
   self->state->render_exception_injection = static_cast<int>(injection);
+#else
+  (void)sink;
+  (void)injection;
+#endif
+}
+
+void set_callback_exception_injection_for_test(
+    GstElement* element,
+    CallbackPoint point,
+    CallbackExceptionInjection injection) {
+  if (!element)
+    return;
+  if (G_TYPE_CHECK_INSTANCE_TYPE(element, gst_hm_preview_isolation_get_type())) {
+    auto* isolation = reinterpret_cast<GstHmPreviewIsolation*>(element);
+    if (!isolation->state)
+      return;
+    isolation->state->callback_exception_injection = static_cast<int>(injection);
+    isolation->state->callback_exception_point = static_cast<int>(point);
+    return;
+  }
+#if defined(__x86_64__)
+  if (G_TYPE_CHECK_INSTANCE_TYPE(element, gst_hm_gpu_preview_sink_get_type())) {
+    auto* sink = reinterpret_cast<GstHmGpuPreviewSink*>(element);
+    if (!sink->state)
+      return;
+    sink->state->callback_exception_injection = static_cast<int>(injection);
+    sink->state->callback_exception_point = static_cast<int>(point);
+  }
+#else
+  (void)point;
+  (void)injection;
+#endif
+}
+
+void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptionInjection injection) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  if (self->state)
+    self->state->capture_exception_injection = static_cast<int>(injection);
 #else
   (void)sink;
   (void)injection;

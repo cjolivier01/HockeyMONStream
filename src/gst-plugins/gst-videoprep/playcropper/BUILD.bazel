@@ -32,6 +32,7 @@ cc_test(
     srcs = ["PlayCropperRuntimeSizingTest.cpp"],
     deps = [
         ":playcropper",
+        "//src/libs/common:preview_overlay_meta",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@local_cuda//:nppc",

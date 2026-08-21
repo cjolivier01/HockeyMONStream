@@ -17,6 +17,29 @@ enum class RenderExceptionInjection {
   kUnknown,
 };
 
+enum class CallbackExceptionInjection {
+  kNone,
+  kBadAlloc,
+  kLengthError,
+  kUnknown,
+};
+
+enum class CallbackPoint {
+  kIsolationChain,
+  kIsolationChainList,
+  kIsolationEvent,
+  kIsolationQuery,
+  kIsolationSetProperty,
+  kIsolationGetProperty,
+  kSinkStart,
+  kSinkSetCaps,
+  kSinkStop,
+  kSinkSetProperty,
+  kSinkGetProperty,
+  kSinkUnlock,
+  kSinkUnlockStop,
+};
+
 inline constexpr std::size_t kMaximumPresentedFrameCaptureBytes = 32U * 1024U * 1024U;
 
 // Registers hmpreviewisolation and hmgpupreviewsink as process-local
@@ -58,9 +81,15 @@ bool capture_presented_frame(
     unsigned* height,
     std::string* error);
 
-// Installs a one-shot failure used to verify the GStreamer render ABI
-// boundary. Production code never enables this hook.
+// Installs one-shot failures used to verify the GStreamer/GObject callback and
+// explicit-capture exception boundaries. Production code never enables these
+// hooks.
 void set_render_exception_injection_for_test(GstElement* sink, RenderExceptionInjection injection);
+void set_callback_exception_injection_for_test(
+    GstElement* element,
+    CallbackPoint point,
+    CallbackExceptionInjection injection);
+void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptionInjection injection);
 bool renderer_resources_released_for_test(GstElement* sink);
 
 } // namespace hm::gpu_preview

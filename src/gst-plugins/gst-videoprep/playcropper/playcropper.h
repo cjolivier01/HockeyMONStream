@@ -5,11 +5,49 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 namespace hm {
 namespace playcropper {
+
+using CudaStreamSynchronizer = cudaError_t (*)(cudaStream_t);
+
+// Once output work has been queued, every return path must synchronize before
+// the output buffer can be recycled by the surrounding GStreamer pool.
+class CudaStreamCompletionFence {
+ public:
+  explicit CudaStreamCompletionFence(
+      cudaStream_t stream,
+      CudaStreamSynchronizer synchronizer = cudaStreamSynchronize) noexcept
+      : stream_(stream), synchronizer_(synchronizer) {}
+  ~CudaStreamCompletionFence() noexcept {
+    // Returning a possibly in-flight surface to the pool is memory-unsafe. A
+    // persistent synchronization failure is therefore process-fatal.
+    if (Synchronize() != cudaSuccess)
+      std::_Exit(88);
+  }
+  CudaStreamCompletionFence(const CudaStreamCompletionFence&) = delete;
+  CudaStreamCompletionFence& operator=(const CudaStreamCompletionFence&) = delete;
+
+  void MarkSubmitted() noexcept {
+    submitted_ = true;
+  }
+  cudaError_t Synchronize() noexcept {
+    if (!submitted_)
+      return cudaSuccess;
+    const cudaError_t result = synchronizer_ ? synchronizer_(stream_) : cudaErrorInvalidValue;
+    if (result == cudaSuccess)
+      submitted_ = false;
+    return result;
+  }
+
+ private:
+  cudaStream_t stream_{nullptr};
+  CudaStreamSynchronizer synchronizer_{nullptr};
+  bool submitted_{false};
+};
 
 struct FrameTransformGeometry {
   BBox source_rect;
@@ -85,6 +123,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   bool scoreboard_disabled_{false};
   bool scoreboard_configure_attempted_{false};
+  bool preview_transform_failure_reported_{false};
   std::string config_file_;
   size_t scoreboard_warp_interval_{3};
   NvBufSurfaceParams display_dest_params_;

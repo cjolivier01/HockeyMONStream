@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 
 #include <cmath>
 #include <iostream>
@@ -7,6 +8,20 @@
 #include "nvbufsurface.h"
 
 namespace {
+
+int synchronize_calls = 0;
+int synchronize_failures_remaining = 0;
+cudaStream_t synchronized_stream = nullptr;
+
+cudaError_t fake_stream_synchronize(cudaStream_t stream) {
+  ++synchronize_calls;
+  synchronized_stream = stream;
+  if (synchronize_failures_remaining > 0) {
+    --synchronize_failures_remaining;
+    return cudaErrorUnknown;
+  }
+  return cudaSuccess;
+}
 
 bool expect_size(
     hm::playcropper::PlayCropperPriv& cropper,
@@ -173,6 +188,74 @@ int main() {
     std::cerr << "Expected an input fill count larger than capacity to fail" << std::endl;
     return 1;
   }
+
+  NvDsBatchMeta* batch_meta = nvds_create_batch_meta(1);
+  NvDsFrameMeta* frame_meta = batch_meta ? nvds_acquire_frame_meta_from_pool(batch_meta) : nullptr;
+  if (!batch_meta || !frame_meta) {
+    std::cerr << "Could not construct preview metadata safety fixture\n";
+    if (batch_meta)
+      nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  frame_meta->base_meta.batch_meta = batch_meta;
+  const hm::preview_overlay::PlayCropperTransform preview_transform{};
+  const cudaStream_t fake_stream = reinterpret_cast<cudaStream_t>(0x1234);
+  synchronize_calls = 0;
+  synchronized_stream = nullptr;
+  {
+    hm::playcropper::CudaStreamCompletionFence fence(fake_stream, fake_stream_synchronize);
+    fence.MarkSubmitted();
+    if (hm::preview_overlay::add_playcropper_transform_meta(
+            frame_meta,
+            preview_transform,
+            hm::preview_overlay::PlayCropperTransformAttachmentInjection::kPoolExhausted)) {
+      std::cerr << "Injected user-meta pool exhaustion unexpectedly attached a transform\n";
+      nvds_destroy_batch_meta(batch_meta);
+      return 1;
+    }
+    // Models any diagnostic failure after output work has already been queued:
+    // scope exit must fence the borrowed output before pool reuse.
+  }
+  if (synchronize_calls != 1 || synchronized_stream != fake_stream) {
+    std::cerr << "Post-submit diagnostic failure did not synchronize before output recycle\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  synchronize_calls = 0;
+  {
+    hm::playcropper::CudaStreamCompletionFence fence(fake_stream, fake_stream_synchronize);
+    fence.MarkSubmitted();
+    if (!hm::preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) ||
+        fence.Synchronize() != cudaSuccess) {
+      std::cerr << "Normal preview metadata flow or explicit stream synchronization failed\n";
+      nvds_destroy_batch_meta(batch_meta);
+      return 1;
+    }
+  }
+  if (synchronize_calls != 1) {
+    std::cerr << "Normal stream completion was skipped or synchronized twice\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  synchronize_calls = 0;
+  synchronize_failures_remaining = 1;
+  {
+    hm::playcropper::CudaStreamCompletionFence fence(fake_stream, fake_stream_synchronize);
+    fence.MarkSubmitted();
+    if (fence.Synchronize() != cudaErrorUnknown) {
+      std::cerr << "Injected stream synchronization failure was not reported\n";
+      nvds_destroy_batch_meta(batch_meta);
+      return 1;
+    }
+    // The failed explicit synchronization keeps the fence armed; destruction
+    // must retry instead of allowing an uncertain output surface to recycle.
+  }
+  if (synchronize_calls != 2) {
+    std::cerr << "Failed stream synchronization did not retain the recycle fence\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  nvds_destroy_batch_meta(batch_meta);
 
   return 0;
 }

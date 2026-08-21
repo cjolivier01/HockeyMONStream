@@ -40,6 +40,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <iomanip>
@@ -1318,40 +1319,49 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       std::chrono::steady_clock::time_point last_emission;
       bool have_last_emission{false};
     };
-    auto preview_probe = +[](GstPad*, GstPadProbeInfo* info, gpointer user_data) -> GstPadProbeReturn {
-      auto* state = static_cast<PreviewProbeState*>(user_data);
-      if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
-        GstEvent* event = GST_PAD_PROBE_INFO_EVENT(info);
-        if (event && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
-          GstCaps* caps = nullptr;
-          gst_event_parse_caps(event, &caps);
-          const GstStructure* structure = caps && gst_caps_get_size(caps) ? gst_caps_get_structure(caps, 0) : nullptr;
-          gint width = 0;
-          gint height = 0;
-          if (structure && gst_structure_get_int(structure, "width", &width) &&
-              gst_structure_get_int(structure, "height", &height) && width > 0 && height > 0) {
-            hm::gpu_preview::set_source_geometry(state->sink, width, height);
+    auto preview_probe = +[](GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept -> GstPadProbeReturn {
+      try {
+        auto* state = static_cast<PreviewProbeState*>(user_data);
+        if (!state || !info)
+          return GST_PAD_PROBE_DROP;
+        if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
+          GstEvent* event = GST_PAD_PROBE_INFO_EVENT(info);
+          if (event && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+            GstCaps* caps = nullptr;
+            gst_event_parse_caps(event, &caps);
+            const GstStructure* structure = caps && gst_caps_get_size(caps) ? gst_caps_get_structure(caps, 0) : nullptr;
+            gint width = 0;
+            gint height = 0;
+            if (structure && gst_structure_get_int(structure, "width", &width) &&
+                gst_structure_get_int(structure, "height", &height) && width > 0 && height > 0) {
+              hm::gpu_preview::set_source_geometry(state->sink, width, height);
+            }
           }
         }
-      }
-      if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
-        const auto now = std::chrono::steady_clock::now();
-        constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
-        if (state->have_last_emission && now - state->last_emission < kMinimumWallPeriod)
-          return GST_PAD_PROBE_DROP;
-        GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-        const GstClockTime pts = buffer ? GST_BUFFER_PTS(buffer) : GST_CLOCK_TIME_NONE;
-        constexpr GstClockTime kMinimumPreviewPeriod = GST_SECOND / 30;
-        if (GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(state->last_pts) && pts >= state->last_pts &&
-            pts - state->last_pts < kMinimumPreviewPeriod) {
-          return GST_PAD_PROBE_DROP;
+        if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+          const auto now = std::chrono::steady_clock::now();
+          constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
+          if (state->have_last_emission && now - state->last_emission < kMinimumWallPeriod)
+            return GST_PAD_PROBE_DROP;
+          GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+          const GstClockTime pts = buffer ? GST_BUFFER_PTS(buffer) : GST_CLOCK_TIME_NONE;
+          constexpr GstClockTime kMinimumPreviewPeriod = GST_SECOND / 30;
+          if (GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(state->last_pts) && pts >= state->last_pts &&
+              pts - state->last_pts < kMinimumPreviewPeriod) {
+            return GST_PAD_PROBE_DROP;
+          }
+          if (GST_CLOCK_TIME_IS_VALID(pts))
+            state->last_pts = pts;
+          state->last_emission = now;
+          state->have_last_emission = true;
         }
-        if (GST_CLOCK_TIME_IS_VALID(pts))
-          state->last_pts = pts;
-        state->last_emission = now;
-        state->have_last_emission = true;
+        return GST_PAD_PROBE_OK;
+      } catch (const std::exception& error) {
+        g_printerr("HSTREAM_PREVIEW_CALLBACK_EXCEPTION callback=rate-limit-probe message=%s\n", error.what());
+      } catch (...) {
+        g_printerr("HSTREAM_PREVIEW_CALLBACK_EXCEPTION callback=rate-limit-probe message=unknown exception\n");
       }
-      return GST_PAD_PROBE_OK;
+      return GST_PAD_PROBE_DROP;
     };
 
     auto configure_path = [&](GstElement* queue,
@@ -1464,9 +1474,10 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
           preview_probe,
           probe_state,
-          +[](gpointer data) {
+          +[](gpointer data) noexcept {
             auto* state = static_cast<PreviewProbeState*>(data);
-            gst_object_unref(state->sink);
+            if (state && state->sink)
+              gst_object_unref(state->sink);
             delete state;
           });
       gst_object_unref(probe_pad);
@@ -1512,6 +1523,25 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
+    GstElement* tracked_preview_playtracker = app_context->pipeline.dsplaytracker_bin.bin;
+    if ((program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
+        tracked_preview_playtracker) {
+      GstPad* playtracker_src = gst_element_get_static_pad(tracked_preview_playtracker, "src");
+      if (!playtracker_src)
+        return absl::FailedPreconditionError("The play tracker does not expose a GPU overlay snapshot point");
+      auto* snapshot_state = new OverlaySnapshotProbeState;
+      const gulong snapshot_probe = gst_pad_add_probe(
+          playtracker_src,
+          GST_PAD_PROBE_TYPE_BUFFER,
+          snapshot_preview_overlays,
+          snapshot_state,
+          +[](gpointer data) noexcept { delete static_cast<OverlaySnapshotProbeState*>(data); });
+      gst_object_unref(playtracker_src);
+      if (snapshot_probe == 0) {
+        delete snapshot_state;
+        return absl::InternalError("Could not install the pre-playcropper GPU overlay snapshot probe");
+      }
+    }
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     if (stitched_target != ui_preview_window_ids_.end()) {
       GstElement* playtracker = app_context->pipeline.dsplaytracker_bin.bin;
@@ -1572,15 +1602,6 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
                 true) ||
             !link_element_to_tee_src_pad(tee, ingress_isolation)) {
           return absl::InternalError("Could not link the tracked Stitched GPU preview branch");
-        }
-        auto* snapshot_state = new OverlaySnapshotProbeState;
-        const gulong snapshot_probe = gst_pad_add_probe(
-            playtracker_src, GST_PAD_PROBE_TYPE_BUFFER, snapshot_preview_overlays, snapshot_state, +[](gpointer data) {
-              delete static_cast<OverlaySnapshotProbeState*>(data);
-            });
-        if (snapshot_probe == 0) {
-          delete snapshot_state;
-          return absl::InternalError("Could not install the pre-playcropper GPU overlay snapshot probe");
         }
         configure_overlays(sink);
       } else {
