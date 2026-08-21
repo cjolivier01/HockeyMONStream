@@ -45,6 +45,7 @@ GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 
 static gboolean install_mux_eosmonitor_probe = FALSE;
 static gint uri_playlist_initial_seek_failure_injected = FALSE;
+static gint uri_playlist_decoder_restart_failure_injected = FALSE;
 
 struct UriListPadProbeData {
   NvDsSrcBin* bin;
@@ -2139,24 +2140,30 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
           probe_data,
           reinterpret_cast<GDestroyNotify>(g_free));
     }
+    // Retain the selected pad's decoder before link_uri_decode_pad() publishes
+    // its initial-seek blocker. A ready message from another camera can run on
+    // the main context as soon as that blocker is visible.
+    GstElement* decoder = bin->src_elem ? hardware_decoder_for_decode_pad(pad) : nullptr;
+    if (bin->src_elem) {
+      if (decoder) {
+        g_object_set_data_full(
+            G_OBJECT(bin->src_elem),
+            "hstream-uri-playlist-video-decoder",
+            gst_object_ref(decoder),
+            reinterpret_cast<GDestroyNotify>(gst_object_unref));
+      } else {
+        g_object_set_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder", nullptr);
+      }
+    }
     const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, TRUE);
     if (link_result.status != UriDecodePadLinkStatus::kLinked && event_probe_id != 0) {
       gst_pad_remove_probe(pad, event_probe_id);
     }
-    if (link_result.status == UriDecodePadLinkStatus::kLinked && bin->src_elem) {
-      GstElement* decoder = hardware_decoder_for_decode_pad(pad);
-      if (decoder) {
-        auto* retained_decoder = static_cast<GstElement*>(
-            g_object_get_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder"));
-        if (retained_decoder != decoder) {
-          g_object_set_data_full(
-              G_OBJECT(bin->src_elem),
-              "hstream-uri-playlist-video-decoder",
-              gst_object_ref(decoder),
-              reinterpret_cast<GDestroyNotify>(gst_object_unref));
-        }
-        gst_object_unref(decoder);
-      }
+    if (link_result.status != UriDecodePadLinkStatus::kLinked && bin->src_elem) {
+      g_object_set_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder", nullptr);
+    }
+    if (decoder) {
+      gst_object_unref(decoder);
     }
     gst_object_unref(sinkpad);
     g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
@@ -4279,6 +4286,22 @@ static void release_uri_playlist_initial_seek_blockers(NvDsSrcParentBin* parent)
   }
 }
 
+static gboolean fail_uri_playlist_decoder_recovery(
+    NvDsSrcParentBin* parent,
+    NvDsSrcBin* source,
+    guint source_id,
+    const char* reason) {
+  cancel_uri_playlist_source(source, TRUE);
+  release_uri_playlist_initial_seek_blockers(parent);
+  GST_ELEMENT_ERROR(
+      source->src_elem,
+      STREAM,
+      FAILED,
+      ("Could not rebuild NVIDIA decoder after URI-playlist seek"),
+      ("source=%u: %s", source_id, reason));
+  return TRUE;
+}
+
 gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
   if (!bin || !bin->uri_playlist_initial_offsets_configured) {
     return FALSE;
@@ -4311,6 +4334,16 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
     if (source->uri_playlist_initial_seek_ns == 0) {
       continue;
     }
+    GstElement* hardware_decoder = nullptr;
+    if (source->src_elem) {
+      g_mutex_lock(&source->uri_decode_pad_selection_mutex);
+      hardware_decoder = static_cast<GstElement*>(
+          g_object_get_data(G_OBJECT(source->src_elem), "hstream-uri-playlist-video-decoder"));
+      if (hardware_decoder) {
+        gst_object_ref(hardware_decoder);
+      }
+      g_mutex_unlock(&source->uri_decode_pad_selection_mutex);
+    }
     const gboolean inject_failure = source_id == 0 && g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_FAIL_ONCE") &&
         g_atomic_int_compare_and_exchange(&uri_playlist_initial_seek_failure_injected, FALSE, TRUE);
     gboolean accelerated = !inject_failure && source->src_elem &&
@@ -4323,36 +4356,39 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
             static_cast<gint64>(source->uri_playlist_initial_seek_ns),
             GST_SEEK_TYPE_NONE,
             GST_CLOCK_TIME_NONE);
-    if (accelerated) {
-      g_mutex_lock(&source->uri_decode_pad_selection_mutex);
-      auto* hardware_decoder = static_cast<GstElement*>(
-          g_object_get_data(G_OBJECT(source->src_elem), "hstream-uri-playlist-video-decoder"));
-      if (hardware_decoder) {
-        gst_object_ref(hardware_decoder);
-      }
-      g_mutex_unlock(&source->uri_decode_pad_selection_mutex);
-      if (hardware_decoder) {
-        // nvv4l2decoder can retain a partially initialized 8K HEVC output surface after a flushing seek performed
-        // once preroll has reached the decoded pad. That surface presents as persistent green/corrupt image regions.
-        // The first seek positions the demuxer; retire the selected hardware decoder, restart it under its parent,
-        // then repeat the keyframe seek so the pristine decoder begins at the selected random-access point.
-        accelerated = gst_element_set_state(hardware_decoder, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE &&
-            gst_element_sync_state_with_parent(hardware_decoder);
-        accelerated = accelerated &&
-            gst_element_seek(
-                source->src_elem,
-                1.0,
-                GST_FORMAT_TIME,
-                static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
-                GST_SEEK_TYPE_SET,
-                static_cast<gint64>(source->uri_playlist_initial_seek_ns),
-                GST_SEEK_TYPE_NONE,
-                GST_CLOCK_TIME_NONE);
-        if (accelerated) {
-          g_print("URI-playlist source %u reset NVIDIA decoder after preroll seek\n", source_id);
-        }
+    if (accelerated && hardware_decoder) {
+      // nvv4l2decoder can retain a partially initialized 8K HEVC output surface after a flushing seek performed once
+      // preroll has reached the decoded pad. The first seek positions the demuxer; retire the selected hardware
+      // decoder, restart it under its parent, then repeat the seek so the pristine decoder begins at that keyframe.
+      const gboolean stopped =
+          gst_element_set_state(hardware_decoder, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+      const gboolean inject_restart_failure =
+          g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_DECODER_RESTART_FAIL_ONCE") &&
+          g_atomic_int_compare_and_exchange(&uri_playlist_decoder_restart_failure_injected, FALSE, TRUE);
+      const gboolean restarted =
+          stopped && !inject_restart_failure && gst_element_sync_state_with_parent(hardware_decoder);
+      if (!restarted) {
         gst_object_unref(hardware_decoder);
+        return fail_uri_playlist_decoder_recovery(bin, source, source_id, "decoder state restart failed");
       }
+      const gboolean reseeked = gst_element_seek(
+          source->src_elem,
+          1.0,
+          GST_FORMAT_TIME,
+          static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+          GST_SEEK_TYPE_SET,
+          static_cast<gint64>(source->uri_playlist_initial_seek_ns),
+          GST_SEEK_TYPE_NONE,
+          GST_CLOCK_TIME_NONE);
+      gst_object_unref(hardware_decoder);
+      hardware_decoder = nullptr;
+      if (!reseeked) {
+        return fail_uri_playlist_decoder_recovery(bin, source, source_id, "post-restart keyframe seek failed");
+      }
+      g_print("URI-playlist source %u reset NVIDIA decoder after preroll seek\n", source_id);
+    }
+    if (hardware_decoder) {
+      gst_object_unref(hardware_decoder);
     }
     if (!accelerated) {
       g_mutex_lock(&bin->uri_playlist_barrier_mutex);

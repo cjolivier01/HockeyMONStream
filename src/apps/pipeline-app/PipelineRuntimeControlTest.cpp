@@ -98,6 +98,8 @@ class PipelineProcess {
       ::setenv("GST_DEBUG", "NVDS_APP:4", 1);
       ::setenv("USE_NEW_NVSTREAMMUX", "yes", 1);
       ::setenv("HSTREAM_RUNTIME_CONTROL_TEST_ROOT", config.parent_path().c_str(), 1);
+      const std::string test_home = (config.parent_path() / "home").string();
+      ::setenv("HOME", test_home.c_str(), 1);
       for (const auto& [name, value] : environment) {
         ::setenv(name.c_str(), value.c_str(), 1);
       }
@@ -528,6 +530,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   const fs::path root(pattern);
+  const fs::path home = root / "home";
   const fs::path video = root / "input.mp4";
   const fs::path multi_track_video = root / "input-multi-track.mp4";
   const fs::path config = root / "pipeline.yaml";
@@ -540,6 +543,7 @@ int main(int argc, char** argv) {
   const fs::path recreate_config = root / "pipeline-recreate.yaml";
   const fs::path error_config = root / "pipeline-error.yaml";
   const fs::path archive = root / "archive.mkv";
+  ok &= expect(fs::create_directory(home), "isolated pipeline-app HOME must be created");
   ok &= expect(
       run_command({
           "ffmpeg",    "-hide_banner", "-loglevel",
@@ -842,6 +846,41 @@ int main(int argc, char** argv) {
   }
 
   PipelineProcess multi_track_seek_process;
+  PipelineProcess decoder_restart_failure_process;
+  if (ok) {
+    ok &= expect(
+        decoder_restart_failure_process.Start(
+            argv[1],
+            playlist_seek_config,
+            "URI-MULTIPLE",
+            "RENDER",
+            true,
+            {{"HM_TEST_URI_PLAYLIST_INITIAL_SEEK_DECODER_RESTART_FAIL_ONCE", "1"}}),
+        "decoder-restart failure seek process must start");
+    ok &= expect(
+        decoder_restart_failure_process.WaitFor("Pipeline running"),
+        "decoder-restart failure pipeline must reach PLAYING");
+    const size_t decoder_restart_failure_mark = decoder_restart_failure_process.Mark();
+    ok &= expect(
+        decoder_restart_failure_process.Send("@seek 10000000000 21\n"),
+        "decoder-restart failure seek command must be delivered");
+    exit_code = 0;
+    ok &= expect(
+        decoder_restart_failure_process.WaitForExit(&exit_code, std::chrono::seconds(20)),
+        "decoder-restart failure must terminate reconstruction promptly");
+    const std::string& decoder_restart_failure_output = decoder_restart_failure_process.output();
+    ok &= expect(exit_code != 0, "decoder-restart failure must make pipeline reconstruction fatal");
+    ok &= expect(
+        decoder_restart_failure_output.find(
+            "Could not rebuild NVIDIA decoder after URI-playlist seek", decoder_restart_failure_mark) !=
+            std::string::npos,
+        "decoder-restart failure must report the fatal reconstruction cause");
+    ok &= expect(
+        decoder_restart_failure_output.find("falling back to exact decoded trimming", decoder_restart_failure_mark) ==
+            std::string::npos,
+        "a stopped decoder must never advertise decoded-trimming fallback");
+  }
+
   if (ok) {
     ok &= expect(
         multi_track_seek_process.Start(
@@ -1248,6 +1287,9 @@ int main(int argc, char** argv) {
     }
     if (!multi_track_seek_process.output().empty()) {
       multi_track_seek_process.DumpOutput();
+    }
+    if (!decoder_restart_failure_process.output().empty()) {
+      decoder_restart_failure_process.DumpOutput();
     }
     if (!unequal_seek_process.output().empty()) {
       unequal_seek_process.DumpOutput();
