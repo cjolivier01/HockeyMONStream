@@ -60,6 +60,13 @@ struct TelemetryConfigEvent {
   std::string artifact_contents;
 };
 
+enum class TelemetryRunOutcome {
+  kIncomplete,
+  kEndOfStream,
+  kIntentionalStop,
+  kFailed,
+};
+
 /**
  * Bounded, non-blocking metadata exporter for HM camera-policy datasets.
  *
@@ -79,6 +86,7 @@ class PlayTrackerTelemetryCsv {
       const std::string& source_config_file,
       const std::string& effective_config_file,
       size_t queue_capacity = 2048);
+  void MarkRunOutcome(TelemetryRunOutcome outcome);
   void Stop();
 
   bool active() const;
@@ -108,6 +116,16 @@ class PlayTrackerTelemetryCsv {
     uint64_t sample_boundary{0};
     TelemetryConfigEvent event;
   };
+  struct OwnedArtifact {
+    std::string filename;
+    // Training inputs are written to filename while the run is active, then
+    // atomically linked to this HM-visible name after successful completion.
+    std::string published_filename;
+    uint64_t device{0};
+    uint64_t inode{0};
+    int reservation_fd{-1};
+    bool training_input{false};
+  };
   using WorkItem = std::variant<QueuedSample, QueuedConfigEvent>;
 
   absl::Status OpenOutputs(
@@ -118,8 +136,12 @@ class PlayTrackerTelemetryCsv {
   bool TryRecordConfigEventLocked(TelemetryConfigEvent event);
   void WriterLoop();
   void WriteSample(const QueuedSample& queued);
-  void WriteConfigEvent(const QueuedConfigEvent& queued);
-  void WriteManifest(bool complete);
+  bool WriteConfigEvent(const QueuedConfigEvent& queued);
+  bool WriteManifest();
+  bool WriteExclusiveConfigArtifact(const std::string& stem, const std::string& contents, std::string* filename);
+  bool PublishTrainingArtifacts();
+  bool VerifyOwnedArtifacts() const;
+  void RemoveOwnedArtifacts(bool training_only);
   void CloseOutputs();
   void RemoveIncompleteOutputs();
   void ResetOutputPaths();
@@ -131,6 +153,10 @@ class PlayTrackerTelemetryCsv {
   bool active_{false};
   bool stopping_{false};
   bool writer_failed_{false};
+  bool writer_drained_{false};
+  bool completed_{false};
+  bool eligible_for_training_{false};
+  TelemetryRunOutcome run_outcome_{TelemetryRunOutcome::kIncomplete};
   std::thread writer_thread_;
   std::atomic<uint64_t> frame_id_high_watermark_{0};
   std::atomic<uint64_t> attempted_samples_{0};
@@ -138,8 +164,18 @@ class PlayTrackerTelemetryCsv {
   std::atomic<uint64_t> config_event_discontinuity_gaps_{0};
   std::atomic<uint64_t> dropped_samples_{0};
   std::atomic<uint64_t> dropped_config_events_{0};
+  std::atomic<uint64_t> samples_persisted_{0};
+  std::atomic<uint64_t> training_samples_persisted_{0};
+  std::atomic<uint64_t> config_events_attempted_{0};
+  std::atomic<uint64_t> config_events_persisted_{0};
+  std::atomic<bool> fail_next_config_artifact_write_for_testing_{false};
   uint64_t config_event_sequence_{0};
   uint64_t config_artifact_sequence_{0};
+
+  int output_directory_fd_{-1};
+  int directory_lock_fd_{-1};
+  int manifest_fd_{-1};
+  std::vector<OwnedArtifact> owned_artifacts_;
 
   std::string started_utc_;
   std::string output_directory_;

@@ -67,11 +67,93 @@ index 010ba7a5..26d443db 100644
              start = rng.randint(0, len(frames) - self._seq_len)
              seq_frames = frames[start : start + self._seq_len]
 
+@@ -610,6 +626,40 @@ class CameraPanZoomGPTIterableDataset(IterableDataset):
+             yield out
+
+
++def _latest_complete_camera_generation(
++    game_dir: str,
++) -> tuple[Optional[str], Optional[str], Optional[str]]:
++    """Return matching tracking/camera paths from the newest complete generation."""
++    base_path = Path(game_dir)
++    if not base_path.is_dir():
++        return None, None, None
++
++    tracking_candidates: list[tuple[int, str, Path]] = []
++    bare_tracking = base_path / "tracking.csv"
++    if bare_tracking.is_file():
++        tracking_candidates.append((0, "", bare_tracking))
++    for tracking_path in base_path.glob("tracking-*.csv"):
++        suffix = tracking_path.stem[len("tracking-") :]
++        if suffix.isdigit() and tracking_path.is_file():
++            tracking_candidates.append((int(suffix), suffix, tracking_path))
++
++    for _, suffix, tracking_path in sorted(
++        tracking_candidates, key=lambda candidate: candidate[0], reverse=True
++    ):
++        suffix_part = f"-{suffix}" if suffix else ""
++        camera_path = base_path / f"camera{suffix_part}.csv"
++        if not camera_path.is_file():
++            continue
++        camera_fast_path = base_path / f"camera_fast{suffix_part}.csv"
++        return (
++            str(tracking_path),
++            str(camera_path),
++            str(camera_fast_path) if camera_fast_path.is_file() else None,
++        )
++
++    return None, None, None
++
++
+ def resolve_csv_paths(
+     game_id: str,
+     game_dir: str,
+@@ -619,20 +669,27 @@ def resolve_csv_paths(
+     camera_fast_csv_name: Optional[str] = None,
+     pose_csv_name: Optional[str] = None,
+ ) -> Optional[GameCsvPaths]:
+-    """Resolve required CSVs inside a game directory (latest suffix wins).
++    """Resolve required CSVs inside a game directory.
+
+     The optional ``*_csv_name`` arguments allow selecting fixed filenames such as
+-    ``camera_annotated.csv`` produced by manual editing tools.
++    ``camera_annotated.csv`` produced by manual editing tools. When both required
++    names are automatic, tracking and camera are selected from the newest complete
++    suffix generation so an interrupted publisher cannot mix two generations.
+     """
+     from hmlib.datasets.dataframe import find_latest_dataframe_file
+
+-    if tracking_csv_name:
++    automatic_generation = not tracking_csv_name and not camera_csv_name
++    if automatic_generation:
++        tracking, camera, generation_camera_fast = _latest_complete_camera_generation(game_dir)
++    elif tracking_csv_name:
+         tracking_path = str(Path(game_dir) / tracking_csv_name)
+         tracking = tracking_path if Path(tracking_path).is_file() else None
+     else:
+         tracking = find_latest_dataframe_file(game_dir, "tracking")
+
+-    if camera_csv_name:
++    if automatic_generation:
++        pass
++    elif camera_csv_name:
+         camera_path = str(Path(game_dir) / camera_csv_name)
+         camera = camera_path if Path(camera_path).is_file() else None
+     else:
+@@ -644,6 +701,8 @@ def resolve_csv_paths(
+     if camera_fast_csv_name:
+         fast_path = str(Path(game_dir) / camera_fast_csv_name)
+         camera_fast = fast_path if Path(fast_path).is_file() else None
++    elif automatic_generation:
++        camera_fast = generation_camera_fast
+     else:
+         camera_fast = find_latest_dataframe_file(game_dir, "camera_fast")
+
 diff --git a/tests/test_camera_gpt.py b/tests/test_camera_gpt.py
-index 4165e154..ad145fdd 100644
+index 4165e154..80fda699 100644
 --- a/tests/test_camera_gpt.py
 +++ b/tests/test_camera_gpt.py
-@@ -155,5 +155,66 @@ def should_sample_gpt_dataset_and_run_model_forward(monkeypatch):
+@@ -155,5 +155,91 @@ def should_sample_gpt_dataset_and_run_model_forward(monkeypatch):
              main()
 
 
@@ -136,5 +218,85 @@ index 4165e154..ad145fdd 100644
 +            next(iter(unusable))
 +
 +
++def should_resolve_only_complete_matching_csv_generations():
++    from hmlib.camera.camera_gpt_dataset import resolve_csv_paths
++
++    with tempfile.TemporaryDirectory(prefix="hm_camgpt_generation_") as td:
++        td_path = Path(td)
++        for filename in (
++            "tracking.csv",
++            "camera.csv",
++            "tracking-1.csv",
++            "camera-1.csv",
++            "camera_fast-1.csv",
++            "camera-2.csv",
++            "camera_fast-2.csv",
++            "tracking-3.csv",
++        ):
++            (td_path / filename).write_text("1\n")
++
++        paths = resolve_csv_paths("generation", td)
++        assert paths is not None
++        assert Path(paths.tracking_csv).name == "tracking-1.csv"
++        assert Path(paths.camera_csv).name == "camera-1.csv"
++        assert paths.camera_fast_csv is not None
++        assert Path(paths.camera_fast_csv).name == "camera_fast-1.csv"
++
++
  def should_free_run_legacy_prev_slow_by_feeding_predictions():
      torch = _torch()
+diff --git a/hmlib/camera/camera_model_dataset.py b/hmlib/camera/camera_model_dataset.py
+index 0db01bcd..ef80419b 100644
+--- a/hmlib/camera/camera_model_dataset.py
++++ b/hmlib/camera/camera_model_dataset.py
+@@ -90,3 +90,8 @@ class CameraPanZoomDataset(Dataset):
+         self.frames: List[int] = [int(f) for f in frames]
+-        self.valid_indices: List[int] = [i for i in range(self.window, len(self.frames))]
++        self.frame_set = set(self.frames)
++        self.valid_indices: List[int] = [
++            i
++            for i in range(self.window, len(self.frames))
++            if all(self.frames[j + 1] == self.frames[j] + 1 for j in range(i - self.window, i))
++        ]
+
+@@ -119,5 +124,7 @@ class CameraPanZoomDataset(Dataset):
+             if prev_cx is None:
+-                # use previous camera center from camera csv if available
+-                pcx, pcy, ph = self._get_cam(max(self.frames[0], f - 1))
+-                prev_cx, prev_cy, prev_h = pcx, pcy, ph
++                # Never bridge a missing numeric frame with stale camera state.
++                previous_frame = f - 1
++                if previous_frame in self.frame_set:
++                    pcx, pcy, ph = self._get_cam(previous_frame)
++                    prev_cx, prev_cy, prev_h = pcx, pcy, ph
+             tlwh = self._get_tlwh(f)
+@@ -126,3 +133,3 @@ class CameraPanZoomDataset(Dataset):
+                 norm=self.norm,
+-                prev_cam_center=(prev_cx, prev_cy),
++                prev_cam_center=None if prev_cx is None else (prev_cx, prev_cy),
+                 prev_cam_h=prev_h,
+diff --git a/tests/test_camera_transformer.py b/tests/test_camera_transformer.py
+index 12e48a09..652e6eaf 100644
+--- a/tests/test_camera_transformer.py
++++ b/tests/test_camera_transformer.py
+@@ -63 +63,20 @@ def test_dataset_and_model_train_smoke():
+         assert "state_dict" in ckpt and "norm" in ckpt
++
++
++def should_keep_legacy_dataset_windows_inside_contiguous_frame_runs():
++    with tempfile.TemporaryDirectory() as td:
++        tracking_csv, camera_csv = _make_synth_csvs(td, n_frames=9)
++        keep = {1, 2, 3, 4, 6, 7, 8, 9}
++        tracking = pd.read_csv(tracking_csv, header=None)
++        camera = pd.read_csv(camera_csv, header=None)
++        tracking[tracking[0].isin(keep)].to_csv(tracking_csv, header=False, index=False)
++        camera[camera[0].isin(keep)].to_csv(camera_csv, header=False, index=False)
++
++        dataset = CameraPanZoomDataset(tracking_csv=tracking_csv, camera_csv=camera_csv, window=2)
++        assert [dataset.frames[index] for index in dataset.valid_indices] == [3, 4, 8, 9]
++        for index in dataset.valid_indices:
++            sequence = dataset.frames[index - dataset.window : index + 1]
++            assert all(right == left + 1 for left, right in zip(sequence, sequence[1:]))
++
++        first_after_gap = dataset[2]
++        assert torch.equal(first_after_gap["x"][0, -3:], torch.zeros(3))

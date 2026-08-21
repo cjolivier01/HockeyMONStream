@@ -275,6 +275,18 @@ BufferResult PlayTrackerPriv::ProcessBuffer(GstBuffer* inbuf) {
 }
 
 bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
+  const GstStructure* structure = event ? gst_event_get_structure(event) : nullptr;
+  if (structure && gst_structure_has_name(structure, "hstream-playtracker-telemetry-failed")) {
+    telemetry_csv_.MarkRunOutcome(TelemetryRunOutcome::kFailed);
+    return Super::HandleEvent(event);
+  }
+  if (structure && gst_structure_has_name(structure, "hstream-playtracker-telemetry-eos")) {
+    telemetry_csv_.MarkRunOutcome(TelemetryRunOutcome::kEndOfStream);
+    return Super::HandleEvent(event);
+  }
+  if (event && GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
+    return Super::HandleEvent(event);
+  }
   if (event && GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP) {
     // Let the async base worker retire every old-generation frame while the
     // src pad is still flushing, then reset tracking before the new segment.

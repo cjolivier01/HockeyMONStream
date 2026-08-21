@@ -227,6 +227,23 @@ static gboolean message_source_is_ui_preview(GstMessage* message) {
   return FALSE;
 }
 
+static void mark_playtracker_telemetry_outcome(AppCtx* appCtx, const char* event_name) {
+  GstElement* playtracker = appCtx ? appCtx->pipeline.dsplaytracker_bin.elem_dsplaytracker : nullptr;
+  if (!playtracker || !event_name) {
+    return;
+  }
+  gst_element_send_event(
+      playtracker, gst_event_new_custom(GST_EVENT_CUSTOM_DOWNSTREAM_OOB, gst_structure_new_empty(event_name)));
+}
+
+static void mark_playtracker_telemetry_failed(AppCtx* appCtx) {
+  mark_playtracker_telemetry_outcome(appCtx, "hstream-playtracker-telemetry-failed");
+}
+
+static void mark_playtracker_telemetry_eos(AppCtx* appCtx) {
+  mark_playtracker_telemetry_outcome(appCtx, "hstream-playtracker-telemetry-eos");
+}
+
 // Error messages can be posted while createMainLoop() is synchronously waiting
 // for PAUSED/preroll, before the GLib main loop dispatches bus_callback(). Wake
 // an exact-frame peer immediately in the posting thread, but leave the message
@@ -363,6 +380,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         }
       }
 
+      mark_playtracker_telemetry_failed(appCtx);
       g_error_free(error);
       g_free(debuginfo);
       appCtx->return_value = -1;
@@ -414,6 +432,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         NVGSTDS_INFO_MSG_V("Received EOS while awaiting calibration restart ...\n");
         return TRUE;
       }
+      mark_playtracker_telemetry_eos(appCtx);
       /*
        * In normal scenario, this would use g_main_loop_quit() to exit the
        * loop and release the resources. Since this application might be
@@ -2281,6 +2300,9 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   }
 
   stop_uri_playlist_sources_gracefully(&appCtx->pipeline.multi_src_bin);
+  if (appCtx->return_value != 0) {
+    mark_playtracker_telemetry_failed(appCtx);
+  }
   gboolean finalized = appCtx->eos_received || appCtx->return_value != 0;
   gboolean fatal_error = FALSE;
   if (!finalized) {
@@ -2304,6 +2326,7 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
         if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
           appCtx->eos_received = TRUE;
           finalized = TRUE;
+          mark_playtracker_telemetry_eos(appCtx);
         } else {
           bus_callback(bus, message, appCtx);
           fatal_error = appCtx->return_value != 0;
@@ -2313,6 +2336,7 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
       gst_object_unref(bus);
     }
     if (!finalized) {
+      mark_playtracker_telemetry_failed(appCtx);
       g_printerr(
           "%s; encoded output may be incomplete\n",
           fatal_error ? "Pipeline failed while finalizing EOS" : "Pipeline EOS finalization timed out");
@@ -2321,6 +2345,9 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   }
 
   const gboolean stopped = gst_element_set_state(pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+  if (!stopped) {
+    mark_playtracker_telemetry_failed(appCtx);
+  }
   return stopped && finalized;
 }
 

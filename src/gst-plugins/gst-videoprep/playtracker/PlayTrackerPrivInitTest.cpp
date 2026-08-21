@@ -400,10 +400,28 @@ int main() {
     return 17;
   }
 
+  GstEvent* eos = gst_event_new_eos();
+  const bool eos_handled = priv.HandleEvent(eos);
+  gst_event_unref(eos);
+  if (!eos_handled) {
+    std::cerr << "EOS did not mark telemetry outcome\n";
+    return 22;
+  }
+  GstEvent* pipeline_eos = gst_event_new_custom(
+      GST_EVENT_CUSTOM_DOWNSTREAM_OOB, gst_structure_new_empty("hstream-playtracker-telemetry-eos"));
+  const bool pipeline_eos_handled = priv.HandleEvent(pipeline_eos);
+  gst_event_unref(pipeline_eos);
+  if (!pipeline_eos_handled) {
+    std::cerr << "Pipeline EOS did not mark telemetry outcome\n";
+    return 23;
+  }
   priv.StopTelemetry();
   const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
-  if (config_events.find(",2,property,fixed-edge-rotation-angle-left,32.0,") == std::string::npos ||
-      config_events.find(",4,seek,flush-stop,1,") == std::string::npos) {
+  const std::string telemetry_manifest = read_file(telemetry_dir / "hstream_telemetry.json");
+  if (config_events.find(",11,property,fixed-edge-rotation-angle-left,32.0,") == std::string::npos ||
+      config_events.find(",13,seek,flush-stop,1,") == std::string::npos ||
+      telemetry_manifest.find("\"run_outcome\": \"end-of-stream\"") == std::string::npos ||
+      telemetry_manifest.find("\"eligible_for_training\": true") == std::string::npos) {
     std::cerr << "geometry or seek event was not committed at the correct attempted-sample boundary\n";
     return 21;
   }
