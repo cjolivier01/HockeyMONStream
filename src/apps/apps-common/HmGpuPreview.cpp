@@ -1,5 +1,6 @@
 #include "HmGpuPreview.h"
 
+#include "hstream/src/apps/apps-common/RinkMaskImage.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 
 #include <gst/base/gstbasesink.h>
@@ -278,8 +279,6 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 #include <gstnvdsmeta.h>
 #include <nvbufsurface.h>
 #include <nvdsmeta.h>
-#include <opencv2/imgcodecs.hpp>
-
 #include <array>
 #include <chrono>
 #include <optional>
@@ -344,6 +343,7 @@ struct RendererState {
   guint rink_mask_width{0};
   guint rink_mask_height{0};
   bool rink_mask_failure_reported{false};
+  unsigned rink_mask_consecutive_failures{0};
   std::chrono::steady_clock::time_point rink_mask_retry_after{};
 };
 
@@ -813,10 +813,15 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
   RendererState* state = self->state;
   if (!state->rink_mask_dirty)
     return state->rink_mask_texture != 0;
-  static constexpr auto kRetryInterval = std::chrono::seconds(2);
   const auto now = std::chrono::steady_clock::now();
   if (now < state->rink_mask_retry_after)
     return false;
+  auto schedule_retry = [&] {
+    state->rink_mask_consecutive_failures = std::min(state->rink_mask_consecutive_failures + 1U, 6U);
+    const unsigned delay = hm::gpu_preview::rink_mask_retry_delay_seconds(state->rink_mask_consecutive_failures);
+    state->rink_mask_retry_after = now + std::chrono::seconds(delay);
+    return delay;
+  };
   if (state->rink_mask_texture) {
     glDeleteTextures(1, &state->rink_mask_texture);
     state->rink_mask_texture = 0;
@@ -825,30 +830,25 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
   state->rink_mask_height = 0;
   if (state->rink_mask_file.empty()) {
     state->rink_mask_dirty = false;
+    state->rink_mask_consecutive_failures = 0;
     return false;
   }
-  if (!g_file_test(state->rink_mask_file.c_str(), G_FILE_TEST_IS_REGULAR)) {
+  const hm::gpu_preview::RinkMaskLoadResult loaded = hm::gpu_preview::load_rink_mask_png(state->rink_mask_file);
+  if (!loaded) {
+    const unsigned retry_seconds = schedule_retry();
     if (!state->rink_mask_failure_reported) {
       g_printerr(
-          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=missing\n",
+          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=%s retry=%us message=%s\n",
           state->channel.c_str(),
-          state->rink_mask_file.c_str());
+          state->rink_mask_file.c_str(),
+          hm::gpu_preview::rink_mask_load_status_name(loaded.status),
+          retry_seconds,
+          loaded.message);
       state->rink_mask_failure_reported = true;
     }
-    state->rink_mask_retry_after = now + kRetryInterval;
     return false;
   }
-  const cv::Mat mask = cv::imread(state->rink_mask_file, cv::IMREAD_GRAYSCALE);
-  if (mask.empty()) {
-    if (!state->rink_mask_failure_reported) {
-      g_printerr(
-          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=invalid\n",
-          state->channel.c_str(),
-          state->rink_mask_file.c_str());
-      state->rink_mask_failure_reported = true;
-    }
-    state->rink_mask_retry_after = now + kRetryInterval;
-    return false;
+  for (int stale_error = 0; stale_error < 16 && glGetError() != GL_NO_ERROR; ++stale_error) {
   }
   glGenTextures(1, &state->rink_mask_texture);
   glBindTexture(GL_TEXTURE_2D, state->rink_mask_texture);
@@ -859,18 +859,36 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
   constexpr GLfloat kTransparentBorder[4] = {0.0F, 0.0F, 0.0F, 0.0F};
   glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, kTransparentBorder);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA8, mask.cols, mask.rows, 0, GL_ALPHA, GL_UNSIGNED_BYTE, mask.data);
+  glTexImage2D(
+      GL_TEXTURE_2D,
+      0,
+      GL_ALPHA8,
+      static_cast<GLsizei>(loaded.image.width),
+      static_cast<GLsizei>(loaded.image.height),
+      0,
+      GL_ALPHA,
+      GL_UNSIGNED_BYTE,
+      loaded.image.alpha.data());
   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-  if (glGetError() != GL_NO_ERROR) {
+  if (state->rink_mask_texture == 0 || glGetError() != GL_NO_ERROR) {
     glDeleteTextures(1, &state->rink_mask_texture);
     state->rink_mask_texture = 0;
-    state->rink_mask_retry_after = now + kRetryInterval;
+    const unsigned retry_seconds = schedule_retry();
+    if (!state->rink_mask_failure_reported) {
+      g_printerr(
+          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=texture-upload-failed retry=%us\n",
+          state->channel.c_str(),
+          state->rink_mask_file.c_str(),
+          retry_seconds);
+      state->rink_mask_failure_reported = true;
+    }
     return false;
   }
-  state->rink_mask_width = static_cast<guint>(mask.cols);
-  state->rink_mask_height = static_cast<guint>(mask.rows);
+  state->rink_mask_width = loaded.image.width;
+  state->rink_mask_height = loaded.image.height;
   state->rink_mask_dirty = false;
   state->rink_mask_failure_reported = false;
+  state->rink_mask_consecutive_failures = 0;
   state->rink_mask_retry_after = {};
   g_print(
       "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=loaded\n",
@@ -1207,6 +1225,7 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
       state->rink_mask_file = g_value_get_string(value) ? g_value_get_string(value) : "";
       state->rink_mask_dirty = true;
       state->rink_mask_failure_reported = false;
+      state->rink_mask_consecutive_failures = 0;
       state->rink_mask_retry_after = {};
       break;
     default:

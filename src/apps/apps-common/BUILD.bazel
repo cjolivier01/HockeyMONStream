@@ -48,6 +48,26 @@ cc_test(
 )
 
 cc_library(
+    name = "rink_mask_image",
+    srcs = ["RinkMaskImage.cpp"],
+    hdrs = ["RinkMaskImage.h"],
+    copts = ["-std=c++17"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@opencv_linux//:opencv"],
+)
+
+cc_test(
+    name = "rink_mask_image_test",
+    srcs = ["RinkMaskImageTest.cpp"],
+    copts = ["-std=c++17"],
+    deps = [
+        ":rink_mask_image",
+        "@opencv_linux//:opencv",
+    ],
+)
+
+cc_library(
     name = "hstream_lossless_nvstreammux",
     hdrs = ["HStreamLosslessMux.h"],
     include_prefix = INCLUDE_PREFIX,
@@ -154,6 +174,7 @@ cc_library(
     deps = [
         ":gst_plugin_properties",
         ":hstream_lossless_nvstreammux",
+        ":rink_mask_image",
         "//src/libs/camera",
         "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/common:fs",
