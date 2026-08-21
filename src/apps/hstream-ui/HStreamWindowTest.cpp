@@ -3108,6 +3108,211 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
 
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@set-preview-overlays 16 1 1 1"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "40");
+  int overlay_delay_arms = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay delay armed") == overlay_delay_arms; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  int overlay_timeouts = window->logText().count(overlay_timeout_log);
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && window->logText().count(overlay_timeout_log) == overlay_timeouts; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_delay_arms = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay delay armed") == overlay_delay_arms; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  int overlay_rejection_arms = window->logText().count("test preview overlay rejection armed");
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") == overlay_rejection_arms;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       (!window->logText().contains("stdin:@set-preview-overlays 18 1 1 1") ||
+        window->logText().count(overlay_timeout_log) < overlay_timeouts + 2);
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_delay_arms = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay delay armed") == overlay_delay_arms; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_rejection_arms = window->logText().count("test preview overlay rejection armed");
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") == overlay_rejection_arms;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_timeouts = window->logText().count(overlay_timeout_log);
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && window->logText().count(overlay_timeout_log) == overlay_timeouts; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const int backend_state_logs_before_unresolved_timeout =
+      window->logText().count("preview overlays players=1 play=1 rink=0 apply=backend-state");
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       window->logText().count("preview overlays players=1 play=1 rink=0 apply=backend-state") ==
+           backend_state_logs_before_unresolved_timeout;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  QApplication::processEvents();
+  QTest::qWait(100);
+  if (!expect(
+          show_player_tracking->isChecked() && show_play_tracking->isChecked() && !show_rink_mask->isChecked() &&
+              window->logText().contains("stdin:@set-preview-overlays 16 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 17 1 1 0") &&
+              window->logText().contains("stdin:@set-preview-overlays 18 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 19 1 1 0") &&
+              window->logText().count("preview overlays players=1 play=1 rink=0 apply=backend-state") ==
+                  backend_state_logs_before_unresolved_timeout + 1 &&
+              !window->logText().contains("stdin:@set-preview-overlays 20 "),
+          "A normal request timeout must preserve an older unresolved reconciliation until its late failure adopts "
+          "the known backend state without another retry")) {
+    qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    return false;
+  }
+
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@set-preview-overlays 20 1 1 1"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_delay_arms = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay delay armed") == overlay_delay_arms; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_timeouts = window->logText().count(overlay_timeout_log);
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && window->logText().count(overlay_timeout_log) == overlay_timeouts; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "1000");
+  overlay_delay_arms = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay delay armed") == overlay_delay_arms; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_rejection_arms = window->logText().count("test preview overlay rejection armed");
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") == overlay_rejection_arms;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@set-preview-overlays 22 1 1 1"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_delay_arms = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay delay armed") == overlay_delay_arms; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_rejection_arms = window->logText().count("test preview overlay rejection armed");
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") == overlay_rejection_arms;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@set-preview-overlays 23 1 1 0"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       !window->logText().contains(
+           "late failed preview overlay reconciliation generation=22; preserving backend state");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_delay_arms = window->logText().count("test preview overlay delay armed");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay delay armed") == overlay_delay_arms; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_rejection_arms = window->logText().count("test preview overlay rejection armed");
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") == overlay_rejection_arms;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@set-preview-overlays 24 1 1 1"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  overlay_rejection_arms = window->logText().count("test preview overlay rejection armed");
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && window->logText().count("test preview overlay rejection armed") == overlay_rejection_arms;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const int backend_state_logs_before_repeated_supersession =
+      window->logText().count("preview overlays players=1 play=1 rink=0 apply=backend-state");
+  for (int i = 0; i < 200 &&
+       window->logText().count("preview overlays players=1 play=1 rink=0 apply=backend-state") ==
+           backend_state_logs_before_repeated_supersession;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  QApplication::processEvents();
+  QTest::qWait(100);
+  qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+  if (!expect(
+          show_player_tracking->isChecked() && show_play_tracking->isChecked() && !show_rink_mask->isChecked() &&
+              window->logText().contains("stdin:@set-preview-overlays 20 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 21 1 1 0") &&
+              window->logText().contains("stdin:@set-preview-overlays 22 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 23 1 1 0") &&
+              window->logText().contains("stdin:@set-preview-overlays 24 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 25 1 1 1") &&
+              window->logText().contains(
+                  "late failed preview overlay reconciliation generation=22; preserving backend state") &&
+              window->logText().count("preview overlays players=1 play=1 rink=0 apply=backend-state") ==
+                  backend_state_logs_before_repeated_supersession + 1 &&
+              !window->logText().contains("stdin:@set-preview-overlays 26 "),
+          "Repeated user supersessions must retain a known backend fallback until the newest failed request is "
+          "reconciled without looping")) {
+    return false;
+  }
+
   const int disabled_count_before_paused_toggle = window->logText().count("GPU preview disabled generation=");
   activate(pause);
   if (!expect(

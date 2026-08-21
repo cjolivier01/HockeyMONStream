@@ -6489,7 +6489,6 @@ void HStreamWindow::preparePreviewOverlayUserRequest() {
       preview_overlay_reconciliation_fallback_valid_) {
     unresolved_preview_overlay_reconciliation_generation_ = pending_preview_overlay_generation_;
   }
-  preview_overlay_stale_apply_observed_ = false;
   pending_preview_overlay_is_reconciliation_ = false;
   if (!preview_overlay_reconciliation_fallback_valid_)
     unresolved_preview_overlay_reconciliation_generation_ = 0;
@@ -6548,7 +6547,8 @@ void HStreamWindow::timeoutPreviewOverlayRequest(quint64 generation) {
   preview_overlay_stale_apply_observed_ = false;
   pending_preview_overlay_generation_ = 0;
   pending_preview_overlay_is_reconciliation_ = false;
-  unresolved_preview_overlay_reconciliation_generation_ = timed_out_reconciliation ? generation : 0;
+  if (timed_out_reconciliation)
+    unresolved_preview_overlay_reconciliation_generation_ = generation;
   restoreConfirmedPreviewOverlays("acknowledgement-timeout");
   if (reconcile_stale_apply) {
     setRuntimePreviewOverlays(true);
