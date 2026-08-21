@@ -246,6 +246,20 @@ struct _AppCtx {
   gboolean eos_received{false};
 };
 
+inline gboolean terminal_source_error_requires_failure(const AppCtx* app_ctx) {
+  return !app_ctx || !app_ctx->eos_received;
+}
+
+inline gboolean mark_terminal_source_error_failure(AppCtx* app_ctx) {
+  if (!terminal_source_error_requires_failure(app_ctx)) {
+    return FALSE;
+  }
+  if (app_ctx) {
+    app_ctx->return_value = -1;
+  }
+  return TRUE;
+}
+
 class HmApp : public _AppCtx {
  public:
   HmApp(std::string game_id, std::string app_config_file, int override_gpu_id)

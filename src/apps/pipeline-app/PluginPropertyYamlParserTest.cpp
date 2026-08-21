@@ -40,6 +40,18 @@ int main() {
   gst_init(nullptr, nullptr);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
 
+  auto terminal_outcome = std::make_unique<AppCtx>();
+  if (!mark_terminal_source_error_failure(terminal_outcome.get()) || terminal_outcome->return_value == 0) {
+    std::cerr << "A terminal source error without observed EOS did not set a failure result\n";
+    return 1;
+  }
+  terminal_outcome->return_value = 0;
+  terminal_outcome->eos_received = TRUE;
+  if (mark_terminal_source_error_failure(terminal_outcome.get()) || terminal_outcome->return_value != 0) {
+    std::cerr << "A positively observed EOS was treated as a terminal source failure\n";
+    return 1;
+  }
+
   const YAML::Node config = YAML::Load(R"yaml(
 hmplaycropper:
   enable: true
@@ -77,6 +89,7 @@ ds-playtracker:
     source-id: 2
   private-properties:
     show: true
+    telemetry-csv-dir: /tmp/hm-game
 )yaml");
 
   HmPlayCropperConfig playcropper{};
@@ -119,7 +132,8 @@ ds-playtracker:
     return 1;
   }
   if (!expect_property(playtracker.plugin_properties, "source-id", "2") ||
-      !expect_property(playtracker.private_properties, "show", "true")) {
+      !expect_property(playtracker.private_properties, "show", "true") ||
+      !expect_property(playtracker.private_properties, "telemetry-csv-dir", "/tmp/hm-game")) {
     return 1;
   }
   if (!playtracker.fixed_edge_rotation_angle_left_set || !playtracker.fixed_edge_rotation_angle_right_set ||

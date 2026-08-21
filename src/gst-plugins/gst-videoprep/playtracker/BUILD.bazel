@@ -1,6 +1,19 @@
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/playtracker"
 
 cc_library(
+    name = "playtracker_telemetry_csv",
+    srcs = ["PlayTrackerTelemetryCsv.cpp"],
+    hdrs = ["PlayTrackerTelemetryCsv.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    copts = ["-std=c++17"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
     name = "playtracker",
     srcs = [
       "playtracker.cpp",
@@ -10,12 +23,27 @@ cc_library(
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
+    copts = ["-std=c++17"],
     deps = [
         ":playtracker_payload",
+        ":playtracker_telemetry_csv",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
+        "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/draw_display",
     ],
+)
+
+cc_test(
+    name = "playtracker_telemetry_csv_test",
+    srcs = [
+        "PlayTrackerTelemetryCsvTest.cpp",
+    ],
+    deps = [
+        ":playtracker_telemetry_csv",
+        "@com_google_absl//absl/status",
+    ],
+    copts = ["-std=c++17"],
 )
 
 cc_library(

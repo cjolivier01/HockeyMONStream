@@ -180,6 +180,7 @@ git_repository(
     patches = [
         "//buildfiles/third_party:hm_playtracker_nonreentrant_stop.patch",
         "//buildfiles/third_party:hm_playtracker_runtime_tuning.patch",
+        "//buildfiles/third_party:hm_camera_gpt_contiguous_frames.patch",
     ],
     remote = "ssh://git@github.com/cjolivier01/HockeyMOM",
 )
