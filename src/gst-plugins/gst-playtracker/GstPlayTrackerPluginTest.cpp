@@ -17,6 +17,7 @@ int main(int argc, char** argv) {
               {"unique-id", G_TYPE_UINT, true},
               {"gpu-id", G_TYPE_UINT, true},
               {"draw", G_TYPE_BOOLEAN, true},
+              {"preview-overlay-flags", G_TYPE_UINT, true},
               {"config-file", G_TYPE_STRING, true},
           },
           {
@@ -36,6 +37,7 @@ int main(int argc, char** argv) {
           {
               {"unique-id", "22"},
               {"draw", "true"},
+              {"preview-overlay-flags", "5"},
               {"config-file", "/tmp/play_tracker.yaml"},
           })) {
     gst_object_unref(element);
@@ -44,10 +46,23 @@ int main(int argc, char** argv) {
 
   guint unique_id = 0;
   gboolean draw = FALSE;
+  guint preview_overlay_flags = 0;
   gchar* config_file = nullptr;
-  g_object_get(G_OBJECT(element), "unique-id", &unique_id, "draw", &draw, "config-file", &config_file, NULL);
-  const bool ok =
-      unique_id == 22 && draw == TRUE && config_file && std::string(config_file) == "/tmp/play_tracker.yaml";
+  g_object_get(
+      G_OBJECT(element),
+      "unique-id",
+      &unique_id,
+      "draw",
+      &draw,
+      "preview-overlay-flags",
+      &preview_overlay_flags,
+      "config-file",
+      &config_file,
+      NULL);
+  GParamSpec* preview_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "preview-overlay-flags");
+  const bool ok = unique_id == 22 && draw == TRUE && preview_overlay_flags == 5 && preview_spec &&
+      (preview_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0 && config_file &&
+      std::string(config_file) == "/tmp/play_tracker.yaml";
   g_free(config_file);
   gst_object_unref(element);
 

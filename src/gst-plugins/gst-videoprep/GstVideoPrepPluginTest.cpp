@@ -29,6 +29,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"fixed-edge-rotation-angle-left", G_TYPE_DOUBLE, true},
           {"fixed-edge-rotation-angle-right", G_TYPE_DOUBLE, true},
           {"dynamic-acceleration-scaling", G_TYPE_DOUBLE, true},
+          {"preview-overlay-flags", G_TYPE_UINT, true},
           {"shadow-lift", G_TYPE_DOUBLE, true},
           {"shadow-lift-black-point", G_TYPE_BOOLEAN, true},
           {"runtime-tuning-config-file", G_TYPE_STRING, false},
@@ -221,7 +222,18 @@ int main(int argc, char** argv) {
     std::cerr << "Could not create vpplaytracker\n";
     return 1;
   }
-  g_object_set(G_OBJECT(tracker), "plugin-type", "vpplaytracker", "config-file", valid_base.c_str(), nullptr);
+  g_object_set(
+      G_OBJECT(tracker),
+      "plugin-type",
+      "vpplaytracker",
+      "config-file",
+      valid_base.c_str(),
+      "preview-overlay-flags",
+      5U,
+      nullptr);
+  guint preview_overlay_flags = 0;
+  g_object_get(G_OBJECT(tracker), "preview-overlay-flags", &preview_overlay_flags, nullptr);
+  GParamSpec* preview_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(tracker), "preview-overlay-flags");
   const GstStateChangeReturn state_result = gst_element_set_state(tracker, GST_STATE_READY);
   gboolean invalid_accepted = TRUE;
   if (state_result == GST_STATE_CHANGE_SUCCESS) {
@@ -232,7 +244,8 @@ int main(int argc, char** argv) {
   gst_object_unref(tracker);
   std::filesystem::remove(valid_base);
   std::filesystem::remove(invalid_runtime);
-  if (state_result != GST_STATE_CHANGE_SUCCESS || invalid_accepted) {
+  if (state_result != GST_STATE_CHANGE_SUCCESS || invalid_accepted || preview_overlay_flags != 5 || !preview_spec ||
+      (preview_spec->flags & GST_PARAM_MUTABLE_PLAYING) == 0) {
     std::cerr << "vpplaytracker production property path did not reject invalid runtime tuning\n";
     return 1;
   }

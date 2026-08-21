@@ -762,8 +762,10 @@ GstPadProbeReturn attach_stitched_generation(GstPad*, GstPadProbeInfo* info, gpo
       return GST_PAD_PROBE_OK;
     }
     batch->max_frames_in_batch = 1;
-    frame->source_frame_width = 640;
-    frame->source_frame_height = 360;
+    // DeepStream metadata can use a scaled coordinate space even though the
+    // live NVMM surface and persisted rink mask remain full resolution.
+    frame->source_frame_width = 320;
+    frame->source_frame_height = 180;
     nvds_add_frame_meta_to_batch(batch, frame);
     hm::stitching::StitchedOutputGenerationPayload::create_and_add<hm::stitching::StitchedOutputGenerationPayload>(
         frame, state->generation);
@@ -854,6 +856,7 @@ bool run_rink_mask_reactivation_test(Window window) {
       "rink-mask-file",
       (fixture.path() / "rink_mask_0.png").c_str(),
       nullptr);
+  hm::gpu_preview::set_source_geometry(sink, 640, 360);
   hm::gpu_preview::set_isolation_active(gate, true, 17);
   hm::gpu_preview::set_renderer_generation(sink, 17);
   const bool playing = gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;

@@ -2500,17 +2500,20 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     if (preview_focus_mode_) {
       if (!canFocusPreview(tab_index)) {
         setPreviewFocusMode(false, tab_index);
-        switchPipelineRenderTarget(tab_index);
-        return;
-      }
-      focused_preview_tab_ = tab_index;
-      for (size_t index = 0; index < preview_hosts_.size(); ++index) {
-        auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
-        if (host)
-          host->setFocused(static_cast<int>(index) == tab_index);
+      } else {
+        focused_preview_tab_ = tab_index;
+        for (size_t index = 0; index < preview_hosts_.size(); ++index) {
+          auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[index]);
+          if (host)
+            host->setFocused(static_cast<int>(index) == tab_index);
+        }
       }
     }
     if (tab_index == pipeline_inspector_tab_index_) {
+      // The inspector has no video surface. Quiesce the previously selected
+      // GPU branch while it is hidden; returning to a video tab issues a new
+      // generation and therefore re-arms first-frame recovery.
+      requestPipelinePreviewChannel("none", PreviewRequestReason::kTabChange);
       if (pipeline_inspector_ && pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
         pipeline_inspector_->requestRefresh();
       }
@@ -4176,6 +4179,10 @@ void HStreamWindow::startPipeline() {
   if (render_video && !active_run_is_calibration_ && show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked())
     preview_overlays << "rink";
   env.insert("HSTREAM_UI_PREVIEW_OVERLAYS", preview_overlays.join(','));
+  confirmed_show_player_tracking_ = preview_overlays.contains("players");
+  confirmed_show_play_tracking_ = preview_overlays.contains("play");
+  confirmed_show_rink_mask_ = preview_overlays.contains("rink");
+  pending_preview_overlay_generation_ = 0;
   appendLog(
       render_video
           ? "audio enabled via pipeline.hmaudio.enable=1; local monitor audio follows Render video"
@@ -4524,6 +4531,7 @@ void HStreamWindow::clearPreviewFrames() {
   active_preview_channel_.clear();
   pending_preview_channel_.clear();
   pending_preview_generation_ = 0;
+  pending_preview_overlay_generation_ = 0;
   preview_recovery_attempts_ = 0;
   preview_disable_attempts_ = 0;
   preview_runtime_ready_ = false;
@@ -4643,6 +4651,9 @@ void HStreamWindow::readPipelineOutput() {
           continue;
         }
         if (handleGpuPreviewStatus(trimmed)) {
+          continue;
+        }
+        if (handlePreviewOverlayResponse(trimmed)) {
           continue;
         }
         if (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed)) {
@@ -5870,7 +5881,18 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
           preview_status_->setText("Pipeline running without video rendering");
         appendLog(QString("GPU preview backend ready with rendering disabled generation=%1").arg(generation));
       }
-    } else if (backend_channel != "none" && (selected_channel.isEmpty() || selected_channel == backend_channel)) {
+    } else if (selected_channel.isEmpty()) {
+      pending_preview_channel_.clear();
+      pending_preview_generation_ = 0;
+      if (backend_channel != "none") {
+        requestPipelinePreviewChannel("none", PreviewRequestReason::kStartup);
+      } else {
+        active_preview_channel_.clear();
+        if (preview_status_)
+          preview_status_->setText("Pipeline inspector active; GPU preview is idle");
+        appendLog(QString("GPU preview backend ready with inspector selected generation=%1").arg(generation));
+      }
+    } else if (backend_channel != "none" && selected_channel == backend_channel) {
       pending_preview_channel_ = backend_channel;
       pending_preview_generation_ = generation;
       preview_recovery_attempts_ = 0;
@@ -6034,6 +6056,46 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       if (surface)
         surface->hide();
     }
+  }
+  return true;
+}
+
+bool HStreamWindow::handlePreviewOverlayResponse(const QString& line) {
+  static const QRegularExpression pattern(
+      R"(^HSTREAM_PREVIEW_OVERLAYS status=(applied|failed) generation=(\d+) players=([01]) play=([01]) rink=([01])(?: reason=(.*))?$)");
+  const QRegularExpressionMatch match = pattern.match(line);
+  if (!match.hasMatch())
+    return false;
+
+  bool generation_valid = false;
+  const quint64 generation = match.captured(2).toULongLong(&generation_valid);
+  if (!generation_valid || generation == 0 || generation > preview_overlay_generation_)
+    return true;
+  if (match.captured(1) == "applied") {
+    confirmed_show_player_tracking_ = match.captured(3) == "1";
+    confirmed_show_play_tracking_ = match.captured(4) == "1";
+    confirmed_show_rink_mask_ = match.captured(5) == "1";
+    const QSignalBlocker player_blocker(show_player_tracking_toggle_);
+    const QSignalBlocker play_blocker(show_play_tracking_toggle_);
+    const QSignalBlocker rink_blocker(show_rink_mask_toggle_);
+    if (show_player_tracking_toggle_)
+      show_player_tracking_toggle_->setChecked(confirmed_show_player_tracking_);
+    if (show_play_tracking_toggle_)
+      show_play_tracking_toggle_->setChecked(confirmed_show_play_tracking_);
+    if (show_rink_mask_toggle_)
+      show_rink_mask_toggle_->setChecked(confirmed_show_rink_mask_);
+    if (generation == pending_preview_overlay_generation_) {
+      pending_preview_overlay_generation_ = 0;
+      appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=live")
+                    .arg(confirmed_show_player_tracking_ ? 1 : 0)
+                    .arg(confirmed_show_play_tracking_ ? 1 : 0)
+                    .arg(confirmed_show_rink_mask_ ? 1 : 0));
+    }
+    return true;
+  }
+  if (generation == pending_preview_overlay_generation_) {
+    pending_preview_overlay_generation_ = 0;
+    restoreConfirmedPreviewOverlays(match.captured(6).isEmpty() ? "backend-rejected" : match.captured(6));
   }
   return true;
 }
@@ -6237,6 +6299,10 @@ void HStreamWindow::setRuntimePreviewOverlays() {
   const bool play = show_play_tracking_toggle_ && show_play_tracking_toggle_->isChecked();
   const bool rink = show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked();
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    confirmed_show_player_tracking_ = players;
+    confirmed_show_play_tracking_ = play;
+    confirmed_show_rink_mask_ = rink;
+    pending_preview_overlay_generation_ = 0;
     appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=next-start")
                   .arg(players ? 1 : 0)
                   .arg(play ? 1 : 0)
@@ -6244,32 +6310,51 @@ void HStreamWindow::setRuntimePreviewOverlays() {
     return;
   }
   if (!pipeline_render_embedded_) {
-    appendLog("preview debug overlays require the embedded GPU preview");
+    restoreConfirmedPreviewOverlays("embedded-preview-unavailable");
     return;
   }
-
-  QStringList assignments;
-  auto add_sink = [&](const QString& sink) {
-    assignments << QString("%1 show-player-tracking=%2").arg(sink).arg(players ? 1 : 0)
-                << QString("%1 show-play-tracking=%2").arg(sink).arg(play ? 1 : 0)
-                << QString("%1 show-rink-mask=%2").arg(sink).arg(rink ? 1 : 0);
-  };
-  if (active_run_is_calibration_) {
-    add_sink("hmstitcher_preview_sink");
-  } else {
-    add_sink("program_gpu_preview_sink");
-    add_sink("stitched_gpu_preview_sink");
-    assignments << QString("dsplaytracker0 draw=%1").arg(play ? 1 : 0);
-  }
-  const QByteArray command = QString("@set-properties %1\n").arg(assignments.join(';')).toUtf8();
+  const quint64 generation = ++preview_overlay_generation_;
+  const QByteArray command = QString("@set-preview-overlays %1 %2 %3 %4\n")
+                                 .arg(generation)
+                                 .arg(players ? 1 : 0)
+                                 .arg(play ? 1 : 0)
+                                 .arg(rink ? 1 : 0)
+                                 .toUtf8();
   if (pipeline_process_->write(command) != command.size()) {
-    appendLog("could not update GPU preview debug overlays");
+    restoreConfirmedPreviewOverlays("pipeline-command-write");
     return;
   }
+  pending_preview_overlay_generation_ = generation;
   appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=pending")
                 .arg(players ? 1 : 0)
                 .arg(play ? 1 : 0)
                 .arg(rink ? 1 : 0));
+  QTimer::singleShot(
+      runtimeControlAckTimeoutMs(), this, [this, generation]() { timeoutPreviewOverlayRequest(generation); });
+}
+
+void HStreamWindow::restoreConfirmedPreviewOverlays(const QString& reason) {
+  const QSignalBlocker player_blocker(show_player_tracking_toggle_);
+  const QSignalBlocker play_blocker(show_play_tracking_toggle_);
+  const QSignalBlocker rink_blocker(show_rink_mask_toggle_);
+  if (show_player_tracking_toggle_)
+    show_player_tracking_toggle_->setChecked(confirmed_show_player_tracking_);
+  if (show_play_tracking_toggle_)
+    show_play_tracking_toggle_->setChecked(confirmed_show_play_tracking_);
+  if (show_rink_mask_toggle_)
+    show_rink_mask_toggle_->setChecked(confirmed_show_rink_mask_);
+  appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=failed reason=%4")
+                .arg(confirmed_show_player_tracking_ ? 1 : 0)
+                .arg(confirmed_show_play_tracking_ ? 1 : 0)
+                .arg(confirmed_show_rink_mask_ ? 1 : 0)
+                .arg(reason));
+}
+
+void HStreamWindow::timeoutPreviewOverlayRequest(quint64 generation) {
+  if (generation != pending_preview_overlay_generation_)
+    return;
+  pending_preview_overlay_generation_ = 0;
+  restoreConfirmedPreviewOverlays("acknowledgement-timeout");
 }
 
 void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
@@ -6354,9 +6439,9 @@ void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   } else {
     appendLog("video rendering will start when the GPU preview backend becomes ready");
   }
-  // A pipeline started with Render disabled did not enable play-tracker draw
-  // metadata or sink overlays from the environment. Reapply the checked
-  // layers whenever rendering becomes active so UI state and output agree.
+  // A pipeline started with Render disabled did not enable preview-only
+  // metadata or sink overlays from the environment. Reapply the checked layers
+  // whenever rendering becomes active so UI state and output agree.
   setRuntimePreviewOverlays();
   updatePlaybackSeekControls();
 }

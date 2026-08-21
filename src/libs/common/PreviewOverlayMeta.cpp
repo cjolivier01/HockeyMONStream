@@ -192,7 +192,12 @@ NvDsMetaType overlay_snapshot_meta_type() {
   return type;
 }
 
-bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, OverlaySnapshotExceptionInjection injection) noexcept {
+bool add_selected_overlay_snapshot_meta(
+    NvDsFrameMeta* frame_meta,
+    bool include_players,
+    bool include_play,
+    const NvDsMetaList* play_display_meta_list,
+    OverlaySnapshotExceptionInjection injection) noexcept {
   if (!frame_meta || !frame_meta->base_meta.batch_meta)
     return false;
   try {
@@ -202,28 +207,32 @@ bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, OverlaySnapshotExcepti
     auto snapshot = std::make_unique<OverlaySnapshot>();
     snapshot->coordinate_width = static_cast<float>(frame_meta->source_frame_width);
     snapshot->coordinate_height = static_cast<float>(frame_meta->source_frame_height);
-    snapshot->player_rects.reserve(frame_meta->num_obj_meta);
-    for (NvDsMetaList* item = frame_meta->obj_meta_list; item; item = item->next) {
-      auto* object_meta = static_cast<NvDsObjectMeta*>(item->data);
-      if (object_meta && object_meta->class_id == 0 && object_meta->object_id != UNTRACKED_OBJECT_ID)
-        snapshot->player_rects.push_back(object_meta->rect_params);
+    if (include_players) {
+      snapshot->player_rects.reserve(frame_meta->num_obj_meta);
+      for (NvDsMetaList* item = frame_meta->obj_meta_list; item; item = item->next) {
+        auto* object_meta = static_cast<NvDsObjectMeta*>(item->data);
+        if (object_meta && object_meta->class_id == 0 && object_meta->object_id != UNTRACKED_OBJECT_ID)
+          snapshot->player_rects.push_back(object_meta->rect_params);
+      }
     }
-    for (NvDsMetaList* item = frame_meta->display_meta_list; item; item = item->next) {
-      auto* display_meta = static_cast<NvDsDisplayMeta*>(item->data);
-      if (!display_meta)
-        continue;
-      snapshot->play_rects.insert(
-          snapshot->play_rects.end(), display_meta->rect_params, display_meta->rect_params + display_meta->num_rects);
-      snapshot->play_lines.insert(
-          snapshot->play_lines.end(), display_meta->line_params, display_meta->line_params + display_meta->num_lines);
-      snapshot->play_arrows.insert(
-          snapshot->play_arrows.end(),
-          display_meta->arrow_params,
-          display_meta->arrow_params + display_meta->num_arrows);
-      snapshot->play_circles.insert(
-          snapshot->play_circles.end(),
-          display_meta->circle_params,
-          display_meta->circle_params + display_meta->num_circles);
+    if (include_play) {
+      for (const NvDsMetaList* item = play_display_meta_list; item; item = item->next) {
+        auto* display_meta = static_cast<const NvDsDisplayMeta*>(item->data);
+        if (!display_meta)
+          continue;
+        snapshot->play_rects.insert(
+            snapshot->play_rects.end(), display_meta->rect_params, display_meta->rect_params + display_meta->num_rects);
+        snapshot->play_lines.insert(
+            snapshot->play_lines.end(), display_meta->line_params, display_meta->line_params + display_meta->num_lines);
+        snapshot->play_arrows.insert(
+            snapshot->play_arrows.end(),
+            display_meta->arrow_params,
+            display_meta->arrow_params + display_meta->num_arrows);
+        snapshot->play_circles.insert(
+            snapshot->play_circles.end(),
+            display_meta->circle_params,
+            display_meta->circle_params + display_meta->num_circles);
+      }
     }
     NvDsUserMeta* user_meta = nvds_acquire_user_meta_from_pool(frame_meta->base_meta.batch_meta);
     if (!user_meta)
@@ -239,6 +248,11 @@ bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, OverlaySnapshotExcepti
   } catch (...) {
     return false;
   }
+}
+
+bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, OverlaySnapshotExceptionInjection injection) noexcept {
+  return add_selected_overlay_snapshot_meta(
+      frame_meta, true, true, frame_meta ? frame_meta->display_meta_list : nullptr, injection);
 }
 
 const OverlaySnapshot* find_overlay_snapshot_meta(const NvDsFrameMeta* frame_meta) {

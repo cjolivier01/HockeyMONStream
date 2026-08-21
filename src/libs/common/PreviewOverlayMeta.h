@@ -79,6 +79,12 @@ NvDsMetaType overlay_snapshot_meta_type();
 bool add_overlay_snapshot_meta(
     NvDsFrameMeta* frame_meta,
     OverlaySnapshotExceptionInjection injection = OverlaySnapshotExceptionInjection::kNone) noexcept;
+bool add_selected_overlay_snapshot_meta(
+    NvDsFrameMeta* frame_meta,
+    bool include_players,
+    bool include_play,
+    const NvDsMetaList* play_display_meta_list,
+    OverlaySnapshotExceptionInjection injection = OverlaySnapshotExceptionInjection::kNone) noexcept;
 const OverlaySnapshot* find_overlay_snapshot_meta(const NvDsFrameMeta* frame_meta);
 
 // Exercises the same noexcept copy boundary installed on NvDsUserMeta.

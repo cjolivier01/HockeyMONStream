@@ -218,6 +218,15 @@ cc_test(
 )
 
 cc_test(
+    name = "preview_overlay_runtime_test",
+    srcs = [
+        "PreviewOverlayRuntime.h",
+        "PreviewOverlayRuntimeTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+)
+
+cc_test(
     name = "runtime_property_allowlist_test",
     srcs = [
         "RuntimePropertyAllowlist.h",

@@ -490,6 +490,12 @@ struct PreviewOverlays {
   std::optional<hm::preview_overlay::PlayCropperTransform> program_transform;
   float coordinate_width{0.0F};
   float coordinate_height{0.0F};
+  // The saved field mask is an artifact of the actual stitched video
+  // surface. Its dimensions can legitimately differ from DeepStream's
+  // metadata coordinate space, which remains authoritative for vector
+  // overlays.
+  float stitched_surface_width{0.0F};
+  float stitched_surface_height{0.0F};
   std::string stitched_output_generation;
   bool diagnostic_coordinates_valid{true};
 };
@@ -895,6 +901,10 @@ void add_rect_paths(
 PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* buffer) {
   RendererState* state = self->state;
   PreviewOverlays overlays;
+  overlays.stitched_surface_width =
+      static_cast<float>(state->source_width ? state->source_width : state->negotiated_width);
+  overlays.stitched_surface_height =
+      static_cast<float>(state->source_height ? state->source_height : state->negotiated_height);
   NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buffer);
   if (!batch_meta || !batch_meta->frame_meta_list)
     return overlays;
@@ -927,6 +937,8 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
     overlays.program_transform = *attached_transform;
     overlays.coordinate_width = attached_transform->output_width;
     overlays.coordinate_height = attached_transform->output_height;
+    overlays.stitched_surface_width = attached_transform->input_width;
+    overlays.stitched_surface_height = attached_transform->input_height;
   } else if (snapshot) {
     overlays.coordinate_width = snapshot->coordinate_width;
     overlays.coordinate_height = snapshot->coordinate_height;
@@ -1083,10 +1095,8 @@ std::optional<std::uint32_t> exact_positive_dimension(float dimension) {
 
 bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
-  const float expected_width_value =
-      overlays.program_transform ? overlays.program_transform->input_width : overlays.coordinate_width;
-  const float expected_height_value =
-      overlays.program_transform ? overlays.program_transform->input_height : overlays.coordinate_height;
+  const float expected_width_value = overlays.stitched_surface_width;
+  const float expected_height_value = overlays.stitched_surface_height;
   const auto expected_width = exact_positive_dimension(expected_width_value);
   const auto expected_height = exact_positive_dimension(expected_height_value);
   const guint requested_width = expected_width.value_or(0);
@@ -1223,19 +1233,23 @@ void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) 
       !ensure_rink_mask_texture(self, overlays))
     return;
   std::array<hm::preview_overlay::Point, 4> texture_points = {
-      hm::preview_overlay::Point{0.0F, overlays.coordinate_height},
-      hm::preview_overlay::Point{overlays.coordinate_width, overlays.coordinate_height},
-      hm::preview_overlay::Point{overlays.coordinate_width, 0.0F},
+      hm::preview_overlay::Point{0.0F, overlays.stitched_surface_height},
+      hm::preview_overlay::Point{overlays.stitched_surface_width, overlays.stitched_surface_height},
+      hm::preview_overlay::Point{overlays.stitched_surface_width, 0.0F},
       hm::preview_overlay::Point{0.0F, 0.0F},
   };
   if (overlays.program_transform) {
+    texture_points = {
+        hm::preview_overlay::Point{0.0F, overlays.coordinate_height},
+        hm::preview_overlay::Point{overlays.coordinate_width, overlays.coordinate_height},
+        hm::preview_overlay::Point{overlays.coordinate_width, 0.0F},
+        hm::preview_overlay::Point{0.0F, 0.0F},
+    };
     for (auto& point : texture_points)
       point = hm::preview_overlay::output_to_input(*overlays.program_transform, point);
   }
-  const float source_width =
-      overlays.program_transform ? overlays.program_transform->input_width : overlays.coordinate_width;
-  const float source_height =
-      overlays.program_transform ? overlays.program_transform->input_height : overlays.coordinate_height;
+  const float source_width = overlays.stitched_surface_width;
+  const float source_height = overlays.stitched_surface_height;
   if (source_width <= 0.0F || source_height <= 0.0F)
     return;
   glEnable(GL_BLEND);

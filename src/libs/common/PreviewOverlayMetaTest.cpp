@@ -210,5 +210,35 @@ int main(int argc, char** argv) {
     std::cerr << "Program transform metadata was not isolated from copied Stitched snapshot metadata\n";
     return 7;
   }
+  NvDsBatchMeta* selected_batch = nvds_create_batch_meta(1);
+  NvDsFrameMeta* selected_frame = selected_batch ? nvds_acquire_frame_meta_from_pool(selected_batch) : nullptr;
+  NvDsObjectMeta* selected_player = selected_batch ? nvds_acquire_obj_meta_from_pool(selected_batch) : nullptr;
+  NvDsDisplayMeta* selected_play = selected_batch ? nvds_acquire_display_meta_from_pool(selected_batch) : nullptr;
+  if (!selected_batch || !selected_frame || !selected_player || !selected_play) {
+    if (selected_batch)
+      nvds_destroy_batch_meta(selected_batch);
+    std::cerr << "Could not allocate DeepStream metadata for selected preview snapshot test\n";
+    return 8;
+  }
+  selected_frame->source_frame_width = 1920;
+  selected_frame->source_frame_height = 1080;
+  nvds_add_frame_meta_to_batch(selected_batch, selected_frame);
+  selected_player->class_id = 0;
+  selected_player->object_id = 42;
+  selected_player->rect_params.left = 44.0F;
+  nvds_add_obj_meta_to_frame(selected_frame, selected_player, nullptr);
+  selected_play->num_lines = 1;
+  selected_play->line_params[0].x1 = 55;
+  nvds_add_display_meta_to_frame(selected_frame, selected_play);
+  const bool selected_attached = hm::preview_overlay::add_selected_overlay_snapshot_meta(
+      selected_frame, false, true, selected_frame->display_meta_list);
+  const auto* selected_snapshot = hm::preview_overlay::find_overlay_snapshot_meta(selected_frame);
+  const bool selected_ok = selected_attached && selected_snapshot && selected_snapshot->player_rects.empty() &&
+      selected_snapshot->play_lines.size() == 1 && selected_snapshot->play_lines[0].x1 == 55;
+  nvds_destroy_batch_meta(selected_batch);
+  if (!selected_ok) {
+    std::cerr << "Selected preview snapshot copied an unrequested metadata class\n";
+    return 9;
+  }
   return 0;
 }

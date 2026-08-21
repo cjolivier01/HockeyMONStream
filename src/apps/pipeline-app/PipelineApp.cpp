@@ -5,6 +5,7 @@
 #include "PipelineApp.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
+#include "PreviewOverlayRuntime.h"
 #include "RuntimePropertyAllowlist.h"
 #include "RuntimePropertyValueParser.h"
 #include "StitchFrameTimePlan.h"
@@ -86,31 +87,43 @@ struct StitchFrameRewindRequest {
   uint64_t main_loop_generation;
 };
 
-struct PreviewOverlaySelection {
-  bool player_tracking{false};
-  bool play_tracking{false};
-  bool rink_mask{false};
-};
-
-PreviewOverlaySelection preview_overlay_selection() {
-  PreviewOverlaySelection selection;
+hm::pipeline_internal::PreviewOverlaySelection preview_overlay_selection_from_environment() {
+  hm::pipeline_internal::PreviewOverlaySelection selection;
   const char* configured = g_getenv("HSTREAM_UI_PREVIEW_OVERLAYS");
   if (!configured)
     return selection;
   for (absl::string_view value : absl::StrSplit(configured, ',')) {
     if (value == "players")
-      selection.player_tracking = true;
+      selection.players = true;
     else if (value == "play")
-      selection.play_tracking = true;
+      selection.play = true;
     else if (value == "rink")
-      selection.rink_mask = true;
+      selection.rink = true;
   }
   return selection;
 }
 
 struct OverlaySnapshotProbeState {
+  std::atomic<unsigned>* flags{nullptr};
   std::atomic_bool failure_reported{false};
 };
+
+constexpr unsigned kPreviewOverlayPlayers = 1U << 0;
+constexpr unsigned kPreviewOverlayPlay = 1U << 1;
+constexpr unsigned kPreviewOverlayTransformRequired = 1U << 2;
+
+unsigned preview_overlay_producer_flags(
+    const hm::pipeline_internal::PreviewOverlaySelection& selection,
+    const std::string& active_channel) {
+  const bool tracked_preview = active_channel == "program" || active_channel == "stitched";
+  if (!tracked_preview)
+    return 0;
+  unsigned flags = selection.players ? kPreviewOverlayPlayers : 0;
+  flags |= selection.play ? kPreviewOverlayPlay : 0;
+  if (active_channel == "program" && selection.any())
+    flags |= kPreviewOverlayTransformRequired;
+  return flags;
+}
 
 GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept {
   try {
@@ -119,6 +132,10 @@ GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpoi
     GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
     NvDsBatchMeta* batch_meta = buffer ? gst_buffer_get_nvds_batch_meta(buffer) : nullptr;
     if (!batch_meta)
+      return GST_PAD_PROBE_OK;
+    auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
+    const unsigned flags = state && state->flags ? state->flags->load(std::memory_order_acquire) : 0;
+    if (flags == 0)
       return GST_PAD_PROBE_OK;
     bool snapshot_failed = false;
     for (NvDsMetaList* item = batch_meta->frame_meta_list; item; item = item->next) {
@@ -129,10 +146,13 @@ GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpoi
       // transform to the copied metadata on the Program output buffer after the
       // transform is known, so the Stitched branch cannot race a mutation.
       const bool snapshot_ready = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) ||
-          hm::preview_overlay::add_overlay_snapshot_meta(frame_meta);
+          hm::preview_overlay::add_selected_overlay_snapshot_meta(
+                                      frame_meta,
+                                      (flags & kPreviewOverlayPlayers) != 0,
+                                      (flags & kPreviewOverlayPlay) != 0,
+                                      (flags & kPreviewOverlayPlay) != 0 ? frame_meta->display_meta_list : nullptr);
       snapshot_failed = snapshot_failed || !snapshot_ready;
     }
-    auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
     if (snapshot_failed && state && !state->failure_reported.exchange(true)) {
       g_printerr("Could not snapshot pre-playcropper metadata for GPU preview overlays\n");
     }
@@ -945,6 +965,8 @@ PipelineApplication::PipelineApplication()
       rcfg_(0),
       rrowsel_(FALSE),
       selecting_(FALSE) {
+  preview_overlay_state_ =
+      hm::pipeline_internal::PreviewOverlayRuntimeState(preview_overlay_selection_from_environment());
   memset(fps_, 0, sizeof(fps_));
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
@@ -1255,8 +1277,6 @@ absl::Status PipelineApplication::configureInstances(
     }
     if (!ui_preview_window_ids_.empty()) {
       app_ctx->config.hmsticher_config.ui_preview = TRUE;
-      if (preview_overlay_selection().play_tracking)
-        app_ctx->config.dsplaytracker_config.draw = TRUE;
     }
     valid_app_contexts.emplace_back(std::move(app_ctx));
   }
@@ -1302,27 +1322,19 @@ absl::Status PipelineApplication::createPipelines(
 absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   if (!ui_preview_window_ids_.empty()) {
+    preview_overlay_producers_.clear();
+    preview_overlay_probe_flags_.store(0, std::memory_order_release);
     if (app_contexts.size() != 1) {
       return absl::InvalidArgumentError("GPU-native UI previews require exactly one active pipeline context");
     }
     constexpr guint64 kPreviewImageBudgetBytes = 64ULL * 1024ULL * 1024ULL;
     guint64 preview_image_bytes = 0;
-    const PreviewOverlaySelection overlay_selection = preview_overlay_selection();
+    const hm::pipeline_internal::PreviewOverlaySelection overlay_selection = preview_overlay_state_.selection();
     const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
     const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
 
     auto configure_overlays = [&](GstElement* sink) {
-      g_object_set(
-          G_OBJECT(sink),
-          "show-player-tracking",
-          overlay_selection.player_tracking ? TRUE : FALSE,
-          "show-play-tracking",
-          overlay_selection.play_tracking ? TRUE : FALSE,
-          "show-rink-mask",
-          overlay_selection.rink_mask ? TRUE : FALSE,
-          "rink-mask-file",
-          rink_mask_file.c_str(),
-          nullptr);
+      g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
     };
 
     struct PreviewProbeState {
@@ -1535,26 +1547,33 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
-    GstElement* tracked_preview_playtracker = app_context->pipeline.dsplaytracker_bin.bin;
+    GstElement* preview_overlay_producer = app_context->pipeline.dsplaytracker_bin.elem_dsplaytracker;
+    if (preview_overlay_producer)
+      preview_overlay_producers_.push_back(preview_overlay_producer);
+    HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     if ((program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
-        tracked_preview_playtracker) {
-      GstPad* playtracker_src = gst_element_get_static_pad(tracked_preview_playtracker, "src");
-      if (!playtracker_src)
-        return absl::FailedPreconditionError("The play tracker does not expose a GPU overlay snapshot point");
-      auto* snapshot_state = new OverlaySnapshotProbeState;
+        !preview_overlay_producer) {
+      GstPad* snapshot_pad =
+          stitcher.elem_hmstitcher ? gst_element_get_static_pad(stitcher.elem_hmstitcher, "src") : nullptr;
+      if (!snapshot_pad && app_context->pipeline.common_elements.hmplaycropper_bin.playcropper) {
+        snapshot_pad =
+            gst_element_get_static_pad(app_context->pipeline.common_elements.hmplaycropper_bin.playcropper, "sink");
+      }
+      if (!snapshot_pad)
+        return absl::FailedPreconditionError("The pipeline does not expose a GPU overlay snapshot point");
+      auto* snapshot_state = new OverlaySnapshotProbeState{&preview_overlay_probe_flags_};
       const gulong snapshot_probe = gst_pad_add_probe(
-          playtracker_src,
+          snapshot_pad,
           GST_PAD_PROBE_TYPE_BUFFER,
           snapshot_preview_overlays,
           snapshot_state,
           +[](gpointer data) noexcept { delete static_cast<OverlaySnapshotProbeState*>(data); });
-      gst_object_unref(playtracker_src);
+      gst_object_unref(snapshot_pad);
       if (snapshot_probe == 0) {
         delete snapshot_state;
-        return absl::InternalError("Could not install the pre-playcropper GPU overlay snapshot probe");
+        return absl::InternalError("Could not install the no-playtracker GPU overlay snapshot probe");
       }
     }
-    HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     if (stitched_target != ui_preview_window_ids_.end()) {
       GstElement* playtracker = app_context->pipeline.dsplaytracker_bin.bin;
       if (playtracker) {
@@ -1715,6 +1734,14 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     }
     if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_))
       active_ui_preview_channel_.clear();
+    const bool has_overlay_sink =
+        std::any_of(ui_preview_channels_.begin(), ui_preview_channels_.end(), [](const auto& channel) {
+          return hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel.first);
+        });
+    if (has_overlay_sink && !apply_preview_overlay_state(overlay_selection, true))
+      return absl::InternalError("Could not apply the initial GPU preview overlay state");
+    if (!has_overlay_sink)
+      update_preview_overlay_producers();
     g_print(
         "HSTREAM_PREVIEW_MEMORY image-bytes=%" G_GUINT64_FORMAT " budget-bytes=%" G_GUINT64_FORMAT "\n",
         preview_image_bytes,
@@ -3614,6 +3641,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\tp: Pause\n"
       "\tr: Resume\n"
       "\t@set-preview-active <program|stitched|sourceN|none> <generation>: Activate one GPU-native UI preview\n"
+      "\t@set-preview-overlays <generation> <players:0|1> <play:0|1> <rink:0|1>: Select GPU preview "
+      "diagnostic layers\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
@@ -4997,6 +5026,16 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
+  if (hm::pipeline_internal::is_preview_overlay_command(trimmed_line)) {
+    hm::pipeline_internal::PreviewOverlayCommand command;
+    if (!hm::pipeline_internal::parse_preview_overlay_command(trimmed_line, &command)) {
+      g_print(
+          "HSTREAM_PREVIEW_OVERLAYS status=failed generation=0 players=0 play=0 rink=0 "
+          "reason=malformed-command\n");
+      return false;
+    }
+    return set_preview_overlays_runtime(command);
+  }
   if (trimmed_line.rfind("inspect-", 0) == 0) {
     InspectorCommand command;
     if (!parse_inspector_command(trimmed_line, &command)) {
@@ -5095,6 +5134,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
+        "set-preview-overlays <generation> <players:0|1> <play:0|1> <rink:0|1>, "
         "set-render-window <xid>, set-render-audio-muted <0|1>, capture-preview-frame <main|stitched|sourceN> "
         "<jpg-path>, seek <position-ns> <generation>, seek-relative <delta-ns> <generation>, set-properties "
         "<element property=value;...>, reset-progress-rate <generation>, inspect-pipeline <request-id>, "
@@ -5503,8 +5543,187 @@ void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {
       active_instances);
 }
 
+bool PipelineApplication::apply_preview_overlay_state(
+    const hm::pipeline_internal::PreviewOverlaySelection& selection,
+    bool apply_sinks) {
+  struct SinkState {
+    GstElement* sink{nullptr};
+    gboolean players{FALSE};
+    gboolean play{FALSE};
+    gboolean rink{FALSE};
+  };
+  struct ProducerState {
+    GstElement* producer{nullptr};
+    guint flags{0};
+  };
+
+  std::vector<SinkState> sinks;
+  std::set<GstElement*> seen_sinks;
+  if (apply_sinks) {
+    if (ui_preview_channels_.empty())
+      return false;
+    for (const auto& [channel, preview] : ui_preview_channels_) {
+      if (!hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel))
+        continue;
+      if (!preview.sink || !seen_sinks.insert(preview.sink).second)
+        continue;
+      for (const char* property : {"show-player-tracking", "show-play-tracking", "show-rink-mask"}) {
+        GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(preview.sink), property);
+        if (!spec || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_BOOLEAN || (spec->flags & G_PARAM_READABLE) == 0 ||
+            (spec->flags & G_PARAM_WRITABLE) == 0) {
+          return false;
+        }
+      }
+      SinkState state;
+      state.sink = preview.sink;
+      g_object_get(
+          G_OBJECT(state.sink),
+          "show-player-tracking",
+          &state.players,
+          "show-play-tracking",
+          &state.play,
+          "show-rink-mask",
+          &state.rink,
+          nullptr);
+      sinks.push_back(state);
+    }
+    if (sinks.empty())
+      return false;
+  }
+
+  std::vector<ProducerState> producers;
+  std::set<GstElement*> seen_producers;
+  for (GstElement* producer : preview_overlay_producers_) {
+    if (!producer || !seen_producers.insert(producer).second)
+      continue;
+    GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(producer), "preview-overlay-flags");
+    if (!spec || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_UINT || (spec->flags & G_PARAM_READABLE) == 0 ||
+        (spec->flags & G_PARAM_WRITABLE) == 0) {
+      return false;
+    }
+    ProducerState state;
+    state.producer = producer;
+    g_object_get(G_OBJECT(producer), "preview-overlay-flags", &state.flags, nullptr);
+    producers.push_back(state);
+  }
+
+  const guint producer_flags = preview_overlay_producer_flags(selection, active_ui_preview_channel_);
+  bool applied = true;
+  for (const SinkState& state : sinks) {
+    g_object_set(
+        G_OBJECT(state.sink),
+        "show-player-tracking",
+        selection.players ? TRUE : FALSE,
+        "show-play-tracking",
+        selection.play ? TRUE : FALSE,
+        "show-rink-mask",
+        selection.rink ? TRUE : FALSE,
+        nullptr);
+    gboolean players = FALSE;
+    gboolean play = FALSE;
+    gboolean rink = FALSE;
+    g_object_get(
+        G_OBJECT(state.sink),
+        "show-player-tracking",
+        &players,
+        "show-play-tracking",
+        &play,
+        "show-rink-mask",
+        &rink,
+        nullptr);
+    applied = applied && players == (selection.players ? TRUE : FALSE) && play == (selection.play ? TRUE : FALSE) &&
+        rink == (selection.rink ? TRUE : FALSE);
+    if (!applied)
+      break;
+  }
+  if (applied) {
+    for (const ProducerState& state : producers) {
+      g_object_set(G_OBJECT(state.producer), "preview-overlay-flags", producer_flags, nullptr);
+      guint observed = 0;
+      g_object_get(G_OBJECT(state.producer), "preview-overlay-flags", &observed, nullptr);
+      applied = observed == producer_flags;
+      if (applied) {
+        GParamSpec* result_spec =
+            g_object_class_find_property(G_OBJECT_GET_CLASS(state.producer), "last-property-set-ok");
+        if (result_spec && G_PARAM_SPEC_VALUE_TYPE(result_spec) == G_TYPE_BOOLEAN) {
+          gboolean property_set_ok = FALSE;
+          g_object_get(G_OBJECT(state.producer), "last-property-set-ok", &property_set_ok, nullptr);
+          applied = property_set_ok;
+        }
+      }
+      if (!applied)
+        break;
+    }
+  }
+  if (!applied) {
+    for (const ProducerState& state : producers)
+      g_object_set(G_OBJECT(state.producer), "preview-overlay-flags", state.flags, nullptr);
+    for (const SinkState& state : sinks) {
+      g_object_set(
+          G_OBJECT(state.sink),
+          "show-player-tracking",
+          state.players,
+          "show-play-tracking",
+          state.play,
+          "show-rink-mask",
+          state.rink,
+          nullptr);
+    }
+    return false;
+  }
+  preview_overlay_probe_flags_.store(producer_flags, std::memory_order_release);
+  return true;
+}
+
+bool PipelineApplication::update_preview_overlay_producers() {
+  if (apply_preview_overlay_state(preview_overlay_state_.selection(), false))
+    return true;
+  preview_overlay_probe_flags_.store(0, std::memory_order_release);
+  for (GstElement* producer : preview_overlay_producers_) {
+    if (producer)
+      g_object_set(G_OBJECT(producer), "preview-overlay-flags", 0U, nullptr);
+  }
+  g_printerr("Could not reconcile GPU preview overlay producer state; preview snapshots are disabled\n");
+  return false;
+}
+
+bool PipelineApplication::set_preview_overlays_runtime(const hm::pipeline_internal::PreviewOverlayCommand& command) {
+  const auto& selection = command.selection;
+  auto emit = [&](const char* status, const char* reason = nullptr) {
+    g_print(
+        "HSTREAM_PREVIEW_OVERLAYS status=%s generation=%" G_GUINT64_FORMAT " players=%u play=%u rink=%u%s%s\n",
+        status,
+        static_cast<guint64>(command.generation),
+        selection.players ? 1U : 0U,
+        selection.play ? 1U : 0U,
+        selection.rink ? 1U : 0U,
+        reason ? " reason=" : "",
+        reason ? reason : "");
+  };
+  if (!preview_overlay_state_.is_fresh(command)) {
+    emit("failed", "stale-generation");
+    return true;
+  }
+  const bool has_overlay_sink =
+      std::any_of(ui_preview_channels_.begin(), ui_preview_channels_.end(), [](const auto& channel) {
+        return hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel.first);
+      });
+  if (!has_overlay_sink) {
+    emit("failed", "preview-unavailable");
+    return true;
+  }
+  if (!apply_preview_overlay_state(selection, true)) {
+    emit("failed", "apply-failed");
+    return true;
+  }
+  preview_overlay_state_.commit(command);
+  emit("applied");
+  return true;
+}
+
 bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {
   if (ui_preview_channels_.empty()) {
+    preview_overlay_probe_flags_.store(0, std::memory_order_release);
     g_printerr("runtime preview activation failed: GPU-native UI previews are not configured\n");
     return false;
   }
@@ -5531,6 +5750,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     if (!hm::gpu_preview::isolation_active(previous->second.ingress_isolation) ||
         !hm::gpu_preview::isolation_active(previous->second.isolation)) {
       active_ui_preview_channel_.clear();
+      update_preview_overlay_producers();
       g_print(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
           " message=the selected GPU preview channel cannot be re-armed\n",
@@ -5554,6 +5774,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     if (!hm::gpu_preview::quiesce(previous->second.sink, generation)) {
       active_ui_preview_channel_.clear();
       active_ui_preview_generation_ = generation;
+      update_preview_overlay_producers();
       g_print(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
           " message=could not quiesce the previous preview channel\n",
@@ -5566,6 +5787,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   active_ui_preview_channel_.clear();
   active_ui_preview_generation_ = generation;
   if (channel == "none") {
+    update_preview_overlay_producers();
     g_print(
         "HSTREAM_PREVIEW channel=none status=deactivated generation=%" G_GUINT64_FORMAT
         " message=all GPU preview branches are inactive\n",
@@ -5575,6 +5797,7 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
 
   const auto target = ui_preview_channels_.find(channel);
   if (target == ui_preview_channels_.end()) {
+    update_preview_overlay_producers();
     g_print(
         "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
         " message=the requested camera source is unavailable\n",
@@ -5583,6 +5806,11 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     return true;
   }
 
+  // Arm metadata production before opening either preview gate so the first
+  // admitted Program/Stitched frame already has the requested immutable
+  // snapshot (and Program crop transform, when needed).
+  active_ui_preview_channel_ = channel;
+  update_preview_overlay_producers();
   g_object_set(G_OBJECT(target->second.sink), "generation", generation, nullptr);
   // Arm the drain barrier before opening the ingress gate. A newly enqueued
   // buffer can therefore never be dropped between the two gates.
@@ -5593,6 +5821,8 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, false, generation);
     hm::gpu_preview::set_isolation_active(target->second.isolation, false, generation);
     hm::gpu_preview::quiesce(target->second.sink, generation);
+    active_ui_preview_channel_.clear();
+    update_preview_overlay_producers();
     g_print(
         "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
         " message=the requested GPU preview channel has failed locally\n",
@@ -5600,7 +5830,6 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
         generation);
     return true;
   }
-  active_ui_preview_channel_ = channel;
   g_print(
       "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
       " message=GPU preview branch activated\n",
@@ -6954,6 +7183,8 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   }
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
+  preview_overlay_producers_.clear();
+  preview_overlay_probe_flags_.store(0, std::memory_order_release);
   if (calibration_restart || runtime_seek_restart) {
     destroy_pipeline_for_recreate(app_ctx_ptr);
   } else {

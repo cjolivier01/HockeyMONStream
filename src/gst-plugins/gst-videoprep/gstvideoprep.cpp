@@ -12,6 +12,7 @@
 #include <cmath>
 #include <iostream>
 #include <mutex>
+#include <string_view>
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "gst-nvcommon.h"
 #include "gstnvdsmeta.h"
@@ -148,6 +149,7 @@ enum {
   PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT,
   PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
   PROP_DYNAMIC_ACCELERATION_SCALING,
+  PROP_PREVIEW_OVERLAY_FLAGS,
   PROP_SHADOW_LIFT,
   PROP_SHADOW_LIFT_BLACK_POINT,
   PROP_RUNTIME_TUNING_CONFIG_FILE,
@@ -1194,6 +1196,18 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_PREVIEW_OVERLAY_FLAGS,
+      g_param_spec_uint(
+          "preview-overlay-flags",
+          "Preview overlay flags",
+          "Preview-only snapshot content and Program transform bitmask",
+          0,
+          7,
+          0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_SHADOW_LIFT,
       g_param_spec_double(
           "shadow-lift",
@@ -1288,6 +1302,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->fixed_edge_rotation_angle_left = 10.0;
   videoprep->fixed_edge_rotation_angle_right = 10.0;
   videoprep->dynamic_acceleration_scaling = 1.0;
+  videoprep->preview_overlay_flags = 0;
   videoprep->shadow_lift = 0.0;
   videoprep->shadow_lift_black_point = FALSE;
   videoprep->last_property_set_ok = TRUE;
@@ -1495,6 +1510,14 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
+    case PROP_PREVIEW_OVERLAY_FLAGS: {
+      const guint previous = videoprep->preview_overlay_flags;
+      videoprep->preview_overlay_flags = g_value_get_uint(value);
+      if (!set_priv_property("preview-overlay-flags", std::to_string(videoprep->preview_overlay_flags))) {
+        videoprep->preview_overlay_flags = previous;
+      }
+      break;
+    }
     case PROP_SHADOW_LIFT: {
       const gdouble previous = videoprep->shadow_lift;
       const gboolean previous_set = videoprep->shadow_lift_set;
@@ -1605,6 +1628,11 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              Property("dynamic-acceleration-scaling", std::to_string(videoprep->dynamic_acceleration_scaling))) &&
         ok;
   }
+  if (videoprep->plugin_type && std::string_view(videoprep->plugin_type) == "vpplaytracker") {
+    ok = videoprep->priv->SetProperty(
+             Property("preview-overlay-flags", std::to_string(videoprep->preview_overlay_flags))) &&
+        ok;
+  }
   if (videoprep->shadow_lift_set &&
       typed_property_wins_over_private_config(videoprep, videoprep->shadow_lift_sequence, "shadow-lift")) {
     ok = videoprep->priv->SetProperty(Property("shadow-lift", std::to_string(videoprep->shadow_lift))) && ok;
@@ -1651,6 +1679,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_DYNAMIC_ACCELERATION_SCALING:
       g_value_set_double(value, videoprep->dynamic_acceleration_scaling);
+      break;
+    case PROP_PREVIEW_OVERLAY_FLAGS:
+      g_value_set_uint(value, videoprep->preview_overlay_flags);
       break;
     case PROP_SHADOW_LIFT:
       g_value_set_double(value, videoprep->shadow_lift);

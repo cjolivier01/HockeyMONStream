@@ -706,7 +706,7 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
-      "delayed_seek_generation, timeout_next_seek, backend_seek_position\n");
+      "delayed_seek_generation, timeout_next_seek, backend_seek_position, reject_next_preview_overlays\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-exit'):\n");
   file.write("        print('test process exit requested', flush=True)\n");
@@ -714,6 +714,10 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-stall-preview-disable'):\n");
   file.write("        preview_disable_stalled = True\n");
   file.write("        print('test preview disable stalled', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-reject-preview-overlays'):\n");
+  file.write("        reject_next_preview_overlays = True\n");
+  file.write("        print('test preview overlay rejection armed', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-drop-progress-resets'):\n");
   file.write("        drop_progress_resets = True\n");
@@ -756,6 +760,12 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "        print('HSTREAM_PREVIEW channel=' + channel + ' status=' + status + ' generation=' + generation + "
       "' message=synthetic review regression', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-preview-runtime-ready '):\n");
+  file.write("        _, channel, generation = line.rstrip('\\n').split(' ', 2)\n");
+  file.write(
+      "        print('HSTREAM_PREVIEW_RUNTIME status=ready channel=' + channel + ' generation=' + generation, "
+      "flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@reset-progress-rate'):\n");
   file.write("        generation = line.rstrip('\\n').split(' ', 1)[1]\n");
@@ -862,6 +872,17 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + "
       "' message=first GPU frame presented', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@set-preview-overlays '):\n");
+  file.write("        _, generation, players, play, rink = line.rstrip('\\n').split(' ')\n");
+  file.write("        status = 'failed' if reject_next_preview_overlays else 'applied'\n");
+  file.write("        reject_next_preview_overlays = False\n");
+  file.write(
+      "        response = 'HSTREAM_PREVIEW_OVERLAYS status=' + status + ' generation=' + generation + "
+      "' players=' + players + ' play=' + play + ' rink=' + rink\n");
+  file.write("        if status == 'failed': response += ' reason=injected-rejection'\n");
+  file.write("        print(response, flush=True)\n");
+  file.write("        return\n");
   file.write("    if line.startswith('@set-properties '):\n");
   file.write("        updates = line.rstrip('\\n').split(' ', 1)[1].split(';')\n");
   file.write("        reject = os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1'\n");
@@ -889,6 +910,7 @@ bool write_fake_runner(const QString& path) {
   file.write("delayed_seek_generation = ''\n");
   file.write("timeout_next_seek = False\n");
   file.write("backend_seek_position = 42000000000\n");
+  file.write("reject_next_preview_overlays = False\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -2650,12 +2672,50 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       expect(!window->logText().contains("stdin:@set-preview-active none") && !preview_surface->isHidden() &&
                  !preview_target->isHidden(),
              "First-frame recovery must never deactivate or hide the selected Program preview");
+  QTest::mouseDClick(preview_target, Qt::LeftButton);
+  QApplication::processEvents();
+  if (!expect(!top_bar->isVisible(), "The inspector transition regression must begin in focused Program video")) {
+    return false;
+  }
+  const int preview_deactivations_before_inspector = window->logText().count("stdin:@set-preview-active none");
+  const int program_activations_before_inspector = window->logText().count("stdin:@set-preview-active program");
+  preview_tabs->setCurrentIndex(pipeline_inspector_index);
+  for (int i = 0;
+       i < 100 && window->logText().count("stdin:@set-preview-active none") == preview_deactivations_before_inspector;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-preview-runtime-ready program 900\n");
+  for (int i = 0; i < 100 &&
+       window->logText().count("stdin:@set-preview-active none") < preview_deactivations_before_inspector + 2;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  preview_tabs->setCurrentIndex(0);
+  for (int i = 0;
+       i < 100 && window->logText().count("stdin:@set-preview-active program") == program_activations_before_inspector;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("stdin:@set-preview-active none") == preview_deactivations_before_inspector + 2 &&
+              window->logText().count("stdin:@set-preview-active program") ==
+                  program_activations_before_inspector + 1 &&
+              top_bar->isVisible() && !preview_surface->isHidden() && !preview_target->isHidden(),
+          "The Pipeline inspector tab must quiesce hidden GPU rendering across backend recreation, and returning "
+          "to Program must request a fresh recoverable preview generation")) {
+    return false;
+  }
   if (!expect_x11_widget_state(
           preview_target, true, "Playing Program target must remain aligned with its Qt video host")) {
     return false;
   }
   const int pipeline_start_count = window->logText().count("pipeline started pid=");
   const int ready_count_before_runtime_toggle = window->logText().count("GPU preview ready channel=program");
+  const int disabled_count_before_runtime_toggle = window->logText().count("GPU preview disabled generation=");
   if (!expect(
           render_video->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 && program_focus->isVisible() &&
               program_focus->isEnabled() && program_controls->isHidden() && program_controls_toggle->isVisible(),
@@ -2668,23 +2728,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QTest::mouseClick(show_player_tracking, Qt::LeftButton);
   QTest::mouseClick(show_play_tracking, Qt::LeftButton);
   QTest::mouseClick(show_rink_mask, Qt::LeftButton);
-  for (int i = 0;
-       i < 100 && !window->logText().contains("stdin:@set-property stitched_gpu_preview_sink show-rink-mask=1");
-       ++i) {
+  for (int i = 0; i < 100 && !window->logText().contains("preview overlays players=1 play=1 rink=1 apply=live"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(
           show_player_tracking->isChecked() && show_play_tracking->isChecked() && show_rink_mask->isChecked() &&
-              window->logText().contains("stdin:@set-property program_gpu_preview_sink show-player-tracking=1") &&
-              window->logText().contains("stdin:@set-property stitched_gpu_preview_sink show-play-tracking=1") &&
-              window->logText().contains("stdin:@set-property stitched_gpu_preview_sink show-rink-mask=1") &&
-              window->logText().contains("stdin:@set-property dsplaytracker0 draw=1"),
-          "Live overlay checkboxes must update both GPU preview sinks and the play-tracker metadata producer")) {
+              window->logText().contains("stdin:@set-preview-overlays 3 1 1 1") &&
+              window->logText().contains("preview overlays players=1 play=1 rink=1 apply=live"),
+          "Live overlay checkboxes must use the topology-independent backend command and confirm applied state")) {
     return false;
   }
   QTest::mouseClick(render_video, Qt::LeftButton);
-  for (int i = 0; i < 100 && !window->logText().contains("GPU preview disabled generation="); ++i) {
+  for (int i = 0;
+       i < 100 && window->logText().count("GPU preview disabled generation=") <= disabled_count_before_runtime_toggle;
+       ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
@@ -2702,8 +2760,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!capture_interaction_artifact(window, "playing-render-disabled.png"))
     return false;
   QTest::mouseClick(render_video, Qt::LeftButton);
-  for (int i = 0;
-       i < 100 && window->logText().count("GPU preview ready channel=program") <= ready_count_before_runtime_toggle;
+  for (int i = 0; i < 100 &&
+       (window->logText().count("GPU preview ready channel=program") <= ready_count_before_runtime_toggle ||
+        window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") < 2);
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -2714,11 +2773,30 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               show_rink_mask->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 &&
               window->logText().contains("reason=render-toggle") &&
               window->logText().contains("stdin:@set-render-audio-muted 0") &&
-              window->logText().count("stdin:@set-property program_gpu_preview_sink show-player-tracking=1") >= 2 &&
-              window->logText().count("stdin:@set-property dsplaytracker0 draw=1") >= 2 &&
+              window->logText().contains("stdin:@set-preview-overlays 4 1 1 1") &&
+              window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") >= 2 &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
           "Turning rendering back on must restore preview, audio, and checked overlays without restarting the "
           "pipeline")) {
+    return false;
+  }
+
+  pipeline_process->write("@test-reject-preview-overlays\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test preview overlay rejection armed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && !window->logText().contains("reason=injected-rejection"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          show_player_tracking->isChecked() && show_play_tracking->isChecked() && show_rink_mask->isChecked() &&
+              window->logText().contains("stdin:@set-preview-overlays 5 1 1 0") &&
+              window->logText().contains(
+                  "preview overlays players=1 play=1 rink=1 apply=failed reason=injected-rejection"),
+          "A rejected overlay update must restore the last backend-confirmed checkbox state")) {
     return false;
   }
 

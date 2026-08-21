@@ -188,6 +188,7 @@ class HStreamWindow : public QMainWindow {
   int previewReadyTimeoutMs() const;
   void clearPreviewFrames();
   bool handleGpuPreviewStatus(const QString& line);
+  bool handlePreviewOverlayResponse(const QString& line);
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
@@ -196,6 +197,8 @@ class HStreamWindow : public QMainWindow {
   int previewDisableTimeoutMs() const;
   bool setRuntimeRenderAudioMuted(bool muted);
   void setRuntimePreviewOverlays();
+  void restoreConfirmedPreviewOverlays(const QString& reason);
+  void timeoutPreviewOverlayRequest(quint64 generation);
   void setRuntimeVideoRendering(bool enabled);
   void setPreviewRenderingLayout(bool rendering);
   void setPreviewFocusAvailable(const QString& channel, bool available);
@@ -372,6 +375,11 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* show_player_tracking_toggle_{nullptr};
   QCheckBox* show_play_tracking_toggle_{nullptr};
   QCheckBox* show_rink_mask_toggle_{nullptr};
+  bool confirmed_show_player_tracking_{false};
+  bool confirmed_show_play_tracking_{false};
+  bool confirmed_show_rink_mask_{false};
+  quint64 preview_overlay_generation_{0};
+  quint64 pending_preview_overlay_generation_{0};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
