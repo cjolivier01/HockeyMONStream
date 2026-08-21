@@ -2149,6 +2149,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* bring_up_shadows = require_child<QSlider>(window, "cameraSlider_Bring_Up_Shadows");
   auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* show_player_tracking = require_child<QCheckBox>(window, "showPlayerTrackingCheck");
+  auto* show_play_tracking = require_child<QCheckBox>(window, "showPlayTrackingCheck");
+  auto* show_rink_mask = require_child<QCheckBox>(window, "showRinkMaskCheck");
   auto* log = require_child<QTextEdit>(window, "runtimeLog");
   auto* clear_log = require_child<QPushButton>(window, "clearLogButton");
   auto* main_log_splitter = require_child<QSplitter>(window, "mainLogSplitter");
@@ -2185,13 +2188,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time || !game_id || !rotate ||
-      !max_speed_x || !bring_up_shadows || !render_video || !log || !clear_log || !main_log_splitter ||
-      !setup_preview_splitter || !output_routing || !preview_tabs || !program_host || !preview_surface ||
-      !preview_target || !stitched_surface || !stitched_target || !camera1_host || !camera1_surface ||
-      !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface || !external_notice ||
-      !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle || !stitched_controls ||
-      !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel ||
-      !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
+      !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking || !show_play_tracking ||
+      !show_rink_mask || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
+      !preview_tabs || !program_host || !preview_surface || !preview_target || !stitched_surface || !stitched_target ||
+      !camera1_host || !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
+      !external_notice || !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle ||
+      !stitched_controls || !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar ||
+      !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position ||
+      !pipeline_process) {
     return false;
   }
 
@@ -2208,6 +2212,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect_x11_application_icon(window))
     return false;
+  if (!expect(
+          !show_player_tracking->isChecked() && !show_play_tracking->isChecked() && !show_rink_mask->isChecked() &&
+              show_player_tracking->isEnabled() && show_play_tracking->isEnabled() && show_rink_mask->isEnabled() &&
+              show_player_tracking->toolTip().contains("encoded output") &&
+              show_play_tracking->toolTip().contains("both GPU previews") &&
+              show_rink_mask->toolTip().contains("translucent green"),
+          "Render controls should expose disabled-by-default GPU-only player, play-tracker, and rink-mask layers")) {
+    return false;
+  }
   const QString icon_artifact_dir = qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR");
   if (!icon_artifact_dir.isEmpty() &&
       (!QDir().mkpath(icon_artifact_dir) ||
@@ -2644,6 +2657,24 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!capture_interaction_artifact(window, "playing-video-layout.png"))
     return false;
+  QTest::mouseClick(show_player_tracking, Qt::LeftButton);
+  QTest::mouseClick(show_play_tracking, Qt::LeftButton);
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0;
+       i < 100 && !window->logText().contains("stdin:@set-property stitched_gpu_preview_sink show-rink-mask=1");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          show_player_tracking->isChecked() && show_play_tracking->isChecked() && show_rink_mask->isChecked() &&
+              window->logText().contains("stdin:@set-property program_gpu_preview_sink show-player-tracking=1") &&
+              window->logText().contains("stdin:@set-property stitched_gpu_preview_sink show-play-tracking=1") &&
+              window->logText().contains("stdin:@set-property stitched_gpu_preview_sink show-rink-mask=1") &&
+              window->logText().contains("stdin:@set-property dsplaytracker0 draw=1"),
+          "Live overlay checkboxes must update both GPU preview sinks and the play-tracker metadata producer")) {
+    return false;
+  }
   QTest::mouseClick(render_video, Qt::LeftButton);
   for (int i = 0; i < 100 && !window->logText().contains("GPU preview disabled generation="); ++i) {
     QApplication::processEvents();
@@ -2651,7 +2682,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           !render_video->isChecked() && render_video->isEnabled() && preview_target->isHidden() &&
-              program_focus->isHidden() && !seek_slider->isEnabled() && setup_preview_splitter->sizes().at(0) > 0 &&
+              program_focus->isHidden() && !show_player_tracking->isEnabled() && !show_play_tracking->isEnabled() &&
+              !show_rink_mask->isEnabled() && !seek_slider->isEnabled() && setup_preview_splitter->sizes().at(0) > 0 &&
               window->logText().contains("stdin:@set-preview-active none") &&
               window->logText().contains("stdin:@set-render-audio-muted 1") &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
@@ -2670,11 +2702,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           render_video->isChecked() && !preview_target->isHidden() && program_focus->isVisible() &&
-              program_focus->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 &&
+              program_focus->isEnabled() && show_player_tracking->isEnabled() && show_play_tracking->isEnabled() &&
+              show_rink_mask->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 &&
               window->logText().contains("reason=render-toggle") &&
               window->logText().contains("stdin:@set-render-audio-muted 0") &&
+              window->logText().count("stdin:@set-property program_gpu_preview_sink show-player-tracking=1") >= 2 &&
+              window->logText().count("stdin:@set-property dsplaytracker0 draw=1") >= 2 &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
-          "Turning rendering back on must restore preview and local monitor audio without restarting the pipeline")) {
+          "Turning rendering back on must restore preview, audio, and checked overlays without restarting the "
+          "pipeline")) {
     return false;
   }
 
@@ -6026,6 +6062,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
   auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* show_player_tracking = require_child<QCheckBox>(window, "showPlayerTrackingCheck");
+  auto* show_play_tracking = require_child<QCheckBox>(window, "showPlayTrackingCheck");
+  auto* show_rink_mask = require_child<QCheckBox>(window, "showRinkMaskCheck");
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
   auto* preview_tabs = require_child<QTabWidget>(window, "previewTabs");
   auto* program_surface = require_child<QWidget>(window, "previewSurface");
@@ -6035,9 +6074,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
   auto* camera1_render_target = require_child<QWidget>(window, "camera1PreviewRenderTarget");
   auto* playback_progress = require_child<QProgressBar>(window, "playbackProgress");
-  if (!game_id_edit || !create || !start || !stop || !mode || !control_points || !render_video || !archive ||
-      !preview_tabs || !program_surface || !program_render_target || !stitched_surface || !stitched_render_target ||
-      !camera1_surface || !camera1_render_target || !playback_progress) {
+  if (!game_id_edit || !create || !start || !stop || !mode || !control_points || !render_video ||
+      !show_player_tracking || !show_play_tracking || !show_rink_mask || !archive || !preview_tabs ||
+      !program_surface || !program_render_target || !stitched_surface || !stitched_render_target || !camera1_surface ||
+      !camera1_render_target || !playback_progress) {
     return false;
   }
   const bool verify_x11_preview = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_VERIFY_X11_PREVIEW");
@@ -6080,6 +6120,14 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   } else if (!render_video->isChecked() && verify_x11_preview) {
     activate(render_video);
   }
+  const QStringList preview_overlays =
+      qEnvironmentVariable("HSTREAM_UI_E2E_PREVIEW_OVERLAYS").split(',', Qt::SkipEmptyParts);
+  if (preview_overlays.contains("players") && !show_player_tracking->isChecked())
+    activate(show_player_tracking);
+  if (preview_overlays.contains("play") && !show_play_tracking->isChecked())
+    activate(show_play_tracking);
+  if (preview_overlays.contains("rink") && !show_rink_mask->isChecked())
+    activate(show_rink_mask);
   if (!archive->isChecked()) {
     activate(archive);
   }
@@ -6317,6 +6365,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
   QString report;
   report += QString("game_id: %1\n").arg(game_id);
+  report += QString("preview_overlays: %1\n").arg(preview_overlays.join(','));
   report += QString("output: %1\n").arg(output_path);
   report += QString("panorama: %1\n").arg(panorama_path);
   report += QString("scoreboard_selector_observed: %1\n").arg(submitted_scoreboard ? "true" : "false");

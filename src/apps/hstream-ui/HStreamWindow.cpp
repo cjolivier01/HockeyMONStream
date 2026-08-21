@@ -2093,6 +2093,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       if (calibration)
         preview_tabs_->setCurrentIndex(1);
     }
+    const bool overlays_available = !isCalibrationRun() && render_video_toggle_ && render_video_toggle_->isChecked();
+    for (QCheckBox* toggle : {show_player_tracking_toggle_, show_play_tracking_toggle_, show_rink_mask_toggle_}) {
+      if (toggle)
+        toggle->setEnabled(overlays_available);
+    }
   });
 
   control_points_spin_ = new QSpinBox();
@@ -2127,7 +2132,29 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   render_video_toggle_->setChecked(true);
   render_video_toggle_->setToolTip(
       "Show the active GPU preview and play local monitor audio; this can be changed while the pipeline is running");
-  connect(render_video_toggle_, &QCheckBox::toggled, this, [this](bool enabled) { setRuntimeVideoRendering(enabled); });
+  connect(render_video_toggle_, &QCheckBox::toggled, this, [this](bool enabled) {
+    for (QCheckBox* toggle : {show_player_tracking_toggle_, show_play_tracking_toggle_, show_rink_mask_toggle_}) {
+      if (toggle)
+        toggle->setEnabled(enabled && !isCalibrationRun());
+    }
+    setRuntimeVideoRendering(enabled);
+  });
+
+  show_player_tracking_toggle_ = new QCheckBox("Player boxes");
+  show_player_tracking_toggle_->setObjectName("showPlayerTrackingCheck");
+  show_player_tracking_toggle_->setToolTip(
+      "Draw tracked-player boxes on the Program and Stitched GPU previews without altering encoded output");
+  show_play_tracking_toggle_ = new QCheckBox("Play tracking");
+  show_play_tracking_toggle_->setObjectName("showPlayTrackingCheck");
+  show_play_tracking_toggle_->setToolTip(
+      "Draw play-tracker camera boxes, thresholds, and state geometry on both GPU previews");
+  show_rink_mask_toggle_ = new QCheckBox("Rink mask");
+  show_rink_mask_toggle_->setObjectName("showRinkMaskCheck");
+  show_rink_mask_toggle_->setToolTip("Composite the saved ice-rink mask as translucent green on both GPU previews");
+  for (QCheckBox* toggle : {show_player_tracking_toggle_, show_play_tracking_toggle_, show_rink_mask_toggle_}) {
+    toggle->setChecked(false);
+    connect(toggle, &QCheckBox::toggled, this, [this]() { setRuntimePreviewOverlays(); });
+  }
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
@@ -2160,6 +2187,9 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   status_bar->addWidget(stitch_frame_time_label);
   status_bar->addWidget(stitch_frame_time_edit_);
   status_bar->addWidget(render_video_toggle_);
+  status_bar->addWidget(show_player_tracking_toggle_);
+  status_bar->addWidget(show_play_tracking_toggle_);
+  status_bar->addWidget(show_rink_mask_toggle_);
 
   auto* action_bar = new QHBoxLayout();
   action_bar->setSpacing(8);
@@ -4120,6 +4150,16 @@ void HStreamWindow::startPipeline() {
   if (!active_calibration_invalidation_id_.isEmpty())
     env.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", active_calibration_invalidation_id_);
   env.insert("HSTREAM_RENDER_AUDIO_MUTED", render_video ? "0" : "1");
+  QStringList preview_overlays;
+  if (render_video && !active_run_is_calibration_ && show_player_tracking_toggle_ &&
+      show_player_tracking_toggle_->isChecked())
+    preview_overlays << "players";
+  if (render_video && !active_run_is_calibration_ && show_play_tracking_toggle_ &&
+      show_play_tracking_toggle_->isChecked())
+    preview_overlays << "play";
+  if (render_video && !active_run_is_calibration_ && show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked())
+    preview_overlays << "rink";
+  env.insert("HSTREAM_UI_PREVIEW_OVERLAYS", preview_overlays.join(','));
   appendLog(
       render_video
           ? "audio enabled via pipeline.hmaudio.enable=1; local monitor audio follows Render video"
@@ -6163,6 +6203,46 @@ bool HStreamWindow::setRuntimeRenderAudioMuted(bool muted) {
   return true;
 }
 
+void HStreamWindow::setRuntimePreviewOverlays() {
+  const bool players = show_player_tracking_toggle_ && show_player_tracking_toggle_->isChecked();
+  const bool play = show_play_tracking_toggle_ && show_play_tracking_toggle_->isChecked();
+  const bool rink = show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked();
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=next-start")
+                  .arg(players ? 1 : 0)
+                  .arg(play ? 1 : 0)
+                  .arg(rink ? 1 : 0));
+    return;
+  }
+  if (!pipeline_render_embedded_) {
+    appendLog("preview debug overlays require the embedded GPU preview");
+    return;
+  }
+
+  QStringList assignments;
+  auto add_sink = [&](const QString& sink) {
+    assignments << QString("%1 show-player-tracking=%2").arg(sink).arg(players ? 1 : 0)
+                << QString("%1 show-play-tracking=%2").arg(sink).arg(play ? 1 : 0)
+                << QString("%1 show-rink-mask=%2").arg(sink).arg(rink ? 1 : 0);
+  };
+  if (active_run_is_calibration_) {
+    add_sink("hmstitcher_preview_sink");
+  } else {
+    add_sink("program_gpu_preview_sink");
+    add_sink("stitched_gpu_preview_sink");
+    assignments << QString("dsplaytracker0 draw=%1").arg(play ? 1 : 0);
+  }
+  const QByteArray command = QString("@set-properties %1\n").arg(assignments.join(';')).toUtf8();
+  if (pipeline_process_->write(command) != command.size()) {
+    appendLog("could not update GPU preview debug overlays");
+    return;
+  }
+  appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=pending")
+                .arg(players ? 1 : 0)
+                .arg(play ? 1 : 0)
+                .arg(rink ? 1 : 0));
+}
+
 void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   updatePlaybackSeekControls();
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
@@ -6245,6 +6325,10 @@ void HStreamWindow::setRuntimeVideoRendering(bool enabled) {
   } else {
     appendLog("video rendering will start when the GPU preview backend becomes ready");
   }
+  // A pipeline started with Render disabled did not enable play-tracker draw
+  // metadata or sink overlays from the environment. Reapply the checked
+  // layers whenever rendering becomes active so UI state and output agree.
+  setRuntimePreviewOverlays();
   updatePlaybackSeekControls();
 }
 

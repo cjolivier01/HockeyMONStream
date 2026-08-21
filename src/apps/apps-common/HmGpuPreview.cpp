@@ -1,5 +1,7 @@
 #include "HmGpuPreview.h"
 
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
+
 #include <gst/base/gstbasesink.h>
 #include <gst/video/video.h>
 
@@ -272,16 +274,43 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 #include <X11/Xutil.h>
 #include <cuda_gl_interop.h>
 #include <cuda_runtime_api.h>
+#include <gstnvdsmeta.h>
 #include <nvbufsurface.h>
+#include <nvdsmeta.h>
+#include <opencv2/imgcodecs.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <optional>
 #include <thread>
 #include <vector>
 
 namespace {
 
 constexpr auto kGpuCompletionTimeout = std::chrono::seconds(5);
+
+struct OverlayColor {
+  float red{1.0F};
+  float green{1.0F};
+  float blue{1.0F};
+  float alpha{1.0F};
+};
+
+struct OverlayPath {
+  std::vector<hm::preview_overlay::Point> points;
+  OverlayColor color;
+  float width{1.0F};
+  bool closed{false};
+  bool filled{false};
+};
+
+struct PreviewOverlays {
+  std::vector<OverlayPath> paths;
+  std::optional<hm::preview_overlay::PlayCropperTransform> program_transform;
+  float coordinate_width{0.0F};
+  float coordinate_height{0.0F};
+};
 
 struct RendererState {
   std::mutex mutex;
@@ -306,6 +335,16 @@ struct RendererState {
   cudaGraphicsResource_t cuda_texture{nullptr};
   cudaStream_t cuda_stream{nullptr};
   cudaEvent_t copy_complete{nullptr};
+  std::atomic<bool> show_player_tracking{false};
+  std::atomic<bool> show_play_tracking{false};
+  std::atomic<bool> show_rink_mask{false};
+  std::string rink_mask_file;
+  bool rink_mask_dirty{true};
+  GLuint rink_mask_texture{0};
+  guint rink_mask_width{0};
+  guint rink_mask_height{0};
+  bool rink_mask_failure_reported{false};
+  std::chrono::steady_clock::time_point rink_mask_retry_after{};
 };
 
 typedef struct _GstHmGpuPreviewSink {
@@ -327,6 +366,10 @@ enum SinkProperty {
   kSinkPropertyGeneration,
   kSinkPropertySourceWidth,
   kSinkPropertySourceHeight,
+  kSinkPropertyShowPlayerTracking,
+  kSinkPropertyShowPlayTracking,
+  kSinkPropertyShowRinkMask,
+  kSinkPropertyRinkMaskFile,
 };
 
 thread_local RendererState* current_x_error_target = nullptr;
@@ -559,7 +602,330 @@ bool wait_for_copy_or_terminate(GstHmGpuPreviewSink* self) {
   }
 }
 
-void draw_texture(GstHmGpuPreviewSink* self) {
+OverlayColor overlay_color(const NvOSD_ColorParams& color) {
+  return OverlayColor{
+      static_cast<float>(color.red),
+      static_cast<float>(color.green),
+      static_cast<float>(color.blue),
+      static_cast<float>(color.alpha),
+  };
+}
+
+std::vector<hm::preview_overlay::Point> transform_points(
+    const std::vector<hm::preview_overlay::Point>& points,
+    const hm::preview_overlay::PlayCropperTransform* transform) {
+  if (!transform)
+    return points;
+  std::vector<hm::preview_overlay::Point> transformed;
+  transformed.reserve(points.size());
+  for (const auto& point : points)
+    transformed.push_back(hm::preview_overlay::metadata_to_output(*transform, point));
+  return transformed;
+}
+
+void add_rect_paths(
+    PreviewOverlays* overlays,
+    float left,
+    float top,
+    float width,
+    float height,
+    float border_width,
+    OverlayColor border,
+    bool has_background,
+    OverlayColor background,
+    const hm::preview_overlay::PlayCropperTransform* transform) {
+  if (!overlays || width <= 0.0F || height <= 0.0F)
+    return;
+  const std::vector<hm::preview_overlay::Point> raw = {
+      {left, top},
+      {left + width, top},
+      {left + width, top + height},
+      {left, top + height},
+  };
+  const auto points = transform_points(raw, transform);
+  if (has_background && background.alpha > 0.0F)
+    overlays->paths.push_back(OverlayPath{points, background, 1.0F, true, true});
+  if (border_width > 0.0F && border.alpha > 0.0F)
+    overlays->paths.push_back(OverlayPath{points, border, border_width, true, false});
+}
+
+PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* buffer) {
+  RendererState* state = self->state;
+  PreviewOverlays overlays;
+  NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buffer);
+  if (!batch_meta || !batch_meta->frame_meta_list)
+    return overlays;
+  auto* frame_meta = static_cast<NvDsFrameMeta*>(batch_meta->frame_meta_list->data);
+  if (!frame_meta)
+    return overlays;
+  const auto* snapshot = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta);
+  const auto* attached_transform =
+      state->channel == "program" ? hm::preview_overlay::find_playcropper_transform_meta(frame_meta) : nullptr;
+  if (state->channel == "program" && attached_transform) {
+    overlays.program_transform = *attached_transform;
+    overlays.coordinate_width = attached_transform->output_width;
+    overlays.coordinate_height = attached_transform->output_height;
+  } else if (snapshot) {
+    overlays.coordinate_width = snapshot->coordinate_width;
+    overlays.coordinate_height = snapshot->coordinate_height;
+  } else {
+    overlays.coordinate_width = static_cast<float>(frame_meta->source_frame_width);
+    overlays.coordinate_height = static_cast<float>(frame_meta->source_frame_height);
+  }
+  if (overlays.coordinate_width <= 0.0F || overlays.coordinate_height <= 0.0F) {
+    overlays.coordinate_width = static_cast<float>(state->negotiated_width);
+    overlays.coordinate_height = static_cast<float>(state->negotiated_height);
+  }
+  const auto* program_transform = overlays.program_transform ? &*overlays.program_transform : nullptr;
+
+  if (state->show_player_tracking.load()) {
+    auto add_player_rect = [&](const NvOSD_RectParams& rect,
+                               const hm::preview_overlay::PlayCropperTransform* transform) {
+      add_rect_paths(
+          &overlays,
+          rect.left,
+          rect.top,
+          rect.width,
+          rect.height,
+          std::max(2.0F, static_cast<float>(rect.border_width)),
+          OverlayColor{0.0F, 1.0F, 1.0F, 0.95F},
+          false,
+          {},
+          transform);
+    };
+    if (snapshot) {
+      for (const NvOSD_RectParams& rect : snapshot->player_rects)
+        add_player_rect(rect, program_transform);
+    } else {
+      const auto* object_transform =
+          program_transform && !program_transform->object_meta_transformed ? program_transform : nullptr;
+      for (NvDsMetaList* item = frame_meta->obj_meta_list; item; item = item->next) {
+        auto* object_meta = static_cast<NvDsObjectMeta*>(item->data);
+        if (!object_meta || object_meta->class_id != 0 || object_meta->object_id == UNTRACKED_OBJECT_ID)
+          continue;
+        add_player_rect(object_meta->rect_params, object_transform);
+      }
+    }
+  }
+
+  if (state->show_play_tracking.load()) {
+    auto add_play_rect = [&](const NvOSD_RectParams& rect) {
+      add_rect_paths(
+          &overlays,
+          rect.left,
+          rect.top,
+          rect.width,
+          rect.height,
+          static_cast<float>(rect.border_width),
+          overlay_color(rect.border_color),
+          rect.has_bg_color,
+          overlay_color(rect.bg_color),
+          program_transform);
+    };
+    auto add_play_line = [&](const NvOSD_LineParams& line) {
+      overlays.paths.push_back(
+          OverlayPath{
+              transform_points(
+                  {{static_cast<float>(line.x1), static_cast<float>(line.y1)},
+                   {static_cast<float>(line.x2), static_cast<float>(line.y2)}},
+                  program_transform),
+              overlay_color(line.line_color),
+              static_cast<float>(line.line_width),
+              false,
+              false,
+          });
+    };
+    auto add_play_arrow = [&](const NvOSD_ArrowParams& arrow) {
+      overlays.paths.push_back(
+          OverlayPath{
+              transform_points(
+                  {{static_cast<float>(arrow.x1), static_cast<float>(arrow.y1)},
+                   {static_cast<float>(arrow.x2), static_cast<float>(arrow.y2)}},
+                  program_transform),
+              overlay_color(arrow.arrow_color),
+              static_cast<float>(arrow.arrow_width),
+              false,
+              false,
+          });
+    };
+    auto add_play_circle = [&](const NvOSD_CircleParams& circle) {
+      constexpr int kCircleSegments = 48;
+      std::vector<hm::preview_overlay::Point> points;
+      points.reserve(kCircleSegments);
+      for (int segment = 0; segment < kCircleSegments; ++segment) {
+        constexpr float kPi = 3.14159265358979323846F;
+        const float angle = 2.0F * kPi * segment / kCircleSegments;
+        points.push_back({
+            static_cast<float>(circle.xc) + static_cast<float>(circle.radius) * std::cos(angle),
+            static_cast<float>(circle.yc) + static_cast<float>(circle.radius) * std::sin(angle),
+        });
+      }
+      points = transform_points(points, program_transform);
+      if (circle.has_bg_color)
+        overlays.paths.push_back(OverlayPath{points, overlay_color(circle.bg_color), 1.0F, true, true});
+      overlays.paths.push_back(OverlayPath{points, overlay_color(circle.circle_color), 3.0F, true, false});
+    };
+    if (snapshot) {
+      for (const NvOSD_RectParams& rect : snapshot->play_rects)
+        add_play_rect(rect);
+      for (const NvOSD_LineParams& line : snapshot->play_lines)
+        add_play_line(line);
+      for (const NvOSD_ArrowParams& arrow : snapshot->play_arrows)
+        add_play_arrow(arrow);
+      for (const NvOSD_CircleParams& circle : snapshot->play_circles)
+        add_play_circle(circle);
+    } else {
+      for (NvDsMetaList* item = frame_meta->display_meta_list; item; item = item->next) {
+        auto* display_meta = static_cast<NvDsDisplayMeta*>(item->data);
+        if (!display_meta)
+          continue;
+        for (guint index = 0; index < display_meta->num_rects; ++index)
+          add_play_rect(display_meta->rect_params[index]);
+        for (guint index = 0; index < display_meta->num_lines; ++index)
+          add_play_line(display_meta->line_params[index]);
+        for (guint index = 0; index < display_meta->num_arrows; ++index)
+          add_play_arrow(display_meta->arrow_params[index]);
+        for (guint index = 0; index < display_meta->num_circles; ++index)
+          add_play_circle(display_meta->circle_params[index]);
+      }
+    }
+  }
+  return overlays;
+}
+
+bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
+  RendererState* state = self->state;
+  if (!state->rink_mask_dirty)
+    return state->rink_mask_texture != 0;
+  static constexpr auto kRetryInterval = std::chrono::seconds(2);
+  const auto now = std::chrono::steady_clock::now();
+  if (now < state->rink_mask_retry_after)
+    return false;
+  if (state->rink_mask_texture) {
+    glDeleteTextures(1, &state->rink_mask_texture);
+    state->rink_mask_texture = 0;
+  }
+  state->rink_mask_width = 0;
+  state->rink_mask_height = 0;
+  if (state->rink_mask_file.empty()) {
+    state->rink_mask_dirty = false;
+    return false;
+  }
+  if (!g_file_test(state->rink_mask_file.c_str(), G_FILE_TEST_IS_REGULAR)) {
+    if (!state->rink_mask_failure_reported) {
+      g_printerr(
+          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=missing\n",
+          state->channel.c_str(),
+          state->rink_mask_file.c_str());
+      state->rink_mask_failure_reported = true;
+    }
+    state->rink_mask_retry_after = now + kRetryInterval;
+    return false;
+  }
+  const cv::Mat mask = cv::imread(state->rink_mask_file, cv::IMREAD_GRAYSCALE);
+  if (mask.empty()) {
+    if (!state->rink_mask_failure_reported) {
+      g_printerr(
+          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=invalid\n",
+          state->channel.c_str(),
+          state->rink_mask_file.c_str());
+      state->rink_mask_failure_reported = true;
+    }
+    state->rink_mask_dirty = false;
+    return false;
+  }
+  glGenTextures(1, &state->rink_mask_texture);
+  glBindTexture(GL_TEXTURE_2D, state->rink_mask_texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+  constexpr GLfloat kTransparentBorder[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+  glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, kTransparentBorder);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA8, mask.cols, mask.rows, 0, GL_ALPHA, GL_UNSIGNED_BYTE, mask.data);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  if (glGetError() != GL_NO_ERROR) {
+    glDeleteTextures(1, &state->rink_mask_texture);
+    state->rink_mask_texture = 0;
+    state->rink_mask_retry_after = now + kRetryInterval;
+    return false;
+  }
+  state->rink_mask_width = static_cast<guint>(mask.cols);
+  state->rink_mask_height = static_cast<guint>(mask.rows);
+  state->rink_mask_dirty = false;
+  state->rink_mask_failure_reported = false;
+  state->rink_mask_retry_after = {};
+  g_print(
+      "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=loaded\n",
+      state->channel.c_str(),
+      state->rink_mask_file.c_str());
+  return true;
+}
+
+void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
+  RendererState* state = self->state;
+  if (!state->show_rink_mask.load() || !ensure_rink_mask_texture(self))
+    return;
+  std::array<hm::preview_overlay::Point, 4> texture_points = {
+      hm::preview_overlay::Point{0.0F, overlays.coordinate_height},
+      hm::preview_overlay::Point{overlays.coordinate_width, overlays.coordinate_height},
+      hm::preview_overlay::Point{overlays.coordinate_width, 0.0F},
+      hm::preview_overlay::Point{0.0F, 0.0F},
+  };
+  if (overlays.program_transform) {
+    for (auto& point : texture_points)
+      point = hm::preview_overlay::output_to_input(*overlays.program_transform, point);
+  }
+  const float source_width =
+      overlays.program_transform ? overlays.program_transform->input_width : overlays.coordinate_width;
+  const float source_height =
+      overlays.program_transform ? overlays.program_transform->input_height : overlays.coordinate_height;
+  if (source_width <= 0.0F || source_height <= 0.0F)
+    return;
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, state->rink_mask_texture);
+  glColor4f(0.0F, 1.0F, 0.0F, 0.10F);
+  glBegin(GL_QUADS);
+  constexpr std::array<std::array<float, 2>, 4> vertices = {
+      std::array<float, 2>{-1.0F, -1.0F},
+      std::array<float, 2>{1.0F, -1.0F},
+      std::array<float, 2>{1.0F, 1.0F},
+      std::array<float, 2>{-1.0F, 1.0F},
+  };
+  for (size_t index = 0; index < texture_points.size(); ++index) {
+    glTexCoord2f(texture_points[index].x / source_width, texture_points[index].y / source_height);
+    glVertex2f(vertices[index][0], vertices[index][1]);
+  }
+  glEnd();
+  glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+}
+
+void draw_overlay_paths(const PreviewOverlays& overlays) {
+  if (overlays.coordinate_width <= 0.0F || overlays.coordinate_height <= 0.0F)
+    return;
+  glDisable(GL_TEXTURE_2D);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  for (const OverlayPath& path : overlays.paths) {
+    if (path.points.size() < (path.filled ? 3U : 2U))
+      continue;
+    glColor4f(path.color.red, path.color.green, path.color.blue, path.color.alpha);
+    glLineWidth(std::max(1.0F, path.width));
+    glBegin(path.filled ? GL_POLYGON : (path.closed ? GL_LINE_LOOP : GL_LINE_STRIP));
+    for (const auto& point : path.points) {
+      glVertex2f(
+          -1.0F + 2.0F * point.x / overlays.coordinate_width, 1.0F - 2.0F * point.y / overlays.coordinate_height);
+    }
+    glEnd();
+  }
+  glLineWidth(1.0F);
+  glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+}
+
+void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
   XWindowAttributes attributes{};
   current_x_error_target = state;
@@ -600,6 +966,8 @@ void draw_texture(GstHmGpuPreviewSink* self) {
   glTexCoord2f(0.0F, 0.0F);
   glVertex2f(-1.0F, 1.0F);
   glEnd();
+  draw_rink_mask(self, overlays);
+  draw_overlay_paths(overlays);
   current_x_error_target = state;
   glXSwapBuffers(state->display, static_cast<GLXDrawable>(state->window_id));
   XSync(state->display, False);
@@ -670,6 +1038,7 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
     post_sink_failure(self, "preview received an invalid or non-device RGBA NvBufSurface");
     return GST_FLOW_ERROR;
   }
+  const PreviewOverlays overlays = collect_preview_overlays(self, buffer);
   if (!make_context_current(self)) {
     gst_buffer_unmap(buffer, &map);
     return GST_FLOW_ERROR;
@@ -707,7 +1076,7 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
   // barrier. No pixel plane has been mapped to host memory.
   gst_buffer_unmap(buffer, &map);
   if (!state->failed.load()) {
-    draw_texture(self);
+    draw_texture(self, overlays);
     const guint64 generation = state->generation.load();
     if (!state->failed.load() && state->ready_generation != generation) {
       state->ready_generation = generation;
@@ -759,6 +1128,9 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
     if (state->texture)
       glDeleteTextures(1, &state->texture);
     state->texture = 0;
+    if (state->rink_mask_texture)
+      glDeleteTextures(1, &state->rink_mask_texture);
+    state->rink_mask_texture = 0;
     release_context(state);
   }
   if (state->display && state->context)
@@ -786,6 +1158,18 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
     state->generation = g_value_get_uint64(value);
     return;
   }
+  if (property_id == kSinkPropertyShowPlayerTracking) {
+    state->show_player_tracking = g_value_get_boolean(value);
+    return;
+  }
+  if (property_id == kSinkPropertyShowPlayTracking) {
+    state->show_play_tracking = g_value_get_boolean(value);
+    return;
+  }
+  if (property_id == kSinkPropertyShowRinkMask) {
+    state->show_rink_mask = g_value_get_boolean(value);
+    return;
+  }
   std::lock_guard<std::mutex> lock(state->mutex);
   switch (property_id) {
     case kSinkPropertyWindowId:
@@ -803,6 +1187,12 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
     case kSinkPropertySourceHeight:
       state->source_height = g_value_get_uint(value);
       break;
+    case kSinkPropertyRinkMaskFile:
+      state->rink_mask_file = g_value_get_string(value) ? g_value_get_string(value) : "";
+      state->rink_mask_dirty = true;
+      state->rink_mask_failure_reported = false;
+      state->rink_mask_retry_after = {};
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
   }
@@ -813,6 +1203,18 @@ void preview_sink_get_property(GObject* object, guint property_id, GValue* value
   RendererState* state = self->state;
   if (property_id == kSinkPropertyGeneration) {
     g_value_set_uint64(value, state->generation.load());
+    return;
+  }
+  if (property_id == kSinkPropertyShowPlayerTracking) {
+    g_value_set_boolean(value, state->show_player_tracking.load());
+    return;
+  }
+  if (property_id == kSinkPropertyShowPlayTracking) {
+    g_value_set_boolean(value, state->show_play_tracking.load());
+    return;
+  }
+  if (property_id == kSinkPropertyShowRinkMask) {
+    g_value_set_boolean(value, state->show_rink_mask.load());
     return;
   }
   std::lock_guard<std::mutex> lock(state->mutex);
@@ -831,6 +1233,9 @@ void preview_sink_get_property(GObject* object, guint property_id, GValue* value
       break;
     case kSinkPropertySourceHeight:
       g_value_set_uint(value, state->source_height);
+      break;
+    case kSinkPropertyRinkMaskFile:
+      g_value_set_string(value, state->rink_mask_file.c_str());
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
@@ -881,6 +1286,34 @@ void gst_hm_gpu_preview_sink_class_init(GstHmGpuPreviewSinkClass* klass) {
       kSinkPropertySourceHeight,
       g_param_spec_uint(
           "source-height", "Source height", "Original aspect-ratio height", 0, G_MAXUINT, 0, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      object_class,
+      kSinkPropertyShowPlayerTracking,
+      g_param_spec_boolean(
+          "show-player-tracking",
+          "Show player tracking",
+          "Draw tracked-player boxes in the GPU preview",
+          FALSE,
+          G_PARAM_READWRITE));
+  g_object_class_install_property(
+      object_class,
+      kSinkPropertyShowPlayTracking,
+      g_param_spec_boolean(
+          "show-play-tracking",
+          "Show play tracking",
+          "Draw play-tracker state geometry in the GPU preview",
+          FALSE,
+          G_PARAM_READWRITE));
+  g_object_class_install_property(
+      object_class,
+      kSinkPropertyShowRinkMask,
+      g_param_spec_boolean(
+          "show-rink-mask", "Show rink mask", "Composite the rink mask in the GPU preview", FALSE, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      object_class,
+      kSinkPropertyRinkMaskFile,
+      g_param_spec_string(
+          "rink-mask-file", "Rink mask file", "Saved stitched-canvas rink mask", "", G_PARAM_READWRITE));
   GstCaps* caps = gst_caps_from_string(
       "video/x-raw(memory:NVMM),format=(string)RGBA,width=(int)[1,4096],height=(int)[1,2160],"
       "framerate=(fraction)[0/1,120/1]");
@@ -1042,22 +1475,47 @@ bool capture_presented_frame(
       *error = "could not activate the preview OpenGL context";
     return false;
   }
-  const size_t byte_count = static_cast<size_t>(state->negotiated_width) * state->negotiated_height * 4U;
+  XWindowAttributes attributes{};
+  const std::uint64_t error_serial = state->x_error_serial.load();
+  current_x_error_target = state;
+  const Status attributes_status =
+      XGetWindowAttributes(state->display, static_cast<Window>(state->window_id), &attributes);
+  XSync(state->display, False);
+  current_x_error_target = nullptr;
+  constexpr int kMaximumCaptureDimension = 16384;
+  if (!attributes_status || state->x_error_serial.load() != error_serial || attributes.width <= 0 ||
+      attributes.height <= 0 || attributes.width > kMaximumCaptureDimension ||
+      attributes.height > kMaximumCaptureDimension) {
+    release_context(state);
+    if (error)
+      *error = "preview window geometry is unavailable";
+    return false;
+  }
+  const size_t row_bytes = static_cast<size_t>(attributes.width) * 4U;
+  const size_t byte_count = row_bytes * static_cast<size_t>(attributes.height);
   rgba->resize(byte_count);
-  glBindTexture(GL_TEXTURE_2D, state->texture);
+  glReadBuffer(GL_FRONT);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->data());
+  glReadPixels(0, 0, attributes.width, attributes.height, GL_RGBA, GL_UNSIGNED_BYTE, rgba->data());
   glFinish();
   const GLenum gl_error = glGetError();
   release_context(state);
   if (gl_error != GL_NO_ERROR) {
     rgba->clear();
     if (error)
-      *error = "OpenGL diagnostic texture readback failed";
+      *error = "OpenGL presented-frame readback failed";
     return false;
   }
-  *width = state->negotiated_width;
-  *height = state->negotiated_height;
+  std::vector<std::uint8_t> row(row_bytes);
+  for (int top = 0, bottom = attributes.height - 1; top < bottom; ++top, --bottom) {
+    auto* top_row = rgba->data() + static_cast<size_t>(top) * row_bytes;
+    auto* bottom_row = rgba->data() + static_cast<size_t>(bottom) * row_bytes;
+    std::copy(top_row, top_row + row_bytes, row.begin());
+    std::copy(bottom_row, bottom_row + row_bytes, top_row);
+    std::copy(row.begin(), row.end(), bottom_row);
+  }
+  *width = static_cast<unsigned>(attributes.width);
+  *height = static_cast<unsigned>(attributes.height);
   if (error)
     error->clear();
   return true;

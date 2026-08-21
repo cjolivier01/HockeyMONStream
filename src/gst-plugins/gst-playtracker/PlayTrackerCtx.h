@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 #include <nvdsmeta.h>
 
+#include <atomic>
 #include <list>
 #include <memory>
 #include <optional>
@@ -37,6 +38,7 @@ struct DsPlayTrackerInitParams {
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
+  std::atomic<bool> draw{false};
   std::optional<DsPlayTrackerRuntimeTuning> detector_runtime_tuning;
   std::optional<DsPlayTrackerRuntimeTuning> fast_box_runtime_tuning;
   std::optional<DsPlayTrackerRuntimeTuning> follower_box_runtime_tuning;
@@ -57,6 +59,9 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file);
 
 absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning);
+
+// Controls preview display-metadata generation without restarting tracking.
+void DsPlayTrackerCtxSetDraw(DsPlayTrackerCtx* ctx, bool draw);
 
 // Drops per-source position/velocity history while preserving accumulated live
 // tuning. Used after a flushing playback seek before the next frame arrives.

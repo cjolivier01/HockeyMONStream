@@ -157,6 +157,7 @@ cc_library(
         "//src/libs/camera",
         "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/common:fs",
+        "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
         "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
@@ -164,6 +165,7 @@ cc_library(
         "@gstreamer",
         "@json_glib",
         "@libsoup",
+        "@opencv_linux//:opencv",
     ],
 )
 

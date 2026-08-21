@@ -135,6 +135,24 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "preview_overlay_meta",
+    srcs = ["PreviewOverlayMeta.cpp"],
+    hdrs = ["PreviewOverlayMeta.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@deepstream//:deepstream_lib",
+        "@glib",
+    ],
+)
+
+cc_test(
+    name = "preview_overlay_meta_test",
+    srcs = ["PreviewOverlayMetaTest.cpp"],
+    deps = [":preview_overlay_meta"],
+)
+
 cc_test(
     name = "video_bitrate_test",
     srcs = ["VideoBitrateTest.cpp"],

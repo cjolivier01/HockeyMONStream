@@ -35,6 +35,7 @@ PIPELINE_APP_DEPS = [
     "//src/libs/common:fs",
     "//src/libs/common:baseline_config",
     "//src/libs/common:playtracker_config_roles",
+    "//src/libs/common:preview_overlay_meta",
     "//src/libs/common:user_config",
     "//src/libs/stitching",
     "//src/libs/wireless:stream_control",

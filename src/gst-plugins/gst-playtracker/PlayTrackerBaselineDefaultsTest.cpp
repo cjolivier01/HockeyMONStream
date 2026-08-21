@@ -158,6 +158,10 @@ live-boxes:
   draw_surface.width = 2000;
   draw_surface.height = 1000;
   DsPlayTrackerCtx draw_context;
+  DsPlayTrackerCtxSetDraw(&draw_context, true);
+  ok &= expect(
+      draw_context.draw.load(std::memory_order_relaxed),
+      "Play-tracker display metadata must be live-toggleable on an active context");
   draw_context.arena_box = hm::BBox(0, 0, 2000, 1000);
   auto& draw_tracker = draw_context.play_trackers[0];
   draw_tracker.base_play_tracker_config = reordered_config;

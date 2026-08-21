@@ -803,6 +803,7 @@ ScaleXY get_scale_xy(const GstDsPlayTrackerFrame& frame) {
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
   ctx->initParams = *initParams;
+  ctx->draw.store(initParams->draw, std::memory_order_relaxed);
   return ctx;
 }
 
@@ -975,6 +976,12 @@ absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsP
   return absl::OkStatus();
 }
 
+void DsPlayTrackerCtxSetDraw(DsPlayTrackerCtx* ctx, bool draw) {
+  if (ctx) {
+    ctx->draw.store(draw, std::memory_order_relaxed);
+  }
+}
+
 void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx) {
   if (ctx) {
     ctx->play_trackers.clear();
@@ -1081,7 +1088,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   }
 
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
-  if (ctx->initParams.draw) {
+  if (ctx->draw.load(std::memory_order_relaxed)) {
     if (!DsPlayTrackerDrawToDisplayMeta(ctx, frame).ok()) {
       return false;
     }

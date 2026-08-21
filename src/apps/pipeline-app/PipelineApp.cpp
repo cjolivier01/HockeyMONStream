@@ -9,6 +9,7 @@
 #include "RuntimePropertyValueParser.h"
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
+#include "configurator.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
@@ -33,6 +34,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
@@ -56,6 +58,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
@@ -78,6 +81,60 @@ struct StitchFrameRewindRequest {
   long stage;
   uint64_t main_loop_generation;
 };
+
+struct PreviewOverlaySelection {
+  bool player_tracking{false};
+  bool play_tracking{false};
+  bool rink_mask{false};
+};
+
+PreviewOverlaySelection preview_overlay_selection() {
+  PreviewOverlaySelection selection;
+  const char* configured = g_getenv("HSTREAM_UI_PREVIEW_OVERLAYS");
+  if (!configured)
+    return selection;
+  for (absl::string_view value : absl::StrSplit(configured, ',')) {
+    if (value == "players")
+      selection.player_tracking = true;
+    else if (value == "play")
+      selection.play_tracking = true;
+    else if (value == "rink")
+      selection.rink_mask = true;
+  }
+  return selection;
+}
+
+struct OverlaySnapshotProbeState {
+  std::atomic_bool failure_reported{false};
+};
+
+GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpointer user_data) {
+  if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0)
+    return GST_PAD_PROBE_OK;
+  GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+  NvDsBatchMeta* batch_meta = buffer ? gst_buffer_get_nvds_batch_meta(buffer) : nullptr;
+  if (!batch_meta)
+    return GST_PAD_PROBE_OK;
+  bool snapshot_failed = false;
+  for (NvDsMetaList* item = batch_meta->frame_meta_list; item; item = item->next) {
+    auto* frame_meta = static_cast<NvDsFrameMeta*>(item->data);
+    if (!frame_meta)
+      continue;
+    // Attach both user-meta records before tee fan-out. Playcropper updates
+    // the transform record in place on the Program branch, avoiding a shared
+    // frame-user-meta list mutation while Stitched reads its snapshot.
+    const bool transform_ready = hm::preview_overlay::find_playcropper_transform_meta(frame_meta) ||
+        hm::preview_overlay::add_playcropper_transform_meta(frame_meta, {});
+    const bool snapshot_ready = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) ||
+        hm::preview_overlay::add_overlay_snapshot_meta(frame_meta);
+    snapshot_failed = snapshot_failed || !transform_ready || !snapshot_ready;
+  }
+  auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
+  if (snapshot_failed && state && !state->failure_reported.exchange(true)) {
+    g_printerr("Could not snapshot pre-playcropper metadata for GPU preview overlays\n");
+  }
+  return GST_PAD_PROBE_OK;
+}
 
 guint stitch_frame_completion_timeout_ms() {
   constexpr guint kDefaultTimeoutMs = 300'000;
@@ -1179,6 +1236,8 @@ absl::Status PipelineApplication::configureInstances(
     }
     if (!ui_preview_window_ids_.empty()) {
       app_ctx->config.hmsticher_config.ui_preview = TRUE;
+      if (preview_overlay_selection().play_tracking)
+        app_ctx->config.dsplaytracker_config.draw = TRUE;
     }
     valid_app_contexts.emplace_back(std::move(app_ctx));
   }
@@ -1229,6 +1288,23 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     }
     constexpr guint64 kPreviewImageBudgetBytes = 64ULL * 1024ULL * 1024ULL;
     guint64 preview_image_bytes = 0;
+    const PreviewOverlaySelection overlay_selection = preview_overlay_selection();
+    const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
+    const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
+
+    auto configure_overlays = [&](GstElement* sink) {
+      g_object_set(
+          G_OBJECT(sink),
+          "show-player-tracking",
+          overlay_selection.player_tracking ? TRUE : FALSE,
+          "show-play-tracking",
+          overlay_selection.play_tracking ? TRUE : FALSE,
+          "show-rink-mask",
+          overlay_selection.rink_mask ? TRUE : FALSE,
+          "rink-mask-file",
+          rink_mask_file.c_str(),
+          nullptr);
+    };
 
     struct PreviewProbeState {
       GstElement* sink{nullptr};
@@ -1426,30 +1502,103 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           !link_element_to_tee_src_pad(output.tee, ingress_isolation)) {
         return absl::InternalError("Could not link the GPU-native Program preview branch");
       }
+      configure_overlays(sink);
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     if (stitched_target != ui_preview_window_ids_.end()) {
-      if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
-          !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
-        return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
-      }
-      g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
-      if (!configure_path(
-              stitcher.preview_queue,
-              stitcher.preview_ingress_isolation,
-              stitcher.preview_isolation,
-              stitcher.preview_converter,
-              stitcher.preview_caps_filter,
-              stitcher.preview_sink,
-              "stitched",
-              stitched_target->second,
-              app_context->config.hmsticher_config.gpu_id,
-              1600,
-              900,
-              false)) {
-        return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
+      GstElement* playtracker = app_context->pipeline.dsplaytracker_bin.bin;
+      if (playtracker) {
+        GstPad* playtracker_src = gst_element_get_static_pad(playtracker, "src");
+        GstPad* tracked_downstream_sink = playtracker_src ? gst_pad_get_peer(playtracker_src) : nullptr;
+        GstElement* tracked_downstream =
+            tracked_downstream_sink ? gst_pad_get_parent_element(tracked_downstream_sink) : nullptr;
+        if (!playtracker_src || !tracked_downstream_sink || !tracked_downstream) {
+          if (tracked_downstream)
+            gst_object_unref(tracked_downstream);
+          if (tracked_downstream_sink)
+            gst_object_unref(tracked_downstream_sink);
+          if (playtracker_src)
+            gst_object_unref(playtracker_src);
+          return absl::FailedPreconditionError("The play tracker does not expose a linked downstream preview point");
+        }
+        auto tracked_link_cleanup = absl::MakeCleanup([&] {
+          gst_object_unref(tracked_downstream);
+          gst_object_unref(tracked_downstream_sink);
+          gst_object_unref(playtracker_src);
+        });
+        GstElement* tee = gst_element_factory_make(NVDS_ELEM_TEE, "stitched_tracking_gpu_preview_tee");
+        GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "stitched_gpu_preview_queue");
+        GstElement* ingress_isolation =
+            gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_ingress_isolation");
+        GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_isolation");
+        GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "stitched_gpu_preview_converter");
+        GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "stitched_gpu_preview_caps");
+        GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "stitched_gpu_preview_sink");
+        if (!tee || !queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink) {
+          return absl::InternalError("Could not create the tracked Stitched GPU preview branch");
+        }
+        gst_bin_add_many(
+            GST_BIN(app_context->pipeline.pipeline),
+            tee,
+            ingress_isolation,
+            queue,
+            isolation,
+            converter,
+            caps_filter,
+            sink,
+            nullptr);
+        if (!gst_pad_unlink(playtracker_src, tracked_downstream_sink) || !gst_element_link(playtracker, tee) ||
+            !link_element_to_tee_src_pad(tee, tracked_downstream) ||
+            !configure_path(
+                queue,
+                ingress_isolation,
+                isolation,
+                converter,
+                caps_filter,
+                sink,
+                "stitched",
+                stitched_target->second,
+                app_context->config.hmsticher_config.gpu_id,
+                1600,
+                900,
+                true) ||
+            !link_element_to_tee_src_pad(tee, ingress_isolation)) {
+          return absl::InternalError("Could not link the tracked Stitched GPU preview branch");
+        }
+        auto* snapshot_state = new OverlaySnapshotProbeState;
+        const gulong snapshot_probe = gst_pad_add_probe(
+            playtracker_src, GST_PAD_PROBE_TYPE_BUFFER, snapshot_preview_overlays, snapshot_state, +[](gpointer data) {
+              delete static_cast<OverlaySnapshotProbeState*>(data);
+            });
+        if (snapshot_probe == 0) {
+          delete snapshot_state;
+          return absl::InternalError("Could not install the pre-playcropper GPU overlay snapshot probe");
+        }
+        configure_overlays(sink);
+      } else {
+        if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
+            !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
+          return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
+        }
+        g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
+        if (!configure_path(
+                stitcher.preview_queue,
+                stitcher.preview_ingress_isolation,
+                stitcher.preview_isolation,
+                stitcher.preview_converter,
+                stitcher.preview_caps_filter,
+                stitcher.preview_sink,
+                "stitched",
+                stitched_target->second,
+                app_context->config.hmsticher_config.gpu_id,
+                1600,
+                900,
+                false)) {
+          return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
+        }
+        configure_overlays(stitcher.preview_sink);
       }
     }
 

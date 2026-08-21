@@ -27,6 +27,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
@@ -571,6 +572,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
     const size_t input_width = incoming_surface.width();
     const size_t input_height = incoming_surface.height();
+    const float metadata_width = static_cast<float>(frame_meta->source_frame_width);
+    const float metadata_height = static_cast<float>(frame_meta->source_frame_height);
     // ack this may vary on jetson I think
     const size_t output_width = outgoing_surface.width();
     const size_t output_height = outgoing_surface.height();
@@ -675,6 +678,27 @@ absl::Status PlayCropperPriv::GenerateOutput(
           transform.anchor_point,
           transform.crop_box,
           output_rect);
+    }
+    const preview_overlay::PlayCropperTransform preview_transform{
+        static_cast<float>(input_width),
+        static_cast<float>(input_height),
+        metadata_width,
+        metadata_height,
+        transform.source_rect.left,
+        transform.source_rect.top,
+        transform.anchor_point.x,
+        transform.anchor_point.y,
+        transform.crop_box.left,
+        transform.crop_box.top,
+        transform.crop_box.width(),
+        transform.crop_box.height(),
+        static_cast<float>(output_width),
+        static_cast<float>(output_height),
+        transform.angle,
+        transform_object_meta_,
+    };
+    if (!preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform)) {
+      return absl::ResourceExhaustedError("Could not attach playcropper preview transform metadata");
     }
     ++frame_count_;
   }

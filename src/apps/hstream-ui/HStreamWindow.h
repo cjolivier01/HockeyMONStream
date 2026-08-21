@@ -194,6 +194,7 @@ class HStreamWindow : public QMainWindow {
   void recoverPreviewDisableFailure(const QString& reason, bool force = false);
   int previewDisableTimeoutMs() const;
   bool setRuntimeRenderAudioMuted(bool muted);
+  void setRuntimePreviewOverlays();
   void setRuntimeVideoRendering(bool enabled);
   void setPreviewRenderingLayout(bool rendering);
   void setPreviewFocusAvailable(const QString& channel, bool available);
@@ -365,6 +366,9 @@ class HStreamWindow : public QMainWindow {
   QPushButton* save_preset_button_{nullptr};
   QPushButton* stop_button_{nullptr};
   QCheckBox* render_video_toggle_{nullptr};
+  QCheckBox* show_player_tracking_toggle_{nullptr};
+  QCheckBox* show_play_tracking_toggle_{nullptr};
+  QCheckBox* show_rink_mask_toggle_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};

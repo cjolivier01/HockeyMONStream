@@ -203,7 +203,8 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
       playtracker->gpu_id = g_value_get_uint(value);
       break;
     case PROP_DRAW:
-      playtracker->draw = g_value_get_boolean(value);
+      g_atomic_int_set(&playtracker->draw, g_value_get_boolean(value));
+      DsPlayTrackerCtxSetDraw(playtracker->playtrackerlib_ctx, g_value_get_boolean(value));
       break;
     case PROP_PLAY_TRACKER_CONFIG_FILE: {
       const char* str = g_value_get_string(value);
@@ -234,7 +235,7 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
       g_value_set_uint(value, playtracker->gpu_id);
       break;
     case PROP_DRAW:
-      g_value_set_boolean(value, playtracker->draw);
+      g_value_set_boolean(value, g_atomic_int_get(&playtracker->draw));
       break;
     case PROP_PLAY_TRACKER_CONFIG_FILE:
       g_value_set_string(value, playtracker->play_tracker_config_file);
@@ -252,7 +253,7 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   DsPlayTrackerInitParams init_params = {
       .play_tracker_config_file = playtracker->play_tracker_config_file,
-      .draw = !!playtracker->draw,
+      .draw = !!g_atomic_int_get(&playtracker->draw),
   };
 
   absl::Status validation_status = DsPlayTrackerValidateConfigFile(init_params.play_tracker_config_file);
