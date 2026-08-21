@@ -5012,6 +5012,19 @@ bool PipelineApplication::seek_runtime_impl(
   }
 
   AppCtx* app_context = stage->second.front().get();
+  const bool telemetry_capture_active = app_context->config.dsplaytracker_config.enable &&
+      std::any_of(app_context->config.dsplaytracker_config.private_properties.begin(),
+                  app_context->config.dsplaytracker_config.private_properties.end(),
+                  [](const hm::gst::PluginProperty& property) {
+                    return property.name == "telemetry-csv-dir" && !trim_ascii(property.value).empty();
+                  });
+  if (telemetry_capture_active) {
+    // Runtime seek replaces the complete GStreamer graph, including the
+    // vpplaytracker instance that owns the active telemetry exporter. Reject
+    // before teardown so a capture can never silently discard its pre-seek
+    // segment or publish only the final replacement generation.
+    return reject("rejected", "telemetry-capture-active");
+  }
   GstElement* pipeline = app_context->pipeline.pipeline;
   if (!pipeline) {
     return reject("failed", "pipeline-unavailable");

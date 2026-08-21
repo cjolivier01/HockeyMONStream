@@ -926,12 +926,34 @@ bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
     return false;
   }
   if (!SyncDirectory("tracking-commit")) {
-    // Both cameras were already durable before tracking became visible. A
-    // failed directory fsync now makes the tracking link's crash persistence
-    // uncertain, but either crash state is safe: no tracking link, or a
-    // complete three-file generation. Never roll back after this point,
-    // because persisting only part of that rollback could expose tracking
-    // without one of its camera inputs.
+    // Retract tracking first. If that removal becomes durable, the camera
+    // links can then be removed independently without ever exposing tracking
+    // without both inputs. If the removal fsync also fails, retain both durable
+    // cameras: after a crash the uncertain tracking link is then either absent
+    // or still names a complete generation. HM additionally treats the durable
+    // pending manifest as authoritative and rejects either visible failure
+    // state.
+    const OwnedArtifact& tracking_artifact = owned_artifacts_[publication_order[2]];
+    if (unlink_owned_name(
+            output_directory_fd_,
+            tracking_artifact.published_filename,
+            tracking_artifact.device,
+            tracking_artifact.inode)) {
+      durability_events_for_testing_.push_back(absl::StrCat("unlink:", tracking_artifact.published_filename));
+      if (SyncDirectory("tracking-rollback")) {
+        for (size_t position = 0; position < 2; ++position) {
+          const OwnedArtifact& camera_artifact = owned_artifacts_[publication_order[position]];
+          if (unlink_owned_name(
+                  output_directory_fd_,
+                  camera_artifact.published_filename,
+                  camera_artifact.device,
+                  camera_artifact.inode)) {
+            durability_events_for_testing_.push_back(absl::StrCat("unlink:", camera_artifact.published_filename));
+          }
+        }
+        SyncDirectory("cameras-rollback");
+      }
+    }
     ::flock(directory_lock_fd_, LOCK_UN);
     return false;
   }

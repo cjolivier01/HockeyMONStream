@@ -614,6 +614,10 @@ int main() {
   const std::string tracking_commit_failure_manifest = read_file(directory / "hstream_telemetry-20.json");
   const std::vector<std::string> tracking_failure_events =
       hm::playtracker::PlayTrackerTelemetryCsvTestPeer::DurabilityEvents(tracking_commit_failure_exporter);
+  const size_t tracking_failure_link = event_position(tracking_failure_events, "link:tracking-20.csv");
+  const size_t tracking_failure_commit = event_position(tracking_failure_events, "fsync:directory:tracking-commit");
+  const size_t tracking_failure_unlink = event_position(tracking_failure_events, "unlink:tracking-20.csv");
+  const size_t tracking_failure_rollback = event_position(tracking_failure_events, "fsync:directory:tracking-rollback");
   const bool tracking_commit_failure_valid =
       expect(
           tracking_commit_failure_manifest.find("\"writer_failed\": true") != std::string::npos &&
@@ -621,13 +625,16 @@ int main() {
               tracking_commit_failure_manifest.find("\"eligible_for_training\": false") != std::string::npos,
           "uncertain tracking-link durability must retain a pending ineligible manifest") &&
       expect(
-          fs::is_regular_file(directory / "tracking-20.csv") && fs::is_regular_file(directory / "camera-20.csv") &&
-              fs::is_regular_file(directory / "camera_fast-20.csv"),
-          "a post-link tracking commit failure must retain the complete visible generation") &&
+          !fs::exists(directory / "tracking-20.csv") && fs::is_regular_file(directory / "camera-20.csv") &&
+              fs::is_regular_file(directory / "camera_fast-20.csv") &&
+              fs::is_regular_file(directory / "tracking-10.csv") && fs::is_regular_file(directory / "camera-10.csv"),
+          "tracking must be retracted before camera cleanup, leaving the prior committed generation discoverable") &&
       expect(
-          event_position(tracking_failure_events, "fsync:directory:publication-rollback") ==
-              tracking_failure_events.size(),
-          "publication must never roll back visible links after tracking is linked");
+          tracking_failure_link < tracking_failure_commit && tracking_failure_commit < tracking_failure_unlink &&
+              tracking_failure_unlink < tracking_failure_rollback &&
+              event_position(tracking_failure_events, "unlink:camera-20.csv") == tracking_failure_events.size() &&
+              event_position(tracking_failure_events, "unlink:camera_fast-20.csv") == tracking_failure_events.size(),
+          "failed tracking rollback fsync must retain both durable cameras for crash-safe all-or-none recovery");
 
   const fs::path atomic_manifest_directory = directory / "atomic-manifest";
   hm::playtracker::PlayTrackerTelemetryCsv atomic_manifest_exporter;

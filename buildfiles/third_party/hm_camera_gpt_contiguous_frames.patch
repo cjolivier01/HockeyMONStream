@@ -67,10 +67,52 @@ index 010ba7a5..26d443db 100644
              start = rng.randint(0, len(frames) - self._seq_len)
              seq_frames = frames[start : start + self._seq_len]
 
-@@ -610,6 +626,40 @@ class CameraPanZoomGPTIterableDataset(IterableDataset):
+@@ -610,6 +626,86 @@ class CameraPanZoomGPTIterableDataset(IterableDataset):
              yield out
 
 
++def _hstream_manifest_allows_generation(
++    base_path: Path,
++    suffix_part: str,
++    tracking_path: Path,
++    camera_path: Path,
++    camera_fast_path: Path,
++) -> bool:
++    """Reject incomplete hstream publications while preserving legacy CSV discovery."""
++    manifest_path = base_path / f"hstream_telemetry{suffix_part}.json"
++    if not manifest_path.exists():
++        return True
++    if not manifest_path.is_file():
++        return False
++
++    try:
++        manifest = json.loads(manifest_path.read_text())
++    except (OSError, UnicodeError, json.JSONDecodeError):
++        return False
++
++    compatibility = manifest.get("hm_compatibility")
++    if not isinstance(compatibility, dict):
++        return False
++
++    def compatibility_file(key: str) -> Optional[str]:
++        artifact = compatibility.get(key)
++        if not isinstance(artifact, dict):
++            return None
++        filename = artifact.get("file")
++        return filename if isinstance(filename, str) else None
++
++    return (
++        manifest.get("schema") == "hstream-playtracker-telemetry-v1"
++        and manifest.get("publication_state") == "committed"
++        and manifest.get("completed") is True
++        and manifest.get("eligible_for_training") is True
++        and compatibility_file("tracking_csv") == tracking_path.name
++        and compatibility_file("camera_csv") == camera_path.name
++        and compatibility_file("camera_fast_csv") == camera_fast_path.name
++        and camera_fast_path.is_file()
++    )
++
++
 +def _latest_complete_camera_generation(
 +    game_dir: str,
 +) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -96,6 +138,10 @@ index 010ba7a5..26d443db 100644
 +        if not camera_path.is_file():
 +            continue
 +        camera_fast_path = base_path / f"camera_fast{suffix_part}.csv"
++        if not _hstream_manifest_allows_generation(
++            base_path, suffix_part, tracking_path, camera_path, camera_fast_path
++        ):
++            continue
 +        return (
 +            str(tracking_path),
 +            str(camera_path),
@@ -108,7 +154,7 @@ index 010ba7a5..26d443db 100644
  def resolve_csv_paths(
      game_id: str,
      game_dir: str,
-@@ -619,20 +669,27 @@ def resolve_csv_paths(
+@@ -619,20 +715,27 @@ def resolve_csv_paths(
      camera_fast_csv_name: Optional[str] = None,
      pose_csv_name: Optional[str] = None,
  ) -> Optional[GameCsvPaths]:
@@ -140,7 +186,7 @@ index 010ba7a5..26d443db 100644
          camera_path = str(Path(game_dir) / camera_csv_name)
          camera = camera_path if Path(camera_path).is_file() else None
      else:
-@@ -644,6 +701,8 @@ def resolve_csv_paths(
+@@ -644,6 +747,8 @@ def resolve_csv_paths(
      if camera_fast_csv_name:
          fast_path = str(Path(game_dir) / camera_fast_csv_name)
          camera_fast = fast_path if Path(fast_path).is_file() else None
@@ -153,7 +199,8 @@ diff --git a/tests/test_camera_gpt.py b/tests/test_camera_gpt.py
 index 4165e154..80fda699 100644
 --- a/tests/test_camera_gpt.py
 +++ b/tests/test_camera_gpt.py
-@@ -155,5 +155,91 @@ def should_sample_gpt_dataset_and_run_model_forward(monkeypatch):
+@@ -154,6 +154,134 @@ def should_sample_gpt_dataset_and_run_model_forward(monkeypatch):
+         with pytest.raises(SystemExit, match="--target-iou requires validation"):
              main()
 
 
@@ -236,6 +283,48 @@ index 4165e154..80fda699 100644
 +            (td_path / filename).write_text("1\n")
 +
 +        paths = resolve_csv_paths("generation", td)
++        assert paths is not None
++        assert Path(paths.tracking_csv).name == "tracking-1.csv"
++        assert Path(paths.camera_csv).name == "camera-1.csv"
++        assert paths.camera_fast_csv is not None
++        assert Path(paths.camera_fast_csv).name == "camera_fast-1.csv"
++
++
++def should_ignore_pending_hstream_generation_after_tracking_commit_failure():
++    import json
++
++    from hmlib.camera.camera_gpt_dataset import resolve_csv_paths
++
++    with tempfile.TemporaryDirectory(prefix="hm_camgpt_publication_failure_") as td:
++        td_path = Path(td)
++        for suffix in ("-1", "-2"):
++            for stem in ("tracking", "camera", "camera_fast"):
++                (td_path / f"{stem}{suffix}.csv").write_text("1\n")
++
++        def write_manifest(suffix: str, *, committed: bool) -> None:
++            suffix_part = f"-{suffix}"
++            (td_path / f"hstream_telemetry{suffix_part}.json").write_text(
++                json.dumps(
++                    {
++                        "schema": "hstream-playtracker-telemetry-v1",
++                        "publication_state": "committed" if committed else "pending",
++                        "completed": committed,
++                        "eligible_for_training": committed,
++                        "hm_compatibility": {
++                            "tracking_csv": {"file": f"tracking{suffix_part}.csv"},
++                            "camera_csv": {"file": f"camera{suffix_part}.csv"},
++                            "camera_fast_csv": {"file": f"camera_fast{suffix_part}.csv"},
++                        },
++                    }
++                )
++            )
++
++        write_manifest("1", committed=True)
++        # Mirrors hstream's injected tracking-directory-fsync failure: all CSV
++        # links may be visible, but the durable manifest remains pending.
++        write_manifest("2", committed=False)
++
++        paths = resolve_csv_paths("publication-failure", td)
 +        assert paths is not None
 +        assert Path(paths.tracking_csv).name == "tracking-1.csv"
 +        assert Path(paths.camera_csv).name == "camera-1.csv"
