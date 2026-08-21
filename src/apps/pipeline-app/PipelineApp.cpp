@@ -5012,14 +5012,16 @@ bool PipelineApplication::seek_runtime_impl(
   }
 
   AppCtx* app_context = stage->second.front().get();
-  const bool telemetry_capture_active = app_context->config.dsplaytracker_config.enable &&
-      std::any_of(app_context->config.dsplaytracker_config.private_properties.begin(),
-                  app_context->config.dsplaytracker_config.private_properties.end(),
-                  [](const hm::gst::PluginProperty& property) {
-                    std::string normalized_name = property.name;
-                    std::replace(normalized_name.begin(), normalized_name.end(), '_', '-');
-                    return normalized_name == "telemetry-csv-dir" && !property.value.empty();
-                  });
+  std::string configured_telemetry_csv_dir;
+  for (const hm::gst::PluginProperty& property : app_context->config.dsplaytracker_config.private_properties) {
+    std::string normalized_name = property.name;
+    std::replace(normalized_name.begin(), normalized_name.end(), '_', '-');
+    if (normalized_name == "telemetry-csv-dir") {
+      configured_telemetry_csv_dir = property.value;
+    }
+  }
+  const bool telemetry_capture_active =
+      app_context->config.dsplaytracker_config.enable && !configured_telemetry_csv_dir.empty();
   if (telemetry_capture_active) {
     // Runtime seek replaces the complete GStreamer graph, including the
     // vpplaytracker instance that owns the active telemetry exporter. Reject

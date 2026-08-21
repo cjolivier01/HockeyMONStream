@@ -334,6 +334,59 @@ bool verify_telemetry_seek_rejection(
       "a rejected seek must finalize one uninterrupted telemetry session, never only a replacement segment");
 }
 
+bool verify_telemetry_seek_allowed_when_disabled(
+    const fs::path& executable,
+    const fs::path& config,
+    const fs::path& telemetry_csv_dir) {
+  PipelineProcess process;
+  if (!expect(
+          process.Start(
+              executable,
+              config,
+              "URI-MULTIPLE",
+              "RENDER",
+              true,
+              {{"HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY", "1"}}),
+          "last-empty telemetry capture seek process must start") ||
+      !expect(process.WaitFor("Pipeline running"), "last-empty telemetry capture pipeline must reach PLAYING") ||
+      !expect(
+          process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
+          "last-empty telemetry capture pipeline must process media before the seek command")) {
+    process.DumpOutput();
+    return false;
+  }
+
+  const size_t seek_mark = process.Mark();
+  if (!expect(process.Send("@seek 10000000000 12\n"), "last-empty telemetry seek command must be delivered") ||
+      !expect(
+          process.WaitFor(
+              "HSTREAM_PIPELINE_RECREATE status=injected-failure phase=after-destroy",
+              seek_mark,
+              std::chrono::seconds(20)),
+          "a final empty telemetry property must allow reconstruction to start") ||
+      !expect(
+          process.output().find(
+              "HSTREAM_SEEK status=rejected generation=12 reason=telemetry-capture-active", seek_mark) ==
+              std::string::npos,
+          "an earlier nonempty telemetry alias must not override the final empty value") ||
+      !expect(
+          !fs::exists(telemetry_csv_dir / "hstream_telemetry.json"),
+          "a final empty telemetry property must leave the exporter disabled") ||
+      !expect(process.Interrupt(), "last-empty telemetry capture process SIGINT must be delivered")) {
+    process.DumpOutput();
+    return false;
+  }
+
+  int exit_code = -1;
+  if (!expect(
+          process.WaitForExit(&exit_code, std::chrono::seconds(12)),
+          "last-empty telemetry capture process must stop promptly")) {
+    process.DumpOutput();
+    return false;
+  }
+  return true;
+}
+
 bool write_config(
     const fs::path& config,
     const fs::path& video,
@@ -526,8 +579,7 @@ bool write_playlist_seek_config(
     const fs::path& video,
     const fs::path& playtracker_config,
     int second_source_chapter_count = 2,
-    const std::string& telemetry_property_name = {},
-    const std::string& telemetry_property_value = {}) {
+    const std::vector<std::pair<std::string, std::string>>& telemetry_properties = {}) {
   std::ofstream output(config);
   output << "application:\n"
          << "  stage: 0\n"
@@ -588,9 +640,11 @@ bool write_playlist_seek_config(
          << "  show: 0\n"
          << "  plugin-type: vpplaytracker\n"
          << "  config-file: " << playtracker_config.string() << "\n";
-  if (!telemetry_property_name.empty()) {
-    output << "  private-properties:\n"
-           << "    " << telemetry_property_name << ": " << telemetry_property_value << "\n";
+  if (!telemetry_properties.empty()) {
+    output << "  private-properties:\n";
+    for (const auto& [name, value] : telemetry_properties) {
+      output << "    " << name << ": " << value << "\n";
+    }
   }
   return output.good();
 }
@@ -624,6 +678,8 @@ int main(int argc, char** argv) {
   const fs::path telemetry_alias_csv_dir = root / "telemetry-alias-seek";
   const fs::path telemetry_whitespace_seek_config = root / "pipeline-playlist-telemetry-whitespace-seek.yaml";
   const fs::path telemetry_whitespace_csv_dir = root / "   ";
+  const fs::path telemetry_disabled_seek_config = root / "pipeline-playlist-telemetry-disabled-seek.yaml";
+  const fs::path telemetry_disabled_csv_dir = root / "telemetry-disabled-seek";
   const fs::path playtracker_config = root / "playtracker.yaml";
   const fs::path playtracker_runtime_config = root / "playtracker-runtime.yaml";
   const fs::path recreate_config = root / "pipeline-recreate.yaml";
@@ -678,7 +734,7 @@ int main(int argc, char** argv) {
   ok &= expect(fs::create_directory(telemetry_csv_dir), "telemetry seek directory must be created");
   ok &= expect(
       write_playlist_seek_config(
-          telemetry_seek_config, video, playtracker_config, 2, "telemetry-csv-dir", telemetry_csv_dir.string()),
+          telemetry_seek_config, video, playtracker_config, 2, {{"telemetry-csv-dir", telemetry_csv_dir.string()}}),
       "pipeline-app telemetry seek config must be written");
   ok &= expect(fs::create_directory(telemetry_alias_csv_dir), "telemetry alias seek directory must be created");
   ok &= expect(
@@ -687,15 +743,26 @@ int main(int argc, char** argv) {
           video,
           playtracker_config,
           2,
-          "telemetry_csv_dir",
-          telemetry_alias_csv_dir.string()),
+          {{"telemetry_csv_dir", telemetry_alias_csv_dir.string()}}),
       "pipeline-app telemetry alias seek config must be written");
   ok &=
       expect(fs::create_directory(telemetry_whitespace_csv_dir), "telemetry whitespace seek directory must be created");
   ok &= expect(
       write_playlist_seek_config(
-          telemetry_whitespace_seek_config, video, playtracker_config, 2, "telemetry-csv-dir", R"yaml("   ")yaml"),
+          telemetry_whitespace_seek_config, video, playtracker_config, 2, {{"telemetry-csv-dir", R"yaml("   ")yaml"}}),
       "pipeline-app telemetry whitespace seek config must be written");
+  ok &= expect(fs::create_directory(telemetry_disabled_csv_dir), "telemetry last-empty seek directory must be created");
+  ok &= expect(
+      write_playlist_seek_config(
+          telemetry_disabled_seek_config,
+          video,
+          playtracker_config,
+          2,
+          {
+              {"telemetry_csv_dir", telemetry_disabled_csv_dir.string()},
+              {"telemetry-csv-dir", R"yaml("")yaml"},
+          }),
+      "pipeline-app telemetry last-empty seek config must be written");
   ok &=
       expect(write_config(recreate_config, video, archive, true), "pipeline-app recreate test config must be written");
   ok &= expect(
@@ -1049,6 +1116,10 @@ int main(int argc, char** argv) {
         telemetry_whitespace_csv_dir,
         "quoted whitespace telemetry private property value",
         root);
+  }
+  if (ok) {
+    ok &= verify_telemetry_seek_allowed_when_disabled(
+        argv[1], telemetry_disabled_seek_config, telemetry_disabled_csv_dir);
   }
 
   PipelineProcess fallback_seek_process;
