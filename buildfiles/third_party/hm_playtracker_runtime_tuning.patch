@@ -2,7 +2,7 @@ diff --git a/hockeymom/csrc/play_tracker/LivingBox.h b/hockeymom/csrc/play_track
 index f3683458..8a9fe9d4 100644
 --- a/hockeymom/csrc/play_tracker/LivingBox.h
 +++ b/hockeymom/csrc/play_tracker/LivingBox.h
-@@ -97,6 +97,25 @@ struct ILivingBox : virtual public IBasicLivingBox {
+@@ -97,6 +97,28 @@ struct ILivingBox : virtual public IBasicLivingBox {
    // Begin a per-axis stop delay externally (e.g., overshoot cases)
    virtual void begin_stop_delay(
        std::optional<IntValue> delay_x, std::optional<IntValue> delay_y) = 0;
@@ -25,6 +25,9 @@ index f3683458..8a9fe9d4 100644
 +  virtual void set_camera_geometry(
 +      FloatValue arena_angle_from_vertical,
 +      FloatValue dynamic_acceleration_scaling) = 0;
++
++  virtual void set_resizing_shrink_thresholds(
++      FloatValue width_ratio, FloatValue height_ratio) = 0;
  };
 
  /* clang-format off */
@@ -32,7 +35,7 @@ diff --git a/hockeymom/csrc/play_tracker/LivingBoxImpl.h b/hockeymom/csrc/play_t
 index e36b4ca8..3df39082 100644
 --- a/hockeymom/csrc/play_tracker/LivingBoxImpl.h
 +++ b/hockeymom/csrc/play_tracker/LivingBoxImpl.h
-@@ -96,24 +96,33 @@ class LivingBox : public ILivingBox,
+@@ -96,24 +96,38 @@ class LivingBox : public ILivingBox,
        bool cancel_on_opposite,
        IntValue cancel_hysteresis_frames,
        IntValue stop_delay_cooldown_frames,
@@ -64,6 +67,11 @@ index e36b4ca8..3df39082 100644
 +      FloatValue dynamic_acceleration_scaling) override {
 +    TranslatingBox::set_camera_geometry(
 +        arena_angle_from_vertical, dynamic_acceleration_scaling);
++  }
++
++  void set_resizing_shrink_thresholds(
++      FloatValue width_ratio, FloatValue height_ratio) override {
++    ResizingBox::set_shrink_thresholds(width_ratio, height_ratio);
 +  }
 +
   protected:
@@ -128,3 +136,40 @@ index df086340..40fd14cb 100644
    /**
     * Scale the current speed by the given ratio
     */
+diff --git a/hockeymom/csrc/play_tracker/ResizingBox.cpp b/hockeymom/csrc/play_tracker/ResizingBox.cpp
+index 70466f67..d219da04 100644
+--- a/hockeymom/csrc/play_tracker/ResizingBox.cpp
++++ b/hockeymom/csrc/play_tracker/ResizingBox.cpp
+@@ -30,0 +31,6 @@ const ResizingConfig& ResizingBox::get_config() const {
++void ResizingBox::set_shrink_thresholds(
++    FloatValue width_ratio, FloatValue height_ratio) {
++  config_.size_ratio_thresh_shrink_dw = width_ratio;
++  config_.size_ratio_thresh_shrink_dh = height_ratio;
++}
++
+diff --git a/hockeymom/csrc/play_tracker/ResizingBox.h b/hockeymom/csrc/play_tracker/ResizingBox.h
+index 3e37525c..19aa45b3 100644
+--- a/hockeymom/csrc/play_tracker/ResizingBox.h
++++ b/hockeymom/csrc/play_tracker/ResizingBox.h
+@@ -43,0 +44,3 @@ class ResizingBox : virtual public IBasicLivingBox {
++  void set_shrink_thresholds(
++      FloatValue width_ratio, FloatValue height_ratio);
++
+@@ -67,2 +70,2 @@ class ResizingBox : virtual public IBasicLivingBox {
+-  const ResizingConfig config_;
++  ResizingConfig config_;
+   ResizingState state_;
+
+diff --git a/hmlib/config/baseline.yaml b/hmlib/config/baseline.yaml
+--- a/hmlib/config/baseline.yaml
++++ b/hmlib/config/baseline.yaml
+@@ -201,6 +201,9 @@ rink:
+     # Minimum height for the aspect-ratio follower box, as a fraction of play height.
+     # Smaller values allow more zoom-in.
+     follower_box_min_height_ratio: 0.2
++    # How readily the play-tracking camera zooms in. 25 preserves the native
++    # 8%/10% sticky shrink thresholds; larger values zoom in sooner.
++    zoom_in_aggressiveness: 25
+     crop_image: true
+     pre_clip: true
+     max_speed_ratio_x: 1.0

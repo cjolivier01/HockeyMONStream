@@ -3,11 +3,13 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
 #include "RuntimePropertyAllowlist.h"
 #include "RuntimePropertyValueParser.h"
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
+#include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -24,6 +26,7 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
@@ -106,6 +109,104 @@ guint stitch_frame_restart_timeout_ms() {
     return kDefaultTimeoutMs;
   }
   return static_cast<guint>(parsed);
+}
+
+guint runtime_seek_transition_timeout_ms() {
+  constexpr guint kDefaultTimeoutMs = 10'000;
+  const char* configured = g_getenv("HM_TEST_RUNTIME_SEEK_TRANSITION_TIMEOUT_MS");
+  if (!configured || !*configured) {
+    configured = g_getenv("HM_TEST_RUNTIME_SEEK_TIMEOUT_MS");
+  }
+  if (!configured || !*configured) {
+    return kDefaultTimeoutMs;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  return end && *end == '\0' && parsed > 0 && parsed <= G_MAXUINT ? static_cast<guint>(parsed) : kDefaultTimeoutMs;
+}
+
+guint runtime_seek_fallback_timeout_ms(guint64 fallback_ns) {
+  constexpr guint64 kMaximumTimeoutMs = 300'000;
+  const guint64 fallback_ms = fallback_ns / GST_MSECOND + (fallback_ns % GST_MSECOND != 0 ? 1 : 0);
+  // A rejected keyframe seek must decode from the selected chapter start. Give
+  // that rare path up to twice its media duration (0.5x realtime), while
+  // retaining both the normal lower bound and an explicit five-minute cap.
+  const guint64 decoded_trim_budget_ms = fallback_ms > kMaximumTimeoutMs / 2 ? kMaximumTimeoutMs : fallback_ms * 2;
+  return static_cast<guint>(
+      std::max<guint64>(runtime_seek_transition_timeout_ms(), std::min(decoded_trim_budget_ms, kMaximumTimeoutMs)));
+}
+
+guint runtime_seek_recreation_timeout_ms() {
+  constexpr guint kDefaultTimeoutMs = 30'000;
+  const char* configured = g_getenv("HM_TEST_RUNTIME_SEEK_TIMEOUT_MS");
+  if (!configured || !*configured) {
+    return kDefaultTimeoutMs;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  return end && *end == '\0' && parsed > 0 && parsed <= G_MAXUINT ? static_cast<guint>(parsed) : kDefaultTimeoutMs;
+}
+
+guint test_delay_ms(const char* variable) {
+  const char* configured = g_getenv(variable);
+  if (!configured || !*configured) {
+    return 0;
+  }
+  gchar* end = nullptr;
+  const guint64 parsed = g_ascii_strtoull(configured, &end, 10);
+  return end && *end == '\0' && parsed <= G_MAXUINT ? static_cast<guint>(parsed) : 0;
+}
+
+bool materialize_secure_runtime_file(
+    const std::string& contents,
+    std::string* output_path,
+    std::string* failure_reason) {
+  GError* error = nullptr;
+  gchar* path = nullptr;
+  const gint fd = g_file_open_tmp("hstream-runtime-tuning-XXXXXX.yaml", &path, &error);
+  if (fd < 0 || !path) {
+    if (failure_reason) {
+      *failure_reason = error ? error->message : "could not create temporary file";
+    }
+    if (error) {
+      g_error_free(error);
+    }
+    if (fd >= 0) {
+      ::close(fd);
+    }
+    g_free(path);
+    return false;
+  }
+  std::string owned_path(path);
+  g_free(path);
+  bool ok = ::fchmod(fd, S_IRUSR | S_IWUSR) == 0;
+  size_t written = 0;
+  while (ok && written < contents.size()) {
+    const ssize_t result = ::write(fd, contents.data() + written, contents.size() - written);
+    if (result > 0) {
+      written += static_cast<size_t>(result);
+    } else if (result < 0 && errno == EINTR) {
+      continue;
+    } else {
+      ok = false;
+    }
+  }
+  int saved_errno = ok ? 0 : errno;
+  if (::close(fd) != 0) {
+    if (ok) {
+      saved_errno = errno;
+    }
+    ok = false;
+  }
+  if (!ok || written != contents.size()) {
+    if (failure_reason) {
+      *failure_reason = saved_errno != 0 ? std::strerror(saved_errno) : "incomplete temporary-file write";
+    }
+    ::unlink(owned_path.c_str());
+    return false;
+  }
+  *output_path = std::move(owned_path);
+  return true;
 }
 
 absl::StatusOr<uint64_t> parse_time_option(const char* option, const char* value) {
@@ -493,6 +594,9 @@ absl::Status stage_bazel_runtime_libraries(
 }
 
 absl::Status configure_pipeline_runtime_environment(const char* argv0) {
+  if (!hm::pipeline_internal::configure_streammux_runtime_environment())
+    return absl::InternalError("Could not select DeepStream's replacement nvstreammux implementation");
+
   std::error_code error;
   const fs::path working_directory = fs::current_path(error);
   const fs::path executable = running_executable_path(argv0).value_or(argv0 ? fs::path(argv0) : fs::path());
@@ -681,6 +785,30 @@ uint64_t duration_for_source_ns(const NvDsSourceConfig& source_config) {
   return total_ns;
 }
 
+uint64_t frame_duration_for_source_ns(const NvDsSourceConfig& source_config) {
+  std::vector<std::string> uris = split_uri_list(source_config.uri_list);
+  if (uris.empty() && source_config.uri && *source_config.uri) {
+    uris.emplace_back(source_config.uri);
+  }
+  uint64_t longest_frame_ns = GST_CLOCK_TIME_NONE;
+  for (const std::string& uri : uris) {
+    const std::optional<std::string> path = file_uri_to_path(uri.c_str());
+    if (!path) {
+      continue;
+    }
+    const hm::Videoinfo info = hm::getVideoInfo(*path);
+    if (!std::isfinite(info.fps) || info.fps <= 0.0) {
+      continue;
+    }
+    const uint64_t frame_ns = static_cast<uint64_t>(static_cast<double>(GST_SECOND) / info.fps);
+    if (frame_ns == 0) {
+      continue;
+    }
+    longest_frame_ns = longest_frame_ns == GST_CLOCK_TIME_NONE ? frame_ns : std::max(longest_frame_ns, frame_ns);
+  }
+  return longest_frame_ns;
+}
+
 uint64_t hmstitcher_source_offset_ns(const HmStitcherConfig& stitcher_config, guint source_index) {
   if (source_index == 0) {
     return stitcher_config.left_frame_offset_ns;
@@ -753,7 +881,7 @@ PipelineApplication::PipelineApplication()
 
 //------------------------------------------------------------------------------
 // PipelineApplication destructor.
-PipelineApplication::~PipelineApplication() {}
+PipelineApplication::~PipelineApplication() = default;
 
 //------------------------------------------------------------------------------
 // Callback and helper functions implementation.
@@ -773,6 +901,7 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_st
     app_ctx->index = i;
     app_ctx->active_source_index = -1;
     app_ctx->element_message_cb = handle_element_message_static;
+    app_ctx->bus_message_cb = handle_bus_message_static;
     app_ctx->defer_eos_cb = should_defer_eos_static;
     app_ctx->fatal_pipeline_error_cb = handle_fatal_pipeline_error_static;
     if (show_bbox_text_)
@@ -1702,6 +1831,7 @@ absl::Status PipelineApplication::createMainLoop(
 
   auto owned_windows = std::make_shared<std::set<Window>>();
   cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
+    begin_pipeline_recreation();
     for (const auto& context : contexts) {
       if (!context) {
         continue;
@@ -1733,6 +1863,27 @@ absl::Status PipelineApplication::createMainLoop(
     if (display_) {
       XCloseDisplay(display_);
       display_ = nullptr;
+    }
+    end_pipeline_recreation();
+  });
+  // This cleanup is pushed after pipeline destruction so it runs first. A
+  // pending recreation worker owns the reused AppCtx, so it must finish before
+  // the ordinary stage cleanup destroys that pipeline a final time.
+  cleanup_stack.push([this, contexts = app_contexts] {
+    runtime_seek_shutdown_requested_ = true;
+    if (runtime_seek_recreation_thread_.joinable()) {
+      runtime_seek_recreation_thread_.join();
+    }
+    dispatch_runtime_seek_recreation_completion();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    if (!runtime_seek_pending_) {
+      return;
+    }
+    const bool pending_context_is_stopping = std::any_of(contexts.begin(), contexts.end(), [this](const auto& context) {
+      return context && context.get() == runtime_seek_pending_->app_ctx;
+    });
+    if (pending_context_is_stopping) {
+      finish_runtime_seek("failed", "pipeline-stopped");
     }
   });
 
@@ -1924,9 +2075,31 @@ absl::Status PipelineApplication::playPipelines(
     if (dump_pipeline_dot_) {
       hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_running");
     }
-    if (app_contexts[i]->config.pipeline_recreate_sec)
-      g_timeout_add_seconds(
-          app_contexts[i]->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_contexts[i].get());
+    if (app_contexts[i]->config.pipeline_recreate_sec) {
+      AppCtx* app_ctx = app_contexts[i].get();
+      app_ctx->pipeline_recreate_source_id =
+          g_timeout_add_seconds(app_ctx->config.pipeline_recreate_sec, recreate_pipeline_thread_func_static, app_ctx);
+      if (app_ctx->pipeline_recreate_source_id == 0) {
+        return absl::InternalError("could not schedule periodic pipeline recreation");
+      }
+      // This source belongs to the stage's default main context. Remove it
+      // before stopPipeline or AppCtx destruction so a later stage's loop can
+      // never dispatch a callback with the previous stage's raw pointer.
+      cleanup_stack.push([this, context = app_contexts[i]] {
+        const guint source_id = context->pipeline_recreate_source_id;
+        context->pipeline_recreate_source_id = 0;
+        if (source_id == 0) {
+          return;
+        }
+        GMainContext* main_context = main_loop_ ? g_main_loop_get_context(main_loop_) : g_main_context_default();
+        if (GSource* source = g_main_context_find_source_by_id(main_context, source_id)) {
+          g_source_destroy(source);
+          if (g_getenv("HM_TEST_VERIFY_PIPELINE_RECREATE_SOURCE_CLEANUP")) {
+            g_print("HSTREAM_PIPELINE_RECREATE_TIMER status=cancelled source_id=%u\n", source_id);
+          }
+        }
+      });
+    }
   }
 
   print_runtime_commands();
@@ -1949,6 +2122,28 @@ absl::Status PipelineApplication::playPipelines(
   }
   g_main_loop_run(main_loop_);
   changemode(0);
+
+  // No path may stop or inspect the reused AppCtx while the reconstruction
+  // worker owns it. Most stop requests stay in the loop until publication;
+  // this is the final backstop for an unexpected loop quit from another
+  // source or a future stop condition.
+  if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+    runtime_seek_shutdown_requested_ = true;
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
+    if (runtime_seek_recreation_thread_.joinable()) {
+      runtime_seek_recreation_thread_.join();
+    }
+    dispatch_runtime_seek_recreation_completion();
+  }
+  if (runtime_seek_pending_) {
+    finish_runtime_seek("failed", "pipeline-stopped");
+  }
+  // Quiesce every streaming/X reader before final EOS/state teardown. Keep
+  // the fence raised through stage cleanup, which releases the last element
+  // references before clearing it.
+  begin_pipeline_recreation();
 
   // Finalize muxers before reporting success or allowing cleanup to set the
   // pipeline to NULL. In particular, a UI Stop/SIGINT must leave a playable
@@ -2619,6 +2814,14 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 //------------------------------------------------------------------------------
 
 void PipelineApplication::all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index) {
+  PipelineApplication* application = instance_;
+  if (!application || application->pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::lock_guard<std::mutex> pipeline_lock(application->pipeline_access_mu_);
+  if (application->pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
   guint num_male = 0;
   guint num_female = 0;
   guint num_objects[128];
@@ -2694,6 +2897,7 @@ void PipelineApplication::reset_playback_timing_state(long stage) {
   have_first_frame_by_source_.fill(false);
   first_frame_numbers_by_source_.fill(0);
   timed_run_last_progress_ns_ = GST_CLOCK_TIME_NONE;
+  timed_run_stop_requested_.store(false, std::memory_order_release);
   timed_run_last_progress_wall_ = time_limit_seconds_ > 0 &&
           hm::pipeline_internal::stitch_frame_should_account_playback(
                                       stitch_frame_calibration_active_.load(std::memory_order_acquire))
@@ -2714,6 +2918,63 @@ void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
   }
 }
 
+void PipelineApplication::request_timed_run_stop() {
+  timed_run_stop_requested_.store(true, std::memory_order_release);
+  GMainContext* context = main_loop_ ? g_main_loop_get_context(main_loop_) : g_main_context_default();
+  g_main_context_wakeup(context);
+}
+
+uint64_t PipelineApplication::playback_horizon_ns(AppCtx* app_ctx) const {
+  if (!app_ctx || !app_ctx->pipeline.pipeline) {
+    return GST_CLOCK_TIME_NONE;
+  }
+  std::vector<uint64_t> source_durations;
+  source_durations.reserve(app_ctx->config.num_source_sub_bins);
+  guint enabled_uri_sources = 0;
+  const bool stitched_output = app_ctx->config.hmsticher_config.enable;
+  const bool exact_paired_sources = app_ctx->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled;
+  for (guint i = 0; i < app_ctx->config.num_source_sub_bins; ++i) {
+    const NvDsSourceConfig& source_config = app_ctx->config.multi_source_config[i];
+    if (!source_config.enable ||
+        (source_config.type != NV_DS_SOURCE_URI && source_config.type != NV_DS_SOURCE_URI_MULTIPLE)) {
+      continue;
+    }
+    enabled_uri_sources++;
+    uint64_t source_duration_ns = duration_for_source_ns(source_config);
+    if (source_duration_ns != GST_CLOCK_TIME_NONE) {
+      if (stitched_output) {
+        source_duration_ns =
+            subtract_duration_ns(source_duration_ns, hmstitcher_source_offset_ns(app_ctx->config.hmsticher_config, i));
+      }
+      source_durations.emplace_back(source_duration_ns);
+    }
+  }
+
+  uint64_t horizon_ns = GST_CLOCK_TIME_NONE;
+  const bool complete_source_durations = enabled_uri_sources > 0 && source_durations.size() == enabled_uri_sources;
+  const bool require_complete_source_durations = stitched_output || exact_paired_sources;
+  const bool use_shortest_source = stitched_output || exact_paired_sources;
+  if (!source_durations.empty() && (!require_complete_source_durations || complete_source_durations)) {
+    horizon_ns = use_shortest_source && source_durations.size() > 1
+        ? *std::min_element(source_durations.begin(), source_durations.end())
+        : *std::max_element(source_durations.begin(), source_durations.end());
+  } else if (!require_complete_source_durations) {
+    gint64 queried_duration = 0;
+    if (gst_element_query_duration(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_duration) &&
+        queried_duration > 0) {
+      horizon_ns = static_cast<uint64_t>(queried_duration);
+    }
+  }
+  if (horizon_ns != GST_CLOCK_TIME_NONE && start_time_ns_ > 0) {
+    horizon_ns = horizon_ns > start_time_ns_ ? horizon_ns - start_time_ns_ : 0;
+  }
+  if (time_limit_seconds_ > 0) {
+    const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
+    horizon_ns = horizon_ns == GST_CLOCK_TIME_NONE ? limit_ns : std::min(horizon_ns, limit_ns);
+  }
+  return horizon_ns;
+}
+
 hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx* app_ctx) {
   hm::PlaybackProgressMetrics metrics;
   if (!app_ctx || !app_ctx->pipeline.pipeline ||
@@ -2724,51 +2985,7 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
 
   ProgressState& state = progress_states_[app_ctx->index];
   if (!state.initialized) {
-    std::vector<uint64_t> source_durations;
-    source_durations.reserve(app_ctx->config.num_source_sub_bins);
-    guint enabled_uri_sources = 0;
-    const bool stitched_output = app_ctx->config.hmsticher_config.enable;
-    for (guint i = 0; i < app_ctx->config.num_source_sub_bins; ++i) {
-      const NvDsSourceConfig& source_config = app_ctx->config.multi_source_config[i];
-      if (!source_config.enable ||
-          (source_config.type != NV_DS_SOURCE_URI && source_config.type != NV_DS_SOURCE_URI_MULTIPLE)) {
-        continue;
-      }
-      enabled_uri_sources++;
-      uint64_t source_duration_ns = duration_for_source_ns(source_config);
-      if (source_duration_ns != GST_CLOCK_TIME_NONE) {
-        if (stitched_output) {
-          source_duration_ns = subtract_duration_ns(
-              source_duration_ns, hmstitcher_source_offset_ns(app_ctx->config.hmsticher_config, i));
-        }
-        source_durations.emplace_back(source_duration_ns);
-      }
-    }
-
-    const bool have_complete_stitched_source_durations =
-        stitched_output && enabled_uri_sources > 0 && source_durations.size() == enabled_uri_sources;
-    if (!source_durations.empty() && (!stitched_output || have_complete_stitched_source_durations)) {
-      if (stitched_output && source_durations.size() > 1) {
-        state.total_video_ns = *std::min_element(source_durations.begin(), source_durations.end());
-      } else {
-        state.total_video_ns = *std::max_element(source_durations.begin(), source_durations.end());
-      }
-    } else {
-      gint64 queried_duration = 0;
-      if (gst_element_query_duration(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_duration) &&
-          queried_duration > 0) {
-        state.total_video_ns = static_cast<uint64_t>(queried_duration);
-      }
-    }
-
-    if (state.total_video_ns != GST_CLOCK_TIME_NONE && start_time_ns_ > 0) {
-      state.total_video_ns = state.total_video_ns > start_time_ns_ ? state.total_video_ns - start_time_ns_ : 0;
-    }
-    if (time_limit_seconds_ > 0) {
-      const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
-      state.total_video_ns =
-          state.total_video_ns == GST_CLOCK_TIME_NONE ? limit_ns : std::min(state.total_video_ns, limit_ns);
-    }
+    state.total_video_ns = playback_horizon_ns(app_ctx);
     state.initialized = true;
   }
 
@@ -2777,7 +2994,10 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
   if (gst_element_query_position(app_ctx->pipeline.pipeline, GST_FORMAT_TIME, &queried_position) &&
       queried_position >= 0) {
     processed_ns = static_cast<uint64_t>(queried_position);
-    if (start_time_ns_ > 0 && processed_ns >= start_time_ns_) {
+    if (app_ctx->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
+      const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
+      processed_ns = processed_ns > G_MAXUINT64 - runtime_offset_ns ? G_MAXUINT64 : processed_ns + runtime_offset_ns;
+    } else if (start_time_ns_ > 0 && processed_ns >= start_time_ns_) {
       processed_ns -= start_time_ns_;
     }
   }
@@ -2789,10 +3009,7 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
   if (time_limit_seconds_ > 0) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (processed_ns >= limit_ns && !quit_) {
-      quit_ = TRUE;
-      if (main_loop_) {
-        g_main_loop_quit(main_loop_);
-      }
+      request_timed_run_stop();
     }
   }
   if (state.total_video_ns != GST_CLOCK_TIME_NONE) {
@@ -3003,6 +3220,13 @@ hm::TerminalProgressGraphSnapshot PipelineApplication::build_progress_graph_snap
 }
 
 void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return;
+  }
   static guint header_print_cnt = 0;
   guint i;
   AppCtx* app_ctx = reinterpret_cast<AppCtx*>(context);
@@ -3121,10 +3345,25 @@ gboolean PipelineApplication::check_for_interrupt() {
     return FALSE;
   if (cintr_) {
     cintr_ = FALSE;
+    if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+      runtime_seek_shutdown_requested_ = true;
+      if (runtime_seek_pending_) {
+        finish_runtime_seek("failed", "pipeline-stopped");
+      }
+      // AppCtx is still owned by the worker. Its completion callback will
+      // leave the pipeline in a destructible state before quitting the loop.
+      return TRUE;
+    }
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
     return FALSE;
+  }
+  if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
   }
   std::chrono::steady_clock::time_point last_progress_wall;
   {
@@ -3142,6 +3381,9 @@ gboolean PipelineApplication::check_for_interrupt() {
       g_printerr(
           "Timed run saw no video-time progress for %d wall-clock seconds; stopping\n",
           kTimedRunNoProgressTimeoutSeconds);
+      if (runtime_seek_pending_) {
+        finish_runtime_seek("failed", "pipeline-stopped");
+      }
       quit_ = TRUE;
       if (main_loop_) {
         g_main_loop_quit(main_loop_);
@@ -3187,6 +3429,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
       "\t@set-render-audio-muted <0|1>: Mute or restore only the local render-audio branch\n"
+      "\t@seek <position-ns> <generation>: Seek local-render-only playback relative to the configured run start\n"
+      "\t@seek-relative <delta-ns> <generation>: Jump from the pipeline's current playback position\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
@@ -3704,6 +3948,15 @@ bool PipelineApplication::set_element_property_runtime(
         property_name.c_str());
     return false;
   }
+  PreparedRuntimeProperty prepared;
+  if (!prepare_runtime_property(element_name, property_name, value, &prepared)) {
+    return false;
+  }
+  auto prepared_cleanup = absl::MakeCleanup([&prepared]() {
+    if (prepared.owned_file_path.has_value()) {
+      ::unlink(prepared.owned_file_path->c_str());
+    }
+  });
   auto& app_ctx = stage_app_contexts_.at(current_stage_);
   for (const auto& app : app_ctx) {
     if (!app || !app->pipeline.pipeline) {
@@ -3721,7 +3974,7 @@ bool PipelineApplication::set_element_property_runtime(
       return false;
     }
     GValue gvalue = G_VALUE_INIT;
-    if (!set_gvalue_from_string(&gvalue, pspec, value)) {
+    if (!set_gvalue_from_string(&gvalue, pspec, prepared.applied_value)) {
       if (G_IS_VALUE(&gvalue)) {
         g_value_unset(&gvalue);
       }
@@ -3737,8 +3990,18 @@ bool PipelineApplication::set_element_property_runtime(
           "runtime command failed: value out of range for %s.%s=%s\n",
           element_name.c_str(),
           property_name.c_str(),
-          value.c_str());
+          prepared.original_value.c_str());
       return false;
+    }
+    const guint apply_delay_ms = test_delay_ms("HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS");
+    if (!replaying_runtime_properties_ && apply_delay_ms > 0 && prepared.owned_file_path.has_value()) {
+      g_print(
+          "HSTREAM_RUNTIME_PROPERTY status=captured element=%s property=%s original=%s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          prepared.original_value.c_str());
+      std::fflush(stdout);
+      g_usleep(static_cast<gulong>(apply_delay_ms) * 1000);
     }
     g_object_set_property(G_OBJECT(element), property_name.c_str(), &gvalue);
     g_value_unset(&gvalue);
@@ -3752,12 +4015,16 @@ bool PipelineApplication::set_element_property_runtime(
             "runtime command failed: plugin rejected %s.%s=%s\n",
             element_name.c_str(),
             property_name.c_str(),
-            value.c_str());
+            prepared.original_value.c_str());
         return false;
       }
     }
     gst_object_unref(element);
-    g_print("runtime property %s %s=%s\n", element_name.c_str(), property_name.c_str(), value.c_str());
+    if (!replaying_runtime_properties_) {
+      commit_runtime_property(element_name, property_name, prepared);
+    }
+    g_print(
+        "runtime property %s %s=%s\n", element_name.c_str(), property_name.c_str(), prepared.original_value.c_str());
     return true;
   }
   g_printerr("runtime command failed: element not found: %s\n", element_name.c_str());
@@ -3770,7 +4037,7 @@ bool PipelineApplication::set_element_properties_runtime(
     GstElement* element{nullptr};
     std::string element_name;
     std::string property_name;
-    std::string value;
+    PreparedRuntimeProperty prepared;
     GParamSpec* pspec{nullptr};
     GValue requested = G_VALUE_INIT;
     GValue previous = G_VALUE_INIT;
@@ -3786,6 +4053,9 @@ bool PipelineApplication::set_element_properties_runtime(
       }
       if (assignment.element) {
         gst_object_unref(assignment.element);
+      }
+      if (assignment.prepared.owned_file_path.has_value()) {
+        ::unlink(assignment.prepared.owned_file_path->c_str());
       }
     }
   });
@@ -3813,9 +4083,14 @@ bool PipelineApplication::set_element_properties_runtime(
     assignment.element = element;
     assignment.element_name = element_name;
     assignment.property_name = property_name;
-    assignment.value = value;
+    if (!prepare_runtime_property(element_name, property_name, value, &assignment.prepared)) {
+      assignment.prepared.original_value = value;
+      pending.push_back(std::move(assignment));
+      return false;
+    }
     assignment.pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
-    if (!assignment.pspec || !set_gvalue_from_string(&assignment.requested, assignment.pspec, value) ||
+    if (!assignment.pspec ||
+        !set_gvalue_from_string(&assignment.requested, assignment.pspec, assignment.prepared.applied_value) ||
         g_param_value_validate(assignment.pspec, &assignment.requested)) {
       pending.push_back(std::move(assignment));
       g_printerr(
@@ -3838,6 +4113,25 @@ bool PipelineApplication::set_element_properties_runtime(
       g_object_get_property(G_OBJECT(element), property_name.c_str(), &assignment.previous);
     }
     pending.push_back(std::move(assignment));
+  }
+  const guint apply_delay_ms = test_delay_ms("HM_TEST_RUNTIME_PROPERTY_APPLY_DELAY_MS");
+  if (!replaying_runtime_properties_ && apply_delay_ms > 0) {
+    bool captured_file = false;
+    for (const PendingAssignment& assignment : pending) {
+      if (!assignment.prepared.owned_file_path.has_value()) {
+        continue;
+      }
+      captured_file = true;
+      g_print(
+          "HSTREAM_RUNTIME_PROPERTY status=captured element=%s property=%s original=%s\n",
+          assignment.element_name.c_str(),
+          assignment.property_name.c_str(),
+          assignment.prepared.original_value.c_str());
+    }
+    if (captured_file) {
+      std::fflush(stdout);
+      g_usleep(static_cast<gulong>(apply_delay_ms) * 1000);
+    }
   }
   size_t applied = 0;
   for (; applied < pending.size(); ++applied) {
@@ -3864,23 +4158,224 @@ bool PipelineApplication::set_element_properties_runtime(
         "runtime command failed: plugin rejected %s.%s=%s\n",
         failed.element_name.c_str(),
         failed.property_name.c_str(),
-        failed.value.c_str());
+        failed.prepared.original_value.c_str());
     return false;
   }
   for (const PendingAssignment& assignment : pending) {
+    if (!replaying_runtime_properties_) {
+      commit_runtime_property(assignment.element_name, assignment.property_name, assignment.prepared);
+    }
     g_print(
         "runtime property %s %s=%s\n",
         assignment.element_name.c_str(),
         assignment.property_name.c_str(),
-        assignment.value.c_str());
+        assignment.prepared.original_value.c_str());
+  }
+  return true;
+}
+
+bool PipelineApplication::prepare_runtime_property(
+    const std::string& element_name,
+    const std::string& property_name,
+    const std::string& value,
+    PreparedRuntimeProperty* prepared) {
+  if (!prepared) {
+    return false;
+  }
+  prepared->original_value = value;
+  prepared->applied_value = value;
+  if (property_name == "runtime-tuning-config-file") {
+    gchar* contents = nullptr;
+    gsize size = 0;
+    GError* error = nullptr;
+    if (!g_file_get_contents(value.c_str(), &contents, &size, &error)) {
+      g_printerr(
+          "runtime command failed: could not snapshot %s for recreation: %s\n",
+          value.c_str(),
+          error ? error->message : "unknown error");
+      if (error) {
+        g_error_free(error);
+      }
+      return false;
+    }
+    prepared->replay_file_contents.emplace(contents, size);
+    g_free(contents);
+
+    const auto tuning_status = DsPlayTrackerLoadRuntimeTuningContents(*prepared->replay_file_contents);
+    if (!tuning_status.ok()) {
+      g_printerr(
+          "runtime command failed: invalid runtime tuning for %s.%s: %s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          tuning_status.status().ToString().c_str());
+      return false;
+    }
+
+    // Sparse tuning deltas with the same target set and fields supersede one
+    // another. This keeps rapid slider motion bounded without discarding
+    // independent earlier adjustments that must be replayed in order.
+    try {
+      const YAML::Node document = YAML::Load(*prepared->replay_file_contents);
+      const YAML::Node play_tracker = document["play-tracker"];
+      const YAML::Node tuning = play_tracker["hstream-runtime-tuning"];
+      std::vector<std::string> keys;
+      if (tuning && tuning.IsMap()) {
+        for (const auto& entry : tuning) {
+          keys.push_back(entry.first.as<std::string>());
+        }
+      }
+      std::sort(keys.begin(), keys.end());
+      std::ostringstream group;
+      group << (play_tracker["hstream-apply-to-fast-box"] ? play_tracker["hstream-apply-to-fast-box"].as<bool>()
+                                                          : false)
+            << ':'
+            << (play_tracker["hstream-apply-to-follower-box"] ? play_tracker["hstream-apply-to-follower-box"].as<bool>()
+                                                              : true);
+      for (const std::string& key : keys) {
+        group << ':' << key;
+      }
+      prepared->replay_group = group.str();
+    } catch (const std::exception& error) {
+      g_printerr("runtime command failed: could not index runtime tuning for recreation: %s\n", error.what());
+      return false;
+    }
+    std::string failure_reason;
+    std::string owned_path;
+    if (!materialize_secure_runtime_file(*prepared->replay_file_contents, &owned_path, &failure_reason)) {
+      g_printerr(
+          "runtime command failed: could not materialize owned tuning for %s.%s: %s\n",
+          element_name.c_str(),
+          property_name.c_str(),
+          failure_reason.c_str());
+      return false;
+    }
+    prepared->owned_file_path = owned_path;
+    prepared->applied_value = std::move(owned_path);
+  }
+  return true;
+}
+
+void PipelineApplication::commit_runtime_property(
+    const std::string& element_name,
+    const std::string& property_name,
+    const PreparedRuntimeProperty& prepared) {
+  runtime_property_overrides_.erase(
+      std::remove_if(
+          runtime_property_overrides_.begin(),
+          runtime_property_overrides_.end(),
+          [&](const RuntimePropertyOverride& assignment) {
+            if (assignment.element_name != element_name || assignment.property_name != property_name) {
+              return false;
+            }
+            return !prepared.replay_group.has_value() || assignment.replay_group == prepared.replay_group;
+          }),
+      runtime_property_overrides_.end());
+  runtime_property_overrides_.push_back(
+      {element_name, property_name, prepared.original_value, prepared.replay_file_contents, prepared.replay_group});
+}
+
+bool PipelineApplication::reapply_runtime_properties() {
+  replaying_runtime_properties_ = true;
+  auto replay_cleanup = absl::MakeCleanup([this]() { replaying_runtime_properties_ = false; });
+  for (const RuntimePropertyOverride& assignment : runtime_property_overrides_) {
+    std::string replay_value = assignment.value;
+    std::optional<std::string> replay_path;
+    if (assignment.replay_file_contents.has_value()) {
+      GError* error = nullptr;
+      gchar* path = nullptr;
+      const gint fd = g_file_open_tmp("hstream-runtime-tuning-XXXXXX.yaml", &path, &error);
+      if (fd < 0 || !path) {
+        g_printerr(
+            "runtime command failed: could not create replay file for %s.%s: %s\n",
+            assignment.element_name.c_str(),
+            assignment.property_name.c_str(),
+            error ? error->message : "unknown error");
+        if (error) {
+          g_error_free(error);
+        }
+        if (fd >= 0) {
+          ::close(fd);
+        }
+        g_free(path);
+        return false;
+      }
+      replay_path = path;
+      g_free(path);
+      size_t written = 0;
+      while (written < assignment.replay_file_contents->size()) {
+        const ssize_t result = ::write(
+            fd, assignment.replay_file_contents->data() + written, assignment.replay_file_contents->size() - written);
+        if (result > 0) {
+          written += static_cast<size_t>(result);
+          continue;
+        }
+        if (result < 0 && errno == EINTR) {
+          continue;
+        }
+        break;
+      }
+      const int close_result = ::close(fd);
+      if (written != assignment.replay_file_contents->size() || close_result != 0) {
+        g_printerr(
+            "runtime command failed: could not materialize replay file for %s.%s: %s\n",
+            assignment.element_name.c_str(),
+            assignment.property_name.c_str(),
+            std::strerror(errno));
+        ::unlink(replay_path->c_str());
+        return false;
+      }
+      replay_value = *replay_path;
+    }
+    const bool applied = set_element_property_runtime(assignment.element_name, assignment.property_name, replay_value);
+    if (replay_path.has_value()) {
+      ::unlink(replay_path->c_str());
+    }
+    if (!applied) {
+      g_printerr(
+          "runtime command failed: could not restore %s.%s after pipeline recreation\n",
+          assignment.element_name.c_str(),
+          assignment.property_name.c_str());
+      return false;
+    }
   }
   return true;
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
+  constexpr absl::string_view kSeekRelativeCommand = "seek-relative";
+  constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
+  if (trimmed_line.rfind(std::string(kSeekRelativeCommand), 0) == 0 &&
+      trimmed_line.size() > kSeekRelativeCommand.size() &&
+      std::isspace(static_cast<unsigned char>(trimmed_line[kSeekRelativeCommand.size()]))) {
+    const std::string arguments = trim_ascii(trimmed_line.substr(kSeekRelativeCommand.size()));
+    const size_t separator = arguments.find_first_of(" \t");
+    gint64 delta_ns = 0;
+    guint64 generation = 0;
+    if (separator == std::string::npos || !parse_int64_strict(trim_ascii(arguments.substr(0, separator)), &delta_ns) ||
+        delta_ns == 0 || !parse_uint64_strict(trim_ascii(arguments.substr(separator)), &generation) ||
+        generation == 0) {
+      g_printerr("runtime command failed: seek-relative requires nonzero delta-ns and a positive generation\n");
+      return false;
+    }
+    return seek_runtime_relative(delta_ns, generation);
+  }
+  if (trimmed_line.rfind(std::string(kSeekCommand), 0) == 0 && trimmed_line.size() > kSeekCommand.size() &&
+      std::isspace(static_cast<unsigned char>(trimmed_line[kSeekCommand.size()]))) {
+    const std::string arguments = trim_ascii(trimmed_line.substr(kSeekCommand.size()));
+    const size_t separator = arguments.find_first_of(" \t");
+    guint64 target_ns = 0;
+    guint64 generation = 0;
+    if (separator == std::string::npos ||
+        !parse_uint64_strict(trim_ascii(arguments.substr(0, separator)), &target_ns) ||
+        !parse_uint64_strict(trim_ascii(arguments.substr(separator)), &generation) || generation == 0) {
+      g_printerr("runtime command failed: seek requires position-ns and a positive generation\n");
+      return false;
+    }
+    return seek_runtime(target_ns, generation);
+  }
   if (trimmed_line.rfind(std::string(kRenderAudioMutedCommand), 0) == 0 &&
       trimmed_line.size() > kRenderAudioMutedCommand.size() &&
       std::isspace(static_cast<unsigned char>(trimmed_line[kRenderAudioMutedCommand.size()]))) {
@@ -3928,11 +4423,378 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
         "set-render-window <xid>, set-render-audio-muted <0|1>, capture-preview-frame <main|stitched|sourceN> "
-        "<jpg-path>, set-properties "
+        "<jpg-path>, seek <position-ns> <generation>, seek-relative <delta-ns> <generation>, set-properties "
         "<element property=value;...>, reset-progress-rate <generation>, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);
+}
+
+bool PipelineApplication::runtime_seek_is_local_render_only() const {
+  auto is_render_type = [](NvDsSinkType type) {
+#if defined(IS_TEGRA)
+    return type == NV_DS_SINK_RENDER_3D || type == NV_DS_SINK_RENDER_DRM;
+#else
+    return type == NV_DS_SINK_RENDER_EGL || type == NV_DS_SINK_RENDER_DRM;
+#endif
+  };
+  if (enabled_sink_types_.empty()) {
+    return false;
+  }
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.empty()) {
+    return false;
+  }
+  const size_t stage_index = static_cast<size_t>(std::distance(stage_app_contexts_.cbegin(), stage));
+  if (enabled_sink_types_.size() != 1 && stage_index >= enabled_sink_types_.size()) {
+    return false;
+  }
+  const auto& requested_types =
+      enabled_sink_types_.size() == 1 ? enabled_sink_types_.front() : enabled_sink_types_.at(stage_index);
+  const bool requested_render =
+      !requested_types.empty() && std::all_of(requested_types.begin(), requested_types.end(), is_render_type);
+  if (!requested_render) {
+    return false;
+  }
+  bool active_render = false;
+  for (const auto& app_context : stage->second) {
+    if (!app_context) {
+      continue;
+    }
+    for (guint index = 0; index < app_context->config.num_sink_sub_bins; ++index) {
+      const NvDsSinkSubBinConfig& sink = app_context->config.sink_bin_sub_bin_config[index];
+      if (!sink.enable) {
+        continue;
+      }
+      if (!is_render_type(sink.type)) {
+        return false;
+      }
+      active_render = true;
+    }
+  }
+  return active_render;
+}
+
+bool PipelineApplication::seek_runtime(uint64_t target_ns, uint64_t generation) {
+  return seek_runtime_impl(target_ns, std::nullopt, generation);
+}
+
+bool PipelineApplication::seek_runtime_relative(gint64 delta_ns, uint64_t generation) {
+  return seek_runtime_impl(0, delta_ns, generation);
+}
+
+bool PipelineApplication::seek_runtime_impl(
+    uint64_t target_ns,
+    std::optional<gint64> relative_delta_ns,
+    uint64_t generation) {
+  auto reject = [generation](const char* status, const char* reason) {
+    g_print("HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " reason=%s\n", status, generation, reason);
+    std::fflush(stdout);
+    return false;
+  };
+  if (!runtime_seek_is_local_render_only()) {
+    return reject("rejected", "nonlocal-output-active");
+  }
+  if (runtime_seek_pending_ || runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+    return reject("rejected", "seek-in-progress");
+  }
+  if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+    return reject("rejected", "stitching-calibration-active");
+  }
+  if (!ui_preview_window_ids_.empty() && active_ui_preview_channel_.empty()) {
+    return reject("rejected", "local-render-disabled");
+  }
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.empty()) {
+    return reject("failed", "pipeline-unavailable");
+  }
+  if (stage->second.size() != 1 || !stage->second.front()) {
+    return reject("rejected", "multiple-pipelines-unsupported");
+  }
+
+  AppCtx* app_context = stage->second.front().get();
+  GstElement* pipeline = app_context->pipeline.pipeline;
+  if (!pipeline) {
+    return reject("failed", "pipeline-unavailable");
+  }
+  GstState current_state = GST_STATE_NULL;
+  GstState pending_state = GST_STATE_VOID_PENDING;
+  const GstStateChangeReturn state_result = gst_element_get_state(pipeline, &current_state, &pending_state, 0);
+  if (state_result == GST_STATE_CHANGE_FAILURE || current_state != GST_STATE_PLAYING) {
+    return reject("rejected", "pipeline-not-playing");
+  }
+  guint enabled_file_sources = 0;
+  for (guint source_index = 0; source_index < app_context->config.num_source_sub_bins; ++source_index) {
+    const NvDsSourceConfig& source = app_context->config.multi_source_config[source_index];
+    if (!source.enable) {
+      continue;
+    }
+    if (source.type != NV_DS_SOURCE_URI && source.type != NV_DS_SOURCE_URI_MULTIPLE) {
+      return reject("rejected", "source-not-seekable");
+    }
+    ++enabled_file_sources;
+  }
+  if (enabled_file_sources == 0) {
+    return reject("rejected", "source-not-seekable");
+  }
+
+  uint64_t clamped_target_ns = target_ns;
+  if (relative_delta_ns.has_value()) {
+    gint64 pipeline_position_ns = -1;
+    if (!gst_element_query_position(pipeline, GST_FORMAT_TIME, &pipeline_position_ns) || pipeline_position_ns < 0) {
+      return reject("failed", "position-unavailable");
+    }
+    const uint64_t queried_position = static_cast<uint64_t>(pipeline_position_ns);
+    uint64_t relative_position = 0;
+    if (app_context->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
+      const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
+      relative_position =
+          queried_position > G_MAXUINT64 - runtime_offset_ns ? G_MAXUINT64 : runtime_offset_ns + queried_position;
+    } else {
+      relative_position = queried_position > start_time_ns_ ? queried_position - start_time_ns_ : 0;
+    }
+    const gint64 delta_ns = *relative_delta_ns;
+    if (delta_ns > 0) {
+      const uint64_t forward_ns = static_cast<uint64_t>(delta_ns);
+      clamped_target_ns = forward_ns > G_MAXUINT64 - relative_position ? G_MAXUINT64 : relative_position + forward_ns;
+    } else {
+      const uint64_t backward_ns =
+          delta_ns == G_MININT64 ? static_cast<uint64_t>(G_MAXINT64) + 1 : static_cast<uint64_t>(-delta_ns);
+      clamped_target_ns = backward_ns >= relative_position ? 0 : relative_position - backward_ns;
+    }
+  }
+  if (time_limit_seconds_ > 0) {
+    clamped_target_ns = std::min(clamped_target_ns, static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND);
+  }
+  const uint64_t playback_horizon = playback_horizon_ns(app_context);
+  if (playback_horizon == GST_CLOCK_TIME_NONE || playback_horizon == 0) {
+    return reject("rejected", "duration-unavailable");
+  }
+  // Media durations are exclusive endpoints. The initial playlist planners
+  // correctly reject a target at permanent EOS, while the UI slider can
+  // naturally emit its maximum. Leave at least one second (or two frames for
+  // very low frame-rate media) for the exact-pair barrier and downstream frame
+  // acknowledgement before decoder EOS arrives.
+  uint64_t endpoint_margin_ns = GST_SECOND;
+  for (guint source_index = 0; source_index < app_context->config.num_source_sub_bins; ++source_index) {
+    const NvDsSourceConfig& source = app_context->config.multi_source_config[source_index];
+    if (!source.enable) {
+      continue;
+    }
+    const uint64_t frame_duration_ns = source.camera_fps_n > 0 && source.camera_fps_d > 0
+        ? gst_util_uint64_scale(GST_SECOND, source.camera_fps_d, source.camera_fps_n)
+        : frame_duration_for_source_ns(source);
+    if (frame_duration_ns == GST_CLOCK_TIME_NONE || frame_duration_ns == 0) {
+      continue;
+    }
+    endpoint_margin_ns =
+        std::max(endpoint_margin_ns, frame_duration_ns > G_MAXUINT64 / 2 ? G_MAXUINT64 : frame_duration_ns * 2);
+  }
+  const uint64_t last_seekable_position_ns =
+      playback_horizon > endpoint_margin_ns ? playback_horizon - endpoint_margin_ns : 0;
+  clamped_target_ns = std::min(clamped_target_ns, last_seekable_position_ns);
+  if (clamped_target_ns > static_cast<uint64_t>(G_MAXINT64) - start_time_ns_) {
+    return reject("failed", "position-overflow");
+  }
+  if (!app_context->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
+    for (guint audio_index = 0; audio_index < MAX_SOURCE_BINS; ++audio_index) {
+      const NvDsHmAudioConfig& audio = app_context->config.hmaudio_config[audio_index];
+      if (audio.enable && audio.src == SRC_FILE) {
+        return reject("rejected", "standalone-audio-seek-unsupported");
+      }
+    }
+    // Promote ordinary file URIs to one-entry logical playlists for the
+    // replacement generation. Their decoded-pad trim can then position before
+    // preroll without issuing the NVIDIA decoder flushing seek that can wedge
+    // while PAUSED.
+    for (guint source_index = 0; source_index < app_context->config.num_source_sub_bins; ++source_index) {
+      NvDsSourceConfig& source = app_context->config.multi_source_config[source_index];
+      if (!source.enable || (source.uri_list && *source.uri_list)) {
+        continue;
+      }
+      if (!source.uri || !*source.uri) {
+        return reject("failed", "source-uri-unavailable");
+      }
+      source.uri_list = g_strdup(source.uri);
+    }
+  }
+  // Rebuild from pristine source state at the selected epoch. URI-MULTIPLE is
+  // a logical multi-file camera playlist whose exact-pair counters and current
+  // physical chapters cannot be rewound safely by a flushing seek. Recreation
+  // reuses the startup positioning path, so chapter selection, camera offsets,
+  // source-linked audio, play tracking, and native tracking all cross the
+  // timeline boundary as one generation.
+  runtime_seek_pending_ = RuntimeSeekPending{
+      .app_ctx = app_context,
+      .generation = generation,
+      .target_ns = clamped_target_ns,
+      .phase = RuntimeSeekPhase::kRecreating,
+      .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_recreation_timeout_ms()),
+  };
+  runtime_seek_recreation_timed_out_ = false;
+  runtime_seek_shutdown_requested_ = false;
+  runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
+  if (g_getenv("HM_TEST_URI_PLAYLIST_SCHEDULE_SUSPEND_RACE")) {
+    if (!exercise_uri_playlist_schedule_suspend_race_for_test(&app_context->pipeline.multi_src_bin, 0, 5000)) {
+      g_printerr("URI-playlist schedule/suspend ownership regression failed\n");
+      finish_runtime_seek("failed", "playlist-callback-fence-failed");
+      return false;
+    }
+    g_print("HSTREAM_URI_PLAYLIST_CALLBACK status=race-fenced action=switch source=0\n");
+  } else if (
+      g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK") &&
+      !queue_uri_playlist_switch_callback_for_test(&app_context->pipeline.multi_src_bin, 0, 5000)) {
+    g_printerr("Could not queue the requested URI-playlist boundary callback for lifecycle testing\n");
+  }
+  // Decoder streaming threads schedule physical-boundary work on this main
+  // context. Invalidate and remove that generation before the worker can
+  // clear mutexes or replace GstElements in the reused AppCtx.
+  std::thread test_pipeline_reader;
+  std::atomic<bool> test_pipeline_reader_entered{false};
+  const guint test_reader_delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_READER_DELAY_MS");
+  if (test_reader_delay_ms > 0) {
+    test_pipeline_reader = std::thread([this, app_context, test_reader_delay_ms, &test_pipeline_reader_entered] {
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+        return;
+      }
+      std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+        return;
+      }
+      test_pipeline_reader_entered.store(true, std::memory_order_release);
+      g_print("HSTREAM_PIPELINE_READER status=entered\n");
+      GstState state = GST_STATE_NULL;
+      GstState pending = GST_STATE_VOID_PENDING;
+      if (app_context->pipeline.pipeline) {
+        gst_element_get_state(app_context->pipeline.pipeline, &state, &pending, 0);
+      }
+      g_usleep(static_cast<gulong>(test_reader_delay_ms) * 1000);
+      g_print("HSTREAM_PIPELINE_READER status=released\n");
+    });
+    while (!test_pipeline_reader_entered.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  }
+  runtime_seek_recreation_active_.store(true, std::memory_order_release);
+  begin_pipeline_recreation();
+  if (test_pipeline_reader.joinable()) {
+    test_pipeline_reader.join();
+  }
+  // A streaming callback may have reached the timed-run limit while this
+  // main-context command waited to quiesce it. The already-earned stop wins;
+  // do not let a new seek reset and erase that request.
+  if (quit_ || timed_run_stop_requested_.load(std::memory_order_acquire)) {
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    finish_runtime_seek("failed", "pipeline-stopping");
+    return false;
+  }
+  suspend_uri_playlist_main_context_callbacks(&app_context->pipeline.multi_src_bin);
+  if (app_context->config.enable_perf_measurement) {
+    // perf_cb queries app_context->pipeline from an independent GLib timeout;
+    // remove it on the main context before the worker owns that storage.
+    pause_perf_measurement(&app_context->perf_struct);
+  }
+  app_context->defer_bus_watch = TRUE;
+  detach_pipeline_bus_watch(app_context);
+  try {
+    if (g_getenv("HM_TEST_RUNTIME_SEEK_WORKER_UNAVAILABLE")) {
+      throw std::runtime_error("injected runtime seek worker construction failure");
+    }
+    runtime_seek_recreation_thread_ = std::thread(
+        &PipelineApplication::runtime_seek_recreation_worker, this, app_context, clamped_target_ns, generation);
+  } catch (const std::exception& error) {
+    app_context->defer_bus_watch = FALSE;
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    // Callback cancellation may have consumed a pending physical-boundary
+    // transition, so the original generation cannot be advertised as healthy.
+    // Seeking is local-render-only: discard it directly and stop with an
+    // explicit failure instead of risking a later playlist wedge.
+    app_context->eos_received = TRUE;
+    cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
+    const bool stopped = !app_context->pipeline.pipeline ||
+        gst_element_set_state(app_context->pipeline.pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    if (!stopped) {
+      g_printerr("Runtime seek worker failure left a local-render pipeline that could not be stopped\n");
+    }
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-recreate-worker-unavailable");
+    }
+    app_context->return_value = -1;
+    app_context->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    g_printerr("runtime seek could not start its recreation worker: %s\n", error.what());
+    return false;
+  }
+  return true;
+}
+
+void PipelineApplication::advance_runtime_seek() {
+  // The worker only publishes its result into protected storage. Polling it
+  // from this recurring main-context callback guarantees that AppCtx
+  // publication and thread joining can never run inline on the worker.
+  dispatch_runtime_seek_recreation_completion();
+  if (!runtime_seek_pending_) {
+    return;
+  }
+  RuntimeSeekPending& pending = *runtime_seek_pending_;
+  AppCtx* app_context = pending.app_ctx;
+  GstElement* pipeline = pending.pipeline;
+  if (pending.phase == RuntimeSeekPhase::kRecreating) {
+    if (std::chrono::steady_clock::now() >= pending.deadline) {
+      runtime_seek_recreation_timed_out_ = true;
+      finish_runtime_seek("failed", "pipeline-recreate-timeout");
+    }
+    return;
+  }
+  if (!app_context || !pipeline || app_context->pipeline.pipeline != pipeline) {
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    finish_runtime_seek("failed", "pipeline-replaced");
+    return;
+  }
+  if (app_context->return_value != 0 || app_context->quit || app_context->eos_received) {
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    finish_runtime_seek("failed", app_context->eos_received ? "end-of-stream" : "pipeline-stopped");
+    return;
+  }
+  if (std::chrono::steady_clock::now() >= pending.deadline) {
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    finish_runtime_seek("failed", "first-frame-timeout");
+    app_context->return_value = -1;
+    app_context->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+  }
+}
+
+void PipelineApplication::finish_runtime_seek(const char* status, const char* reason, uint64_t achieved_position_ns) {
+  if (!runtime_seek_pending_) {
+    return;
+  }
+  runtime_seek_frame_generation_.store(0, std::memory_order_release);
+  const RuntimeSeekPending completed = std::move(*runtime_seek_pending_);
+  runtime_seek_pending_.reset();
+  if (reason) {
+    g_print(
+        "HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " reason=%s\n", status, completed.generation, reason);
+  } else {
+    g_print(
+        "HSTREAM_SEEK status=%s generation=%" G_GUINT64_FORMAT " position_ns=%" G_GUINT64_FORMAT "\n",
+        status,
+        completed.generation,
+        achieved_position_ns == GST_CLOCK_TIME_NONE ? completed.target_ns : achieved_position_ns);
+  }
+  std::fflush(stdout);
+  if (completed.pipeline) {
+    gst_object_unref(completed.pipeline);
+  }
 }
 
 void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {
@@ -4206,15 +5068,112 @@ gboolean PipelineApplication::event_thread_func_static(gpointer arg) {
 }
 
 uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx) const {
-  return hm::pipeline_internal::stitch_frame_initial_position(
+  const uint64_t configured_position = hm::pipeline_internal::stitch_frame_initial_position(
       start_time_ns_,
       stitch_frame_time_ns_,
       app_ctx && app_ctx->configurator().stitching_calibration_required(),
       app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0);
+  const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
+  return runtime_offset_ns > G_MAXUINT64 - configured_position ? G_MAXUINT64 : configured_position + runtime_offset_ns;
 }
 
 gboolean PipelineApplication::handle_element_message_static(AppCtx* app_ctx, GstMessage* message) {
   return instance_ ? instance_->handle_element_message(app_ctx, message) : FALSE;
+}
+
+void PipelineApplication::handle_bus_message_static(AppCtx* app_ctx, GstMessage* message) {
+  if (instance_) {
+    instance_->handle_bus_message(app_ctx, message);
+  }
+}
+
+void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* message) {
+  if (app_ctx && message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
+    const GstStructure* structure = gst_message_get_structure(message);
+    if (structure && gst_structure_has_name(structure, "hstream-uri-playlist-initial-seek-ready")) {
+      if (seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin)) {
+        const guint64 fallback_ns = uri_playlist_initial_seek_fallback_ns(&app_ctx->pipeline.multi_src_bin);
+        if (fallback_ns > 0 && runtime_seek_pending_ && runtime_seek_pending_->app_ctx == app_ctx &&
+            runtime_seek_pending_->phase == RuntimeSeekPhase::kWaitingForFrame) {
+          const guint fallback_timeout_ms = runtime_seek_fallback_timeout_ms(fallback_ns);
+          runtime_seek_pending_->deadline =
+              std::chrono::steady_clock::now() + std::chrono::milliseconds(fallback_timeout_ms);
+          g_print(
+              "HSTREAM_SEEK_FALLBACK status=active generation=%" G_GUINT64_FORMAT " decoded_trim_ns=%" G_GUINT64_FORMAT
+              " timeout_ms=%u\n",
+              runtime_seek_pending_->generation,
+              fallback_ns,
+              fallback_timeout_ms);
+          std::fflush(stdout);
+        }
+      }
+      return;
+    }
+    guint64 recovery_generation = 0;
+    if (structure && gst_structure_has_name(structure, "hstream-runtime-seek-recovery-frame") &&
+        gst_structure_get_uint64(structure, "generation", &recovery_generation) && recovery_generation != 0) {
+      GstState current_state = GST_STATE_NULL;
+      GstState pending_state = GST_STATE_VOID_PENDING;
+      const GstStateChangeReturn state_result =
+          gst_element_get_state(app_ctx->pipeline.pipeline, &current_state, &pending_state, 0);
+      if (state_result == GST_STATE_CHANGE_FAILURE || current_state != GST_STATE_PLAYING ||
+          app_ctx->observed_pipeline_state != GST_STATE_PLAYING) {
+        uint64_t expected = 0;
+        (void)runtime_seek_recovery_frame_generation_.compare_exchange_strong(
+            expected, recovery_generation, std::memory_order_acq_rel, std::memory_order_acquire);
+        return;
+      }
+      g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", recovery_generation);
+      std::fflush(stdout);
+      return;
+    }
+  }
+  if (!runtime_seek_pending_ || !message || runtime_seek_pending_->app_ctx != app_ctx) {
+    return;
+  }
+  if (runtime_seek_pending_->phase == RuntimeSeekPhase::kRecreating) {
+    return;
+  }
+  if (!app_ctx || runtime_seek_pending_->pipeline != app_ctx->pipeline.pipeline) {
+    finish_runtime_seek("failed", "pipeline-replaced");
+    return;
+  }
+  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
+    const GstStructure* structure = gst_message_get_structure(message);
+    guint64 generation = 0;
+    guint64 pts_ns = GST_CLOCK_TIME_NONE;
+    if (structure && gst_structure_has_name(structure, "hstream-runtime-seek-frame") &&
+        gst_structure_get_uint64(structure, "generation", &generation) &&
+        gst_structure_get_uint64(structure, "pts-ns", &pts_ns) && generation == runtime_seek_pending_->generation) {
+      uint64_t achieved_position_ns = runtime_seek_pending_->target_ns;
+      if (app_ctx->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
+        achieved_position_ns = pts_ns > G_MAXUINT64 - runtime_seek_pending_->target_ns
+            ? G_MAXUINT64
+            : runtime_seek_pending_->target_ns + pts_ns;
+      } else if (pts_ns >= start_time_ns_) {
+        achieved_position_ns = pts_ns - start_time_ns_;
+      }
+      const uint64_t horizon_ns = playback_horizon_ns(app_ctx);
+      if (horizon_ns != GST_CLOCK_TIME_NONE) {
+        achieved_position_ns = std::min(achieved_position_ns, horizon_ns);
+      }
+      resume_perf_measurement(&app_ctx->perf_struct);
+      finish_runtime_seek("ok", nullptr, achieved_position_ns);
+    }
+    return;
+  }
+  switch (GST_MESSAGE_TYPE(message)) {
+    case GST_MESSAGE_ERROR:
+      runtime_seek_frame_generation_.store(0, std::memory_order_release);
+      finish_runtime_seek("failed", "pipeline-error");
+      break;
+    case GST_MESSAGE_EOS:
+      runtime_seek_frame_generation_.store(0, std::memory_order_release);
+      finish_runtime_seek("failed", "end-of-stream");
+      break;
+    default:
+      break;
+  }
 }
 
 void PipelineApplication::handle_fatal_pipeline_error_static(AppCtx* app_ctx) {
@@ -4743,6 +5702,25 @@ gboolean PipelineApplication::event_thread_func() {
   guint i;
   gboolean ret = TRUE;
 
+  advance_runtime_seek();
+  // The recreation worker exclusively owns the reused AppCtx and its old/new
+  // GstPipeline generations. Keep dispatching the GLib loop (including the
+  // seek deadline), but do not inspect that mutable state or consume another
+  // runtime command until the completed transaction is published here.
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
+  if (timed_run_stop_requested_.exchange(false, std::memory_order_acq_rel)) {
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return FALSE;
+  }
+
   auto& app_ctx = stage_app_contexts_.at(current_stage_);
   for (i = 0; i < app_ctx.size(); i++) {
     if (app_ctx[i] && !app_ctx[i]->quit)
@@ -4917,6 +5895,13 @@ gpointer PipelineApplication::nvds_x_event_thread() {
     memset(&e, 0, sizeof(XEvent));
     while (!quit_ && display_ && XPending(display_)) {
       XNextEvent(display_, &e);
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+        continue;
+      }
+      std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+      if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+        continue;
+      }
       auto& app_ctx = stage_app_contexts_.at(current_stage_);
       switch (e.type) {
         case ButtonPress: {
@@ -5012,6 +5997,55 @@ gboolean PipelineApplication::overlay_graphics(
     GstBuffer* buf,
     NvDsBatchMeta* batch_meta,
     guint index) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    return TRUE;
+  }
+  uint64_t seek_generation = runtime_seek_frame_generation_.load(std::memory_order_acquire);
+  const GstClockTime seek_frame_pts = buf ? GST_BUFFER_PTS(buf) : GST_CLOCK_TIME_NONE;
+  if (!g_getenv("HM_TEST_RUNTIME_SEEK_SUPPRESS_FIRST_FRAME_ACK") && seek_generation != 0 &&
+      GST_CLOCK_TIME_IS_VALID(seek_frame_pts) &&
+      runtime_seek_frame_generation_.compare_exchange_strong(
+          seek_generation, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    GstStructure* structure = gst_structure_new(
+        "hstream-runtime-seek-frame",
+        "generation",
+        G_TYPE_UINT64,
+        seek_generation,
+        "pts-ns",
+        G_TYPE_UINT64,
+        static_cast<guint64>(seek_frame_pts),
+        nullptr);
+    GstElement* pipeline = app_ctx ? app_ctx->pipeline.pipeline : nullptr;
+    if (pipeline) {
+      gst_element_post_message(pipeline, gst_message_new_application(GST_OBJECT(pipeline), structure));
+    } else {
+      gst_structure_free(structure);
+    }
+  }
+  uint64_t recovery_generation = runtime_seek_recovery_frame_generation_.load(std::memory_order_acquire);
+  if (recovery_generation != 0 && GST_CLOCK_TIME_IS_VALID(seek_frame_pts) &&
+      runtime_seek_recovery_frame_generation_.compare_exchange_strong(
+          recovery_generation, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    GstStructure* structure = gst_structure_new(
+        "hstream-runtime-seek-recovery-frame",
+        "generation",
+        G_TYPE_UINT64,
+        recovery_generation,
+        "pts-ns",
+        G_TYPE_UINT64,
+        static_cast<guint64>(seek_frame_pts),
+        nullptr);
+    GstElement* pipeline = app_ctx ? app_ctx->pipeline.pipeline : nullptr;
+    if (pipeline) {
+      gst_element_post_message(pipeline, gst_message_new_application(GST_OBJECT(pipeline), structure));
+    } else {
+      gst_structure_free(structure);
+    }
+  }
   if (time_limit_seconds_ > 0 && batch_meta &&
       hm::pipeline_internal::stitch_frame_should_account_playback(
           stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
@@ -5037,12 +6071,7 @@ gboolean PipelineApplication::overlay_graphics(
         if (have_elapsed) {
           record_timed_run_progress(elapsed_ns);
           if (elapsed_ns >= limit_ns) {
-            if (!quit_) {
-              quit_ = TRUE;
-              if (main_loop_) {
-                g_main_loop_quit(main_loop_);
-              }
-            }
+            request_timed_run_stop();
             return TRUE;
           }
         }
@@ -5083,12 +6112,7 @@ gboolean PipelineApplication::overlay_graphics(
     }
     record_timed_run_progress(elapsed_from_frames_ns);
     if (elapsed_from_frames_ns >= limit_ns) {
-      if (!quit_) {
-        quit_ = TRUE;
-        if (main_loop_) {
-          g_main_loop_quit(main_loop_);
-        }
-      }
+      request_timed_run_stop();
     }
   }
 
@@ -5129,7 +6153,12 @@ gboolean PipelineApplication::overlay_graphics(
 }
 
 gboolean PipelineApplication::recreate_pipeline_thread_func_static(gpointer arg) {
-  return instance_ ? instance_->recreate_pipeline_thread_func(arg) : FALSE;
+  auto* app_ctx = static_cast<AppCtx*>(arg);
+  const gboolean keep = instance_ && app_ctx ? instance_->recreate_pipeline_thread_func(app_ctx) : FALSE;
+  if (!keep && app_ctx) {
+    app_ctx->pipeline_recreate_source_id = 0;
+  }
+  return keep;
 }
 
 gboolean PipelineApplication::inject_stitching_calibration_error_static(gpointer /*arg*/) {
@@ -5166,8 +6195,6 @@ gboolean PipelineApplication::inject_stitching_calibration_error() {
 }
 
 gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
-  guint i;
-  gboolean ret = TRUE;
   AppCtx* app_ctx_ptr = reinterpret_cast<AppCtx*>(arg);
   const bool calibration_context = one_pass_calibration_contexts_.count(app_ctx_ptr) != 0;
   const bool calibration_restart = calibration_context && stitch_frame_rewound_contexts_.count(app_ctx_ptr) != 0;
@@ -5179,17 +6206,81 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     g_print("Deferring periodic pipeline recreation until stitching calibration completes\n");
     return TRUE;
   }
+  if (runtime_seek_pending_ || runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+    g_print("Deferring periodic pipeline recreation until the active playback seek completes\n");
+    return TRUE;
+  }
+  begin_pipeline_recreation();
+  const gboolean recreated = recreate_pipeline_impl(app_ctx_ptr, calibration_restart, false, 0, 0);
+  end_pipeline_recreation();
+  return recreated;
+}
+
+void PipelineApplication::begin_pipeline_recreation() {
+  // Readers perform the inverse double-check while holding this mutex. Taking
+  // it before publishing the fence waits out readers already inside; readers
+  // that raced the first check then observe true and leave without touching
+  // AppCtx. Do not hold the mutex through a GStreamer state transition because
+  // state teardown waits for streaming callbacks to return.
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  pipeline_recreation_active_.store(true, std::memory_order_release);
+}
+
+void PipelineApplication::end_pipeline_recreation() {
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+  pipeline_recreation_active_.store(false, std::memory_order_release);
+}
+
+gboolean PipelineApplication::recreate_pipeline_impl(
+    AppCtx* app_ctx_ptr,
+    bool calibration_restart,
+    bool runtime_seek_restart,
+    uint64_t runtime_seek_target_ns,
+    uint64_t /*runtime_seek_generation*/) {
+  guint i;
+  gboolean ret = TRUE;
+  if (runtime_seek_restart) {
+    const guint delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS");
+    if (delay_ms > 0) {
+      g_usleep(static_cast<gulong>(delay_ms) * 1000);
+    }
+  }
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
-  if (calibration_restart) {
+  if (calibration_restart || runtime_seek_restart) {
     destroy_pipeline_for_recreate(app_ctx_ptr);
   } else {
     destroy_pipeline(app_ctx_ptr);
+  }
+  if (runtime_seek_restart) {
+    runtime_playback_offset_ns_.store(runtime_seek_target_ns, std::memory_order_release);
   }
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
     return FALSE;
+  }
+  if (runtime_seek_restart && !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {
+    NVGSTDS_ERR_MSG_V("Failed to defer replacement URI-playlist callbacks before preroll");
+    return FALSE;
+  }
+  if (runtime_seek_restart && g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_REPLACEMENT_PLAYLIST_CALLBACK")) {
+    const gboolean queued = queue_uri_playlist_switch_callback_for_test(&app_ctx_ptr->pipeline.multi_src_bin, 0, 1);
+    g_print(
+        "HSTREAM_URI_PLAYLIST_CALLBACK status=%s action=replacement-switch source=0\n",
+        queued ? "unsafe-queued" : "replacement-fenced");
+    if (queued) {
+      return FALSE;
+    }
+  }
+  if (runtime_seek_restart && app_ctx_ptr->config.enable_perf_measurement) {
+    // create_pipeline starts its timer by default. Keep the replacement timer
+    // removed until the main context publishes the rebuilt AppCtx.
+    pause_perf_measurement(&app_ctx_ptr->perf_struct);
+    const guint post_create_delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_POST_CREATE_DELAY_MS");
+    if (post_create_delay_ms > 0) {
+      g_usleep(static_cast<gulong>(post_create_delay_ms) * 1000);
+    }
   }
   auto* hm_app = static_cast<HmApp*>(app_ctx_ptr);
   const uint64_t initial_position_ns = initial_pipeline_position_ns(hm_app);
@@ -5197,6 +6288,11 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
       hm_app->configurator().prepare_initial_pipeline_position(hm_app->pipeline, hm_app->config, initial_position_ns);
   if (!position_status.ok()) {
     NVGSTDS_ERR_MSG_V("Failed to restore initial pipeline position: %s", position_status.ToString().c_str());
+    return FALSE;
+  }
+  if (runtime_seek_restart && app_ctx_ptr->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
+      !arm_uri_playlist_initial_seeks(&app_ctx_ptr->pipeline.multi_src_bin)) {
+    NVGSTDS_ERR_MSG_V("Failed to arm replacement URI-playlist chapter seeks before preroll");
     return FALSE;
   }
   if (!ui_preview_window_ids_.empty()) {
@@ -5221,6 +6317,10 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     NVGSTDS_ERR_MSG_V("Failed to restore post-configuration position: %s", post_config_status.ToString().c_str());
     return FALSE;
   }
+  if (!reapply_runtime_properties()) {
+    NVGSTDS_ERR_MSG_V("Failed to restore live runtime properties");
+    return FALSE;
+  }
   for (i = 0; i < app_ctx_ptr->config.num_sink_sub_bins; i++) {
     GstElement* sink = app_ctx_ptr->pipeline.instance_bins[0].sink_bin.sub_bins[i].sink;
     if (!GST_IS_VIDEO_OVERLAY(sink) || manages_its_own_window(sink))
@@ -5233,6 +6333,11 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     g_print("hmstitcher: suppressing replacement PLAYING transition for lifecycle test\n");
     return ret;
   }
+  if (runtime_seek_restart) {
+    // Publish the replacement and its seek acknowledgement state on the main
+    // context before allowing the first post-preroll frame to run.
+    return ret;
+  }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     g_print("\ncan't set pipeline to playing state.\n");
     return FALSE;
@@ -5243,6 +6348,158 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
         app_ctx_ptr->pipeline.pipeline, gst_message_new_eos(GST_OBJECT(app_ctx_ptr->pipeline.pipeline)));
   }
   return ret;
+}
+
+void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation) {
+  if (g_getenv("HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS")) {
+    g_print("HSTREAM_SEEK_RECREATION status=started generation=%" G_GUINT64_FORMAT "\n", generation);
+    std::fflush(stdout);
+  }
+  gboolean success = FALSE;
+  try {
+    success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation);
+  } catch (const std::exception& error) {
+    g_printerr("Runtime seek reconstruction threw an exception: %s\n", error.what());
+  } catch (...) {
+    g_printerr("Runtime seek reconstruction threw an unknown exception\n");
+  }
+  RuntimeSeekRecreationResult result{
+      .application = this,
+      .app_ctx = app_ctx,
+      .generation = generation,
+      .success = success,
+  };
+  {
+    std::lock_guard<std::mutex> lock(runtime_seek_recreation_result_mu_);
+    runtime_seek_recreation_result_ = std::move(result);
+  }
+  GMainContext* context = main_loop_ ? g_main_loop_get_context(main_loop_) : g_main_context_default();
+  g_main_context_wakeup(context);
+}
+
+bool PipelineApplication::dispatch_runtime_seek_recreation_completion() {
+  std::optional<RuntimeSeekRecreationResult> result;
+  {
+    std::lock_guard<std::mutex> lock(runtime_seek_recreation_result_mu_);
+    if (!runtime_seek_recreation_result_) {
+      return false;
+    }
+    result = std::move(runtime_seek_recreation_result_);
+    runtime_seek_recreation_result_.reset();
+  }
+  complete_runtime_seek_recreation(std::move(*result));
+  return true;
+}
+
+gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecreationResult result) {
+  if (runtime_seek_recreation_thread_.joinable()) {
+    runtime_seek_recreation_thread_.join();
+  }
+  result.app_ctx->defer_bus_watch = FALSE;
+
+  const bool recreation_timed_out = runtime_seek_recreation_timed_out_;
+  const bool shutdown_requested = runtime_seek_shutdown_requested_;
+  runtime_seek_recreation_timed_out_ = false;
+  runtime_seek_shutdown_requested_ = false;
+  if (shutdown_requested) {
+    // Runtime seeking is restricted to local rendering, so this replacement
+    // has no muxed or network output to finalize. Discard it directly instead
+    // of asking a PAUSED pipeline to deliver EOS and waiting five seconds.
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
+    suspend_uri_playlist_main_context_callbacks(&result.app_ctx->pipeline.multi_src_bin);
+    cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
+    result.app_ctx->eos_received = TRUE;
+    const bool stopped = !result.app_ctx->pipeline.pipeline ||
+        gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+    if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
+        runtime_seek_pending_->generation == result.generation) {
+      finish_runtime_seek("failed", "pipeline-stopped");
+    }
+    if (!stopped) {
+      result.app_ctx->return_value = -1;
+      g_printerr("Interrupted local-render replacement could not be stopped\n");
+    }
+    result.app_ctx->quit = TRUE;
+    quit_ = TRUE;
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return G_SOURCE_REMOVE;
+  }
+
+  if (!result.success || !attach_pipeline_bus_watch(result.app_ctx)) {
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
+    cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
+    if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
+        runtime_seek_pending_->generation == result.generation) {
+      finish_runtime_seek("failed", result.success ? "pipeline-bus-unavailable" : "pipeline-recreate-failed");
+    }
+    result.app_ctx->return_value = -1;
+    result.app_ctx->quit = TRUE;
+    quit_ = TRUE;
+    end_pipeline_recreation();
+    runtime_seek_recreation_active_.store(false, std::memory_order_release);
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+    return G_SOURCE_REMOVE;
+  }
+
+  // Every successful replacement begins a new media epoch, even if the public
+  // request already timed out while the worker was reconstructing it.
+  reset_playback_timing_state(current_stage_);
+  if (runtime_seek_pending_ && runtime_seek_pending_->app_ctx == result.app_ctx &&
+      runtime_seek_pending_->generation == result.generation) {
+    RuntimeSeekPending& pending = *runtime_seek_pending_;
+    pending.pipeline = GST_ELEMENT(gst_object_ref(result.app_ctx->pipeline.pipeline));
+    pending.phase = RuntimeSeekPhase::kWaitingForFrame;
+    pending.deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(runtime_seek_transition_timeout_ms());
+    runtime_seek_frame_generation_.store(pending.generation, std::memory_order_release);
+    g_print("HSTREAM_SEEK_RECREATION status=published generation=%" G_GUINT64_FORMAT "\n", pending.generation);
+    std::fflush(stdout);
+  } else {
+    // A reconstruction deadline or user stop may have completed the public
+    // transaction while the worker was still returning the AppCtx to a valid
+    // generation. Do not let a late frame acknowledge that closed request.
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+  }
+
+  // The worker created and prerolled this generation with callback scheduling
+  // disabled. Publication above establishes the main-context ownership and
+  // acknowledgement state that playlist actions are allowed to observe.
+  resume_uri_playlist_main_context_callbacks(&result.app_ctx->pipeline.multi_src_bin);
+  if (recreation_timed_out) {
+    // The public request already failed, but the UI must remain fenced until
+    // actual replacement media reaches the application after PLAYING.
+    runtime_seek_recovery_frame_generation_.store(result.generation, std::memory_order_release);
+  }
+  const GstStateChangeReturn play_result = gst_element_set_state(result.app_ctx->pipeline.pipeline, GST_STATE_PLAYING);
+  if (play_result == GST_STATE_CHANGE_FAILURE) {
+    runtime_seek_frame_generation_.store(0, std::memory_order_release);
+    runtime_seek_recovery_frame_generation_.store(0, std::memory_order_release);
+    if (runtime_seek_pending_) {
+      finish_runtime_seek("failed", "pipeline-play-failed");
+    }
+    cancel_uri_playlist_frame_barrier(&result.app_ctx->pipeline.multi_src_bin);
+    result.app_ctx->return_value = -1;
+    result.app_ctx->quit = TRUE;
+    quit_ = TRUE;
+    if (main_loop_) {
+      g_main_loop_quit(main_loop_);
+    }
+  } else {
+    if (result.app_ctx->config.enable_perf_measurement) {
+      resume_perf_measurement(&result.app_ctx->perf_struct);
+    }
+  }
+  end_pipeline_recreation();
+  runtime_seek_recreation_active_.store(false, std::memory_order_release);
+  return G_SOURCE_REMOVE;
 }
 
 //------------------------------------------------------------------------------

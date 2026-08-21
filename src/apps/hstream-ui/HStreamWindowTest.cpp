@@ -62,6 +62,36 @@
 #include <unistd.h>
 #endif
 
+struct HStreamWindowTestAccess {
+  static void beginPendingPlaybackSeek(HStreamWindow* window, quint64 generation) {
+    window->active_run_local_render_only_ = true;
+    window->active_run_is_calibration_ = false;
+    window->calibration_pending_ = false;
+    window->pipeline_paused_ = false;
+    window->playback_duration_ns_ = 600'000'000'000LL;
+    if (window->render_video_toggle_) {
+      window->render_video_toggle_->setChecked(true);
+    }
+    window->pending_playback_seek_generation_ = generation;
+    window->playback_seek_channel_available_ = true;
+    window->updatePlaybackSeekControls();
+  }
+
+  static void reportPipelineError(HStreamWindow* window, QProcess::ProcessError error) {
+    window->handlePipelineError(error);
+  }
+
+  static void beginTimedOutPlaybackSeekRecovery(HStreamWindow* window, quint64 generation) {
+    beginPendingPlaybackSeek(window, generation);
+    window->handlePlaybackSeekOutput(
+        QString("HSTREAM_SEEK status=failed generation=%1 reason=pipeline-recreate-timeout").arg(generation));
+  }
+
+  static qint64 requestPipelineProcessExit(HStreamWindow* window) {
+    return window->pipeline_process_ ? window->pipeline_process_->write("@test-exit\n") : -1;
+  }
+};
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -675,8 +705,12 @@ bool write_fake_runner(const QString& path) {
   file.write("def handle_stdin_line(line):\n");
   file.write(
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
-      "delayed_progress_generation, drop_progress_resets\n");
+      "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
+      "delayed_seek_generation, timeout_next_seek, backend_seek_position\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
+  file.write("    if line.startswith('@test-exit'):\n");
+  file.write("        print('test process exit requested', flush=True)\n");
+  file.write("        sys.exit(0)\n");
   file.write("    if line.startswith('@test-stall-preview-disable'):\n");
   file.write("        preview_disable_stalled = True\n");
   file.write("        print('test preview disable stalled', flush=True)\n");
@@ -696,6 +730,26 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-resume-preview-disable'):\n");
   file.write("        preview_disable_stalled = False\n");
   file.write("        print('test preview disable resumed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-stall-seek'):\n");
+  file.write("        stall_next_seek = True\n");
+  file.write("        print('test seek acknowledgement stalled', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-timeout-seek'):\n");
+  file.write("        timeout_next_seek = True\n");
+  file.write("        print('test seek reconstruction timeout armed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-set-backend-position '):\n");
+  file.write("        backend_seek_position = int(line.rstrip('\\n').split(' ', 1)[1])\n");
+  file.write("        print('test backend position set to ' + str(backend_seek_position), flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-complete-seek'):\n");
+  file.write("        if delayed_seek_generation:\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=ok generation=' + delayed_seek_generation + ' position_ns=' + "
+      "delayed_seek_position, flush=True)\n");
+  file.write("            delayed_seek_position = ''\n");
+  file.write("            delayed_seek_generation = ''\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-preview-status '):\n");
   file.write("        _, channel, status, generation = line.rstrip('\\n').split(' ', 3)\n");
@@ -732,6 +786,61 @@ bool write_fake_runner(const QString& path) {
       "        print('HSTREAM_PROGRESS processed_ns=44000000000 total_ns=600000000000 remaining_ns=556000000000 "
       "eta_ns=unknown speed_x=0.000000 fraction=0.073333 stage=0 instance=aggregate instances=2 generation=' + "
       "generation, "
+      "flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@seek-relative '):\n");
+  file.write("        _, delta_ns, generation = line.rstrip('\\n').split(' ', 2)\n");
+  file.write("        backend_seek_position = max(0, min(600000000000, backend_seek_position + int(delta_ns)))\n");
+  file.write("        position_ns = str(backend_seek_position)\n");
+  file.write("        if timeout_next_seek:\n");
+  file.write("            timeout_next_seek = False\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=failed generation=' + generation + "
+      "' reason=pipeline-recreate-timeout', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
+  file.write("            print('Pipeline running', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
+  file.write("            print('HSTREAM_SEEK_RECOVERY status=ready generation=' + generation, flush=True)\n");
+  file.write("            return\n");
+  file.write("        if stall_next_seek:\n");
+  file.write("            stall_next_seek = False\n");
+  file.write("            delayed_seek_position = position_ns\n");
+  file.write("            delayed_seek_generation = generation\n");
+  file.write("            return\n");
+  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=rejected generation=' + generation + "
+      "' reason=nonlocal-output-active', flush=True)\n");
+  file.write("        else:\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=ok generation=' + generation + ' position_ns=' + position_ns, "
+      "flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@seek '):\n");
+  file.write("        _, position_ns, generation = line.rstrip('\\n').split(' ', 2)\n");
+  file.write("        backend_seek_position = int(position_ns)\n");
+  file.write("        if timeout_next_seek:\n");
+  file.write("            timeout_next_seek = False\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=failed generation=' + generation + "
+      "' reason=pipeline-recreate-timeout', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
+  file.write("            print('Pipeline running', flush=True)\n");
+  file.write("            time.sleep(0.25)\n");
+  file.write("            print('HSTREAM_SEEK_RECOVERY status=ready generation=' + generation, flush=True)\n");
+  file.write("            return\n");
+  file.write("        if stall_next_seek:\n");
+  file.write("            stall_next_seek = False\n");
+  file.write("            delayed_seek_position = position_ns\n");
+  file.write("            delayed_seek_generation = generation\n");
+  file.write("            return\n");
+  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=rejected generation=' + generation + "
+      "' reason=nonlocal-output-active', flush=True)\n");
+  file.write("        else:\n");
+  file.write(
+      "            print('HSTREAM_SEEK status=ok generation=' + generation + ' position_ns=' + position_ns, "
       "flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@set-preview-active '):\n");
@@ -775,6 +884,11 @@ bool write_fake_runner(const QString& path) {
   file.write("stall_next_progress_reset = False\n");
   file.write("delayed_progress_generation = ''\n");
   file.write("drop_progress_resets = False\n");
+  file.write("stall_next_seek = False\n");
+  file.write("delayed_seek_position = ''\n");
+  file.write("delayed_seek_generation = ''\n");
+  file.write("timeout_next_seek = False\n");
+  file.write("backend_seek_position = 42000000000\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -2063,6 +2177,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* program_focus = require_child<QPushButton>(window, "programFocusButton");
   auto* top_bar = require_child<QWidget>(window, "topBarPanel");
   auto* playback_progress = require_child<QProgressBar>(window, "playbackProgress");
+  auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
+  auto* seek_back = require_child<QPushButton>(window, "playbackSeekBack10Button");
+  auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
+  auto* seek_position = require_child<QLabel>(window, "playbackSeekPosition");
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
@@ -2073,7 +2191,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface || !external_notice ||
       !camera1_notice || !stitched_status || !program_controls || !program_controls_toggle || !stitched_controls ||
       !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel ||
-      !playback_progress || !pipeline_process) {
+      !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2408,6 +2526,85 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "An active run should show exact backend playback progress without adding protocol noise to the log")) {
     return false;
   }
+  if (!expect(
+          seek_slider->isEnabled() && seek_back->isEnabled() && seek_forward->isEnabled() &&
+              seek_position->text() == "00:00:42 / 00:10:00",
+          "Local-render-only Program playback should expose position seeking after duration is known")) {
+    return false;
+  }
+  pipeline_process->write("@test-set-backend-position 47000000000\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test backend position set to 47000000000"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  pipeline_process->write("@test-stall-seek\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test seek acknowledgement stalled"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  activate(seek_forward);
+  for (int i = 0; i < 100 && !window->logText().contains("stdin:@seek-relative 10000000000 1"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !pause->isEnabled() && !seek_slider->isEnabled() && !seek_back->isEnabled() && !seek_forward->isEnabled() &&
+              !window->logText().contains("playback seek complete at 00:00:57"),
+          "A pending asynchronous seek should disable Pause and every transport control until completion")) {
+    return false;
+  }
+  pipeline_process->write("@test-complete-seek\n");
+  for (int i = 0; i < 100 && !window->logText().contains("playback seek complete at 00:00:57"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().contains("stdin:@seek-relative 10000000000 1") &&
+              window->logText().contains("playback seek complete at 00:00:57") && pause->isEnabled(),
+          "The +10s control should use the backend's fresh 47-second position, complete at 57 seconds, and then "
+          "restore Pause")) {
+    return false;
+  }
+  const int pipeline_running_count_before_seek_recovery = window->logText().count("Pipeline running");
+  pipeline_process->write("@test-timeout-seek\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test seek reconstruction timeout armed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  activate(seek_forward);
+  for (int i = 0; i < 100 && !window->logText().contains("playback seek failed: pipeline-recreate-timeout"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          !pause->isEnabled() && !seek_slider->isEnabled() && !seek_back->isEnabled() && !seek_forward->isEnabled() &&
+              !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
+          "A reconstruction timeout must keep transport and live tuning disabled until AppCtx recovery")) {
+    return false;
+  }
+  for (int i = 0; i < 100 && window->logText().count("Pipeline running") <= pipeline_running_count_before_seek_recovery;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("Pipeline running") > pipeline_running_count_before_seek_recovery &&
+              !pause->isEnabled() && !seek_slider->isEnabled() && !program_control_tabs->isEnabled() &&
+              !window->logText().contains("playback recovered after a timed-out seek reconstruction"),
+          "A PLAYING transition alone must not clear recovery before replacement media is processed")) {
+    return false;
+  }
+  for (int i = 0; i < 100 && !window->logText().contains("playback recovered after a timed-out seek reconstruction");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          pause->isEnabled() && seek_slider->isEnabled() && seek_back->isEnabled() && seek_forward->isEnabled() &&
+              program_control_tabs->isEnabled() && stitched_control_tabs->isEnabled(),
+          "The explicit reconstruction recovery event must safely restore transport and live tuning")) {
+    return false;
+  }
   const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   const YAML::Node fresh_program_saved = YAML::LoadFile(fresh_program_config.string());
   YAML::Node fresh_program_status;
@@ -2454,7 +2651,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           !render_video->isChecked() && render_video->isEnabled() && preview_target->isHidden() &&
-              program_focus->isHidden() && setup_preview_splitter->sizes().at(0) > 0 &&
+              program_focus->isHidden() && !seek_slider->isEnabled() && setup_preview_splitter->sizes().at(0) > 0 &&
               window->logText().contains("stdin:@set-preview-active none") &&
               window->logText().contains("stdin:@set-render-audio-muted 1") &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
@@ -3687,7 +3884,10 @@ bool test_output_controls(HStreamWindow* window) {
   auto* add_rtsp = require_child<QPushButton>(window, "addRtspButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
-  if (!spare || !archive || !archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop) {
+  auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
+  auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
+  if (!spare || !archive || !archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop ||
+      !seek_slider || !seek_forward) {
     return false;
   }
 
@@ -3777,6 +3977,13 @@ bool test_output_controls(HStreamWindow* window) {
           window->logText().contains(QString("HM_OUTPUT_WORK_DIR=%1").arg(output_root.path())) &&
           window->logText().contains(QRegularExpression("HSTREAM_ARCHIVE_RUN_ID=[0-9]+-[0-9a-f-]+")),
       "Archive playback should show the backend's exact resolved path and pass a deterministic output directory");
+  const int seek_commands_before_nonlocal_click = window->logText().count("stdin:@seek");
+  activate(seek_forward);
+  QApplication::processEvents();
+  const bool nonlocal_seek_blocked = expect(
+      !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
+          window->logText().count("stdin:@seek") == seek_commands_before_nonlocal_click,
+      "Archive/RTMP/RTSP playback must disable seeking and send no seek command");
   QFile recovered_interrupted_archive(restarted_recovery_path);
   const bool recovered_interrupted_archive_opened = recovered_interrupted_archive.open(QIODevice::ReadOnly);
   const bool interrupted_archive_preserved = expect(
@@ -3961,8 +4168,9 @@ bool test_output_controls(HStreamWindow* window) {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
-      interrupted_archive_preserved && missing_new_output_reported && finalization_visible && archive_deployed &&
-      durability_sync_responsive && failed_archive_retained && unsafe_retry_blocked && retry_unblocked_after_recovery;
+      nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && finalization_visible &&
+      archive_deployed && durability_sync_responsive && failed_archive_retained && unsafe_retry_blocked &&
+      retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
@@ -3975,6 +4183,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
+  auto* zoom_in_aggressiveness = require_child<QSlider>(window, "cameraSlider_Zoom_In_Aggressiveness");
   auto* apply_to_fast = require_child<QSlider>(window, "cameraSlider_Apply_To_Fast_Box");
   auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -3989,9 +4198,9 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
-  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !apply_to_fast ||
-      !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !lift_shadow_black_point || !reset ||
-      !save || !create || !game_id || !start || !stop || !mode || !stitch_frame_time) {
+  if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !zoom_in_aggressiveness ||
+      !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !lift_shadow_black_point ||
+      !reset || !save || !create || !game_id || !start || !stop || !mode || !stitch_frame_time) {
     return false;
   }
 
@@ -4027,6 +4236,10 @@ bool test_camera_controls(HStreamWindow* window) {
       "programControlsToggle",
       "stitchedControlsToggle",
       "cameraSlider_Stitch_Rotate_Degrees",
+      "playbackSeekSlider",
+      "playbackSeekBack10Button",
+      "playbackSeekForward10Button",
+      "cameraSlider_Zoom_In_Aggressiveness",
       "cameraSlider_Stop_Direction_Change_Delay_Frames",
       "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10",
       "cameraSlider_Bring_Up_Shadows",
@@ -4049,6 +4262,7 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 2 &&
               window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 2 &&
               window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 20 &&
+              window->cameraControlValue("Zoom_In_Aggressiveness") == 25 &&
               window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 6 &&
               window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 6 &&
               window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 70 &&
@@ -4104,6 +4318,7 @@ bool test_camera_controls(HStreamWindow* window) {
     direct_overrides["rink"]["camera"]["stop_cancel_hysteresis_frames"] = 4;
     direct_overrides["rink"]["camera"]["stop_delay_cooldown_frames"] = 5;
     direct_overrides["rink"]["camera"]["time_to_dest_speed_limit_frames"] = 30;
+    direct_overrides["rink"]["camera"]["zoom_in_aggressiveness"] = 80;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 8;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["post_nonstop_stop_delay_count"] = 9;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_scale_speed_ratio"] = 0.83;
@@ -4120,6 +4335,7 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 4 &&
               window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 5 &&
               window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 30 &&
+              window->cameraControlValue("Zoom_In_Aggressiveness") == 80 &&
               window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 8 &&
               window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 9 &&
               window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 83 &&
@@ -4130,8 +4346,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(reset);
   if (!expect(
-          stop_delay->value() == 10 && rotate->value() == 90 && bring_up_shadows->value() == 0 &&
-              !lift_shadow_black_point->isChecked() && save->isEnabled(),
+          stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
+              bring_up_shadows->value() == 0 && !lift_shadow_black_point->isChecked() && save->isEnabled(),
           "Reset should stage removal of direct per-game canonical overrides")) {
     return false;
   }
@@ -4139,6 +4355,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const YAML::Node after_direct_reset = YAML::LoadFile(config.string());
   if (!expect(
           !lookup_yaml_path(after_direct_reset, {"rink", "camera", "stop_on_dir_change_delay"}, nullptr) &&
+              !lookup_yaml_path(after_direct_reset, {"rink", "camera", "zoom_in_aggressiveness"}, nullptr) &&
               !lookup_yaml_path(after_direct_reset, {"stitching", "post_stitch_rotate_degrees"}, nullptr) &&
               !lookup_yaml_path(
                   after_direct_reset, {"pipeline", "hmplaycropper", "properties", "shadow-lift"}, nullptr) &&
@@ -4149,8 +4366,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          stop_delay->value() == 10 && rotate->value() == 90 && bring_up_shadows->value() == 0 &&
-              !lift_shadow_black_point->isChecked() && !save->isEnabled(),
+          stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
+              bring_up_shadows->value() == 0 && !lift_shadow_black_point->isChecked() && !save->isEnabled(),
           "Reload after Reset plus Save should remain on bundled defaults")) {
     return false;
   }
@@ -5070,6 +5287,25 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
+  zoom_in_aggressiveness->setValue(75);
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Zoom_In_Aggressiveness=75 apply=live"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const fs::path live_zoom_config_path = newest_live_playtracker_config();
+  const YAML::Node live_zoom_config =
+      fs::exists(live_zoom_config_path) ? YAML::LoadFile(live_zoom_config_path.string()) : YAML::Node();
+  YAML::Node live_zoom_value;
+  const bool live_zoom_written = lookup_yaml_path(
+      live_zoom_config, {"play-tracker", "hstream-runtime-tuning", "zoom-in-aggressiveness"}, &live_zoom_value);
+  if (!expect(
+          window->logText().contains("camera control Zoom_In_Aggressiveness=75 apply=pending") &&
+              window->logText().contains("camera control Zoom_In_Aggressiveness=75 apply=live") && live_zoom_written &&
+              live_zoom_value.IsScalar() && live_zoom_value.as<int>() == 75,
+          "Zoom-in aggressiveness should publish an acknowledged sparse live follower tuning update")) {
+    activate(stop);
+    return false;
+  }
   max_speed_y->setValue(480);
   for (int i = 0; i < 50; ++i) {
     QApplication::processEvents();
@@ -5501,8 +5737,13 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
 
 bool test_window_close_stops_pipeline(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* pause = require_child<QPushButton>(window, "pausePipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!start || !mode) {
+  auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
+  auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
+  auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
+  auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+  if (!start || !pause || !mode || !seek_slider || !seek_forward || !program_control_tabs || !stitched_control_tabs) {
     return false;
   }
   mode->setCurrentIndex(mode->findData("program"));
@@ -5512,6 +5753,63 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(window->pipelineStateText() == "PLAYING", "Close-event test pipeline should start")) {
+    return false;
+  }
+  HStreamWindowTestAccess::beginPendingPlaybackSeek(window, 999);
+  if (!expect(!pause->isEnabled(), "A pending playback seek should disable Pause before channel failure")) {
+    return false;
+  }
+  HStreamWindowTestAccess::reportPipelineError(window, QProcess::WriteError);
+  QApplication::processEvents();
+  if (!expect(
+          window->logText().contains("playback seek failed: pipeline command channel write error"),
+          "A pending seek should report a command-channel write failure") ||
+      !expect(pause->isEnabled(), "A command-channel write failure should restore Pause") ||
+      !expect(
+          !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
+              seek_slider->toolTip().contains("command channel failed"),
+          "A command-channel write failure should permanently disable seeking for the run")) {
+    return false;
+  }
+
+  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1000);
+  if (!expect(
+          !pause->isEnabled() && !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
+          "A timed-out reconstruction should keep transport and tuning disabled before command-channel failure")) {
+    return false;
+  }
+  HStreamWindowTestAccess::reportPipelineError(window, QProcess::ReadError);
+  QApplication::processEvents();
+  if (!expect(
+          window->logText().contains("playback seek failed: pipeline command channel read error") &&
+              pause->isEnabled() && program_control_tabs->isEnabled() && stitched_control_tabs->isEnabled(),
+          "A terminal command-channel error after reconstruction timeout must release every seek-recovery lock") ||
+      !expect(
+          !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
+              seek_slider->toolTip().contains("command channel failed"),
+          "Recovery cleanup must not advertise seeking after the command channel has failed")) {
+    return false;
+  }
+
+  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1001);
+  if (!expect(
+          !pause->isEnabled() && !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
+          "A second timed-out reconstruction should lock controls before process completion")) {
+    return false;
+  }
+  if (!expect(
+          HStreamWindowTestAccess::requestPipelineProcessExit(window) == 11,
+          "The fake pipeline process must accept its exit command")) {
+    return false;
+  }
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->pipelineStateText() == "STOPPED" && !pause->isEnabled() && program_control_tabs->isEnabled() &&
+              stitched_control_tabs->isEnabled(),
+          "Process completion after reconstruction timeout must clear recovery state for the next run")) {
     return false;
   }
   const bool closed = window->close();

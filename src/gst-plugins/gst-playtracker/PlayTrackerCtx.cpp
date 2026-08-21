@@ -79,6 +79,7 @@ bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error) {
       "time-to-dest-stop-speed-threshold",
       "unsticky-translation-size-ratio",
       "follower-box-min-height-ratio",
+      "zoom-in-aggressiveness",
   };
   if (!node) {
     return true;
@@ -307,6 +308,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
           "max-accel-ratio-y",
           "max-speed-ratio-x",
           "max-speed-ratio-y",
+          "zoom-in-aggressiveness",
       },
   };
   std::vector<YAML::Node> live_box_yamls;
@@ -360,6 +362,18 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   SET_LOCATOR(locator, config, ignore_largest_bbox);
   set_config_from_yaml(yaml, locator);
 
+  const int zoom_in_aggressiveness =
+      yaml["zoom-in-aggressiveness"] ? yaml["zoom-in-aggressiveness"].as<int>() : kDefaultZoomInAggressiveness;
+  if (zoom_in_aggressiveness < kMinimumZoomInAggressiveness || zoom_in_aggressiveness > kMaximumZoomInAggressiveness) {
+    throw std::invalid_argument("zoom-in-aggressiveness must be from 0 through 100");
+  }
+  if (!config.living_boxes.empty()) {
+    AllLivingBoxConfig& follower = config.living_boxes.back();
+    const float multiplier = DsPlayTrackerZoomInThresholdMultiplier(zoom_in_aggressiveness);
+    follower.size_ratio_thresh_shrink_dw *= multiplier;
+    follower.size_ratio_thresh_shrink_dh *= multiplier;
+  }
+
   return config;
 }
 
@@ -367,11 +381,19 @@ absl::Status validate_runtime_tuning_target(
     const DsPlayTrackerCtx::PlayTracker& tracker_context,
     const DsPlayTrackerRuntimeTuning& tuning) {
   const size_t box_count = tracker_context.play_tracker_config.living_boxes.size();
+  if (tuning.zoom_in_aggressiveness.has_value() &&
+      (*tuning.zoom_in_aggressiveness < kMinimumZoomInAggressiveness ||
+       *tuning.zoom_in_aggressiveness > kMaximumZoomInAggressiveness)) {
+    return absl::InvalidArgumentError("zoom-in-aggressiveness must be from 0 through 100");
+  }
   if (tuning.apply_to_fast_box && box_count < 1) {
     return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
   }
   if (tuning.apply_to_follower_box && box_count < 1) {
     return absl::FailedPreconditionError("playtracker runtime tuning requires a follower live box");
+  }
+  if (tuning.zoom_in_aggressiveness.has_value() && box_count < 1) {
+    return absl::FailedPreconditionError("zoom-in aggressiveness requires a follower live box");
   }
   if (tracker_context.base_play_tracker_config.living_boxes.size() != box_count) {
     return absl::FailedPreconditionError("playtracker runtime tuning base configuration does not match live boxes");
@@ -405,14 +427,21 @@ absl::Status apply_runtime_tuning_to_tracker(
   }
   const size_t box_count = tracker_context->play_tracker_config.living_boxes.size();
   for (size_t index = 0; index < box_count; ++index) {
-    const bool selected =
-        (index == 0 && tuning.apply_to_fast_box) || (index + 1 == box_count && tuning.apply_to_follower_box);
+    const bool follower_zoom_selected = index + 1 == box_count && tuning.zoom_in_aggressiveness.has_value();
+    const bool selected = (index == 0 && tuning.apply_to_fast_box) ||
+        (index + 1 == box_count && tuning.apply_to_follower_box) || follower_zoom_selected;
     if (!selected) {
       continue;
     }
     auto& applied = tracker_context->play_tracker_config.living_boxes[index];
     const auto& base = tracker_context->base_play_tracker_config.living_boxes[index];
     auto box = tracker->get_live_box(index);
+    if (follower_zoom_selected) {
+      const float multiplier = DsPlayTrackerZoomInThresholdMultiplier(*tuning.zoom_in_aggressiveness);
+      applied.size_ratio_thresh_shrink_dw = base.size_ratio_thresh_shrink_dw * multiplier;
+      applied.size_ratio_thresh_shrink_dh = base.size_ratio_thresh_shrink_dh * multiplier;
+      box->set_resizing_shrink_thresholds(applied.size_ratio_thresh_shrink_dw, applied.size_ratio_thresh_shrink_dh);
+    }
     if (tuning.update_motion_tuning) {
       if (tuning.stop_on_dir_change_delay.has_value() || tuning.cancel_on_opposite.has_value() ||
           tuning.cancel_hysteresis_frames.has_value() || tuning.stop_delay_cooldown_frames.has_value() ||
@@ -509,6 +538,7 @@ void merge_box_runtime_tuning(
   merge_optional(&state->max_speed_y, update.max_speed_y);
   merge_optional(&state->max_accel_x, update.max_accel_x);
   merge_optional(&state->max_accel_y, update.max_accel_y);
+  merge_optional(&state->zoom_in_aggressiveness, update.zoom_in_aggressiveness);
   if (update.arena_angle_from_vertical.has_value()) {
     state->arena_angle_from_vertical = update.arena_angle_from_vertical;
   }
@@ -531,6 +561,12 @@ void accumulate_runtime_tuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntime
     merge_box_runtime_tuning(&*ctx->fast_box_runtime_tuning, tuning, true);
   }
   if (tuning.apply_to_follower_box) {
+    if (!ctx->follower_box_runtime_tuning.has_value()) {
+      ctx->follower_box_runtime_tuning.emplace();
+    }
+    merge_box_runtime_tuning(&*ctx->follower_box_runtime_tuning, tuning, false);
+  }
+  if (tuning.zoom_in_aggressiveness.has_value() && !tuning.apply_to_follower_box) {
     if (!ctx->follower_box_runtime_tuning.has_value()) {
       ctx->follower_box_runtime_tuning.emplace();
     }
@@ -570,6 +606,15 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx,
       if (yaml["play-tracker"]) {
         ctx->play_trackers[source_id].play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
         ctx->play_trackers[source_id].base_play_tracker_config = ctx->play_trackers[source_id].play_tracker_config;
+        if (!ctx->play_trackers[source_id].base_play_tracker_config.living_boxes.empty()) {
+          const int zoom_in_aggressiveness = yaml["play-tracker"]["zoom-in-aggressiveness"]
+              ? yaml["play-tracker"]["zoom-in-aggressiveness"].as<int>()
+              : kDefaultZoomInAggressiveness;
+          const float multiplier = DsPlayTrackerZoomInThresholdMultiplier(zoom_in_aggressiveness);
+          auto& base_follower = ctx->play_trackers[source_id].base_play_tracker_config.living_boxes.back();
+          base_follower.size_ratio_thresh_shrink_dw /= multiplier;
+          base_follower.size_ratio_thresh_shrink_dh /= multiplier;
+        }
         ctx->play_trackers[source_id].play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(
             arena_box, ctx->play_trackers[source_id].play_tracker_config);
         const absl::Status tuning_status = apply_accumulated_runtime_tuning(ctx, &ctx->play_trackers[source_id]);
@@ -928,6 +973,12 @@ absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsP
   }
   gst_hm_playtracker::accumulate_runtime_tuning(ctx, tuning);
   return absl::OkStatus();
+}
+
+void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx) {
+  if (ctx) {
+    ctx->play_trackers.clear();
+  }
 }
 
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream) {

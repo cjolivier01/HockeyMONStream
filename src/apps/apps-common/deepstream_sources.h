@@ -165,6 +165,9 @@ typedef struct {
   /** Guards URI playlist lifecycle fields when this source is not owned by a multi-source parent. */
   GMutex uri_playlist_mutex;
   gboolean uri_playlist_mutex_initialized;
+  /** Serializes decodebin video/audio pad selection before either logical tee accepts a peer. */
+  GMutex uri_decode_pad_selection_mutex;
+  gboolean uri_decode_pad_selection_mutex_initialized;
   /** Optional playlist state (for file sources). */
   gchar** uri_list;
   guint num_uri_list;
@@ -173,8 +176,26 @@ typedef struct {
   guint uri_playlist_initial_uri_index;
   /** Exact duration of complete physical chapters skipped before decoding begins. */
   guint64 uri_playlist_initial_skipped_base_ns;
+  /** Chapter-local keyframe seek applied before decoded-pad trimming begins. */
+  guint64 uri_playlist_initial_seek_ns;
+  /** Temporary decoded-pad blockers that follow the pads currently feeding the logical video/audio branches. */
+  GstPad* uri_playlist_initial_seek_video_pad;
+  gulong uri_playlist_initial_seek_video_probe;
+  GstPad* uri_playlist_initial_seek_audio_pad;
+  gulong uri_playlist_initial_seek_audio_probe;
   guint uri_switch_count;
   gboolean uri_switch_pending;
+  /**
+   * Main-context work scheduled by decoder streaming threads must not outlive
+   * the GstPipeline generation that scheduled it. These fields are accessed
+   * with GLib atomic operations, not the playlist mutex: runtime seek
+   * recreation deliberately clears that mutex after invalidating callbacks.
+   */
+  gint uri_playlist_callbacks_enabled;
+  gint uri_playlist_callback_generation;
+  gint uri_loop_seek_source_id;
+  gint uri_switch_source_id;
+  gint uri_terminal_audio_drain_source_id;
   /** Video frames admitted after initial positioning across every URI. Never resets at chapter boundaries. */
   guint64 uri_list_decoded_frame_count;
   /** Logical end timestamp of the latest decoded video buffer released by the exact-pair barrier. */
@@ -225,6 +246,10 @@ struct NvDsSrcParentBin {
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */
   gboolean uri_playlist_delivery_aborted;
   gboolean uri_playlist_initial_offsets_configured;
+  /** Block decoded buffers until every selected chapter has received its initial keyframe seek. */
+  gboolean uri_playlist_initial_seek_pending;
+  /** Largest chapter-local distance that must be decoded because accelerated seeking was rejected. */
+  guint64 uri_playlist_initial_seek_fallback_ns;
   gulong nvstreammux_eosmonitor_probe;
 };
 
@@ -238,6 +263,15 @@ gboolean configure_uri_playlist_initial_offsets(
     guint64 right_video_offset_ns,
     guint audio_source_id,
     guint64 start_time_ns);
+
+/** Configure a non-paired URI playlist to begin at a logical timestamp before preroll. */
+gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 start_time_ns);
+/** Gate replacement-pipeline decoded buffers until their chapter-local seeks have completed. */
+gboolean arm_uri_playlist_initial_seeks(NvDsSrcParentBin* bin);
+/** Seek each selected physical chapter near its trim frontier before replacement-pipeline sequence admission. */
+gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin);
+/** Return the largest chapter-local decoded-trimming fallback distance for the current initial seek. */
+guint64 uri_playlist_initial_seek_fallback_ns(NvDsSrcParentBin* bin);
 /** Cancel exact-pair waits and close every logical URI-playlist branch with synthetic EOS. */
 void stop_uri_playlist_sources_gracefully(NvDsSrcParentBin* bin);
 
@@ -262,6 +296,29 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
 
 /** Wake every URI-playlist frame waiter before an error/stop transitions the pipeline to NULL. */
 void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* bin);
+
+/**
+ * Fence and remove URI-playlist callbacks owned by the current pipeline
+ * generation. Must run on the owning GLib main context before an asynchronous
+ * recreation worker is allowed to mutate the reused source-bin storage.
+ */
+void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
+
+/**
+ * Disable callback scheduling on a freshly created, still-NULL source bin.
+ * This is safe on a reconstruction worker only before decoder streaming can
+ * begin and fails if any callback source has already been attached.
+ */
+gboolean defer_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
+
+/** Re-enable callback scheduling after the replacement AppCtx is published on its owning main context. */
+void resume_uri_playlist_main_context_callbacks(NvDsSrcParentBin* bin);
+
+/** Queue a delayed physical-boundary switch for the runtime recreation regression test. */
+gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* bin, guint source_id, guint delay_ms);
+
+/** Exercise scheduler publication racing callback suspension; test-only. */
+gboolean exercise_uri_playlist_schedule_suspend_race_for_test(NvDsSrcParentBin* bin, guint source_id, guint delay_ms);
 
 /**
  * Commit one decoded URI-playlist frame only after the other camera reaches

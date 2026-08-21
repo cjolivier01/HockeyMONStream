@@ -4,6 +4,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 
 #include <mutex>
+#include <vector>
 #include "absl/status/status.h"
 
 namespace hm {
@@ -21,6 +22,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
 
   // -DSCustomLibraryBase
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
+  bool HandleEvent(GstEvent* event) override;
   bool SetProperty(const Property& prop) override;
   // DSCustomLibraryBase-
 
@@ -39,6 +41,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   std::string play_tracker_config_source_file_;
   std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
+  std::vector<DsPlayTrackerRuntimeTuning> runtime_tuning_history_;
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
   float fixed_edge_rotation_angle_left_{10.0};
   float fixed_edge_rotation_angle_right_{10.0};

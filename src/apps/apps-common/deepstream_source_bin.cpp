@@ -27,6 +27,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
 #include "hstream/src/apps/apps-common/HStreamLosslessMux.h"
+#include "hstream/src/apps/apps-common/UriPlaylistDiscovery.h"
 
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
@@ -43,6 +44,8 @@ GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 
 static gboolean install_mux_eosmonitor_probe = FALSE;
+static gint uri_playlist_initial_seek_failure_injected = FALSE;
+static gint uri_playlist_decoder_restart_failure_injected = FALSE;
 
 struct UriListPadProbeData {
   NvDsSrcBin* bin;
@@ -52,12 +55,24 @@ struct UriListPadProbeData {
   GstClockTime initial_offset;
 };
 
+struct UriPlaylistMainContextCallback {
+  NvDsSrcBin* bin;
+  gint generation;
+  gint* source_id_slot;
+  gboolean (*action)(gpointer);
+  const char* action_name;
+  guint bin_source_id;
+  guint glib_source_id;
+};
+
 static gboolean send_uri_audio_eos(NvDsSrcBin* bin, gboolean log_failure);
+static gboolean seek_decode(gpointer data);
 static gboolean switch_to_next_uri(gpointer data);
 static gboolean finish_uri_terminal_audio_drain(gpointer data);
 static void cancel_uri_playlist_source(NvDsSrcBin* bin, gboolean barrier_failed);
 static GstPadProbeReturn fail_uri_playlist_audio_gate(NvDsSrcBin* bin, const char* reason);
 static GstPadProbeReturn fail_uri_playlist_initial_positioning(NvDsSrcBin* bin, const char* reason);
+static void release_uri_playlist_initial_seek_blockers(NvDsSrcParentBin* parent);
 
 // A slow camera decoder must never turn into frame loss. Wake periodically only
 // to report diagnostics; successful pairing is governed exclusively by the
@@ -66,6 +81,110 @@ static GstPadProbeReturn fail_uri_playlist_initial_positioning(NvDsSrcBin* bin, 
 constexpr gint64 kUriPlaylistBarrierDiagnosticIntervalUs = 30 * G_TIME_SPAN_SECOND;
 
 static GMutex* uri_playlist_mutex(NvDsSrcBin* bin);
+
+// Deterministic test-only rendezvous for the scheduler/suspender source-
+// ownership race. It is armed for one exact callback slot, so production
+// decoder scheduling never waits here.
+static GMutex uri_playlist_suspend_race_mutex;
+static GCond uri_playlist_suspend_race_cond;
+static gint* uri_playlist_suspend_race_slot = nullptr;
+static gboolean uri_playlist_suspend_race_published = FALSE;
+static gboolean uri_playlist_suspend_race_release = FALSE;
+
+static void release_uri_playlist_main_context_callback(gpointer data) {
+  auto* callback = static_cast<UriPlaylistMainContextCallback*>(data);
+  if (!callback) {
+    return;
+  }
+  if (callback->source_id_slot && callback->glib_source_id > 0) {
+    g_atomic_int_compare_and_exchange(
+        callback->source_id_slot, static_cast<gint>(callback->glib_source_id), static_cast<gint>(0));
+  }
+  delete callback;
+}
+
+static gboolean dispatch_uri_playlist_main_context_callback(gpointer data) {
+  auto* callback = static_cast<UriPlaylistMainContextCallback*>(data);
+  if (!callback || !callback->bin || !callback->action) {
+    return G_SOURCE_REMOVE;
+  }
+  const gboolean current = g_atomic_int_get(&callback->bin->uri_playlist_callbacks_enabled) &&
+      g_atomic_int_get(&callback->bin->uri_playlist_callback_generation) == callback->generation;
+  if (!current) {
+    if (g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK")) {
+      g_print(
+          "HSTREAM_URI_PLAYLIST_CALLBACK status=stale action=%s source=%u\n",
+          callback->action_name,
+          callback->bin_source_id);
+    }
+    return G_SOURCE_REMOVE;
+  }
+  return callback->action(callback->bin);
+}
+
+static gboolean schedule_uri_playlist_main_context_callback(
+    NvDsSrcBin* bin,
+    guint delay_ms,
+    gboolean (*action)(gpointer),
+    const char* action_name,
+    gint* source_id_slot) {
+  if (!bin || !action || !source_id_slot || !g_atomic_int_get(&bin->uri_playlist_callbacks_enabled)) {
+    return FALSE;
+  }
+  const gint generation = g_atomic_int_get(&bin->uri_playlist_callback_generation);
+  if (!g_atomic_int_get(&bin->uri_playlist_callbacks_enabled) ||
+      generation != g_atomic_int_get(&bin->uri_playlist_callback_generation) ||
+      !g_atomic_int_compare_and_exchange(source_id_slot, 0, -1)) {
+    return FALSE;
+  }
+
+  auto* callback = new UriPlaylistMainContextCallback{
+      .bin = bin,
+      .generation = generation,
+      .source_id_slot = source_id_slot,
+      .action = action,
+      .action_name = action_name,
+      .bin_source_id = bin->source_id,
+      .glib_source_id = 0,
+  };
+  GSource* source = g_timeout_source_new(std::max(delay_ms, 1U));
+  // Do not make the source dispatchable until its ID is published. Decoder
+  // threads can schedule this while the main context is active.
+  g_source_set_ready_time(source, G_MAXINT64);
+  g_source_set_callback(
+      source, dispatch_uri_playlist_main_context_callback, callback, release_uri_playlist_main_context_callback);
+  const guint source_id = g_source_attach(source, g_main_context_default());
+  callback->glib_source_id = source_id;
+  if (source_id == 0) {
+    g_atomic_int_compare_and_exchange(source_id_slot, -1, 0);
+    g_source_unref(source);
+    return FALSE;
+  }
+  g_atomic_int_set(source_id_slot, static_cast<gint>(source_id));
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  if (uri_playlist_suspend_race_slot == source_id_slot) {
+    uri_playlist_suspend_race_published = TRUE;
+    g_cond_broadcast(&uri_playlist_suspend_race_cond);
+    while (!uri_playlist_suspend_race_release) {
+      g_cond_wait(&uri_playlist_suspend_race_cond, &uri_playlist_suspend_race_mutex);
+    }
+  }
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+  const gboolean still_current = g_atomic_int_get(&bin->uri_playlist_callbacks_enabled) &&
+      generation == g_atomic_int_get(&bin->uri_playlist_callback_generation);
+  if (still_current) {
+    const gint64 now = g_get_monotonic_time();
+    const gint64 delay_us = static_cast<gint64>(std::max(delay_ms, 1U)) * G_TIME_SPAN_MILLISECOND;
+    g_source_set_ready_time(source, delay_us > G_MAXINT64 - now ? G_MAXINT64 : now + delay_us);
+  } else if (g_atomic_int_compare_and_exchange(source_id_slot, static_cast<gint>(source_id), 0)) {
+    // Whichever side clears the published slot owns source destruction. A
+    // concurrent suspend may already have claimed it; in that case leave the
+    // context attachment intact until the suspending main thread destroys it.
+    g_source_destroy(source);
+  }
+  g_source_unref(source);
+  return still_current;
+}
 
 static GstClockTime uri_playlist_initial_offset(const NvDsSrcBin* bin, gboolean is_video) {
   if (!bin) {
@@ -388,6 +507,171 @@ void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* parent) {
   }
   g_cond_broadcast(&parent->uri_playlist_barrier_cond);
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  release_uri_playlist_initial_seek_blockers(parent);
+}
+
+void suspend_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
+  if (!parent) {
+    return;
+  }
+  GMainContext* context = g_main_context_default();
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    NvDsSrcBin* source = &parent->sub_bins[source_index];
+    // Disable scheduling first, then advance the fence. A decoder thread that
+    // was already between those reads either declines to attach or publishes
+    // an old-generation source that can only self-discard.
+    // Async runtime seek performs this on the main context before its worker
+    // starts. destroy_pipeline calls it again centrally; the exchange makes
+    // that worker-side call a no-op while preserving coverage for synchronous
+    // recreation and final teardown.
+    if (!g_atomic_int_compare_and_exchange(&source->uri_playlist_callbacks_enabled, TRUE, FALSE)) {
+      continue;
+    }
+    g_atomic_int_inc(&source->uri_playlist_callback_generation);
+    struct CallbackSlot {
+      gint* source_id;
+      const char* action;
+    } slots[] = {
+        {&source->uri_loop_seek_source_id, "loop-seek"},
+        {&source->uri_switch_source_id, "switch"},
+        {&source->uri_terminal_audio_drain_source_id, "terminal-audio-drain"},
+    };
+    for (const CallbackSlot& slot : slots) {
+      const gint source_id = g_atomic_int_get(slot.source_id);
+      if (source_id <= 0 || !g_atomic_int_compare_and_exchange(slot.source_id, source_id, 0)) {
+        continue;
+      }
+      // Claim the slot before borrowing the context-owned source. The
+      // scheduling thread checks the same claim before destroying its local
+      // source, so its final unref cannot invalidate this pointer.
+      GSource* pending = g_main_context_find_source_by_id(context, static_cast<guint>(source_id));
+      if (pending) {
+        g_source_destroy(pending);
+        if (g_getenv("HM_TEST_RUNTIME_SEEK_INJECT_PENDING_PLAYLIST_CALLBACK")) {
+          g_print("HSTREAM_URI_PLAYLIST_CALLBACK status=cancelled action=%s source=%u\n", slot.action, source_index);
+        }
+      }
+    }
+  }
+}
+
+gboolean defer_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
+  if (!parent) {
+    return FALSE;
+  }
+  // Runtime reconstruction calls this immediately after create_pipeline,
+  // while every element is still NULL. Preflight all slots before changing
+  // any source so a violated lifecycle invariant cannot leave a partial fence.
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    const NvDsSrcBin* source = &parent->sub_bins[source_index];
+    if (g_atomic_int_get(&source->uri_loop_seek_source_id) != 0 ||
+        g_atomic_int_get(&source->uri_switch_source_id) != 0 ||
+        g_atomic_int_get(&source->uri_terminal_audio_drain_source_id) != 0) {
+      return FALSE;
+    }
+  }
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    NvDsSrcBin* source = &parent->sub_bins[source_index];
+    if (g_atomic_int_compare_and_exchange(&source->uri_playlist_callbacks_enabled, TRUE, FALSE)) {
+      g_atomic_int_inc(&source->uri_playlist_callback_generation);
+    }
+  }
+  return TRUE;
+}
+
+void resume_uri_playlist_main_context_callbacks(NvDsSrcParentBin* parent) {
+  if (!parent) {
+    return;
+  }
+  for (guint source_index = 0; source_index < parent->num_bins; ++source_index) {
+    g_atomic_int_set(&parent->sub_bins[source_index].uri_playlist_callbacks_enabled, TRUE);
+  }
+}
+
+gboolean queue_uri_playlist_switch_callback_for_test(NvDsSrcParentBin* parent, guint source_id, guint delay_ms) {
+  if (!parent || source_id >= parent->num_bins) {
+    return FALSE;
+  }
+  NvDsSrcBin* source = &parent->sub_bins[source_id];
+  if (!source->uri_list || source->num_uri_list < 2) {
+    return FALSE;
+  }
+  GMutex* mutex = uri_playlist_mutex(source);
+  g_mutex_lock(mutex);
+  source->uri_switch_pending = TRUE;
+  g_mutex_unlock(mutex);
+  const gboolean queued = schedule_uri_playlist_main_context_callback(
+      source, delay_ms, switch_to_next_uri, "switch", &source->uri_switch_source_id);
+  if (!queued) {
+    g_mutex_lock(mutex);
+    source->uri_switch_pending = FALSE;
+    g_mutex_unlock(mutex);
+    return FALSE;
+  }
+  g_print("HSTREAM_URI_PLAYLIST_CALLBACK status=queued action=switch source=%u\n", source_id);
+  return TRUE;
+}
+
+gboolean exercise_uri_playlist_schedule_suspend_race_for_test(
+    NvDsSrcParentBin* parent,
+    guint source_id,
+    guint delay_ms) {
+  if (!parent || source_id >= parent->num_bins) {
+    return FALSE;
+  }
+  NvDsSrcBin* source = &parent->sub_bins[source_id];
+  struct ScheduleRequest {
+    NvDsSrcParentBin* parent;
+    guint source_id;
+    guint delay_ms;
+    gboolean queued;
+  } request{parent, source_id, delay_ms, FALSE};
+
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  uri_playlist_suspend_race_slot = &source->uri_switch_source_id;
+  uri_playlist_suspend_race_published = FALSE;
+  uri_playlist_suspend_race_release = FALSE;
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+
+  GThread* scheduler = g_thread_new(
+      "uri-playlist-suspend-race",
+      [](gpointer data) -> gpointer {
+        auto* request = static_cast<ScheduleRequest*>(data);
+        request->queued =
+            queue_uri_playlist_switch_callback_for_test(request->parent, request->source_id, request->delay_ms);
+        return nullptr;
+      },
+      &request);
+  if (!scheduler) {
+    g_mutex_lock(&uri_playlist_suspend_race_mutex);
+    uri_playlist_suspend_race_slot = nullptr;
+    g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+    return FALSE;
+  }
+
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  const gint64 deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+  while (!uri_playlist_suspend_race_published &&
+         g_cond_wait_until(&uri_playlist_suspend_race_cond, &uri_playlist_suspend_race_mutex, deadline)) {
+  }
+  const gboolean published = uri_playlist_suspend_race_published;
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+
+  if (published) {
+    suspend_uri_playlist_main_context_callbacks(parent);
+  }
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  uri_playlist_suspend_race_release = TRUE;
+  g_cond_broadcast(&uri_playlist_suspend_race_cond);
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+  g_thread_join(scheduler);
+
+  g_mutex_lock(&uri_playlist_suspend_race_mutex);
+  uri_playlist_suspend_race_slot = nullptr;
+  uri_playlist_suspend_race_published = FALSE;
+  uri_playlist_suspend_race_release = FALSE;
+  g_mutex_unlock(&uri_playlist_suspend_race_mutex);
+  return published && !request.queued && g_atomic_int_get(&source->uri_switch_source_id) == 0;
 }
 
 static gboolean configure_lossless_uri_playlist_mux(NvDsSrcParentBin* parent) {
@@ -451,6 +735,7 @@ void stop_uri_playlist_sources_gracefully(NvDsSrcParentBin* parent) {
   }
   g_cond_broadcast(&parent->uri_playlist_barrier_cond);
   g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  release_uri_playlist_initial_seek_blockers(parent);
 
   // Decoder EOS is deliberately hidden at physical URI boundaries. Once an
   // application stop cancels exact pairing, those decoder events can no
@@ -813,7 +1098,7 @@ static void maybe_complete_uri_playlist_boundary(NvDsSrcBin* bin, guint uri_inde
   }
   g_mutex_unlock(mutex);
   if (schedule_switch) {
-    g_timeout_add(1, switch_to_next_uri, bin);
+    schedule_uri_playlist_main_context_callback(bin, 1, switch_to_next_uri, "switch", &bin->uri_switch_source_id);
   } else if (end_playlist) {
     mark_uri_playlist_terminal(bin);
   }
@@ -1671,7 +1956,8 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
     g_mutex_unlock(mutex);
     if (is_current_uri) {
       if (terminal_drain_pending) {
-        g_idle_add(finish_uri_terminal_audio_drain, bin);
+        schedule_uri_playlist_main_context_callback(
+            bin, 1, finish_uri_terminal_audio_drain, "terminal-audio-drain", &bin->uri_terminal_audio_drain_source_id);
       } else {
         maybe_complete_uri_playlist_boundary(bin, probe_data->uri_index);
       }
@@ -1683,13 +1969,160 @@ static GstPadProbeReturn uri_list_audio_pad_event_probe(GstPad* pad, GstPadProbe
   return ret;
 }
 
+static GstPadProbeReturn block_uri_playlist_initial_seek_buffer(
+    GstPad* /*pad*/,
+    GstPadProbeInfo* /*info*/,
+    gpointer /*user_data*/) {
+  // A blocking probe remains installed until gst_pad_remove_probe(). Flushing seeks discard a blocked pre-seek
+  // buffer and leave the probe ready to preserve the first post-seek buffer; a branch that needs no physical seek
+  // simply retains its first buffer until every peer seek has been submitted.
+  return GST_PAD_PROBE_OK;
+}
+
+enum class UriDecodePadLinkStatus { kLinked, kSecondary, kBlockerFailed, kLinkFailed };
+
+struct UriDecodePadLinkResult {
+  UriDecodePadLinkStatus status{UriDecodePadLinkStatus::kLinkFailed};
+  gboolean initial_seek_blocked{FALSE};
+};
+
+static GstElement* hardware_decoder_for_decode_pad(GstPad* exposed_pad) {
+  GstPad* current = exposed_pad ? GST_PAD(gst_object_ref(exposed_pad)) : nullptr;
+  while (current) {
+    GstElement* parent = gst_pad_get_parent_element(current);
+    GstElementFactory* factory = parent ? gst_element_get_factory(parent) : nullptr;
+    const gchar* factory_name = factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)) : nullptr;
+    if (factory_name && g_strcmp0(factory_name, "nvv4l2decoder") == 0) {
+      gst_object_unref(current);
+      return parent;
+    }
+    if (parent) {
+      gst_object_unref(parent);
+    }
+    GstPad* target = GST_IS_GHOST_PAD(current) ? gst_ghost_pad_get_target(GST_GHOST_PAD(current)) : nullptr;
+    gst_object_unref(current);
+    current = target;
+  }
+  return nullptr;
+}
+
+static UriDecodePadLinkResult link_uri_decode_pad(NvDsSrcBin* bin, GstPad* pad, GstPad* sinkpad, gboolean is_video) {
+  NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
+  if (!bin || !pad || !sinkpad) {
+    return {};
+  }
+  GstPad* retired_pad = nullptr;
+  gulong retired_probe_id = 0;
+  GstPad* candidate_blocked_pad = nullptr;
+  gulong candidate_probe_id = 0;
+  UriDecodePadLinkResult result;
+  GMutex* mutex = uri_playlist_mutex(bin);
+  g_mutex_lock(mutex);
+  if (gst_pad_is_linked(sinkpad)) {
+    result.status = UriDecodePadLinkStatus::kSecondary;
+  } else {
+    const gboolean initial_seek_pending = parent && parent->uri_playlist_initial_seek_pending;
+    if (initial_seek_pending) {
+      candidate_probe_id = gst_pad_add_probe(
+          pad,
+          static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BLOCK | GST_PAD_PROBE_TYPE_BUFFER),
+          block_uri_playlist_initial_seek_buffer,
+          nullptr,
+          nullptr);
+      if (candidate_probe_id == 0) {
+        result.status = UriDecodePadLinkStatus::kBlockerFailed;
+      } else {
+        candidate_blocked_pad = GST_PAD(gst_object_ref(pad));
+      }
+    }
+    if (result.status != UriDecodePadLinkStatus::kBlockerFailed) {
+      const GstPadLinkReturn link_result = gst_pad_link(pad, sinkpad);
+      if (link_result == GST_PAD_LINK_OK) {
+        result.status = UriDecodePadLinkStatus::kLinked;
+      } else {
+        result.status = link_result == GST_PAD_LINK_WAS_LINKED ? UriDecodePadLinkStatus::kSecondary
+                                                               : UriDecodePadLinkStatus::kLinkFailed;
+      }
+    }
+  }
+  if (result.status == UriDecodePadLinkStatus::kLinked) {
+    if (!is_video && bin->uri_list && bin->num_uri_list >= 1) {
+      // The audio event probe cannot observe a linked branch until this state
+      // is committed because it takes the same playlist mutex.
+      bin->uri_audio_has_pad = TRUE;
+    }
+    if (candidate_blocked_pad && candidate_probe_id != 0) {
+      GstPad*& blocked_pad =
+          is_video ? bin->uri_playlist_initial_seek_video_pad : bin->uri_playlist_initial_seek_audio_pad;
+      gulong& probe_id =
+          is_video ? bin->uri_playlist_initial_seek_video_probe : bin->uri_playlist_initial_seek_audio_probe;
+      retired_pad = blocked_pad;
+      retired_probe_id = probe_id;
+      blocked_pad = candidate_blocked_pad;
+      probe_id = candidate_probe_id;
+      candidate_blocked_pad = nullptr;
+      candidate_probe_id = 0;
+      result.initial_seek_blocked = TRUE;
+    }
+  }
+  g_mutex_unlock(mutex);
+  if (candidate_blocked_pad && candidate_probe_id != 0) {
+    gst_pad_remove_probe(candidate_blocked_pad, candidate_probe_id);
+    gst_object_unref(candidate_blocked_pad);
+  }
+  // The replacement blocker becomes visible under the playlist mutex only
+  // after its pad is the committed tee peer, so readiness cannot observe the
+  // retired blocker during the link handoff.
+  if (retired_pad && retired_probe_id != 0) {
+    gst_pad_remove_probe(retired_pad, retired_probe_id);
+    gst_object_unref(retired_pad);
+    if (g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK")) {
+      g_print(
+          "HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=blocker-relinked source=%u media=%s\n",
+          bin->source_id,
+          is_video ? "video" : "audio");
+    }
+  }
+  return result;
+}
+
 static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
   GstCaps* caps = gst_pad_query_caps(pad, NULL);
+  if (!caps || gst_caps_get_size(caps) == 0) {
+    if (caps) {
+      gst_caps_unref(caps);
+    }
+    return;
+  }
   const GstStructure* str = gst_caps_get_structure(caps, 0);
-  const gchar* name = gst_structure_get_name(str);
+  const gchar* name = str ? gst_structure_get_name(str) : nullptr;
+  if (!name) {
+    gst_caps_unref(caps);
+    return;
+  }
 
   if (!strncmp(name, "video", 5)) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
+    g_mutex_lock(&bin->uri_decode_pad_selection_mutex);
+    GstPad* sinkpad = gst_element_get_static_pad(bin->tee, "sink");
+    if (!sinkpad) {
+      g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+      gst_caps_unref(caps);
+      return;
+    }
+    if (gst_pad_is_linked(sinkpad)) {
+      // A container may expose multiple raw video tracks. The logical camera
+      // owns exactly one; a real decoded-pad replacement arrives only after
+      // the previous pad has been removed and this tee sink is unlinked.
+      if (g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK")) {
+        g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=video\n", bin->source_id);
+      }
+      gst_object_unref(sinkpad);
+      g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+      gst_caps_unref(caps);
+      return;
+    }
+    gulong event_probe_id = 0;
     if (bin->uri_list && bin->num_uri_list >= 1) {
       auto* probe_data = g_new0(UriListPadProbeData, 1);
       probe_data->bin = bin;
@@ -1700,25 +2133,58 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       probe_data->initial_offset = uri_playlist_initial_offset(bin, TRUE);
       g_mutex_unlock(mutex);
       probe_data->is_video = TRUE;
-      gst_pad_add_probe(
+      event_probe_id = gst_pad_add_probe(
           pad,
           (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
           uri_list_video_pad_event_probe,
           probe_data,
           reinterpret_cast<GDestroyNotify>(g_free));
     }
-    GstPad* sinkpad = gst_element_get_static_pad(bin->tee, "sink");
-    if (gst_pad_is_linked(sinkpad)) {
-      GstPad* peer = gst_pad_get_peer(sinkpad);
-      if (peer) {
-        gst_pad_unlink(peer, sinkpad);
-        gst_object_unref(peer);
+    // Retain the selected pad's decoder before link_uri_decode_pad() publishes
+    // its initial-seek blocker. A ready message from another camera can run on
+    // the main context as soon as that blocker is visible.
+    GstElement* decoder = bin->src_elem ? hardware_decoder_for_decode_pad(pad) : nullptr;
+    if (bin->src_elem) {
+      if (decoder) {
+        g_object_set_data_full(
+            G_OBJECT(bin->src_elem),
+            "hstream-uri-playlist-video-decoder",
+            gst_object_ref(decoder),
+            reinterpret_cast<GDestroyNotify>(gst_object_unref));
+      } else {
+        g_object_set_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder", nullptr);
       }
     }
-    if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK) {
+    const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, TRUE);
+    if (link_result.status != UriDecodePadLinkStatus::kLinked && event_probe_id != 0) {
+      gst_pad_remove_probe(pad, event_probe_id);
+    }
+    if (link_result.status != UriDecodePadLinkStatus::kLinked && bin->src_elem) {
+      g_object_set_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder", nullptr);
+    }
+    if (decoder) {
+      gst_object_unref(decoder);
+    }
+    gst_object_unref(sinkpad);
+    g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+    if (link_result.status == UriDecodePadLinkStatus::kSecondary) {
+      if (g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK")) {
+        g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=video\n", bin->source_id);
+      }
+      gst_caps_unref(caps);
+      return;
+    }
+    if (link_result.status != UriDecodePadLinkStatus::kLinked) {
       NVGSTDS_ERR_MSG_V("Failed to link decodebin to pipeline");
       cancel_uri_playlist_source(bin, TRUE);
-      GST_ELEMENT_ERROR(bin->src_elem, STREAM, FAILED, ("Failed to link decoded video"), ("source=%u", bin->source_id));
+      release_uri_playlist_initial_seek_blockers(bin->parent_bin);
+      GST_ELEMENT_ERROR(
+          bin->src_elem,
+          STREAM,
+          FAILED,
+          (link_result.status == UriDecodePadLinkStatus::kBlockerFailed ? "Failed to guard replacement decoded video"
+                                                                        : "Failed to link decoded video"),
+          ("source=%u", bin->source_id));
     } else {
       NvDsSourceConfig* config = (NvDsSourceConfig*)g_object_get_data(G_OBJECT(bin->cap_filter), SRC_CONFIG_KEY);
 
@@ -1728,11 +2194,33 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
-    gst_object_unref(sinkpad);
+    if (link_result.status == UriDecodePadLinkStatus::kLinked && link_result.initial_seek_blocked) {
+      gst_element_post_message(
+          bin->src_elem,
+          gst_message_new_application(
+              GST_OBJECT(bin->src_elem), gst_structure_new_empty("hstream-uri-playlist-initial-seek-ready")));
+    }
   } else if (g_str_has_prefix(name, "audio/x-raw")) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
 
     if (bin->uri_audio_tee) {
+      g_mutex_lock(&bin->uri_decode_pad_selection_mutex);
+      GstPad* sinkpad = gst_element_get_static_pad(bin->uri_audio_tee, "sink");
+      if (!sinkpad) {
+        g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+        gst_caps_unref(caps);
+        return;
+      }
+      if (gst_pad_is_linked(sinkpad)) {
+        if (g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK")) {
+          g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=audio\n", bin->source_id);
+        }
+        gst_object_unref(sinkpad);
+        g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+        gst_caps_unref(caps);
+        return;
+      }
+      gulong event_probe_id = 0;
       if (bin->uri_list && bin->num_uri_list >= 1) {
         auto* probe_data = g_new0(UriListPadProbeData, 1);
         probe_data->bin = bin;
@@ -1743,45 +2231,45 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
         probe_data->initial_offset = uri_playlist_initial_offset(bin, FALSE);
         g_mutex_unlock(mutex);
         probe_data->is_video = FALSE;
-        gst_pad_add_probe(
+        event_probe_id = gst_pad_add_probe(
             pad,
             (GstPadProbeType)(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
             uri_list_audio_pad_event_probe,
             probe_data,
             reinterpret_cast<GDestroyNotify>(g_free));
       }
-      if (bin->uri_list && bin->num_uri_list >= 1) {
-        GMutex* mutex = uri_playlist_mutex(bin);
-        g_mutex_lock(mutex);
-        bin->uri_audio_has_pad = TRUE;
-        g_mutex_unlock(mutex);
+      const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, FALSE);
+      if (link_result.status != UriDecodePadLinkStatus::kLinked && event_probe_id != 0) {
+        gst_pad_remove_probe(pad, event_probe_id);
       }
-
-      GstPad* sinkpad = gst_element_get_static_pad(bin->uri_audio_tee, "sink");
-      if (!sinkpad) {
+      gst_object_unref(sinkpad);
+      g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
+      if (link_result.status == UriDecodePadLinkStatus::kSecondary) {
+        if (g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_REPORT_RELINK")) {
+          g_print("HSTREAM_URI_PLAYLIST_INITIAL_SEEK status=secondary-ignored source=%u media=audio\n", bin->source_id);
+        }
         gst_caps_unref(caps);
         return;
       }
-      if (gst_pad_is_linked(sinkpad)) {
-        GstPad* peer = gst_pad_get_peer(sinkpad);
-        if (peer) {
-          gst_pad_unlink(peer, sinkpad);
-          gst_object_unref(peer);
-        }
-      }
-      if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK) {
+      if (link_result.status != UriDecodePadLinkStatus::kLinked) {
         NVGSTDS_ERR_MSG_V("Failed to link URI decodebin audio pad to audio tee");
         cancel_uri_playlist_source(bin, TRUE);
+        release_uri_playlist_initial_seek_blockers(bin->parent_bin);
         GST_ELEMENT_ERROR(
-            bin->src_elem, STREAM, FAILED, ("Failed to link decoded audio"), ("source=%u", bin->source_id));
+            bin->src_elem,
+            STREAM,
+            FAILED,
+            (link_result.status == UriDecodePadLinkStatus::kBlockerFailed ? "Failed to guard replacement decoded audio"
+                                                                          : "Failed to link decoded audio"),
+            ("source=%u", bin->source_id));
       }
-      gst_object_unref(sinkpad);
       gst_caps_unref(caps);
       return;
     }
 
     /** skip linking if we did not prepare for audio */
     if (!bin->audio_converter) {
+      gst_caps_unref(caps);
       return;
     }
 
@@ -1791,12 +2279,23 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       NVGSTDS_ERR_MSG_V("Failed to link decodebin to pipeline");
     gst_object_unref(sinkpad);
   }
+  gst_caps_unref(caps);
 }
 
 static void cb_newpad_audio(GstElement* decodebin, GstPad* pad, gpointer data) {
   GstCaps* caps = gst_pad_query_caps(pad, NULL);
+  if (!caps || gst_caps_get_size(caps) == 0) {
+    if (caps) {
+      gst_caps_unref(caps);
+    }
+    return;
+  }
   const GstStructure* str = gst_caps_get_structure(caps, 0);
-  const gchar* name = gst_structure_get_name(str);
+  const gchar* name = str ? gst_structure_get_name(str) : nullptr;
+  if (!name) {
+    gst_caps_unref(caps);
+    return;
+  }
 
   if (g_str_has_prefix(name, "audio/x-raw")) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
@@ -1812,6 +2311,7 @@ static void cb_newpad_audio(GstElement* decodebin, GstPad* pad, gpointer data) {
     bin->fakesink = gst_element_factory_make("fakesink", "src_fakesink");
     if (!bin->fakesink) {
       NVGSTDS_ERR_MSG_V("Could not create 'src_fakesink' for video path");
+      gst_caps_unref(caps);
       return;
     }
 
@@ -1900,6 +2400,15 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   }
   g_mutex_init(&bin->uri_playlist_mutex);
   bin->uri_playlist_mutex_initialized = TRUE;
+  if (bin->uri_decode_pad_selection_mutex_initialized) {
+    g_mutex_clear(&bin->uri_decode_pad_selection_mutex);
+  }
+  g_mutex_init(&bin->uri_decode_pad_selection_mutex);
+  bin->uri_decode_pad_selection_mutex_initialized = TRUE;
+  // This runs only after the preceding generation has reached NULL. Publishing
+  // enabled here lets the newly created decoder own callbacks without ever
+  // resetting the generation fence or its atomically managed source IDs.
+  g_atomic_int_set(&bin->uri_playlist_callbacks_enabled, TRUE);
   if (bin->uri_list) {
     for (guint i = 0; i < bin->num_uri_list; ++i) {
       g_free(bin->uri_list[i]);
@@ -1925,6 +2434,11 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_list_index = 0;
   bin->uri_playlist_initial_uri_index = 0;
   bin->uri_playlist_initial_skipped_base_ns = 0;
+  bin->uri_playlist_initial_seek_ns = 0;
+  bin->uri_playlist_initial_seek_video_pad = nullptr;
+  bin->uri_playlist_initial_seek_video_probe = 0;
+  bin->uri_playlist_initial_seek_audio_pad = nullptr;
+  bin->uri_playlist_initial_seek_audio_probe = 0;
   bin->uri_switch_count = 0;
   bin->uri_switch_pending = FALSE;
   bin->uri_list_decoded_frame_count = 0;
@@ -1950,7 +2464,6 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_list_video_eos_seen = FALSE;
   bin->uri_list_pads_complete = FALSE;
   bin->uri_list_boundary_handled = FALSE;
-
   // Keep config->uri in sync with the current entry to match file/live detection elsewhere.
   g_free(config->uri);
   config->uri = g_strdup(bin->uri_list[0]);
@@ -2100,7 +2613,8 @@ static void cb_no_more_pads(GstElement* decodebin, gpointer data) {
   g_mutex_unlock(mutex);
   // If video EOS raced ahead of no-more-pads, this is what proves that the URI truly has no audio pad.
   if (terminal_drain_without_audio) {
-    g_idle_add(finish_uri_terminal_audio_drain, bin);
+    schedule_uri_playlist_main_context_callback(
+        bin, 1, finish_uri_terminal_audio_drain, "terminal-audio-drain", &bin->uri_terminal_audio_drain_source_id);
   } else {
     maybe_complete_uri_playlist_boundary(bin, uri_index);
   }
@@ -2119,7 +2633,7 @@ static GstPadProbeReturn restart_stream_buf_prob(GstPad* pad, GstPadProbeInfo* i
   }
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_BOTH)) {
     if (GST_EVENT_TYPE(event) == GST_EVENT_EOS) {
-      g_timeout_add(1, seek_decode, bin);
+      schedule_uri_playlist_main_context_callback(bin, 1, seek_decode, "loop-seek", &bin->uri_loop_seek_source_id);
     }
 
     if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
@@ -3359,6 +3873,8 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   bin->uri_playlist_barrier_failed = FALSE;
   bin->uri_playlist_delivery_aborted = FALSE;
   bin->uri_playlist_initial_offsets_configured = FALSE;
+  bin->uri_playlist_initial_seek_pending = FALSE;
+  bin->uri_playlist_initial_seek_fallback_ns = 0;
 
   bin->bin = gst_bin_new("multi_src_bin");
   if (!bin->bin) {
@@ -3517,6 +4033,7 @@ gboolean configure_uri_playlist_initial_offsets(
   struct InitialChapterPlan {
     guint index{0};
     GstClockTime skipped_base{0};
+    GstClockTime target{0};
   } plans[2];
   for (guint source_id = 0; source_id < 2; ++source_id) {
     NvDsSrcBin* source = &bin->sub_bins[source_id];
@@ -3524,6 +4041,7 @@ gboolean configure_uri_playlist_initial_offsets(
     // A source that owns selected audio cannot skip past the common audio epoch merely because its camera has a
     // positive synchronization offset. Decode that residual video range so audio remains continuous from time zero.
     const GstClockTime target = source_id == audio_source_id ? std::min(video_target, start_time_ns) : video_target;
+    plans[source_id].target = target;
     while (plans[source_id].index < source->num_uri_list) {
       GError* error = nullptr;
       GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
@@ -3541,7 +4059,7 @@ gboolean configure_uri_playlist_initial_offsets(
       if (error) {
         g_error_free(error);
       }
-      if (result != GST_DISCOVERER_OK || !GST_CLOCK_TIME_IS_VALID(duration) || duration == 0 ||
+      if (!hm::uri_playlist_internal::discovery_has_usable_duration(result, duration) ||
           duration > G_MAXUINT64 - plans[source_id].skipped_base) {
         break;
       }
@@ -3585,6 +4103,7 @@ gboolean configure_uri_playlist_initial_offsets(
       source->uri_list_index = plans[source_id].index;
       source->uri_playlist_initial_uri_index = plans[source_id].index;
       source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
+      source->uri_playlist_initial_seek_ns = plans[source_id].target - plans[source_id].skipped_base;
       source->prev_accumulated_base = plans[source_id].skipped_base;
       source->accumulated_base = plans[source_id].skipped_base;
       g_free(source->config->uri);
@@ -3600,6 +4119,314 @@ gboolean configure_uri_playlist_initial_offsets(
     }
   }
   return configured;
+}
+
+gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 start_time_ns) {
+  if (!bin || bin->uri_playlist_exact_pairing_enabled || bin->num_bins == 0 || start_time_ns == 0) {
+    return FALSE;
+  }
+  GstState state = GST_STATE_VOID_PENDING;
+  GstState pending = GST_STATE_VOID_PENDING;
+  (void)gst_element_get_state(bin->bin, &state, &pending, 0);
+  if (state > GST_STATE_READY || (pending != GST_STATE_VOID_PENDING && pending > GST_STATE_READY)) {
+    return FALSE;
+  }
+
+  struct InitialChapterPlan {
+    guint index{0};
+    GstClockTime skipped_base{0};
+  } plans[MAX_SOURCE_BINS];
+  for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+    NvDsSrcBin* source = &bin->sub_bins[source_id];
+    if (!source->uri_list || source->num_uri_list == 0 || !source->config) {
+      return FALSE;
+    }
+    while (plans[source_id].index < source->num_uri_list) {
+      GError* error = nullptr;
+      GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
+      GstDiscovererInfo* info = discoverer
+          ? gst_discoverer_discover_uri(discoverer, source->uri_list[plans[source_id].index], &error)
+          : nullptr;
+      const GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
+      const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
+      if (info) {
+        gst_discoverer_info_unref(info);
+      }
+      if (discoverer) {
+        g_object_unref(discoverer);
+      }
+      if (error) {
+        g_error_free(error);
+      }
+      if (!hm::uri_playlist_internal::discovery_has_usable_duration(result, duration) ||
+          duration > G_MAXUINT64 - plans[source_id].skipped_base) {
+        return FALSE;
+      }
+      if (plans[source_id].skipped_base + duration > start_time_ns) {
+        break;
+      }
+      if (plans[source_id].index + 1 == source->num_uri_list) {
+        return FALSE;
+      }
+      plans[source_id].skipped_base += duration;
+      ++plans[source_id].index;
+    }
+  }
+
+  gboolean configured = FALSE;
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  const gboolean pristine = !bin->uri_playlist_initial_offsets_configured && !bin->uri_playlist_terminal &&
+      bin->uri_playlist_next_frame_sequence == 0 && !GST_CLOCK_TIME_IS_VALID(bin->uri_playlist_paired_video_end);
+  if (pristine) {
+    configured = TRUE;
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      if (source->uri_list_decoded_frame_count != 0 || source->uri_list_initial_positioned_frame_count != 0 ||
+          source->uri_list_mux_delivered_sequence != G_MAXUINT64 ||
+          source->uri_list_frame_ready_sequence != G_MAXUINT64 ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_list_released_video_end) ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_playlist_video_origin_ns)) {
+        configured = FALSE;
+        break;
+      }
+    }
+  }
+  if (configured) {
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      source->uri_playlist_initial_video_offset_ns = start_time_ns;
+      source->uri_playlist_initial_audio_offset_ns = start_time_ns;
+      source->uri_playlist_video_origin_ns = GST_CLOCK_TIME_NONE;
+      source->uri_playlist_audio_origin_ns = start_time_ns;
+      source->uri_list_index = plans[source_id].index;
+      source->uri_playlist_initial_uri_index = plans[source_id].index;
+      source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
+      source->uri_playlist_initial_seek_ns = start_time_ns - plans[source_id].skipped_base;
+      source->prev_accumulated_base = plans[source_id].skipped_base;
+      source->accumulated_base = plans[source_id].skipped_base;
+      g_free(source->config->uri);
+      source->config->uri = g_strdup(source->uri_list[plans[source_id].index]);
+    }
+    bin->uri_playlist_initial_offsets_configured = TRUE;
+  }
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+
+  if (configured) {
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      NvDsSrcBin* source = &bin->sub_bins[source_id];
+      g_object_set(G_OBJECT(source->src_elem), "uri", source->config->uri, NULL);
+    }
+  }
+  return configured;
+}
+
+gboolean arm_uri_playlist_initial_seeks(NvDsSrcParentBin* bin) {
+  if (!bin || !bin->uri_playlist_initial_offsets_configured) {
+    return FALSE;
+  }
+  gboolean can_arm = TRUE;
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  const gboolean pristine = !bin->uri_playlist_terminal && bin->uri_playlist_next_frame_sequence == 0 &&
+      !GST_CLOCK_TIME_IS_VALID(bin->uri_playlist_paired_video_end);
+  if (pristine) {
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      const NvDsSrcBin* source = &bin->sub_bins[source_id];
+      if (source->uri_list_decoded_frame_count != 0 || source->uri_list_initial_positioned_frame_count != 0 ||
+          source->uri_list_mux_delivered_sequence != G_MAXUINT64 ||
+          source->uri_list_frame_ready_sequence != G_MAXUINT64 ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_list_released_video_end) ||
+          GST_CLOCK_TIME_IS_VALID(source->uri_playlist_video_origin_ns)) {
+        can_arm = FALSE;
+        break;
+      }
+    }
+  } else {
+    can_arm = FALSE;
+  }
+  if (can_arm) {
+    bin->uri_playlist_initial_seek_pending = FALSE;
+    bin->uri_playlist_initial_seek_fallback_ns = 0;
+    for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+      bin->uri_playlist_initial_seek_pending =
+          bin->uri_playlist_initial_seek_pending || bin->sub_bins[source_id].uri_playlist_initial_seek_ns > 0;
+    }
+  }
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+  return can_arm;
+}
+
+static void release_uri_playlist_initial_seek_blockers(NvDsSrcParentBin* parent) {
+  if (!parent || !parent->uri_playlist_barrier_initialized) {
+    return;
+  }
+  struct Blocker {
+    GstPad* pad;
+    gulong probe_id;
+  };
+  std::vector<Blocker> blockers;
+  g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+  parent->uri_playlist_initial_seek_pending = FALSE;
+  for (guint source_id = 0; source_id < parent->num_bins; ++source_id) {
+    NvDsSrcBin* source = &parent->sub_bins[source_id];
+    if (source->uri_playlist_initial_seek_video_pad && source->uri_playlist_initial_seek_video_probe != 0) {
+      blockers.push_back({source->uri_playlist_initial_seek_video_pad, source->uri_playlist_initial_seek_video_probe});
+    }
+    source->uri_playlist_initial_seek_video_pad = nullptr;
+    source->uri_playlist_initial_seek_video_probe = 0;
+    if (source->uri_playlist_initial_seek_audio_pad && source->uri_playlist_initial_seek_audio_probe != 0) {
+      blockers.push_back({source->uri_playlist_initial_seek_audio_pad, source->uri_playlist_initial_seek_audio_probe});
+    }
+    source->uri_playlist_initial_seek_audio_pad = nullptr;
+    source->uri_playlist_initial_seek_audio_probe = 0;
+  }
+  g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+  for (const Blocker& blocker : blockers) {
+    gst_pad_remove_probe(blocker.pad, blocker.probe_id);
+    gst_object_unref(blocker.pad);
+  }
+}
+
+static gboolean fail_uri_playlist_decoder_recovery(
+    NvDsSrcParentBin* parent,
+    NvDsSrcBin* source,
+    guint source_id,
+    const char* reason) {
+  cancel_uri_playlist_source(source, TRUE);
+  release_uri_playlist_initial_seek_blockers(parent);
+  GST_ELEMENT_ERROR(
+      source->src_elem,
+      STREAM,
+      FAILED,
+      ("Could not rebuild NVIDIA decoder after URI-playlist seek"),
+      ("source=%u: %s", source_id, reason));
+  return TRUE;
+}
+
+gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
+  if (!bin || !bin->uri_playlist_initial_offsets_configured) {
+    return FALSE;
+  }
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  const gboolean pending = bin->uri_playlist_initial_seek_pending;
+  gboolean ready = pending;
+  for (guint source_id = 0; source_id < bin->num_bins && ready; ++source_id) {
+    const NvDsSrcBin* source = &bin->sub_bins[source_id];
+    GstPad* sinkpad = source->tee ? gst_element_get_static_pad(source->tee, "sink") : nullptr;
+    GstPad* peer = sinkpad ? gst_pad_get_peer(sinkpad) : nullptr;
+    ready = peer && peer == source->uri_playlist_initial_seek_video_pad &&
+        source->uri_playlist_initial_seek_video_probe != 0;
+    if (peer) {
+      gst_object_unref(peer);
+    }
+    if (sinkpad) {
+      gst_object_unref(sinkpad);
+    }
+  }
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+  if (!pending) {
+    return TRUE;
+  }
+  if (!ready) {
+    return FALSE;
+  }
+  for (guint source_id = 0; source_id < bin->num_bins; ++source_id) {
+    NvDsSrcBin* source = &bin->sub_bins[source_id];
+    if (source->uri_playlist_initial_seek_ns == 0) {
+      continue;
+    }
+    GstElement* hardware_decoder = nullptr;
+    if (source->src_elem) {
+      g_mutex_lock(&source->uri_decode_pad_selection_mutex);
+      hardware_decoder = static_cast<GstElement*>(
+          g_object_get_data(G_OBJECT(source->src_elem), "hstream-uri-playlist-video-decoder"));
+      if (hardware_decoder) {
+        gst_object_ref(hardware_decoder);
+      }
+      g_mutex_unlock(&source->uri_decode_pad_selection_mutex);
+    }
+    const gboolean inject_failure = source_id == 0 && g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_FAIL_ONCE") &&
+        g_atomic_int_compare_and_exchange(&uri_playlist_initial_seek_failure_injected, FALSE, TRUE);
+    gboolean accelerated = !inject_failure && source->src_elem &&
+        gst_element_seek(
+            source->src_elem,
+            1.0,
+            GST_FORMAT_TIME,
+            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+            GST_SEEK_TYPE_SET,
+            static_cast<gint64>(source->uri_playlist_initial_seek_ns),
+            GST_SEEK_TYPE_NONE,
+            GST_CLOCK_TIME_NONE);
+    if (accelerated && hardware_decoder) {
+      // nvv4l2decoder can retain a partially initialized 8K HEVC output surface after a flushing seek performed once
+      // preroll has reached the decoded pad. The first seek positions the demuxer; retire the selected hardware
+      // decoder, restart it under its parent, then repeat the seek so the pristine decoder begins at that keyframe.
+      const gboolean stopped =
+          gst_element_set_state(hardware_decoder, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+      const gboolean inject_restart_failure =
+          g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_DECODER_RESTART_FAIL_ONCE") &&
+          g_atomic_int_compare_and_exchange(&uri_playlist_decoder_restart_failure_injected, FALSE, TRUE);
+      const gboolean restarted =
+          stopped && !inject_restart_failure && gst_element_sync_state_with_parent(hardware_decoder);
+      if (!restarted) {
+        gst_object_unref(hardware_decoder);
+        return fail_uri_playlist_decoder_recovery(bin, source, source_id, "decoder state restart failed");
+      }
+      const gboolean reseeked = gst_element_seek(
+          source->src_elem,
+          1.0,
+          GST_FORMAT_TIME,
+          static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+          GST_SEEK_TYPE_SET,
+          static_cast<gint64>(source->uri_playlist_initial_seek_ns),
+          GST_SEEK_TYPE_NONE,
+          GST_CLOCK_TIME_NONE);
+      gst_object_unref(hardware_decoder);
+      hardware_decoder = nullptr;
+      if (!reseeked) {
+        return fail_uri_playlist_decoder_recovery(bin, source, source_id, "post-restart keyframe seek failed");
+      }
+      g_print("URI-playlist source %u reset NVIDIA decoder after preroll seek\n", source_id);
+    }
+    if (hardware_decoder) {
+      gst_object_unref(hardware_decoder);
+    }
+    if (!accelerated) {
+      g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+      bin->uri_playlist_initial_seek_fallback_ns =
+          std::max(bin->uri_playlist_initial_seek_fallback_ns, source->uri_playlist_initial_seek_ns);
+      g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+      g_printerr(
+          "Could not accelerate URI-playlist source %u to chapter-local position %" GST_TIME_FORMAT
+          "; falling back to exact decoded trimming\n",
+          source_id,
+          GST_TIME_ARGS(source->uri_playlist_initial_seek_ns));
+      continue;
+    }
+    g_print(
+        "URI-playlist source %u selected chapter %u at local position %" GST_TIME_FORMAT "\n",
+        source_id,
+        source->uri_playlist_initial_uri_index,
+        GST_TIME_ARGS(source->uri_playlist_initial_seek_ns));
+    if (const gchar* delay_value = g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_INTER_SOURCE_DELAY_MS")) {
+      gchar* end = nullptr;
+      const guint64 delay_ms = g_ascii_strtoull(delay_value, &end, 10);
+      if (end && *end == '\0' && delay_ms > 0 && delay_ms <= 5000) {
+        g_usleep(delay_ms * 1000);
+      }
+    }
+  }
+  release_uri_playlist_initial_seek_blockers(bin);
+  return TRUE;
+}
+
+guint64 uri_playlist_initial_seek_fallback_ns(NvDsSrcParentBin* bin) {
+  if (!bin || !bin->uri_playlist_barrier_initialized) {
+    return 0;
+  }
+  g_mutex_lock(&bin->uri_playlist_barrier_mutex);
+  const guint64 fallback_ns = bin->uri_playlist_initial_seek_fallback_ns;
+  g_mutex_unlock(&bin->uri_playlist_barrier_mutex);
+  return fallback_ns;
 }
 
 static void set_properties_nvuribin(GstElement* element_, NvDsSourceConfig const* config) {

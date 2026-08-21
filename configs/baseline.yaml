@@ -201,6 +201,9 @@ rink:
     # Minimum height for the aspect-ratio follower box, as a fraction of play height.
     # Smaller values allow more zoom-in.
     follower_box_min_height_ratio: 0.2
+    # How readily the play-tracking camera zooms in. 25 preserves the native
+    # 8%/10% sticky shrink thresholds; larger values zoom in sooner.
+    zoom_in_aggressiveness: 25
     crop_image: true
     pre_clip: true
     max_speed_ratio_x: 1.0

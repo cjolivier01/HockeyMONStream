@@ -246,11 +246,18 @@ static GstBusSyncReply bus_sync_callback(GstBus* /*bus*/, GstMessage* message, g
  */
 static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
   AppCtx* appCtx = (AppCtx*)data;
+  const gboolean isolated_preview_error =
+      GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR && message_source_is_ui_preview(message);
   GST_CAT_DEBUG(
       NVDS_APP,
       "Received message on bus: source %s, msg_type %s",
       GST_MESSAGE_SRC_NAME(message),
       GST_MESSAGE_TYPE_NAME(message));
+  // Preview branches are observational and their errors are isolated below.
+  // Do not let an isolated error cancel an unrelated in-flight seek.
+  if (appCtx && appCtx->bus_message_cb && !isolated_preview_error) {
+    appCtx->bus_message_cb(appCtx, message);
+  }
   switch (GST_MESSAGE_TYPE(message)) {
     case GST_MESSAGE_INFO: {
       GError* error = NULL;
@@ -286,7 +293,7 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       // GPU previews are observational branches behind hmpreviewisolation.
       // Converter/X11 errors must disable that preview without tearing down
       // decoding, stitching, audio, or encoded outputs.
-      if (message_source_is_ui_preview(message)) {
+      if (isolated_preview_error) {
         g_printerr(
             "HSTREAM_PREVIEW status=isolated-error source=%s message=%s\n",
             GST_OBJECT_NAME(message->src),
@@ -530,6 +537,29 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
       break;
   }
   return TRUE;
+}
+
+gboolean attach_pipeline_bus_watch(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return FALSE;
+  }
+  if (appCtx->pipeline.bus_id != 0) {
+    return TRUE;
+  }
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
+  appCtx->pipeline.bus_id = gst_bus_add_watch(bus, bus_callback, appCtx);
+  gst_object_unref(bus);
+  return appCtx->pipeline.bus_id != 0;
+}
+
+void detach_pipeline_bus_watch(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline || appCtx->pipeline.bus_id == 0) {
+    return;
+  }
+  GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
+  gst_bus_remove_watch(bus);
+  gst_object_unref(bus);
+  appCtx->pipeline.bus_id = 0;
 }
 
 gboolean dispatch_pending_pipeline_bus_messages(AppCtx* appCtx) {
@@ -1799,9 +1829,10 @@ gboolean create_pipeline(
     goto done;
   }
 
-  bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline->pipeline));
-  pipeline->bus_id = gst_bus_add_watch(bus, bus_callback, appCtx);
-  gst_object_unref(bus);
+  if (!appCtx->defer_bus_watch && !attach_pipeline_bus_watch(appCtx)) {
+    NVGSTDS_ERR_MSG_V("Failed to attach pipeline bus watch");
+    goto done;
+  }
 
   if (config->file_loop) {
     /* Let each source bin know it needs to loop. */
@@ -2184,7 +2215,8 @@ gboolean create_pipeline(
           appCtx->perf_struct.aggregate_output_fps ? 1 : config->max_batch_size,
           config->perf_measurement_interval_sec,
           config->multi_source_config[0].dewarper_config.num_surfaces_per_frame,
-          perf_cb);
+          perf_cb,
+          !appCtx->defer_bus_watch);
     } else {
       enable_perf_measurement(
           &appCtx->perf_struct,
@@ -2192,7 +2224,8 @@ gboolean create_pipeline(
           perf_num_instances,
           config->perf_measurement_interval_sec,
           config->multi_source_config[0].dewarper_config.num_surfaces_per_frame,
-          perf_cb);
+          perf_cb,
+          !appCtx->defer_bus_watch);
     }
   }
 
@@ -2302,6 +2335,19 @@ void destroy_pipeline(AppCtx* appCtx) {
   if (!appCtx)
     return;
 
+  if (g_getenv("HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK")) {
+    queue_uri_playlist_switch_callback_for_test(&appCtx->pipeline.multi_src_bin, 0, 5000);
+  }
+  // The performance timeout calls back into application code that queries
+  // appCtx->pipeline. Remove it before any GstPipeline pointer can be cleared
+  // or replaced; recreation installs a fresh timeout after publication.
+  pause_perf_measurement(&appCtx->perf_struct);
+  // Main-context URI work owns pointers into multi_src_bin. Fence it before
+  // final teardown and every in-place recreation so no old-generation source
+  // can run after GstElements or playlist mutexes have been replaced. Runtime
+  // seek already does this before handing AppCtx to its worker; the operation
+  // is deliberately idempotent for that path.
+  suspend_uri_playlist_main_context_callbacks(&appCtx->pipeline.multi_src_bin);
   stop_pipeline_gracefully(appCtx, 5 * GST_SECOND);
 
   g_mutex_lock(&appCtx->app_lock);
@@ -2341,7 +2387,10 @@ void destroy_pipeline(AppCtx* appCtx) {
   if (appCtx->pipeline.pipeline) {
     bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
     gst_bus_set_sync_handler(bus, NULL, NULL, NULL);
-    gst_bus_remove_watch(bus);
+    if (appCtx->pipeline.bus_id != 0) {
+      gst_bus_remove_watch(bus);
+      appCtx->pipeline.bus_id = 0;
+    }
     gst_object_unref(bus);
     gst_object_unref(appCtx->pipeline.pipeline);
     appCtx->pipeline.pipeline = NULL;
@@ -2380,22 +2429,30 @@ void destroy_pipeline_for_recreate(AppCtx* appCtx) {
 }
 
 gboolean pause_pipeline(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return FALSE;
+  }
   GstState cur;
   GstState pending;
   GstStateChangeReturn ret;
-  GstClockTime timeout = 5 * GST_SECOND / 1000;
+  constexpr GstClockTime timeout = 5 * GST_SECOND;
 
-  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
-
-  if (ret == GST_STATE_CHANGE_ASYNC) {
+  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, 0);
+  if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC) {
     return FALSE;
   }
 
   if (cur == GST_STATE_PAUSED) {
     return TRUE;
   } else if (cur == GST_STATE_PLAYING) {
-    gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PAUSED);
-    gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
+    if (gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      return FALSE;
+    }
+    ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
+    if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC || cur != GST_STATE_PAUSED ||
+        (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PAUSED)) {
+      return FALSE;
+    }
     pause_perf_measurement(&appCtx->perf_struct);
     return TRUE;
   } else {
@@ -2404,22 +2461,30 @@ gboolean pause_pipeline(AppCtx* appCtx) {
 }
 
 gboolean resume_pipeline(AppCtx* appCtx) {
+  if (!appCtx || !appCtx->pipeline.pipeline) {
+    return FALSE;
+  }
   GstState cur;
   GstState pending;
   GstStateChangeReturn ret;
-  GstClockTime timeout = 5 * GST_SECOND / 1000;
+  constexpr GstClockTime timeout = 5 * GST_SECOND;
 
-  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
-
-  if (ret == GST_STATE_CHANGE_ASYNC) {
+  ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, 0);
+  if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC) {
     return FALSE;
   }
 
   if (cur == GST_STATE_PLAYING) {
     return TRUE;
   } else if (cur == GST_STATE_PAUSED) {
-    gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PLAYING);
-    gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, GST_CLOCK_TIME_NONE);
+    if (gst_element_set_state(appCtx->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      return FALSE;
+    }
+    ret = gst_element_get_state(appCtx->pipeline.pipeline, &cur, &pending, timeout);
+    if (ret == GST_STATE_CHANGE_FAILURE || ret == GST_STATE_CHANGE_ASYNC || cur != GST_STATE_PLAYING ||
+        (pending != GST_STATE_VOID_PENDING && pending != GST_STATE_PLAYING)) {
+      return FALSE;
+    }
     resume_perf_measurement(&appCtx->perf_struct);
     return TRUE;
   } else {

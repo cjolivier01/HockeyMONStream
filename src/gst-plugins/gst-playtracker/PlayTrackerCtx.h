@@ -58,6 +58,10 @@ absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file);
 
 absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning);
 
+// Drops per-source position/velocity history while preserving accumulated live
+// tuning. Used after a flushing playback seek before the next frame arrives.
+void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx);
+
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
 
 absl::Status DsPlayTrackerDrawToDisplayMeta(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame);

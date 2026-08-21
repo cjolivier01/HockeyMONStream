@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 #include <gst/gst.h>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,6 +37,7 @@ fs::path write_minimal_config(const fs::path& dir) {
   out << "  max-accel-ratio-x: 1.0\n";
   out << "  max-accel-ratio-y: 1.0\n";
   out << "  follower-box-min-height-ratio: 0.2\n";
+  out << "  zoom-in-aggressiveness: 25\n";
   out << "  live-boxes:\n";
   out << "    - name: current_roi\n";
   out << "      time-to-dest-speed-limit-frames: 20\n";
@@ -89,6 +91,7 @@ fs::path write_runtime_config(const fs::path& dir) {
   out << "    max-speed-y: 17.0\n";
   out << "    max-accel-x: 2.0\n";
   out << "    max-accel-y: 1.5\n";
+  out << "    zoom-in-aggressiveness: 75\n";
   out << "  live-boxes:\n";
   out << "    - name: current_roi\n";
   out << "    - name: current_roi_aspect\n";
@@ -145,6 +148,7 @@ int main() {
   const fs::path tmpdir = fs::temp_directory_path() / "vpplaytracker_priv_init_test";
   fs::remove_all(tmpdir);
   const fs::path cfg = write_minimal_config(tmpdir);
+  const fs::path runtime_cfg = write_runtime_config(tmpdir);
   const std::string cfg_str = cfg.string();
 
   cudaStream_t stream = nullptr;
@@ -167,6 +171,10 @@ int main() {
   if (!status.ok()) {
     std::cerr << "PreCapsInit failed: " << status << std::endl;
     return 1;
+  }
+  if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", runtime_cfg.string()))) {
+    std::cerr << "vpplaytracker rejected runtime tuning before caps initialization\n";
+    return 18;
   }
 
   status = priv.PostCapsInit(&params);
@@ -242,7 +250,6 @@ int main() {
   }
   tracker_before->set_bboxes({hm::BBox(120, 100, 520, 360), hm::BBox(80, 60, 720, 420)});
   const hm::BBox follower_before = tracker_before->get_live_box(1)->bounding_box();
-  const fs::path runtime_cfg = write_runtime_config(tmpdir);
   if (!priv.SetProperty(hm::Property("runtime-tuning-config-file", runtime_cfg.string()))) {
     std::cerr << "vpplaytracker rejected valid runtime tuning config\n";
     return 4;
@@ -291,6 +298,36 @@ int main() {
           context->play_trackers[0].base_play_tracker_config.living_boxes[1].max_speed_x) {
     std::cerr << "both-box runtime reset did not restore fast and follower configured values\n";
     return 13;
+  }
+
+  GstEvent* flush_stop = gst_event_new_flush_stop(FALSE);
+  const bool flush_handled = priv.HandleEvent(flush_stop);
+  gst_event_unref(flush_stop);
+  if (!flush_handled || priv.contextForTesting() != context || !context->play_trackers.empty()) {
+    std::cerr << "flushing seek did not clear tracker history in place\n";
+    return 16;
+  }
+  NvDsBatchMeta* post_seek_batch = nvds_create_batch_meta(1);
+  NvDsFrameMeta* post_seek_frame_meta = nvds_acquire_frame_meta_from_pool(post_seek_batch);
+  post_seek_frame_meta->source_id = 0;
+  post_seek_frame_meta->source_frame_width = 3840;
+  post_seek_frame_meta->source_frame_height = 1080;
+  nvds_add_frame_meta_to_batch(post_seek_batch, post_seek_frame_meta);
+  NvBufSurfaceParams post_seek_surface{};
+  post_seek_surface.width = 3840;
+  post_seek_surface.height = 1080;
+  GstDsPlayTrackerFrame post_seek_frame;
+  post_seek_frame.frame_meta = post_seek_frame_meta;
+  post_seek_frame.input_surf_params = &post_seek_surface;
+  const bool post_seek_processed = DsPlayTrackerProcessFrame(context, post_seek_frame, stream);
+  const auto post_seek_tracker = context->play_trackers.find(0);
+  const bool zoom_tuning_restored = post_seek_tracker != context->play_trackers.end() &&
+      std::abs(post_seek_tracker->second.play_tracker_config.living_boxes.back().size_ratio_thresh_shrink_dw - 0.032f) <
+          0.0001f;
+  nvds_destroy_batch_meta(post_seek_batch);
+  if (!post_seek_processed || !zoom_tuning_restored) {
+    std::cerr << "post-seek tracker did not restore accumulated live zoom tuning\n";
+    return 17;
   }
 
   if (params.m_inCaps) {

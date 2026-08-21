@@ -38,6 +38,7 @@ PIPELINE_APP_DEPS = [
     "//src/libs/common:user_config",
     "//src/libs/stitching",
     "//src/libs/wireless:stream_control",
+    "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
     "//src/apps/apps-common:deepstream_apps_common",
     "@deepstream//:deepstream_lib",
     "@hm-cupano//src/pano:canvas",
@@ -190,6 +191,16 @@ cc_test(
         "PlaybackProgress.cpp",
         "PlaybackProgress.h",
         "PlaybackProgressTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+)
+
+cc_test(
+    name = "pipeline_runtime_environment_test",
+    srcs = [
+        "PipelineRuntimeEnvironment.cpp",
+        "PipelineRuntimeEnvironment.h",
+        "PipelineRuntimeEnvironmentTest.cpp",
     ],
     copts = PIPELINE_APP_COPTS,
 )

@@ -424,6 +424,33 @@ char* CustomAlgorithmBase::QueryProperties() {
 
 bool CustomAlgorithmBase::HandleEvent(GstEvent* event) {
   switch (GST_EVENT_TYPE(event)) {
+    case GST_EVENT_FLUSH_START: {
+      // A seek invalidates every frame from the old segment. Incrementing the
+      // generation also fences a frame that the worker already popped: if its
+      // processing finishes after FLUSH_STOP, it is discarded immediately
+      // before publication instead of leaking into the new segment.
+      std::queue<PacketInfo> pending;
+      {
+        std::lock_guard<std::mutex> lock(m_processLock);
+        flush_generation_.fetch_add(1, std::memory_order_release);
+        pending.swap(m_processQ);
+      }
+      while (!pending.empty()) {
+        gst_buffer_unref(pending.front().inbuf);
+        pending.pop();
+      }
+    } break;
+    case GST_EVENT_FLUSH_STOP: {
+      // Keep the src pad flushing until an old-generation worker has either
+      // observed the fence or attempted its (flushing) publication. This
+      // closes the final check-to-push race before the new segment begins.
+      const guint64 current_generation = flush_generation_.load(std::memory_order_acquire);
+      std::unique_lock<std::mutex> lock(m_processLock);
+      m_processCV.wait(lock, [this, current_generation] {
+        const guint64 in_flight = in_flight_flush_generation_.load(std::memory_order_acquire);
+        return in_flight == G_MAXUINT64 || in_flight >= current_generation;
+      });
+    } break;
     case GST_EVENT_EOS: {
       std::unique_lock<std::mutex> lock(m_processLock);
       m_stop = TRUE;
@@ -512,6 +539,10 @@ NvDsBatchMeta* CustomAlgorithmBase::GetNVDS_BatchMeta(GstBuffer* buffer) {
 
 /* Process Buffer */
 BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
+  // Capture the segment generation before doing any mapping or preprocessing.
+  // FLUSH_START can run concurrently with this method; reading the generation
+  // only when enqueueing could relabel an old-segment buffer as new.
+  const guint64 packet_flush_generation = flush_generation_.load(std::memory_order_acquire);
   GstMapInfo in_map_info;
   NvBufSurface* in_surf;
   // BuffferResult result;
@@ -556,6 +587,7 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   PacketInfo packetInfo;
   packetInfo.inbuf = inbuf;
   packetInfo.frame_num = m_frameNum;
+  packetInfo.flush_generation = packet_flush_generation;
 
   // Add custom preprocessing logic if required, here
   // Pass the buffer to output_loop for further processing and pusing to next component
@@ -570,7 +602,8 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   bool accepted = false;
   {
     std::lock_guard<std::mutex> lock(m_processLock);
-    if (!shutdown_requested_.load(std::memory_order_acquire) && !outputthread_stopped && !m_stop) {
+    if (packetInfo.flush_generation == flush_generation_.load(std::memory_order_relaxed) &&
+        !shutdown_requested_.load(std::memory_order_acquire) && !outputthread_stopped && !m_stop) {
       m_processQ.push(packetInfo);
       accepted = true;
       m_processCV.notify_all();
@@ -581,6 +614,10 @@ BufferResult CustomAlgorithmBase::ProcessBuffer(GstBuffer* inbuf) {
   }
 
   return BufferResult::Buffer_Async; // BufferResult::Buffer_Ok;
+}
+
+bool CustomAlgorithmBase::PacketGenerationIsCurrent(const PacketInfo& packet_info) const {
+  return packet_info.flush_generation == flush_generation_.load(std::memory_order_acquire);
 }
 
 void CustomAlgorithmBase::update_meta(NvDsBatchMeta* batch_meta, uint32_t icnt) {
@@ -808,9 +845,24 @@ void CustomAlgorithmBase::OutputThread(void) {
 
     PacketInfo packetInfo = m_processQ.front();
     m_processQ.pop();
+    in_flight_flush_generation_.store(packetInfo.flush_generation, std::memory_order_release);
 
     m_processCV.notify_all();
     lk.unlock();
+    struct InFlightGenerationGuard {
+      std::atomic<guint64>* generation;
+      std::condition_variable* condition;
+      ~InFlightGenerationGuard() {
+        generation->store(G_MAXUINT64, std::memory_order_release);
+        condition->notify_all();
+      }
+    } in_flight_guard{&in_flight_flush_generation_, &m_processCV};
+
+    if (!PacketGenerationIsCurrent(packetInfo)) {
+      gst_buffer_unref(packetInfo.inbuf);
+      lk.lock();
+      continue;
+    }
 
     if (runtime_output_pool_flow.consume_if_terminal(packetInfo.inbuf)) {
       lk.lock();
@@ -983,6 +1035,11 @@ void CustomAlgorithmBase::OutputThread(void) {
           gst_buffer_unref(outBuffer);
           outBuffer = nullptr;
         }
+      } else if (!PacketGenerationIsCurrent(packetInfo)) {
+        if (outBuffer) {
+          gst_buffer_unref(outBuffer);
+          outBuffer = nullptr;
+        }
       } else if (!send_eos) {
         nvds_set_output_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
         flow_ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), outBuffer);
@@ -1060,8 +1117,15 @@ absl::Status CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
       newGstOutBuf,
       GST_TIME_ARGS(GST_BUFFER_PTS(newGstOutBuf)));
 
+  if (!PacketGenerationIsCurrent(*packetInfo)) {
+    gst_buffer_unref(newGstOutBuf);
+    return absl::OkStatus();
+  }
   result = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(m_element), newGstOutBuf);
   if (result != GST_FLOW_OK) {
+    if (result == GST_FLOW_FLUSHING && !PacketGenerationIsCurrent(*packetInfo)) {
+      return absl::OkStatus();
+    }
     GST_ERROR_OBJECT(m_element, "custom buffer pad push failed error = %d\n", result);
     return absl::InternalError("custom buffer pad push failed");
   }

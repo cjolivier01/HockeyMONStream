@@ -63,39 +63,41 @@ static GstPadProbeReturn sink_bin_buf_probe(GstPad* pad, GstPadProbeInfo* info, 
   if (!batch_meta)
     return GST_PAD_PROBE_OK;
 
-  if (!str->stop) {
-    g_mutex_lock(&str->struct_lock);
-    if (str->aggregate_output_fps) {
-      if (str->num_instances > 0) {
-        update_instance_perf_counter(&str->instance_str[0], count_frame_meta(batch_meta));
-      }
-      g_mutex_unlock(&str->struct_lock);
-      return GST_PAD_PROBE_OK;
-    }
-
-    for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
-      NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
-      if (frame_meta->pad_index >= str->num_instances || frame_meta->pad_index >= MAX_SOURCE_BINS) {
-        continue;
-      }
-      update_instance_perf_counter(&str->instance_str[frame_meta->pad_index]);
+  g_mutex_lock(&str->struct_lock);
+  if (str->stop) {
+    g_mutex_unlock(&str->struct_lock);
+    return GST_PAD_PROBE_OK;
+  }
+  if (str->aggregate_output_fps) {
+    if (str->num_instances > 0) {
+      update_instance_perf_counter(&str->instance_str[0], count_frame_meta(batch_meta));
     }
     g_mutex_unlock(&str->struct_lock);
+    return GST_PAD_PROBE_OK;
   }
+
+  for (NvDsMetaList* l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next) {
+    NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)l_frame->data;
+    if (frame_meta->pad_index >= str->num_instances || frame_meta->pad_index >= MAX_SOURCE_BINS) {
+      continue;
+    }
+    update_instance_perf_counter(&str->instance_str[frame_meta->pad_index]);
+  }
+  g_mutex_unlock(&str->struct_lock);
   return GST_PAD_PROBE_OK;
 }
 
 static gboolean perf_measurement_callback(gpointer data) {
-  if (g_disable_perf_measurement) {
-    return false;
-  }
   NvDsAppPerfStructInt* str = (NvDsAppPerfStructInt*)data;
   guint buffer_cnt[MAX_SOURCE_BINS];
   NvDsAppPerfStruct perf_struct;
   struct timeval current_fps_time;
   guint i;
   g_mutex_lock(&str->struct_lock);
-  if (str->stop) {
+  if (g_disable_perf_measurement || str->stop) {
+    // GLib is about to remove this source. Never leave its retired ID behind:
+    // resume_perf_measurement must be able to install a fresh generation.
+    str->perf_measurement_timeout_id = 0;
     g_mutex_unlock(&str->struct_lock);
     return FALSE;
   }
@@ -198,22 +200,34 @@ static gboolean perf_measurement_callback(gpointer data) {
 
 void pause_perf_measurement(NvDsAppPerfStructInt* str) {
   guint i;
+  gulong timeout_id;
 
   g_mutex_lock(&str->struct_lock);
+  const gboolean was_stopped = str->stop;
   str->stop = TRUE;
+  timeout_id = str->perf_measurement_timeout_id;
+  str->perf_measurement_timeout_id = 0;
 
-  for (i = 0; i < str->num_instances; i++) {
-    NvDsInstancePerfStruct* str1 = &str->instance_str[i];
-    str1->total_fps_time.tv_sec += str1->last_fps_time.tv_sec - str1->start_fps_time.tv_sec;
-    str1->total_fps_time.tv_usec += str1->last_fps_time.tv_usec - str1->start_fps_time.tv_usec;
-    if (str1->total_fps_time.tv_usec < 0) {
-      str1->total_fps_time.tv_sec--;
-      str1->total_fps_time.tv_usec += 1000000;
+  if (!was_stopped) {
+    for (i = 0; i < str->num_instances; i++) {
+      NvDsInstancePerfStruct* str1 = &str->instance_str[i];
+      str1->total_fps_time.tv_sec += str1->last_fps_time.tv_sec - str1->start_fps_time.tv_sec;
+      str1->total_fps_time.tv_usec += str1->last_fps_time.tv_usec - str1->start_fps_time.tv_usec;
+      if (str1->total_fps_time.tv_usec < 0) {
+        str1->total_fps_time.tv_sec--;
+        str1->total_fps_time.tv_usec += 1000000;
+      }
+      str1->start_fps_time.tv_sec = str1->start_fps_time.tv_usec = 0;
     }
-    str1->start_fps_time.tv_sec = str1->start_fps_time.tv_usec = 0;
   }
 
   g_mutex_unlock(&str->struct_lock);
+  if (timeout_id != 0) {
+    GSource* source = g_main_context_find_source_by_id(g_main_context_default(), static_cast<guint>(timeout_id));
+    if (source) {
+      g_source_destroy(source);
+    }
+  }
 }
 
 void resume_perf_measurement(NvDsAppPerfStructInt* str) {
@@ -246,7 +260,8 @@ gboolean enable_perf_measurement(
     guint num_sources,
     gulong interval_sec,
     guint num_surfaces_per_frame,
-    perf_callback callback) {
+    perf_callback callback,
+    gboolean start_immediately) {
   guint i;
   g_disable_perf_measurement = false;
 
@@ -272,7 +287,9 @@ gboolean enable_perf_measurement(
   str->sink_bin_pad = sink_bin_pad;
   str->fps_measure_probe_id = gst_pad_add_probe(sink_bin_pad, GST_PAD_PROBE_TYPE_BUFFER, sink_bin_buf_probe, str, NULL);
 
-  resume_perf_measurement(str);
+  if (start_immediately) {
+    resume_perf_measurement(str);
+  }
 
   return TRUE;
 }
