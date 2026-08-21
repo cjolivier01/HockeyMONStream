@@ -1,5 +1,6 @@
 exports_files([
     "hm_cupano_half3_remap.patch",
+    "hm_camera_gpt_contiguous_frames.patch",
     "hm_playtracker_nonreentrant_stop.patch",
     "hm_playtracker_runtime_tuning.patch",
     "lightglue_onnx.BUILD",

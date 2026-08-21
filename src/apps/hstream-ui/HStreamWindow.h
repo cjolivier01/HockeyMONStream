@@ -393,6 +393,7 @@ class HStreamWindow : public QMainWindow {
   bool preview_overlay_reconciliation_fallback_play_{false};
   bool preview_overlay_reconciliation_fallback_rink_{false};
   int preview_overlay_reconciliation_attempts_{0};
+  QCheckBox* drivegpt_csv_toggle_{nullptr};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};

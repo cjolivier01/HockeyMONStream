@@ -2,6 +2,7 @@
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
 
 #include <mutex>
 #include <vector>
@@ -35,13 +36,21 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   }
 
  protected:
-  absl::Status ReloadContextFromConfig();
+  absl::Status ReloadContextFromConfig(const std::string& config_contents);
+  void RememberRuntimeTuning(DsPlayTrackerRuntimeTuning tuning, TelemetryConfigEvent provenance);
 
   DsPlayTrackerInitParams init_params_;
   std::string play_tracker_config_source_file_;
+  std::string play_tracker_config_source_contents_;
+  std::string play_tracker_effective_config_contents_;
+  std::string telemetry_csv_dir_;
   std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
+  PlayTrackerTelemetryCsv telemetry_csv_;
+  uint64_t telemetry_seek_epoch_{0};
   std::vector<DsPlayTrackerRuntimeTuning> runtime_tuning_history_;
+  std::vector<TelemetryConfigEvent> runtime_tuning_provenance_history_;
+  std::vector<std::string> runtime_tuning_groups_;
   hm::play_tracker::PlayTrackerResults prev_play_tracker_results_;
   float fixed_edge_rotation_angle_left_{10.0};
   float fixed_edge_rotation_angle_right_{10.0};

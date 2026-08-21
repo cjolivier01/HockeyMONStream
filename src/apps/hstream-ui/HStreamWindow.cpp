@@ -2157,6 +2157,12 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     connect(toggle, &QCheckBox::toggled, this, [this]() { setRuntimePreviewOverlays(); });
   }
 
+  drivegpt_csv_toggle_ = new QCheckBox("DriveGPT CSV");
+  drivegpt_csv_toggle_->setObjectName("drivegptCsvCheck");
+  drivegpt_csv_toggle_->setChecked(false);
+  drivegpt_csv_toggle_->setToolTip(
+      "Save HM-compatible tracking.csv, camera.csv, and camera_fast.csv policy metadata for this Program run");
+
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
   pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPause), "Pause");
@@ -2191,6 +2197,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   status_bar->addWidget(show_player_tracking_toggle_);
   status_bar->addWidget(show_play_tracking_toggle_);
   status_bar->addWidget(show_rink_mask_toggle_);
+  status_bar->addWidget(drivegpt_csv_toggle_);
 
   auto* action_bar = new QHBoxLayout();
   action_bar->setSpacing(8);
@@ -2597,6 +2604,10 @@ void HStreamWindow::configureControlHelp() {
   help(
       "renderVideoCheck",
       "Show GPU video previews and local monitor audio. This can be toggled while running without stopping the processing pipeline.");
+  help(
+      "drivegptCsvCheck",
+      "For the next Program run, save HM-compatible tracking.csv, camera.csv, and camera_fast.csv in the game "
+      "directory, plus timestamp/config sidecars. Only tracker and policy metadata is copied; video pixels remain on the GPU.");
   help(
       "startPipelineButton",
       "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run.");
@@ -3907,6 +3918,10 @@ QStringList HStreamWindow::pipelineArguments() const {
                 .arg(cameraControlValue("Bring_Up_Shadows"));
     args << QString("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=%1")
                 .arg(cameraControlValue("Lift_Shadow_Black_Point"));
+    if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
+      args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
+                  .arg(QDir::cleanPath(gameDirectory(game_id)));
+    }
   }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
@@ -6867,6 +6882,9 @@ void HStreamWindow::updateRunControls() {
   }
   if (render_video_toggle_) {
     render_video_toggle_->setEnabled(!running || pipeline_render_embedded_);
+  }
+  if (drivegpt_csv_toggle_) {
+    drivegpt_csv_toggle_->setEnabled(!running && !finalizing);
   }
   if (game_controls_) {
     game_controls_->setEnabled(!running && !finalizing);
