@@ -1352,6 +1352,8 @@ int main(int argc, char** argv) {
 
   PipelineProcess failed_process;
   PipelineProcess archive_process;
+  PipelineProcess destroyed_recreation_process;
+  PipelineProcess partial_recreation_process;
   if (ok) {
     ok &= expect(
         archive_process.Start(
@@ -1396,6 +1398,62 @@ int main(int argc, char** argv) {
     ok &= expect(fs::is_regular_file(archive) && fs::file_size(archive) > 0, "archive output must be written");
     ok &= expect(run_command({"ffprobe", "-v", "error", archive.string()}), "user-stopped archive must be playable");
   }
+
+  const auto verify_failed_recreation_generation = [&](PipelineProcess* recreation_process,
+                                                       const char* injected_environment,
+                                                       const char* failure_phase,
+                                                       uint64_t request_id) {
+    if (!ok) {
+      return;
+    }
+    ok &= expect(
+        recreation_process->Start(argv[1], recreate_config, "URI", "FAKE", false, {{injected_environment, "1"}}),
+        "injected-failure periodic recreation process must start");
+    ok &= expect(
+        recreation_process->WaitFor("Pipeline running"),
+        "injected-failure periodic recreation must reach initial PLAYING");
+    ok &= expect(
+        recreation_process->WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":1}"),
+        "injected-failure recreation must announce its initial inspector generation");
+    const size_t recreation_mark = recreation_process->Mark();
+    const std::string failure_marker =
+        std::string("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=") + failure_phase;
+    ok &= expect(
+        recreation_process->WaitFor(failure_marker, recreation_mark, std::chrono::seconds(12)),
+        "periodic recreation must reach the requested post-destruction failure phase");
+    ok &= expect(
+        recreation_process->WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
+            "\"stage\":0,\"generation\":2}",
+            recreation_mark),
+        "a failed recreation that changed topology must publish a new inspector generation");
+    const size_t stale_command_mark = recreation_process->Mark();
+    ok &= expect(
+        recreation_process->Send(
+            "@inspect-set-property " + std::to_string(request_id) + " 0 1 0 " + kQueuePath + " " + kSilentProperty +
+            " dHJ1ZQ==\n"),
+        "a property command retained from the destroyed topology must be delivered");
+    ok &= expect(
+        recreation_process->WaitFor(
+            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":" +
+                std::to_string(request_id) +
+                ",\"status\":\"error\",\"stage\":0,\"generation\":1,\"message\":\"Stale pipeline inspector "
+                "stage/generation",
+            stale_command_mark),
+        "the old inspector generation must not mutate a destroyed or partial replacement topology");
+    ok &= expect(recreation_process->Interrupt(), "injected-failure recreation SIGINT must be delivered");
+    int recreation_exit_code = -1;
+    ok &= expect(
+        recreation_process->WaitForExit(&recreation_exit_code, std::chrono::seconds(12)),
+        "injected-failure recreation process must stop promptly");
+  };
+
+  verify_failed_recreation_generation(
+      &destroyed_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY", "after-destroy", 160);
+  verify_failed_recreation_generation(
+      &partial_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE", "after-create", 161);
 
   if (ok) {
     ok &=
@@ -1453,6 +1511,12 @@ int main(int argc, char** argv) {
     }
     if (!archive_process.output().empty()) {
       archive_process.DumpOutput();
+    }
+    if (!destroyed_recreation_process.output().empty()) {
+      destroyed_recreation_process.DumpOutput();
+    }
+    if (!partial_recreation_process.output().empty()) {
+      partial_recreation_process.DumpOutput();
     }
     std::cerr << "fixture retained at " << root << '\n';
   } else {

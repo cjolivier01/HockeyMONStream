@@ -212,19 +212,21 @@ class PipelineApplication {
       bool calibration_restart,
       bool runtime_seek_restart,
       uint64_t runtime_seek_target_ns,
-      uint64_t runtime_seek_generation);
+      uint64_t runtime_seek_generation,
+      bool* topology_changed);
   struct RuntimeSeekRecreationResult {
     PipelineApplication* application{nullptr};
     AppCtx* app_ctx{nullptr};
     uint64_t generation{0};
     gboolean success{FALSE};
+    bool topology_changed{false};
   };
   void runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation);
   bool dispatch_runtime_seek_recreation_completion();
   gboolean complete_runtime_seek_recreation(RuntimeSeekRecreationResult result);
   void publish_inspector_topology();
   void begin_pipeline_recreation();
-  void end_pipeline_recreation(bool topology_replaced = false);
+  void end_pipeline_recreation(bool topology_changed = false);
   static gboolean inject_stitching_calibration_error_static(gpointer arg);
   gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;

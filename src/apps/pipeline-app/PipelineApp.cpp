@@ -6710,8 +6710,16 @@ gboolean PipelineApplication::recreate_pipeline_thread_func(gpointer arg) {
     return TRUE;
   }
   begin_pipeline_recreation();
-  const gboolean recreated = recreate_pipeline_impl(app_ctx_ptr, calibration_restart, false, 0, 0);
-  end_pipeline_recreation(recreated == TRUE);
+  bool topology_changed = false;
+  gboolean recreated = FALSE;
+  try {
+    recreated = recreate_pipeline_impl(app_ctx_ptr, calibration_restart, false, 0, 0, &topology_changed);
+  } catch (const std::exception& error) {
+    g_printerr("Periodic pipeline reconstruction threw an exception: %s\n", error.what());
+  } catch (...) {
+    g_printerr("Periodic pipeline reconstruction threw an unknown exception\n");
+  }
+  end_pipeline_recreation(topology_changed);
   return recreated;
 }
 
@@ -6736,11 +6744,11 @@ void PipelineApplication::begin_pipeline_recreation() {
   pipeline_recreation_active_.store(true, std::memory_order_release);
 }
 
-void PipelineApplication::end_pipeline_recreation(bool topology_replaced) {
+void PipelineApplication::end_pipeline_recreation(bool topology_changed) {
   std::optional<std::pair<long, uint64_t>> published_session;
   {
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
-    if (topology_replaced) {
+    if (topology_changed) {
       published_session = std::make_pair(current_stage_, ++inspector_topology_generation_);
     }
     pipeline_recreation_active_.store(false, std::memory_order_release);
@@ -6755,9 +6763,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     bool calibration_restart,
     bool runtime_seek_restart,
     uint64_t runtime_seek_target_ns,
-    uint64_t /*runtime_seek_generation*/) {
+    uint64_t /*runtime_seek_generation*/,
+    bool* topology_changed) {
   guint i;
   gboolean ret = TRUE;
+  if (topology_changed) {
+    *topology_changed = false;
+  }
   if (runtime_seek_restart) {
     const guint delay_ms = test_delay_ms("HM_TEST_RUNTIME_SEEK_RECREATE_DELAY_MS");
     if (delay_ms > 0) {
@@ -6771,12 +6783,23 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   } else {
     destroy_pipeline(app_ctx_ptr);
   }
+  if (topology_changed) {
+    *topology_changed = true;
+  }
+  if (g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY")) {
+    g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=after-destroy\n");
+    return FALSE;
+  }
   if (runtime_seek_restart) {
     runtime_playback_offset_ns_.store(runtime_seek_target_ns, std::memory_order_release);
   }
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
+    return FALSE;
+  }
+  if (g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE")) {
+    g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=after-create\n");
     return FALSE;
   }
   if (runtime_seek_restart && !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {
@@ -6875,8 +6898,9 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
     std::fflush(stdout);
   }
   gboolean success = FALSE;
+  bool topology_changed = false;
   try {
-    success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation);
+    success = recreate_pipeline_impl(app_ctx, false, true, target_ns, generation, &topology_changed);
   } catch (const std::exception& error) {
     g_printerr("Runtime seek reconstruction threw an exception: %s\n", error.what());
   } catch (...) {
@@ -6887,6 +6911,7 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
       .app_ctx = app_ctx,
       .generation = generation,
       .success = success,
+      .topology_changed = topology_changed,
   };
   {
     std::lock_guard<std::mutex> lock(runtime_seek_recreation_result_mu_);
@@ -6941,7 +6966,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     }
     result.app_ctx->quit = TRUE;
     quit_ = TRUE;
-    end_pipeline_recreation();
+    end_pipeline_recreation(result.topology_changed);
     runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (main_loop_) {
       g_main_loop_quit(main_loop_);
@@ -6960,7 +6985,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     result.app_ctx->return_value = -1;
     result.app_ctx->quit = TRUE;
     quit_ = TRUE;
-    end_pipeline_recreation();
+    end_pipeline_recreation(result.topology_changed);
     runtime_seek_recreation_active_.store(false, std::memory_order_release);
     if (main_loop_) {
       g_main_loop_quit(main_loop_);
@@ -7016,7 +7041,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
       resume_perf_measurement(&result.app_ctx->perf_struct);
     }
   }
-  end_pipeline_recreation(play_result != GST_STATE_CHANGE_FAILURE);
+  end_pipeline_recreation(result.topology_changed);
   runtime_seek_recreation_active_.store(false, std::memory_order_release);
   return G_SOURCE_REMOVE;
 }
