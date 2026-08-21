@@ -706,7 +706,8 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
-      "delayed_seek_generation, timeout_next_seek, backend_seek_position, reject_next_preview_overlays\n");
+      "delayed_seek_generation, timeout_next_seek, backend_seek_position, reject_next_preview_overlays, "
+      "delay_next_preview_overlays, delayed_preview_overlay_response\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-exit'):\n");
   file.write("        print('test process exit requested', flush=True)\n");
@@ -718,6 +719,15 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-reject-preview-overlays'):\n");
   file.write("        reject_next_preview_overlays = True\n");
   file.write("        print('test preview overlay rejection armed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-delay-preview-overlays'):\n");
+  file.write("        delay_next_preview_overlays = True\n");
+  file.write("        print('test preview overlay delay armed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-complete-preview-overlays'):\n");
+  file.write("        if delayed_preview_overlay_response:\n");
+  file.write("            print(delayed_preview_overlay_response, flush=True)\n");
+  file.write("            delayed_preview_overlay_response = ''\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-drop-progress-resets'):\n");
   file.write("        drop_progress_resets = True\n");
@@ -881,6 +891,10 @@ bool write_fake_runner(const QString& path) {
       "        response = 'HSTREAM_PREVIEW_OVERLAYS status=' + status + ' generation=' + generation + "
       "' players=' + players + ' play=' + play + ' rink=' + rink\n");
   file.write("        if status == 'failed': response += ' reason=injected-rejection'\n");
+  file.write("        if delay_next_preview_overlays:\n");
+  file.write("            delay_next_preview_overlays = False\n");
+  file.write("            delayed_preview_overlay_response = response\n");
+  file.write("            return\n");
   file.write("        print(response, flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@set-properties '):\n");
@@ -911,6 +925,8 @@ bool write_fake_runner(const QString& path) {
   file.write("timeout_next_seek = False\n");
   file.write("backend_seek_position = 42000000000\n");
   file.write("reject_next_preview_overlays = False\n");
+  file.write("delay_next_preview_overlays = False\n");
+  file.write("delayed_preview_overlay_response = ''\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -2693,6 +2709,37 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  const int preview_deactivations_before_inspector_render_cycle =
+      window->logText().count("stdin:@set-preview-active none");
+  const int program_activations_before_inspector_render_cycle =
+      window->logText().count("stdin:@set-preview-active program");
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  for (int i = 0; i < 100 &&
+       window->logText().count("stdin:@set-preview-active none") <
+           preview_deactivations_before_inspector_render_cycle + 1;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QTest::mouseClick(render_video, Qt::LeftButton);
+  for (int i = 0; i < 100 &&
+       window->logText().count("stdin:@set-preview-active none") <
+           preview_deactivations_before_inspector_render_cycle + 2;
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          render_video->isChecked() && preview_tabs->currentIndex() == pipeline_inspector_index &&
+              window->logText().count("stdin:@set-preview-active program") ==
+                  program_activations_before_inspector_render_cycle &&
+              window->logText().count("stdin:@set-preview-active none") >=
+                  preview_deactivations_before_inspector_render_cycle + 2 &&
+              window->logText().contains("GPU preview idle for Pipeline inspector generation="),
+          "Re-enabling Render on the Pipeline inspector must preserve its idle GPU state without waking a hidden "
+          "Program branch")) {
+    return false;
+  }
   preview_tabs->setCurrentIndex(0);
   for (int i = 0;
        i < 100 && window->logText().count("stdin:@set-preview-active program") == program_activations_before_inspector;
@@ -2701,7 +2748,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(
-          window->logText().count("stdin:@set-preview-active none") == preview_deactivations_before_inspector + 2 &&
+          window->logText().count("stdin:@set-preview-active none") >= preview_deactivations_before_inspector + 4 &&
               window->logText().count("stdin:@set-preview-active program") ==
                   program_activations_before_inspector + 1 &&
               top_bar->isVisible() && !preview_surface->isHidden() && !preview_target->isHidden(),
@@ -2734,7 +2781,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           show_player_tracking->isChecked() && show_play_tracking->isChecked() && show_rink_mask->isChecked() &&
-              window->logText().contains("stdin:@set-preview-overlays 3 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 4 1 1 1") &&
               window->logText().contains("preview overlays players=1 play=1 rink=1 apply=live"),
           "Live overlay checkboxes must use the topology-independent backend command and confirm applied state")) {
     return false;
@@ -2773,7 +2820,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               show_rink_mask->isEnabled() && setup_preview_splitter->sizes().at(0) == 0 &&
               window->logText().contains("reason=render-toggle") &&
               window->logText().contains("stdin:@set-render-audio-muted 0") &&
-              window->logText().contains("stdin:@set-preview-overlays 4 1 1 1") &&
+              window->logText().contains("stdin:@set-preview-overlays 5 1 1 1") &&
               window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") >= 2 &&
               window->logText().count("pipeline started pid=") == pipeline_start_count,
           "Turning rendering back on must restore preview, audio, and checked overlays without restarting the "
@@ -2793,10 +2840,56 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           show_player_tracking->isChecked() && show_play_tracking->isChecked() && show_rink_mask->isChecked() &&
-              window->logText().contains("stdin:@set-preview-overlays 5 1 1 0") &&
+              window->logText().contains("stdin:@set-preview-overlays 6 1 1 0") &&
               window->logText().contains(
                   "preview overlays players=1 play=1 rink=1 apply=failed reason=injected-rejection"),
           "A rejected overlay update must restore the last backend-confirmed checkbox state")) {
+    return false;
+  }
+
+  qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "40");
+  pipeline_process->write("@test-delay-preview-overlays\n");
+  for (int i = 0; i < 100 && !window->logText().contains("test preview overlay delay armed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const QString overlay_timeout_log =
+      "preview overlays players=1 play=1 rink=1 apply=failed reason=acknowledgement-timeout";
+  const int overlay_timeouts_before_delay = window->logText().count(overlay_timeout_log);
+  QTest::mouseClick(show_rink_mask, Qt::LeftButton);
+  for (int i = 0; i < 100 && window->logText().count(overlay_timeout_log) == overlay_timeouts_before_delay; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          show_rink_mask->isChecked() && window->logText().contains("stdin:@set-preview-overlays 7 1 1 0"),
+          "A timed-out overlay update must roll its checkbox back to the last confirmed state")) {
+    qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    return false;
+  }
+  const int confirmed_overlay_logs_before_late_ack =
+      window->logText().count("preview overlays players=1 play=1 rink=1 apply=live");
+  pipeline_process->write("@test-complete-preview-overlays\n");
+  for (int i = 0; i < 100 &&
+       (!window->logText().contains(
+            "preview overlay acknowledgement arrived after rollback generation=7; reconciling") ||
+        !window->logText().contains("stdin:@set-preview-overlays 8 1 1 1") ||
+        window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") ==
+            confirmed_overlay_logs_before_late_ack);
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+  if (!expect(
+          show_player_tracking->isChecked() && show_play_tracking->isChecked() && show_rink_mask->isChecked() &&
+              window->logText().contains(
+                  "preview overlay acknowledgement arrived after rollback generation=7; reconciling") &&
+              window->logText().contains("stdin:@set-preview-overlays 8 1 1 1") &&
+              window->logText().count("preview overlays players=1 play=1 rink=1 apply=live") >
+                  confirmed_overlay_logs_before_late_ack &&
+              !window->logText().contains("preview overlays players=1 play=1 rink=0 apply=live"),
+          "A late applied acknowledgement must not resurrect a rolled-back choice and must reconcile the backend")) {
     return false;
   }
 

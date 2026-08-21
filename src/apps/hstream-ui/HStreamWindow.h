@@ -380,6 +380,7 @@ class HStreamWindow : public QMainWindow {
   bool confirmed_show_rink_mask_{false};
   quint64 preview_overlay_generation_{0};
   quint64 pending_preview_overlay_generation_{0};
+  bool preview_overlay_stale_apply_observed_{false};
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
