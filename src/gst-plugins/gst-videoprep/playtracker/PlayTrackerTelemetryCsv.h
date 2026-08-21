@@ -17,6 +17,8 @@
 
 namespace hm::playtracker {
 
+class PlayTrackerTelemetryCsvTestPeer;
+
 struct TelemetryTrack {
   uint64_t tracking_id{0};
   float left{0.0f};
@@ -96,6 +98,8 @@ class PlayTrackerTelemetryCsv {
   std::string output_manifest() const;
 
  private:
+  friend class PlayTrackerTelemetryCsvTestPeer;
+
   struct QueuedSample {
     uint64_t sample_id{0};
     TelemetrySample sample;
@@ -110,6 +114,8 @@ class PlayTrackerTelemetryCsv {
       const std::string& output_directory,
       const std::string& source_config_file,
       const std::string& effective_config_file);
+  bool TryEnqueueLocked(TelemetrySample sample);
+  bool TryRecordConfigEventLocked(TelemetryConfigEvent event);
   void WriterLoop();
   void WriteSample(const QueuedSample& queued);
   void WriteConfigEvent(const QueuedConfigEvent& queued);
@@ -129,6 +135,7 @@ class PlayTrackerTelemetryCsv {
   std::atomic<uint64_t> frame_id_high_watermark_{0};
   std::atomic<uint64_t> attempted_samples_{0};
   std::atomic<uint64_t> discontinuity_gaps_{0};
+  std::atomic<uint64_t> config_event_discontinuity_gaps_{0};
   std::atomic<uint64_t> dropped_samples_{0};
   std::atomic<uint64_t> dropped_config_events_{0};
   uint64_t config_event_sequence_{0};

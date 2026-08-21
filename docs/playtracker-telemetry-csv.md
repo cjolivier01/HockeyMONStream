@@ -30,12 +30,13 @@ The three training files are headerless, as expected by `../hm`:
 | `camera_fast[-N].csv` | `Frame,BBox_X,BBox_Y,BBox_W,BBox_H` | Fast camera-policy action in TLWH coordinates. For a one-box policy it matches `camera.csv`. |
 
 `Frame` is a monotonic, one-based attempted-sample ID shared by all three
-files. A queue drop consumes its ID, a seek reserves an unused ID, and a frame
-without player tracks is naturally absent from `tracking.csv`. These numeric
-gaps preserve temporal discontinuities instead of silently joining unrelated
-timesteps. HStream's pinned HM patch makes the DriveGPT loader form sequences
-only within numerically contiguous runs and use previous-camera state only
-from the adjacent prior ID. HM's
+files. A queue drop consumes its ID, a seek reserves an unused ID, and a live
+policy change whose provenance event cannot enter the full writer queue also
+reserves an unused ID. A frame without player tracks is naturally absent from
+`tracking.csv`. These numeric gaps preserve temporal discontinuities instead
+of silently joining unrelated timesteps. HStream's pinned HM patch makes the
+DriveGPT loader form sequences only within numerically contiguous runs and use
+previous-camera state only from the adjacent prior ID. HM's
 `CameraPanZoomGPTIterableDataset`, `CameraPanZoomDataset`, `camgpt_train`, and
 DriveGPT training mode can consume these files without a schema conversion.
 As in HM's own saver, frames with no player rows are absent from
@@ -59,7 +60,11 @@ The generation also contains:
   did not reach a graceful exporter stop. Any nonzero `dropped_samples` means
   the bounded queue could not keep up; each drop is a complete sample whose
   unused `Frame` ID splits DriveGPT windows, so the HM input/action files never
-  become cross-frame or cross-discontinuity misaligned.
+  become cross-frame or cross-discontinuity misaligned. A nonzero
+  `dropped_config_events` reports lost policy provenance; every such loss from
+  ordinary live config-event admission also increments
+  `config_event_discontinuity_gaps` and reserves a `Frame` ID so training
+  sequences cannot bridge the undocumented policy transition.
 
 Together, the headerless HM files contain the policy inputs (tracked player
 identities and boxes) and actions (fast/follower camera boxes), while the

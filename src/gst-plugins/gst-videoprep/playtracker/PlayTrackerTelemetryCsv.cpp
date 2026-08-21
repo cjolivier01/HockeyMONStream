@@ -148,6 +148,7 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   frame_id_high_watermark_.store(0, std::memory_order_release);
   attempted_samples_.store(0, std::memory_order_release);
   discontinuity_gaps_.store(0, std::memory_order_release);
+  config_event_discontinuity_gaps_.store(0, std::memory_order_release);
   dropped_samples_.store(0, std::memory_order_release);
   dropped_config_events_.store(0, std::memory_order_release);
   config_event_sequence_ = 0;
@@ -376,6 +377,10 @@ bool PlayTrackerTelemetryCsv::active() const {
 
 bool PlayTrackerTelemetryCsv::TryEnqueue(TelemetrySample sample) {
   std::lock_guard<std::mutex> lock(mutex_);
+  return TryEnqueueLocked(std::move(sample));
+}
+
+bool PlayTrackerTelemetryCsv::TryEnqueueLocked(TelemetrySample sample) {
   if (!active_ || stopping_) {
     return false;
   }
@@ -394,10 +399,20 @@ bool PlayTrackerTelemetryCsv::TryEnqueue(TelemetrySample sample) {
 
 bool PlayTrackerTelemetryCsv::TryRecordConfigEvent(TelemetryConfigEvent event) {
   std::lock_guard<std::mutex> lock(mutex_);
+  return TryRecordConfigEventLocked(std::move(event));
+}
+
+bool PlayTrackerTelemetryCsv::TryRecordConfigEventLocked(TelemetryConfigEvent event) {
   if (!active_ || stopping_) {
     return false;
   }
   if (queue_.size() >= queue_capacity_) {
+    // The policy mutation has already been applied by the caller. Even though
+    // its provenance event cannot be queued, reserve an unused frame ID so HM
+    // cannot train a sequence across the undocumented policy transition.
+    frame_id_high_watermark_.fetch_add(1, std::memory_order_acq_rel);
+    discontinuity_gaps_.fetch_add(1, std::memory_order_acq_rel);
+    config_event_discontinuity_gaps_.fetch_add(1, std::memory_order_acq_rel);
     dropped_config_events_.fetch_add(1, std::memory_order_acq_rel);
     return false;
   }
@@ -532,6 +547,8 @@ void PlayTrackerTelemetryCsv::WriteManifest(bool complete) {
            << attempted_samples_.load(std::memory_order_acquire) - dropped_samples_.load(std::memory_order_acquire)
            << ",\n"
            << "  \"discontinuity_gaps\": " << discontinuity_gaps_.load(std::memory_order_acquire) << ",\n"
+           << "  \"config_event_discontinuity_gaps\": "
+           << config_event_discontinuity_gaps_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_samples\": " << dropped_samples_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_config_events\": " << dropped_config_events_.load(std::memory_order_acquire) << ",\n"
            << "  \"performance_contract\": \"metadata-only; no video-frame mapping or CPU pixel conversion\",\n"

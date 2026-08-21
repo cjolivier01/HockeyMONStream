@@ -2,6 +2,7 @@
 
 #include <unistd.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -9,9 +10,40 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
+
+namespace hm::playtracker {
+
+class PlayTrackerTelemetryCsvTestPeer {
+ public:
+  static std::pair<bool, bool> EnqueueThenRecordWhileWriterExcluded(
+      PlayTrackerTelemetryCsv& exporter,
+      TelemetrySample sample,
+      TelemetryConfigEvent event) {
+    std::lock_guard<std::mutex> lock(exporter.mutex_);
+    const bool sample_accepted = exporter.TryEnqueueLocked(std::move(sample));
+    const bool event_accepted = exporter.TryRecordConfigEventLocked(std::move(event));
+    return {sample_accepted, event_accepted};
+  }
+
+  static bool WaitUntilQueueEmpty(PlayTrackerTelemetryCsv& exporter) {
+    for (size_t attempt = 0; attempt < 1'000'000; ++attempt) {
+      {
+        std::lock_guard<std::mutex> lock(exporter.mutex_);
+        if (exporter.queue_.empty()) {
+          return true;
+        }
+      }
+      std::this_thread::yield();
+    }
+    return false;
+  }
+};
+
+} // namespace hm::playtracker
 
 namespace {
 
@@ -66,8 +98,10 @@ hm::playtracker::TelemetrySample make_policy_sample(bool with_track, size_t extr
 } // namespace
 
 int main() {
-  const fs::path directory = fs::temp_directory_path() /
-      ("hstream-playtracker-telemetry-test-" + std::to_string(static_cast<uint64_t>(::getpid())));
+  const char* bazel_test_tmpdir = std::getenv("TEST_TMPDIR");
+  const fs::path temporary_root = bazel_test_tmpdir ? fs::path(bazel_test_tmpdir) : fs::temp_directory_path();
+  const fs::path directory =
+      temporary_root / ("hstream-playtracker-telemetry-test-" + std::to_string(static_cast<uint64_t>(::getpid())));
   std::error_code error;
   fs::remove_all(directory, error);
   fs::create_directories(directory, error);
@@ -210,6 +244,47 @@ int main() {
       expect(overflow_manifest.find("\"dropped_samples\": " + std::to_string(overflow_dropped)) != std::string::npos,
              "overflow manifest should report dropped samples");
 
+  hm::playtracker::PlayTrackerTelemetryCsv config_drop_exporter;
+  const absl::Status config_drop_start =
+      config_drop_exporter.Start(directory.string(), source_config.string(), effective_config.string(), 1);
+  if (!expect(config_drop_start.ok(), config_drop_start.ToString())) {
+    return 1;
+  }
+  const auto [saturated_sample_accepted, config_event_accepted] =
+      hm::playtracker::PlayTrackerTelemetryCsvTestPeer::EnqueueThenRecordWhileWriterExcluded(
+          config_drop_exporter, make_policy_sample(true), {"property", "fixed-edge-rotation-angle", "33", {}, {}});
+  if (!expect(saturated_sample_accepted, "capacity-one queue should accept the pre-change sample") ||
+      !expect(!config_event_accepted, "saturated queue should reject the applied config event") ||
+      !expect(
+          hm::playtracker::PlayTrackerTelemetryCsvTestPeer::WaitUntilQueueEmpty(config_drop_exporter),
+          "writer should drain the deliberately saturated queue") ||
+      !expect(config_drop_exporter.TryEnqueue(make_policy_sample(true)), "post-change sample should be accepted") ||
+      !expect(
+          config_drop_exporter.frame_id_high_watermark() == 3,
+          "dropped config event must reserve frame ID 2 between pre/post-change samples")) {
+    return 1;
+  }
+  config_drop_exporter.Stop();
+  const std::vector<uint64_t> config_drop_tracking_ids = csv_frame_ids(read_file(directory / "tracking-12.csv"));
+  const std::vector<uint64_t> config_drop_camera_ids = csv_frame_ids(read_file(directory / "camera-12.csv"));
+  const std::string config_drop_events = read_file(directory / "hstream_config_events-12.csv");
+  const std::string config_drop_manifest = read_file(directory / "hstream_telemetry-12.json");
+  const bool config_drop_valid =
+      expect(
+          config_drop_tracking_ids == std::vector<uint64_t>({1, 3}) &&
+              config_drop_camera_ids == std::vector<uint64_t>({1, 3}),
+          "HM training rows must contain a numeric gap across the unrecorded policy change") &&
+      expect(
+          config_drop_events.find("fixed-edge-rotation-angle") == std::string::npos,
+          "the saturated queue must not claim it preserved the dropped config event") &&
+      expect(
+          config_drop_manifest.find("\"frame_id_high_watermark\": 3") != std::string::npos &&
+              config_drop_manifest.find("\"samples_attempted\": 2") != std::string::npos &&
+              config_drop_manifest.find("\"discontinuity_gaps\": 1") != std::string::npos &&
+              config_drop_manifest.find("\"config_event_discontinuity_gaps\": 1") != std::string::npos &&
+              config_drop_manifest.find("\"dropped_config_events\": 1") != std::string::npos,
+          "manifest must account for the dropped config event and its protective discontinuity");
+
   const fs::path failed_directory = directory / "failed-start";
   hm::playtracker::PlayTrackerTelemetryCsv failed_exporter;
   const absl::Status failed_start = failed_exporter.Start(
@@ -223,5 +298,5 @@ int main() {
       expect(failed_directory_empty, "failed startup must not leave empty generation artifacts");
 
   fs::remove_all(directory, error);
-  return valid && overflow_valid && startup_cleanup_valid ? 0 : 1;
+  return valid && overflow_valid && config_drop_valid && startup_cleanup_valid ? 0 : 1;
 }
