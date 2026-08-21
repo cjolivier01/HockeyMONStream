@@ -59,15 +59,24 @@ The generation also contains:
 - `hstream_config_events[-N].csv`: the sample boundary for seek events, live
   camera geometry changes, base-config reloads, and runtime tuning updates.
 - `play_tracker_source[-N].yaml` and `play_tracker_effective[-N].yaml`: exact
-  startup policy configuration. Runtime tuning YAMLs are copied alongside the
-  event that activated them.
+  startup policy configuration. Base and runtime configuration is parsed and
+  recorded from one immutable byte snapshot, so replacing a config pathname
+  during reload cannot make the applied policy differ from its provenance.
+  Runtime tuning applied before caps initialization is emitted at sample
+  boundary 1, and later runtime tuning YAMLs are copied alongside the event
+  that activated them. Every active-run change remains in the telemetry event
+  stream, while restart replay state compacts superseded updates with the same
+  target boxes and field set so rapid slider motion cannot grow memory or
+  reload work without bound.
 - `hstream_telemetry[-N].json`: schema declaration, filenames, original config
   paths, run outcome, publication eligibility, and loss counters.
   `writer_drained` only reports queue finalization; `completed` and
   `eligible_for_training` additionally require an explicit successful EOS or
   intentional-stop outcome, a healthy core writer, and at least one usable
   tracking/camera sample. EOS is accepted only from the terminal pipeline-bus
-  result; a later fatal result downgrades it to `failed`. Any nonzero
+  result; a later fatal result downgrades it to `failed`, and a source error
+  whose text can also describe EOS is still a failure unless EOS was positively
+  observed on the bus. Any nonzero
   `dropped_samples` means the bounded queue could not keep up; each drop is a
   complete sample whose unused `Frame` ID splits training windows.
   `config_events_attempted`,
@@ -77,14 +86,30 @@ The generation also contains:
   event cannot join training sequences across the undocumented transition. A
   config event that requires a YAML artifact is persisted only if that exact
   artifact is also written successfully.
+  `samples_buffered`, `training_samples_buffered`, and
+  `config_events_buffered` describe rows accepted by the writer streams;
+  their `*_persisted` counterparts are confirmed only after final flush and
+  `fsync`. A final ENOSPC/I/O failure therefore cannot claim removed training
+  rows were durable.
 
 While a run is active, its three HM training inputs are written to hidden
 `.partial` files, so HM's filename-based discovery cannot select them. They are
 published with no-replace filesystem links only after the writer drains, an
 explicit successful outcome is recorded, the core writer is healthy, and at
-least one usable policy sample exists. The finalized manifest and both camera
-files precede the no-replace `tracking*.csv` link, which is the irreversible
-HM discovery/commit point; no fallible eligibility step follows it. If
+least one usable policy sample exists. Every staged data, sidecar, provenance,
+and manifest file is flushed and `fsync`ed first. A durable pending/ineligible
+manifest precedes publication. Both camera links are created and the directory
+is `fsync`ed before the no-replace `tracking*.csv` link; that tracking link and
+a second directory `fsync` form the irreversible HM discovery/commit point.
+Only after that durable commit is the manifest rewritten as
+`publication_state: committed`, `completed: true`, and
+`eligible_for_training: true`. Each manifest state is written and `fsync`ed on
+a new same-directory inode, atomically renamed over the prior complete JSON,
+and followed by a directory `fsync`; a crash can therefore expose the old or
+new state but not a truncate-in-progress document. A crash at any earlier
+point therefore leaves
+either no discoverable tracking generation or a pending/ineligible manifest,
+never a false-positive completed manifest. If
 teardown occurs without a successful outcome, the core writer fails, or the
 run is empty, the manifest and diagnostic sidecars are retained with
 `eligible_for_training: false` and the hidden training files are removed. HM's
@@ -92,6 +117,12 @@ latest-file discovery therefore continues to select the most recent eligible
 generation after failed, empty, incomplete, or normally crashed runs. A
 normal EOS—including an intentional user stop after useful samples—preserves a
 partial dataset as an eligible generation.
+
+Once the tracking link exists after the durable camera links, the visible
+three-file set is never rolled back. If the tracking-link directory `fsync`
+itself fails, crash recovery may retain no tracking link or the complete set,
+but cannot persist a rollback that leaves tracking without a camera input; the
+manifest remains pending/ineligible and reports the durability failure.
 
 Together, the headerless HM files contain the policy inputs (tracked player
 identities and boxes) and actions (fast/follower camera boxes), while the

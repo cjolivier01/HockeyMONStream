@@ -60,6 +60,11 @@ struct TelemetryConfigEvent {
   std::string artifact_contents;
 };
 
+struct TelemetryConfigArtifact {
+  std::string path;
+  std::string contents;
+};
+
 enum class TelemetryRunOutcome {
   kIncomplete,
   kEndOfStream,
@@ -85,6 +90,12 @@ class PlayTrackerTelemetryCsv {
       const std::string& output_directory,
       const std::string& source_config_file,
       const std::string& effective_config_file,
+      size_t queue_capacity = 2048);
+  absl::Status Start(
+      const std::string& output_directory,
+      TelemetryConfigArtifact source_config,
+      TelemetryConfigArtifact effective_config,
+      std::vector<TelemetryConfigEvent> startup_config_events = {},
       size_t queue_capacity = 2048);
   void MarkRunOutcome(TelemetryRunOutcome outcome);
   void Stop();
@@ -120,6 +131,8 @@ class PlayTrackerTelemetryCsv {
     std::string filename;
     // Training inputs are written to filename while the run is active, then
     // atomically linked to this HM-visible name after successful completion.
+    // The retained descriptor also makes every staged artifact independently
+    // fsyncable without reopening a mutable pathname.
     std::string published_filename;
     uint64_t device{0};
     uint64_t inode{0};
@@ -130,15 +143,19 @@ class PlayTrackerTelemetryCsv {
 
   absl::Status OpenOutputs(
       const std::string& output_directory,
-      const std::string& source_config_file,
-      const std::string& effective_config_file);
+      const TelemetryConfigArtifact& source_config,
+      const TelemetryConfigArtifact& effective_config);
   bool TryEnqueueLocked(TelemetrySample sample);
   bool TryRecordConfigEventLocked(TelemetryConfigEvent event);
   void WriterLoop();
   void WriteSample(const QueuedSample& queued);
   bool WriteConfigEvent(const QueuedConfigEvent& queued);
-  bool WriteManifest();
+  std::string BuildManifestContents() const;
+  bool WriteManifestAndSync(const std::string& phase);
   bool WriteExclusiveConfigArtifact(const std::string& stem, const std::string& contents, std::string* filename);
+  bool FlushAndSyncStagedArtifacts();
+  bool SyncFd(int fd, const std::string& event);
+  bool SyncDirectory(const std::string& phase);
   bool PublishTrainingArtifacts();
   bool VerifyOwnedArtifacts() const;
   void RemoveOwnedArtifacts(bool training_only);
@@ -156,6 +173,7 @@ class PlayTrackerTelemetryCsv {
   bool writer_drained_{false};
   bool completed_{false};
   bool eligible_for_training_{false};
+  bool publication_committed_{false};
   TelemetryRunOutcome run_outcome_{TelemetryRunOutcome::kIncomplete};
   std::thread writer_thread_;
   std::atomic<uint64_t> frame_id_high_watermark_{0};
@@ -164,13 +182,21 @@ class PlayTrackerTelemetryCsv {
   std::atomic<uint64_t> config_event_discontinuity_gaps_{0};
   std::atomic<uint64_t> dropped_samples_{0};
   std::atomic<uint64_t> dropped_config_events_{0};
+  std::atomic<uint64_t> samples_buffered_{0};
+  std::atomic<uint64_t> training_samples_buffered_{0};
+  std::atomic<uint64_t> config_events_buffered_{0};
   std::atomic<uint64_t> samples_persisted_{0};
   std::atomic<uint64_t> training_samples_persisted_{0};
   std::atomic<uint64_t> config_events_attempted_{0};
   std::atomic<uint64_t> config_events_persisted_{0};
   std::atomic<bool> fail_next_config_artifact_write_for_testing_{false};
+  std::string fail_sync_event_for_testing_;
+  std::string fail_directory_syncs_from_event_for_testing_;
+  bool fail_all_directory_syncs_for_testing_{false};
+  std::vector<std::string> durability_events_for_testing_;
   uint64_t config_event_sequence_{0};
   uint64_t config_artifact_sequence_{0};
+  uint64_t manifest_rewrite_sequence_{0};
 
   int output_directory_fd_{-1};
   int directory_lock_fd_{-1};

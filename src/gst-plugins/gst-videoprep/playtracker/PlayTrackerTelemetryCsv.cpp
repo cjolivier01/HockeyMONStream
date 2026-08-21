@@ -114,13 +114,6 @@ bool write_all(int fd, const std::string& contents) {
   return true;
 }
 
-bool replace_file_contents(int fd, const std::string& contents) {
-  if (::ftruncate(fd, 0) != 0 || ::lseek(fd, 0, SEEK_SET) < 0) {
-    return false;
-  }
-  return write_all(fd, contents);
-}
-
 bool open_reserved_stream(int fd, std::ofstream* output) {
   if (!output) {
     return false;
@@ -187,6 +180,26 @@ absl::Status PlayTrackerTelemetryCsv::Start(
     const std::string& effective_config_file,
     size_t queue_capacity) {
   Stop();
+  TelemetryConfigArtifact source_config{source_config_file, ReadTelemetryConfigArtifact(source_config_file)};
+  TelemetryConfigArtifact effective_config{effective_config_file, ReadTelemetryConfigArtifact(effective_config_file)};
+  if (source_config.contents.empty() || effective_config.contents.empty()) {
+    return absl::InvalidArgumentError("could not read non-empty playtracker source/effective configuration");
+  }
+  return Start(
+      output_directory,
+      std::move(source_config),
+      std::move(effective_config),
+      /*startup_config_events=*/{},
+      queue_capacity);
+}
+
+absl::Status PlayTrackerTelemetryCsv::Start(
+    const std::string& output_directory,
+    TelemetryConfigArtifact source_config,
+    TelemetryConfigArtifact effective_config,
+    std::vector<TelemetryConfigEvent> startup_config_events,
+    size_t queue_capacity) {
+  Stop();
   if (output_directory.empty()) {
     return absl::InvalidArgumentError("playtracker telemetry output directory is empty");
   }
@@ -202,6 +215,9 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   config_event_discontinuity_gaps_.store(0, std::memory_order_release);
   dropped_samples_.store(0, std::memory_order_release);
   dropped_config_events_.store(0, std::memory_order_release);
+  samples_buffered_.store(0, std::memory_order_release);
+  training_samples_buffered_.store(0, std::memory_order_release);
+  config_events_buffered_.store(0, std::memory_order_release);
   samples_persisted_.store(0, std::memory_order_release);
   training_samples_persisted_.store(0, std::memory_order_release);
   config_events_attempted_.store(0, std::memory_order_release);
@@ -209,16 +225,22 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   fail_next_config_artifact_write_for_testing_.store(false, std::memory_order_release);
   config_event_sequence_ = 0;
   config_artifact_sequence_ = 0;
+  manifest_rewrite_sequence_ = 0;
   writer_failed_ = false;
   writer_drained_ = false;
   completed_ = false;
   eligible_for_training_ = false;
+  publication_committed_ = false;
   run_outcome_ = TelemetryRunOutcome::kIncomplete;
   stopping_ = false;
+  fail_sync_event_for_testing_.clear();
+  fail_directory_syncs_from_event_for_testing_.clear();
+  fail_all_directory_syncs_for_testing_ = false;
+  durability_events_for_testing_.clear();
   started_utc_ = utc_now();
-  source_config_path_ = source_config_file;
-  effective_config_path_ = effective_config_file;
-  const absl::Status open_status = OpenOutputs(output_directory, source_config_file, effective_config_file);
+  source_config_path_ = source_config.path;
+  effective_config_path_ = effective_config.path;
+  const absl::Status open_status = OpenOutputs(output_directory, source_config, effective_config);
   if (!open_status.ok()) {
     RemoveIncompleteOutputs();
     CloseOutputs();
@@ -228,7 +250,7 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   frame_index_ << "Sample,SourceID,SourceFrame,DecodedSourceID,DecodedSequence,PTS_NS,NTP_NS,SeekEpoch,Width,Height,"
                   "TrackCount,HasCamera\n";
   config_events_ << "Event,SampleBoundary,Kind,Key,Value,Artifact\n";
-  config_events_ << "0,1,base-config,config-file," << csv_string(source_config_file) << ','
+  config_events_ << "0,1,base-config,config-file," << csv_string(source_config.path) << ','
                  << csv_string(source_config_filename_) << '\n';
   if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
     RemoveIncompleteOutputs();
@@ -236,7 +258,16 @@ absl::Status PlayTrackerTelemetryCsv::Start(
     return absl::InternalError("could not initialize playtracker telemetry CSV headers");
   }
 
-  if (!WriteManifest()) {
+  for (TelemetryConfigEvent& event : startup_config_events) {
+    config_events_attempted_.fetch_add(1, std::memory_order_acq_rel);
+    if (!WriteConfigEvent(QueuedConfigEvent{/*sample_boundary=*/1, std::move(event)})) {
+      RemoveIncompleteOutputs();
+      CloseOutputs();
+      return absl::InternalError("could not persist startup playtracker tuning provenance");
+    }
+  }
+
+  if (!WriteManifestAndSync("fsync:manifest:initial") || !SyncDirectory("initial")) {
     RemoveIncompleteOutputs();
     CloseOutputs();
     return absl::InternalError("could not write initial playtracker telemetry manifest");
@@ -262,8 +293,8 @@ absl::Status PlayTrackerTelemetryCsv::Start(
 
 absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
     const std::string& output_directory,
-    const std::string& source_config_file,
-    const std::string& effective_config_file) {
+    const TelemetryConfigArtifact& source_config,
+    const TelemetryConfigArtifact& effective_config) {
   std::error_code error;
   fs::create_directories(output_directory, error);
   if (error) {
@@ -280,10 +311,8 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
         absl::StrCat("could not normalize playtracker telemetry directory: ", error.message()));
   }
 
-  const std::string source_contents = ReadTelemetryConfigArtifact(source_config_file);
-  const std::string effective_contents = ReadTelemetryConfigArtifact(effective_config_file);
-  if (source_contents.empty() || effective_contents.empty()) {
-    return absl::InvalidArgumentError("could not read non-empty playtracker source/effective configuration");
+  if (source_config.contents.empty() || effective_config.contents.empty()) {
+    return absl::InvalidArgumentError("playtracker source/effective configuration snapshot is empty");
   }
 
   output_directory_fd_ = ::open(output_directory_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -407,7 +436,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
            generation_artifacts[index].published_filename,
            static_cast<uint64_t>(info.st_dev),
            static_cast<uint64_t>(info.st_ino),
-           generation_artifacts[index].training_input ? artifact_fds[index] : -1,
+           index == 5 ? -1 : artifact_fds[index],
            generation_artifacts[index].training_input});
     }
     if (reservation_error == 0) {
@@ -438,17 +467,20 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
   }
 
   const bool provenance_written =
-      write_all(artifact_fds[6], source_contents) && write_all(artifact_fds[7], effective_contents);
+      write_all(artifact_fds[6], source_config.contents) && write_all(artifact_fds[7], effective_config.contents);
   const bool streams_opened = open_reserved_stream(artifact_fds[0], &tracking_) &&
       open_reserved_stream(artifact_fds[1], &camera_) && open_reserved_stream(artifact_fds[2], &camera_fast_) &&
       open_reserved_stream(artifact_fds[3], &frame_index_) && open_reserved_stream(artifact_fds[4], &config_events_);
   manifest_fd_ = artifact_fds[5];
   artifact_fds[5] = -1;
-  // Keep stable descriptors for the hidden training files so publication can
-  // link the exact reserved inodes rather than trusting mutable pathnames.
-  artifact_fds[0] = -1;
-  artifact_fds[1] = -1;
-  artifact_fds[2] = -1;
+  // Keep stable descriptors for every staged artifact. Training publication
+  // links the exact reserved inodes, and finalization fsyncs every file without
+  // reopening a mutable pathname. The manifest descriptor is owned separately.
+  for (size_t index = 0; index < artifact_fds.size(); ++index) {
+    if (index != 5) {
+      artifact_fds[index] = -1;
+    }
+  }
   for (int& fd : artifact_fds) {
     if (fd >= 0) {
       ::close(fd);
@@ -493,28 +525,57 @@ void PlayTrackerTelemetryCsv::Stop() {
     writer_thread_.join();
   }
   writer_drained_ = true;
-  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !VerifyOwnedArtifacts()) {
+  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_ || !VerifyOwnedArtifacts()) {
     writer_failed_ = true;
+  }
+  const bool staged_artifacts_durable = !writer_failed_ && FlushAndSyncStagedArtifacts();
+  if (staged_artifacts_durable) {
+    samples_persisted_.store(samples_buffered_.load(std::memory_order_acquire), std::memory_order_release);
+    training_samples_persisted_.store(
+        training_samples_buffered_.load(std::memory_order_acquire), std::memory_order_release);
+    config_events_persisted_.store(config_events_buffered_.load(std::memory_order_acquire), std::memory_order_release);
+  } else {
+    writer_failed_ = true;
+    samples_persisted_.store(0, std::memory_order_release);
+    training_samples_persisted_.store(0, std::memory_order_release);
+    config_events_persisted_.store(0, std::memory_order_release);
   }
   const bool successful_outcome =
       run_outcome_ == TelemetryRunOutcome::kEndOfStream || run_outcome_ == TelemetryRunOutcome::kIntentionalStop;
-  completed_ = successful_outcome && !writer_failed_ && training_samples_persisted_.load(std::memory_order_acquire) > 0;
-  eligible_for_training_ = completed_;
-  // Finalize every fallible audit write before making tracking*.csv visible.
-  // HM treats that filename as the generation's discovery/commit marker.
-  if (!WriteManifest()) {
+  const bool publication_candidate =
+      successful_outcome && !writer_failed_ && training_samples_persisted_.load(std::memory_order_acquire) > 0;
+  completed_ = false;
+  eligible_for_training_ = false;
+  publication_committed_ = false;
+
+  // The durable pre-publication manifest is deliberately pending/ineligible.
+  // A crash before tracking*.csv is committed can never leave a false-positive
+  // manifest, even if later corrective writes also fail.
+  const bool pending_manifest_durable = WriteManifestAndSync("fsync:manifest:pending") && SyncDirectory("staged");
+  if (!pending_manifest_durable) {
     writer_failed_ = true;
-    completed_ = false;
-    eligible_for_training_ = false;
-  } else if (completed_ && !PublishTrainingArtifacts()) {
+    WriteManifestAndSync("fsync:manifest:failed");
+    SyncDirectory("failed");
+  } else if (publication_candidate && PublishTrainingArtifacts()) {
+    // PublishTrainingArtifacts() returns success only after the tracking link
+    // and its containing directory are durable. Eligibility is never written
+    // before that irreversible commit point.
+    publication_committed_ = true;
+    completed_ = true;
+    eligible_for_training_ = true;
+    if (!WriteManifestAndSync("fsync:manifest:committed")) {
+      writer_failed_ = true;
+      // The prior durable manifest was pending and the HM inputs are already a
+      // complete durable generation. A retry may disclose this audit failure;
+      // failure cannot make the training inputs incomplete.
+      WriteManifestAndSync("fsync:manifest:committed-retry");
+    }
+  } else if (publication_candidate) {
     writer_failed_ = true;
-    completed_ = false;
-    eligible_for_training_ = false;
-    // Best-effort correction: publication failed before the tracking commit
-    // point, so HM cannot select this generation even if this rewrite fails.
-    WriteManifest();
+    WriteManifestAndSync("fsync:manifest:publication-failed");
+    SyncDirectory("publication-failed");
   }
-  if (!eligible_for_training_) {
+  if (!publication_committed_) {
     RemoveOwnedArtifacts(/*training_only=*/true);
   }
   CloseOutputs();
@@ -632,8 +693,8 @@ void PlayTrackerTelemetryCsv::WriterLoop() {
   camera_fast_.flush();
   frame_index_.flush();
   config_events_.flush();
-  if (!config_events_) {
-    config_events_persisted_.store(0, std::memory_order_release);
+  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+    writer_failed_ = true;
   }
 }
 
@@ -663,9 +724,9 @@ void PlayTrackerTelemetryCsv::WriteSample(const QueuedSample& queued) {
   frame_index_ << ',' << sample.seek_epoch << ',' << sample.width << ',' << sample.height << ',' << sample.tracks.size()
                << ',' << (!sample.policy_boxes.empty() ? 1 : 0) << '\n';
   if (tracking_ && camera_ && camera_fast_ && frame_index_) {
-    samples_persisted_.fetch_add(1, std::memory_order_acq_rel);
+    samples_buffered_.fetch_add(1, std::memory_order_acq_rel);
     if (!sample.tracks.empty() && !sample.policy_boxes.empty()) {
-      training_samples_persisted_.fetch_add(1, std::memory_order_acq_rel);
+      training_samples_buffered_.fetch_add(1, std::memory_order_acq_rel);
     }
   }
 }
@@ -694,7 +755,7 @@ bool PlayTrackerTelemetryCsv::WriteConfigEvent(const QueuedConfigEvent& queued) 
   if (!config_events_) {
     return false;
   }
-  config_events_persisted_.fetch_add(1, std::memory_order_acq_rel);
+  config_events_buffered_.fetch_add(1, std::memory_order_acq_rel);
   return true;
 }
 
@@ -726,7 +787,7 @@ bool PlayTrackerTelemetryCsv::WriteExclusiveConfigArtifact(
     }
     struct stat info{};
     const bool have_identity = ::fstat(fd, &info) == 0;
-    written = have_identity && write_all(fd, contents);
+    written = have_identity && write_all(fd, contents) && SyncFd(fd, absl::StrCat("fsync:config-artifact:", candidate));
     ::close(fd);
     if (!written) {
       if (have_identity) {
@@ -742,6 +803,57 @@ bool PlayTrackerTelemetryCsv::WriteExclusiveConfigArtifact(
   }
   ::flock(directory_lock_fd_, LOCK_UN);
   return written;
+}
+
+bool PlayTrackerTelemetryCsv::SyncFd(int fd, const std::string& event) {
+  durability_events_for_testing_.push_back(event);
+  if (!fail_directory_syncs_from_event_for_testing_.empty() && event == fail_directory_syncs_from_event_for_testing_) {
+    fail_all_directory_syncs_for_testing_ = true;
+  }
+  if (fail_all_directory_syncs_for_testing_ && event.rfind("fsync:directory:", 0) == 0) {
+    errno = EIO;
+    return false;
+  }
+  if (event == fail_sync_event_for_testing_) {
+    fail_sync_event_for_testing_.clear();
+    errno = ENOSPC;
+    return false;
+  }
+  if (fd < 0) {
+    errno = EBADF;
+    return false;
+  }
+  while (::fsync(fd) != 0) {
+    if (errno == EINTR) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+bool PlayTrackerTelemetryCsv::SyncDirectory(const std::string& phase) {
+  return SyncFd(output_directory_fd_, absl::StrCat("fsync:directory:", phase));
+}
+
+bool PlayTrackerTelemetryCsv::FlushAndSyncStagedArtifacts() {
+  tracking_.flush();
+  camera_.flush();
+  camera_fast_.flush();
+  frame_index_.flush();
+  config_events_.flush();
+  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+    return false;
+  }
+
+  bool success = true;
+  for (const OwnedArtifact& artifact : owned_artifacts_) {
+    if (artifact.reservation_fd >= 0 &&
+        !SyncFd(artifact.reservation_fd, absl::StrCat("fsync:staged:", artifact.filename))) {
+      success = false;
+    }
+  }
+  return success;
 }
 
 bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
@@ -766,8 +878,7 @@ bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
     publication_order.push_back(static_cast<size_t>(std::distance(owned_artifacts_.begin(), artifact)));
   }
 
-  bool success = true;
-  for (const size_t index : publication_order) {
+  auto link_artifact = [this](size_t index) {
     const OwnedArtifact& artifact = owned_artifacts_[index];
     struct stat staging_info{};
     struct stat reserved_info{};
@@ -777,40 +888,62 @@ bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
         ::fstatat(output_directory_fd_, artifact.filename.c_str(), &staging_info, AT_SYMLINK_NOFOLLOW) != 0 ||
         !S_ISREG(staging_info.st_mode) || static_cast<uint64_t>(staging_info.st_dev) != artifact.device ||
         static_cast<uint64_t>(staging_info.st_ino) != artifact.inode) {
-      success = false;
-      break;
+      return false;
     }
     const std::string reserved_path = absl::StrCat("/proc/self/fd/", artifact.reservation_fd);
+    durability_events_for_testing_.push_back(absl::StrCat("link:", artifact.published_filename));
     if (::linkat(
             AT_FDCWD,
             reserved_path.c_str(),
             output_directory_fd_,
             artifact.published_filename.c_str(),
             AT_SYMLINK_FOLLOW) != 0) {
-      success = false;
-      break;
+      return false;
     }
-  }
+    return true;
+  };
 
-  if (!success) {
+  auto roll_back_publication = [this, &publication_order]() {
     // Roll back only links that still name one of our reserved inodes. A
     // competing file or symlink is never followed or removed.
     for (const size_t index : publication_order) {
       const OwnedArtifact& artifact = owned_artifacts_[index];
       unlink_owned_name(output_directory_fd_, artifact.published_filename, artifact.device, artifact.inode);
     }
+    SyncDirectory("publication-rollback");
+  };
+
+  // Persist both camera links before exposing tracking, which is HM's commit
+  // marker for a complete generation.
+  if (!link_artifact(publication_order[0]) || !link_artifact(publication_order[1]) || !SyncDirectory("cameras")) {
+    roll_back_publication();
+    ::flock(directory_lock_fd_, LOCK_UN);
+    return false;
+  }
+  if (!link_artifact(publication_order[2])) {
+    roll_back_publication();
+    ::flock(directory_lock_fd_, LOCK_UN);
+    return false;
+  }
+  if (!SyncDirectory("tracking-commit")) {
+    // Both cameras were already durable before tracking became visible. A
+    // failed directory fsync now makes the tracking link's crash persistence
+    // uncertain, but either crash state is safe: no tracking link, or a
+    // complete three-file generation. Never roll back after this point,
+    // because persisting only part of that rollback could expose tracking
+    // without one of its camera inputs.
     ::flock(directory_lock_fd_, LOCK_UN);
     return false;
   }
 
-  // The tracking link above was the commit point. Hidden-link cleanup is
-  // deliberately best-effort: no failure after that commit can revoke an
-  // otherwise valid generation or require unsafe rollback.
+  // The tracking link and its directory entry are durable. Hidden-link
+  // cleanup is best-effort and cannot revoke this valid generation.
   for (const size_t index : publication_order) {
     const OwnedArtifact& artifact = owned_artifacts_[index];
     unlink_owned_name(output_directory_fd_, artifact.filename, artifact.device, artifact.inode);
     owned_artifacts_[index].filename = owned_artifacts_[index].published_filename;
   }
+  SyncDirectory("staging-cleanup");
   ::flock(directory_lock_fd_, LOCK_UN);
   return true;
 }
@@ -843,13 +976,102 @@ void PlayTrackerTelemetryCsv::RemoveOwnedArtifacts(bool training_only) {
     }
     unlink_owned_name(output_directory_fd_, artifact.filename, artifact.device, artifact.inode);
   }
+  SyncDirectory(training_only ? "training-cleanup" : "incomplete-cleanup");
   ::flock(directory_lock_fd_, LOCK_UN);
 }
 
-bool PlayTrackerTelemetryCsv::WriteManifest() {
-  if (manifest_fd_ < 0) {
+bool PlayTrackerTelemetryCsv::WriteManifestAndSync(const std::string& phase) {
+  durability_events_for_testing_.push_back(absl::StrCat("write:", phase));
+  if (output_directory_fd_ < 0 || directory_lock_fd_ < 0 || manifest_fd_ < 0 ||
+      ::flock(directory_lock_fd_, LOCK_EX) != 0) {
     return false;
   }
+  const auto unlock_directory = [this]() { ::flock(directory_lock_fd_, LOCK_UN); };
+  const std::string manifest_filename = fs::path(manifest_path_).filename().string();
+  auto manifest_artifact = std::find_if(
+      owned_artifacts_.begin(), owned_artifacts_.end(), [&manifest_filename](const OwnedArtifact& artifact) {
+        return !artifact.training_input && artifact.filename == manifest_filename;
+      });
+  struct stat manifest_path_info{};
+  struct stat manifest_fd_info{};
+  if (manifest_artifact == owned_artifacts_.end() || ::fstat(manifest_fd_, &manifest_fd_info) != 0 ||
+      ::fstatat(output_directory_fd_, manifest_filename.c_str(), &manifest_path_info, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISREG(manifest_path_info.st_mode) ||
+      static_cast<uint64_t>(manifest_path_info.st_dev) != manifest_artifact->device ||
+      static_cast<uint64_t>(manifest_path_info.st_ino) != manifest_artifact->inode ||
+      static_cast<uint64_t>(manifest_fd_info.st_dev) != manifest_artifact->device ||
+      static_cast<uint64_t>(manifest_fd_info.st_ino) != manifest_artifact->inode) {
+    unlock_directory();
+    return false;
+  }
+
+  int replacement_fd = -1;
+  std::string replacement_filename;
+  struct stat replacement_info{};
+  for (size_t attempt = 0; attempt < 100000; ++attempt) {
+    replacement_filename = absl::StrCat(".", manifest_filename, ".rewrite-", ++manifest_rewrite_sequence_, ".partial");
+    replacement_fd = ::openat(
+        output_directory_fd_, replacement_filename.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (replacement_fd >= 0) {
+      break;
+    }
+    if (errno != EEXIST && errno != ELOOP) {
+      unlock_directory();
+      return false;
+    }
+  }
+  if (replacement_fd < 0 || ::fstat(replacement_fd, &replacement_info) != 0 || !S_ISREG(replacement_info.st_mode)) {
+    if (replacement_fd >= 0) {
+      ::close(replacement_fd);
+    }
+    unlock_directory();
+    return false;
+  }
+
+  const uint64_t replacement_device = static_cast<uint64_t>(replacement_info.st_dev);
+  const uint64_t replacement_inode = static_cast<uint64_t>(replacement_info.st_ino);
+  auto remove_replacement = [this, &replacement_filename, replacement_device, replacement_inode]() {
+    unlink_owned_name(output_directory_fd_, replacement_filename, replacement_device, replacement_inode);
+  };
+  if (!write_all(replacement_fd, BuildManifestContents()) || !SyncFd(replacement_fd, phase)) {
+    ::close(replacement_fd);
+    remove_replacement();
+    unlock_directory();
+    return false;
+  }
+
+  // Revalidate the visible inode immediately before the atomic replacement.
+  // The directory lock serializes cooperating exporters; the identity check
+  // also refuses to replace a path that no longer names our manifest.
+  if (::fstatat(output_directory_fd_, manifest_filename.c_str(), &manifest_path_info, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISREG(manifest_path_info.st_mode) ||
+      static_cast<uint64_t>(manifest_path_info.st_dev) != manifest_artifact->device ||
+      static_cast<uint64_t>(manifest_path_info.st_ino) != manifest_artifact->inode) {
+    ::close(replacement_fd);
+    remove_replacement();
+    unlock_directory();
+    return false;
+  }
+
+  durability_events_for_testing_.push_back(absl::StrCat("rename:manifest:", phase));
+  if (::renameat(output_directory_fd_, replacement_filename.c_str(), output_directory_fd_, manifest_filename.c_str()) !=
+      0) {
+    ::close(replacement_fd);
+    remove_replacement();
+    unlock_directory();
+    return false;
+  }
+
+  ::close(manifest_fd_);
+  manifest_fd_ = replacement_fd;
+  manifest_artifact->device = replacement_device;
+  manifest_artifact->inode = replacement_inode;
+  const bool directory_synced = SyncDirectory(absl::StrCat("manifest:", phase));
+  unlock_directory();
+  return directory_synced;
+}
+
+std::string PlayTrackerTelemetryCsv::BuildManifestContents() const {
   const uint64_t config_events_attempted = config_events_attempted_.load(std::memory_order_acquire);
   const uint64_t config_events_persisted = config_events_persisted_.load(std::memory_order_acquire);
   std::ostringstream manifest;
@@ -859,6 +1081,7 @@ bool PlayTrackerTelemetryCsv::WriteManifest() {
            << "  \"output_directory\": " << json_string(output_directory_) << ",\n"
            << "  \"writer_drained\": " << (writer_drained_ ? "true" : "false") << ",\n"
            << "  \"run_outcome\": " << json_string(outcome_name(run_outcome_)) << ",\n"
+           << "  \"publication_state\": " << json_string(publication_committed_ ? "committed" : "pending") << ",\n"
            << "  \"completed\": " << (completed_ ? "true" : "false") << ",\n"
            << "  \"eligible_for_training\": " << (eligible_for_training_ ? "true" : "false") << ",\n"
            << "  \"writer_failed\": " << (writer_failed_ ? "true" : "false") << ",\n"
@@ -872,10 +1095,13 @@ bool PlayTrackerTelemetryCsv::WriteManifest() {
            << config_event_discontinuity_gaps_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_samples\": " << dropped_samples_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_config_events\": " << dropped_config_events_.load(std::memory_order_acquire) << ",\n"
+           << "  \"samples_buffered\": " << samples_buffered_.load(std::memory_order_acquire) << ",\n"
+           << "  \"training_samples_buffered\": " << training_samples_buffered_.load(std::memory_order_acquire) << ",\n"
            << "  \"samples_persisted\": " << samples_persisted_.load(std::memory_order_acquire) << ",\n"
            << "  \"training_samples_persisted\": " << training_samples_persisted_.load(std::memory_order_acquire)
            << ",\n"
            << "  \"config_events_attempted\": " << config_events_attempted << ",\n"
+           << "  \"config_events_buffered\": " << config_events_buffered_.load(std::memory_order_acquire) << ",\n"
            << "  \"config_events_persisted\": " << config_events_persisted << ",\n"
            << "  \"config_events_lost\": " << config_events_attempted - config_events_persisted << ",\n"
            << "  \"performance_contract\": \"metadata-only; no video-frame mapping or CPU pixel conversion\",\n"
@@ -903,7 +1129,7 @@ bool PlayTrackerTelemetryCsv::WriteManifest() {
            << "    \"effective_artifact\": " << json_string(effective_config_filename_) << "\n"
            << "  }\n"
            << "}\n";
-  return replace_file_contents(manifest_fd_, manifest.str());
+  return manifest.str();
 }
 
 void PlayTrackerTelemetryCsv::CloseOutputs() {

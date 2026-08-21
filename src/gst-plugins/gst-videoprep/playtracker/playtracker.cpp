@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
@@ -51,6 +52,46 @@ bool parse_finite_float(const std::string& value, float* out) {
   return true;
 }
 
+std::string runtime_tuning_group(const DsPlayTrackerRuntimeTuning& tuning) {
+  std::ostringstream group;
+  group << tuning.apply_to_fast_box << ':' << tuning.apply_to_follower_box << ':' << tuning.update_motion_tuning;
+  auto append_field = [&group](const char* name, bool present) {
+    if (present) {
+      group << ':' << name;
+    }
+  };
+  append_field("stop-on-dir-change-delay", tuning.stop_on_dir_change_delay.has_value());
+  append_field("cancel-on-opposite", tuning.cancel_on_opposite.has_value());
+  append_field("cancel-hysteresis-frames", tuning.cancel_hysteresis_frames.has_value());
+  append_field("stop-delay-cooldown-frames", tuning.stop_delay_cooldown_frames.has_value());
+  append_field("post-nonstop-stop-delay-count", tuning.post_nonstop_stop_delay_count.has_value());
+  append_field("time-to-dest-speed-limit-frames", tuning.time_to_dest_speed_limit_frames.has_value());
+  append_field("overshoot-stop-delay-count", tuning.overshoot_stop_delay_count.has_value());
+  append_field("overshoot-scale-speed-ratio", tuning.overshoot_scale_speed_ratio.has_value());
+  append_field("max-speed-x", tuning.max_speed_x.has_value());
+  append_field("max-speed-y", tuning.max_speed_y.has_value());
+  append_field("max-accel-x", tuning.max_accel_x.has_value());
+  append_field("max-accel-y", tuning.max_accel_y.has_value());
+  append_field("zoom-in-aggressiveness", tuning.zoom_in_aggressiveness.has_value());
+  append_field("arena-angle-from-vertical", tuning.arena_angle_from_vertical.has_value());
+  append_field("dynamic-acceleration-scaling", tuning.dynamic_acceleration_scaling.has_value());
+  return group.str();
+}
+
+DsPlayTrackerRuntimeTuning camera_geometry_tuning(
+    std::optional<float> angle,
+    std::optional<float> dynamic_acceleration_scaling,
+    bool apply_to_fast_box,
+    bool apply_to_follower_box) {
+  DsPlayTrackerRuntimeTuning tuning;
+  tuning.apply_to_fast_box = apply_to_fast_box;
+  tuning.apply_to_follower_box = apply_to_follower_box;
+  tuning.update_motion_tuning = false;
+  tuning.arena_angle_from_vertical = angle;
+  tuning.dynamic_acceleration_scaling = dynamic_acceleration_scaling;
+  return tuning;
+}
+
 } // namespace
 
 PlayTrackerPriv::~PlayTrackerPriv() {
@@ -78,24 +119,36 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   if (play_tracker_config_source_file_.empty()) {
     play_tracker_config_source_file_ = init_params_.play_tracker_config_file;
   }
+  if (play_tracker_config_source_contents_.empty()) {
+    play_tracker_config_source_contents_ = ReadTelemetryConfigArtifact(play_tracker_config_source_file_);
+  }
+  if (play_tracker_config_source_contents_.empty()) {
+    return absl::InvalidArgumentError("could not read non-empty vpplaytracker base configuration snapshot");
+  }
 
   {
     std::lock_guard<std::mutex> lk(context_mu_);
-    HM_RETURN_IF_ERROR(ReloadContextFromConfig());
+    HM_RETURN_IF_ERROR(ReloadContextFromConfig(play_tracker_config_source_contents_));
   }
   const absl::Status status = Super::PostCapsInit(params);
   if (!status.ok()) {
     return status;
   }
   if (!telemetry_csv_dir_.empty()) {
-    HM_RETURN_IF_ERROR(telemetry_csv_.Start(
-        telemetry_csv_dir_, play_tracker_config_source_file_, init_params_.play_tracker_config_file));
+    const absl::Status telemetry_status = telemetry_csv_.Start(
+        telemetry_csv_dir_,
+        TelemetryConfigArtifact{play_tracker_config_source_file_, play_tracker_config_source_contents_},
+        TelemetryConfigArtifact{init_params_.play_tracker_config_file, play_tracker_effective_config_contents_},
+        runtime_tuning_provenance_history_);
+    if (!telemetry_status.ok()) {
+      return telemetry_status;
+    }
     std::cout << "Playtracker telemetry CSV export: " << telemetry_csv_.output_manifest() << std::endl;
   }
   return absl::OkStatus();
 }
 
-absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
+absl::Status PlayTrackerPriv::ReloadContextFromConfig(const std::string& config_contents) {
   if (play_tracker_config_source_file_.empty()) {
     return absl::NotFoundError("vpplaytracker config-file is not set");
   }
@@ -104,7 +157,7 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
   next_params.owned_objects.clear();
   YAML::Node config;
   try {
-    config = YAML::LoadFile(play_tracker_config_source_file_);
+    config = YAML::Load(config_contents);
     YAML::Node live_boxes = config["play-tracker"]["live-boxes"];
     if (!live_boxes || !live_boxes.IsSequence()) {
       return absl::InvalidArgumentError("vpplaytracker config missing play-tracker.live-boxes");
@@ -124,8 +177,11 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
     return absl::InvalidArgumentError(absl::StrCat("failed to load vpplaytracker config: ", exc.what()));
   }
   auto temp_yaml_file = std::make_unique<hm::utils::TempFile>(/*autoRemove=*/true);
+  std::ostringstream effective_config;
+  effective_config << config;
+  const std::string next_effective_config_contents = effective_config.str();
   std::ofstream ofile(temp_yaml_file->getPath());
-  ofile << config;
+  ofile << next_effective_config_contents;
   ofile.close();
   if (!ofile) {
     return absl::InternalError("Failed to write generated vpplaytracker runtime config");
@@ -148,25 +204,32 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
     DsPlayTrackerCtxDeinit(pt_context_);
   }
   init_params_ = std::move(next_params);
+  play_tracker_effective_config_contents_ = next_effective_config_contents;
   pt_context_ = next_context;
   return absl::OkStatus();
 }
 
+void PlayTrackerPriv::RememberRuntimeTuning(DsPlayTrackerRuntimeTuning tuning, TelemetryConfigEvent provenance) {
+  const std::string group = runtime_tuning_group(tuning);
+  const auto previous_group = std::find(runtime_tuning_groups_.begin(), runtime_tuning_groups_.end(), group);
+  if (previous_group != runtime_tuning_groups_.end()) {
+    const size_t index = static_cast<size_t>(std::distance(runtime_tuning_groups_.begin(), previous_group));
+    runtime_tuning_groups_.erase(previous_group);
+    runtime_tuning_history_.erase(runtime_tuning_history_.begin() + index);
+    runtime_tuning_provenance_history_.erase(runtime_tuning_provenance_history_.begin() + index);
+  }
+  runtime_tuning_groups_.push_back(group);
+  runtime_tuning_history_.push_back(std::move(tuning));
+  runtime_tuning_provenance_history_.push_back(provenance);
+  if (telemetry_csv_.active()) {
+    telemetry_csv_.TryRecordConfigEvent(std::move(provenance));
+  }
+}
+
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
-  bool reload_context = false;
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
-  auto apply_camera_geometry_locked = [this](
-                                          std::optional<float> angle,
-                                          std::optional<float> dynamic_acceleration_scaling,
-                                          bool apply_to_fast_box,
-                                          bool apply_to_follower_box) {
-    DsPlayTrackerRuntimeTuning tuning;
-    tuning.apply_to_fast_box = apply_to_fast_box;
-    tuning.apply_to_follower_box = apply_to_follower_box;
-    tuning.update_motion_tuning = false;
-    tuning.arena_angle_from_vertical = angle;
-    tuning.dynamic_acceleration_scaling = dynamic_acceleration_scaling;
+  auto apply_camera_geometry_locked = [this](const DsPlayTrackerRuntimeTuning& tuning) {
     return !pt_context_ || DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, tuning).ok();
   };
   if (key == "show") {
@@ -185,50 +248,62 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     std::lock_guard<std::mutex> lk(context_mu_);
-    if (!apply_camera_geometry_locked(angle, std::nullopt, true, true)) {
+    DsPlayTrackerRuntimeTuning tuning = camera_geometry_tuning(angle, std::nullopt, true, true);
+    if (!apply_camera_geometry_locked(tuning)) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
     fixed_edge_rotation_angle_right_ = angle;
-    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
+    RememberRuntimeTuning(
+        std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-left") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
     std::lock_guard<std::mutex> lk(context_mu_);
-    if (!apply_camera_geometry_locked(0.5f * (angle + fixed_edge_rotation_angle_right_), std::nullopt, true, true)) {
+    DsPlayTrackerRuntimeTuning tuning =
+        camera_geometry_tuning(0.5f * (angle + fixed_edge_rotation_angle_right_), std::nullopt, true, true);
+    if (!apply_camera_geometry_locked(tuning)) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
-    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
+    RememberRuntimeTuning(
+        std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-right") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
     std::lock_guard<std::mutex> lk(context_mu_);
-    if (!apply_camera_geometry_locked(0.5f * (fixed_edge_rotation_angle_left_ + angle), std::nullopt, true, true)) {
+    DsPlayTrackerRuntimeTuning tuning =
+        camera_geometry_tuning(0.5f * (fixed_edge_rotation_angle_left_ + angle), std::nullopt, true, true);
+    if (!apply_camera_geometry_locked(tuning)) {
       return false;
     }
     fixed_edge_rotation_angle_right_ = angle;
-    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
+    RememberRuntimeTuning(
+        std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "dynamic-acceleration-scaling") {
     float dynamic_acceleration_scaling = 0.0f;
     if (!parse_finite_float(prop.value, &dynamic_acceleration_scaling)) {
       return false;
     }
     std::lock_guard<std::mutex> lk(context_mu_);
-    if (!apply_camera_geometry_locked(std::nullopt, dynamic_acceleration_scaling, false, true)) {
+    DsPlayTrackerRuntimeTuning tuning = camera_geometry_tuning(std::nullopt, dynamic_acceleration_scaling, false, true);
+    if (!apply_camera_geometry_locked(tuning)) {
       return false;
     }
     dynamic_acceleration_scaling_ = dynamic_acceleration_scaling;
-    telemetry_csv_.TryRecordConfigEvent({"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
+    RememberRuntimeTuning(
+        std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "runtime-tuning-config-file") {
     // Parse outside the streaming mutex so disk I/O and YAML conversion never
-    // stall GenerateOutput(). Only the small in-place mutation is serialized.
-    auto tuning = DsPlayTrackerLoadRuntimeTuning(prop.value);
+    // stall GenerateOutput(). Parsing and provenance both consume this one
+    // immutable byte snapshot, so a concurrent pathname replacement cannot
+    // make the applied policy differ from the recorded artifact.
     const std::string tuning_contents = ReadTelemetryConfigArtifact(prop.value);
+    auto tuning = DsPlayTrackerLoadRuntimeTuningContents(tuning_contents);
     if (!tuning.ok()) {
       std::cerr << tuning.status() << std::endl;
       return false;
@@ -241,31 +316,31 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
         return false;
       }
     }
-    runtime_tuning_history_.push_back(*tuning);
-    telemetry_csv_.TryRecordConfigEvent(
-        {"runtime-tuning", key, prop.value, "play_tracker_runtime_tuning", tuning_contents});
+    RememberRuntimeTuning(*tuning, {"runtime-tuning", key, prop.value, "play_tracker_runtime_tuning", tuning_contents});
     return true;
   } else if (key == "config-file") {
-    // This property changes the next-start base configuration. Runtime tuning
-    // uses runtime-tuning-config-file so active tracker history is preserved.
-    reload_context = true;
-  }
-  if (reload_context) {
+    // Cache one immutable snapshot for both a live reload and the next startup.
+    // Runtime tuning uses runtime-tuning-config-file so active history is preserved.
     const std::string config_contents = ReadTelemetryConfigArtifact(prop.value);
+    if (config_contents.empty()) {
+      return false;
+    }
     std::lock_guard<std::mutex> lk(context_mu_);
     const std::string previous_config_source_file = play_tracker_config_source_file_;
-    if (key == "config-file") {
-      play_tracker_config_source_file_ = prop.value;
-    }
+    const std::string previous_config_source_contents = play_tracker_config_source_contents_;
+    play_tracker_config_source_file_ = prop.value;
+    play_tracker_config_source_contents_ = config_contents;
     if (pt_context_) {
-      const absl::Status status = ReloadContextFromConfig();
+      const absl::Status status = ReloadContextFromConfig(config_contents);
       if (!status.ok()) {
         play_tracker_config_source_file_ = previous_config_source_file;
+        play_tracker_config_source_contents_ = previous_config_source_contents;
         std::cerr << status << std::endl;
         return false;
       }
     }
     telemetry_csv_.TryRecordConfigEvent({"base-config", key, prop.value, "play_tracker_source", config_contents});
+    return true;
   }
   return true;
 }

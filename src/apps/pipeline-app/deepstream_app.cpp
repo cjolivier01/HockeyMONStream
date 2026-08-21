@@ -331,6 +331,12 @@ static gboolean bus_callback(GstBus* bus, GstMessage* message, gpointer data) {
         g_print(
             "Reconnection attempt  exceeded or EOS received for all sources."
             " Exiting.\n");
+        if (mark_terminal_source_error_failure(appCtx)) {
+          mark_playtracker_telemetry_failed(appCtx);
+          if (appCtx->fatal_pipeline_error_cb) {
+            appCtx->fatal_pipeline_error_cb(appCtx);
+          }
+        }
         g_error_free(error);
         g_free(debuginfo);
         appCtx->quit = TRUE;
