@@ -4,17 +4,18 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstring>
 #include <exception>
-#include <filesystem>
-#include <fstream>
 #include <new>
 #include <utility>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace hm::gpu_preview {
 namespace {
-
-namespace fs = std::filesystem;
 
 constexpr std::array<std::uint8_t, 8> kPngSignature = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
 constexpr std::size_t kPngHeaderBytes = 24;
@@ -56,25 +57,65 @@ RinkMaskLoadResult failed(RinkMaskLoadStatus status, const char* message) {
   return RinkMaskLoadResult{status, {}, message};
 }
 
+class FileDescriptor {
+ public:
+  explicit FileDescriptor(int value) : value_(value) {}
+  ~FileDescriptor() {
+    if (value_ >= 0)
+      ::close(value_);
+  }
+  FileDescriptor(const FileDescriptor&) = delete;
+  FileDescriptor& operator=(const FileDescriptor&) = delete;
+
+  int get() const {
+    return value_;
+  }
+
+ private:
+  int value_{-1};
+};
+
 } // namespace
 
-RinkMaskLoadResult load_rink_mask_png(const std::string& path, const RinkMaskDecoder& decoder) {
+RinkMaskLoadResult load_rink_mask_png(
+    const std::string& path,
+    const RinkMaskDecoder& decoder,
+    const RinkMaskOpenObserver& open_observer) {
   try {
-    std::error_code error;
-    if (!fs::is_regular_file(path, error) || error)
-      return failed(RinkMaskLoadStatus::kMissing, "file is missing or is not regular");
-    const std::uintmax_t file_size = fs::file_size(path, error);
-    if (error)
-      return failed(RinkMaskLoadStatus::kMissing, "file size is unavailable");
+    const int opened = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
+    if (opened < 0) {
+      if (errno == ELOOP)
+        return failed(RinkMaskLoadStatus::kUnsafeFileType, "symbolic links are not accepted");
+      return failed(RinkMaskLoadStatus::kMissing, "file could not be opened");
+    }
+    FileDescriptor input(opened);
+    struct stat attributes{};
+    if (::fstat(input.get(), &attributes) != 0)
+      return failed(RinkMaskLoadStatus::kMissing, "file metadata is unavailable");
+    if (!S_ISREG(attributes.st_mode))
+      return failed(RinkMaskLoadStatus::kUnsafeFileType, "file is not a regular file");
+    if (attributes.st_size < 0)
+      return failed(RinkMaskLoadStatus::kInvalidPngHeader, "compressed PNG has an invalid size");
+    const std::uint64_t file_size = static_cast<std::uint64_t>(attributes.st_size);
     if (file_size > kMaximumRinkMaskCompressedBytes)
       return failed(RinkMaskLoadStatus::kCompressedFileTooLarge, "compressed PNG exceeds 8 MiB");
     if (file_size < kPngHeaderBytes)
       return failed(RinkMaskLoadStatus::kInvalidPngHeader, "PNG header is truncated");
 
     std::vector<std::uint8_t> compressed(static_cast<std::size_t>(file_size));
-    std::ifstream input(path, std::ios::binary);
-    if (!input.read(reinterpret_cast<char*>(compressed.data()), static_cast<std::streamsize>(compressed.size())))
+    if (open_observer)
+      open_observer();
+    std::size_t offset = 0;
+    while (offset < compressed.size()) {
+      const ssize_t bytes = ::read(input.get(), compressed.data() + offset, compressed.size() - offset);
+      if (bytes > 0) {
+        offset += static_cast<std::size_t>(bytes);
+        continue;
+      }
+      if (bytes < 0 && errno == EINTR)
+        continue;
       return failed(RinkMaskLoadStatus::kInvalidPngHeader, "compressed PNG could not be read completely");
+    }
     if (!std::equal(kPngSignature.begin(), kPngSignature.end(), compressed.begin()) ||
         read_big_endian_u32(compressed.data() + 8) != 13U || std::memcmp(compressed.data() + 12, "IHDR", 4) != 0) {
       return failed(RinkMaskLoadStatus::kInvalidPngHeader, "PNG signature or IHDR is invalid");
@@ -108,12 +149,21 @@ RinkMaskLoadResult load_rink_mask_png(const std::string& path, const RinkMaskDec
   }
 }
 
+bool rink_mask_dimensions_match(
+    const RinkMaskImage& image,
+    std::uint32_t expected_width,
+    std::uint32_t expected_height) {
+  return expected_width > 0 && expected_height > 0 && image.width == expected_width && image.height == expected_height;
+}
+
 const char* rink_mask_load_status_name(RinkMaskLoadStatus status) {
   switch (status) {
     case RinkMaskLoadStatus::kLoaded:
       return "loaded";
     case RinkMaskLoadStatus::kMissing:
       return "missing";
+    case RinkMaskLoadStatus::kUnsafeFileType:
+      return "unsafe-file-type";
     case RinkMaskLoadStatus::kCompressedFileTooLarge:
       return "compressed-file-too-large";
     case RinkMaskLoadStatus::kInvalidPngHeader:

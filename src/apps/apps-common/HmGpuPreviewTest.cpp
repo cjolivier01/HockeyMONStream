@@ -2,6 +2,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <gst/base/gstbasesink.h>
 #include <gst/gst.h>
 
 #include <algorithm>
@@ -298,6 +299,35 @@ bool run_capture_geometry_budget_test() {
   return true;
 }
 
+bool run_render_exception_boundary_test() {
+  for (const auto injection : {
+           hm::gpu_preview::RenderExceptionInjection::kBadAlloc,
+           hm::gpu_preview::RenderExceptionInjection::kLengthError,
+           hm::gpu_preview::RenderExceptionInjection::kUnknown,
+       }) {
+    GstElement* sink = gst_element_factory_make("hmgpupreviewsink", nullptr);
+    GstBuffer* buffer = gst_buffer_new();
+    if (!sink || !buffer) {
+      std::cerr << "Could not construct GPU preview exception-boundary fixture\n";
+      if (buffer)
+        gst_buffer_unref(buffer);
+      if (sink)
+        gst_object_unref(sink);
+      return false;
+    }
+    hm::gpu_preview::set_render_exception_injection_for_test(sink, injection);
+    auto* sink_class = GST_BASE_SINK_GET_CLASS(sink);
+    const GstFlowReturn result = sink_class->render(GST_BASE_SINK(sink), buffer);
+    gst_buffer_unref(buffer);
+    gst_object_unref(sink);
+    if (result != GST_FLOW_ERROR) {
+      std::cerr << "GPU preview render exception escaped or returned a non-error flow result\n";
+      return false;
+    }
+  }
+  return true;
+}
+
 bool run_renderer_test(Display* display, Window window) {
   GError* error = nullptr;
   GstElement* pipeline = gst_parse_launch(
@@ -369,12 +399,27 @@ bool run_renderer_test(Display* display, Window window) {
       ? std::pair<std::uint8_t, std::uint8_t>{0, 0}
       : std::minmax({*std::min_element(rgba.begin(), rgba.end()), *std::max_element(rgba.begin(), rgba.end())});
 
+  bool eos = false;
+  GstMessage* terminal =
+      gst_bus_timed_pop_filtered(bus, 5 * GST_SECOND, static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+  if (terminal) {
+    eos = GST_MESSAGE_TYPE(terminal) == GST_MESSAGE_EOS;
+    gst_message_unref(terminal);
+  }
+  // The UI owns the foreign XID and may destroy it before the sink transitions
+  // to NULL. Cleanup must use the sink's private GLX drawable in that case.
+  XDestroyWindow(display, window);
+  XSync(display, False);
   gst_object_unref(bus);
   gst_element_set_state(pipeline, GST_STATE_NULL);
+  sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
+  const bool stale_xid_cleanup = hm::gpu_preview::renderer_resources_released_for_test(sink);
+  gst_object_unref(sink);
   gst_object_unref(pipeline);
   const bool bounded_capture_ok = bounded_capture && bounded_width < 4096 && bounded_height < 2160 &&
       bounded_rgba.size() <= hm::gpu_preview::kMaximumPresentedFrameCaptureBytes;
-  if (!ready || !captured || width != 640 || height != 360 || maximum == minimum || !bounded_capture_ok) {
+  if (!ready || !eos || !captured || width != 640 || height != 360 || maximum == minimum || !bounded_capture_ok ||
+      !stale_xid_cleanup) {
     std::cerr << "GPU preview did not expose its presented texture: ready=" << ready << " captured=" << captured
               << " range=" << static_cast<int>(maximum - minimum) << " error=" << capture_error
               << " bounded-capture=" << bounded_capture << " bounded-size=" << bounded_width << 'x' << bounded_height
@@ -400,6 +445,8 @@ int main(int argc, char** argv) {
   if (!run_two_stage_disabled_path_test())
     return 1;
   if (!run_capture_geometry_budget_test())
+    return 1;
+  if (!run_render_exception_boundary_test())
     return 1;
   if (!gst_element_factory_find("nvvideoconvert") || !std::getenv("DISPLAY")) {
     std::cout << "NVMM conversion or X11 display unavailable; skipping\n";
@@ -427,7 +474,6 @@ int main(int argc, char** argv) {
   XSync(display, False);
 
   const bool passed = run_renderer_test(display, window);
-  XDestroyWindow(display, window);
   XCloseDisplay(display);
   return passed ? 0 : 1;
 }

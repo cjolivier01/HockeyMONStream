@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -104,6 +105,49 @@ int main() {
   if (!valid_result || valid_result.image.width != 5U || valid_result.image.height != 4U ||
       valid_result.image.alpha.size() != 20U || valid_result.image.alpha.front() != 173U) {
     std::cerr << "valid grayscale PNG did not survive bounded decode\n";
+    return 1;
+  }
+  if (!hm::gpu_preview::rink_mask_dimensions_match(valid_result.image, 5U, 4U) ||
+      hm::gpu_preview::rink_mask_dimensions_match(valid_result.image, 4U, 5U)) {
+    std::cerr << "rink-mask exact stitched-canvas dimension validation failed\n";
+    return 1;
+  }
+
+  const fs::path symlink_path = temporary.path() / "mask-link.png";
+  fs::create_symlink(valid_png.filename(), symlink_path);
+  if (!expect_status(
+          hm::gpu_preview::load_rink_mask_png(symlink_path.string()),
+          hm::gpu_preview::RinkMaskLoadStatus::kUnsafeFileType,
+          "symbolic-link mask")) {
+    return 1;
+  }
+  const fs::path fifo_path = temporary.path() / "mask-fifo";
+  if (::mkfifo(fifo_path.c_str(), 0600) != 0 ||
+      !expect_status(
+          hm::gpu_preview::load_rink_mask_png(fifo_path.string()),
+          hm::gpu_preview::RinkMaskLoadStatus::kUnsafeFileType,
+          "FIFO mask") ||
+      !expect_status(
+          hm::gpu_preview::load_rink_mask_png("/dev/null"),
+          hm::gpu_preview::RinkMaskLoadStatus::kUnsafeFileType,
+          "device mask")) {
+    return 1;
+  }
+
+  const fs::path open_once_path = temporary.path() / "open-once.png";
+  const fs::path open_once_replacement = temporary.path() / "open-once-replacement.png";
+  const fs::path opened_inode = temporary.path() / "opened-inode.png";
+  cv::imwrite(open_once_path.string(), cv::Mat(4, 5, CV_8UC1, cv::Scalar(71)));
+  cv::imwrite(open_once_replacement.string(), cv::Mat(2, 3, CV_8UC1, cv::Scalar(219)));
+  bool swapped = false;
+  const auto open_once_result = hm::gpu_preview::load_rink_mask_png(open_once_path.string(), {}, [&] {
+    fs::rename(open_once_path, opened_inode);
+    fs::rename(open_once_replacement, open_once_path);
+    swapped = true;
+  });
+  if (!swapped || !open_once_result || open_once_result.image.width != 5U || open_once_result.image.height != 4U ||
+      open_once_result.image.alpha.front() != 71U) {
+    std::cerr << "rink-mask loader reopened a swapped pathname instead of reading its validated descriptor\n";
     return 1;
   }
 

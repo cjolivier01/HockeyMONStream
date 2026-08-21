@@ -22,6 +22,7 @@ struct RinkMaskImage {
 enum class RinkMaskLoadStatus {
   kLoaded,
   kMissing,
+  kUnsafeFileType,
   kCompressedFileTooLarge,
   kInvalidPngHeader,
   kDimensionsTooLarge,
@@ -44,10 +45,19 @@ using RinkMaskDecoder = std::function<RinkMaskImage(
     const std::vector<std::uint8_t>& compressed,
     std::uint32_t expected_width,
     std::uint32_t expected_height)>;
+using RinkMaskOpenObserver = std::function<void()>;
 
-// Validates the compressed PNG and its IHDR before invoking OpenCV. The
-// optional decoder exists for deterministic exception-containment tests.
-RinkMaskLoadResult load_rink_mask_png(const std::string& path, const RinkMaskDecoder& decoder = {});
+// Opens the path once without following links, validates that same descriptor,
+// and reads the compressed PNG and its IHDR before invoking OpenCV. The
+// optional hooks exist for deterministic exception and pathname-swap tests.
+RinkMaskLoadResult load_rink_mask_png(
+    const std::string& path,
+    const RinkMaskDecoder& decoder = {},
+    const RinkMaskOpenObserver& open_observer = {});
+bool rink_mask_dimensions_match(
+    const RinkMaskImage& image,
+    std::uint32_t expected_width,
+    std::uint32_t expected_height);
 const char* rink_mask_load_status_name(RinkMaskLoadStatus status);
 
 // First failure waits two seconds; repeated failures back off to 30 seconds.

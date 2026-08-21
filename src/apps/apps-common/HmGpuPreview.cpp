@@ -1,7 +1,12 @@
 #include "HmGpuPreview.h"
 
 #include "hstream/src/apps/apps-common/RinkMaskImage.h"
+#include "hstream/src/libs/common/ApplicationPayload.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/stitching/FieldMaskArtifact.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
+
+#include "absl/status/status.h"
 
 #include <gst/base/gstbasesink.h>
 #include <gst/video/video.h>
@@ -11,7 +16,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <limits>
 #include <mutex>
+#include <new>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -274,6 +283,7 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 #include <GL/glx.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#undef Status
 #include <cuda_gl_interop.h>
 #include <cuda_runtime_api.h>
 #include <gstnvdsmeta.h>
@@ -309,6 +319,7 @@ struct PreviewOverlays {
   std::optional<hm::preview_overlay::PlayCropperTransform> program_transform;
   float coordinate_width{0.0F};
   float coordinate_height{0.0F};
+  std::string stitched_output_generation;
 };
 
 struct RendererState {
@@ -316,6 +327,7 @@ struct RendererState {
   std::atomic<bool> stopping{false};
   std::atomic<bool> failed{false};
   std::atomic<bool> failure_reported{false};
+  std::atomic<int> render_exception_injection{static_cast<int>(hm::gpu_preview::RenderExceptionInjection::kNone)};
   std::atomic<std::uint64_t> x_error_serial{0};
   std::string channel{"unknown"};
   guint64 window_id{0};
@@ -330,6 +342,8 @@ struct RendererState {
   bool have_caps{false};
   Display* display{nullptr};
   GLXContext context{nullptr};
+  Window cleanup_window{0};
+  Colormap cleanup_colormap{0};
   GLuint texture{0};
   cudaGraphicsResource_t cuda_texture{nullptr};
   cudaStream_t cuda_stream{nullptr};
@@ -342,6 +356,10 @@ struct RendererState {
   GLuint rink_mask_texture{0};
   guint rink_mask_width{0};
   guint rink_mask_height{0};
+  std::string rink_mask_output_generation;
+  guint requested_rink_mask_width{0};
+  guint requested_rink_mask_height{0};
+  std::string requested_rink_mask_output_generation;
   bool rink_mask_failure_reported{false};
   unsigned rink_mask_consecutive_failures{0};
   std::chrono::steady_clock::time_point rink_mask_retry_after{};
@@ -441,22 +459,39 @@ bool cuda_succeeded(GstHmGpuPreviewSink* self, cudaError_t result, const char* o
   std::_Exit(86);
 }
 
-bool make_context_current(GstHmGpuPreviewSink* self) {
+bool make_context_current_on_drawable(GstHmGpuPreviewSink* self, GLXDrawable drawable, const char* failure_message) {
   RendererState* state = self->state;
-  if (!state->display || !state->context || state->window_id == 0)
+  if (!state->display || !state->context || drawable == 0)
     return false;
   const std::uint64_t error_serial = state->x_error_serial.load();
   current_x_error_target = state;
-  const Bool current = glXMakeCurrent(state->display, static_cast<GLXDrawable>(state->window_id), state->context);
+  const Bool current = glXMakeCurrent(state->display, drawable, state->context);
   XSync(state->display, False);
   current_x_error_target = nullptr;
   if (!current || state->x_error_serial.load() != error_serial) {
     if (current)
       glXMakeCurrent(state->display, None, nullptr);
-    post_sink_failure(self, "could not make GLX context current on the preview window");
+    if (failure_message)
+      post_sink_failure(self, failure_message);
     return false;
   }
   return true;
+}
+
+bool make_context_current(GstHmGpuPreviewSink* self) {
+  return make_context_current_on_drawable(
+      self,
+      static_cast<GLXDrawable>(self->state->window_id),
+      "could not make GLX context current on the preview window");
+}
+
+bool make_cleanup_context_current(GstHmGpuPreviewSink* self) {
+  RendererState* state = self->state;
+  if (state->cleanup_window != 0 &&
+      make_context_current_on_drawable(self, static_cast<GLXDrawable>(state->cleanup_window), nullptr)) {
+    return true;
+  }
+  return make_context_current(self);
 }
 
 void release_context(RendererState* state) {
@@ -480,7 +515,7 @@ bool initialize_renderer(GstHmGpuPreviewSink* self) {
   }
   XWindowAttributes attributes{};
   current_x_error_target = state;
-  const Status attributes_status =
+  const int attributes_status =
       XGetWindowAttributes(state->display, static_cast<Window>(state->window_id), &attributes);
   XSync(state->display, False);
   current_x_error_target = nullptr;
@@ -509,6 +544,36 @@ bool initialize_renderer(GstHmGpuPreviewSink* self) {
   if (!visual_compatible || state->x_error_serial.load() != error_serial) {
     XFree(visual);
     post_sink_failure(self, "preview XID visual does not support RGBA GLX rendering");
+    return false;
+  }
+  error_serial = state->x_error_serial.load();
+  current_x_error_target = state;
+  state->cleanup_colormap =
+      XCreateColormap(state->display, RootWindow(state->display, visual->screen), visual->visual, AllocNone);
+  if (state->cleanup_colormap != 0) {
+    XSetWindowAttributes cleanup_attributes{};
+    cleanup_attributes.border_pixel = 0;
+    cleanup_attributes.colormap = state->cleanup_colormap;
+    state->cleanup_window = XCreateWindow(
+        state->display,
+        RootWindow(state->display, visual->screen),
+        0,
+        0,
+        1,
+        1,
+        0,
+        visual->depth,
+        InputOutput,
+        visual->visual,
+        CWBorderPixel | CWColormap,
+        &cleanup_attributes);
+  }
+  XSync(state->display, False);
+  current_x_error_target = nullptr;
+  if (state->cleanup_colormap == 0 || state->cleanup_window == 0 || state->x_error_serial.load() != error_serial) {
+    state->cleanup_window = 0;
+    XFree(visual);
+    post_sink_failure(self, "could not create a private GLX cleanup drawable");
     return false;
   }
   error_serial = state->x_error_serial.load();
@@ -658,6 +723,12 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   auto* frame_meta = static_cast<NvDsFrameMeta*>(batch_meta->frame_meta_list->data);
   if (!frame_meta)
     return overlays;
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+  if (const auto* generation =
+          hm::UserApplicationPayload::get_payload<hm::stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+    overlays.stitched_output_generation = generation->generation();
+  }
+#endif
   const auto* snapshot = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta);
   const auto* attached_transform =
       state->channel == "program" ? hm::preview_overlay::find_playcropper_transform_meta(frame_meta) : nullptr;
@@ -809,8 +880,43 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   return overlays;
 }
 
-bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
+std::optional<std::uint32_t> exact_positive_dimension(float dimension) {
+  const double exact_dimension = static_cast<double>(dimension);
+  if (!std::isfinite(dimension) || dimension <= 0.0F ||
+      exact_dimension > static_cast<double>(std::numeric_limits<std::uint32_t>::max()) ||
+      std::floor(exact_dimension) != exact_dimension) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint32_t>(dimension);
+}
+
+bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
+  const float expected_width_value =
+      overlays.program_transform ? overlays.program_transform->input_width : overlays.coordinate_width;
+  const float expected_height_value =
+      overlays.program_transform ? overlays.program_transform->input_height : overlays.coordinate_height;
+  const auto expected_width = exact_positive_dimension(expected_width_value);
+  const auto expected_height = exact_positive_dimension(expected_height_value);
+  const guint requested_width = expected_width.value_or(0);
+  const guint requested_height = expected_height.value_or(0);
+  const bool requested_artifact_changed =
+      state->requested_rink_mask_output_generation != overlays.stitched_output_generation ||
+      state->requested_rink_mask_width != requested_width || state->requested_rink_mask_height != requested_height;
+  if (requested_artifact_changed) {
+    state->requested_rink_mask_output_generation = overlays.stitched_output_generation;
+    state->requested_rink_mask_width = requested_width;
+    state->requested_rink_mask_height = requested_height;
+    state->rink_mask_failure_reported = false;
+    state->rink_mask_consecutive_failures = 0;
+    state->rink_mask_retry_after = {};
+  }
+  const bool artifact_identity_changed = !expected_width || !expected_height ||
+      state->rink_mask_output_generation != overlays.stitched_output_generation ||
+      (expected_width && state->rink_mask_width != *expected_width) ||
+      (expected_height && state->rink_mask_height != *expected_height);
+  if (artifact_identity_changed)
+    state->rink_mask_dirty = true;
   if (!state->rink_mask_dirty)
     return state->rink_mask_texture != 0;
   const auto now = std::chrono::steady_clock::now();
@@ -828,22 +934,44 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
   }
   state->rink_mask_width = 0;
   state->rink_mask_height = 0;
+  state->rink_mask_output_generation.clear();
   if (state->rink_mask_file.empty()) {
     state->rink_mask_dirty = false;
     state->rink_mask_consecutive_failures = 0;
     return false;
   }
-  const hm::gpu_preview::RinkMaskLoadResult loaded = hm::gpu_preview::load_rink_mask_png(state->rink_mask_file);
-  if (!loaded) {
+  hm::gpu_preview::RinkMaskLoadResult loaded;
+  absl::Status artifact_status;
+  if (!expected_width || !expected_height) {
+    artifact_status = absl::FailedPreconditionError("preview frame has invalid stitched-canvas dimensions");
+  } else if (overlays.stitched_output_generation.empty()) {
+    artifact_status = absl::FailedPreconditionError("preview frame has no stitched-output generation metadata");
+  } else {
+    const std::string game_dir = std::filesystem::path(state->rink_mask_file).parent_path().string();
+    const char* invalidation = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
+    artifact_status = hm::stitching::visit_current_field_mask(
+        game_dir,
+        overlays.stitched_output_generation,
+        invalidation ? invalidation : "",
+        [&](const std::string& validated_path) {
+          loaded = hm::gpu_preview::load_rink_mask_png(validated_path);
+          if (!loaded)
+            return absl::FailedPreconditionError(loaded.message);
+          if (!hm::gpu_preview::rink_mask_dimensions_match(loaded.image, *expected_width, *expected_height)) {
+            return absl::FailedPreconditionError("field mask dimensions do not exactly match the live stitched canvas");
+          }
+          return absl::OkStatus();
+        });
+  }
+  if (!artifact_status.ok()) {
     const unsigned retry_seconds = schedule_retry();
     if (!state->rink_mask_failure_reported) {
       g_printerr(
-          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=%s retry=%us message=%s\n",
+          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=validation-failed retry=%us message=%s\n",
           state->channel.c_str(),
           state->rink_mask_file.c_str(),
-          hm::gpu_preview::rink_mask_load_status_name(loaded.status),
           retry_seconds,
-          loaded.message);
+          artifact_status.ToString().c_str());
       state->rink_mask_failure_reported = true;
     }
     return false;
@@ -886,6 +1014,7 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
   }
   state->rink_mask_width = loaded.image.width;
   state->rink_mask_height = loaded.image.height;
+  state->rink_mask_output_generation = overlays.stitched_output_generation;
   state->rink_mask_dirty = false;
   state->rink_mask_failure_reported = false;
   state->rink_mask_consecutive_failures = 0;
@@ -899,7 +1028,7 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self) {
 
 void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
-  if (!state->show_rink_mask.load() || !ensure_rink_mask_texture(self))
+  if (!state->show_rink_mask.load() || !ensure_rink_mask_texture(self, overlays))
     return;
   std::array<hm::preview_overlay::Point, 4> texture_points = {
       hm::preview_overlay::Point{0.0F, overlays.coordinate_height},
@@ -1039,7 +1168,66 @@ gboolean preview_sink_set_caps(GstBaseSink* base_sink, GstCaps* caps) {
   return TRUE;
 }
 
-GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
+class ScopedBufferMap {
+ public:
+  ScopedBufferMap(GstBuffer* buffer, GstMapFlags flags)
+      : buffer_(buffer), mapped_(gst_buffer_map(buffer, &map_, flags)) {}
+  ~ScopedBufferMap() {
+    reset();
+  }
+  ScopedBufferMap(const ScopedBufferMap&) = delete;
+  ScopedBufferMap& operator=(const ScopedBufferMap&) = delete;
+
+  explicit operator bool() const {
+    return mapped_;
+  }
+  GstMapInfo& map() {
+    return map_;
+  }
+  void reset() {
+    if (mapped_) {
+      gst_buffer_unmap(buffer_, &map_);
+      mapped_ = false;
+    }
+  }
+
+ private:
+  GstBuffer* buffer_{nullptr};
+  GstMapInfo map_{};
+  bool mapped_{false};
+};
+
+class ScopedCurrentContext {
+ public:
+  explicit ScopedCurrentContext(RendererState* state) : state_(state) {}
+  ~ScopedCurrentContext() {
+    if (state_)
+      release_context(state_);
+  }
+  ScopedCurrentContext(const ScopedCurrentContext&) = delete;
+  ScopedCurrentContext& operator=(const ScopedCurrentContext&) = delete;
+
+ private:
+  RendererState* state_{nullptr};
+};
+
+void inject_render_exception(GstHmGpuPreviewSink* self) {
+  const auto injection =
+      static_cast<hm::gpu_preview::RenderExceptionInjection>(self->state->render_exception_injection.exchange(
+          static_cast<int>(hm::gpu_preview::RenderExceptionInjection::kNone)));
+  switch (injection) {
+    case hm::gpu_preview::RenderExceptionInjection::kNone:
+      return;
+    case hm::gpu_preview::RenderExceptionInjection::kBadAlloc:
+      throw std::bad_alloc();
+    case hm::gpu_preview::RenderExceptionInjection::kLengthError:
+      throw std::length_error("injected GPU preview render length failure");
+    case hm::gpu_preview::RenderExceptionInjection::kUnknown:
+      throw 7;
+  }
+}
+
+GstFlowReturn preview_sink_render_impl(GstBaseSink* base_sink, GstBuffer* buffer) {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
   RendererState* state = self->state;
   if (state->failed.load())
@@ -1055,12 +1243,13 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
     return GST_FLOW_ERROR;
   if (!initialize_renderer(self))
     return GST_FLOW_ERROR;
-  GstMapInfo map{};
-  if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+  const PreviewOverlays overlays = collect_preview_overlays(self, buffer);
+  ScopedBufferMap mapping(buffer, GST_MAP_READ);
+  if (!mapping) {
     post_sink_failure(self, "could not inspect the NvBufSurface descriptor");
     return GST_FLOW_ERROR;
   }
-  auto* surface = reinterpret_cast<NvBufSurface*>(map.data);
+  auto* surface = reinterpret_cast<NvBufSurface*>(mapping.map().data);
   bool valid = surface && surface->batchSize >= 1 && surface->numFilled == 1 && surface->surfaceList &&
       surface->gpuId == state->gpu_id && surface->memType == NVBUF_MEM_CUDA_DEVICE;
   NvBufSurfaceParams* params = valid ? &surface->surfaceList[0] : nullptr;
@@ -1068,19 +1257,14 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
       params->colorFormat == NVBUF_COLOR_FORMAT_RGBA && params->width == state->negotiated_width &&
       params->height == state->negotiated_height && params->pitch >= state->negotiated_width * 4U;
   if (!valid) {
-    gst_buffer_unmap(buffer, &map);
     post_sink_failure(self, "preview received an invalid or non-device RGBA NvBufSurface");
     return GST_FLOW_ERROR;
   }
-  const PreviewOverlays overlays = collect_preview_overlays(self, buffer);
-  if (!make_context_current(self)) {
-    gst_buffer_unmap(buffer, &map);
+  if (!make_context_current(self))
     return GST_FLOW_ERROR;
-  }
+  ScopedCurrentContext current_context(state);
   const cudaError_t map_result = cudaGraphicsMapResources(1, &state->cuda_texture, state->cuda_stream);
   if (!cuda_succeeded(self, map_result, "cudaGraphicsMapResources")) {
-    gst_buffer_unmap(buffer, &map);
-    release_context(state);
     return GST_FLOW_ERROR;
   }
   cudaArray_t texture_array = nullptr;
@@ -1108,7 +1292,7 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
   wait_for_copy_or_terminate(self);
   // The explicit completion event above is the source NvBufSurface lifetime
   // barrier. No pixel plane has been mapped to host memory.
-  gst_buffer_unmap(buffer, &map);
+  mapping.reset();
   if (!state->failed.load()) {
     draw_texture(self, overlays);
     const guint64 generation = state->generation.load();
@@ -1117,8 +1301,25 @@ GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) {
       post_preview_status(GST_ELEMENT(self), state->channel.c_str(), "ready", generation, "first GPU frame presented");
     }
   }
-  release_context(state);
   return state->failed.load() ? GST_FLOW_ERROR : GST_FLOW_OK;
+}
+
+GstFlowReturn preview_sink_render(GstBaseSink* base_sink, GstBuffer* buffer) noexcept {
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(base_sink);
+  try {
+    inject_render_exception(self);
+    return preview_sink_render_impl(base_sink, buffer);
+  } catch (const std::bad_alloc&) {
+    post_sink_failure(self, "GPU preview render allocation failed");
+  } catch (const std::length_error&) {
+    post_sink_failure(self, "GPU preview render size exceeded its bounded container capacity");
+  } catch (const std::exception& error) {
+    g_printerr("HSTREAM_PREVIEW_RENDER_EXCEPTION channel=%s message=%s\n", self->state->channel.c_str(), error.what());
+    post_sink_failure(self, "GPU preview render failed with a C++ exception");
+  } catch (...) {
+    post_sink_failure(self, "GPU preview render failed with an unknown exception");
+  }
+  return GST_FLOW_ERROR;
 }
 
 gboolean preview_sink_unlock(GstBaseSink* base_sink) {
@@ -1136,7 +1337,7 @@ gboolean preview_sink_unlock_stop(GstBaseSink* base_sink) {
 bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
   RendererState* state = self->state;
   if (state->context) {
-    if (!make_context_current(self))
+    if (!make_cleanup_context_current(self))
       return false;
     glFinish();
     if (!cuda_succeeded(self, cudaSetDevice(state->gpu_id), "cudaSetDevice during preview cleanup")) {
@@ -1170,6 +1371,12 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
   if (state->display && state->context)
     glXDestroyContext(state->display, state->context);
   state->context = nullptr;
+  if (state->display && state->cleanup_window)
+    XDestroyWindow(state->display, state->cleanup_window);
+  state->cleanup_window = 0;
+  if (state->display && state->cleanup_colormap)
+    XFreeColormap(state->display, state->cleanup_colormap);
+  state->cleanup_colormap = 0;
   if (state->display)
     XCloseDisplay(state->display);
   state->display = nullptr;
@@ -1224,6 +1431,9 @@ void preview_sink_set_property(GObject* object, guint property_id, const GValue*
     case kSinkPropertyRinkMaskFile:
       state->rink_mask_file = g_value_get_string(value) ? g_value_get_string(value) : "";
       state->rink_mask_dirty = true;
+      state->requested_rink_mask_output_generation.clear();
+      state->requested_rink_mask_width = 0;
+      state->requested_rink_mask_height = 0;
       state->rink_mask_failure_reported = false;
       state->rink_mask_consecutive_failures = 0;
       state->rink_mask_retry_after = {};
@@ -1281,7 +1491,10 @@ void preview_sink_finalize(GObject* object) {
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(object);
   {
     std::lock_guard<std::mutex> lock(self->state->mutex);
-    destroy_renderer_locked(self);
+    if (!destroy_renderer_locked(self)) {
+      g_printerr("HSTREAM_PREVIEW_FATAL message=renderer resources remained live during finalization\n");
+      std::_Exit(87);
+    }
   }
   delete self->state;
   self->state = nullptr;
@@ -1534,7 +1747,7 @@ bool capture_presented_frame(
   XWindowAttributes attributes{};
   const std::uint64_t error_serial = state->x_error_serial.load();
   current_x_error_target = state;
-  const Status attributes_status =
+  const int attributes_status =
       XGetWindowAttributes(state->display, static_cast<Window>(state->window_id), &attributes);
   XSync(state->display, False);
   current_x_error_target = nullptr;
@@ -1644,6 +1857,34 @@ bool capture_presented_frame(
   if (error)
     *error = "GPU preview renderer is unavailable on this platform";
   return false;
+#endif
+}
+
+void set_render_exception_injection_for_test(GstElement* sink, RenderExceptionInjection injection) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  self->state->render_exception_injection = static_cast<int>(injection);
+#else
+  (void)sink;
+  (void)injection;
+#endif
+}
+
+bool renderer_resources_released_for_test(GstElement* sink) {
+#if defined(__x86_64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return false;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  const RendererState* state = self->state;
+  return !state->display && !state->context && state->cleanup_window == 0 && state->cleanup_colormap == 0 &&
+      state->texture == 0 && state->rink_mask_texture == 0 && !state->cuda_texture && !state->cuda_stream &&
+      !state->copy_complete;
+#else
+  (void)sink;
+  return true;
 #endif
 }
 

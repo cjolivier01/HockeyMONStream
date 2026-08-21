@@ -108,30 +108,38 @@ struct OverlaySnapshotProbeState {
   std::atomic_bool failure_reported{false};
 };
 
-GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpointer user_data) {
-  if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0)
+GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept {
+  try {
+    if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0)
+      return GST_PAD_PROBE_OK;
+    GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+    NvDsBatchMeta* batch_meta = buffer ? gst_buffer_get_nvds_batch_meta(buffer) : nullptr;
+    if (!batch_meta)
+      return GST_PAD_PROBE_OK;
+    bool snapshot_failed = false;
+    for (NvDsMetaList* item = batch_meta->frame_meta_list; item; item = item->next) {
+      auto* frame_meta = static_cast<NvDsFrameMeta*>(item->data);
+      if (!frame_meta)
+        continue;
+      // Only immutable metadata crosses the tee. Playcropper attaches its
+      // transform to the copied metadata on the Program output buffer after the
+      // transform is known, so the Stitched branch cannot race a mutation.
+      const bool snapshot_ready = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) ||
+          hm::preview_overlay::add_overlay_snapshot_meta(frame_meta);
+      snapshot_failed = snapshot_failed || !snapshot_ready;
+    }
+    auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
+    if (snapshot_failed && state && !state->failure_reported.exchange(true)) {
+      g_printerr("Could not snapshot pre-playcropper metadata for GPU preview overlays\n");
+    }
     return GST_PAD_PROBE_OK;
-  GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-  NvDsBatchMeta* batch_meta = buffer ? gst_buffer_get_nvds_batch_meta(buffer) : nullptr;
-  if (!batch_meta)
+  } catch (const std::exception& error) {
+    g_printerr("Could not snapshot GPU preview overlays: %s\n", error.what());
     return GST_PAD_PROBE_OK;
-  bool snapshot_failed = false;
-  for (NvDsMetaList* item = batch_meta->frame_meta_list; item; item = item->next) {
-    auto* frame_meta = static_cast<NvDsFrameMeta*>(item->data);
-    if (!frame_meta)
-      continue;
-    // Only immutable metadata crosses the tee. Playcropper attaches its
-    // transform to the copied metadata on the Program output buffer after the
-    // transform is known, so the Stitched branch cannot race a mutation.
-    const bool snapshot_ready = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) ||
-        hm::preview_overlay::add_overlay_snapshot_meta(frame_meta);
-    snapshot_failed = snapshot_failed || !snapshot_ready;
+  } catch (...) {
+    g_printerr("Could not snapshot GPU preview overlays: unknown failure\n");
+    return GST_PAD_PROBE_OK;
   }
-  auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
-  if (snapshot_failed && state && !state->failure_reported.exchange(true)) {
-    g_printerr("Could not snapshot pre-playcropper metadata for GPU preview overlays\n");
-  }
-  return GST_PAD_PROBE_OK;
 }
 
 guint stitch_frame_completion_timeout_ms() {

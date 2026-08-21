@@ -140,6 +140,26 @@ int main(int argc, char** argv) {
     nvds_destroy_batch_meta(batch_meta);
     return 5;
   }
+  for (const auto injection : {
+           hm::preview_overlay::OverlaySnapshotExceptionInjection::kBadAlloc,
+           hm::preview_overlay::OverlaySnapshotExceptionInjection::kLengthError,
+           hm::preview_overlay::OverlaySnapshotExceptionInjection::kUnknown,
+       }) {
+    NvDsFrameMeta injected_frame{};
+    injected_frame.base_meta.batch_meta = batch_meta;
+    if (hm::preview_overlay::add_overlay_snapshot_meta(&injected_frame, injection) ||
+        hm::preview_overlay::overlay_snapshot_copy_succeeds_for_test(injection)) {
+      std::cerr << "Preview-overlay metadata exception escaped or reported success\n";
+      nvds_destroy_batch_meta(batch_meta);
+      return 5;
+    }
+  }
+  if (!hm::preview_overlay::overlay_snapshot_copy_succeeds_for_test(
+          hm::preview_overlay::OverlaySnapshotExceptionInjection::kNone)) {
+    std::cerr << "Preview-overlay metadata copy boundary rejected a valid snapshot\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 5;
+  }
 
   GstBuffer* tee_input = gst_buffer_new();
   NvDsMeta* gst_meta = tee_input

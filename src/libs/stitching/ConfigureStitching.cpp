@@ -1433,13 +1433,16 @@ absl::Status validate_stitched_output_generation(
   return validate_stitching_generation_owner(*config, expected_invalidation_id);
 }
 
-absl::StatusOr<cv::Mat> load_field_mask(
+absl::Status visit_current_field_mask(
     const std::string& game_dir,
     const std::string& expected_output_generation,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::function<absl::Status(const std::string& mask_path)>& consumer) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
+  if (!consumer)
+    return absl::InvalidArgumentError("A field-mask consumer is required");
 
   const fs::path root(game_dir);
   auto hugin_lock = HuginProject::RecoverAndLock(root);
@@ -1484,34 +1487,47 @@ absl::StatusOr<cv::Mat> load_field_mask(
     return absl::FailedPreconditionError("Field mask is empty or unreadable: " + mask_path.string());
   }
 
-  if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
-    const long delay_ms = std::strtol(delay, nullptr, 10);
-    if (delay_ms > 0)
-      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-  }
-  cv::Mat mask = cv::imread(mask_path.string(), cv::IMREAD_GRAYSCALE);
-  if (mask.empty()) {
-    return absl::InvalidArgumentError("Field mask could not be decoded: " + mask_path.string());
-  }
-  if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension(); max_canvas_dimension.has_value()) {
-    const CanvasSize mask_size{
-        .width = static_cast<size_t>(mask.cols),
-        .height = static_cast<size_t>(mask.rows),
-    };
-    if (canvas_exceeds_max_dimension(mask_size, *max_canvas_dimension)) {
-      std::cout << "Field mask canvas " << mask_size.width << "x" << mask_size.height
-                << " exceeds live-stitch max dimension " << *max_canvas_dimension << "; regenerating" << std::endl;
-      return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
-    }
-  }
-  auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
-  if (canvas_size.ok()) {
-    if (mask.cols != static_cast<int>(canvas_size->width) || mask.rows != static_cast<int>(canvas_size->height)) {
-      std::cout << "Field mask size " << mask.cols << "x" << mask.rows << " does not match stitched canvas "
-                << canvas_size->width << "x" << canvas_size->height << "; regenerating" << std::endl;
-      return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
-    }
-  }
+  return consumer(mask_path.string());
+}
+
+absl::StatusOr<cv::Mat> load_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
+  cv::Mat mask;
+  const absl::Status visit_status = visit_current_field_mask(
+      game_dir, expected_output_generation, expected_invalidation_id, [&](const std::string& mask_path) {
+        if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
+          const long delay_ms = std::strtol(delay, nullptr, 10);
+          if (delay_ms > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        }
+        mask = cv::imread(mask_path, cv::IMREAD_GRAYSCALE);
+        if (mask.empty())
+          return absl::InvalidArgumentError("Field mask could not be decoded: " + mask_path);
+        if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension(); max_canvas_dimension.has_value()) {
+          const CanvasSize mask_size{
+              .width = static_cast<size_t>(mask.cols),
+              .height = static_cast<size_t>(mask.rows),
+          };
+          if (canvas_exceeds_max_dimension(mask_size, *max_canvas_dimension)) {
+            std::cout << "Field mask canvas " << mask_size.width << "x" << mask_size.height
+                      << " exceeds live-stitch max dimension " << *max_canvas_dimension << "; regenerating"
+                      << std::endl;
+            return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
+          }
+        }
+        auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
+        if (canvas_size.ok() &&
+            (mask.cols != static_cast<int>(canvas_size->width) || mask.rows != static_cast<int>(canvas_size->height))) {
+          std::cout << "Field mask size " << mask.cols << "x" << mask.rows << " does not match stitched canvas "
+                    << canvas_size->width << "x" << canvas_size->height << "; regenerating" << std::endl;
+          return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
+        }
+        return absl::OkStatus();
+      });
+  if (!visit_status.ok())
+    return visit_status;
   return mask;
 }
 

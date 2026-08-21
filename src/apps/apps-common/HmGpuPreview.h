@@ -10,6 +10,13 @@
 
 namespace hm::gpu_preview {
 
+enum class RenderExceptionInjection {
+  kNone,
+  kBadAlloc,
+  kLengthError,
+  kUnknown,
+};
+
 inline constexpr std::size_t kMaximumPresentedFrameCaptureBytes = 32U * 1024U * 1024U;
 
 // Registers hmpreviewisolation and hmgpupreviewsink as process-local
@@ -50,5 +57,10 @@ bool capture_presented_frame(
     unsigned* width,
     unsigned* height,
     std::string* error);
+
+// Installs a one-shot failure used to verify the GStreamer render ABI
+// boundary. Production code never enables this hook.
+void set_render_exception_injection_for_test(GstElement* sink, RenderExceptionInjection injection);
+bool renderer_resources_released_for_test(GstElement* sink);
 
 } // namespace hm::gpu_preview

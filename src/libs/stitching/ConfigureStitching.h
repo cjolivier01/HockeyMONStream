@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hstream/src/libs/stitching/FieldMaskArtifact.h"
+
 /* clang-format off */
 #include "src/libs/common/Status.h"
 /* clang-format on */

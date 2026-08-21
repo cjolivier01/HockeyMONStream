@@ -47,6 +47,13 @@ struct OverlaySnapshot {
   std::vector<NvOSD_CircleParams> play_circles;
 };
 
+enum class OverlaySnapshotExceptionInjection {
+  kNone,
+  kBadAlloc,
+  kLengthError,
+  kUnknown,
+};
+
 Point input_to_output(const PlayCropperTransform& transform, Point point);
 Point metadata_to_output(const PlayCropperTransform& transform, Point point);
 Point output_to_input(const PlayCropperTransform& transform, Point point);
@@ -61,7 +68,12 @@ bool add_playcropper_transform_meta(NvDsFrameMeta* frame_meta, const PlayCropper
 const PlayCropperTransform* find_playcropper_transform_meta(const NvDsFrameMeta* frame_meta);
 
 NvDsMetaType overlay_snapshot_meta_type();
-bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta);
+bool add_overlay_snapshot_meta(
+    NvDsFrameMeta* frame_meta,
+    OverlaySnapshotExceptionInjection injection = OverlaySnapshotExceptionInjection::kNone) noexcept;
 const OverlaySnapshot* find_overlay_snapshot_meta(const NvDsFrameMeta* frame_meta);
+
+// Exercises the same noexcept copy boundary installed on NvDsUserMeta.
+bool overlay_snapshot_copy_succeeds_for_test(OverlaySnapshotExceptionInjection injection) noexcept;
 
 } // namespace hm::preview_overlay

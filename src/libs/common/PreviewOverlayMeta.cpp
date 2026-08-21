@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 
 namespace hm::preview_overlay {
 namespace {
@@ -33,19 +34,41 @@ void release_transform_meta(gpointer data, gpointer) {
   user_meta->user_meta_data = nullptr;
 }
 
-gpointer copy_overlay_snapshot_meta(gpointer data, gpointer) {
-  auto* user_meta = static_cast<NvDsUserMeta*>(data);
-  auto* snapshot = user_meta ? static_cast<const OverlaySnapshot*>(user_meta->user_meta_data) : nullptr;
-  if (!snapshot)
-    return nullptr;
+void inject_overlay_snapshot_exception(OverlaySnapshotExceptionInjection injection) {
+  switch (injection) {
+    case OverlaySnapshotExceptionInjection::kNone:
+      return;
+    case OverlaySnapshotExceptionInjection::kBadAlloc:
+      throw std::bad_alloc();
+    case OverlaySnapshotExceptionInjection::kLengthError:
+      throw std::length_error("injected preview-overlay snapshot length failure");
+    case OverlaySnapshotExceptionInjection::kUnknown:
+      throw 7;
+  }
+}
+
+OverlaySnapshot* copy_overlay_snapshot(
+    const OverlaySnapshot& snapshot,
+    OverlaySnapshotExceptionInjection injection) noexcept {
   try {
-    return new OverlaySnapshot(*snapshot);
-  } catch (const std::bad_alloc&) {
+    inject_overlay_snapshot_exception(injection);
+    return new OverlaySnapshot(snapshot);
+  } catch (const std::exception&) {
+    return nullptr;
+  } catch (...) {
     return nullptr;
   }
 }
 
-void release_overlay_snapshot_meta(gpointer data, gpointer) {
+gpointer copy_overlay_snapshot_meta(gpointer data, gpointer) noexcept {
+  auto* user_meta = static_cast<NvDsUserMeta*>(data);
+  auto* snapshot = user_meta ? static_cast<const OverlaySnapshot*>(user_meta->user_meta_data) : nullptr;
+  if (!snapshot)
+    return nullptr;
+  return copy_overlay_snapshot(*snapshot, OverlaySnapshotExceptionInjection::kNone);
+}
+
+void release_overlay_snapshot_meta(gpointer data, gpointer) noexcept {
   auto* user_meta = static_cast<NvDsUserMeta*>(data);
   if (!user_meta)
     return;
@@ -158,12 +181,13 @@ NvDsMetaType overlay_snapshot_meta_type() {
   return type;
 }
 
-bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta) {
+bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta, OverlaySnapshotExceptionInjection injection) noexcept {
   if (!frame_meta || !frame_meta->base_meta.batch_meta)
     return false;
-  if (find_overlay_snapshot_meta(frame_meta))
-    return true;
   try {
+    if (find_overlay_snapshot_meta(frame_meta))
+      return true;
+    inject_overlay_snapshot_exception(injection);
     auto snapshot = std::make_unique<OverlaySnapshot>();
     snapshot->coordinate_width = static_cast<float>(frame_meta->source_frame_width);
     snapshot->coordinate_height = static_cast<float>(frame_meta->source_frame_height);
@@ -199,7 +223,9 @@ bool add_overlay_snapshot_meta(NvDsFrameMeta* frame_meta) {
     user_meta->base_meta.release_func = release_overlay_snapshot_meta;
     nvds_add_user_meta_to_frame(frame_meta, user_meta);
     return true;
-  } catch (const std::bad_alloc&) {
+  } catch (const std::exception&) {
+    return false;
+  } catch (...) {
     return false;
   }
 }
@@ -213,6 +239,12 @@ const OverlaySnapshot* find_overlay_snapshot_meta(const NvDsFrameMeta* frame_met
       return static_cast<const OverlaySnapshot*>(user_meta->user_meta_data);
   }
   return nullptr;
+}
+
+bool overlay_snapshot_copy_succeeds_for_test(OverlaySnapshotExceptionInjection injection) noexcept {
+  const OverlaySnapshot snapshot;
+  std::unique_ptr<OverlaySnapshot> copied(copy_overlay_snapshot(snapshot, injection));
+  return copied != nullptr;
 }
 
 } // namespace hm::preview_overlay

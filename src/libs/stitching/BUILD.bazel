@@ -43,6 +43,7 @@ cc_library(
     "CalibrationCompletion.h",
     "CalibrationModels.h",
     "ConfigureStitching.h",
+    "FieldMaskArtifact.h",
     "Orientation.h",
     "ScoreboardSelector.h",
     "StitchedOutputGenerationPayload.h",
