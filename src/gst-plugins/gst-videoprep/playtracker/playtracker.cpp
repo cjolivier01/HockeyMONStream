@@ -83,16 +83,16 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     std::lock_guard<std::mutex> lk(context_mu_);
     HM_RETURN_IF_ERROR(ReloadContextFromConfig());
   }
+  const absl::Status status = Super::PostCapsInit(params);
+  if (!status.ok()) {
+    return status;
+  }
   if (!telemetry_csv_dir_.empty()) {
     HM_RETURN_IF_ERROR(telemetry_csv_.Start(
         telemetry_csv_dir_, play_tracker_config_source_file_, init_params_.play_tracker_config_file));
     std::cout << "Playtracker telemetry CSV export: " << telemetry_csv_.output_manifest() << std::endl;
   }
-  const absl::Status status = Super::PostCapsInit(params);
-  if (!status.ok()) {
-    telemetry_csv_.Stop();
-  }
-  return status;
+  return absl::OkStatus();
 }
 
 absl::Status PlayTrackerPriv::ReloadContextFromConfig() {
@@ -156,18 +156,17 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
   bool reload_context = false;
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
-  auto apply_camera_geometry = [this](
-                                   std::optional<float> angle,
-                                   std::optional<float> dynamic_acceleration_scaling,
-                                   bool apply_to_fast_box,
-                                   bool apply_to_follower_box) {
+  auto apply_camera_geometry_locked = [this](
+                                          std::optional<float> angle,
+                                          std::optional<float> dynamic_acceleration_scaling,
+                                          bool apply_to_fast_box,
+                                          bool apply_to_follower_box) {
     DsPlayTrackerRuntimeTuning tuning;
     tuning.apply_to_fast_box = apply_to_fast_box;
     tuning.apply_to_follower_box = apply_to_follower_box;
     tuning.update_motion_tuning = false;
     tuning.arena_angle_from_vertical = angle;
     tuning.dynamic_acceleration_scaling = dynamic_acceleration_scaling;
-    std::lock_guard<std::mutex> lk(context_mu_);
     return !pt_context_ || DsPlayTrackerCtxApplyRuntimeTuning(pt_context_, tuning).ok();
   };
   if (key == "show") {
@@ -185,7 +184,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    if (!apply_camera_geometry(angle, std::nullopt, true, true)) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    if (!apply_camera_geometry_locked(angle, std::nullopt, true, true)) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
@@ -196,7 +196,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    if (!apply_camera_geometry(0.5f * (angle + fixed_edge_rotation_angle_right_), std::nullopt, true, true)) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    if (!apply_camera_geometry_locked(0.5f * (angle + fixed_edge_rotation_angle_right_), std::nullopt, true, true)) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
@@ -206,7 +207,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &angle)) {
       return false;
     }
-    if (!apply_camera_geometry(0.5f * (fixed_edge_rotation_angle_left_ + angle), std::nullopt, true, true)) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    if (!apply_camera_geometry_locked(0.5f * (fixed_edge_rotation_angle_left_ + angle), std::nullopt, true, true)) {
       return false;
     }
     fixed_edge_rotation_angle_right_ = angle;
@@ -216,7 +218,8 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     if (!parse_finite_float(prop.value, &dynamic_acceleration_scaling)) {
       return false;
     }
-    if (!apply_camera_geometry(std::nullopt, dynamic_acceleration_scaling, false, true)) {
+    std::lock_guard<std::mutex> lk(context_mu_);
+    if (!apply_camera_geometry_locked(std::nullopt, dynamic_acceleration_scaling, false, true)) {
       return false;
     }
     dynamic_acceleration_scaling_ = dynamic_acceleration_scaling;
@@ -283,7 +286,7 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
     prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
     frame_counter_ = 0;
     ++telemetry_seek_epoch_;
-    telemetry_csv_.TryRecordConfigEvent(
+    telemetry_csv_.TryRecordDiscontinuity(
         {"seek", "flush-stop", std::to_string(telemetry_seek_epoch_), /*artifact_stem=*/{}, /*artifact_contents=*/{}});
     return handled;
   }

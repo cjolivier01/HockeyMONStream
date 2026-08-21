@@ -143,8 +143,11 @@ absl::Status PlayTrackerTelemetryCsv::Start(
     return absl::InvalidArgumentError("playtracker telemetry queue capacity must be positive");
   }
 
+  ResetOutputPaths();
   queue_capacity_ = queue_capacity;
-  next_sample_id_.store(0, std::memory_order_release);
+  frame_id_high_watermark_.store(0, std::memory_order_release);
+  attempted_samples_.store(0, std::memory_order_release);
+  discontinuity_gaps_.store(0, std::memory_order_release);
   dropped_samples_.store(0, std::memory_order_release);
   dropped_config_events_.store(0, std::memory_order_release);
   config_event_sequence_ = 0;
@@ -157,6 +160,7 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   const absl::Status open_status = OpenOutputs(output_directory, source_config_file, effective_config_file);
   if (!open_status.ok()) {
     CloseOutputs();
+    RemoveIncompleteOutputs();
     return open_status;
   }
 
@@ -167,19 +171,32 @@ absl::Status PlayTrackerTelemetryCsv::Start(
                  << csv_string(source_config_filename_) << '\n';
   if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
     CloseOutputs();
+    RemoveIncompleteOutputs();
     return absl::InternalError("could not initialize playtracker telemetry CSV headers");
   }
 
   WriteManifest(false);
   if (writer_failed_) {
     CloseOutputs();
+    RemoveIncompleteOutputs();
     return absl::InternalError("could not write initial playtracker telemetry manifest");
   }
   {
     std::lock_guard<std::mutex> lock(mutex_);
     active_ = true;
   }
-  writer_thread_ = std::thread(&PlayTrackerTelemetryCsv::WriterLoop, this);
+  try {
+    writer_thread_ = std::thread(&PlayTrackerTelemetryCsv::WriterLoop, this);
+  } catch (const std::exception& error) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      active_ = false;
+      queue_.clear();
+    }
+    CloseOutputs();
+    RemoveIncompleteOutputs();
+    return absl::ResourceExhaustedError(absl::StrCat("could not start telemetry writer thread: ", error.what()));
+  }
   return absl::OkStatus();
 }
 
@@ -201,6 +218,12 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
   if (error) {
     return absl::InvalidArgumentError(
         absl::StrCat("could not normalize playtracker telemetry directory: ", error.message()));
+  }
+
+  const std::string source_contents = ReadTelemetryConfigArtifact(source_config_file);
+  const std::string effective_contents = ReadTelemetryConfigArtifact(effective_config_file);
+  if (source_contents.empty() || effective_contents.empty()) {
+    return absl::InvalidArgumentError("could not read non-empty playtracker source/effective configuration");
   }
 
   const std::vector<std::pair<std::string, std::string>> artifact_names = {
@@ -316,11 +339,6 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
     return absl::InternalError(absl::StrCat("could not open playtracker telemetry outputs in ", output_directory_));
   }
 
-  const std::string source_contents = ReadTelemetryConfigArtifact(source_config_file);
-  const std::string effective_contents = ReadTelemetryConfigArtifact(effective_config_file);
-  if (source_contents.empty() || effective_contents.empty()) {
-    return absl::InvalidArgumentError("could not read non-empty playtracker source/effective configuration");
-  }
   if (!write_file(directory / source_config_filename_, source_contents) ||
       !write_file(directory / effective_config_filename_, effective_contents)) {
     return absl::InternalError("could not preserve playtracker telemetry configuration provenance");
@@ -361,11 +379,14 @@ bool PlayTrackerTelemetryCsv::TryEnqueue(TelemetrySample sample) {
   if (!active_ || stopping_) {
     return false;
   }
+  // Frame identity follows attempted input samples, not successful writes.
+  // Reserving before admission leaves a detectable numeric gap on overflow.
+  const uint64_t sample_id = frame_id_high_watermark_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  attempted_samples_.fetch_add(1, std::memory_order_acq_rel);
   if (queue_.size() >= queue_capacity_) {
     dropped_samples_.fetch_add(1, std::memory_order_acq_rel);
     return false;
   }
-  const uint64_t sample_id = next_sample_id_.fetch_add(1, std::memory_order_acq_rel) + 1;
   queue_.emplace_back(QueuedSample{sample_id, std::move(sample)});
   ready_.notify_one();
   return true;
@@ -380,7 +401,27 @@ bool PlayTrackerTelemetryCsv::TryRecordConfigEvent(TelemetryConfigEvent event) {
     dropped_config_events_.fetch_add(1, std::memory_order_acq_rel);
     return false;
   }
-  queue_.emplace_back(QueuedConfigEvent{next_sample_id_.load(std::memory_order_acquire) + 1, std::move(event)});
+  queue_.emplace_back(
+      QueuedConfigEvent{frame_id_high_watermark_.load(std::memory_order_acquire) + 1, std::move(event)});
+  ready_.notify_one();
+  return true;
+}
+
+bool PlayTrackerTelemetryCsv::TryRecordDiscontinuity(TelemetryConfigEvent event) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_ || stopping_) {
+    return false;
+  }
+  // No row may occupy this ID. The next accepted sample therefore cannot be
+  // interpreted as adjacent to the pre-seek timeline.
+  frame_id_high_watermark_.fetch_add(1, std::memory_order_acq_rel);
+  discontinuity_gaps_.fetch_add(1, std::memory_order_acq_rel);
+  if (queue_.size() >= queue_capacity_) {
+    dropped_config_events_.fetch_add(1, std::memory_order_acq_rel);
+    return false;
+  }
+  queue_.emplace_back(
+      QueuedConfigEvent{frame_id_high_watermark_.load(std::memory_order_acquire) + 1, std::move(event)});
   ready_.notify_one();
   return true;
 }
@@ -485,7 +526,12 @@ void PlayTrackerTelemetryCsv::WriteManifest(bool complete) {
            << "  \"output_directory\": " << json_string(output_directory_) << ",\n"
            << "  \"completed\": " << (complete ? "true" : "false") << ",\n"
            << "  \"writer_failed\": " << (writer_failed_ ? "true" : "false") << ",\n"
-           << "  \"samples_written_or_queued\": " << next_sample_id_.load(std::memory_order_acquire) << ",\n"
+           << "  \"frame_id_high_watermark\": " << frame_id_high_watermark_.load(std::memory_order_acquire) << ",\n"
+           << "  \"samples_attempted\": " << attempted_samples_.load(std::memory_order_acquire) << ",\n"
+           << "  \"samples_enqueued\": "
+           << attempted_samples_.load(std::memory_order_acquire) - dropped_samples_.load(std::memory_order_acquire)
+           << ",\n"
+           << "  \"discontinuity_gaps\": " << discontinuity_gaps_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_samples\": " << dropped_samples_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_config_events\": " << dropped_config_events_.load(std::memory_order_acquire) << ",\n"
            << "  \"performance_contract\": \"metadata-only; no video-frame mapping or CPU pixel conversion\",\n"
@@ -500,8 +546,9 @@ void PlayTrackerTelemetryCsv::WriteManifest(bool complete) {
            << "    \"camera_fast_csv\": {\"file\": " << json_string(camera_fast_filename_)
            << ", \"header\": false, \"columns\": [\"Frame\",\"BBox_X\",\"BBox_Y\",\"BBox_W\",\"BBox_H\"], "
               "\"policy_role\": \"fast\"},\n"
-           << "    \"frame_identity\": \"Frame is a monotonically assigned export Sample shared by all three HM CSVs; "
-              "native source/frame/PTS identity is in the frame-index sidecar\"\n"
+           << "    \"frame_identity\": \"Frame is a monotonic attempted-sample ID shared by all three HM CSVs; "
+              "queue drops, seeks, and missing schema rows leave gaps that split DriveGPT windows; native "
+              "source/frame/PTS identity is in the frame-index sidecar\"\n"
            << "  },\n"
            << "  \"sidecars\": {\"frame_index\": " << json_string(frame_index_filename_)
            << ", \"config_events\": " << json_string(config_events_filename_) << "},\n"
@@ -523,6 +570,45 @@ void PlayTrackerTelemetryCsv::CloseOutputs() {
   camera_fast_.close();
   frame_index_.close();
   config_events_.close();
+}
+
+void PlayTrackerTelemetryCsv::RemoveIncompleteOutputs() {
+  if (output_directory_.empty()) {
+    return;
+  }
+  const fs::path directory(output_directory_);
+  const std::vector<std::string> filenames = {
+      tracking_filename_,
+      camera_filename_,
+      camera_fast_filename_,
+      frame_index_filename_,
+      config_events_filename_,
+      source_config_filename_,
+      effective_config_filename_,
+  };
+  std::error_code error;
+  for (const std::string& filename : filenames) {
+    if (!filename.empty()) {
+      fs::remove(directory / filename, error);
+      error.clear();
+    }
+  }
+  if (!manifest_path_.empty()) {
+    fs::remove(manifest_path_, error);
+  }
+}
+
+void PlayTrackerTelemetryCsv::ResetOutputPaths() {
+  output_directory_.clear();
+  suffix_.clear();
+  manifest_path_.clear();
+  tracking_filename_.clear();
+  camera_filename_.clear();
+  camera_fast_filename_.clear();
+  frame_index_filename_.clear();
+  config_events_filename_.clear();
+  source_config_filename_.clear();
+  effective_config_filename_.clear();
 }
 
 } // namespace hm::playtracker

@@ -1,0 +1,140 @@
+diff --git a/hmlib/camera/camera_gpt_dataset.py b/hmlib/camera/camera_gpt_dataset.py
+index 010ba7a5..26d443db 100644
+--- a/hmlib/camera/camera_gpt_dataset.py
++++ b/hmlib/camera/camera_gpt_dataset.py
+@@ -130,10 +130,22 @@ def scan_game_max_xy(
+     return max_x, max_y
+
+
++def _contiguous_frame_runs(frames: list[int]) -> list[list[int]]:
++    """Split sorted frame IDs wherever numeric timeline adjacency is lost."""
++    runs: list[list[int]] = []
++    for frame in frames:
++        if not runs or frame != runs[-1][-1] + 1:
++            runs.append([frame])
++        else:
++            runs[-1].append(frame)
++    return runs
++
++
+ @dataclass
+ class _LoadedGame:
+     game_id: str
+     frames: list[int]
++    frame_runs: list[list[int]]
+     tracks_by_frame: Dict[int, np.ndarray]
+     cam_slow_tlwh_by_frame: Dict[int, np.ndarray]  # normalized TLWH
+     cam_fast_tlwh_by_frame: Dict[int, np.ndarray]  # normalized TLWH
+@@ -261,6 +273,7 @@ def _load_game(
+             frames_set = frames_set.intersection(set(cams_fast["Frame"].unique()))
+     frames = sorted(frames_set)
+     frames_int = [int(f) for f in frames]
++    frame_runs = _contiguous_frame_runs(frames_int)
+
+     tracks_by_frame: Dict[int, np.ndarray] = {}
+     if not tracks.empty:
+@@ -317,6 +330,7 @@ def _load_game(
+     return _LoadedGame(
+         game_id=paths.game_id,
+         frames=frames_int,
++        frame_runs=frame_runs,
+         tracks_by_frame=tracks_by_frame,
+         cam_slow_tlwh_by_frame=cam_slow_tlwh_by_frame,
+         cam_fast_tlwh_by_frame=cam_fast_tlwh_by_frame,
+@@ -418,10 +432,11 @@ class CameraPanZoomGPTIterableDataset(IterableDataset):
+             )
+         except Exception as ex:
+             raise RuntimeError(f"Failed to load camera GPT CSVs for game {game_id!r}") from ex
+-        if len(loaded.frames) < self._seq_len:
+-            self._unusable_reasons[
+-                game_id
+-            ] = f"only {len(loaded.frames)} usable frames for seq_len={self._seq_len}"
++        longest_run = max((len(run) for run in loaded.frame_runs), default=0)
++        if longest_run < self._seq_len:
++            self._unusable_reasons[game_id] = (
++                f"longest contiguous run has {longest_run} frames for seq_len={self._seq_len}"
++            )
+             return None
+         self._unusable_reasons.pop(game_id, None)
+         self._cache[game_id] = loaded
+@@ -469,7 +484,8 @@ class CameraPanZoomGPTIterableDataset(IterableDataset):
+                 games = self._usable_game_paths(games)
+                 continue
+
+-            frames = game.frames
++            eligible_runs = [run for run in game.frame_runs if len(run) >= self._seq_len]
++            frames = rng.choice(eligible_runs)
+             start = rng.randint(0, len(frames) - self._seq_len)
+             seq_frames = frames[start : start + self._seq_len]
+
+diff --git a/tests/test_camera_gpt.py b/tests/test_camera_gpt.py
+index 4165e154..ad145fdd 100644
+--- a/tests/test_camera_gpt.py
++++ b/tests/test_camera_gpt.py
+@@ -155,5 +155,66 @@ def should_sample_gpt_dataset_and_run_model_forward(monkeypatch):
+             main()
+
+
++def should_keep_drivegpt_windows_inside_contiguous_frame_runs():
++    torch = _torch()
++
++    from hmlib.camera.camera_gpt_dataset import CameraPanZoomGPTIterableDataset, GameCsvPaths
++    from hmlib.camera.camera_transformer import CameraNorm
++
++    with tempfile.TemporaryDirectory(prefix="hm_camgpt_gaps_") as td:
++        td_path = Path(td)
++        tracking_csv = td_path / "tracking.csv"
++        camera_csv = td_path / "camera.csv"
++        frames = [1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14]
++        tracking_csv.write_text("".join(f"{frame},1,10,5,10,20,0.9,0,1,\n" for frame in frames))
++        camera_csv.write_text("".join(f"{frame},{frame},0,10,5\n" for frame in frames))
++
++        dataset = CameraPanZoomGPTIterableDataset(
++            games=[
++                GameCsvPaths(
++                    game_id="gapped",
++                    tracking_csv=str(tracking_csv),
++                    camera_csv=str(camera_csv),
++                )
++            ],
++            norm=CameraNorm(scale_x=100.0, scale_y=50.0, max_players=22),
++            seq_len=2,
++            target_mode="slow_tlwh",
++            feature_mode="base_prev_y",
++            include_pose=False,
++            seed=7,
++        )
++        iterator = iter(dataset)
++        saw_run_start = False
++        saw_mid_run = False
++        for _ in range(100):
++            sample = next(iterator)
++            frame_ids = torch.round(sample["y"][:, 0] * 100).to(dtype=torch.int64)
++            assert torch.equal(frame_ids[1:] - frame_ids[:-1], torch.ones(1, dtype=torch.int64))
++
++            first_frame = int(frame_ids[0].item())
++            previous_frame = int(round(float(sample["prev0"][0].item()) * 100))
++            if first_frame in {1, 6, 11}:
++                saw_run_start = True
++                assert torch.equal(sample["prev0"], torch.tensor([0.0, 0.0, 1.0, 1.0]))
++            else:
++                saw_mid_run = True
++                assert previous_frame == first_frame - 1
++
++        assert saw_run_start
++        assert saw_mid_run
++
++        unusable = CameraPanZoomGPTIterableDataset(
++            games=dataset._games,
++            norm=dataset.norm,
++            seq_len=5,
++            target_mode="slow_tlwh",
++            feature_mode="base_prev_y",
++            include_pose=False,
++        )
++        with pytest.raises(RuntimeError, match="longest contiguous run has 4 frames"):
++            next(iter(unusable))
++
++
+ def should_free_run_legacy_prev_slow_by_feeding_predictions():
+     torch = _torch()

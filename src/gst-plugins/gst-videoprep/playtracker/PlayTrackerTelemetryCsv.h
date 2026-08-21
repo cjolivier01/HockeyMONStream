@@ -82,9 +82,13 @@ class PlayTrackerTelemetryCsv {
   bool active() const;
   bool TryEnqueue(TelemetrySample sample);
   bool TryRecordConfigEvent(TelemetryConfigEvent event);
+  bool TryRecordDiscontinuity(TelemetryConfigEvent event);
 
-  uint64_t next_sample_id() const {
-    return next_sample_id_.load(std::memory_order_acquire) + 1;
+  uint64_t frame_id_high_watermark() const {
+    return frame_id_high_watermark_.load(std::memory_order_acquire);
+  }
+  uint64_t attempted_samples() const {
+    return attempted_samples_.load(std::memory_order_acquire);
   }
   uint64_t dropped_samples() const {
     return dropped_samples_.load(std::memory_order_acquire);
@@ -111,6 +115,8 @@ class PlayTrackerTelemetryCsv {
   void WriteConfigEvent(const QueuedConfigEvent& queued);
   void WriteManifest(bool complete);
   void CloseOutputs();
+  void RemoveIncompleteOutputs();
+  void ResetOutputPaths();
 
   mutable std::mutex mutex_;
   std::condition_variable ready_;
@@ -120,7 +126,9 @@ class PlayTrackerTelemetryCsv {
   bool stopping_{false};
   bool writer_failed_{false};
   std::thread writer_thread_;
-  std::atomic<uint64_t> next_sample_id_{0};
+  std::atomic<uint64_t> frame_id_high_watermark_{0};
+  std::atomic<uint64_t> attempted_samples_{0};
+  std::atomic<uint64_t> discontinuity_gaps_{0};
   std::atomic<uint64_t> dropped_samples_{0};
   std::atomic<uint64_t> dropped_config_events_{0};
   uint64_t config_event_sequence_{0};

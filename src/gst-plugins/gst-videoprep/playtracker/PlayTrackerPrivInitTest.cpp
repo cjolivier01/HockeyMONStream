@@ -9,11 +9,67 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace fs = std::filesystem;
 
 namespace {
+
+class TestPlayTrackerPriv : public hm::playtracker::PlayTrackerPriv {
+ public:
+  using PlayTrackerPriv::PlayTrackerPriv;
+
+  void StopTelemetry() {
+    telemetry_csv_.Stop();
+  }
+
+  float fixedEdgeRotationAngleLeft() const {
+    return fixed_edge_rotation_angle_left_;
+  }
+};
+
+std::string read_file(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  std::ostringstream contents;
+  contents << input.rdbuf();
+  return contents.str();
+}
+
+bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
+  NvDsBatchMeta* batch = nvds_create_batch_meta(1);
+  NvDsFrameMeta* frame_meta = batch ? nvds_acquire_frame_meta_from_pool(batch) : nullptr;
+  NvDsObjectMeta* object_meta = batch ? nvds_acquire_obj_meta_from_pool(batch) : nullptr;
+  if (!batch || !frame_meta || !object_meta) {
+    if (batch) {
+      nvds_destroy_batch_meta(batch);
+    }
+    return false;
+  }
+  frame_meta->source_id = 0;
+  frame_meta->frame_num = frame_number;
+  frame_meta->source_frame_width = 3840;
+  frame_meta->source_frame_height = 1080;
+  frame_meta->pipeline_width = 3840;
+  frame_meta->pipeline_height = 1080;
+  object_meta->class_id = 0;
+  object_meta->object_id = 1;
+  object_meta->tracker_confidence = 0.9f;
+  object_meta->tracker_bbox_info.org_bbox_coords = NvBbox_Coords{120.0f, 100.0f, 400.0f, 260.0f};
+  nvds_add_obj_meta_to_frame(frame_meta, object_meta, nullptr);
+  nvds_add_frame_meta_to_batch(batch, frame_meta);
+
+  NvBufSurfaceParams surface_params{};
+  surface_params.width = 3840;
+  surface_params.height = 1080;
+  NvBufSurface surface{};
+  surface.batchSize = 1;
+  surface.numFilled = 1;
+  surface.surfaceList = &surface_params;
+  const absl::Status status = priv.GenerateOutput(batch, &surface, nullptr);
+  nvds_destroy_batch_meta(batch);
+  return status.ok();
+}
 
 fs::path write_minimal_config(const fs::path& dir) {
   fs::create_directories(dir);
@@ -158,7 +214,12 @@ int main() {
     return 10;
   }
 
-  hm::playtracker::PlayTrackerPriv priv(/*gpu_id=*/0, /*batch_size=*/1);
+  TestPlayTrackerPriv priv(/*gpu_id=*/0, /*batch_size=*/1);
+  const fs::path telemetry_dir = tmpdir / "telemetry";
+  if (!priv.SetProperty(hm::Property("telemetry-csv-dir", telemetry_dir.string()))) {
+    std::cerr << "vpplaytracker rejected telemetry directory before caps initialization\n";
+    return 19;
+  }
 
   hm::DSCustom_CreateParams params{};
   params.config_file = const_cast<char*>(cfg_str.c_str());
@@ -300,6 +361,15 @@ int main() {
     return 13;
   }
 
+  if (!generate_export_sample(priv, 1) || !priv.SetProperty(hm::Property("fixed-edge-rotation-angle-left", "32.0")) ||
+      priv.fixedEdgeRotationAngleLeft() != 32.0f ||
+      context->play_trackers[0].play_tracker_config.living_boxes[0].arena_angle_from_vertical != 31.5f ||
+      context->play_trackers[0].play_tracker_config.living_boxes[1].arena_angle_from_vertical != 31.5f ||
+      !generate_export_sample(priv, 2)) {
+    std::cerr << "geometry state/event update did not precede the next exported sample\n";
+    return 20;
+  }
+
   GstEvent* flush_stop = gst_event_new_flush_stop(FALSE);
   const bool flush_handled = priv.HandleEvent(flush_stop);
   gst_event_unref(flush_stop);
@@ -328,6 +398,14 @@ int main() {
   if (!post_seek_processed || !zoom_tuning_restored) {
     std::cerr << "post-seek tracker did not restore accumulated live zoom tuning\n";
     return 17;
+  }
+
+  priv.StopTelemetry();
+  const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
+  if (config_events.find(",2,property,fixed-edge-rotation-angle-left,32.0,") == std::string::npos ||
+      config_events.find(",4,seek,flush-stop,1,") == std::string::npos) {
+    std::cerr << "geometry or seek event was not committed at the correct attempted-sample boundary\n";
+    return 21;
   }
 
   if (params.m_inCaps) {
