@@ -44,9 +44,25 @@ struct GstPropertyInfo {
 
 struct GstElementInfo {
   std::string path;
+  std::string parent_path;
   std::string name;
   std::string type_name;
   std::string factory_name;
+  std::string state_name;
+  bool bin{false};
+};
+
+struct GstConnectionInfo {
+  std::string source_path;
+  std::string source_pad;
+  std::string sink_path;
+  std::string sink_pad;
+  std::string caps;
+};
+
+struct GstPipelineGraphInfo {
+  std::vector<GstElementInfo> elements;
+  std::vector<GstConnectionInfo> connections;
 };
 
 RuntimeControlApplyMode propertyApplyMode(GParamSpec* pspec);
@@ -67,5 +83,13 @@ absl::Status setElementPropertyFromString(
     const std::string& value);
 
 std::vector<GstElementInfo> listElementTree(GstElement* root);
+
+GstPipelineGraphInfo inspectPipelineGraph(GstElement* root);
+
+// Returns a referenced element whose exact structured path matches `path`.
+// The caller owns the returned reference. Paths come from listElementTree()
+// or inspectPipelineGraph(); arbitrary recursive name lookup is intentionally
+// avoided because separate bins may contain children with the same name.
+GstElement* findElementByPath(GstElement* root, const std::string& path);
 
 } // namespace hm::pipeline

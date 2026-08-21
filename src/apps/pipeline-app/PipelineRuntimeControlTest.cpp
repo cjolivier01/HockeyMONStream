@@ -599,6 +599,73 @@ int main(int argc, char** argv) {
   ok &= expect(process.Start(argv[1], config), "hstream-cli process must start");
   ok &= expect(process.WaitFor("Pipeline running"), "pipeline-app must reach PLAYING");
   ok &= expect(process.running(), "pipeline-app must keep processing after reaching PLAYING");
+  const size_t graph_mark = process.Mark();
+  ok &= expect(process.Send("@inspect-pipeline 101\n"), "pipeline graph inspection command must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":101,\"status\":\"ok\"",
+          graph_mark),
+      "backend must return a versioned structured pipeline graph");
+  const std::string graph_output = process.output().substr(graph_mark);
+  ok &= expect(
+      graph_output.find("\"nodes\":[") != std::string::npos && graph_output.find("\"edges\":[") != std::string::npos,
+      "pipeline graph response must include nodes and pad connections");
+  constexpr const char* kQueuePath = "cGlwZWxpbmUubXVsdGlfc3JjX2Jpbi5zcmNfc3ViX2JpbjAucXVldWU=";
+  constexpr const char* kSilentProperty = "c2lsZW50";
+  const size_t properties_mark = process.Mark();
+  ok &= expect(
+      process.Send(std::string("@inspect-properties 102 0 ") + kQueuePath + "\n"),
+      "pipeline element property inspection command must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"properties\",\"requestId\":102,"
+          "\"status\":\"ok\"",
+          properties_mark),
+      "backend must return selected-node property names, types, values, and mutability");
+  const std::string properties_output = process.output().substr(properties_mark);
+  ok &= expect(
+      properties_output.find("\"name\":\"silent\"") != std::string::npos &&
+          properties_output.find("\"editable\":true") != std::string::npos,
+      "a queue property explicitly mutable while PLAYING must be advertised as safely editable");
+  const size_t property_set_mark = process.Mark();
+  ok &= expect(
+      process.Send(std::string("@inspect-set-property 103 0 ") + kQueuePath + " " + kSilentProperty + " dHJ1ZQ==\n"),
+      "approved inspector property mutation must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":103,"
+          "\"status\":\"ok\"",
+          property_set_mark),
+      "backend must accept an explicitly live-mutable scalar property");
+  const size_t property_restore_mark = process.Mark();
+  ok &= expect(
+      process.Send(std::string("@inspect-set-property 104 0 ") + kQueuePath + " " + kSilentProperty + " ZmFsc2U=\n"),
+      "inspector property restoration must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":104,"
+          "\"status\":\"ok\"",
+          property_restore_mark),
+      "backend must restore the live property through the guarded setter");
+  const size_t unsafe_property_mark = process.Mark();
+  ok &= expect(
+      process.Send(std::string("@inspect-set-property 105 0 ") + kQueuePath + " bmFtZQ== aGFja2Vk\n"),
+      "unsafe inspector property request must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":105,"
+          "\"status\":\"error\"",
+          unsafe_property_mark),
+      "backend must reject writable properties that are not explicitly safe while PLAYING");
+  const size_t malformed_inspector_mark = process.Mark();
+  ok &= expect(
+      process.Send("@inspect-properties 106 0 not-base64\n"), "malformed pipeline inspector command must be delivered");
+  ok &= expect(
+      process.WaitFor(
+          "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"command\",\"requestId\":0,"
+          "\"status\":\"error\"",
+          malformed_inspector_mark),
+      "backend must reject malformed inspector tokens without executing a lookup");
   ok &= expect(
       process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
       "pipeline-app must advance its video position before controls");

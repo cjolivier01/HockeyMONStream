@@ -22,6 +22,8 @@ filegroup(
     srcs = [
         "HStreamWindow.cpp",
         "HStreamWindow.h",
+        "PipelineInspectorWidget.cpp",
+        "PipelineInspectorWidget.h",
         "ScoreboardSelectionDialog.cpp",
         "ScoreboardSelectionDialog.h",
         "hstream-ui.desktop",
@@ -46,6 +48,16 @@ cc_library(
 )
 
 cc_library(
+    name = "pipeline_inspector_widget",
+    srcs = ["PipelineInspectorWidget.cpp"],
+    hdrs = ["PipelineInspectorWidget.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = ["@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp"],
     hdrs = ["HStreamWindow.h"],
@@ -53,6 +65,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":pipeline_inspector_widget",
         ":scoreboard_selection_dialog",
         "//src/libs/common:baseline_config",
         "//src/libs/common:playtracker_config_roles",
@@ -60,6 +73,20 @@ cc_library(
         "//src/libs/stitching:game_config",
         "@qt//:qt_widgets",
         "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "pipeline_inspector_widget_test",
+    srcs = ["PipelineInspectorWidgetTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {
+        "QT_QPA_PLATFORM": "offscreen",
+    },
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":pipeline_inspector_widget",
+        "@qt//:qt_widgets",
     ],
 )
 

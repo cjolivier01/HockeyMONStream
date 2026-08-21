@@ -20,6 +20,7 @@
 #include <gst/gstbin.h>
 #include <gst/video/video.h>
 #include <gst/video/videooverlay.h>
+#include <json-glib/json-glib.h>
 #include <nvbufsurface.h>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -43,6 +44,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -58,6 +60,7 @@
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/pipeline_controller/GstPropertyService.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 
@@ -3432,6 +3435,10 @@ void PipelineApplication::print_runtime_commands() const {
       "\t@seek <position-ns> <generation>: Seek local-render-only playback relative to the configured run start\n"
       "\t@seek-relative <delta-ns> <generation>: Jump from the pipeline's current playback position\n"
       "\t@reset-progress-rate <generation>: Reset playback speed and ETA sampling after a process pause\n"
+      "\t@inspect-pipeline <request-id>: Return structured live pipeline topology\n"
+      "\t@inspect-properties <request-id> <app-index> <base64-element-path>: Return selected-node properties\n"
+      "\t@inspect-set-property <request-id> <app-index> <base64-path> <base64-property> <base64-value>: "
+      "Set a backend-approved live property\n"
       "\t@set-property <element> <property=value>: Set an allowlisted runtime GStreamer property\n"
       "\t@set-properties <element property=value;...>: Atomically set allowlisted runtime properties\n\n");
   if (!stage_app_contexts_.empty() && !stage_app_contexts_.at(current_stage_).empty() &&
@@ -3538,6 +3545,94 @@ bool parse_runtime_set_properties(
     assignments->emplace_back(std::move(element_name), std::move(property_name), std::move(value));
   }
   return !assignments->empty();
+}
+
+enum class InspectorCommandKind { kGraph, kProperties, kSetProperty };
+
+struct InspectorCommand {
+  InspectorCommandKind kind{InspectorCommandKind::kGraph};
+  guint64 request_id{0};
+  size_t app_index{0};
+  std::string element_path;
+  std::string property_name;
+  std::string value;
+};
+
+bool parse_uint64_strict(const std::string& value, guint64* out);
+
+bool decode_inspector_token(const std::string& token, std::string* value) {
+  constexpr size_t kMaximumDecodedBytes = 16 * 1024;
+  if (!value || token.empty() || token.size() % 4 != 0) {
+    return false;
+  }
+  bool saw_padding = false;
+  for (size_t index = 0; index < token.size(); ++index) {
+    const unsigned char c = static_cast<unsigned char>(token[index]);
+    if (c == '=') {
+      saw_padding = true;
+      if (index + 2 < token.size()) {
+        return false;
+      }
+      continue;
+    }
+    if (saw_padding || (!std::isalnum(c) && c != '+' && c != '/')) {
+      return false;
+    }
+  }
+  gsize decoded_size = 0;
+  guchar* decoded = g_base64_decode(token.c_str(), &decoded_size);
+  if (!decoded || decoded_size == 0 || decoded_size > kMaximumDecodedBytes ||
+      std::find(decoded, decoded + decoded_size, '\0') != decoded + decoded_size ||
+      !g_utf8_validate(reinterpret_cast<const gchar*>(decoded), decoded_size, nullptr)) {
+    g_free(decoded);
+    return false;
+  }
+  gchar* canonical = g_base64_encode(decoded, decoded_size);
+  const bool canonical_encoding = canonical && token == canonical;
+  if (canonical_encoding) {
+    value->assign(reinterpret_cast<const char*>(decoded), decoded_size);
+  }
+  g_free(canonical);
+  g_free(decoded);
+  return canonical_encoding;
+}
+
+bool parse_inspector_command(const std::string& line, InspectorCommand* command) {
+  if (!command) {
+    return false;
+  }
+  std::istringstream input(trim_ascii(line));
+  std::string verb;
+  std::string app_index;
+  std::string path;
+  std::string property;
+  std::string value;
+  std::string extra;
+  input >> verb;
+  if (verb == "inspect-pipeline") {
+    input >> command->request_id;
+    command->kind = InspectorCommandKind::kGraph;
+    return command->request_id > 0 && command->request_id <= G_MAXINT64 && !(input >> extra);
+  }
+  input >> command->request_id >> app_index >> path;
+  guint64 parsed_app_index = 0;
+  if (command->request_id == 0 || command->request_id > G_MAXINT64 ||
+      !parse_uint64_strict(app_index, &parsed_app_index) || parsed_app_index > std::numeric_limits<size_t>::max() ||
+      !decode_inspector_token(path, &command->element_path)) {
+    return false;
+  }
+  command->app_index = static_cast<size_t>(parsed_app_index);
+  if (verb == "inspect-properties") {
+    command->kind = InspectorCommandKind::kProperties;
+    return !(input >> extra);
+  }
+  if (verb != "inspect-set-property") {
+    return false;
+  }
+  input >> property >> value;
+  command->kind = InspectorCommandKind::kSetProperty;
+  return decode_inspector_token(property, &command->property_name) && decode_inspector_token(value, &command->value) &&
+      !(input >> extra);
 }
 
 bool parse_double_strict(const std::string& value, gdouble* out) {
@@ -3899,6 +3994,104 @@ bool set_gvalue_from_string(GValue* gvalue, GParamSpec* pspec, const std::string
   }
   return false;
 }
+
+const char* inspector_control_kind(hm::pipeline::RuntimeControlKind kind) {
+  switch (kind) {
+    case hm::pipeline::RuntimeControlKind::Toggle:
+      return "toggle";
+    case hm::pipeline::RuntimeControlKind::Integer:
+      return "integer";
+    case hm::pipeline::RuntimeControlKind::Float:
+      return "float";
+    case hm::pipeline::RuntimeControlKind::Enum:
+      return "enum";
+    case hm::pipeline::RuntimeControlKind::Text:
+      return "text";
+  }
+  return "text";
+}
+
+const char* inspector_apply_mode(hm::pipeline::RuntimeControlApplyMode mode) {
+  switch (mode) {
+    case hm::pipeline::RuntimeControlApplyMode::Live:
+      return "playing";
+    case hm::pipeline::RuntimeControlApplyMode::Paused:
+      return "paused";
+    case hm::pipeline::RuntimeControlApplyMode::Ready:
+      return "ready";
+    case hm::pipeline::RuntimeControlApplyMode::Restart:
+      return "restart";
+  }
+  return "restart";
+}
+
+bool inspector_property_editable(const hm::pipeline::GstPropertyInfo& property) {
+  // The inspector intentionally exposes a much narrower write surface than
+  // GObject's G_PARAM_WRITABLE bit. Only readable scalar properties whose
+  // plugin explicitly advertises GST_PARAM_MUTABLE_PLAYING can be edited.
+  // Strings, flags, secrets, construct-time and restart-required properties
+  // remain observational even if their setters technically exist.
+  return property.readable && property.live_writable && !property.secret && !property.unsafe && !property.flags &&
+      property.control_kind != hm::pipeline::RuntimeControlKind::Text;
+}
+
+std::string bounded_inspector_value(const std::string& value) {
+  constexpr size_t kMaximumCharacters = 8192;
+  if (value.size() <= kMaximumCharacters) {
+    return value;
+  }
+  return value.substr(0, kMaximumCharacters) + "... [truncated]";
+}
+
+void json_add_string_member(JsonBuilder* builder, const char* name, const std::string& value) {
+  json_builder_set_member_name(builder, name);
+  json_builder_add_string_value(builder, value.c_str());
+}
+
+void json_add_bool_member(JsonBuilder* builder, const char* name, bool value) {
+  json_builder_set_member_name(builder, name);
+  json_builder_add_boolean_value(builder, value);
+}
+
+void json_add_int_member(JsonBuilder* builder, const char* name, gint64 value) {
+  json_builder_set_member_name(builder, name);
+  json_builder_add_int_value(builder, value);
+}
+
+void emit_inspector_response(JsonBuilder* builder) {
+  JsonGenerator* generator = json_generator_new();
+  JsonNode* root = json_builder_get_root(builder);
+  json_generator_set_root(generator, root);
+  json_generator_set_pretty(generator, FALSE);
+  gchar* document = json_generator_to_data(generator, nullptr);
+  g_print("HSTREAM_PIPELINE_INSPECTOR %s\n", document ? document : "{}");
+  std::fflush(stdout);
+  g_free(document);
+  json_node_free(root);
+  g_object_unref(generator);
+}
+
+JsonBuilder* begin_inspector_response(const char* kind, guint64 request_id, const char* status) {
+  JsonBuilder* builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_add_int_member(builder, "version", 1);
+  json_add_string_member(builder, "kind", kind);
+  json_add_int_member(builder, "requestId", static_cast<gint64>(request_id));
+  json_add_string_member(builder, "status", status);
+  return builder;
+}
+
+void finish_inspector_response(JsonBuilder* builder) {
+  json_builder_end_object(builder);
+  emit_inspector_response(builder);
+  g_object_unref(builder);
+}
+
+void emit_inspector_error(const char* kind, guint64 request_id, const std::string& message) {
+  JsonBuilder* builder = begin_inspector_response(kind, request_id, "error");
+  json_add_string_member(builder, "message", bounded_inspector_value(message));
+  finish_inspector_response(builder);
+}
 } // namespace
 
 bool PipelineApplication::set_render_audio_muted_runtime(bool muted) {
@@ -3930,6 +4123,231 @@ bool PipelineApplication::set_render_audio_muted_runtime(bool muted) {
     return false;
   }
   g_print("HSTREAM_RENDER_AUDIO muted=%d branches=%zu\n", muted ? 1 : 0, updated);
+  return true;
+}
+
+bool PipelineApplication::inspect_pipeline_graph_runtime(uint64_t request_id) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    emit_inspector_error("graph", request_id, "Pipeline reconstruction is in progress; refresh when it completes");
+    return false;
+  }
+  std::vector<hm::pipeline::GstPipelineGraphInfo> graphs;
+  long inspected_stage = current_stage_;
+  std::string snapshot_error;
+  {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+      snapshot_error = "Pipeline reconstruction is in progress; refresh when it completes";
+    } else {
+      const auto stage = stage_app_contexts_.find(current_stage_);
+      if (stage == stage_app_contexts_.end()) {
+        snapshot_error = "No active pipeline stage is available";
+      } else {
+        inspected_stage = current_stage_;
+        graphs.resize(stage->second.size());
+        for (size_t app_index = 0; app_index < stage->second.size(); ++app_index) {
+          const auto& app = stage->second[app_index];
+          if (app && app->pipeline.pipeline) {
+            graphs[app_index] = hm::pipeline::inspectPipelineGraph(app->pipeline.pipeline);
+          }
+        }
+      }
+    }
+  }
+  if (!snapshot_error.empty()) {
+    emit_inspector_error("graph", request_id, snapshot_error);
+    return false;
+  }
+
+  JsonBuilder* builder = begin_inspector_response("graph", request_id, "ok");
+  json_add_int_member(builder, "stage", inspected_stage);
+  json_builder_set_member_name(builder, "nodes");
+  json_builder_begin_array(builder);
+  for (size_t app_index = 0; app_index < graphs.size(); ++app_index) {
+    for (const hm::pipeline::GstElementInfo& element : graphs[app_index].elements) {
+      const std::string node_id = std::to_string(app_index) + ":" + element.path;
+      json_builder_begin_object(builder);
+      json_add_string_member(builder, "id", node_id);
+      json_add_int_member(builder, "appIndex", static_cast<gint64>(app_index));
+      json_add_string_member(builder, "path", element.path);
+      json_add_string_member(
+          builder,
+          "parentId",
+          element.parent_path.empty() ? "" : std::to_string(app_index) + ":" + element.parent_path);
+      json_add_string_member(builder, "name", element.name);
+      json_add_string_member(builder, "factory", element.factory_name);
+      json_add_string_member(builder, "type", element.type_name);
+      json_add_string_member(builder, "state", element.state_name);
+      json_add_bool_member(builder, "bin", element.bin);
+      json_builder_end_object(builder);
+    }
+  }
+  json_builder_end_array(builder);
+  json_builder_set_member_name(builder, "edges");
+  json_builder_begin_array(builder);
+  for (size_t app_index = 0; app_index < graphs.size(); ++app_index) {
+    for (const hm::pipeline::GstConnectionInfo& edge : graphs[app_index].connections) {
+      json_builder_begin_object(builder);
+      json_add_string_member(builder, "source", std::to_string(app_index) + ":" + edge.source_path);
+      json_add_string_member(builder, "sourcePad", edge.source_pad);
+      json_add_string_member(builder, "sink", std::to_string(app_index) + ":" + edge.sink_path);
+      json_add_string_member(builder, "sinkPad", edge.sink_pad);
+      json_add_string_member(builder, "caps", edge.caps);
+      json_builder_end_object(builder);
+    }
+  }
+  json_builder_end_array(builder);
+  finish_inspector_response(builder);
+  return true;
+}
+
+bool PipelineApplication::inspect_element_properties_runtime(
+    uint64_t request_id,
+    size_t app_index,
+    const std::string& element_path) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    emit_inspector_error("properties", request_id, "Pipeline reconstruction is in progress");
+    return false;
+  }
+  std::optional<std::vector<hm::pipeline::GstPropertyInfo>> properties;
+  std::string snapshot_error;
+  {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+      snapshot_error = "Pipeline reconstruction is in progress";
+    } else {
+      const auto stage = stage_app_contexts_.find(current_stage_);
+      if (stage == stage_app_contexts_.end() || app_index >= stage->second.size() || !stage->second[app_index] ||
+          !stage->second[app_index]->pipeline.pipeline) {
+        snapshot_error = "The selected pipeline instance is unavailable";
+      } else {
+        GstElement* element =
+            hm::pipeline::findElementByPath(stage->second[app_index]->pipeline.pipeline, element_path);
+        if (!element) {
+          snapshot_error = "The selected element no longer exists; refresh the graph";
+        } else {
+          auto listed = hm::pipeline::listElementProperties(element);
+          gst_object_unref(element);
+          if (listed.ok()) {
+            properties = std::move(*listed);
+          } else {
+            snapshot_error = listed.status().ToString();
+          }
+        }
+      }
+    }
+  }
+  if (!properties.has_value()) {
+    emit_inspector_error("properties", request_id, snapshot_error);
+    return false;
+  }
+
+  JsonBuilder* builder = begin_inspector_response("properties", request_id, "ok");
+  json_add_int_member(builder, "appIndex", static_cast<gint64>(app_index));
+  json_add_string_member(builder, "path", element_path);
+  json_add_string_member(builder, "nodeId", std::to_string(app_index) + ":" + element_path);
+  json_builder_set_member_name(builder, "properties");
+  json_builder_begin_array(builder);
+  for (const hm::pipeline::GstPropertyInfo& property : *properties) {
+    const bool editable = inspector_property_editable(property);
+    json_builder_begin_object(builder);
+    json_add_string_member(builder, "name", property.name);
+    json_add_string_member(builder, "label", property.nick);
+    json_add_string_member(builder, "description", property.blurb);
+    json_add_string_member(builder, "type", property.type_name);
+    json_add_string_member(builder, "kind", inspector_control_kind(property.control_kind));
+    json_add_string_member(builder, "applyMode", inspector_apply_mode(property.apply_mode));
+    json_add_string_member(builder, "value", bounded_inspector_value(property.serialized_value));
+    json_add_string_member(builder, "default", bounded_inspector_value(property.default_value));
+    json_add_string_member(builder, "minimum", property.minimum_value);
+    json_add_string_member(builder, "maximum", property.maximum_value);
+    json_add_bool_member(builder, "readable", property.readable);
+    json_add_bool_member(builder, "writable", property.writable);
+    json_add_bool_member(builder, "editable", editable);
+    json_add_bool_member(builder, "secret", property.secret);
+    json_add_string_member(
+        builder,
+        "editReason",
+        editable ? "Live edit"
+                 : (property.secret
+                        ? "Sensitive value is read-only"
+                        : (!property.writable ? "Read-only property"
+                                              : (!property.live_writable ? "Requires a safer pipeline state or restart"
+                                                                         : "Unsupported live editor type"))));
+    json_builder_set_member_name(builder, "choices");
+    json_builder_begin_array(builder);
+    for (const hm::pipeline::GstEnumValueInfo& choice : property.enum_values) {
+      json_builder_begin_object(builder);
+      json_add_string_member(builder, "name", choice.name);
+      json_add_string_member(builder, "nick", choice.nick);
+      json_add_int_member(builder, "value", choice.value);
+      json_builder_end_object(builder);
+    }
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_array(builder);
+  finish_inspector_response(builder);
+  return true;
+}
+
+bool PipelineApplication::set_inspected_element_property_runtime(
+    uint64_t request_id,
+    size_t app_index,
+    const std::string& element_path,
+    const std::string& property_name,
+    const std::string& value) {
+  if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+    emit_inspector_error("set-result", request_id, "Pipeline reconstruction is in progress");
+    return false;
+  }
+  std::string mutation_error;
+  {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
+      mutation_error = "Pipeline reconstruction is in progress";
+    } else {
+      const auto stage = stage_app_contexts_.find(current_stage_);
+      if (stage == stage_app_contexts_.end() || app_index >= stage->second.size() || !stage->second[app_index] ||
+          !stage->second[app_index]->pipeline.pipeline) {
+        mutation_error = "The selected pipeline instance is unavailable";
+      } else {
+        GstElement* element =
+            hm::pipeline::findElementByPath(stage->second[app_index]->pipeline.pipeline, element_path);
+        if (!element) {
+          mutation_error = "The selected element no longer exists; refresh the graph";
+        } else {
+          auto properties = hm::pipeline::listElementProperties(element);
+          if (!properties.ok()) {
+            mutation_error = properties.status().ToString();
+          } else {
+            const auto property = std::find_if(properties->begin(), properties->end(), [&](const auto& candidate) {
+              return candidate.name == property_name;
+            });
+            if (property == properties->end() || !inspector_property_editable(*property)) {
+              mutation_error = "This property is not approved for live editing";
+            } else {
+              const absl::Status status = hm::pipeline::setElementPropertyFromString(element, property_name, value);
+              if (!status.ok()) {
+                mutation_error = status.ToString();
+              }
+            }
+          }
+          gst_object_unref(element);
+        }
+      }
+    }
+  }
+  if (!mutation_error.empty()) {
+    emit_inspector_error("set-result", request_id, mutation_error);
+    return false;
+  }
+  JsonBuilder* builder = begin_inspector_response("set-result", request_id, "ok");
+  json_add_int_member(builder, "appIndex", static_cast<gint64>(app_index));
+  json_add_string_member(builder, "path", element_path);
+  json_add_string_member(builder, "nodeId", std::to_string(app_index) + ":" + element_path);
+  json_add_string_member(builder, "property", property_name);
+  finish_inspector_response(builder);
   return true;
 }
 
@@ -4347,6 +4765,22 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
+  if (trimmed_line.rfind("inspect-", 0) == 0) {
+    InspectorCommand command;
+    if (!parse_inspector_command(trimmed_line, &command)) {
+      emit_inspector_error("command", 0, "Malformed pipeline inspector command");
+      return false;
+    }
+    switch (command.kind) {
+      case InspectorCommandKind::kGraph:
+        return inspect_pipeline_graph_runtime(command.request_id);
+      case InspectorCommandKind::kProperties:
+        return inspect_element_properties_runtime(command.request_id, command.app_index, command.element_path);
+      case InspectorCommandKind::kSetProperty:
+        return set_inspected_element_property_runtime(
+            command.request_id, command.app_index, command.element_path, command.property_name, command.value);
+    }
+  }
   if (trimmed_line.rfind(std::string(kSeekRelativeCommand), 0) == 0 &&
       trimmed_line.size() > kSeekRelativeCommand.size() &&
       std::isspace(static_cast<unsigned char>(trimmed_line[kSeekRelativeCommand.size()]))) {
@@ -4424,7 +4858,9 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
         "set-render-window <xid>, set-render-audio-muted <0|1>, capture-preview-frame <main|stitched|sourceN> "
         "<jpg-path>, seek <position-ns> <generation>, seek-relative <delta-ns> <generation>, set-properties "
-        "<element property=value;...>, reset-progress-rate <generation>, or set-property <element> <property=value>\n");
+        "<element property=value;...>, reset-progress-rate <generation>, inspect-pipeline <request-id>, "
+        "inspect-properties <request-id> <app-index> <base64-path>, inspect-set-property <request-id> "
+        "<app-index> <base64-path> <base64-property> <base64-value>, or set-property <element> <property=value>\n");
     return false;
   }
   return set_element_property_runtime(element_name, property_name, value);

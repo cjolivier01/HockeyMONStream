@@ -2,8 +2,10 @@
 
 #include <gst/gst.h>
 
+#include <algorithm>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -204,12 +206,52 @@ bool test_live_mutability_flags() {
   return ok;
 }
 
+bool test_structured_graph_and_exact_path_lookup() {
+  GError* error = nullptr;
+  GstElement* pipeline =
+      gst_parse_launch("videotestsrc name=source num-buffers=1 ! identity name=middle ! fakesink name=sink", &error);
+  if (!expect(pipeline != nullptr, error ? error->message : "Failed to build graph test pipeline")) {
+    if (error) {
+      g_error_free(error);
+    }
+    return false;
+  }
+  if (error) {
+    g_error_free(error);
+  }
+
+  const hm::pipeline::GstPipelineGraphInfo graph = hm::pipeline::inspectPipelineGraph(pipeline);
+  const auto middle = std::find_if(
+      graph.elements.begin(), graph.elements.end(), [](const auto& element) { return element.name == "middle"; });
+  const auto source_edge = std::find_if(graph.connections.begin(), graph.connections.end(), [](const auto& edge) {
+    return edge.source_path.find("source") != std::string::npos && edge.sink_path.find("middle") != std::string::npos;
+  });
+  const bool graph_ok = expect(graph.elements.size() == 4, "Graph must include the pipeline and all three elements") &&
+      expect(graph.connections.size() == 2, "Graph must include both linked pad connections") &&
+      expect(middle != graph.elements.end() && !middle->parent_path.empty(), "Graph nodes must expose parent paths") &&
+      expect(source_edge != graph.connections.end(), "Graph must expose the source-to-identity edge");
+
+  GstElement* found =
+      middle == graph.elements.end() ? nullptr : hm::pipeline::findElementByPath(pipeline, middle->path);
+  GstElement* missing = hm::pipeline::findElementByPath(pipeline, "not.a.real.path");
+  const bool lookup_ok = expect(found != nullptr, "Exact graph path lookup must find a listed element") &&
+      expect(found && std::string(GST_ELEMENT_NAME(found)) == "middle",
+             "Exact graph path lookup returned wrong node") &&
+      expect(missing == nullptr, "Exact graph path lookup must reject unknown paths");
+  if (found) {
+    gst_object_unref(found);
+  }
+  gst_object_unref(pipeline);
+  return graph_ok && lookup_ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   if (!test_list_and_set_identity_properties() || !test_enum_metadata_and_parsing() ||
-      !test_invalid_values_are_rejected() || !test_sensitive_values_are_redacted() || !test_live_mutability_flags()) {
+      !test_invalid_values_are_rejected() || !test_sensitive_values_are_redacted() || !test_live_mutability_flags() ||
+      !test_structured_graph_and_exact_path_lookup()) {
     return 1;
   }
   return 0;
