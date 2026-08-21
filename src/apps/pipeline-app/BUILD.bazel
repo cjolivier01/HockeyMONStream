@@ -37,6 +37,7 @@ PIPELINE_APP_DEPS = [
     "//src/libs/common:playtracker_config_roles",
     "//src/libs/common:preview_overlay_meta",
     "//src/libs/common:user_config",
+    "//src/libs/pipeline_controller:gst_property_service",
     "//src/libs/stitching",
     "//src/libs/wireless:stream_control",
     "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",

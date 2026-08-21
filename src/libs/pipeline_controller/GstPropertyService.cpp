@@ -11,11 +11,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -98,6 +101,9 @@ double parse_double_exact(const std::string& raw_value) {
   if (errno == ERANGE) {
     throw std::out_of_range("floating-point value is out of range");
   }
+  if (!std::isfinite(parsed)) {
+    throw std::invalid_argument("floating-point value must be finite");
+  }
   return parsed;
 }
 
@@ -148,10 +154,11 @@ std::string element_name(GstElement* element) {
 
 std::string element_path(GstElement* element, const std::string& parent_path) {
   const std::string name = element_name(element);
+  const std::string component = std::to_string(name.size()) + ":" + name;
   if (parent_path.empty()) {
-    return name;
+    return component;
   }
-  return parent_path + "." + name;
+  return parent_path + "/" + component;
 }
 
 std::string factory_name(GstElement* element) {
@@ -397,27 +404,38 @@ absl::Status set_typed_value(GObject* object, GParamSpec* pspec, const std::stri
     }
   } catch (const std::exception& ex) {
     g_value_unset(&value);
-    return absl::InvalidArgumentError(absl::StrCat(
-        "Could not parse property '",
-        pspec->name,
-        "' value '",
-        redactSensitiveValueForDisplay(pspec->name, raw_value),
-        "': ",
-        ex.what()));
+    return absl::InvalidArgumentError(
+        absl::StrCat(
+            "Could not parse property '",
+            pspec->name,
+            "' value '",
+            redactSensitiveValueForDisplay(pspec->name, raw_value),
+            "': ",
+            ex.what()));
   }
 
   if (g_param_value_validate(pspec, &value)) {
     g_value_unset(&value);
-    return absl::InvalidArgumentError(absl::StrCat(
-        "Property '",
-        pspec->name,
-        "' value '",
-        redactSensitiveValueForDisplay(pspec->name, raw_value),
-        "' is outside allowed constraints"));
+    return absl::InvalidArgumentError(
+        absl::StrCat(
+            "Property '",
+            pspec->name,
+            "' value '",
+            redactSensitiveValueForDisplay(pspec->name, raw_value),
+            "' is outside allowed constraints"));
   }
 
   g_object_set_property(object, pspec->name, &value);
   g_value_unset(&value);
+
+  GParamSpec* acceptance = g_object_class_find_property(G_OBJECT_GET_CLASS(object), "last-property-set-ok");
+  if (acceptance && (acceptance->flags & G_PARAM_READABLE) && G_PARAM_SPEC_VALUE_TYPE(acceptance) == G_TYPE_BOOLEAN) {
+    gboolean accepted = TRUE;
+    g_object_get(object, "last-property-set-ok", &accepted, nullptr);
+    if (!accepted) {
+      return absl::FailedPreconditionError(absl::StrCat("Plugin rejected property '", pspec->name, "' value"));
+    }
+  }
   return absl::OkStatus();
 }
 
@@ -429,9 +447,12 @@ void collect_element_tree(GstElement* element, const std::string& parent_path, s
   const std::string path = element_path(element, parent_path);
   result->push_back({
       .path = path,
+      .parent_path = parent_path,
       .name = element_name(element),
       .type_name = G_OBJECT_TYPE_NAME(element),
       .factory_name = factory_name(element),
+      .state_name = gst_element_state_get_name(GST_STATE(element)),
+      .bin = GST_IS_BIN(element),
   });
 
   if (!GST_IS_BIN(element)) {
@@ -465,6 +486,54 @@ void collect_element_tree(GstElement* element, const std::string& parent_path, s
     }
   }
 
+  g_value_unset(&item);
+  gst_iterator_free(iterator);
+}
+
+struct ReferencedElement {
+  GstElement* element{nullptr};
+  std::string path;
+};
+
+void collect_referenced_elements(
+    GstElement* element,
+    const std::string& parent_path,
+    std::vector<ReferencedElement>* result) {
+  if (!element || !result) {
+    return;
+  }
+
+  const std::string path = element_path(element, parent_path);
+  result->push_back({GST_ELEMENT(gst_object_ref(element)), path});
+  if (!GST_IS_BIN(element)) {
+    return;
+  }
+
+  GstIterator* iterator = gst_bin_iterate_elements(GST_BIN(element));
+  if (!iterator) {
+    return;
+  }
+  GValue item = G_VALUE_INIT;
+  bool done = false;
+  while (!done) {
+    switch (gst_iterator_next(iterator, &item)) {
+      case GST_ITERATOR_OK: {
+        GstElement* child = GST_ELEMENT(g_value_get_object(&item));
+        if (child) {
+          collect_referenced_elements(child, path, result);
+        }
+        g_value_reset(&item);
+        break;
+      }
+      case GST_ITERATOR_RESYNC:
+        gst_iterator_resync(iterator);
+        break;
+      case GST_ITERATOR_ERROR:
+      case GST_ITERATOR_DONE:
+        done = true;
+        break;
+    }
+  }
   g_value_unset(&item);
   gst_iterator_free(iterator);
 }
@@ -561,10 +630,30 @@ bool isSensitivePropertyName(const std::string& property_name) {
   return name.find("password") != std::string::npos || name.find("passwd") != std::string::npos ||
       name.find("pwd") != std::string::npos || name.find("secret") != std::string::npos ||
       name.find("token") != std::string::npos || name.find("credential") != std::string::npos ||
+      name.find("passphrase") != std::string::npos || name.find("cookie") != std::string::npos ||
+      name.find("authorization") != std::string::npos || name.find("extra-header") != std::string::npos ||
+      name.find("private-key") != std::string::npos || name.find("private_key") != std::string::npos ||
+      name.find("client-key") != std::string::npos || name.find("client_key") != std::string::npos ||
+      name == "user-pw" || name == "user_pw" || name == "proxy-pw" || name == "proxy_pw" ||
       name.find("stream-key") != std::string::npos || name.find("stream_key") != std::string::npos || name == "key" ||
       name == "uri" || name.find("-uri") != std::string::npos || name.find("_uri") != std::string::npos ||
       name.find("location") != std::string::npos || name.find("url") != std::string::npos;
 }
+
+namespace {
+
+bool property_value_safe_for_inspection(GParamSpec* pspec) {
+  if (!pspec || isSensitivePropertyName(safe_string(pspec->name))) {
+    return false;
+  }
+  const GType value_type = G_PARAM_SPEC_VALUE_TYPE(pspec);
+  return value_type == G_TYPE_BOOLEAN || value_type == G_TYPE_INT || value_type == G_TYPE_UINT ||
+      value_type == G_TYPE_LONG || value_type == G_TYPE_ULONG || value_type == G_TYPE_INT64 ||
+      value_type == G_TYPE_UINT64 || value_type == G_TYPE_FLOAT || value_type == G_TYPE_DOUBLE ||
+      G_TYPE_IS_ENUM(value_type);
+}
+
+} // namespace
 
 std::string redactSensitiveValueForDisplay(const std::string& property_name, const std::string& value) {
   if (value.empty()) {
@@ -592,7 +681,11 @@ absl::StatusOr<std::vector<GstPropertyInfo>> listElementProperties(GstElement* e
     const bool writable = pspec->flags & G_PARAM_WRITABLE;
     const bool construct = pspec->flags & G_PARAM_CONSTRUCT;
     const bool construct_only = pspec->flags & G_PARAM_CONSTRUCT_ONLY;
-    const bool secret = isSensitivePropertyName(safe_string(pspec->name));
+    // Inspection is deliberately fail-closed: only supported primitive
+    // scalar/enum values are exposed. Strings can contain credentials even
+    // when a third-party plugin gives the property an unfamiliar name, and
+    // boxed/object/flags values can embed headers, cookies, or key material.
+    const bool secret = !property_value_safe_for_inspection(pspec);
     const bool runtime_writable = writable && !construct_only;
     const RuntimeControlApplyMode apply_mode = propertyApplyMode(pspec);
     const bool live_writable = runtime_writable && apply_mode == RuntimeControlApplyMode::Live;
@@ -604,10 +697,9 @@ absl::StatusOr<std::vector<GstPropertyInfo>> listElementProperties(GstElement* e
         .type_name = safe_string(g_type_name(G_PARAM_SPEC_VALUE_TYPE(pspec))),
         .nick = safe_string(g_param_spec_get_nick(pspec)),
         .blurb = safe_string(g_param_spec_get_blurb(pspec)),
-        .serialized_value = readable ? redactSensitiveValueForDisplay(
-                                           safe_string(pspec->name), serialize_property_value(G_OBJECT(element), pspec))
-                                     : "",
-        .default_value = redactSensitiveValueForDisplay(safe_string(pspec->name), serialize_default_value(pspec)),
+        .serialized_value =
+            readable ? (secret ? "[redacted]" : serialize_property_value(G_OBJECT(element), pspec)) : "",
+        .default_value = secret ? "[redacted]" : serialize_default_value(pspec),
         .minimum_value = std::move(minimum_value),
         .maximum_value = std::move(maximum_value),
         .enum_values = enum_values(G_PARAM_SPEC_VALUE_TYPE(pspec)),
@@ -654,6 +746,107 @@ std::vector<GstElementInfo> listElementTree(GstElement* root) {
     return lhs.path < rhs.path;
   });
   return result;
+}
+
+GstPipelineGraphInfo inspectPipelineGraph(GstElement* root) {
+  GstPipelineGraphInfo graph;
+  if (!root) {
+    return graph;
+  }
+
+  graph.elements = listElementTree(root);
+  std::vector<ReferencedElement> referenced;
+  collect_referenced_elements(root, "", &referenced);
+  std::unordered_map<GstElement*, std::string> paths;
+  paths.reserve(referenced.size());
+  for (const ReferencedElement& item : referenced) {
+    paths.emplace(item.element, item.path);
+  }
+
+  for (const ReferencedElement& item : referenced) {
+    GstIterator* pads = gst_element_iterate_src_pads(item.element);
+    if (!pads) {
+      continue;
+    }
+    GValue pad_value = G_VALUE_INIT;
+    bool done = false;
+    while (!done) {
+      switch (gst_iterator_next(pads, &pad_value)) {
+        case GST_ITERATOR_OK: {
+          GstPad* source_pad = GST_PAD(g_value_get_object(&pad_value));
+          GstPad* sink_pad = source_pad ? gst_pad_get_peer(source_pad) : nullptr;
+          GstElement* sink_element = sink_pad ? gst_pad_get_parent_element(sink_pad) : nullptr;
+          const auto sink_path = paths.find(sink_element);
+          if (source_pad && sink_pad && sink_element && sink_path != paths.end()) {
+            gchar* source_name = gst_pad_get_name(source_pad);
+            gchar* sink_name = gst_pad_get_name(sink_pad);
+            graph.connections.push_back({
+                .source_path = item.path,
+                .source_pad = safe_string(source_name),
+                .sink_path = sink_path->second,
+                .sink_pad = safe_string(sink_name),
+            });
+            g_free(source_name);
+            g_free(sink_name);
+          }
+          if (sink_element) {
+            gst_object_unref(sink_element);
+          }
+          if (sink_pad) {
+            gst_object_unref(sink_pad);
+          }
+          g_value_reset(&pad_value);
+          break;
+        }
+        case GST_ITERATOR_RESYNC:
+          gst_iterator_resync(pads);
+          break;
+        case GST_ITERATOR_ERROR:
+        case GST_ITERATOR_DONE:
+          done = true;
+          break;
+      }
+    }
+    g_value_unset(&pad_value);
+    gst_iterator_free(pads);
+  }
+
+  for (ReferencedElement& item : referenced) {
+    gst_object_unref(item.element);
+  }
+  std::sort(graph.connections.begin(), graph.connections.end(), [](const auto& lhs, const auto& rhs) {
+    return std::tie(lhs.source_path, lhs.source_pad, lhs.sink_path, lhs.sink_pad) <
+        std::tie(rhs.source_path, rhs.source_pad, rhs.sink_path, rhs.sink_pad);
+  });
+  graph.connections.erase(
+      std::unique(
+          graph.connections.begin(),
+          graph.connections.end(),
+          [](const auto& lhs, const auto& rhs) {
+            return std::tie(lhs.source_path, lhs.source_pad, lhs.sink_path, lhs.sink_pad) ==
+                std::tie(rhs.source_path, rhs.source_pad, rhs.sink_path, rhs.sink_pad);
+          }),
+      graph.connections.end());
+  return graph;
+}
+
+GstElement* findElementByPath(GstElement* root, const std::string& path) {
+  if (!root || path.empty()) {
+    return nullptr;
+  }
+  std::vector<ReferencedElement> referenced;
+  collect_referenced_elements(root, "", &referenced);
+  GstElement* found = nullptr;
+  for (ReferencedElement& item : referenced) {
+    if (!found && item.path == path) {
+      found = item.element;
+      item.element = nullptr;
+    }
+    if (item.element) {
+      gst_object_unref(item.element);
+    }
+  }
+  return found;
 }
 
 } // namespace hm::pipeline
