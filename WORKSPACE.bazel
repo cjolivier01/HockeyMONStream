@@ -37,6 +37,7 @@ register_toolchains("//toolchains/jetson:jetson_toolchain")
 conditional_local_repository(
     name = "deepstream",
     build_file = "@//buildfiles:third_party/deepstream.BUILD",
+    path_env_var = "DEEPSTREAM_ROOT",
     paths = [
         "/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream",
         "/opt/nvidia/deepstream/deepstream",

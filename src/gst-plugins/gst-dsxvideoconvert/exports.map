@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{
+  global:
+    gst_dsx_video_convert_get_type;
+    gst_plugin_dsxvideoconvert_get_desc;
+    gst_plugin_dsxvideoconvert_register;
+  local:
+    *;
+};

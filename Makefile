@@ -92,6 +92,7 @@ yolo-custom-lib:
 
 hstream-gst-plugins:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) \
+		//src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
 		//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
 		//src/gst-plugins/gst-playtracker:libgstplaytracker.so \
 		//src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so
@@ -190,7 +191,7 @@ print_targets:
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \
 		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \
-		'hstream-gst-plugins Build the three HStream-owned GStreamer plugins.' \
+		'hstream-gst-plugins Build the four HStream-owned GStreamer plugins.' \
 		'qualify-native-onnx Run the non-skippable native/Python ONNX release gate.' \
 		'deb            Build in Docker; write the package under dist/ubuntu<version> (override DEB_OUTPUT_DIR).' \
 		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (output under dist/ubuntu24.04).' \

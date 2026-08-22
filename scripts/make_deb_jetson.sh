@@ -180,6 +180,7 @@ bazelisk --batch --output_base="${output_base}" build \
   //src/apps/pipeline-app:hstream-cli \
   //src/apps/hstream-assets:hstream-assets \
   //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo \
+  //src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
   //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \
   //src/gst-plugins/gst-playtracker:libgstplaytracker.so \
   //src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so
@@ -193,6 +194,7 @@ cuda_elfs=(
   bazel-bin/src/apps/pipeline-app/hstream-cli
   bazel-bin/src/apps/hstream-assets/hstream-assets
   bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+  bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so
   bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so
   bazel-bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so
   bazel-bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so

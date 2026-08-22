@@ -1595,6 +1595,7 @@ QString hm::ui_internal::matching_development_bazel_bin(const QString& applicati
 QString hm::ui_internal::missing_development_runtime_artifact(const QString& bazel_bin_path) {
   const QDir bazel_bin(canonical_dir_path(bazel_bin_path));
   const QStringList required = {
+      "src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",

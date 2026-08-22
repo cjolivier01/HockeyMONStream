@@ -23,16 +23,19 @@ config_setting(
 
 cc_library(
     name = "deepstream_lib",
+    additional_linker_inputs = select({
+        # The legacy Jetson SDK uses absolute sysroot-internal symlinks for
+        # these libraries; the cross-toolchain supplies their search paths.
+        ":jetson": [],
+        "//conditions:default": glob(["lib/*.so"]),
+    }),
     hdrs = glob([
     ]) + [
     ],
     linkopts = [
-        "-L./lib",
+        "-Lexternal/deepstream/lib",
     ] + select({
         ":jetson": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
-        ":arm64-sbsa": ["-L/opt/nvidia/deepstream/deepstream/lib"],
-        ":aarch64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
-        ":x86_64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
         "//conditions:default": [],
     }) + [
         "-l:libnvdsgst_meta.so",
@@ -52,6 +55,12 @@ cc_library(
     deps = [
         ":deepstream_includes",
     ],
+)
+
+filegroup(
+    name = "nvvideoconvert_plugin",
+    srcs = ["lib/gst-plugins/libgstnvvideoconvert.so"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
