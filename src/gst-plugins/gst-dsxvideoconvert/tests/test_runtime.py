@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 from pathlib import Path
 import platform
@@ -139,8 +140,9 @@ def force_jetson_gpu(tokens: list[str]) -> list[str]:
 def compare_pair(
     directory: Path,
     label: str,
-    make_tokens,
+    make_tokens: Callable[[str], list[str]],
     jetson_stable_gpu: bool = True,
+    normalize_output: Callable[[bytes], bytes] | None = None,
 ) -> None:
     outputs: dict[str, Path] = {}
     for candidate in (ORIGINAL, REPLACEMENT):
@@ -156,6 +158,9 @@ def compare_pair(
         raise AssertionError(f"{label}: original pipeline produced an empty buffer")
     if not replacement:
         raise AssertionError(f"{label}: replacement pipeline produced an empty buffer")
+    if normalize_output is not None:
+        original = normalize_output(original)
+        replacement = normalize_output(replacement)
     if IS_JETSON and not any(replacement):
         raise AssertionError(f"{label}: replacement output contains no image data")
     if len(original) != len(replacement):
@@ -170,16 +175,9 @@ def compare_pair(
     if original != replacement:
         differences = sum(left != right for left, right in zip(original, replacement))
         differences += abs(len(original) - len(replacement))
-        # The DS 7.1 Jetson backend can vary a handful of odd-edge bytes across
-        # otherwise identical one-frame runs. Keep x86 exact and allow only a
-        # negligible normalized boundary variance on Jetson.
-        allowed_differences = max(8, len(original) // 100_000) if IS_JETSON else 0
-        if differences <= allowed_differences:
-            return
         raise AssertionError(
             f"{label}: output differs in {differences} bytes "
-            f"(allowed {allowed_differences}; "
-            f"{len(original)} versus {len(replacement)} bytes)"
+            f"({len(original)} versus {len(replacement)} bytes)"
         )
 
 
@@ -193,6 +191,29 @@ def raw_source(format_name: str = "RGBA", width: int = 320, height: int = 240) -
             "framerate=30/1"
         ),
     ]
+
+
+def packed_vendor_payload(
+    data: bytes,
+    row_bytes: int,
+    height: int,
+    format_name: str,
+) -> bytes:
+    if len(data) % height != 0:
+        raise AssertionError(
+            f"odd {format_name} buffer size {len(data)} is not divisible by "
+            f"{height} rows"
+        )
+    stride = len(data) // height
+    if stride < row_bytes:
+        raise AssertionError(
+            f"odd {format_name} stride {stride} is smaller than "
+            f"{row_bytes} payload bytes"
+        )
+    return b"".join(
+        data[row * stride:row * stride + row_bytes]
+        for row in range(height)
+    )
 
 
 def test_raw_formats(directory: Path) -> int:
@@ -301,6 +322,25 @@ def test_transforms(directory: Path) -> int:
             count += 1
 
     for format_name in RAW_FORMATS:
+        if format_name in ("UYVP", "UYVY"):
+            row_bytes = 161 * 5 // 2 if format_name == "UYVP" else 161 * 2
+            compare_pair(
+                directory,
+                f"odd-raw-output-{format_name}",
+                lambda candidate, fmt=format_name: [
+                    *raw_source(width=319, height=239),
+                    *element(candidate, *format_properties(fmt)),
+                    *caps(f"video/x-raw,format={fmt},width=161,height=121"),
+                ],
+                normalize_output=lambda data, size=row_bytes, fmt=format_name: packed_vendor_payload(
+                    data,
+                    size,
+                    121,
+                    fmt,
+                ),
+            )
+            count += 1
+            continue
         compare_pair(
             directory,
             f"odd-raw-output-{format_name}",

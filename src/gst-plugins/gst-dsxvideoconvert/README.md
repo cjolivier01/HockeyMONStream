@@ -116,9 +116,9 @@ The installed DeepStream 7.1 oracle used by Hstream's Jetson validation can emit
 invalid RAW bytes in a headless session when CUDA-device surfaces are consumed
 by default-VIC helper elements. Pixel-parity cases explicitly select GPU engines
 and CUDA-device memory on every NVIDIA converter in the pipeline, which is stable
-and retains normalized pixel comparison. The comparison is exact except for a
-bounded handful of odd-edge bytes that vary between DeepStream 7.1 runs. Cases
-that intentionally exercise VIC or a specific copy engine instead validate
+and retains exact pixel comparison. Packed odd-width UYVP and UYVY are normalized
+to the vendor plugin's row payload so allocator padding cannot hide differences.
+Cases that intentionally exercise VIC or a specific copy engine instead validate
 nonempty, correctly sized output and trace both requested copy directions.
 DeepStream 7.1's Jetson transform backend hangs for interpolation modes 2-5 in
 the all-GPU RAW validation path, so the runtime pixel gate covers modes 0, 1,
