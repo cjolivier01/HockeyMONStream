@@ -10,6 +10,7 @@ OUTPUT_DIR="${TOPDIR}/dist/windows"
 REPOSITORY="cjolivier01/hstream"
 SIGNING_PKCS12="${WINDOWS_SIGNING_PKCS12:-}"
 SIGNING_PASSWORD_FILE="${WINDOWS_SIGNING_PASSWORD_FILE:-}"
+SIGNING_CA_FILE="${WINDOWS_SIGNING_CA_FILE:-}"
 SIGNING_TIMESTAMP_URL="${WINDOWS_SIGNING_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 
 usage() {
@@ -31,6 +32,8 @@ Release signing environment:
   WINDOWS_SIGNING_PKCS12          Authenticode code-signing PKCS#12 file.
   WINDOWS_SIGNING_PASSWORD_FILE   File containing its password (never placed
                                   on the command line).
+  WINDOWS_SIGNING_CA_FILE         Optional PEM trust anchor used only to verify
+                                  a deliberately private/self-signed signer.
   WINDOWS_SIGNING_TIMESTAMP_URL   RFC 3161 service (default: DigiCert).
 USAGE
 }
@@ -80,6 +83,10 @@ if [[ -n "${SIGNING_PKCS12}" || -n "${SIGNING_PASSWORD_FILE}" ]]; then
     echo "Install it with: sudo apt-get install osslsigncode" >&2
     exit 1
   fi
+fi
+if [[ -n "${SIGNING_CA_FILE}" && ! -f "${SIGNING_CA_FILE}" ]]; then
+  echo "ERROR: WINDOWS_SIGNING_CA_FILE must name a readable PEM certificate file." >&2
+  exit 1
 fi
 
 OUTPUT_DIR="$(mkdir -p "${OUTPUT_DIR}" && cd "${OUTPUT_DIR}" && pwd)"
@@ -135,7 +142,11 @@ if [[ -n "${SIGNING_PKCS12}" ]]; then
     -ts "${SIGNING_TIMESTAMP_URL}" \
     -in "${temporary_output}" \
     -out "${signed_output}"
-  osslsigncode verify -in "${signed_output}"
+  verify_args=(-in "${signed_output}")
+  if [[ -n "${SIGNING_CA_FILE}" ]]; then
+    verify_args=(-CAfile "${SIGNING_CA_FILE}" "${verify_args[@]}")
+  fi
+  osslsigncode verify "${verify_args[@]}"
   installer_to_publish="${signed_output}"
 fi
 install -m 0755 "${installer_to_publish}" "${output_file}"

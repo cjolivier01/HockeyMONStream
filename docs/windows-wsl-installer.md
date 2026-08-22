@@ -68,6 +68,21 @@ and the publisher independently verifies the embedded signature before staging
 the `.exe` beside the Debian packages and `SHA256SUMS`. Override the timestamp
 service with `WINDOWS_SIGNING_TIMESTAMP_URL` when needed.
 
+For a deliberately private or development release, a self-signed certificate
+can be supplied as the explicit verification trust anchor. This verifies the
+signature and timestamp without claiming that Windows trusts the publisher:
+
+```bash
+make publish \
+  WINDOWS_SIGNING_PKCS12=/secure/hstream-self-signed.p12 \
+  WINDOWS_SIGNING_PASSWORD_FILE=/secure/hstream-self-signed.password \
+  WINDOWS_SIGNING_CA_FILE=/secure/hstream-self-signed.cert.pem
+```
+
+Do not set `WINDOWS_SIGNING_CA_FILE` for normal public releases. Windows shows
+an unknown-publisher warning for a self-signed installer unless the certificate
+is separately installed into the target machine's trusted publisher store.
+
 ## Runtime requirements
 
 - Windows 11 with hardware virtualization and WSL 2 support.
