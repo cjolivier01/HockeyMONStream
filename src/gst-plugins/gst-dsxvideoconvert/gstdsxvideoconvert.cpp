@@ -487,21 +487,22 @@ void copy_fixed_field(GstStructure* destination, const GstStructure* source, con
 }
 
 const gchar* memory_type_caps_name(gint memory_type) {
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-  static_cast<void>(memory_type);
-  return "nvbuf-mem-surface-array";
-#else
   switch (memory_type) {
     case 1:
       return "nvbuf-mem-cuda-pinned";
     case 3:
       return "nvbuf-mem-cuda-unified";
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
     case 0:
+    case 4:
+      return "nvbuf-mem-surface-array";
+#else
+    case 0:
+#endif
     case 2:
     default:
       return "nvbuf-mem-cuda-device";
   }
-#endif
 }
 
 void add_output_caps_fields(GstStructure* structure, const GstDsxVideoConvert* self) {

@@ -66,6 +66,8 @@ class DsxVideoConvertBackend {
   bool ensure_staging_surfaces(guint batch_size, gchar** error_message);
   bool upload_raw(GstBuffer* buffer, NvBufSurface* surface, guint batch_size, gchar** error_message) const;
   bool download_raw(const NvBufSurface* surface, GstBuffer* buffer, guint batch_size, gchar** error_message) const;
+  bool copy_staging_surface(NvBufSurface* source, NvBufSurface* destination, guint batch_size, gchar** error_message)
+      const;
 
   GstVideoInfo input_info_{};
   GstVideoInfo output_info_{};
@@ -76,7 +78,9 @@ class DsxVideoConvertBackend {
   NvBufSurfaceColorFormat input_format_ = NVBUF_COLOR_FORMAT_INVALID;
   NvBufSurfaceColorFormat output_format_ = NVBUF_COLOR_FORMAT_INVALID;
   NvBufSurface* input_staging_ = nullptr;
+  NvBufSurface* input_copy_staging_ = nullptr;
   NvBufSurface* output_staging_ = nullptr;
+  NvBufSurface* output_copy_staging_ = nullptr;
   cudaStream_t stream_ = nullptr;
   guint gpu_id_ = 0;
   bool started_ = false;

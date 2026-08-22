@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import platform
 import re
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ import tempfile
 
 ORIGINAL = Path(os.environ["NVVIDEO_PLUGIN_SO"])
 REPLACEMENT = Path(os.environ["DSX_PLUGIN_SO"])
+IS_JETSON = platform.machine() == "aarch64" and Path("/etc/nv_tegra_release").exists()
 
 
 def run(*command: str, env: dict[str, str] | None = None) -> str:
@@ -90,7 +92,12 @@ def dynamic_symbols(path: Path, defined: bool) -> set[str]:
     return {line.split()[-1].split("@")[0] for line in output.splitlines() if line.split()}
 
 
-def negotiated_src_caps(element: str, nvmm_input: bool, nvmm_output: bool) -> dict[str, str]:
+def negotiated_src_caps(
+    element: str,
+    nvmm_input: bool,
+    nvmm_output: bool,
+    properties: tuple[str, ...] = (),
+) -> dict[str, str]:
     output_media = "video/x-raw(memory:NVMM)" if nvmm_output else "video/x-raw"
     input_path = [
         "videotestsrc", "num-buffers=1", "!",
@@ -103,7 +110,7 @@ def negotiated_src_caps(element: str, nvmm_input: bool, nvmm_output: bool) -> di
             "framerate=30/1,batch-size=1,num-surfaces-per-frame=1", "!",
         ])
     command = [
-        "gst-launch-1.0", "-v", *input_path, element, "name=candidate", "!",
+        "gst-launch-1.0", "-v", *input_path, element, "name=candidate", *properties, "!",
         f"{output_media},format=NV12,width=160,height=120", "!",
         "fakesink", "sync=false",
     ]
@@ -132,7 +139,9 @@ def main() -> None:
 
     if pad_contract(original) != pad_contract(replacement):
         raise AssertionError("sink/source pad caps differ from nvvideoconvert")
-    if property_contract(original) != property_contract(replacement):
+    original_properties = property_contract(original)
+    replacement_properties = property_contract(replacement)
+    if original_properties != replacement_properties:
         raise AssertionError("property names, flags, defaults, ranges, or enum values differ")
 
     for input_nvmm, output_nvmm in ((False, False), (False, True), (True, False), (True, True)):
@@ -144,6 +153,29 @@ def main() -> None:
                 f"negotiated caps differ for NVMM {input_nvmm}->{output_nvmm}:\n"
                 f"original={original_caps}\nreplacement={replacement_caps}"
             )
+
+    if IS_JETSON:
+        memory_types = tuple(
+            int(value) for value, _ in original_properties["nvbuf-memory-type"][1]
+        )
+        for memory_type in memory_types:
+            gpu_properties = (
+                ("compute-hw=1", "copy-hw=1")
+                if memory_type in (1, 2, 3)
+                else ()
+            )
+            properties = (f"nvbuf-memory-type={memory_type}", *gpu_properties)
+            original_caps = negotiated_src_caps(
+                ORIGINAL.stem.removeprefix("libgst"), False, True, properties
+            )
+            replacement_caps = negotiated_src_caps(
+                "dsxvideoconvert", False, True, properties
+            )
+            if original_caps != replacement_caps:
+                raise AssertionError(
+                    f"Jetson memory-type {memory_type} caps differ:\n"
+                    f"original={original_caps}\nreplacement={replacement_caps}"
+                )
 
     defined = dynamic_symbols(REPLACEMENT, True)
     required_identity = {

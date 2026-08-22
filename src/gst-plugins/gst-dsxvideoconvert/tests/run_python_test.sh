@@ -7,11 +7,13 @@ set -euo pipefail
 test_script="$(readlink -f "$1")"
 replacement="$(readlink -f "$2")"
 original="$(readlink -f "$3")"
+copy_trace="$(readlink -f "$4")"
 deepstream_root="$(dirname "$(dirname "$(dirname "${original}")")")"
 
 export GST_PLUGIN_PATH="$(dirname "${replacement}"):$(dirname "${original}")${GST_PLUGIN_PATH:+:${GST_PLUGIN_PATH}}"
 export LD_LIBRARY_PATH="${deepstream_root}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export DSX_PLUGIN_SO="${replacement}"
 export NVVIDEO_PLUGIN_SO="${original}"
+export DSX_COPY_TRACE_SO="${copy_trace}"
 
 exec python3 "${test_script}"

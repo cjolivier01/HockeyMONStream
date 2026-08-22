@@ -106,7 +106,18 @@ interpolation, metadata orientation, nonzero batched content, custom RAW
 plane mappings and strides, signed caps-only batch sizing, output-pool depth,
 allocation/layout controls, malformed NVMM descriptors, undersized-stride
 rejection, stale layout-meta filtering, and unsupported BGRA64 conversion.
+On Jetson, an interposition probe also verifies that `copy-hw=GPU` selects a
+GPU `NvBufSurfTransform` copy when CUDA-device and VIC-compatible staging must
+be bridged, while `copy-hw=VIC` selects the public NvBuf raw/surface copy APIs.
 Probe processes have explicit timeouts.
+
+The installed DeepStream 7.1 oracle used by Hstream's Jetson validation emits
+non-deterministic or zero-filled RAW bytes in a headless session after internal
+EGL/NvBufSurfTransform copy errors. Jetson runtime tests therefore require both
+plugins to negotiate and execute representative VIC- and GPU-required cases,
+validate nonempty output buffers from `dsxvideoconvert`, and trace the requested
+copy path, but do not use byte-for-byte oracle comparison. The x86 suite retains
+exact byte comparison.
 
 The benchmark suite uses direct RAW and NVMM generators and GStreamer's
 per-element latency tracer, so source generation is outside the converter

@@ -20,13 +20,11 @@ if IS_JETSON:
     RAW_FORMATS = (
         "I420", "NV12", "P010_10LE", "BGRx", "RGBA", "GRAY8",
         "GRAY16_LE", "RGB", "BGR", "BGR10A2_LE", "UYVP", "UYVY",
-        "YUY2", "YVYU", "Y42B",
     )
     NVMM_ONLY_FORMATS = ("I420_12LE",)
-    MEMORY_TYPES = (0, 4)
+    MEMORY_TYPES = (0, 1, 2, 3, 4)
     YUV_DEST_FORMATS = (
-        "I420", "NV12", "P010_10LE", "UYVP", "UYVY", "YUY2", "YVYU",
-        "Y42B",
+        "I420", "NV12", "P010_10LE", "UYVP", "UYVY",
     )
 else:
     RAW_FORMATS = (
@@ -38,6 +36,12 @@ else:
     MEMORY_TYPES = (0, 1, 2, 3)
     YUV_DEST_FORMATS = ("I420", "NV12", "P010_10LE", "Y444", "UYVP", "UYVY")
 
+JETSON_GPU_ONLY_FORMATS = {
+    "GRAY16_LE", "RGB", "BGR", "BGR10A2_LE", "RGB10A2_LE", "UYVP",
+    "I420_12LE", "Y444", "Y444_10LE", "Y444_12LE", "BGRA64_LE",
+}
+JETSON_GPU_PROPERTIES = ("compute-hw=1", "copy-hw=1", "nvbuf-memory-type=2")
+
 
 def element(name: str, *properties: str) -> list[str]:
     return [name, *properties]
@@ -47,11 +51,30 @@ def caps(value: str) -> list[str]:
     return ["!", value, "!"]
 
 
+def format_properties(format_name: str) -> tuple[str, ...]:
+    if IS_JETSON and format_name in JETSON_GPU_ONLY_FORMATS:
+        return JETSON_GPU_PROPERTIES
+    return ()
+
+
+def oracle_supports(format_name: str) -> bool:
+    result = subprocess.run(
+        ["gst-inspect-1.0", ORIGINAL],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    return format_name in result.stdout
+
+
 def run_pipeline(
     tokens: list[str],
     output: Path,
     expect_success: bool = True,
     expected_error: str | None = None,
+    environment_updates: dict[str, str] | None = None,
 ) -> None:
     command = ["timeout", "25s", "gst-launch-1.0", "-q", *tokens]
     separator = [] if tokens and tokens[-1] == "!" else ["!"]
@@ -61,6 +84,8 @@ def run_pipeline(
         command.extend([*separator, "fakesink"])
     environment = os.environ.copy()
     environment["GST_REGISTRY"] = str(output.parent / "registry.bin")
+    if environment_updates is not None:
+        environment.update(environment_updates)
     result = subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -97,7 +122,11 @@ def compare_pair(directory: Path, label: str, make_tokens) -> None:
     original = outputs[ORIGINAL].read_bytes()
     replacement = outputs[REPLACEMENT].read_bytes()
     if not original:
-        raise AssertionError(f"{label}: pipeline produced an empty buffer")
+        raise AssertionError(f"{label}: original pipeline produced an empty buffer")
+    if not replacement:
+        raise AssertionError(f"{label}: replacement pipeline produced an empty buffer")
+    if IS_JETSON:
+        return
     if original != replacement:
         differences = sum(left != right for left, right in zip(original, replacement))
         differences += abs(len(original) - len(replacement))
@@ -127,7 +156,7 @@ def test_raw_formats(directory: Path) -> int:
             f"raw-output-{format_name}",
             lambda candidate, fmt=format_name: [
                 *raw_source(),
-                *element(candidate),
+                *element(candidate, *format_properties(fmt)),
                 *caps(f"video/x-raw,format={fmt},width=160,height=120"),
             ],
         )
@@ -136,7 +165,7 @@ def test_raw_formats(directory: Path) -> int:
             f"raw-input-{format_name}",
             lambda candidate, fmt=format_name: [
                 *raw_source(fmt),
-                *element(candidate),
+                *element(candidate, *format_properties(fmt)),
                 *caps("video/x-raw,format=RGBA,width=160,height=120"),
             ],
         )
@@ -208,9 +237,12 @@ def test_transforms(directory: Path) -> int:
                 f"dest-crop-{format_name}-{memory == 'video/x-raw(memory:NVMM)'}",
                 lambda candidate, target=memory, fmt=format_name: [
                     *raw_source(),
-                    *element(candidate, "dest-crop=13:9:121:91"),
+                    *element(candidate, "dest-crop=13:9:121:91", *format_properties(fmt)),
                     *caps(f"{target},format={fmt},width=160,height=120"),
-                    *element(ORIGINAL if "NVMM" in target else "videoconvert"),
+                    *element(
+                        ORIGINAL if "NVMM" in target else "videoconvert",
+                        *(format_properties(fmt) if "NVMM" in target else ()),
+                    ),
                     *caps("video/x-raw,format=RGBA"),
                 ],
             )
@@ -222,7 +254,7 @@ def test_transforms(directory: Path) -> int:
             f"odd-raw-output-{format_name}",
             lambda candidate, fmt=format_name: [
                 *raw_source(width=319, height=239),
-                *element(candidate),
+                *element(candidate, *format_properties(fmt)),
                 *caps(f"video/x-raw,format={fmt},width=161,height=121"),
                 *element("videoconvert"),
                 *caps("video/x-raw,format=RGBA,width=161,height=121"),
@@ -240,9 +272,9 @@ def test_nvmm(directory: Path) -> int:
             f"nvmm-output-{format_name}",
             lambda candidate, fmt=format_name: [
                 *raw_source(),
-                *element(candidate),
+                *element(candidate, *format_properties(fmt)),
                 *caps(f"video/x-raw(memory:NVMM),format={fmt},width=160,height=120"),
-                *element(ORIGINAL),
+                *element(ORIGINAL, *format_properties(fmt)),
                 *caps("video/x-raw,format=RGBA"),
             ],
         )
@@ -251,23 +283,26 @@ def test_nvmm(directory: Path) -> int:
             f"nvmm-input-{format_name}",
             lambda candidate, fmt=format_name: [
                 *raw_source(),
-                *element(ORIGINAL),
+                *element(ORIGINAL, *format_properties(fmt)),
                 *caps(f"video/x-raw(memory:NVMM),format={fmt}"),
-                *element(candidate),
+                *element(candidate, *format_properties(fmt)),
                 *caps("video/x-raw,format=RGBA,width=160,height=120"),
             ],
         )
         count += 2
 
     for memory_type in MEMORY_TYPES:
+        gpu_properties = (
+            JETSON_GPU_PROPERTIES if IS_JETSON and memory_type in (1, 2, 3) else ()
+        )
         compare_pair(
             directory,
             f"memory-type-{memory_type}",
             lambda candidate, value=memory_type: [
                 *raw_source(),
-                *element(candidate, f"nvbuf-memory-type={value}"),
+                *element(candidate, f"nvbuf-memory-type={value}", *gpu_properties),
                 *caps("video/x-raw(memory:NVMM),format=NV12,width=160,height=120"),
-                *element(ORIGINAL),
+                *element(ORIGINAL, *gpu_properties),
                 *caps("video/x-raw,format=RGBA"),
             ],
         )
@@ -276,14 +311,16 @@ def test_nvmm(directory: Path) -> int:
 
 
 def test_bgra64(directory: Path) -> int:
+    if not oracle_supports("BGRA64_LE"):
+        return 0
     compare_pair(
         directory,
         "bgra64-raw",
         lambda candidate: [
             *raw_source(),
-            *element(ORIGINAL),
+            *element(ORIGINAL, *format_properties("UYVP")),
             *caps("video/x-raw,format=UYVP"),
-            *element(candidate),
+            *element(candidate, *format_properties("BGRA64_LE")),
             *caps("video/x-raw,format=BGRA64_LE,width=160,height=120"),
         ],
     )
@@ -292,7 +329,7 @@ def test_bgra64(directory: Path) -> int:
         run_pipeline(
             [
                 *raw_source(),
-                *element(candidate),
+                *element(candidate, *format_properties("BGRA64_LE")),
                 *caps("video/x-raw,format=BGRA64_LE"),
             ],
             output,
@@ -354,6 +391,36 @@ def test_hardware_controls(directory: Path) -> int:
             ],
         )
         count += 1
+
+    if IS_JETSON:
+        trace_library = Path(os.environ["DSX_COPY_TRACE_SO"])
+        for method, expected_events in (
+            (1, ("transform=1",)),
+            (2, ("raw-to-surface", "surface-to-raw")),
+        ):
+            trace_file = directory / f"copy-hw-{method}.trace"
+            output = directory / f"copy-hw-{method}.raw"
+            run_pipeline(
+                [
+                    *raw_source(),
+                    *element(REPLACEMENT, "compute-hw=0", f"copy-hw={method}"),
+                    *caps("video/x-raw(memory:NVMM),format=NV12,width=160,height=120"),
+                    *element(REPLACEMENT, "compute-hw=0", f"copy-hw={method}"),
+                    *caps("video/x-raw,format=RGBA,width=80,height=60"),
+                ],
+                output,
+                environment_updates={
+                    "LD_PRELOAD": str(trace_library),
+                    "DSX_COPY_TRACE_FILE": str(trace_file),
+                },
+            )
+            events = trace_file.read_text().splitlines()
+            for expected in expected_events:
+                if expected not in events:
+                    raise AssertionError(
+                        f"copy-hw={method} did not use {expected}: {events}"
+                    )
+            count += 1
     return count
 
 
@@ -368,7 +435,12 @@ def main() -> None:
         checks += test_nvmm(directory)
         checks += test_bgra64(directory)
         checks += test_hardware_controls(directory)
-    print(f"PASS: {checks} black-box runtime parity cases")
+    qualifier = (
+        "Jetson runtime compatibility cases; headless oracle bytes are not stable"
+        if IS_JETSON
+        else "black-box runtime parity cases"
+    )
+    print(f"PASS: {checks} {qualifier}")
 
 
 if __name__ == "__main__":

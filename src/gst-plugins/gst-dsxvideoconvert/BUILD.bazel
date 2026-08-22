@@ -75,6 +75,15 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "libcopy_trace.so",
+    srcs = ["tests/copy_trace.cpp"],
+    linkshared = True,
+    linkstatic = False,
+    linkopts = ["-ldl"],
+    deps = ["@deepstream//:deepstream_lib"],
+)
+
 PARITY_TEST_TAGS = [
     "exclusive",
     "manual",
@@ -89,10 +98,12 @@ PARITY_TEST_TAGS = [
             "$(location %s)" % script,
             "$(location :libgstdsxvideoconvert.so)",
             "$(location @deepstream//:nvvideoconvert_plugin)",
+            "$(location :libcopy_trace.so)",
         ],
         data = [
             script,
             ":libgstdsxvideoconvert.so",
+            ":libcopy_trace.so",
             "@deepstream//:nvvideoconvert_plugin",
         ],
         size = size,
