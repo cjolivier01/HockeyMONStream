@@ -426,15 +426,14 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       std::cerr << "Invalid shadow black-point toggle: " << prop.value << std::endl;
       return false;
     }
-  } else if (key == "premiere-lift") {
-    float premiere_lift = 0.0f;
-    if (!parse_finite_float(prop.value, &premiere_lift) ||
-        premiere_lift < hm::playcropper::kPremiereLiftMinimumSetting ||
-        premiere_lift > hm::playcropper::kPremiereLiftMaximumSetting) {
-      std::cerr << "Invalid Premiere lift setting: " << prop.value << std::endl;
+  } else if (key == "exposure") {
+    float exposure = 0.0f;
+    if (!parse_finite_float(prop.value, &exposure) || exposure < hm::playcropper::kExposureMinimumSetting ||
+        exposure > hm::playcropper::kExposureMaximumSetting) {
+      std::cerr << "Invalid exposure setting: " << prop.value << std::endl;
       return false;
     }
-    premiere_lift_ = premiere_lift;
+    exposure_ = exposure;
   } else if (key == "no-crop") {
     // TODO: implement, needs to change caps too
     no_crop_ = !!std::atoi(prop.value.c_str());
@@ -670,7 +669,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           output_rect,
           shadow_lift_percent_,
           lift_shadow_black_point_,
-          premiere_lift_,
+          exposure_,
           cuda_stream_));
       completion_fence.MarkSubmitted();
     } else {

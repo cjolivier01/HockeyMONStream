@@ -24,7 +24,7 @@ cudaError_t convertHalf4ToRgba8(
     double rotation_degrees,
     float shadow_lift_percent,
     bool lift_shadow_black_point,
-    float premiere_lift,
+    float exposure,
     cudaStream_t stream);
 
 // Calibration must observe the stitched image before user-facing tone controls.

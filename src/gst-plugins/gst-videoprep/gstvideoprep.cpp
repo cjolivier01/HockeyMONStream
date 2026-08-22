@@ -153,7 +153,7 @@ enum {
   PROP_HIGH_BIT_DEPTH,
   PROP_SHADOW_LIFT,
   PROP_SHADOW_LIFT_BLACK_POINT,
-  PROP_PREMIERE_LIFT,
+  PROP_EXPOSURE,
   PROP_RUNTIME_TUNING_CONFIG_FILE,
   PROP_CANCEL_PENDING_WORK,
   PROP_LAST_PROPERTY_SET_OK,
@@ -1242,11 +1242,11 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
-      PROP_PREMIERE_LIFT,
+      PROP_EXPOSURE,
       g_param_spec_double(
-          "premiere-lift",
-          "Premiere-style gain",
-          "Measured Premiere-style RGB gain setting; 1.0 applies sqrt(2) gain and clips at white",
+          "exposure",
+          "Exposure",
+          "Uniform exposure gain; 1.0 applies +0.5 stop (sqrt(2) gain) and clips at white",
           0.0,
           1.3,
           0.0,
@@ -1330,7 +1330,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->high_bit_depth = FALSE;
   videoprep->shadow_lift = 0.0;
   videoprep->shadow_lift_black_point = FALSE;
-  videoprep->premiere_lift = 0.0;
+  videoprep->exposure = 0.0;
   videoprep->last_property_set_ok = TRUE;
   videoprep->post_stitch_rotate_degrees_set = FALSE;
   videoprep->fixed_edge_rotation_angle_set = FALSE;
@@ -1340,7 +1340,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->high_bit_depth_set = FALSE;
   videoprep->shadow_lift_set = FALSE;
   videoprep->shadow_lift_black_point_set = FALSE;
-  videoprep->premiere_lift_set = FALSE;
+  videoprep->exposure_set = FALSE;
   videoprep->property_set_sequence = 0;
   videoprep->plugin_private_config_sequence = 0;
   videoprep->post_stitch_rotate_degrees_sequence = 0;
@@ -1351,7 +1351,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->high_bit_depth_sequence = 0;
   videoprep->shadow_lift_sequence = 0;
   videoprep->shadow_lift_black_point_sequence = 0;
-  videoprep->premiere_lift_sequence = 0;
+  videoprep->exposure_sequence = 0;
   videoprep->priv_factory = new VideoPrepLibrary_Factory();
 
   videoprep->num_output_buffers = DEFAULT_NUM_OUTPUT_BUFFERS;
@@ -1590,17 +1590,17 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
-    case PROP_PREMIERE_LIFT: {
-      const gdouble previous = videoprep->premiere_lift;
-      const gboolean previous_set = videoprep->premiere_lift_set;
-      const guint previous_sequence = videoprep->premiere_lift_sequence;
-      videoprep->premiere_lift = g_value_get_double(value);
-      videoprep->premiere_lift_set = TRUE;
-      videoprep->premiere_lift_sequence = ++videoprep->property_set_sequence;
-      if (!set_priv_property("premiere-lift", std::to_string(videoprep->premiere_lift))) {
-        videoprep->premiere_lift = previous;
-        videoprep->premiere_lift_set = previous_set;
-        videoprep->premiere_lift_sequence = previous_sequence;
+    case PROP_EXPOSURE: {
+      const gdouble previous = videoprep->exposure;
+      const gboolean previous_set = videoprep->exposure_set;
+      const guint previous_sequence = videoprep->exposure_sequence;
+      videoprep->exposure = g_value_get_double(value);
+      videoprep->exposure_set = TRUE;
+      videoprep->exposure_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("exposure", std::to_string(videoprep->exposure))) {
+        videoprep->exposure = previous;
+        videoprep->exposure_set = previous_set;
+        videoprep->exposure_sequence = previous_sequence;
       }
       break;
     }
@@ -1706,9 +1706,9 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              Property("shadow-lift-black-point", videoprep->shadow_lift_black_point ? "1" : "0")) &&
         ok;
   }
-  if (videoprep->premiere_lift_set &&
-      typed_property_wins_over_private_config(videoprep, videoprep->premiere_lift_sequence, "premiere-lift")) {
-    ok = videoprep->priv->SetProperty(Property("premiere-lift", std::to_string(videoprep->premiere_lift))) && ok;
+  if (videoprep->exposure_set &&
+      typed_property_wins_over_private_config(videoprep, videoprep->exposure_sequence, "exposure")) {
+    ok = videoprep->priv->SetProperty(Property("exposure", std::to_string(videoprep->exposure))) && ok;
   }
   videoprep->last_property_set_ok = ok;
   return ok;
@@ -1758,8 +1758,8 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
     case PROP_SHADOW_LIFT_BLACK_POINT:
       g_value_set_boolean(value, videoprep->shadow_lift_black_point);
       break;
-    case PROP_PREMIERE_LIFT:
-      g_value_set_double(value, videoprep->premiere_lift);
+    case PROP_EXPOSURE:
+      g_value_set_double(value, videoprep->exposure);
       break;
     case PROP_RUNTIME_TUNING_CONFIG_FILE:
       G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);

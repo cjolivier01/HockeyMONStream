@@ -53,7 +53,7 @@ __device__ uint8_t gradeAndQuantize(
     bool alpha,
     float shadow_lift_percent,
     bool lift_shadow_black_point,
-    float premiere_gain) {
+    float exposure_gain_value) {
   bool round_graded_result = false;
   const float normalized_value = value / 255.0f;
   if (!alpha && shadow_lift_percent > 0.0f && normalized_value < playcropper::kShadowLiftVideoStart &&
@@ -62,8 +62,8 @@ __device__ uint8_t gradeAndQuantize(
         255.0f;
     round_graded_result = true;
   }
-  if (!alpha && premiere_gain > 1.0f) {
-    value *= premiere_gain;
+  if (!alpha && exposure_gain_value > 1.0f) {
+    value *= exposure_gain_value;
     round_graded_result = true;
   }
   if (round_graded_result) {
@@ -87,7 +87,7 @@ __global__ void convertHalf4ToRgba8Kernel(
     float center_y,
     float shadow_lift_percent,
     bool lift_shadow_black_point,
-    float premiere_gain) {
+    float exposure_gain_value) {
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
   if (x >= output_width || y >= output_height) {
@@ -123,7 +123,7 @@ __global__ void convertHalf4ToRgba8Kernel(
     const float p1 = sampleChannel(p10, channel) * (1.0f - dx) + sampleChannel(p11, channel) * dx;
     const float interpolated = p0 * (1.0f - dy) + p1 * dy;
     channels[channel] =
-        gradeAndQuantize(interpolated, channel == 3, shadow_lift_percent, lift_shadow_black_point, premiere_gain);
+        gradeAndQuantize(interpolated, channel == 3, shadow_lift_percent, lift_shadow_black_point, exposure_gain_value);
   }
   output_row[x] = result;
 }
@@ -163,7 +163,7 @@ cudaError_t convertHalf4ToRgba8(
     double rotation_degrees,
     float shadow_lift_percent,
     bool lift_shadow_black_point,
-    float premiere_lift,
+    float exposure,
     cudaStream_t stream) {
   if (!input || !output || !output->dataPtr || output->colorFormat != NVBUF_COLOR_FORMAT_RGBA || input_width < 2 ||
       input_height < 2 || output->width < 1 || output->height < 1) {
@@ -191,7 +191,7 @@ cudaError_t convertHalf4ToRgba8(
       center_y,
       shadow_lift_percent,
       lift_shadow_black_point,
-      playcropper::premiere_lift_gain(premiere_lift));
+      playcropper::exposure_gain(exposure));
   return cudaGetLastError();
 }
 
@@ -212,7 +212,7 @@ cudaError_t convertHalf4ToCalibrationRgba8(
       rotation_degrees,
       /*shadow_lift_percent=*/0.0f,
       /*lift_shadow_black_point=*/false,
-      /*premiere_lift=*/0.0f,
+      /*exposure=*/0.0f,
       stream);
 }
 

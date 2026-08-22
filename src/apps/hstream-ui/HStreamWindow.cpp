@@ -1851,7 +1851,7 @@ void HStreamWindow::loadBaselineDefaults() {
   camera_defaults_["Max_Accel_X_x10"] = 0;
   camera_defaults_["Max_Accel_Y_x10"] = 0;
   camera_defaults_["Lift_Shadow_Black_Point"] = 0;
-  camera_defaults_["Premiere_Lift_x100"] = 0;
+  camera_defaults_["Exposure_x100"] = 0;
   camera_defaults_["Use_10_Bit_Grading"] = 0;
 }
 
@@ -2708,10 +2708,10 @@ void HStreamWindow::configureControlHelp() {
       {"Lift_Shadow_Black_Point",
        "Allow Bring up shadows to raise exact black for a visibly stronger Resolve-style toe lift. At 100%, black "
        "rises to 15% video level and rolls smoothly back to the protected shadow boundary. Disabled by default."},
-      {"Premiere_Lift_x100",
-       "Apply the independent Premiere-reference RGB gain measured from the supplied exports. 30, 60, 100, and 130 "
-       "match settings 0.3, 0.6, 1.0, and 1.3. It preserves exact black, raises the whole signal, and clips at white. "
-       "When Bring up shadows is also enabled, the shadow curve runs first and this gain runs second."},
+      {"Exposure_x100",
+       "Apply uniform exposure gain. 30, 60, 100, and 130 select settings 0.3, 0.6, 1.0, and 1.3; 100 is +0.5 "
+       "stop (sqrt(2) gain). It preserves exact black, raises the whole signal, and clips at white. When Bring up "
+       "shadows is also enabled, the shadow curve runs first and exposure runs second."},
       {"Use_10_Bit_Grading",
        "Keep 10-bit decoded video in P010 through the lossless camera mux, convert it to RGB10A2, and stitch and "
        "grade in FP16 before the one final RGBA8 conversion. This uses more GPU memory and applies on the next run."},
@@ -2852,7 +2852,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
   const std::vector<CameraSliderSpec> color_controls = {
       {"Bring_Up_Shadows", "Bring up shadows (%)", 0, 100, 0},
-      {"Premiere_Lift_x100", "Premiere lift x100", 0, 130, 0},
+      {"Exposure_x100", "Exposure x100", 0, 130, 0},
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, default_value("Stitch_Rotate_Degrees")},
@@ -3939,12 +3939,12 @@ QStringList HStreamWindow::pipelineArguments() const {
     args << QString("--options=pipeline.%1.properties.shadow-lift-black-point=%2")
                 .arg(active_tone_element)
                 .arg(cameraControlValue("Lift_Shadow_Black_Point"));
-    args << QString("--options=pipeline.%1.properties.premiere-lift=%2")
+    args << QString("--options=pipeline.%1.properties.exposure=%2")
                 .arg(active_tone_element)
-                .arg(QString::number(cameraControlValue("Premiere_Lift_x100") / 100.0, 'f', 2));
+                .arg(QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2));
     args << QString("--options=pipeline.%1.properties.shadow-lift=0").arg(bypassed_tone_element);
     args << QString("--options=pipeline.%1.properties.shadow-lift-black-point=0").arg(bypassed_tone_element);
-    args << QString("--options=pipeline.%1.properties.premiere-lift=0").arg(bypassed_tone_element);
+    args << QString("--options=pipeline.%1.properties.exposure=0").arg(bypassed_tone_element);
     if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
       args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
                   .arg(QDir::cleanPath(gameDirectory(game_id)));
@@ -7377,17 +7377,17 @@ void HStreamWindow::loadSavedControlConfig() {
       stage_control("Bring_Up_Shadows", bounded_integer_control(shadow_lift_path, shadow_lift, 0, 100));
     }
     stage_boolean_path(tone_property_owner + ".shadow-lift-black-point", "Lift_Shadow_Black_Point");
-    const QString premiere_lift_path = tone_property_owner + ".premiere-lift";
-    YAML::Node premiere_lift;
-    if (lookup_yaml_path(config, premiere_lift_path, &premiere_lift)) {
-      const double setting = premiere_lift.as<double>();
-      const int setting_x100 = rounded_control(premiere_lift_path, setting * 100.0);
+    const QString exposure_path = tone_property_owner + ".exposure";
+    YAML::Node exposure;
+    if (lookup_yaml_path(config, exposure_path, &exposure)) {
+      const double setting = exposure.as<double>();
+      const int setting_x100 = rounded_control(exposure_path, setting * 100.0);
       if (!std::isfinite(setting) || setting < 0.0 || setting > 1.3 ||
           std::abs(setting * 100.0 - setting_x100) > 1e-6) {
         throw std::invalid_argument(
-            QString("%1 must be from 0.00 through 1.30 in hundredths").arg(premiere_lift_path).toStdString());
+            QString("%1 must be from 0.00 through 1.30 in hundredths").arg(exposure_path).toStdString());
       }
-      stage_control("Premiere_Lift_x100", setting_x100);
+      stage_control("Exposure_x100", setting_x100);
     }
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
     int loaded = 0;
@@ -7395,7 +7395,7 @@ void HStreamWindow::loadSavedControlConfig() {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
         int value = entry.second.as<int>();
-        if (id == "Premiere_Lift_x100") {
+        if (id == "Exposure_x100") {
           value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 130);
         } else if (id == "Bring_Up_Shadows" || id == "Zoom_In_Aggressiveness") {
           value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 100);
@@ -7535,11 +7535,11 @@ bool HStreamWindow::applySavedControlConfig(
            "stitching.post_stitch_rotate_degrees",
            "pipeline.hmplaycropper.properties.shadow-lift",
            "pipeline.hmplaycropper.properties.shadow-lift-black-point",
-           "pipeline.hmplaycropper.properties.premiere-lift",
+           "pipeline.hmplaycropper.properties.exposure",
            "pipeline.hmstitcher.properties.high-bit-depth",
            "pipeline.hmstitcher.properties.shadow-lift",
            "pipeline.hmstitcher.properties.shadow-lift-black-point",
-           "pipeline.hmstitcher.properties.premiere-lift",
+           "pipeline.hmstitcher.properties.exposure",
            "rink.camera.fixed_edge_rotation_angle",
            "rink.camera.stop_on_dir_change_delay",
            "rink.camera.cancel_stop_on_opposite_dir",
@@ -7629,9 +7629,9 @@ bool HStreamWindow::applySavedControlConfig(
         slider_value("Lift_Shadow_Black_Point") != 0;
     mark_runtime_key(tone_path_prefix + ".shadow-lift-black-point");
   }
-  if (has_control(controls, "Premiere_Lift_x100")) {
-    config["pipeline"][tone_element]["properties"]["premiere-lift"] = slider_value("Premiere_Lift_x100") / 100.0;
-    mark_runtime_key(tone_path_prefix + ".premiere-lift");
+  if (has_control(controls, "Exposure_x100")) {
+    config["pipeline"][tone_element]["properties"]["exposure"] = slider_value("Exposure_x100") / 100.0;
+    mark_runtime_key(tone_path_prefix + ".exposure");
   }
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
@@ -9487,7 +9487,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     schedulePlaytrackerRuntimeControl(id, value);
     return false;
   }
-  if (id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Premiere_Lift_x100") {
+  if (id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Exposure_x100") {
     schedulePlaycropperRuntimeControl(id, value);
     return false;
   }
@@ -9589,9 +9589,9 @@ void HStreamWindow::flushScheduledRuntimeControls() {
       commands.push_back(
           {tone_element, "shadow-lift-black-point", QString::number(cameraControlValue("Lift_Shadow_Black_Point"))});
     }
-    if (controls.count("Premiere_Lift_x100")) {
+    if (controls.count("Exposure_x100")) {
       commands.push_back(
-          {tone_element, "premiere-lift", QString::number(cameraControlValue("Premiere_Lift_x100") / 100.0, 'f', 2)});
+          {tone_element, "exposure", QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2)});
     }
     publishRuntimeControlBatch(controls, commands);
     return;

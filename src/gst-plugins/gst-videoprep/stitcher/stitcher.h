@@ -183,7 +183,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
   std::atomic<float> shadow_lift_percent_{0.0f};
   std::atomic_bool lift_shadow_black_point_{false};
-  std::atomic<float> premiere_lift_{0.0f};
+  std::atomic<float> exposure_{0.0f};
   std::mutex eos_mu_;
   bool pipeline_eos_seen_{false};
   std::set<guint> eos_source_ids_;

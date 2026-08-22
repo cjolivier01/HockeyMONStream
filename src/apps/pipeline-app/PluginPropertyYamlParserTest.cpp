@@ -66,7 +66,7 @@ hmplaycropper:
     silent: true
     shadow-lift: 35
     shadow-lift-black-point: true
-    premiere-lift: 0.6
+    exposure: 0.6
   private-properties:
     runtime-output-max-width: 3840
     runtime-output-max-height: 2160
@@ -102,7 +102,7 @@ ds-playtracker:
       !expect_property(playcropper.plugin_properties, "silent", "true") ||
       !expect_property(playcropper.plugin_properties, "shadow-lift", "35") ||
       !expect_property(playcropper.plugin_properties, "shadow-lift-black-point", "true") ||
-      !expect_property(playcropper.plugin_properties, "premiere-lift", "0.6") ||
+      !expect_property(playcropper.plugin_properties, "exposure", "0.6") ||
       !expect_property(playcropper.private_properties, "runtime-output-max-width", "3840") ||
       !expect_property(playcropper.private_properties, "no-crop", "false")) {
     return 1;

@@ -92,9 +92,9 @@ bool expect_high_bit_property_contract(const std::string& config_dir) {
       stitcher.SetProperty({"shadow-lift", "101"}) || stitcher.SetProperty({"shadow-lift", "nan"}) ||
       !stitcher.SetProperty({"shadow-lift-black-point", "1"}) ||
       !stitcher.SetProperty({"shadow-lift-black-point", "false"}) ||
-      stitcher.SetProperty({"shadow-lift-black-point", "yes"}) || !stitcher.SetProperty({"premiere-lift", "0"}) ||
-      !stitcher.SetProperty({"premiere-lift", "1.3"}) || stitcher.SetProperty({"premiere-lift", "-0.01"}) ||
-      stitcher.SetProperty({"premiere-lift", "1.31"}) || stitcher.SetProperty({"premiere-lift", "inf"}) ||
+      stitcher.SetProperty({"shadow-lift-black-point", "yes"}) || !stitcher.SetProperty({"exposure", "0"}) ||
+      !stitcher.SetProperty({"exposure", "1.3"}) || stitcher.SetProperty({"exposure", "-0.01"}) ||
+      stitcher.SetProperty({"exposure", "1.31"}) || stitcher.SetProperty({"exposure", "inf"}) ||
       !stitcher.SetProperty({"one-pass-mode", "1"})) {
     std::cerr << "High-bit stitcher property validation failed\n";
     return false;

@@ -1059,13 +1059,13 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       return false;
     }
     lift_shadow_black_point_.store(parsed, std::memory_order_relaxed);
-  } else if (prop.key == "premiere-lift") {
+  } else if (prop.key == "exposure") {
     double parsed = 0.0;
     if (!parse_finite_double(prop.value, parsed) || parsed < 0.0 || parsed > 1.3) {
-      std::cerr << "Invalid premiere-lift value: " << prop.value << std::endl;
+      std::cerr << "Invalid exposure value: " << prop.value << std::endl;
       return false;
     }
-    premiere_lift_.store(static_cast<float>(parsed), std::memory_order_relaxed);
+    exposure_.store(static_cast<float>(parsed), std::memory_order_relaxed);
   } else if (prop.key == "cancel-pending-work") {
     calibration_cancelled_.store(true, std::memory_order_release);
     RequestShutdown();
@@ -1642,7 +1642,7 @@ absl::Status StitcherPriv::GenerateOutput(
           applied_post_stitch_rotation,
           shadow_lift_percent_.load(std::memory_order_relaxed),
           lift_shadow_black_point_.load(std::memory_order_relaxed),
-          premiere_lift_.load(std::memory_order_relaxed),
+          exposure_.load(std::memory_order_relaxed),
           cuda_stream_)));
     } else if (stitcher_fp16_) {
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(

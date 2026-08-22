@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
               {"high-bit-depth", "true"},
               {"shadow-lift", "42.5"},
               {"shadow-lift-black-point", "true"},
-              {"premiere-lift", "1.0"},
+              {"exposure", "1.0"},
           })) {
     gst_object_unref(element);
     return 1;
@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
   gboolean high_bit_depth = FALSE;
   gdouble shadow_lift = 0.0;
   gboolean shadow_lift_black_point = FALSE;
-  gdouble premiere_lift = 0.0;
+  gdouble exposure = 0.0;
   gboolean last_property_set_ok = FALSE;
   g_object_get(
       G_OBJECT(element),
@@ -186,8 +186,8 @@ int main(int argc, char** argv) {
       &shadow_lift,
       "shadow-lift-black-point",
       &shadow_lift_black_point,
-      "premiere-lift",
-      &premiere_lift,
+      "exposure",
+      &exposure,
       "last-property-set-ok",
       &last_property_set_ok,
       NULL);
@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
       std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 && std::abs(fixed_edge_rotation_angle_left - 25.0) < 1e-6 &&
       std::abs(fixed_edge_rotation_angle_right - 75.0) < 1e-6 && std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 &&
       high_bit_depth == TRUE && std::abs(shadow_lift - 42.5) < 1e-6 && shadow_lift_black_point == TRUE &&
-      std::abs(premiere_lift - 1.0) < 1e-6 && last_property_set_ok == TRUE;
+      std::abs(exposure - 1.0) < 1e-6 && last_property_set_ok == TRUE;
   GParamSpec* high_bit_depth_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "high-bit-depth");
   const bool high_bit_depth_is_restart_only = high_bit_depth_spec &&
       (high_bit_depth_spec->flags & GST_PARAM_MUTABLE_READY) != 0 &&
@@ -217,17 +217,15 @@ int main(int argc, char** argv) {
       g_object_class_find_property(G_OBJECT_GET_CLASS(element), "shadow-lift-black-point");
   const bool black_point_mutable_while_playing =
       shadow_black_point_spec && (shadow_black_point_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
-  GParamSpec* premiere_lift_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "premiere-lift");
-  const bool premiere_lift_mutable_while_playing =
-      premiere_lift_spec && (premiere_lift_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
+  GParamSpec* exposure_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "exposure");
+  const bool exposure_mutable_while_playing = exposure_spec && (exposure_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
   const bool invalid_black_point_rejected =
       !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"shadow-lift-black-point", "2"}});
   gboolean black_point_after_invalid = FALSE;
   g_object_get(G_OBJECT(element), "shadow-lift-black-point", &black_point_after_invalid, NULL);
-  const bool invalid_premiere_lift_rejected =
-      !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"premiere-lift", "1.31"}});
-  gdouble premiere_lift_after_invalid = 0.0;
-  g_object_get(G_OBJECT(element), "premiere-lift", &premiere_lift_after_invalid, NULL);
+  const bool invalid_exposure_rejected = !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"exposure", "1.31"}});
+  gdouble exposure_after_invalid = 0.0;
+  g_object_get(G_OBJECT(element), "exposure", &exposure_after_invalid, NULL);
   const bool invalid_high_bit_depth_rejected =
       !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"high-bit-depth", "2"}});
   gboolean high_bit_depth_after_invalid = FALSE;
@@ -237,9 +235,9 @@ int main(int argc, char** argv) {
   gst_object_unref(element);
 
   if (!ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 || !black_point_mutable_while_playing ||
-      !premiere_lift_mutable_while_playing || !invalid_black_point_rejected || black_point_after_invalid != TRUE ||
-      !invalid_premiere_lift_rejected || std::abs(premiere_lift_after_invalid - 1.0) > 1e-6 ||
-      !invalid_high_bit_depth_rejected || high_bit_depth_after_invalid != TRUE) {
+      !exposure_mutable_while_playing || !invalid_black_point_rejected || black_point_after_invalid != TRUE ||
+      !invalid_exposure_rejected || std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
+      high_bit_depth_after_invalid != TRUE) {
     std::cerr << "videoprep property roundtrip failed\n";
     return 1;
   }

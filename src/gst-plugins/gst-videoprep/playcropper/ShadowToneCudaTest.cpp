@@ -26,7 +26,7 @@ bool transform_sample(
     float lift_percent,
     std::array<uint8_t, 4>* output,
     bool lift_black_point = false,
-    float premiere_lift = 0.0f) {
+    float exposure = 0.0f) {
   if (!output) {
     return false;
   }
@@ -72,7 +72,7 @@ bool transform_sample(
                           hm::BBox(0, 0, 1, 1),
                           lift_percent,
                           lift_black_point,
-                          premiere_lift,
+                          exposure,
                           stream),
                       "combinedTransform") &&
       cuda_ok(cudaMemcpyAsync(output->data(), device_output, output->size(), cudaMemcpyDeviceToHost, stream),
@@ -90,12 +90,12 @@ bool transform_pixel(
     float lift_percent,
     std::array<uint8_t, 4>* output,
     bool lift_black_point = false,
-    float premiere_lift = 0.0f) {
+    float exposure = 0.0f) {
   std::array<uint8_t, 16> input{};
   for (size_t offset = 0; offset < input.size(); offset += pixel.size()) {
     std::copy(pixel.begin(), pixel.end(), input.begin() + offset);
   }
-  return transform_sample(input, 0.0f, 0.0f, lift_percent, output, lift_black_point, premiere_lift);
+  return transform_sample(input, 0.0f, 0.0f, lift_percent, output, lift_black_point, exposure);
 }
 
 uint8_t lifted_channel(uint8_t value, float lift_percent, bool lift_black_point = false) {
@@ -104,14 +104,14 @@ uint8_t lifted_channel(uint8_t value, float lift_percent, bool lift_black_point 
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(lifted, 0.0f, 255.0f));
 }
 
-uint8_t premiere_lifted_channel(uint8_t value, float setting) {
-  const float lifted = hm::playcropper::evaluate_premiere_lift_curve(value / 255.0f, setting) * 255.0f + 0.5f;
+uint8_t exposed_channel(uint8_t value, float setting) {
+  const float lifted = hm::playcropper::evaluate_exposure(value / 255.0f, setting) * 255.0f + 0.5f;
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(lifted, 0.0f, 255.0f));
 }
 
-uint8_t composed_lifted_channel(uint8_t value, float shadow_lift_percent, float premiere_lift) {
+uint8_t composed_lifted_channel(uint8_t value, float shadow_lift_percent, float exposure) {
   const float shadow_lifted = hm::playcropper::evaluate_shadow_lift_curve(value / 255.0f, shadow_lift_percent, false);
-  const float composed = hm::playcropper::evaluate_premiere_lift_curve(shadow_lifted, premiere_lift) * 255.0f + 0.5f;
+  const float composed = hm::playcropper::evaluate_exposure(shadow_lifted, exposure) * 255.0f + 0.5f;
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(composed, 0.0f, 255.0f));
 }
 
@@ -144,16 +144,16 @@ int main() {
     return 1;
   }
 
-  const std::array<uint8_t, 4> premiere_input = {0, 64, 128, 241};
-  const std::array<uint8_t, 4> premiere_expected = {
+  const std::array<uint8_t, 4> exposure_input = {0, 64, 128, 241};
+  const std::array<uint8_t, 4> exposure_expected = {
       0,
-      premiere_lifted_channel(premiere_input[1], 1.3f),
-      premiere_lifted_channel(premiere_input[2], 1.3f),
-      premiere_input[3],
+      exposed_channel(exposure_input[1], 1.3f),
+      exposed_channel(exposure_input[2], 1.3f),
+      exposure_input[3],
   };
-  if (!transform_pixel(premiere_input, 0.0f, &output, false, 1.3f) || output != premiere_expected || output[0] != 0 ||
+  if (!transform_pixel(exposure_input, 0.0f, &output, false, 1.3f) || output != exposure_expected || output[0] != 0 ||
       output[2] != 201) {
-    std::cerr << "CUDA Premiere lift must match the measured gain while preserving exact black and alpha\n";
+    std::cerr << "CUDA exposure must match the measured gain while preserving exact black and alpha\n";
     return 1;
   }
 
@@ -165,7 +165,7 @@ int main() {
       composed_input[3],
   };
   if (!transform_pixel(composed_input, 100.0f, &output, false, 1.0f) || output != composed_expected) {
-    std::cerr << "CUDA Premiere gain must compose after the existing shadow curve\n";
+    std::cerr << "CUDA exposure must compose after the existing shadow curve\n";
     return 1;
   }
 

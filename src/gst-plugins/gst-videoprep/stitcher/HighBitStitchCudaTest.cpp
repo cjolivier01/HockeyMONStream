@@ -28,13 +28,13 @@ uint32_t pack_rgb10a2(uint32_t red, uint32_t green, uint32_t blue, uint32_t alph
   return (red & 0x3ffu) | ((green & 0x3ffu) << 10) | ((blue & 0x3ffu) << 20) | ((alpha & 0x3u) << 30);
 }
 
-uint8_t composed_grade(float value, float shadow_lift_percent, float premiere_lift) {
+uint8_t composed_grade(float value, float shadow_lift_percent, float exposure) {
   float normalized = value / 255.0f;
   if (shadow_lift_percent > 0.0f && normalized > 0.0f && normalized < hm::playcropper::kShadowLiftVideoStart) {
     normalized = hm::playcropper::evaluate_shadow_lift_curve(normalized, shadow_lift_percent, false);
   }
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(
-      normalized * 255.0f * hm::playcropper::premiere_lift_gain(premiere_lift) + 0.5f, 0.0f, 255.0f));
+      normalized * 255.0f * hm::playcropper::exposure_gain(exposure) + 0.5f, 0.0f, 255.0f));
 }
 
 bool exposure_match_accepts_half4() {
@@ -158,7 +158,7 @@ int main() {
                /*rotation_degrees=*/0.0,
                /*shadow_lift_percent=*/0.0f,
                /*lift_shadow_black_point=*/false,
-               /*premiere_lift=*/0.0f,
+               /*exposure=*/0.0f,
                stream),
            "convertHalf4ToRgba8(identity)");
   std::vector<uchar4> rgba(kWidth * kHeight);
@@ -193,7 +193,7 @@ int main() {
   }
 
   constexpr float kShadowLift = 100.0f;
-  constexpr float kPremiereLift = 1.0f;
+  constexpr float kExposure = 1.0f;
   ok = ok &&
       cuda_ok(
            hm::stitcher::convertHalf4ToRgba8(
@@ -205,7 +205,7 @@ int main() {
                /*rotation_degrees=*/0.0,
                kShadowLift,
                /*lift_shadow_black_point=*/false,
-               kPremiereLift,
+               kExposure,
                stream),
            "convertHalf4ToRgba8(grade)") &&
       cuda_ok(
@@ -222,7 +222,7 @@ int main() {
       cuda_ok(cudaStreamSynchronize(stream), "cudaStreamSynchronize(graded rgba)");
   for (const int code : {0, 64, 256, 614, 1023}) {
     const float source = __half2float(unpacked[code].x);
-    const uint8_t expected = code == 0 ? 0 : composed_grade(source, kShadowLift, kPremiereLift);
+    const uint8_t expected = code == 0 ? 0 : composed_grade(source, kShadowLift, kExposure);
     const uchar4 pixel = rgba[code];
     if (pixel.x != expected || pixel.y != expected || pixel.z != expected || pixel.w != 255) {
       std::cerr << "Composed FP16 grading mismatch at 10-bit code " << code << '\n';

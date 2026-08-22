@@ -28,13 +28,13 @@ int main() {
           is_allowlisted_runtime_property("playcropper", "shadow-lift-black-point"),
           "The playcropper compatibility alias must accept live black-point lift") ||
       !expect(
-          is_allowlisted_runtime_property("playcropper0", "premiere-lift") &&
-              is_allowlisted_runtime_property("playcropper", "premiere-lift"),
-          "Both playcropper names must accept live Premiere lift") ||
+          is_allowlisted_runtime_property("playcropper0", "exposure") &&
+              is_allowlisted_runtime_property("playcropper", "exposure"),
+          "Both playcropper names must accept live exposure") ||
       !expect(
           is_allowlisted_runtime_property("hmstitcher0", "shadow-lift") &&
               is_allowlisted_runtime_property("hmstitcher0", "shadow-lift-black-point") &&
-              is_allowlisted_runtime_property("hmstitcher0", "premiere-lift"),
+              is_allowlisted_runtime_property("hmstitcher0", "exposure"),
           "The FP16 stitcher must accept all live grading controls") ||
       !expect(
           !is_allowlisted_runtime_property("hmstitcher0", "high-bit-depth"),
@@ -52,8 +52,8 @@ int main() {
           !is_allowlisted_runtime_property("dsplaytracker0", "shadow-lift-black-point"),
           "Black-point lift must remain scoped to playcropper") ||
       !expect(
-          !is_allowlisted_runtime_property("dsplaytracker0", "premiere-lift"),
-          "Premiere lift must remain scoped to playcropper") ||
+          !is_allowlisted_runtime_property("dsplaytracker0", "exposure"),
+          "Exposure must remain scoped to playcropper") ||
       !expect(
           !is_allowlisted_runtime_property("untrusted-element", "shadow-lift"),
           "Unknown elements must remain blocked") ||
