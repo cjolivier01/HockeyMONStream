@@ -158,6 +158,11 @@ def compare_pair(
         raise AssertionError(f"{label}: original pipeline produced an empty buffer")
     if not replacement:
         raise AssertionError(f"{label}: replacement pipeline produced an empty buffer")
+    if len(original) != len(replacement):
+        raise AssertionError(
+            f"{label}: raw output sizes differ "
+            f"({len(original)} versus {len(replacement)} bytes)"
+        )
     if normalize_output is not None:
         original = normalize_output(original)
         replacement = normalize_output(replacement)
