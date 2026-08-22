@@ -402,7 +402,6 @@ bool copy_raw_to_surface(
     GstBuffer* buffer,
     NvBufSurface* surface,
     guint batch_size,
-    guint copy_hw,
     gchar** error_message) {
   RawBufferMapping raw;
   if (!raw.map(buffer, info, batch_size, GST_MAP_READ, "raw input", error_message)) {
@@ -410,14 +409,7 @@ bool copy_raw_to_surface(
   }
 
   const guint raw_planes = GST_VIDEO_INFO_N_PLANES(&info);
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-  const bool use_nvbuf_raw_copy = copy_hw == 2;
-#else
-  static_cast<void>(copy_hw);
-  const bool use_nvbuf_raw_copy = false;
-#endif
-  const bool map_surface =
-      !use_nvbuf_raw_copy && (surface->memType == NVBUF_MEM_SURFACE_ARRAY || surface->memType == NVBUF_MEM_HANDLE);
+  const bool map_surface = surface->memType == NVBUF_MEM_SURFACE_ARRAY || surface->memType == NVBUF_MEM_HANDLE;
   surface->numFilled = batch_size;
   for (guint batch = 0; batch < batch_size; ++batch) {
     NvBufSurfaceParams& params = surface->surfaceList[batch];
@@ -459,31 +451,6 @@ bool copy_raw_to_surface(
         break;
       }
       const guint8* source = raw.plane_data(batch, raw_plane);
-      if (use_nvbuf_raw_copy) {
-        std::vector<guint8> packed;
-        if (raw_stride != static_cast<gint>(visible_row_bytes)) {
-          packed.resize(static_cast<gsize>(visible_row_bytes) * rows);
-          for (guint row = 0; row < rows; ++row) {
-            std::memcpy(
-                packed.data() + static_cast<gsize>(row) * visible_row_bytes,
-                source + static_cast<gint64>(row) * raw_stride,
-                visible_row_bytes);
-          }
-          source = packed.data();
-        }
-        if (Raw2NvBufSurface(
-                const_cast<guint8*>(source),
-                batch,
-                surface_plane,
-                params.planeParams.width[surface_plane],
-                rows,
-                surface) != 0) {
-          set_error(error_message, "VIC raw upload failed for plane %u", raw_plane);
-          batch_success = false;
-          break;
-        }
-        continue;
-      }
       guint8* destination = map_surface
           ? static_cast<guint8*>(params.mappedAddr.addr[surface_plane])
           : static_cast<guint8*>(params.dataPtr) + params.planeParams.offset[surface_plane];
@@ -541,7 +508,6 @@ bool copy_surface_to_raw(
     const GstVideoInfo& info,
     GstBuffer* buffer,
     guint batch_size,
-    guint copy_hw,
     gchar** error_message) {
   RawBufferMapping raw;
   if (!raw.map(buffer, info, batch_size, GST_MAP_WRITE, "raw output", error_message)) {
@@ -549,14 +515,7 @@ bool copy_surface_to_raw(
   }
 
   const guint raw_planes = GST_VIDEO_INFO_N_PLANES(&info);
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-  const bool use_nvbuf_raw_copy = copy_hw == 2;
-#else
-  static_cast<void>(copy_hw);
-  const bool use_nvbuf_raw_copy = false;
-#endif
-  const bool map_surface =
-      !use_nvbuf_raw_copy && (surface->memType == NVBUF_MEM_SURFACE_ARRAY || surface->memType == NVBUF_MEM_HANDLE);
+  const bool map_surface = surface->memType == NVBUF_MEM_SURFACE_ARRAY || surface->memType == NVBUF_MEM_HANDLE;
   for (guint batch = 0; batch < batch_size; ++batch) {
     const NvBufSurfaceParams& params = surface->surfaceList[batch];
     bool batch_success = true;
@@ -610,34 +569,6 @@ bool copy_surface_to_raw(
       for (guint row = 0; row < rows; ++row) {
         guint8* destination_row = destination + static_cast<gint64>(row) * raw_stride;
         std::memset(destination_row, 0, absolute_stride);
-      }
-      if (use_nvbuf_raw_copy) {
-        std::vector<guint8> packed;
-        guint8* packed_destination = destination;
-        if (raw_stride != static_cast<gint>(visible_row_bytes)) {
-          packed.resize(static_cast<gsize>(visible_row_bytes) * rows);
-          packed_destination = packed.data();
-        }
-        if (NvBufSurface2Raw(
-                writable_surface,
-                batch,
-                surface_plane,
-                params.planeParams.width[surface_plane],
-                rows,
-                packed_destination) != 0) {
-          set_error(error_message, "VIC raw download failed for plane %u", raw_plane);
-          batch_success = false;
-          break;
-        }
-        if (!packed.empty()) {
-          for (guint row = 0; row < rows; ++row) {
-            std::memcpy(
-                destination + static_cast<gint64>(row) * raw_stride,
-                packed.data() + static_cast<gsize>(row) * visible_row_bytes,
-                visible_row_bytes);
-          }
-        }
-        continue;
       }
       const guint8* source = map_surface
           ? static_cast<const guint8*>(params.mappedAddr.addr[surface_plane])
@@ -705,7 +636,13 @@ NvBufSurfaceColorFormat dsx_video_info_to_nvbuf_format(const GstVideoInfo& info)
     case GST_VIDEO_FORMAT_Y444_12LE:
       return y444_format(info, 12);
     case GST_VIDEO_FORMAT_GRAY8:
+#if NVDS_VERSION_MAJOR >= 9
       return is_full_range(info) ? NVBUF_COLOR_FORMAT_GRAY8_ER : NVBUF_COLOR_FORMAT_GRAY8;
+#else
+      // DeepStream 7.x nvvideoconvert uses limited-range GRAY8 when caps do not
+      // carry an explicit color range, even though GStreamer infers full range.
+      return NVBUF_COLOR_FORMAT_GRAY8;
+#endif
     case GST_VIDEO_FORMAT_GRAY16_LE:
       return NVBUF_COLOR_FORMAT_GRAY16_LE;
     case GST_VIDEO_FORMAT_GBR:
@@ -883,7 +820,7 @@ bool DsxVideoConvertBackend::ensure_staging_surfaces(guint batch_size, gchar** e
       return false;
     }
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-    if (jetson_copy_memory_type(options_) != params.memType) {
+    if (options_.copy_hw == 2 || jetson_copy_memory_type(options_) != params.memType) {
       params.memType = jetson_copy_memory_type(options_);
       if (NvBufSurfaceCreate(&input_copy_staging_, batch_size, &params) != 0) {
         set_error(error_message, "failed to allocate raw-input copy surface");
@@ -919,7 +856,7 @@ bool DsxVideoConvertBackend::ensure_staging_surfaces(guint batch_size, gchar** e
       return false;
     }
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-    if (jetson_copy_memory_type(options_) != params.memType) {
+    if (options_.copy_hw == 2 || jetson_copy_memory_type(options_) != params.memType) {
       params.memType = jetson_copy_memory_type(options_);
       if (NvBufSurfaceCreate(&output_copy_staging_, batch_size, &params) != 0) {
         set_error(error_message, "failed to allocate raw-output copy surface");
@@ -936,7 +873,7 @@ bool DsxVideoConvertBackend::upload_raw(
     NvBufSurface* surface,
     guint batch_size,
     gchar** error_message) const {
-  return copy_raw_to_surface(input_info_, buffer, surface, batch_size, options_.copy_hw, error_message);
+  return copy_raw_to_surface(input_info_, buffer, surface, batch_size, error_message);
 }
 
 bool DsxVideoConvertBackend::download_raw(
@@ -944,7 +881,7 @@ bool DsxVideoConvertBackend::download_raw(
     GstBuffer* buffer,
     guint batch_size,
     gchar** error_message) const {
-  return copy_surface_to_raw(surface, output_info_, buffer, batch_size, options_.copy_hw, error_message);
+  return copy_surface_to_raw(surface, output_info_, buffer, batch_size, error_message);
 }
 
 bool DsxVideoConvertBackend::copy_staging_surface(
@@ -954,6 +891,86 @@ bool DsxVideoConvertBackend::copy_staging_surface(
     gchar** error_message) const {
   source->numFilled = batch_size;
   destination->numFilled = batch_size;
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+  if (options_.copy_hw == 2) {
+    if (NvBufSurfaceCopy(source, destination) != 0) {
+      set_error(error_message, "copy-hw=2 NvBufSurfaceCopy failed");
+      return false;
+    }
+    return true;
+  }
+  if (options_.copy_hw == 1) {
+    const bool source_mappable = source->memType == NVBUF_MEM_SURFACE_ARRAY || source->memType == NVBUF_MEM_HANDLE;
+    const bool destination_mappable =
+        destination->memType == NVBUF_MEM_SURFACE_ARRAY || destination->memType == NVBUF_MEM_HANDLE;
+    const bool source_device = source->memType == NVBUF_MEM_CUDA_DEVICE;
+    const bool destination_device = destination->memType == NVBUF_MEM_CUDA_DEVICE;
+    if (!((source_mappable && destination_device) || (source_device && destination_mappable))) {
+      set_error(error_message, "copy-hw=1 requires one CUDA-device and one mappable Jetson surface");
+      return false;
+    }
+
+    NvBufSurface* mappable = source_mappable ? source : destination;
+    const NvBufSurfaceMemMapFlags map_flags = source_mappable ? NVBUF_MAP_READ : NVBUF_MAP_WRITE;
+    const cudaMemcpyKind copy_kind = source_device ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice;
+    for (guint batch = 0; batch < batch_size; ++batch) {
+      if (NvBufSurfaceMap(mappable, batch, -1, map_flags) != 0) {
+        set_error(error_message, "copy-hw=1 failed to map Jetson surface %u", batch);
+        return false;
+      }
+
+      NvBufSurfaceParams& source_params = source->surfaceList[batch];
+      NvBufSurfaceParams& destination_params = destination->surfaceList[batch];
+      const guint source_planes = source_params.planeParams.num_planes;
+      const guint destination_planes = destination_params.planeParams.num_planes;
+      bool success = source_planes == destination_planes;
+      if (!success) {
+        set_error(error_message, "copy-hw=1 plane count differs (%u versus %u)", source_planes, destination_planes);
+      }
+
+      for (guint plane = 0; success && plane < source_planes; ++plane) {
+        if (source_mappable && NvBufSurfaceSyncForCpu(source, batch, static_cast<int>(plane)) != 0) {
+          set_error(error_message, "copy-hw=1 failed to sync source plane %u", plane);
+          success = false;
+          break;
+        }
+        const guint source_pitch = source_params.planeParams.pitch[plane];
+        const guint destination_pitch = destination_params.planeParams.pitch[plane];
+        const guint rows =
+            std::min(source_params.planeParams.height[plane], destination_params.planeParams.height[plane]);
+        const guint row_bytes = std::min(source_pitch, destination_pitch);
+        const guint8* source_pointer = source_mappable
+            ? static_cast<const guint8*>(source_params.mappedAddr.addr[plane])
+            : static_cast<const guint8*>(source_params.dataPtr) + source_params.planeParams.offset[plane];
+        guint8* destination_pointer = destination_mappable
+            ? static_cast<guint8*>(destination_params.mappedAddr.addr[plane])
+            : static_cast<guint8*>(destination_params.dataPtr) + destination_params.planeParams.offset[plane];
+        if (source_pointer == nullptr || destination_pointer == nullptr || row_bytes == 0 || rows == 0) {
+          set_error(error_message, "copy-hw=1 plane %u is not addressable", plane);
+          success = false;
+          break;
+        }
+        const cudaError_t copy_error = cudaMemcpy2D(
+            destination_pointer, destination_pitch, source_pointer, source_pitch, row_bytes, rows, copy_kind);
+        if (copy_error != cudaSuccess) {
+          set_error(error_message, "copy-hw=1 plane %u failed: %s", plane, cudaGetErrorString(copy_error));
+          success = false;
+          break;
+        }
+        if (destination_mappable && NvBufSurfaceSyncForDevice(destination, batch, static_cast<int>(plane)) != 0) {
+          set_error(error_message, "copy-hw=1 failed to sync destination plane %u", plane);
+          success = false;
+          break;
+        }
+      }
+      NvBufSurfaceUnMap(mappable, batch, -1);
+      if (!success) {
+        return false;
+      }
+    }
+    return true;
+  }
+#endif
   NvBufSurfTransformConfigParams session{};
   session.compute_mode = static_cast<NvBufSurfTransform_Compute>(options_.copy_hw);
   session.gpu_id = static_cast<int32_t>(options_.gpu_id);

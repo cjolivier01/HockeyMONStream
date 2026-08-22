@@ -40,7 +40,8 @@ JETSON_GPU_ONLY_FORMATS = {
     "GRAY16_LE", "RGB", "BGR", "BGR10A2_LE", "RGB10A2_LE", "UYVP",
     "I420_12LE", "Y444", "Y444_10LE", "Y444_12LE", "BGRA64_LE",
 }
-JETSON_GPU_PROPERTIES = ("compute-hw=1", "copy-hw=1", "nvbuf-memory-type=2")
+JETSON_GPU_ENGINE_PROPERTIES = ("compute-hw=1", "copy-hw=1")
+JETSON_GPU_PROPERTIES = (*JETSON_GPU_ENGINE_PROPERTIES, "nvbuf-memory-type=2")
 
 
 def element(name: str, *properties: str) -> list[str]:
@@ -113,11 +114,41 @@ def run_pipeline(
             )
 
 
-def compare_pair(directory: Path, label: str, make_tokens) -> None:
+def force_jetson_gpu(tokens: list[str]) -> list[str]:
+    overridden_properties = {"compute-hw", "copy-hw"}
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        result.append(token)
+        index += 1
+        if token in (ORIGINAL, REPLACEMENT):
+            has_memory_type = False
+            while index < len(tokens) and tokens[index] != "!":
+                name = tokens[index].partition("=")[0]
+                has_memory_type = has_memory_type or name == "nvbuf-memory-type"
+                if name not in overridden_properties:
+                    result.append(tokens[index])
+                index += 1
+            result.extend(JETSON_GPU_ENGINE_PROPERTIES)
+            if not has_memory_type:
+                result.append("nvbuf-memory-type=2")
+    return result
+
+
+def compare_pair(
+    directory: Path,
+    label: str,
+    make_tokens,
+    jetson_stable_gpu: bool = True,
+) -> None:
     outputs: dict[str, Path] = {}
     for candidate in (ORIGINAL, REPLACEMENT):
         output = directory / f"{label}.{candidate}.raw"
-        run_pipeline(make_tokens(candidate), output)
+        tokens = make_tokens(candidate)
+        if IS_JETSON and jetson_stable_gpu:
+            tokens = force_jetson_gpu(tokens)
+        run_pipeline(tokens, output)
         outputs[candidate] = output
     original = outputs[ORIGINAL].read_bytes()
     replacement = outputs[REPLACEMENT].read_bytes()
@@ -125,14 +156,30 @@ def compare_pair(directory: Path, label: str, make_tokens) -> None:
         raise AssertionError(f"{label}: original pipeline produced an empty buffer")
     if not replacement:
         raise AssertionError(f"{label}: replacement pipeline produced an empty buffer")
-    if IS_JETSON:
+    if IS_JETSON and not any(replacement):
+        raise AssertionError(f"{label}: replacement output contains no image data")
+    if len(original) != len(replacement):
+        raise AssertionError(
+            f"{label}: output sizes differ "
+            f"({len(original)} versus {len(replacement)} bytes)"
+        )
+    if IS_JETSON and not jetson_stable_gpu:
         return
+    if IS_JETSON and not any(original):
+        raise AssertionError(f"{label}: stable GPU oracle output contains no image data")
     if original != replacement:
         differences = sum(left != right for left, right in zip(original, replacement))
         differences += abs(len(original) - len(replacement))
+        # The DS 7.1 Jetson backend can vary a handful of odd-edge bytes across
+        # otherwise identical one-frame runs. Keep x86 exact and allow only a
+        # negligible normalized boundary variance on Jetson.
+        allowed_differences = max(8, len(original) // 100_000) if IS_JETSON else 0
+        if differences <= allowed_differences:
+            return
         raise AssertionError(
             f"{label}: output differs in {differences} bytes "
-            f"({len(original)} versus {len(replacement)} bytes)"
+            f"(allowed {allowed_differences}; "
+            f"{len(original)} versus {len(replacement)} bytes)"
         )
 
 
@@ -218,7 +265,12 @@ def test_transforms(directory: Path) -> int:
         )
         count += 1
 
-    for method in range(7):
+    # The DeepStream 7.1 Jetson transform backend hangs for interpolation
+    # methods 2-5 in this all-GPU RAW path. Its property contract is covered
+    # separately; retain exact pixel parity for the modes the vendor backend
+    # can execute on the validation device.
+    interpolation_methods = (0, 1, 6) if IS_JETSON else range(7)
+    for method in interpolation_methods:
         compare_pair(
             directory,
             f"interpolation-{method}",
@@ -293,7 +345,9 @@ def test_nvmm(directory: Path) -> int:
 
     for memory_type in MEMORY_TYPES:
         gpu_properties = (
-            JETSON_GPU_PROPERTIES if IS_JETSON and memory_type in (1, 2, 3) else ()
+            JETSON_GPU_ENGINE_PROPERTIES
+            if IS_JETSON and memory_type in (1, 2, 3)
+            else ()
         )
         compare_pair(
             directory,
@@ -305,6 +359,7 @@ def test_nvmm(directory: Path) -> int:
                 *element(ORIGINAL, *gpu_properties),
                 *caps("video/x-raw,format=RGBA"),
             ],
+            jetson_stable_gpu=not IS_JETSON or memory_type in (1, 2, 3),
         )
         count += 1
     return count
@@ -359,6 +414,7 @@ def test_hardware_controls(directory: Path) -> int:
                 *element(ORIGINAL),
                 *caps("video/x-raw,format=RGBA"),
             ],
+            jetson_stable_gpu=False,
         )
         compare_pair(
             directory,
@@ -370,6 +426,7 @@ def test_hardware_controls(directory: Path) -> int:
                 *element(candidate, f"copy-hw={value}"),
                 *caps("video/x-raw,format=NV12,width=160,height=120"),
             ],
+            jetson_stable_gpu=False,
         )
         count += 2
 
@@ -389,24 +446,31 @@ def test_hardware_controls(directory: Path) -> int:
                 ),
                 *caps("video/x-raw,format=NV12,width=160,height=120"),
             ],
+            jetson_stable_gpu=False,
         )
         count += 1
 
     if IS_JETSON:
         trace_library = Path(os.environ["DSX_COPY_TRACE_SO"])
         for method, expected_events in (
-            (1, ("transform=1",)),
-            (2, ("raw-to-surface", "surface-to-raw")),
+            (
+                1,
+                (
+                    ("cuda-copy-h2d", 2),
+                    ("cuda-copy-d2h", 2),
+                ),
+            ),
+            (2, (("surface-copy", 2),)),
         ):
             trace_file = directory / f"copy-hw-{method}.trace"
             output = directory / f"copy-hw-{method}.raw"
             run_pipeline(
                 [
-                    *raw_source(),
+                    *raw_source(width=161, height=121),
                     *element(REPLACEMENT, "compute-hw=0", f"copy-hw={method}"),
-                    *caps("video/x-raw(memory:NVMM),format=NV12,width=160,height=120"),
+                    *caps("video/x-raw(memory:NVMM),format=NV12,width=161,height=121"),
                     *element(REPLACEMENT, "compute-hw=0", f"copy-hw={method}"),
-                    *caps("video/x-raw,format=RGBA,width=80,height=60"),
+                    *caps("video/x-raw,format=RGBA,width=161,height=121"),
                 ],
                 output,
                 environment_updates={
@@ -414,11 +478,19 @@ def test_hardware_controls(directory: Path) -> int:
                     "DSX_COPY_TRACE_FILE": str(trace_file),
                 },
             )
+            expected_size = 161 * 121 * 4
+            if output.stat().st_size != expected_size:
+                raise AssertionError(
+                    f"copy-hw={method} odd-width output has {output.stat().st_size} "
+                    f"bytes; expected {expected_size}"
+                )
             events = trace_file.read_text().splitlines()
-            for expected in expected_events:
-                if expected not in events:
+            for expected, expected_count in expected_events:
+                actual = events.count(expected)
+                if actual != expected_count:
                     raise AssertionError(
-                        f"copy-hw={method} did not use {expected}: {events}"
+                        f"copy-hw={method} used {expected} {actual} times; "
+                        f"expected {expected_count}: {events}"
                     )
             count += 1
     return count
@@ -436,7 +508,7 @@ def main() -> None:
         checks += test_bgra64(directory)
         checks += test_hardware_controls(directory)
     qualifier = (
-        "Jetson runtime compatibility cases; headless oracle bytes are not stable"
+        "Jetson black-box parity and hardware compatibility cases"
         if IS_JETSON
         else "black-box runtime parity cases"
     )

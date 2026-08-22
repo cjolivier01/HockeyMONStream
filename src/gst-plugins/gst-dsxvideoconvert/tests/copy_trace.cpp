@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "cuda_runtime_api.h"
 #include "nvbufsurface.h"
 #include "nvbufsurftransform.h"
 
@@ -45,30 +46,28 @@ Function library_symbol(const char* library, const char* name) {
 
 } // namespace
 
-extern "C" int Raw2NvBufSurface(
-    unsigned char* pointer,
-    unsigned int index,
-    unsigned int plane,
-    unsigned int width,
-    unsigned int height,
-    NvBufSurface* surface) {
-  trace("raw-to-surface\n");
-  using Function = int (*)(unsigned char*, unsigned int, unsigned int, unsigned int, unsigned int, NvBufSurface*);
-  return library_symbol<Function>("libnvbufsurface.so", "Raw2NvBufSurface")(
-      pointer, index, plane, width, height, surface);
+extern "C" int NvBufSurfaceCopy(NvBufSurface* source, NvBufSurface* destination) {
+  trace("surface-copy\n");
+  using Function = int (*)(NvBufSurface*, NvBufSurface*);
+  return library_symbol<Function>("libnvbufsurface.so", "NvBufSurfaceCopy")(source, destination);
 }
 
-extern "C" int NvBufSurface2Raw(
-    NvBufSurface* surface,
-    unsigned int index,
-    unsigned int plane,
-    unsigned int width,
-    unsigned int height,
-    unsigned char* pointer) {
-  trace("surface-to-raw\n");
-  using Function = int (*)(NvBufSurface*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned char*);
-  return library_symbol<Function>("libnvbufsurface.so", "NvBufSurface2Raw")(
-      surface, index, plane, width, height, pointer);
+extern "C" cudaError_t cudaMemcpy2D(
+    void* destination,
+    size_t destination_pitch,
+    const void* source,
+    size_t source_pitch,
+    size_t width,
+    size_t height,
+    cudaMemcpyKind kind) {
+  if (kind == cudaMemcpyHostToDevice) {
+    trace("cuda-copy-h2d\n");
+  } else if (kind == cudaMemcpyDeviceToHost) {
+    trace("cuda-copy-d2h\n");
+  }
+  using Function = cudaError_t (*)(void*, size_t, const void*, size_t, size_t, size_t, cudaMemcpyKind);
+  return library_symbol<Function>("libcudart.so", "cudaMemcpy2D")(
+      destination, destination_pitch, source, source_pitch, width, height, kind);
 }
 
 extern "C" NvBufSurfTransform_Error NvBufSurfTransformSetSessionParams(NvBufSurfTransformConfigParams* parameters) {

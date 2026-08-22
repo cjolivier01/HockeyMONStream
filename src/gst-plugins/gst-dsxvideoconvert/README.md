@@ -106,18 +106,23 @@ interpolation, metadata orientation, nonzero batched content, custom RAW
 plane mappings and strides, signed caps-only batch sizing, output-pool depth,
 allocation/layout controls, malformed NVMM descriptors, undersized-stride
 rejection, stale layout-meta filtering, and unsupported BGRA64 conversion.
-On Jetson, an interposition probe also verifies that `copy-hw=GPU` selects a
-GPU `NvBufSurfTransform` copy when CUDA-device and VIC-compatible staging must
-be bridged, while `copy-hw=VIC` selects the public NvBuf raw/surface copy APIs.
-Probe processes have explicit timeouts.
+On Jetson, an interposition probe also verifies that `copy-hw=GPU` selects
+pitched CUDA copies in both host-to-device and device-to-host directions when
+CUDA-device and VIC-compatible staging must be bridged, while `copy-hw=VIC`
+selects the public `NvBufSurfaceCopy` API. Probe processes have explicit
+timeouts.
 
-The installed DeepStream 7.1 oracle used by Hstream's Jetson validation emits
-non-deterministic or zero-filled RAW bytes in a headless session after internal
-EGL/NvBufSurfTransform copy errors. Jetson runtime tests therefore require both
-plugins to negotiate and execute representative VIC- and GPU-required cases,
-validate nonempty output buffers from `dsxvideoconvert`, and trace the requested
-copy path, but do not use byte-for-byte oracle comparison. The x86 suite retains
-exact byte comparison.
+The installed DeepStream 7.1 oracle used by Hstream's Jetson validation can emit
+invalid RAW bytes in a headless session when CUDA-device surfaces are consumed
+by default-VIC helper elements. Pixel-parity cases explicitly select GPU engines
+and CUDA-device memory on every NVIDIA converter in the pipeline, which is stable
+and retains normalized pixel comparison. The comparison is exact except for a
+bounded handful of odd-edge bytes that vary between DeepStream 7.1 runs. Cases
+that intentionally exercise VIC or a specific copy engine instead validate
+nonempty, correctly sized output and trace both requested copy directions.
+DeepStream 7.1's Jetson transform backend hangs for interpolation modes 2-5 in
+the all-GPU RAW validation path, so the runtime pixel gate covers modes 0, 1,
+and 6 there while the contract test still checks the complete property range.
 
 The benchmark suite uses direct RAW and NVMM generators and GStreamer's
 per-element latency tracer, so source generation is outside the converter

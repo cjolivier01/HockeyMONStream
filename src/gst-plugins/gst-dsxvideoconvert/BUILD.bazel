@@ -81,7 +81,11 @@ cc_binary(
     linkshared = True,
     linkstatic = False,
     linkopts = ["-ldl"],
-    deps = ["@deepstream//:deepstream_lib"],
+    deps = [
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@local_cuda//:cuda",
+    ],
 )
 
 PARITY_TEST_TAGS = [
