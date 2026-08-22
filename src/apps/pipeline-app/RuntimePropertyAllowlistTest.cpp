@@ -32,6 +32,14 @@ int main() {
               is_allowlisted_runtime_property("playcropper", "premiere-lift"),
           "Both playcropper names must accept live Premiere lift") ||
       !expect(
+          is_allowlisted_runtime_property("hmstitcher0", "shadow-lift") &&
+              is_allowlisted_runtime_property("hmstitcher0", "shadow-lift-black-point") &&
+              is_allowlisted_runtime_property("hmstitcher0", "premiere-lift"),
+          "The FP16 stitcher must accept all live grading controls") ||
+      !expect(
+          !is_allowlisted_runtime_property("hmstitcher0", "high-bit-depth"),
+          "High-bit mode must remain restart-only") ||
+      !expect(
           is_allowlisted_runtime_property("playcropper0", "fixed-edge-rotation-angle"),
           "Existing playcropper runtime controls must remain allowlisted") ||
       !expect(

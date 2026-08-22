@@ -74,6 +74,45 @@ bool expect_output_batch_size(guint input_batch_size, guint configured_batch_siz
   return true;
 }
 
+bool expect_high_bit_property_contract(const std::string& config_dir) {
+  hm::stitcher::StitcherPriv high_bit_then_show(/*gpu_id=*/0, /*batch_size=*/2);
+  hm::stitcher::StitcherPriv show_then_high_bit(/*gpu_id=*/0, /*batch_size=*/2);
+  if (!high_bit_then_show.SetProperty({"high-bit-depth", "1"}) || high_bit_then_show.SetProperty({"show", "1"}) ||
+      !high_bit_then_show.SetProperty({"show", "0"}) || !show_then_high_bit.SetProperty({"show", "1"}) ||
+      show_then_high_bit.SetProperty({"high-bit-depth", "1"})) {
+    std::cerr << "High-bit mode and stitcher debug rendering must be rejected in either property order\n";
+    return false;
+  }
+
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  if (stitcher.SetProperty({"high-bit-depth", "yes"}) || stitcher.SetProperty({"high-bit-depth", "2"}) ||
+      !stitcher.SetProperty({"high-bit-depth", "TRUE"}) || stitcher.SetProperty({"stitch-compute-precision", "fp32"}) ||
+      !stitcher.SetProperty({"stitch-compute-precision", "fp16"}) || !stitcher.SetProperty({"shadow-lift", "0"}) ||
+      !stitcher.SetProperty({"shadow-lift", "100"}) || stitcher.SetProperty({"shadow-lift", "-1"}) ||
+      stitcher.SetProperty({"shadow-lift", "101"}) || stitcher.SetProperty({"shadow-lift", "nan"}) ||
+      !stitcher.SetProperty({"shadow-lift-black-point", "1"}) ||
+      !stitcher.SetProperty({"shadow-lift-black-point", "false"}) ||
+      stitcher.SetProperty({"shadow-lift-black-point", "yes"}) || !stitcher.SetProperty({"premiere-lift", "0"}) ||
+      !stitcher.SetProperty({"premiere-lift", "1.3"}) || stitcher.SetProperty({"premiere-lift", "-0.01"}) ||
+      stitcher.SetProperty({"premiere-lift", "1.31"}) || stitcher.SetProperty({"premiere-lift", "inf"}) ||
+      !stitcher.SetProperty({"one-pass-mode", "1"})) {
+    std::cerr << "High-bit stitcher property validation failed\n";
+    return false;
+  }
+
+  hm::DSCustom_CreateParams params{};
+  params.config_file = const_cast<char*>(config_dir.c_str());
+  params.m_inCaps = gst_caps_from_string("video/x-raw,format=RGB10A2_LE,width=1280,height=720");
+  const absl::Status status = stitcher.PreCapsInit(&params);
+  gst_caps_unref(params.m_inCaps);
+  if (!status.ok() || stitcher.SetProperty({"high-bit-depth", "false"}) ||
+      !stitcher.SetProperty({"high-bit-depth", "true"})) {
+    std::cerr << "High-bit mode must be immutable after caps initialization: " << status << '\n';
+    return false;
+  }
+  return true;
+}
+
 bool expect_runtime_pair_contract() {
   const auto initial_pair = hm::stitcher::select_runtime_stitch_pair({{0, 0}, {0, 1}});
   if (!initial_pair.ok()) {
@@ -449,6 +488,9 @@ int main() {
   }
   if (!expect_output_batch_size(/*input_batch_size=*/4, /*configured_batch_size=*/4, /*expected_batch_size=*/2)) {
     return 4;
+  }
+  if (!expect_high_bit_property_contract(config_dir)) {
+    return 34;
   }
   if (!expect_runtime_pair_contract()) {
     return 13;

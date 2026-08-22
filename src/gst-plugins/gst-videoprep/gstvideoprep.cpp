@@ -150,6 +150,7 @@ enum {
   PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
   PROP_DYNAMIC_ACCELERATION_SCALING,
   PROP_PREVIEW_OVERLAY_FLAGS,
+  PROP_HIGH_BIT_DEPTH,
   PROP_SHADOW_LIFT,
   PROP_SHADOW_LIFT_BLACK_POINT,
   PROP_PREMIERE_LIFT,
@@ -201,7 +202,7 @@ static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE(
     GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
         GST_CAPS_FEATURE_MEMORY_NVMM,
         "{ "
-        "RGBA }")));
+        "RGBA, RGB10A2_LE }")));
 
 /* Output capabilities. */
 static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE(
@@ -635,7 +636,7 @@ static GstCaps* gst_videoprep_transform_caps(
         "video/x-raw",
         "format",
         G_TYPE_STRING,
-        "RGBA",
+        videoprep->high_bit_depth ? "RGB10A2_LE" : "RGBA",
         "width",
         GST_TYPE_INT_RANGE,
         1,
@@ -1209,6 +1210,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_HIGH_BIT_DEPTH,
+      g_param_spec_boolean(
+          "high-bit-depth",
+          "High-bit-depth stitching",
+          "Accept RGB10A2 and keep RGB channels in FP16 until the final stitched RGBA8 conversion",
+          FALSE,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_SHADOW_LIFT,
       g_param_spec_double(
           "shadow-lift",
@@ -1316,6 +1327,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->fixed_edge_rotation_angle_right = 10.0;
   videoprep->dynamic_acceleration_scaling = 1.0;
   videoprep->preview_overlay_flags = 0;
+  videoprep->high_bit_depth = FALSE;
   videoprep->shadow_lift = 0.0;
   videoprep->shadow_lift_black_point = FALSE;
   videoprep->premiere_lift = 0.0;
@@ -1325,6 +1337,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->fixed_edge_rotation_angle_left_set = FALSE;
   videoprep->fixed_edge_rotation_angle_right_set = FALSE;
   videoprep->dynamic_acceleration_scaling_set = FALSE;
+  videoprep->high_bit_depth_set = FALSE;
   videoprep->shadow_lift_set = FALSE;
   videoprep->shadow_lift_black_point_set = FALSE;
   videoprep->premiere_lift_set = FALSE;
@@ -1335,6 +1348,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->fixed_edge_rotation_angle_left_sequence = 0;
   videoprep->fixed_edge_rotation_angle_right_sequence = 0;
   videoprep->dynamic_acceleration_scaling_sequence = 0;
+  videoprep->high_bit_depth_sequence = 0;
   videoprep->shadow_lift_sequence = 0;
   videoprep->shadow_lift_black_point_sequence = 0;
   videoprep->premiere_lift_sequence = 0;
@@ -1534,6 +1548,20 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
+    case PROP_HIGH_BIT_DEPTH: {
+      const gboolean previous = videoprep->high_bit_depth;
+      const gboolean previous_set = videoprep->high_bit_depth_set;
+      const guint previous_sequence = videoprep->high_bit_depth_sequence;
+      videoprep->high_bit_depth = g_value_get_boolean(value);
+      videoprep->high_bit_depth_set = TRUE;
+      videoprep->high_bit_depth_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("high-bit-depth", videoprep->high_bit_depth ? "1" : "0")) {
+        videoprep->high_bit_depth = previous;
+        videoprep->high_bit_depth_set = previous_set;
+        videoprep->high_bit_depth_sequence = previous_sequence;
+      }
+      break;
+    }
     case PROP_SHADOW_LIFT: {
       const gdouble previous = videoprep->shadow_lift;
       const gboolean previous_set = videoprep->shadow_lift_set;
@@ -1663,6 +1691,10 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              Property("preview-overlay-flags", std::to_string(videoprep->preview_overlay_flags))) &&
         ok;
   }
+  if (videoprep->high_bit_depth_set &&
+      typed_property_wins_over_private_config(videoprep, videoprep->high_bit_depth_sequence, "high-bit-depth")) {
+    ok = videoprep->priv->SetProperty(Property("high-bit-depth", videoprep->high_bit_depth ? "1" : "0")) && ok;
+  }
   if (videoprep->shadow_lift_set &&
       typed_property_wins_over_private_config(videoprep, videoprep->shadow_lift_sequence, "shadow-lift")) {
     ok = videoprep->priv->SetProperty(Property("shadow-lift", std::to_string(videoprep->shadow_lift))) && ok;
@@ -1716,6 +1748,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_PREVIEW_OVERLAY_FLAGS:
       g_value_set_uint(value, videoprep->preview_overlay_flags);
+      break;
+    case PROP_HIGH_BIT_DEPTH:
+      g_value_set_boolean(value, videoprep->high_bit_depth);
       break;
     case PROP_SHADOW_LIFT:
       g_value_set_double(value, videoprep->shadow_lift);

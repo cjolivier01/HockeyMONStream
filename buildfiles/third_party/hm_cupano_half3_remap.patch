@@ -1,4 +1,5 @@
 diff --git a/src/cuda/cudaImageAdjust.cuh b/src/cuda/cudaImageAdjust.cuh
+index 3eb1292..84a6e7d 100644
 --- a/src/cuda/cudaImageAdjust.cuh
 +++ b/src/cuda/cudaImageAdjust.cuh
 @@ -2,6 +2,8 @@
@@ -10,11 +11,10 @@ diff --git a/src/cuda/cudaImageAdjust.cuh b/src/cuda/cudaImageAdjust.cuh
  template <typename T>
  void adjustImageCudaBatch(T* d_image, int batchSize, int width, int height, const float3& adjustment);
 
-@@ -69,6 +71,18 @@
-     return out;
+@@ -70,6 +72,31 @@ struct PixelAdjuster<float3> {
    }
  };
-+
+
 +// Specialization for half3 (3-channel half-precision pixel)
 +template <>
 +struct PixelAdjuster<half3> {
@@ -26,25 +26,144 @@ diff --git a/src/cuda/cudaImageAdjust.cuh b/src/cuda/cudaImageAdjust.cuh
 +    return out;
 +  }
 +};
-
++
++// Specialization for half4 (4-channel half-precision pixel)
++template <>
++struct PixelAdjuster<half4> {
++  __device__ static half4 adjust(const half4& pixel, const float3& adjustment) {
++    half4 out;
++    out.x = __float2half(__half2float(pixel.x) + adjustment.x);
++    out.y = __float2half(__half2float(pixel.y) + adjustment.y);
++    out.z = __float2half(__half2float(pixel.z) + adjustment.z);
++    out.w = pixel.w;
++    return out;
++  }
++};
++
  // Specialization for float4 (4-channel floating-point pixel)
  template <>
+ struct PixelAdjuster<float4> {
+diff --git a/src/cuda/cudaMakeFull.cu b/src/cuda/cudaMakeFull.cu
+index a8065d0..6dfcafc 100644
+--- a/src/cuda/cudaMakeFull.cu
++++ b/src/cuda/cudaMakeFull.cu
+@@ -302,6 +302,7 @@ INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(float3, float4)
+ INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(uchar4, float4)
+ INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(uchar4, float3)
+ INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(uchar4, half3)
++INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(half4, half3)
+ INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(float4, float4)
+ // INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(float4, uchar4)
+ INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(float3, uchar4)
+@@ -309,6 +310,7 @@ INSTANTIATE_SIMPLE_MAKE_FULL_BATCH(float3, uchar4)
+
+ // Same–type instantiations:
+ INSTANTIATE_COPY_ROI_BATCHED(half3, uchar3)
++INSTANTIATE_COPY_ROI_BATCHED(half3, half4)
+ INSTANTIATE_COPY_ROI_BATCHED(half3, uchar4)
+ INSTANTIATE_COPY_ROI_BATCHED(float3, float3)
+ INSTANTIATE_COPY_ROI_BATCHED(float4, float4)
 diff --git a/src/cuda/cudaRemap.cu b/src/cuda/cudaRemap.cu
+index d3760ca..a9f5fc7 100644
 --- a/src/cuda/cudaRemap.cu
 +++ b/src/cuda/cudaRemap.cu
-@@ -727,6 +727,7 @@
+@@ -727,6 +727,9 @@ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(uchar3, uchar3)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(float1, float1)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(float4, float4)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(uchar4, float4)
 +INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(uchar4, half3)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(half4, half3)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(half4, half4)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(uchar4, uchar4)
  // INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET(__half, __half)
 
-@@ -742,6 +743,7 @@
+@@ -742,6 +745,9 @@ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(float3, float3)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar3, uchar3)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(float4, float4)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar4, float4)
 +INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar4, half3)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(half4, half3)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(half4, half4)
  INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_ADJUST(uchar4, uchar4)
 
  // For batched_remap_kernel_ex
+@@ -754,11 +760,13 @@ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP(uchar1, uchar1)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP(uchar3, uchar3)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP(float4, float4)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP(uchar4, uchar4)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP(half4, half4)
+
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP_ADJUST(float3, float3)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP_ADJUST(uchar3, uchar3)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP_ADJUST(float4, float4)
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP_ADJUST(uchar4, uchar4)
++INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP_ADJUST(half4, half4)
+
+ // Instantiate for __half input and __half output:
+ INSTANTIATE_BATCHED_REMAP_KERNEL_EX_OFFSET_WITH_DEST_MAP(__half, __half)
+diff --git a/src/cuda/cudaUtils.cuh b/src/cuda/cudaUtils.cuh
+index 5c42f98..7903292 100644
+--- a/src/cuda/cudaUtils.cuh
++++ b/src/cuda/cudaUtils.cuh
+@@ -212,6 +212,7 @@ DECLARE_PERFORM_CAST_3_TO_4(uchar3, float4)
+ DECLARE_PERFORM_CAST_3_TO_4(uchar3, half4)
+ DECLARE_PERFORM_CAST_3_TO_4(float3, float4)
+ DECLARE_PERFORM_CAST_3_TO_4(float3, half4)
++DECLARE_PERFORM_CAST_3_TO_4(half3, half4)
+
+ DECLARE_PERFORM_CAST_3(uchar3, float3)
+ DECLARE_PERFORM_CAST_3(uchar3, half3)
+diff --git a/src/pano/cudaPano.cpp b/src/pano/cudaPano.cpp
+--- a/src/pano/cudaPano.cpp
++++ b/src/pano/cudaPano.cpp
+@@ -4,5 +4,24 @@ namespace hm {
+ namespace pano {
+
++cv::Mat prepare_exposure_match_image(const cv::Mat& image) {
++  if (image.empty() || image.channels() < 3) {
++    return {};
++  }
++
++  std::vector<cv::Mat> channels;
++  cv::split(image, channels);
++  std::vector<cv::Mat> rgb_channels{
++      channels[0],
++      channels[1],
++      channels[2],
++  };
++  cv::Mat rgb;
++  cv::merge(rgb_channels, rgb);
++  cv::Mat prepared;
++  rgb.convertTo(prepared, CV_32F);
++  return prepared;
++}
++
+ //
+ // For hard seams, the seam visibility can be reduced significantly
+ // by matching the colorspace of the images.  We do this by
+diff --git a/src/pano/cudaPano.h b/src/pano/cudaPano.h
+--- a/src/pano/cudaPano.h
++++ b/src/pano/cudaPano.h
+@@ -126,4 +126,6 @@ class CudaStitchPano {
+
+ } // namespace cuda
+
++cv::Mat prepare_exposure_match_image(const cv::Mat& image);
++
+ std::optional<cv::Scalar> match_seam_images(
+     cv::Mat& image1,
+     cv::Mat& image2,
+diff --git a/src/pano/cudaPano.inl b/src/pano/cudaPano.inl
+--- a/src/pano/cudaPano.inl
++++ b/src/pano/cudaPano.inl
+@@ -584,8 +584,8 @@ template <typename T_pipeline, typename T_compute>
+ std::optional<float3> CudaStitchPano<T_pipeline, T_compute>::compute_image_adjustment(
+     const CudaMat<T_pipeline>& inputImage1,
+     const CudaMat<T_pipeline>& inputImage2) {
+-  cv::Mat tmp1 = inputImage1.download();
+-  cv::Mat tmp2 = inputImage2.download();
++  cv::Mat tmp1 = prepare_exposure_match_image(inputImage1.download());
++  cv::Mat tmp2 = prepare_exposure_match_image(inputImage2.download());
+   std::optional<cv::Scalar> adjustment_result = match_seam_images(
+       tmp1,
+       tmp2,

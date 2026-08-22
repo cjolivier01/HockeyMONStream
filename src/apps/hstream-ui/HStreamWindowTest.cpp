@@ -4849,6 +4849,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* bring_up_shadows = require_child<QSlider>(window, "cameraSlider_Bring_Up_Shadows");
   auto* premiere_lift = require_child<QSlider>(window, "cameraSlider_Premiere_Lift_x100");
   auto* lift_shadow_black_point = require_child<QCheckBox>(window, "cameraCheck_Lift_Shadow_Black_Point");
+  auto* use_10_bit_grading = require_child<QCheckBox>(window, "cameraCheck_Use_10_Bit_Grading");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -4859,8 +4860,8 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !zoom_in_aggressiveness ||
       !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !premiere_lift ||
-      !lift_shadow_black_point || !reset || !save || !create || !game_id || !start || !stop || !mode ||
-      !stitch_frame_time) {
+      !lift_shadow_black_point || !use_10_bit_grading || !reset || !save || !create || !game_id || !start || !stop ||
+      !mode || !stitch_frame_time) {
     return false;
   }
 
@@ -4905,6 +4906,7 @@ bool test_camera_controls(HStreamWindow* window) {
       "cameraSlider_Bring_Up_Shadows",
       "cameraSlider_Premiere_Lift_x100",
       "cameraCheck_Lift_Shadow_Black_Point",
+      "cameraCheck_Use_10_Bit_Grading",
   };
   for (const QString& object_name : documented_controls) {
     QWidget* control = window->findChild<QWidget*>(object_name);
@@ -4932,8 +4934,38 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") == 100 &&
               window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 100 &&
               window->cameraControlValue("Lift_Shadow_Black_Point") == 0 && !lift_shadow_black_point->isChecked() &&
-              window->cameraControlValue("Premiere_Lift_x100") == 0,
+              window->cameraControlValue("Premiere_Lift_x100") == 0 &&
+              window->cameraControlValue("Use_10_Bit_Grading") == 0 && !use_10_bit_grading->isChecked(),
           "Camera control defaults should be transformed directly from the bundled baseline")) {
+    return false;
+  }
+  bring_up_shadows->setValue(35);
+  lift_shadow_black_point->setChecked(true);
+  premiere_lift->setValue(60);
+  use_10_bit_grading->setChecked(true);
+  const QStringList high_bit_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  if (!expect(
+          high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=1") &&
+              high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift=35") &&
+              high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift-black-point=1") &&
+              high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.premiere-lift=0.60") &&
+              high_bit_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift=0") &&
+              high_bit_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=0") &&
+              high_bit_arguments.contains("--options=pipeline.hmplaycropper.properties.premiere-lift=0"),
+          "High-bit launch should grade only in the FP16 stitcher")) {
+    return false;
+  }
+  use_10_bit_grading->setChecked(false);
+  const QStringList rgba8_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  if (!expect(
+          rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=0") &&
+              rgba8_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift=35") &&
+              rgba8_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=1") &&
+              rgba8_arguments.contains("--options=pipeline.hmplaycropper.properties.premiere-lift=0.60") &&
+              rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift=0") &&
+              rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift-black-point=0") &&
+              rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.premiere-lift=0"),
+          "RGBA8 launch should grade only in playcropper")) {
     return false;
   }
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
@@ -5059,6 +5091,45 @@ bool test_camera_controls(HStreamWindow* window) {
               lift_shadow_black_point->isChecked() && premiere_lift->value() == 30 && premiere_lift->minimum() == 0 &&
               premiere_lift->maximum() == 130 && !save->isEnabled(),
           "Saved UI color controls should take precedence over canonical runtime values")) {
+    return false;
+  }
+
+  {
+    YAML::Node high_bit_color(YAML::NodeType::Map);
+    high_bit_color["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = true;
+    high_bit_color["pipeline"]["hmstitcher"]["properties"]["shadow-lift"] = 35;
+    high_bit_color["pipeline"]["hmstitcher"]["properties"]["shadow-lift-black-point"] = true;
+    high_bit_color["pipeline"]["hmstitcher"]["properties"]["premiere-lift"] = 0.6;
+    high_bit_color["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 99;
+    std::ofstream out(config);
+    out << high_bit_color << "\n";
+  }
+  activate(create);
+  if (!expect(
+          use_10_bit_grading->isChecked() && bring_up_shadows->value() == 35 && lift_shadow_black_point->isChecked() &&
+              premiere_lift->value() == 60 && !save->isEnabled(),
+          "High-bit presets should load grading controls from the FP16 stitcher instead of stale playcropper values")) {
+    return false;
+  }
+  bring_up_shadows->setValue(45);
+  activate(save);
+  const YAML::Node saved_high_bit_color = YAML::LoadFile(config.string());
+  YAML::Node saved_high_bit_enabled;
+  YAML::Node saved_high_bit_shadow;
+  if (!expect(
+          lookup_yaml_path(
+              saved_high_bit_color,
+              {"pipeline", "hmstitcher", "properties", "high-bit-depth"},
+              &saved_high_bit_enabled) &&
+              saved_high_bit_enabled.as<bool>() &&
+              lookup_yaml_path(
+                  saved_high_bit_color,
+                  {"pipeline", "hmstitcher", "properties", "shadow-lift"},
+                  &saved_high_bit_shadow) &&
+              saved_high_bit_shadow.as<int>() == 45 &&
+              !lookup_yaml_path(
+                  saved_high_bit_color, {"pipeline", "hmplaycropper", "properties", "shadow-lift"}, nullptr),
+          "Saving high-bit grading should persist one tone owner and remove stale playcropper grading")) {
     return false;
   }
 
@@ -5841,6 +5912,13 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
+  use_10_bit_grading->setChecked(true);
+  if (!expect(
+          window->logText().contains("camera control Use_10_Bit_Grading=1 apply=save/restart"),
+          "Changing high-bit mode during playback should be deferred to the next run")) {
+    activate(stop);
+    return false;
+  }
   const int black_point_commands_before =
       window->logText().count("stdin:@set-property playcropper0 shadow-lift-black-point=");
   lift_shadow_black_point->setChecked(false);
@@ -5900,6 +5978,7 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
+  use_10_bit_grading->setChecked(false);
   const int rotation_commands_before =
       window->logText().count("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=");
   for (int value = 60; value <= 69; ++value) {

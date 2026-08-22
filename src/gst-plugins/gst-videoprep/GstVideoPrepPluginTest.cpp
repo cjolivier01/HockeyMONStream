@@ -30,6 +30,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"fixed-edge-rotation-angle-right", G_TYPE_DOUBLE, true},
           {"dynamic-acceleration-scaling", G_TYPE_DOUBLE, true},
           {"preview-overlay-flags", G_TYPE_UINT, true},
+          {"high-bit-depth", G_TYPE_BOOLEAN, true},
           {"shadow-lift", G_TYPE_DOUBLE, true},
           {"shadow-lift-black-point", G_TYPE_BOOLEAN, true},
           {"runtime-tuning-config-file", G_TYPE_STRING, false},
@@ -136,6 +137,7 @@ int main(int argc, char** argv) {
               {"fixed-edge-rotation-angle-left", "25.0"},
               {"fixed-edge-rotation-angle-right", "75.0"},
               {"dynamic-acceleration-scaling", "1.25"},
+              {"high-bit-depth", "true"},
               {"shadow-lift", "42.5"},
               {"shadow-lift-black-point", "true"},
               {"premiere-lift", "1.0"},
@@ -153,6 +155,7 @@ int main(int argc, char** argv) {
   gdouble fixed_edge_rotation_angle_left = 0.0;
   gdouble fixed_edge_rotation_angle_right = 0.0;
   gdouble dynamic_acceleration_scaling = 0.0;
+  gboolean high_bit_depth = FALSE;
   gdouble shadow_lift = 0.0;
   gboolean shadow_lift_black_point = FALSE;
   gdouble premiere_lift = 0.0;
@@ -177,6 +180,8 @@ int main(int argc, char** argv) {
       &fixed_edge_rotation_angle_right,
       "dynamic-acceleration-scaling",
       &dynamic_acceleration_scaling,
+      "high-bit-depth",
+      &high_bit_depth,
       "shadow-lift",
       &shadow_lift,
       "shadow-lift-black-point",
@@ -192,8 +197,22 @@ int main(int argc, char** argv) {
       std::string(private_config) == "show=1;runtime-output-max-width=3840" &&
       std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 && std::abs(fixed_edge_rotation_angle_left - 25.0) < 1e-6 &&
       std::abs(fixed_edge_rotation_angle_right - 75.0) < 1e-6 && std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 &&
-      std::abs(shadow_lift - 42.5) < 1e-6 && shadow_lift_black_point == TRUE && std::abs(premiere_lift - 1.0) < 1e-6 &&
-      last_property_set_ok == TRUE;
+      high_bit_depth == TRUE && std::abs(shadow_lift - 42.5) < 1e-6 && shadow_lift_black_point == TRUE &&
+      std::abs(premiere_lift - 1.0) < 1e-6 && last_property_set_ok == TRUE;
+  GParamSpec* high_bit_depth_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "high-bit-depth");
+  const bool high_bit_depth_is_restart_only = high_bit_depth_spec &&
+      (high_bit_depth_spec->flags & GST_PARAM_MUTABLE_READY) != 0 &&
+      (high_bit_depth_spec->flags & GST_PARAM_MUTABLE_PLAYING) == 0;
+  GstPadTemplate* sink_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(element), "sink");
+  GstCaps* sink_caps = sink_template ? gst_pad_template_get_caps(sink_template) : nullptr;
+  GstCaps* rgb10_caps = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGB10A2_LE");
+  const bool sink_accepts_rgb10 = sink_caps && rgb10_caps && gst_caps_can_intersect(sink_caps, rgb10_caps);
+  if (rgb10_caps) {
+    gst_caps_unref(rgb10_caps);
+  }
+  if (sink_caps) {
+    gst_caps_unref(sink_caps);
+  }
   GParamSpec* shadow_black_point_spec =
       g_object_class_find_property(G_OBJECT_GET_CLASS(element), "shadow-lift-black-point");
   const bool black_point_mutable_while_playing =
@@ -209,13 +228,18 @@ int main(int argc, char** argv) {
       !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"premiere-lift", "1.31"}});
   gdouble premiere_lift_after_invalid = 0.0;
   g_object_get(G_OBJECT(element), "premiere-lift", &premiere_lift_after_invalid, NULL);
+  const bool invalid_high_bit_depth_rejected =
+      !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"high-bit-depth", "2"}});
+  gboolean high_bit_depth_after_invalid = FALSE;
+  g_object_get(G_OBJECT(element), "high-bit-depth", &high_bit_depth_after_invalid, NULL);
   g_free(plugin_type);
   g_free(private_config);
   gst_object_unref(element);
 
-  if (!ok || !black_point_mutable_while_playing || !premiere_lift_mutable_while_playing ||
-      !invalid_black_point_rejected || black_point_after_invalid != TRUE || !invalid_premiere_lift_rejected ||
-      std::abs(premiere_lift_after_invalid - 1.0) > 1e-6) {
+  if (!ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 || !black_point_mutable_while_playing ||
+      !premiere_lift_mutable_while_playing || !invalid_black_point_rejected || black_point_after_invalid != TRUE ||
+      !invalid_premiere_lift_rejected || std::abs(premiere_lift_after_invalid - 1.0) > 1e-6 ||
+      !invalid_high_bit_depth_rejected || high_bit_depth_after_invalid != TRUE) {
     std::cerr << "videoprep property roundtrip failed\n";
     return 1;
   }

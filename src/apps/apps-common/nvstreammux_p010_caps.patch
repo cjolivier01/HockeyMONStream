@@ -1,0 +1,22 @@
+--- gstnvstreammux.cpp
++++ gstnvstreammux.cpp
+@@ -122,8 +122,8 @@
+     GST_PAD_REQUEST,
+     GST_STATIC_CAPS (
+         GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("memory:NVMM",
+-            "{ " "NV12, RGBA, I420 }") "; "
+-        GST_VIDEO_CAPS_MAKE ("{ " "NV12, RGBA }") "; "
++            "{ " "NV12, RGBA, I420, P010_10LE }") "; "
++        GST_VIDEO_CAPS_MAKE ("{ " "NV12, RGBA, P010_10LE }") "; "
+             "audio/x-raw, "
+             "format = { " "S16LE, F32LE }, "
+             "layout = (string) interleaved, "
+@@ -140,7 +140,7 @@
+     GST_PAD_ALWAYS,
+     GST_STATIC_CAPS (
+             GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("memory:NVMM",
+-            "{ " "NV12, RGBA, I420 }") "; "
++            "{ " "NV12, RGBA, I420, P010_10LE }") "; "
+             "audio/x-raw(memory:NVMM), "
+             "format = { " "S16LE, F32LE }, "
+             "layout = (string) interleaved, "

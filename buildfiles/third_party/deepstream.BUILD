@@ -153,13 +153,31 @@ cc_library(
     ],
 )
 
+# The replacement mux is format-preserving, but NVIDIA's public pad template
+# omits P010 even though the batching backend carries its NvBufSurface without
+# conversion. HStream's two-camera mux adds that caps declaration so 10-bit
+# decode can remain P010 until the post-mux GPU conversion into RGB10A2.
+genrule(
+    name = "hstream_lossless_nvstreammux_gst_source",
+    srcs = [
+        "sources/gst-plugins/gst-nvmultistream2/gstnvstreammux.cpp",
+        "@gst_plugin_dev//src/apps/apps-common:nvstreammux_p010_caps.patch",
+    ],
+    outs = ["gstnvstreammux_hstream.cpp"],
+    cmd = " && ".join([
+        "cp $(location sources/gst-plugins/gst-nvmultistream2/gstnvstreammux.cpp) $@",
+        "chmod u+w $@",
+        "patch $@ $$(pwd)/$(location @gst_plugin_dev//src/apps/apps-common:nvstreammux_p010_caps.patch)",
+    ]),
+)
+
 cc_library(
     name = "hstream_lossless_nvstreammux_impl",
     srcs = [
         "@gst_plugin_dev//src/apps/apps-common:HStreamLosslessMux.cpp",
         "sources/gst-plugins/gst-nvmultistream2/GstNvStreamMuxCtx.cpp",
         "sources/gst-plugins/gst-nvmultistream2/gstnvbufaudio.cpp",
-        "sources/gst-plugins/gst-nvmultistream2/gstnvstreammux.cpp",
+        ":hstream_lossless_nvstreammux_gst_source",
         "sources/gst-plugins/gst-nvmultistream2/gstnvstreammux_audio.cpp",
         "sources/gst-plugins/gst-nvmultistream2/gstnvstreammux_ntp.cpp",
         "sources/gst-plugins/gst-nvmultistream2/gstnvstreammux_pads.cpp",
@@ -205,7 +223,6 @@ cc_library(
         "-lnvds_meta",
         "-lnvbufsurface",
         "-lnvbufsurftransform",
-        "-lgstnvdsseimeta",
         "-lnvds_nvtxhelper",
         "-lnvdsbufferpool",
     ],

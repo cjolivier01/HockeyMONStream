@@ -90,6 +90,7 @@ struct GstVideoPrep
   gdouble fixed_edge_rotation_angle_right;
   gdouble dynamic_acceleration_scaling;
   guint preview_overlay_flags;
+  gboolean high_bit_depth;
   gdouble shadow_lift;
   gboolean shadow_lift_black_point;
   gdouble premiere_lift;
@@ -99,6 +100,7 @@ struct GstVideoPrep
   gboolean fixed_edge_rotation_angle_left_set;
   gboolean fixed_edge_rotation_angle_right_set;
   gboolean dynamic_acceleration_scaling_set;
+  gboolean high_bit_depth_set;
   gboolean shadow_lift_set;
   gboolean shadow_lift_black_point_set;
   gboolean premiere_lift_set;
@@ -109,6 +111,7 @@ struct GstVideoPrep
   guint fixed_edge_rotation_angle_left_sequence;
   guint fixed_edge_rotation_angle_right_sequence;
   guint dynamic_acceleration_scaling_sequence;
+  guint high_bit_depth_sequence;
   guint shadow_lift_sequence;
   guint shadow_lift_black_point_sequence;
   guint premiere_lift_sequence;
