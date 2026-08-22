@@ -2,11 +2,50 @@
 
 #include <gst/gst.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace hm::gpu_preview {
+
+enum class RenderExceptionInjection {
+  kNone,
+  kBadAlloc,
+  kLengthError,
+  kUnknown,
+};
+
+enum class CallbackExceptionInjection {
+  kNone,
+  kBadAlloc,
+  kLengthError,
+  kUnknown,
+};
+
+enum class CallbackPoint {
+  kIsolationChain,
+  kIsolationChainList,
+  kIsolationEvent,
+  kIsolationQuery,
+  kIsolationSetProperty,
+  kIsolationGetProperty,
+  kSinkStart,
+  kSinkSetCaps,
+  kSinkStop,
+  kSinkSetProperty,
+  kSinkGetProperty,
+  kSinkUnlock,
+  kSinkUnlockStop,
+};
+
+struct PreviewOverlayInspection {
+  std::size_t path_count{0};
+  bool diagnostic_coordinates_valid{false};
+};
+
+inline constexpr std::size_t kMaximumPresentedFrameCaptureBytes = 32U * 1024U * 1024U;
 
 // Registers hmpreviewisolation and hmgpupreviewsink as process-local
 // GStreamer factories. The renderer is available only on x86_64/X11.
@@ -32,6 +71,11 @@ void set_source_geometry(GstElement* sink, unsigned width, unsigned height);
 // window can be destroyed. Returns false only when the sink is unavailable.
 bool quiesce(GstElement* sink, std::uint64_t generation);
 
+// Preserves aspect ratio while enforcing the diagnostic readback budget.
+// This calculation is exposed so callers and regression tests can reason
+// about the dimensions returned by capture_presented_frame().
+std::pair<unsigned, unsigned> bounded_capture_dimensions(unsigned width, unsigned height);
+
 // Copies the most recently presented OpenGL texture to host memory for an
 // explicit, one-shot diagnostic capture. Normal preview rendering never calls
 // this function and remains entirely GPU-resident.
@@ -41,5 +85,23 @@ bool capture_presented_frame(
     unsigned* width,
     unsigned* height,
     std::string* error);
+
+// Installs one-shot failures used to verify the GStreamer/GObject callback and
+// explicit-capture exception boundaries. Production code never enables these
+// hooks.
+void set_render_exception_injection_for_test(GstElement* sink, RenderExceptionInjection injection);
+void set_callback_exception_injection_for_test(
+    GstElement* element,
+    CallbackPoint point,
+    CallbackExceptionInjection injection);
+void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptionInjection injection);
+PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, GstBuffer* buffer);
+bool renderer_rink_mask_loaded_for_test(
+    GstElement* sink,
+    const std::string& output_generation,
+    unsigned width,
+    unsigned height);
+bool renderer_rink_mask_cache_cleared_for_test(GstElement* sink);
+bool renderer_resources_released_for_test(GstElement* sink);
 
 } // namespace hm::gpu_preview

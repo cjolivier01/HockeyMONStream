@@ -43,6 +43,7 @@ enum {
   PROP_0,
   PROP_UNIQUE_ID,
   PROP_DRAW,
+  PROP_PREVIEW_OVERLAY_FLAGS,
   PROP_GPU_DEVICE_ID,
   PROP_PLAY_TRACKER_CONFIG_FILE,
 };
@@ -139,6 +140,18 @@ static void gst_playtracker_class_init(GstDsPlayTrackerClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_PREVIEW_OVERLAY_FLAGS,
+      g_param_spec_uint(
+          "preview-overlay-flags",
+          "Preview overlay flags",
+          "Preview-only snapshot content and Program transform bitmask",
+          0,
+          kPreviewOverlayAll,
+          0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_PLAY_TRACKER_CONFIG_FILE,
       g_param_spec_string(
           "config-file",
@@ -203,7 +216,12 @@ static void gst_playtracker_set_property(GObject* object, guint prop_id, const G
       playtracker->gpu_id = g_value_get_uint(value);
       break;
     case PROP_DRAW:
-      playtracker->draw = g_value_get_boolean(value);
+      g_atomic_int_set(&playtracker->draw, g_value_get_boolean(value));
+      DsPlayTrackerCtxSetDraw(playtracker->playtrackerlib_ctx, g_value_get_boolean(value));
+      break;
+    case PROP_PREVIEW_OVERLAY_FLAGS:
+      g_atomic_int_set(&playtracker->preview_overlay_flags, static_cast<gint>(g_value_get_uint(value)));
+      DsPlayTrackerCtxSetPreviewOverlayFlags(playtracker->playtrackerlib_ctx, g_value_get_uint(value));
       break;
     case PROP_PLAY_TRACKER_CONFIG_FILE: {
       const char* str = g_value_get_string(value);
@@ -234,7 +252,10 @@ static void gst_playtracker_get_property(GObject* object, guint prop_id, GValue*
       g_value_set_uint(value, playtracker->gpu_id);
       break;
     case PROP_DRAW:
-      g_value_set_boolean(value, playtracker->draw);
+      g_value_set_boolean(value, g_atomic_int_get(&playtracker->draw));
+      break;
+    case PROP_PREVIEW_OVERLAY_FLAGS:
+      g_value_set_uint(value, static_cast<guint>(g_atomic_int_get(&playtracker->preview_overlay_flags)));
       break;
     case PROP_PLAY_TRACKER_CONFIG_FILE:
       g_value_set_string(value, playtracker->play_tracker_config_file);
@@ -252,7 +273,7 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
   GstDsPlayTracker* playtracker = GST_DSPLAYTRACKER(btrans);
   DsPlayTrackerInitParams init_params = {
       .play_tracker_config_file = playtracker->play_tracker_config_file,
-      .draw = !!playtracker->draw,
+      .draw = !!g_atomic_int_get(&playtracker->draw),
   };
 
   absl::Status validation_status = DsPlayTrackerValidateConfigFile(init_params.play_tracker_config_file);
@@ -263,6 +284,8 @@ static gboolean gst_playtracker_start(GstBaseTransform* btrans) {
 
   /* Algorithm specific initializations and resource allocation. */
   playtracker->playtrackerlib_ctx = DsPlayTrackerCtxInit(&init_params);
+  DsPlayTrackerCtxSetPreviewOverlayFlags(
+      playtracker->playtrackerlib_ctx, static_cast<unsigned>(g_atomic_int_get(&playtracker->preview_overlay_flags)));
 
   GST_DEBUG_OBJECT(playtracker, "ctx lib %p \n", playtracker->playtrackerlib_ctx);
 

@@ -34,6 +34,7 @@
 
 // Application and common headers.
 #include "PlaybackProgress.h"
+#include "PreviewOverlayRuntime.h"
 #include "TerminalProgressUi.h"
 #include "configurator.h"
 #include "deepstream_app.h"
@@ -138,6 +139,9 @@ class PipelineApplication {
   void advance_runtime_seek();
   bool set_render_window_runtime(guint64 window_id);
   bool set_preview_active_runtime(const std::string& channel, guint64 generation);
+  bool set_preview_overlays_runtime(const hm::pipeline_internal::PreviewOverlayCommand& command);
+  bool apply_preview_overlay_state(const hm::pipeline_internal::PreviewOverlaySelection& selection, bool apply_sinks);
+  bool update_preview_overlay_producers();
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
   bool set_render_audio_muted_runtime(bool muted);
   bool inspect_pipeline_graph_runtime(uint64_t request_id, long expected_stage, uint64_t expected_generation);
@@ -270,7 +274,11 @@ class PipelineApplication {
   };
   std::map<std::string, UiPreviewChannel> ui_preview_channels_;
   std::string active_ui_preview_channel_;
+  bool ui_preview_channel_explicitly_disabled_{false};
   guint64 active_ui_preview_generation_{1};
+  hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
+  std::vector<GstElement*> preview_overlay_producers_;
+  std::atomic<unsigned> preview_overlay_probe_flags_{0};
   gdouble stitch_rotate_degrees_{0.0};
   gboolean stitch_rotate_degrees_set_{FALSE};
   gboolean show_bbox_text_;

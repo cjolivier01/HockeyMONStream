@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 #include <nvdsmeta.h>
 
+#include <atomic>
 #include <list>
 #include <memory>
 #include <optional>
@@ -37,6 +38,9 @@ struct DsPlayTrackerInitParams {
 
 struct DsPlayTrackerCtx {
   DsPlayTrackerInitParams initParams;
+  std::atomic<bool> draw{false};
+  std::atomic<unsigned> preview_overlay_flags{0};
+  std::atomic<bool> preview_snapshot_failure_reported{false};
   std::optional<DsPlayTrackerRuntimeTuning> detector_runtime_tuning;
   std::optional<DsPlayTrackerRuntimeTuning> fast_box_runtime_tuning;
   std::optional<DsPlayTrackerRuntimeTuning> follower_box_runtime_tuning;
@@ -57,6 +61,21 @@ DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 absl::Status DsPlayTrackerValidateConfigFile(const std::string& config_file);
 
 absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning);
+
+// Controls production display-metadata generation without restarting tracking.
+void DsPlayTrackerCtxSetDraw(DsPlayTrackerCtx* ctx, bool draw);
+
+enum DsPlayTrackerPreviewOverlayFlags : unsigned {
+  kPreviewOverlayPlayers = 1U << 0,
+  kPreviewOverlayPlay = 1U << 1,
+  kPreviewOverlayTransformRequired = 1U << 2,
+  kPreviewOverlayAll = kPreviewOverlayPlayers | kPreviewOverlayPlay | kPreviewOverlayTransformRequired,
+};
+
+// Controls immutable preview-only metadata generation without changing the
+// configured production draw path.
+void DsPlayTrackerCtxSetPreviewOverlayFlags(DsPlayTrackerCtx* ctx, unsigned flags);
+bool DsPlayTrackerAttachPreviewSnapshot(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame);
 
 // Drops per-source position/velocity history while preserving accumulated live
 // tuning. Used after a flushing playback seek before the next frame arrives.

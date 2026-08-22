@@ -17,6 +17,7 @@ cc_library(
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context_header",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_payload",
+        "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
         "//src/libs/draw_display",
         "//src/libs/scoreboard",
@@ -31,6 +32,7 @@ cc_test(
     srcs = ["PlayCropperRuntimeSizingTest.cpp"],
     deps = [
         ":playcropper",
+        "//src/libs/common:preview_overlay_meta",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@local_cuda//:nppc",

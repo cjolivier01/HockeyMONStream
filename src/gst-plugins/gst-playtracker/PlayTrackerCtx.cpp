@@ -8,6 +8,7 @@
 #include "hstream/src/libs/common/ConfigYaml.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/PlotContext.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 
 #include <nvdsmeta.h>
@@ -803,6 +804,7 @@ ScaleXY get_scale_xy(const GstDsPlayTrackerFrame& frame) {
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* initParams) {
   DsPlayTrackerCtx* ctx = new DsPlayTrackerCtx();
   ctx->initParams = *initParams;
+  ctx->draw.store(initParams->draw, std::memory_order_relaxed);
   return ctx;
 }
 
@@ -975,6 +977,58 @@ absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsP
   return absl::OkStatus();
 }
 
+void DsPlayTrackerCtxSetDraw(DsPlayTrackerCtx* ctx, bool draw) {
+  if (ctx) {
+    ctx->draw.store(draw, std::memory_order_relaxed);
+  }
+}
+
+void DsPlayTrackerCtxSetPreviewOverlayFlags(DsPlayTrackerCtx* ctx, unsigned flags) {
+  if (ctx) {
+    ctx->preview_overlay_flags.store(flags & kPreviewOverlayAll, std::memory_order_release);
+    ctx->preview_snapshot_failure_reported.store(false, std::memory_order_relaxed);
+  }
+}
+
+bool DsPlayTrackerAttachPreviewSnapshot(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame) {
+  if (!ctx || !frame.frame_meta)
+    return false;
+  const unsigned flags = ctx->preview_overlay_flags.load(std::memory_order_acquire);
+  if (flags == 0 || hm::preview_overlay::find_overlay_snapshot_meta(frame.frame_meta))
+    return true;
+
+  const bool include_players = (flags & kPreviewOverlayPlayers) != 0;
+  const bool include_play = (flags & kPreviewOverlayPlay) != 0;
+  bool attached = false;
+  if (include_play && !ctx->draw.load(std::memory_order_relaxed)) {
+    // Generate preview play geometry against a shallow frame-meta facade. The
+    // PlotContext-owned display metas are returned to the batch pool after
+    // they have been copied into the immutable snapshot, and the real frame's
+    // production display-meta list is never changed.
+    NvDsFrameMeta preview_frame_meta = *frame.frame_meta;
+    preview_frame_meta.display_meta_list = nullptr;
+    GstDsPlayTrackerFrame preview_frame = frame;
+    preview_frame.frame_meta = &preview_frame_meta;
+    if (DsPlayTrackerDrawToDisplayMeta(ctx, preview_frame).ok()) {
+      attached = hm::preview_overlay::add_selected_overlay_snapshot_meta(
+          frame.frame_meta, include_players, true, preview_frame_meta.display_meta_list);
+    }
+    while (preview_frame_meta.display_meta_list) {
+      auto* display_meta = static_cast<NvDsDisplayMeta*>(preview_frame_meta.display_meta_list->data);
+      if (!display_meta)
+        break;
+      nvds_remove_display_meta_from_frame(&preview_frame_meta, display_meta);
+    }
+  } else {
+    attached = hm::preview_overlay::add_selected_overlay_snapshot_meta(
+        frame.frame_meta, include_players, include_play, include_play ? frame.frame_meta->display_meta_list : nullptr);
+  }
+  if (!attached && !ctx->preview_snapshot_failure_reported.exchange(true, std::memory_order_relaxed)) {
+    g_printerr("HSTREAM_PREVIEW_OVERLAY status=snapshot-unavailable\n");
+  }
+  return attached;
+}
+
 void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx) {
   if (ctx) {
     ctx->play_trackers.clear();
@@ -987,15 +1041,6 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   // it isn't perfectly scalable atm.
 
   DsPlayTrackerCtx::PlayTracker* play_tracker_ctx{nullptr};
-
-#if 1 && !defined(NDEBUG)
-  hm::utils::PlotContext plot_context(frame.frame_meta);
-  plot_context.plot_rect(
-      // hm::BBox(field_box.x, field_box.y, field_box.x + field_box.width, field_box.y + field_box.height),
-      ctx->arena_box,
-      20,
-      hm::utils::ColorRGB{255, 0, 0});
-#endif
 
   if (!gst_hm_playtracker::has_play_tracker(ctx, frame.frame_meta->source_id)) {
     ctx->arena_box = hm::BBox(0, 0, frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
@@ -1073,6 +1118,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
     // aspect-correct fallback instead of stretching a synthetic full-frame
     // box into the Program output.
     frame.play_tracker_results = {};
+    DsPlayTrackerAttachPreviewSnapshot(ctx, frame);
     return true;
   }
 
@@ -1081,11 +1127,12 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   }
 
   frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
-  if (ctx->initParams.draw) {
+  if (ctx->draw.load(std::memory_order_relaxed)) {
     if (!DsPlayTrackerDrawToDisplayMeta(ctx, frame).ok()) {
       return false;
     }
   }
+  DsPlayTrackerAttachPreviewSnapshot(ctx, frame);
   DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
   return true;
 }

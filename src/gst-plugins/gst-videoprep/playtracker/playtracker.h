@@ -56,6 +56,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   float fixed_edge_rotation_angle_right_{10.0};
   // Dynamic acceleration scaling (usually to slower) on the last live-box only
   float dynamic_acceleration_scaling_{1.0};
+  unsigned preview_overlay_flags_{0};
   size_t frame_counter_{0};
   size_t frame_calculation_interval_{1};
   bool show_{false};

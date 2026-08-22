@@ -43,7 +43,34 @@ cc_test(
     }),
     deps = [
         ":deepstream_apps_common",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/common:utils",
+        "//src/libs/stitching:hugin_project",
+        "//src/libs/stitching:stitching",
+        "@deepstream//:deepstream_lib",
         "@gstreamer",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
+    name = "rink_mask_image",
+    srcs = ["RinkMaskImage.cpp"],
+    hdrs = ["RinkMaskImage.h"],
+    copts = ["-std=c++17"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@opencv_linux//:opencv"],
+)
+
+cc_test(
+    name = "rink_mask_image_test",
+    srcs = ["RinkMaskImageTest.cpp"],
+    copts = ["-std=c++17"],
+    deps = [
+        ":rink_mask_image",
+        "@opencv_linux//:opencv",
     ],
 )
 
@@ -154,16 +181,21 @@ cc_library(
     deps = [
         ":gst_plugin_properties",
         ":hstream_lossless_nvstreammux",
+        ":rink_mask_image",
         "//src/libs/camera",
         "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/common:fs",
+        "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
+        "//src/libs/stitching:stitching",
         "//toolchains/jetson:cuda_runtime",
+        "@com_google_absl//absl/status:status",
         "@deepstream//:deepstream_lib",
         "@glib",
         "@gstreamer",
         "@json_glib",
         "@libsoup",
+        "@opencv_linux//:opencv",
     ],
 )
 

@@ -27,6 +27,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
@@ -534,6 +535,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
   // nppStreamContext.nCudaDeviceId = m_gpuId;
 
   HM_RETURN_IF_ERROR(hm::to_status(cudaSetDevice(m_gpuId)));
+  CudaStreamCompletionFence completion_fence(cuda_stream_);
 
   const std::vector<std::optional<BBox>> tracking_boxes = get_object_boxes_by_frame(
       batch_meta, DsPlayTrackerInitParams::kPlayBoxClassIdBase, DsPlayTrackerInitParams::kPlayBoxClassIdBase);
@@ -571,6 +573,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
     const size_t input_width = incoming_surface.width();
     const size_t input_height = incoming_surface.height();
+    const float metadata_width = static_cast<float>(frame_meta->source_frame_width);
+    const float metadata_height = static_cast<float>(frame_meta->source_frame_height);
     // ack this may vary on jetson I think
     const size_t output_width = outgoing_surface.width();
     const size_t output_height = outgoing_surface.height();
@@ -607,6 +611,36 @@ absl::Status PlayCropperPriv::GenerateOutput(
 #else
     const BBox output_rect(0, 0, (FloatValue)output_width, (FloatValue)output_height);
 
+    // Preview metadata is purely diagnostic. Request it only when the UI's
+    // pre-playcropper snapshot is present, and attach it before any output GPU
+    // work is submitted. Pool exhaustion must never break encode/headless
+    // processing or return a surface while CUDA is still writing it.
+    if (preview_overlay::find_overlay_snapshot_meta(frame_meta)) {
+      const preview_overlay::PlayCropperTransform preview_transform{
+          static_cast<float>(input_width),
+          static_cast<float>(input_height),
+          metadata_width,
+          metadata_height,
+          transform.source_rect.left,
+          transform.source_rect.top,
+          transform.anchor_point.x,
+          transform.anchor_point.y,
+          transform.crop_box.left,
+          transform.crop_box.top,
+          transform.crop_box.width(),
+          transform.crop_box.height(),
+          static_cast<float>(output_width),
+          static_cast<float>(output_height),
+          transform.angle,
+          transform_object_meta_,
+      };
+      if (!preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) &&
+          !preview_transform_failure_reported_) {
+        g_printerr("HSTREAM_PREVIEW_OVERLAY status=transform-meta-unavailable\n");
+        preview_transform_failure_reported_ = true;
+      }
+    }
+
     // Check if we can use our optimized path
     NvBufSurfaceColorFormat color_format = incoming_surface->colorFormat;
 #endif // PLAYCROPPER_USE_ONE_KERNEL
@@ -614,6 +648,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
         color_format == NVBUF_COLOR_FORMAT_GRAY8) {
       XCUDA_RETURN_IF_ERROR(cudaMemsetAsync(
           outgoing_surface.dataptr(), 0, outgoing_surface.height() * outgoing_surface.pitch(), cuda_stream_));
+      completion_fence.MarkSubmitted();
       // Use the combined transform - no scratch surfaces needed!
       XCUDA_RETURN_IF_ERROR(combinedTransform(
           incoming_surface.get(),
@@ -626,6 +661,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
           shadow_lift_percent_,
           lift_shadow_black_point_,
           cuda_stream_));
+      completion_fence.MarkSubmitted();
     } else {
       // assert(false);
       // Fall back to original implementation for unsupported formats
@@ -658,11 +694,13 @@ absl::Status PlayCropperPriv::GenerateOutput(
 
     // Scoreboard
     if (show_scoreboard_) {
+      completion_fence.MarkSubmitted();
       HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, cuda_stream_));
     }
     if (show_ && !batch_nr) {
       // Render it inside the loop, but we'll display it after our cudaSynchronize
       display_surface = std::make_unique<surface::Surface>(incoming_surface);
+      completion_fence.MarkSubmitted();
       HM_RETURN_IF_ERROR(RenderDisplayMeta(*display_surface, frame_meta, cuda_stream_));
     }
     if (transform_object_meta_) {
@@ -680,9 +718,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
   }
 
   // Synchronize stream
-  if (cuda_stream_) {
-    cudaStreamSynchronize(cuda_stream_);
-  }
+  HM_RETURN_IF_ERROR(hm::to_status(completion_fence.Synchronize()));
 
   if (show_ && display_surface) {
     // If rendering, only render opne per batch and do it after the main cuda synchronize

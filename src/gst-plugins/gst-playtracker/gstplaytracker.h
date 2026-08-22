@@ -82,6 +82,9 @@ struct _GstDsPlayTracker {
   /** send play tracking shapes to the OSD (who may or may not drw them) */
   gboolean draw;
 
+  /** Bitmask of immutable metadata requested only by active GPU previews. */
+  gint preview_overlay_flags;
+
   char play_tracker_config_file[PATH_MAX * 4];
 
   /** Current batch number of the input batch. */

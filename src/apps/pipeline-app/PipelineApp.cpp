@@ -5,10 +5,12 @@
 #include "PipelineApp.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
+#include "PreviewOverlayRuntime.h"
 #include "RuntimePropertyAllowlist.h"
 #include "RuntimePropertyValueParser.h"
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
+#include "configurator.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 
 #include <gstreamer-1.0/gst/gstelement.h>
@@ -34,11 +36,14 @@
 #include <termios.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <iomanip>
@@ -58,6 +63,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/pipeline_controller/GstPropertyService.h"
@@ -77,10 +83,100 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
 
+void emit_preview_protocol(const char* message) {
+  g_print("%s", message);
+  std::fflush(stdout);
+}
+
+template <typename... Args>
+void emit_preview_protocol(const char* format, Args... args) {
+  g_print(format, args...);
+  std::fflush(stdout);
+}
+
 struct StitchFrameRewindRequest {
   long stage;
   uint64_t main_loop_generation;
 };
+
+hm::pipeline_internal::PreviewOverlaySelection preview_overlay_selection_from_environment() {
+  hm::pipeline_internal::PreviewOverlaySelection selection;
+  const char* configured = g_getenv("HSTREAM_UI_PREVIEW_OVERLAYS");
+  if (!configured)
+    return selection;
+  for (absl::string_view value : absl::StrSplit(configured, ',')) {
+    if (value == "players")
+      selection.players = true;
+    else if (value == "play")
+      selection.play = true;
+    else if (value == "rink")
+      selection.rink = true;
+  }
+  return selection;
+}
+
+struct OverlaySnapshotProbeState {
+  std::atomic<unsigned>* flags{nullptr};
+  std::atomic_bool failure_reported{false};
+};
+
+constexpr unsigned kPreviewOverlayPlayers = 1U << 0;
+constexpr unsigned kPreviewOverlayPlay = 1U << 1;
+constexpr unsigned kPreviewOverlayTransformRequired = 1U << 2;
+
+unsigned preview_overlay_producer_flags(
+    const hm::pipeline_internal::PreviewOverlaySelection& selection,
+    const std::string& active_channel) {
+  const bool tracked_preview = active_channel == "program" || active_channel == "stitched";
+  if (!tracked_preview)
+    return 0;
+  unsigned flags = selection.players ? kPreviewOverlayPlayers : 0;
+  flags |= selection.play ? kPreviewOverlayPlay : 0;
+  if (active_channel == "program" && selection.any())
+    flags |= kPreviewOverlayTransformRequired;
+  return flags;
+}
+
+GstPadProbeReturn snapshot_preview_overlays(GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept {
+  try {
+    if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) == 0)
+      return GST_PAD_PROBE_OK;
+    GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+    NvDsBatchMeta* batch_meta = buffer ? gst_buffer_get_nvds_batch_meta(buffer) : nullptr;
+    if (!batch_meta)
+      return GST_PAD_PROBE_OK;
+    auto* state = static_cast<OverlaySnapshotProbeState*>(user_data);
+    const unsigned flags = state && state->flags ? state->flags->load(std::memory_order_acquire) : 0;
+    if (flags == 0)
+      return GST_PAD_PROBE_OK;
+    bool snapshot_failed = false;
+    for (NvDsMetaList* item = batch_meta->frame_meta_list; item; item = item->next) {
+      auto* frame_meta = static_cast<NvDsFrameMeta*>(item->data);
+      if (!frame_meta)
+        continue;
+      // Only immutable metadata crosses the tee. Playcropper attaches its
+      // transform to the copied metadata on the Program output buffer after the
+      // transform is known, so the Stitched branch cannot race a mutation.
+      const bool snapshot_ready = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta) ||
+          hm::preview_overlay::add_selected_overlay_snapshot_meta(
+                                      frame_meta,
+                                      (flags & kPreviewOverlayPlayers) != 0,
+                                      (flags & kPreviewOverlayPlay) != 0,
+                                      (flags & kPreviewOverlayPlay) != 0 ? frame_meta->display_meta_list : nullptr);
+      snapshot_failed = snapshot_failed || !snapshot_ready;
+    }
+    if (snapshot_failed && state && !state->failure_reported.exchange(true)) {
+      g_printerr("Could not snapshot pre-playcropper metadata for GPU preview overlays\n");
+    }
+    return GST_PAD_PROBE_OK;
+  } catch (const std::exception& error) {
+    g_printerr("Could not snapshot GPU preview overlays: %s\n", error.what());
+    return GST_PAD_PROBE_OK;
+  } catch (...) {
+    g_printerr("Could not snapshot GPU preview overlays: unknown failure\n");
+    return GST_PAD_PROBE_OK;
+  }
+}
 
 guint stitch_frame_completion_timeout_ms() {
   constexpr guint kDefaultTimeoutMs = 300'000;
@@ -881,6 +977,8 @@ PipelineApplication::PipelineApplication()
       rcfg_(0),
       rrowsel_(FALSE),
       selecting_(FALSE) {
+  preview_overlay_state_ =
+      hm::pipeline_internal::PreviewOverlayRuntimeState(preview_overlay_selection_from_environment());
   memset(fps_, 0, sizeof(fps_));
   memset(fps_avg_, 0, sizeof(fps_avg_));
   g_mutex_init(&fps_lock_);
@@ -1236,11 +1334,20 @@ absl::Status PipelineApplication::createPipelines(
 absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   if (!ui_preview_window_ids_.empty()) {
+    preview_overlay_producers_.clear();
+    preview_overlay_probe_flags_.store(0, std::memory_order_release);
     if (app_contexts.size() != 1) {
       return absl::InvalidArgumentError("GPU-native UI previews require exactly one active pipeline context");
     }
     constexpr guint64 kPreviewImageBudgetBytes = 64ULL * 1024ULL * 1024ULL;
     guint64 preview_image_bytes = 0;
+    const hm::pipeline_internal::PreviewOverlaySelection overlay_selection = preview_overlay_state_.selection();
+    const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
+    const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
+
+    auto configure_overlays = [&](GstElement* sink) {
+      g_object_set(G_OBJECT(sink), "rink-mask-file", rink_mask_file.c_str(), nullptr);
+    };
 
     struct PreviewProbeState {
       GstElement* sink{nullptr};
@@ -1248,40 +1355,49 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       std::chrono::steady_clock::time_point last_emission;
       bool have_last_emission{false};
     };
-    auto preview_probe = +[](GstPad*, GstPadProbeInfo* info, gpointer user_data) -> GstPadProbeReturn {
-      auto* state = static_cast<PreviewProbeState*>(user_data);
-      if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
-        GstEvent* event = GST_PAD_PROBE_INFO_EVENT(info);
-        if (event && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
-          GstCaps* caps = nullptr;
-          gst_event_parse_caps(event, &caps);
-          const GstStructure* structure = caps && gst_caps_get_size(caps) ? gst_caps_get_structure(caps, 0) : nullptr;
-          gint width = 0;
-          gint height = 0;
-          if (structure && gst_structure_get_int(structure, "width", &width) &&
-              gst_structure_get_int(structure, "height", &height) && width > 0 && height > 0) {
-            hm::gpu_preview::set_source_geometry(state->sink, width, height);
+    auto preview_probe = +[](GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept -> GstPadProbeReturn {
+      try {
+        auto* state = static_cast<PreviewProbeState*>(user_data);
+        if (!state || !info)
+          return GST_PAD_PROBE_DROP;
+        if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
+          GstEvent* event = GST_PAD_PROBE_INFO_EVENT(info);
+          if (event && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+            GstCaps* caps = nullptr;
+            gst_event_parse_caps(event, &caps);
+            const GstStructure* structure = caps && gst_caps_get_size(caps) ? gst_caps_get_structure(caps, 0) : nullptr;
+            gint width = 0;
+            gint height = 0;
+            if (structure && gst_structure_get_int(structure, "width", &width) &&
+                gst_structure_get_int(structure, "height", &height) && width > 0 && height > 0) {
+              hm::gpu_preview::set_source_geometry(state->sink, width, height);
+            }
           }
         }
-      }
-      if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
-        const auto now = std::chrono::steady_clock::now();
-        constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
-        if (state->have_last_emission && now - state->last_emission < kMinimumWallPeriod)
-          return GST_PAD_PROBE_DROP;
-        GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-        const GstClockTime pts = buffer ? GST_BUFFER_PTS(buffer) : GST_CLOCK_TIME_NONE;
-        constexpr GstClockTime kMinimumPreviewPeriod = GST_SECOND / 30;
-        if (GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(state->last_pts) && pts >= state->last_pts &&
-            pts - state->last_pts < kMinimumPreviewPeriod) {
-          return GST_PAD_PROBE_DROP;
+        if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+          const auto now = std::chrono::steady_clock::now();
+          constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
+          if (state->have_last_emission && now - state->last_emission < kMinimumWallPeriod)
+            return GST_PAD_PROBE_DROP;
+          GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+          const GstClockTime pts = buffer ? GST_BUFFER_PTS(buffer) : GST_CLOCK_TIME_NONE;
+          constexpr GstClockTime kMinimumPreviewPeriod = GST_SECOND / 30;
+          if (GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(state->last_pts) && pts >= state->last_pts &&
+              pts - state->last_pts < kMinimumPreviewPeriod) {
+            return GST_PAD_PROBE_DROP;
+          }
+          if (GST_CLOCK_TIME_IS_VALID(pts))
+            state->last_pts = pts;
+          state->last_emission = now;
+          state->have_last_emission = true;
         }
-        if (GST_CLOCK_TIME_IS_VALID(pts))
-          state->last_pts = pts;
-        state->last_emission = now;
-        state->have_last_emission = true;
+        return GST_PAD_PROBE_OK;
+      } catch (const std::exception& error) {
+        g_printerr("HSTREAM_PREVIEW_CALLBACK_EXCEPTION callback=rate-limit-probe message=%s\n", error.what());
+      } catch (...) {
+        g_printerr("HSTREAM_PREVIEW_CALLBACK_EXCEPTION callback=rate-limit-probe message=unknown exception\n");
       }
-      return GST_PAD_PROBE_OK;
+      return GST_PAD_PROBE_DROP;
     };
 
     auto configure_path = [&](GstElement* queue,
@@ -1394,9 +1510,10 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
           preview_probe,
           probe_state,
-          +[](gpointer data) {
+          +[](gpointer data) noexcept {
             auto* state = static_cast<PreviewProbeState*>(data);
-            gst_object_unref(state->sink);
+            if (state && state->sink)
+              gst_object_unref(state->sink);
             delete state;
           });
       gst_object_unref(probe_pad);
@@ -1438,30 +1555,120 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           !link_element_to_tee_src_pad(output.tee, ingress_isolation)) {
         return absl::InternalError("Could not link the GPU-native Program preview branch");
       }
+      configure_overlays(sink);
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
+    GstElement* preview_overlay_producer = app_context->pipeline.dsplaytracker_bin.elem_dsplaytracker;
+    if (preview_overlay_producer)
+      preview_overlay_producers_.push_back(preview_overlay_producer);
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
-    if (stitched_target != ui_preview_window_ids_.end()) {
-      if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
-          !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
-        return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
+    if ((program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
+        !preview_overlay_producer) {
+      GstPad* snapshot_pad =
+          stitcher.elem_hmstitcher ? gst_element_get_static_pad(stitcher.elem_hmstitcher, "src") : nullptr;
+      if (!snapshot_pad && app_context->pipeline.common_elements.hmplaycropper_bin.playcropper) {
+        snapshot_pad =
+            gst_element_get_static_pad(app_context->pipeline.common_elements.hmplaycropper_bin.playcropper, "sink");
       }
-      g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
-      if (!configure_path(
-              stitcher.preview_queue,
-              stitcher.preview_ingress_isolation,
-              stitcher.preview_isolation,
-              stitcher.preview_converter,
-              stitcher.preview_caps_filter,
-              stitcher.preview_sink,
-              "stitched",
-              stitched_target->second,
-              app_context->config.hmsticher_config.gpu_id,
-              1600,
-              900,
-              false)) {
-        return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
+      if (!snapshot_pad)
+        return absl::FailedPreconditionError("The pipeline does not expose a GPU overlay snapshot point");
+      auto* snapshot_state = new OverlaySnapshotProbeState{&preview_overlay_probe_flags_};
+      const gulong snapshot_probe = gst_pad_add_probe(
+          snapshot_pad,
+          GST_PAD_PROBE_TYPE_BUFFER,
+          snapshot_preview_overlays,
+          snapshot_state,
+          +[](gpointer data) noexcept { delete static_cast<OverlaySnapshotProbeState*>(data); });
+      gst_object_unref(snapshot_pad);
+      if (snapshot_probe == 0) {
+        delete snapshot_state;
+        return absl::InternalError("Could not install the no-playtracker GPU overlay snapshot probe");
+      }
+    }
+    if (stitched_target != ui_preview_window_ids_.end()) {
+      GstElement* playtracker = app_context->pipeline.dsplaytracker_bin.bin;
+      if (playtracker) {
+        GstPad* playtracker_src = gst_element_get_static_pad(playtracker, "src");
+        GstPad* tracked_downstream_sink = playtracker_src ? gst_pad_get_peer(playtracker_src) : nullptr;
+        GstElement* tracked_downstream =
+            tracked_downstream_sink ? gst_pad_get_parent_element(tracked_downstream_sink) : nullptr;
+        if (!playtracker_src || !tracked_downstream_sink || !tracked_downstream) {
+          if (tracked_downstream)
+            gst_object_unref(tracked_downstream);
+          if (tracked_downstream_sink)
+            gst_object_unref(tracked_downstream_sink);
+          if (playtracker_src)
+            gst_object_unref(playtracker_src);
+          return absl::FailedPreconditionError("The play tracker does not expose a linked downstream preview point");
+        }
+        auto tracked_link_cleanup = absl::MakeCleanup([&] {
+          gst_object_unref(tracked_downstream);
+          gst_object_unref(tracked_downstream_sink);
+          gst_object_unref(playtracker_src);
+        });
+        GstElement* tee = gst_element_factory_make(NVDS_ELEM_TEE, "stitched_tracking_gpu_preview_tee");
+        GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "stitched_gpu_preview_queue");
+        GstElement* ingress_isolation =
+            gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_ingress_isolation");
+        GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_isolation");
+        GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "stitched_gpu_preview_converter");
+        GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "stitched_gpu_preview_caps");
+        GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "stitched_gpu_preview_sink");
+        if (!tee || !queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink) {
+          return absl::InternalError("Could not create the tracked Stitched GPU preview branch");
+        }
+        gst_bin_add_many(
+            GST_BIN(app_context->pipeline.pipeline),
+            tee,
+            ingress_isolation,
+            queue,
+            isolation,
+            converter,
+            caps_filter,
+            sink,
+            nullptr);
+        if (!gst_pad_unlink(playtracker_src, tracked_downstream_sink) || !gst_element_link(playtracker, tee) ||
+            !link_element_to_tee_src_pad(tee, tracked_downstream) ||
+            !configure_path(
+                queue,
+                ingress_isolation,
+                isolation,
+                converter,
+                caps_filter,
+                sink,
+                "stitched",
+                stitched_target->second,
+                app_context->config.hmsticher_config.gpu_id,
+                1600,
+                900,
+                true) ||
+            !link_element_to_tee_src_pad(tee, ingress_isolation)) {
+          return absl::InternalError("Could not link the tracked Stitched GPU preview branch");
+        }
+        configure_overlays(sink);
+      } else {
+        if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
+            !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
+          return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
+        }
+        g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
+        if (!configure_path(
+                stitcher.preview_queue,
+                stitcher.preview_ingress_isolation,
+                stitcher.preview_isolation,
+                stitcher.preview_converter,
+                stitcher.preview_caps_filter,
+                stitcher.preview_sink,
+                "stitched",
+                stitched_target->second,
+                app_context->config.hmsticher_config.gpu_id,
+                1600,
+                900,
+                false)) {
+          return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
+        }
+        configure_overlays(stitcher.preview_sink);
       }
     }
 
@@ -1529,7 +1736,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     for (const auto& [channel, window_id] : ui_preview_window_ids_) {
       if (channel.rfind("source", 0) == 0 && !ui_preview_channels_.count(channel)) {
-        g_print(
+        emit_preview_protocol(
             "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
             " message=no active camera source for XID %" G_GUINT64_FORMAT "\n",
             channel.c_str(),
@@ -1537,9 +1744,19 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             window_id);
       }
     }
-    if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_))
+    if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_)) {
       active_ui_preview_channel_.clear();
-    g_print(
+      ui_preview_channel_explicitly_disabled_ = false;
+    }
+    const bool has_overlay_sink =
+        std::any_of(ui_preview_channels_.begin(), ui_preview_channels_.end(), [](const auto& channel) {
+          return hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel.first);
+        });
+    if (has_overlay_sink && !apply_preview_overlay_state(overlay_selection, true))
+      return absl::InternalError("Could not apply the initial GPU preview overlay state");
+    if (!has_overlay_sink)
+      update_preview_overlay_producers();
+    emit_preview_protocol(
         "HSTREAM_PREVIEW_MEMORY image-bytes=%" G_GUINT64_FORMAT " budget-bytes=%" G_GUINT64_FORMAT "\n",
         preview_image_bytes,
         kPreviewImageBudgetBytes);
@@ -2124,10 +2341,10 @@ absl::Status PipelineApplication::playPipelines(
   if (!ui_preview_channels_.empty()) {
     // Re-arm the initial channel directly after PLAYING. Startup must not race
     // an external command against installation of the GLib stdin poll.
-    const std::string channel =
-        active_ui_preview_channel_.empty() ? initial_ui_preview_channel_ : active_ui_preview_channel_;
+    const std::string channel = hm::pipeline_internal::preview_channel_for_pipeline_start(
+        active_ui_preview_channel_, initial_ui_preview_channel_, ui_preview_channel_explicitly_disabled_);
     const guint64 generation = active_ui_preview_generation_ + 1;
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=%" G_GUINT64_FORMAT "\n",
         channel.c_str(),
         generation);
@@ -2591,7 +2808,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     if (initial_ui_preview_channel_ != "none" && !ui_preview_window_ids_.count(initial_ui_preview_channel_)) {
       return absl::InvalidArgumentError("--ui-preview-active must name a channel present in --ui-preview-windows");
     }
-    active_ui_preview_channel_ = initial_ui_preview_channel_ == "none" ? std::string() : initial_ui_preview_channel_;
+    ui_preview_channel_explicitly_disabled_ = initial_ui_preview_channel_ == "none";
+    active_ui_preview_channel_ = ui_preview_channel_explicitly_disabled_ ? std::string() : initial_ui_preview_channel_;
     active_ui_preview_generation_ = 1;
   }
   set_embedded_gpu_preview_video_mode(headless_render_video_ || !ui_preview_window_ids_.empty());
@@ -3438,6 +3656,8 @@ void PipelineApplication::print_runtime_commands() const {
       "\tp: Pause\n"
       "\tr: Resume\n"
       "\t@set-preview-active <program|stitched|sourceN|none> <generation>: Activate one GPU-native UI preview\n"
+      "\t@set-preview-overlays <generation> <players:0|1> <play:0|1> <rink:0|1>: Select GPU preview "
+      "diagnostic layers\n"
       "\t@set-render-window <xid>: Move the embedded program render sink to another X11 window\n"
       "\t@capture-preview-frame <program|main|stitched|sourceN> <image-path>: Save one diagnostic UI preview "
       "frame\n"
@@ -4821,6 +5041,16 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kSeekCommand = "seek";
   const std::string trimmed_line = trim_ascii(line);
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
+  if (hm::pipeline_internal::is_preview_overlay_command(trimmed_line)) {
+    hm::pipeline_internal::PreviewOverlayCommand command;
+    if (!hm::pipeline_internal::parse_preview_overlay_command(trimmed_line, &command)) {
+      emit_preview_protocol(
+          "HSTREAM_PREVIEW_OVERLAYS status=failed generation=0 players=0 play=0 rink=0 "
+          "reason=malformed-command\n");
+      return false;
+    }
+    return set_preview_overlays_runtime(command);
+  }
   if (trimmed_line.rfind("inspect-", 0) == 0) {
     InspectorCommand command;
     if (!parse_inspector_command(trimmed_line, &command)) {
@@ -4919,6 +5149,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   if (!parse_runtime_set_property(line, &element_name, &property_name, &value)) {
     g_printerr(
         "runtime command failed: expected: set-preview-active <program|stitched|sourceN|none> <generation>, "
+        "set-preview-overlays <generation> <players:0|1> <play:0|1> <rink:0|1>, "
         "set-render-window <xid>, set-render-audio-muted <0|1>, capture-preview-frame <main|stitched|sourceN> "
         "<jpg-path>, seek <position-ns> <generation>, seek-relative <delta-ns> <generation>, set-properties "
         "<element property=value;...>, reset-progress-rate <generation>, inspect-pipeline <request-id>, "
@@ -5344,13 +5575,192 @@ void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {
       active_instances);
 }
 
+bool PipelineApplication::apply_preview_overlay_state(
+    const hm::pipeline_internal::PreviewOverlaySelection& selection,
+    bool apply_sinks) {
+  struct SinkState {
+    GstElement* sink{nullptr};
+    gboolean players{FALSE};
+    gboolean play{FALSE};
+    gboolean rink{FALSE};
+  };
+  struct ProducerState {
+    GstElement* producer{nullptr};
+    guint flags{0};
+  };
+
+  std::vector<SinkState> sinks;
+  std::set<GstElement*> seen_sinks;
+  if (apply_sinks) {
+    if (ui_preview_channels_.empty())
+      return false;
+    for (const auto& [channel, preview] : ui_preview_channels_) {
+      if (!hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel))
+        continue;
+      if (!preview.sink || !seen_sinks.insert(preview.sink).second)
+        continue;
+      for (const char* property : {"show-player-tracking", "show-play-tracking", "show-rink-mask"}) {
+        GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(preview.sink), property);
+        if (!spec || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_BOOLEAN || (spec->flags & G_PARAM_READABLE) == 0 ||
+            (spec->flags & G_PARAM_WRITABLE) == 0) {
+          return false;
+        }
+      }
+      SinkState state;
+      state.sink = preview.sink;
+      g_object_get(
+          G_OBJECT(state.sink),
+          "show-player-tracking",
+          &state.players,
+          "show-play-tracking",
+          &state.play,
+          "show-rink-mask",
+          &state.rink,
+          nullptr);
+      sinks.push_back(state);
+    }
+    if (sinks.empty())
+      return false;
+  }
+
+  std::vector<ProducerState> producers;
+  std::set<GstElement*> seen_producers;
+  for (GstElement* producer : preview_overlay_producers_) {
+    if (!producer || !seen_producers.insert(producer).second)
+      continue;
+    GParamSpec* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(producer), "preview-overlay-flags");
+    if (!spec || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_UINT || (spec->flags & G_PARAM_READABLE) == 0 ||
+        (spec->flags & G_PARAM_WRITABLE) == 0) {
+      return false;
+    }
+    ProducerState state;
+    state.producer = producer;
+    g_object_get(G_OBJECT(producer), "preview-overlay-flags", &state.flags, nullptr);
+    producers.push_back(state);
+  }
+
+  const guint producer_flags = preview_overlay_producer_flags(selection, active_ui_preview_channel_);
+  bool applied = true;
+  for (const SinkState& state : sinks) {
+    g_object_set(
+        G_OBJECT(state.sink),
+        "show-player-tracking",
+        selection.players ? TRUE : FALSE,
+        "show-play-tracking",
+        selection.play ? TRUE : FALSE,
+        "show-rink-mask",
+        selection.rink ? TRUE : FALSE,
+        nullptr);
+    gboolean players = FALSE;
+    gboolean play = FALSE;
+    gboolean rink = FALSE;
+    g_object_get(
+        G_OBJECT(state.sink),
+        "show-player-tracking",
+        &players,
+        "show-play-tracking",
+        &play,
+        "show-rink-mask",
+        &rink,
+        nullptr);
+    applied = applied && players == (selection.players ? TRUE : FALSE) && play == (selection.play ? TRUE : FALSE) &&
+        rink == (selection.rink ? TRUE : FALSE);
+    if (!applied)
+      break;
+  }
+  if (applied) {
+    for (const ProducerState& state : producers) {
+      g_object_set(G_OBJECT(state.producer), "preview-overlay-flags", producer_flags, nullptr);
+      guint observed = 0;
+      g_object_get(G_OBJECT(state.producer), "preview-overlay-flags", &observed, nullptr);
+      applied = observed == producer_flags;
+      if (applied) {
+        GParamSpec* result_spec =
+            g_object_class_find_property(G_OBJECT_GET_CLASS(state.producer), "last-property-set-ok");
+        if (result_spec && G_PARAM_SPEC_VALUE_TYPE(result_spec) == G_TYPE_BOOLEAN) {
+          gboolean property_set_ok = FALSE;
+          g_object_get(G_OBJECT(state.producer), "last-property-set-ok", &property_set_ok, nullptr);
+          applied = property_set_ok;
+        }
+      }
+      if (!applied)
+        break;
+    }
+  }
+  if (!applied) {
+    for (const ProducerState& state : producers)
+      g_object_set(G_OBJECT(state.producer), "preview-overlay-flags", state.flags, nullptr);
+    for (const SinkState& state : sinks) {
+      g_object_set(
+          G_OBJECT(state.sink),
+          "show-player-tracking",
+          state.players,
+          "show-play-tracking",
+          state.play,
+          "show-rink-mask",
+          state.rink,
+          nullptr);
+    }
+    return false;
+  }
+  preview_overlay_probe_flags_.store(producer_flags, std::memory_order_release);
+  return true;
+}
+
+bool PipelineApplication::update_preview_overlay_producers() {
+  if (apply_preview_overlay_state(preview_overlay_state_.selection(), false))
+    return true;
+  preview_overlay_probe_flags_.store(0, std::memory_order_release);
+  for (GstElement* producer : preview_overlay_producers_) {
+    if (producer)
+      g_object_set(G_OBJECT(producer), "preview-overlay-flags", 0U, nullptr);
+  }
+  g_printerr("Could not reconcile GPU preview overlay producer state; preview snapshots are disabled\n");
+  return false;
+}
+
+bool PipelineApplication::set_preview_overlays_runtime(const hm::pipeline_internal::PreviewOverlayCommand& command) {
+  const auto& selection = command.selection;
+  auto emit = [&](const char* status, const char* reason = nullptr) {
+    emit_preview_protocol(
+        "HSTREAM_PREVIEW_OVERLAYS status=%s generation=%" G_GUINT64_FORMAT " players=%u play=%u rink=%u%s%s\n",
+        status,
+        static_cast<guint64>(command.generation),
+        selection.players ? 1U : 0U,
+        selection.play ? 1U : 0U,
+        selection.rink ? 1U : 0U,
+        reason ? " reason=" : "",
+        reason ? reason : "");
+  };
+  if (!preview_overlay_state_.is_fresh(command)) {
+    emit("failed", "stale-generation");
+    return true;
+  }
+  const bool has_overlay_sink =
+      std::any_of(ui_preview_channels_.begin(), ui_preview_channels_.end(), [](const auto& channel) {
+        return hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel.first);
+      });
+  if (!has_overlay_sink) {
+    emit("failed", "preview-unavailable");
+    return true;
+  }
+  if (!apply_preview_overlay_state(selection, true)) {
+    emit("failed", "apply-failed");
+    return true;
+  }
+  preview_overlay_state_.commit(command);
+  emit("applied");
+  return true;
+}
+
 bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {
   if (ui_preview_channels_.empty()) {
+    preview_overlay_probe_flags_.store(0, std::memory_order_release);
     g_printerr("runtime preview activation failed: GPU-native UI previews are not configured\n");
     return false;
   }
   if (generation <= active_ui_preview_generation_) {
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=stale generation=%" G_GUINT64_FORMAT
         " message=activation generation is not newer than %" G_GUINT64_FORMAT "\n",
         channel.c_str(),
@@ -5372,14 +5782,16 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     if (!hm::gpu_preview::isolation_active(previous->second.ingress_isolation) ||
         !hm::gpu_preview::isolation_active(previous->second.isolation)) {
       active_ui_preview_channel_.clear();
-      g_print(
+      ui_preview_channel_explicitly_disabled_ = false;
+      update_preview_overlay_producers();
+      emit_preview_protocol(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
           " message=the selected GPU preview channel cannot be re-armed\n",
           channel.c_str(),
           generation);
       return true;
     }
-    g_print(
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
         " message=GPU preview branch re-armed\n",
         channel.c_str(),
@@ -5394,8 +5806,10 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     hm::gpu_preview::set_isolation_active(previous->second.isolation, false, generation);
     if (!hm::gpu_preview::quiesce(previous->second.sink, generation)) {
       active_ui_preview_channel_.clear();
+      ui_preview_channel_explicitly_disabled_ = false;
       active_ui_preview_generation_ = generation;
-      g_print(
+      update_preview_overlay_producers();
+      emit_preview_protocol(
           "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
           " message=could not quiesce the previous preview channel\n",
           channel.c_str(),
@@ -5405,9 +5819,12 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
   }
 
   active_ui_preview_channel_.clear();
+  ui_preview_channel_explicitly_disabled_ = false;
   active_ui_preview_generation_ = generation;
   if (channel == "none") {
-    g_print(
+    ui_preview_channel_explicitly_disabled_ = true;
+    update_preview_overlay_producers();
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=none status=deactivated generation=%" G_GUINT64_FORMAT
         " message=all GPU preview branches are inactive\n",
         generation);
@@ -5416,7 +5833,8 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
 
   const auto target = ui_preview_channels_.find(channel);
   if (target == ui_preview_channels_.end()) {
-    g_print(
+    update_preview_overlay_producers();
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
         " message=the requested camera source is unavailable\n",
         channel.c_str(),
@@ -5424,6 +5842,12 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     return true;
   }
 
+  // Arm metadata production before opening either preview gate so the first
+  // admitted Program/Stitched frame already has the requested immutable
+  // snapshot (and Program crop transform, when needed).
+  active_ui_preview_channel_ = channel;
+  ui_preview_channel_explicitly_disabled_ = false;
+  update_preview_overlay_producers();
   g_object_set(G_OBJECT(target->second.sink), "generation", generation, nullptr);
   // Arm the drain barrier before opening the ingress gate. A newly enqueued
   // buffer can therefore never be dropped between the two gates.
@@ -5434,15 +5858,17 @@ bool PipelineApplication::set_preview_active_runtime(const std::string& channel,
     hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, false, generation);
     hm::gpu_preview::set_isolation_active(target->second.isolation, false, generation);
     hm::gpu_preview::quiesce(target->second.sink, generation);
-    g_print(
+    active_ui_preview_channel_.clear();
+    ui_preview_channel_explicitly_disabled_ = false;
+    update_preview_overlay_producers();
+    emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
         " message=the requested GPU preview channel has failed locally\n",
         channel.c_str(),
         generation);
     return true;
   }
-  active_ui_preview_channel_ = channel;
-  g_print(
+  emit_preview_protocol(
       "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
       " message=GPU preview branch activated\n",
       channel.c_str(),
@@ -6795,6 +7221,8 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   }
   g_print("Destroy pipeline\n");
   ui_preview_channels_.clear();
+  preview_overlay_producers_.clear();
+  preview_overlay_probe_flags_.store(0, std::memory_order_release);
   if (calibration_restart || runtime_seek_restart) {
     destroy_pipeline_for_recreate(app_ctx_ptr);
   } else {

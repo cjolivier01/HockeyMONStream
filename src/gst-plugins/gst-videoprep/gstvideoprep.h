@@ -89,6 +89,7 @@ struct GstVideoPrep
   gdouble fixed_edge_rotation_angle_left;
   gdouble fixed_edge_rotation_angle_right;
   gdouble dynamic_acceleration_scaling;
+  guint preview_overlay_flags;
   gdouble shadow_lift;
   gboolean shadow_lift_black_point;
   gboolean last_property_set_ok;

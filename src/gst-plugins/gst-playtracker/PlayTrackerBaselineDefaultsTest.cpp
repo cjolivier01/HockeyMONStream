@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 
 #include <cmath>
 #include <filesystem>
@@ -158,6 +159,10 @@ live-boxes:
   draw_surface.width = 2000;
   draw_surface.height = 1000;
   DsPlayTrackerCtx draw_context;
+  DsPlayTrackerCtxSetDraw(&draw_context, true);
+  ok &= expect(
+      draw_context.draw.load(std::memory_order_relaxed),
+      "Play-tracker display metadata must be live-toggleable on an active context");
   draw_context.arena_box = hm::BBox(0, 0, 2000, 1000);
   auto& draw_tracker = draw_context.play_trackers[0];
   draw_tracker.base_play_tracker_config = reordered_config;
@@ -170,6 +175,40 @@ live-boxes:
       hm::BBox(100, 100, 300, 300), hm::BBox(400, 100, 600, 300), hm::BBox(700, 100, 900, 300)};
   const absl::Status draw_status = DsPlayTrackerDrawToDisplayMeta(&draw_context, draw_frame);
   ok &= expect(draw_status.ok(), "Display drawing must support more than two live boxes");
+  DsPlayTrackerCtxSetPreviewOverlayFlags(&draw_context, kPreviewOverlayPlayers);
+  ok &= expect(
+      draw_context.draw.load(std::memory_order_relaxed),
+      "Enabling preview metadata must preserve a configured production draw=true state");
+  NvDsBatchMeta* preview_batch = nvds_create_batch_meta(1);
+  NvDsFrameMeta* preview_frame_meta = preview_batch ? nvds_acquire_frame_meta_from_pool(preview_batch) : nullptr;
+  ok &= expect(preview_batch && preview_frame_meta, "Expected DeepStream metadata for preview-only draw test");
+  if (preview_frame_meta) {
+    preview_frame_meta->source_id = 0;
+    preview_frame_meta->source_frame_width = 2000;
+    preview_frame_meta->source_frame_height = 1000;
+    nvds_add_frame_meta_to_batch(preview_batch, preview_frame_meta);
+    GstDsPlayTrackerFrame preview_frame = draw_frame;
+    preview_frame.frame_meta = preview_frame_meta;
+    DsPlayTrackerCtxSetDraw(&draw_context, false);
+    DsPlayTrackerCtxSetPreviewOverlayFlags(&draw_context, 0);
+    ok &= expect(
+        DsPlayTrackerAttachPreviewSnapshot(&draw_context, preview_frame) &&
+            !hm::preview_overlay::find_overlay_snapshot_meta(preview_frame_meta) &&
+            preview_frame_meta->display_meta_list == nullptr,
+        "Disabled preview overlays must not allocate a snapshot or production display metadata");
+    DsPlayTrackerCtxSetPreviewOverlayFlags(&draw_context, kPreviewOverlayPlay | kPreviewOverlayTransformRequired);
+    ok &= expect(
+        !draw_context.draw.load(std::memory_order_relaxed),
+        "Preview selection must preserve the configured production draw state");
+    const bool preview_attached = DsPlayTrackerAttachPreviewSnapshot(&draw_context, preview_frame);
+    const auto* preview_snapshot = hm::preview_overlay::find_overlay_snapshot_meta(preview_frame_meta);
+    ok &= expect(
+        preview_attached && preview_snapshot && !preview_snapshot->play_rects.empty() &&
+            preview_frame_meta->display_meta_list == nullptr,
+        "Preview play geometry must be snapshotted without contaminating production display metadata");
+  }
+  if (preview_batch)
+    nvds_destroy_batch_meta(preview_batch);
   DsPlayTrackerRuntimeTuning zoom_tuning;
   zoom_tuning.apply_to_fast_box = false;
   zoom_tuning.apply_to_follower_box = false;

@@ -193,6 +193,7 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig(const std::string& config_
   if (!next_context) {
     return absl::InternalError("Failed to reload vpplaytracker context");
   }
+  DsPlayTrackerCtxSetPreviewOverlayFlags(next_context, preview_overlay_flags_);
   for (const DsPlayTrackerRuntimeTuning& tuning : runtime_tuning_history_) {
     const absl::Status status = DsPlayTrackerCtxApplyRuntimeTuning(next_context, tuning);
     if (!status.ok()) {
@@ -236,6 +237,18 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     show_ = !!std::atol(prop.value.c_str());
   } else if (key == "draw") {
     init_params_.draw = !!std::atol(prop.value.c_str());
+  } else if (key == "preview-overlay-flags") {
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long parsed = std::strtoul(prop.value.c_str(), &end, 10);
+    if (prop.value.empty() || prop.value.c_str() == end || errno == ERANGE || !end || *end != '\0' ||
+        parsed > kPreviewOverlayAll) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lk(context_mu_);
+    preview_overlay_flags_ = static_cast<unsigned>(parsed);
+    DsPlayTrackerCtxSetPreviewOverlayFlags(pt_context_, preview_overlay_flags_);
+    return true;
   } else if (key == "telemetry-csv-dir") {
     if (telemetry_csv_.active() && prop.value != telemetry_csv_dir_) {
       std::cerr << "telemetry-csv-dir can only be changed before the pipeline starts" << std::endl;
@@ -454,6 +467,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       if (pt_context_->initParams.draw) {
         HM_RETURN_IF_ERROR(DsPlayTrackerDrawToDisplayMeta(pt_context_, frame));
       }
+      DsPlayTrackerAttachPreviewSnapshot(pt_context_, frame);
       DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
     }
     if (export_telemetry) {

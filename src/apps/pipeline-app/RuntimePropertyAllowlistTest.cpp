@@ -41,7 +41,18 @@ int main() {
           "Black-point lift must remain scoped to playcropper") ||
       !expect(
           !is_allowlisted_runtime_property("untrusted-element", "shadow-lift"),
-          "Unknown elements must remain blocked")) {
+          "Unknown elements must remain blocked") ||
+      !expect(
+          is_allowlisted_runtime_property("dsplaytracker0", "draw"),
+          "The play-tracker display-meta producer must be live-toggleable") ||
+      !expect(
+          is_allowlisted_runtime_property("program_gpu_preview_sink", "show-player-tracking") &&
+              is_allowlisted_runtime_property("stitched_gpu_preview_sink", "show-play-tracking") &&
+              is_allowlisted_runtime_property("hmstitcher_preview_sink", "show-rink-mask"),
+          "GPU preview debug layers must be live-toggleable on both preview channels") ||
+      !expect(
+          !is_allowlisted_runtime_property("program_gpu_preview_sink", "rink-mask-file"),
+          "Runtime commands must not replace the trusted game-scoped rink-mask path")) {
     return 1;
   }
   return 0;

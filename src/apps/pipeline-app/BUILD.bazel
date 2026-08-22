@@ -35,6 +35,7 @@ PIPELINE_APP_DEPS = [
     "//src/libs/common:fs",
     "//src/libs/common:baseline_config",
     "//src/libs/common:playtracker_config_roles",
+    "//src/libs/common:preview_overlay_meta",
     "//src/libs/common:user_config",
     "//src/libs/pipeline_controller:gst_property_service",
     "//src/libs/stitching",
@@ -212,6 +213,15 @@ cc_test(
         "PipelineRuntimePaths.cpp",
         "PipelineRuntimePaths.h",
         "PipelineRuntimePathsTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+)
+
+cc_test(
+    name = "preview_overlay_runtime_test",
+    srcs = [
+        "PreviewOverlayRuntime.h",
+        "PreviewOverlayRuntimeTest.cpp",
     ],
     copts = PIPELINE_APP_COPTS,
 )
