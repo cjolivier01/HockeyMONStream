@@ -130,6 +130,10 @@ if [[ ! -f "${WINDOWS_SIGNING_PKCS12:-}" || ! -f "${WINDOWS_SIGNING_PASSWORD_FIL
   echo "ERROR: release publication requires WINDOWS_SIGNING_PKCS12 and WINDOWS_SIGNING_PASSWORD_FILE." >&2
   exit 1
 fi
+if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" && ! -f "${WINDOWS_SIGNING_CA_FILE}" ]]; then
+  echo "ERROR: WINDOWS_SIGNING_CA_FILE must name a readable PEM certificate file." >&2
+  exit 1
+fi
 if ! gh auth status >/dev/null 2>&1; then
   echo "ERROR: GitHub CLI is not authenticated. Run 'gh auth login' first." >&2
   exit 1
@@ -180,6 +184,7 @@ make windows-installer \
   WINDOWS_INSTALLER_REPOSITORY="${repository}" \
   WINDOWS_SIGNING_PKCS12="${WINDOWS_SIGNING_PKCS12}" \
   WINDOWS_SIGNING_PASSWORD_FILE="${WINDOWS_SIGNING_PASSWORD_FILE}" \
+  WINDOWS_SIGNING_CA_FILE="${WINDOWS_SIGNING_CA_FILE:-}" \
   WINDOWS_SIGNING_TIMESTAMP_URL="${WINDOWS_SIGNING_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 
 validate_and_stage_deb() {
@@ -226,7 +231,11 @@ if [[ ! -f "${windows_installer}" ]] ||
   echo "ERROR: expected Windows WSL bootstrapper was not created: ${windows_installer}" >&2
   exit 1
 fi
-if ! osslsigncode verify -in "${windows_installer}"; then
+windows_verify_args=(-in "${windows_installer}")
+if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
+  windows_verify_args=(-CAfile "${WINDOWS_SIGNING_CA_FILE}" "${windows_verify_args[@]}")
+fi
+if ! osslsigncode verify "${windows_verify_args[@]}"; then
   echo "ERROR: Windows WSL bootstrapper is not validly Authenticode-signed: ${windows_installer}" >&2
   exit 1
 fi
@@ -275,8 +284,16 @@ release_assets=(
   "${release_dir}"/*.sh
   "${release_dir}/SHA256SUMS"
 )
+release_note_args=()
+if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
+  private_release_warning=$'## Windows installer trust\n\n> [!WARNING]\n'
+  private_release_warning+=$'> The Windows installer in this release uses a private/self-signed publisher certificate. '
+  private_release_warning+=$'Windows will report an unknown publisher unless that certificate is explicitly trusted on '
+  private_release_warning+=$'the target machine. The Debian artifacts are unaffected.'
+  release_note_args=(--notes "${private_release_warning}")
+fi
 if ! gh release create "${release_tag}" "${release_assets[@]}" \
-    --repo "${repository}" --verify-tag --generate-notes --title "HStream ${release_tag}"; then
+    --repo "${repository}" --verify-tag --generate-notes "${release_note_args[@]}" --title "HStream ${release_tag}"; then
   echo "ERROR: tag ${release_tag} was pushed, but GitHub release publication failed." >&2
   echo "After inspecting the failure, retry publication or run:" >&2
   echo "  make delete-release RELEASE_TAG=${release_tag}" >&2
