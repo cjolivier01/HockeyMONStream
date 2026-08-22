@@ -17,6 +17,7 @@ bool expect(bool condition, const char* message) {
 } // namespace
 
 int main() {
+  using hm::playcropper::evaluate_premiere_lift_curve;
   using hm::playcropper::evaluate_shadow_lift_curve;
   constexpr float kTolerance = 2e-5f;
 
@@ -95,6 +96,39 @@ int main() {
           evaluate_shadow_lift_curve(hm::playcropper::kShadowLiftVideoStart, 100.0f, true) ==
               hm::playcropper::kShadowLiftVideoStart,
           "The black-point toe must fade to zero at the protected shadow boundary")) {
+    return 1;
+  }
+
+  struct PremiereReference {
+    float setting;
+    std::array<int, 5> outputs;
+  };
+  constexpr std::array<int, 5> premiere_inputs = {16, 32, 64, 128, 160};
+  // Per-code medians measured from the aligned Premiere Pro PNG exports.
+  constexpr std::array<PremiereReference, 4> premiere_references = {{
+      {0.3f, {18, 36, 71, 142, 178}},
+      {0.6f, {20, 39, 79, 158, 197}},
+      {1.0f, {23, 45, 91, 181, 226}},
+      {1.3f, {25, 50, 100, 201, 251}},
+  }};
+  for (const PremiereReference& reference : premiere_references) {
+    for (size_t i = 0; i < premiere_inputs.size(); ++i) {
+      const int output = static_cast<int>(
+          evaluate_premiere_lift_curve(premiere_inputs[i] / 255.0f, reference.setting) * 255.0f + 0.5f);
+      if (!expect(
+              std::abs(output - reference.outputs[i]) <= 1,
+              "Premiere lift must reproduce the measured reference pixels within one 8-bit code value")) {
+        return 1;
+      }
+    }
+  }
+  if (!expect(evaluate_premiere_lift_curve(0.0f, 1.3f) == 0.0f, "Premiere lift must preserve exact black") ||
+      !expect(evaluate_premiere_lift_curve(1.0f, 1.3f) == 1.0f, "Premiere lift must clip at white") ||
+      !expect(
+          evaluate_premiere_lift_curve(0.5f, 0.0f) == 0.5f, "Zero Premiere lift must preserve legacy pixels exactly") ||
+      !expect(
+          std::abs(hm::playcropper::premiere_lift_gain(1.0f) - std::sqrt(2.0f)) <= kTolerance,
+          "Premiere setting 1.0 must apply the measured square-root-of-two gain")) {
     return 1;
   }
   return 0;

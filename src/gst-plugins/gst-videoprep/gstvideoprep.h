@@ -92,6 +92,7 @@ struct GstVideoPrep
   guint preview_overlay_flags;
   gdouble shadow_lift;
   gboolean shadow_lift_black_point;
+  gdouble premiere_lift;
   gboolean last_property_set_ok;
   gboolean post_stitch_rotate_degrees_set;
   gboolean fixed_edge_rotation_angle_set;
@@ -100,6 +101,7 @@ struct GstVideoPrep
   gboolean dynamic_acceleration_scaling_set;
   gboolean shadow_lift_set;
   gboolean shadow_lift_black_point_set;
+  gboolean premiere_lift_set;
   guint property_set_sequence;
   guint plugin_private_config_sequence;
   guint post_stitch_rotate_degrees_sequence;
@@ -109,6 +111,7 @@ struct GstVideoPrep
   guint dynamic_acceleration_scaling_sequence;
   guint shadow_lift_sequence;
   guint shadow_lift_black_point_sequence;
+  guint premiere_lift_sequence;
 
   // GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 

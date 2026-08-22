@@ -28,6 +28,10 @@ int main() {
           is_allowlisted_runtime_property("playcropper", "shadow-lift-black-point"),
           "The playcropper compatibility alias must accept live black-point lift") ||
       !expect(
+          is_allowlisted_runtime_property("playcropper0", "premiere-lift") &&
+              is_allowlisted_runtime_property("playcropper", "premiere-lift"),
+          "Both playcropper names must accept live Premiere lift") ||
+      !expect(
           is_allowlisted_runtime_property("playcropper0", "fixed-edge-rotation-angle"),
           "Existing playcropper runtime controls must remain allowlisted") ||
       !expect(
@@ -39,6 +43,9 @@ int main() {
       !expect(
           !is_allowlisted_runtime_property("dsplaytracker0", "shadow-lift-black-point"),
           "Black-point lift must remain scoped to playcropper") ||
+      !expect(
+          !is_allowlisted_runtime_property("dsplaytracker0", "premiere-lift"),
+          "Premiere lift must remain scoped to playcropper") ||
       !expect(
           !is_allowlisted_runtime_property("untrusted-element", "shadow-lift"),
           "Unknown elements must remain blocked") ||

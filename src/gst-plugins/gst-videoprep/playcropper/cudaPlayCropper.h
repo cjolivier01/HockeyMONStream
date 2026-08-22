@@ -19,6 +19,7 @@ cudaError_t combinedTransform(
     const hm::BBox& output_rect,
     float shadow_lift_percent,
     bool lift_shadow_black_point,
+    float premiere_lift,
     cudaStream_t stream);
 
 }

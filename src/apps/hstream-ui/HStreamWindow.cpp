@@ -1851,6 +1851,7 @@ void HStreamWindow::loadBaselineDefaults() {
   camera_defaults_["Max_Accel_X_x10"] = 0;
   camera_defaults_["Max_Accel_Y_x10"] = 0;
   camera_defaults_["Lift_Shadow_Black_Point"] = 0;
+  camera_defaults_["Premiere_Lift_x100"] = 0;
 }
 
 HStreamWindow::~HStreamWindow() {
@@ -2706,6 +2707,10 @@ void HStreamWindow::configureControlHelp() {
       {"Lift_Shadow_Black_Point",
        "Allow Bring up shadows to raise exact black for a visibly stronger Resolve-style toe lift. At 100%, black "
        "rises to 15% video level and rolls smoothly back to the protected shadow boundary. Disabled by default."},
+      {"Premiere_Lift_x100",
+       "Apply the independent Premiere-reference RGB gain measured from the supplied exports. 30, 60, 100, and 130 "
+       "match settings 0.3, 0.6, 1.0, and 1.3. It preserves exact black, raises the whole signal, and clips at white. "
+       "When Bring up shadows is also enabled, the shadow curve runs first and this gain runs second."},
       {"Overshoot_Stop_Delay_Frames", "Frames to delay stopping when tracking motion overshoots its destination."},
       {"Post_Nonstop_Stop_Delay_Frames", "Frames to delay stopping after a continuous non-stop movement segment."},
       {"Overshoot_Speed_Ratio_x100",
@@ -2838,6 +2843,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
   const std::vector<CameraSliderSpec> color_controls = {
       {"Bring_Up_Shadows", "Bring up shadows (%)", 0, 100, 0},
+      {"Premiere_Lift_x100", "Premiere lift x100", 0, 130, 0},
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, default_value("Stitch_Rotate_Degrees")},
@@ -3918,6 +3924,8 @@ QStringList HStreamWindow::pipelineArguments() const {
                 .arg(cameraControlValue("Bring_Up_Shadows"));
     args << QString("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=%1")
                 .arg(cameraControlValue("Lift_Shadow_Black_Point"));
+    args << QString("--options=pipeline.hmplaycropper.properties.premiere-lift=%1")
+                .arg(QString::number(cameraControlValue("Premiere_Lift_x100") / 100.0, 'f', 2));
     if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
       args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
                   .arg(QDir::cleanPath(gameDirectory(game_id)));
@@ -7345,14 +7353,28 @@ void HStreamWindow::loadSavedControlConfig() {
           bounded_integer_control("pipeline.hmplaycropper.properties.shadow-lift", shadow_lift, 0, 100));
     }
     stage_boolean_path("pipeline.hmplaycropper.properties.shadow-lift-black-point", "Lift_Shadow_Black_Point");
+    YAML::Node premiere_lift;
+    if (lookup_yaml_path(config, "pipeline.hmplaycropper.properties.premiere-lift", &premiere_lift)) {
+      const double setting = premiere_lift.as<double>();
+      const int setting_x100 = rounded_control("pipeline.hmplaycropper.properties.premiere-lift", setting * 100.0);
+      if (!std::isfinite(setting) || setting < 0.0 || setting > 1.3 ||
+          std::abs(setting * 100.0 - setting_x100) > 1e-6) {
+        throw std::invalid_argument(
+            "pipeline.hmplaycropper.properties.premiere-lift must be from 0.00 through 1.30 in hundredths");
+      }
+      stage_control("Premiere_Lift_x100", setting_x100);
+    }
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
     int loaded = 0;
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
-        const int value = id == "Bring_Up_Shadows" || id == "Zoom_In_Aggressiveness"
-            ? bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 100)
-            : entry.second.as<int>();
+        int value = entry.second.as<int>();
+        if (id == "Premiere_Lift_x100") {
+          value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 130);
+        } else if (id == "Bring_Up_Shadows" || id == "Zoom_In_Aggressiveness") {
+          value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 100);
+        }
         if ((id == "Link_Fixed_Edge_Rotation_Left_Right" || id == "Apply_To_Fast_Box" ||
              id == "Apply_To_Follower_Box" || id == "Lift_Shadow_Black_Point") &&
             value != 0 && value != 1) {
@@ -7488,6 +7510,7 @@ bool HStreamWindow::applySavedControlConfig(
            "stitching.post_stitch_rotate_degrees",
            "pipeline.hmplaycropper.properties.shadow-lift",
            "pipeline.hmplaycropper.properties.shadow-lift-black-point",
+           "pipeline.hmplaycropper.properties.premiere-lift",
            "rink.camera.fixed_edge_rotation_angle",
            "rink.camera.stop_on_dir_change_delay",
            "rink.camera.cancel_stop_on_opposite_dir",
@@ -7569,6 +7592,10 @@ bool HStreamWindow::applySavedControlConfig(
     config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift-black-point"] =
         slider_value("Lift_Shadow_Black_Point") != 0;
     mark_runtime_key("pipeline.hmplaycropper.properties.shadow-lift-black-point");
+  }
+  if (has_control(controls, "Premiere_Lift_x100")) {
+    config["pipeline"]["hmplaycropper"]["properties"]["premiere-lift"] = slider_value("Premiere_Lift_x100") / 100.0;
+    mark_runtime_key("pipeline.hmplaycropper.properties.premiere-lift");
   }
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
@@ -9424,7 +9451,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     schedulePlaytrackerRuntimeControl(id, value);
     return false;
   }
-  if (id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point") {
+  if (id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Premiere_Lift_x100") {
     schedulePlaycropperRuntimeControl(id, value);
     return false;
   }
@@ -9524,6 +9551,10 @@ void HStreamWindow::flushScheduledRuntimeControls() {
     if (controls.count("Lift_Shadow_Black_Point")) {
       commands.push_back(
           {"playcropper0", "shadow-lift-black-point", QString::number(cameraControlValue("Lift_Shadow_Black_Point"))});
+    }
+    if (controls.count("Premiere_Lift_x100")) {
+      commands.push_back(
+          {"playcropper0", "premiere-lift", QString::number(cameraControlValue("Premiere_Lift_x100") / 100.0, 'f', 2)});
     }
     publishRuntimeControlBatch(controls, commands);
     return;
