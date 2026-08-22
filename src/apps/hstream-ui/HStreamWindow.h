@@ -469,6 +469,7 @@ class HStreamWindow : public QMainWindow {
   ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
   bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};
+  bool active_run_high_bit_depth_{false};
   int active_calibration_control_points_{0};
   QString active_stitch_frame_time_;
   QString active_calibration_start_stage_;

@@ -17,6 +17,7 @@ bool expect(bool condition, const char* message) {
 } // namespace
 
 int main() {
+  using hm::playcropper::evaluate_exposure;
   using hm::playcropper::evaluate_shadow_lift_curve;
   constexpr float kTolerance = 2e-5f;
 
@@ -95,6 +96,38 @@ int main() {
           evaluate_shadow_lift_curve(hm::playcropper::kShadowLiftVideoStart, 100.0f, true) ==
               hm::playcropper::kShadowLiftVideoStart,
           "The black-point toe must fade to zero at the protected shadow boundary")) {
+    return 1;
+  }
+
+  struct ExposureReference {
+    float setting;
+    std::array<int, 5> outputs;
+  };
+  constexpr std::array<int, 5> exposure_inputs = {16, 32, 64, 128, 160};
+  // Per-code medians measured from the aligned reference PNG exports.
+  constexpr std::array<ExposureReference, 4> exposure_references = {{
+      {0.3f, {18, 36, 71, 142, 178}},
+      {0.6f, {20, 39, 79, 158, 197}},
+      {1.0f, {23, 45, 91, 181, 226}},
+      {1.3f, {25, 50, 100, 201, 251}},
+  }};
+  for (const ExposureReference& reference : exposure_references) {
+    for (size_t i = 0; i < exposure_inputs.size(); ++i) {
+      const int output =
+          static_cast<int>(evaluate_exposure(exposure_inputs[i] / 255.0f, reference.setting) * 255.0f + 0.5f);
+      if (!expect(
+              std::abs(output - reference.outputs[i]) <= 1,
+              "Exposure must reproduce the measured reference pixels within one 8-bit code value")) {
+        return 1;
+      }
+    }
+  }
+  if (!expect(evaluate_exposure(0.0f, 1.3f) == 0.0f, "Exposure must preserve exact black") ||
+      !expect(evaluate_exposure(1.0f, 1.3f) == 1.0f, "Exposure must clip at white") ||
+      !expect(evaluate_exposure(0.5f, 0.0f) == 0.5f, "Zero exposure must preserve legacy pixels exactly") ||
+      !expect(
+          std::abs(hm::playcropper::exposure_gain(1.0f) - std::sqrt(2.0f)) <= kTolerance,
+          "Exposure setting 1.0 must apply the measured square-root-of-two gain")) {
     return 1;
   }
   return 0;

@@ -124,6 +124,12 @@ int main() {
     std::cerr << "Shadow black-point lift should accept only true, false, 1, or 0" << std::endl;
     return 1;
   }
+  if (!cropper.SetProperty({"exposure", "0"}) || !cropper.SetProperty({"exposure", "0.3"}) ||
+      !cropper.SetProperty({"exposure", "1.3"}) || cropper.SetProperty({"exposure", "-0.01"}) ||
+      cropper.SetProperty({"exposure", "1.31"}) || cropper.SetProperty({"exposure", "nan"})) {
+    std::cerr << "Exposure should accept finite settings from 0.0 through 1.3 only" << std::endl;
+    return 1;
+  }
   if (!expect_size(
           cropper,
           /*input_width=*/12102,

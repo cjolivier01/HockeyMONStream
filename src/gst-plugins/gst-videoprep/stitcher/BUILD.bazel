@@ -1,4 +1,37 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/stitcher"
+
+cuda_library(
+    name = "high_bit_stitch_cuda",
+    srcs = ["cudaHighBitStitch.cu"],
+    copts = [
+        "-Xcompiler=-fPIC",
+        "-Wno-deprecated-gpu-targets",
+    ],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":high_bit_stitch_cuda_h",
+        "//src/gst-plugins/gst-videoprep/playcropper:shadow_tone_curve",
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@hm-cupano//src/pano:cuda_pano",
+    ],
+)
+
+cc_library(
+    name = "high_bit_stitch_cuda_h",
+    hdrs = ["cudaHighBitStitch.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@hm-cupano//src/pano:cuda_matrix",
+        "@hm-cupano//src/pano:cuda_pano",
+        "@opencv_linux//:opencv",
+    ],
+)
 
 cc_library(
     name = "stitcher",
@@ -11,12 +44,27 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":high_bit_stitch_cuda",
+        ":high_bit_stitch_cuda_h",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/stitching",
         "@com_google_absl//absl/strings",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@hm-cupano//src/pano:cuda_pano",
+    ],
+)
+
+cc_test(
+    name = "high_bit_stitch_cuda_test",
+    srcs = ["HighBitStitchCudaTest.cpp"],
+    deps = [
+        ":high_bit_stitch_cuda",
+        ":high_bit_stitch_cuda_h",
+        "//src/gst-plugins/gst-videoprep/playcropper:shadow_tone_curve",
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@hm-cupano//src/pano:cuda_matrix",
     ],
 )
 

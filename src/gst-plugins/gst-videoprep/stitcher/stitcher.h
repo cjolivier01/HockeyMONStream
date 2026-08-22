@@ -111,6 +111,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
  private:
   using STITCHER_FP32 = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
   using STITCHER_FP16 = hm::pano::cuda::CudaStitchPano<uchar4, half3>;
+  using STITCHER_RGB10_FP16 = hm::pano::cuda::CudaStitchPano<half4, half3>;
   enum class StitchComputePrecision {
     kFp32,
     kFp16,
@@ -139,12 +140,19 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     canvas_height_hint_ = height;
   }
   bool has_stitcher() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(stitcher_mu_) {
-    return stitcher_fp32_ || stitcher_fp16_;
+    return stitcher_fp32_ || stitcher_fp16_ || stitcher_rgb10_fp16_;
   }
+  absl::Status prepare_high_bit_inputs(
+      hm::surface::Surface incoming_surface_left,
+      hm::surface::Surface incoming_surface_right);
+  absl::StatusOr<std::pair<hm::surface::Surface, hm::surface::Surface>> high_bit_calibration_surfaces();
+  void release_high_bit_calibration_surfaces();
+  void release_high_bit_field_mask_canvas();
 
   absl::Mutex stitcher_mu_;
   std::unique_ptr<STITCHER_FP32> stitcher_fp32_ ABSL_GUARDED_BY(stitcher_mu_);
   std::unique_ptr<STITCHER_FP16> stitcher_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
+  std::unique_ptr<STITCHER_RGB10_FP16> stitcher_rgb10_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::string calibration_invalidation_id_;
@@ -170,7 +178,12 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool match_exposure_{false};
   bool minimize_blend_{false};
   bool require_decoded_frame_sequence_meta_{false};
+  bool high_bit_depth_{false};
+  bool caps_initialized_{false};
   StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
+  std::atomic<float> shadow_lift_percent_{0.0f};
+  std::atomic_bool lift_shadow_black_point_{false};
+  std::atomic<float> exposure_{0.0f};
   std::mutex eos_mu_;
   bool pipeline_eos_seen_{false};
   std::set<guint> eos_source_ids_;
@@ -182,6 +195,15 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   size_t rotation_scratch_width_{0};
   size_t rotation_scratch_height_{0};
   NvBufSurfaceParams rotation_scratch_params_{};
+  std::unique_ptr<hm::CudaMat<half4>> high_bit_left_;
+  std::unique_ptr<hm::CudaMat<half4>> high_bit_right_;
+  std::unique_ptr<hm::CudaMat<half4>> high_bit_canvas_;
+  std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_left_;
+  std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_right_;
+  std::unique_ptr<hm::CudaMat<uchar4>> high_bit_field_mask_canvas_;
+  NvBufSurfaceParams high_bit_calibration_left_params_{};
+  NvBufSurfaceParams high_bit_calibration_right_params_{};
+  NvBufSurfaceParams high_bit_field_mask_canvas_params_{};
 };
 
 } // namespace stitcher

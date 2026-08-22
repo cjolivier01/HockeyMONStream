@@ -619,6 +619,7 @@ void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
 
 gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   gboolean ret = FALSE;
+  gboolean high_bit_depth = FALSE;
   std::stringstream ppc;
   std::string private_config;
 
@@ -792,6 +793,18 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   if (!hm::gst::apply_plugin_properties(G_OBJECT(bin->elem_hmstitcher), config->plugin_properties)) {
     goto done;
   }
+
+  g_object_get(G_OBJECT(bin->elem_hmstitcher), "high-bit-depth", &high_bit_depth, NULL);
+  if (high_bit_depth && g_strcmp0(g_getenv("USE_NEW_NVSTREAMMUX"), "yes") != 0) {
+    NVGSTDS_ERR_MSG_V("High-bit-depth stitching requires the replacement nvstreammux");
+    goto done;
+  }
+  if (high_bit_depth) {
+    g_object_set(G_OBJECT(bin->pre_conv), "compute-hw", 1, NULL);
+  }
+  setup_rgb_nvvm_caps_filter(
+      gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, high_bit_depth ? "RGB10A2_LE" : "RGBA", NULL),
+      bin->cap_filter);
 
   ret = TRUE;
 

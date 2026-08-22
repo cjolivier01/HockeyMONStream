@@ -52,9 +52,12 @@ class Surface {
   constexpr guint bytes_per_pixel() const {
     switch (params_->colorFormat) {
       case NVBUF_COLOR_FORMAT_RGBA:
+      case NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709:
+      case NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020:
         return 4;
       default:
         assert(false);
+        return 0;
     }
   }
   constexpr guint pitch_width() const {

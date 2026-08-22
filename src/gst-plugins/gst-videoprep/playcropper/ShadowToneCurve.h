@@ -20,9 +20,31 @@ constexpr float kShadowLiftMaximumPercent = 100.0f;
 constexpr float kShadowLiftVideoStart = 0.6f;
 constexpr float kShadowLiftMaximumOcioAdjustment = 1.8f;
 constexpr float kShadowLiftMaximumBlackPoint = 0.15f;
+constexpr float kExposureMinimumSetting = 0.0f;
+constexpr float kExposureMaximumSetting = 1.3f;
+constexpr float kExposureStopScale = 0.5f;
 
 HM_SHADOW_HOST_DEVICE inline float clamp_shadow_value(float value, float minimum, float maximum) {
   return ::fminf(::fmaxf(value, minimum), maximum);
+}
+
+// Pixel pairs from the supplied reference exports at exposure settings 0.3,
+// 0.6, 1.0, and 1.3 follow this channel-independent gain to within one 8-bit
+// code value:
+//
+//   output = clamp(input * 2^(setting / 2), 0, 1)
+//
+// This is a uniform exposure-style gain: it preserves exact black, raises all
+// nonzero tones, and clips at white. Keep it independent from the OCIO
+// shadows-only curve below so existing grades remain byte-for-byte compatible
+// when this setting is zero.
+HM_SHADOW_HOST_DEVICE inline float exposure_gain(float setting) {
+  const float amount = clamp_shadow_value(setting, kExposureMinimumSetting, kExposureMaximumSetting);
+  return ::exp2f(amount * kExposureStopScale);
+}
+
+HM_SHADOW_HOST_DEVICE inline float evaluate_exposure(float sample, float setting) {
+  return clamp_shadow_value(sample * exposure_gain(setting), 0.0f, 1.0f);
 }
 
 // Evaluates the inverse of the monotone two-piece quadratic used for OCIO's

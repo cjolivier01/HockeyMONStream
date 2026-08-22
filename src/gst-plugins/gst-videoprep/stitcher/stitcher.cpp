@@ -1,6 +1,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/stitcher/cudaHighBitStitch.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -126,6 +127,38 @@ std::string normalized_property_value(std::string value) {
   return value;
 }
 
+bool parse_strict_bool(const std::string& value, bool& parsed) {
+  const std::string normalized = normalized_property_value(value);
+  if (normalized == "1" || normalized == "true") {
+    parsed = true;
+    return true;
+  }
+  if (normalized == "0" || normalized == "false") {
+    parsed = false;
+    return true;
+  }
+  return false;
+}
+
+template <typename Pixel>
+NvBufSurfaceParams cuda_mat_surface_params(hm::CudaMat<Pixel>& mat, NvBufSurfaceColorFormat format) {
+  NvBufSurfaceParams params{};
+  params.width = mat.width();
+  params.height = mat.height();
+  params.pitch = mat.pitch();
+  params.colorFormat = format;
+  params.layout = NVBUF_LAYOUT_PITCH;
+  params.dataPtr = mat.data_raw();
+  params.dataSize = params.pitch * params.height;
+  params.planeParams.num_planes = 1;
+  params.planeParams.width[0] = params.width;
+  params.planeParams.height[0] = params.height;
+  params.planeParams.pitch[0] = params.pitch;
+  params.planeParams.psize[0] = params.dataSize;
+  params.planeParams.bytesPerPix[0] = sizeof(Pixel);
+  return params;
+}
+
 } // namespace
 
 static constexpr int kNumStitcherLaplacianLevels = 11;
@@ -183,8 +216,14 @@ void StitcherPriv::Shutdown() {
     absl::MutexLock lk(&stitcher_mu_);
     stitcher_fp32_.reset();
     stitcher_fp16_.reset();
+    stitcher_rgb10_fp16_.reset();
     hugin_generation_id_.clear();
   }
+  high_bit_left_.reset();
+  high_bit_right_.reset();
+  high_bit_canvas_.reset();
+  release_high_bit_calibration_surfaces();
+  release_high_bit_field_mask_canvas();
   calibration_invalidation_id_.clear();
   calibration_run_generation_.clear();
   release_rotation_scratch();
@@ -565,7 +604,16 @@ absl::Status StitcherPriv::ensure_stitcher() {
     }
     hugin_generation_id_ = std::move(*generation);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
-    if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
+    if (high_bit_depth_) {
+      g_print("hmstitcher: using RGB10A2 input with fp16 stitch compute\n");
+      stitcher_rgb10_fp16_ = std::make_unique<STITCHER_RGB10_FP16>(
+          /*batch_size=*/1,
+          /*num_levels=*/kNumStitcherLaplacianLevels,
+          control_masks,
+          /*match_exposure=*/match_exposure_,
+          /*quiet=*/false,
+          /*minimize_blend=*/minimize_blend_);
+    } else if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
       g_print("hmstitcher: using fp16 stitch compute\n");
       stitcher_fp16_ = std::make_unique<STITCHER_FP16>(
           /*batch_size=*/1,
@@ -588,6 +636,9 @@ absl::Status StitcherPriv::ensure_stitcher() {
   if (stitcher_fp16_ && !stitcher_fp16_->status().ok()) {
     return to_status(stitcher_fp16_->status());
   }
+  if (stitcher_rgb10_fp16_ && !stitcher_rgb10_fp16_->status().ok()) {
+    return to_status(stitcher_rgb10_fp16_->status());
+  }
   if (stitcher_fp32_ && !stitcher_fp32_->status().ok()) {
     return to_status(stitcher_fp32_->status());
   }
@@ -597,7 +648,10 @@ absl::Status StitcherPriv::ensure_stitcher() {
 absl::Status StitcherPriv::reload_stitcher() {
   HM_RETURN_IF_ERROR(ensure_stitcher());
   absl::MutexLock lk(&stitcher_mu_);
-  if (stitcher_fp16_) {
+  if (stitcher_rgb10_fp16_) {
+    update_canvas_hints(stitcher_rgb10_fp16_->canvas_width(), stitcher_rgb10_fp16_->canvas_height());
+    log_canvas_hint("hmstitcher", canvas_width_hint_, canvas_height_hint_);
+  } else if (stitcher_fp16_) {
     update_canvas_hints(stitcher_fp16_->canvas_width(), stitcher_fp16_->canvas_height());
     log_canvas_hint("hmstitcher", canvas_width_hint_, canvas_height_hint_);
   } else if (stitcher_fp32_) {
@@ -608,6 +662,7 @@ absl::Status StitcherPriv::reload_stitcher() {
 }
 
 absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
+  caps_initialized_ = true;
   owner_element_ = params && params->m_element ? GST_ELEMENT(params->m_element) : nullptr;
   if (params->config_file) {
     config_file_ = params->config_file;
@@ -632,12 +687,20 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   // Not an in-place transform
   m_transformMode = true;
 
-  m_inVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  m_inVideoFmt = high_bit_depth_ ? GST_VIDEO_FORMAT_RGB10A2_LE : GST_VIDEO_FORMAT_RGBA;
   m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
 
   {
     absl::MutexLock lk(&stitcher_mu_);
-    if (stitcher_fp16_) {
+    if (stitcher_rgb10_fp16_) {
+      params->output_width_height[0] = stitcher_rgb10_fp16_->canvas_width();
+      params->output_width_height[1] = stitcher_rgb10_fp16_->canvas_height();
+      g_print(
+          "Stitched canvas size: %d x %d\n",
+          (int)stitcher_rgb10_fp16_->canvas_width(),
+          (int)stitcher_rgb10_fp16_->canvas_height());
+      update_canvas_hints(stitcher_rgb10_fp16_->canvas_width(), stitcher_rgb10_fp16_->canvas_height());
+    } else if (stitcher_fp16_) {
       // TODO: handle this through caps
       params->output_width_height[0] = stitcher_fp16_->canvas_width();
       params->output_width_height[1] = stitcher_fp16_->canvas_height();
@@ -676,6 +739,100 @@ guint StitcherPriv::GetOutputBatchSize(guint input_batch_size, guint configured_
   return 1;
 }
 
+absl::Status StitcherPriv::prepare_high_bit_inputs(
+    hm::surface::Surface incoming_surface_left,
+    hm::surface::Surface incoming_surface_right) {
+  if (!high_bit_depth_) {
+    return absl::FailedPreconditionError("RGB10 input preparation requires high-bit-depth mode");
+  }
+  if (!isRgb10A2ColorFormat(incoming_surface_left->colorFormat) ||
+      !isRgb10A2ColorFormat(incoming_surface_right->colorFormat)) {
+    return absl::FailedPreconditionError(
+        absl::StrFormat(
+            "High-bit-depth stitching requires RGB10A2 surfaces (received color formats %d and %d)",
+            static_cast<int>(incoming_surface_left->colorFormat),
+            static_cast<int>(incoming_surface_right->colorFormat)));
+  }
+  if (incoming_surface_left.width() != incoming_surface_right.width() ||
+      incoming_surface_left.height() != incoming_surface_right.height()) {
+    return absl::FailedPreconditionError("High-bit-depth stitching requires equal left/right input dimensions");
+  }
+
+  const int width = static_cast<int>(incoming_surface_left.width());
+  const int height = static_cast<int>(incoming_surface_left.height());
+  auto ensure_input = [width, height](std::unique_ptr<hm::CudaMat<half4>>& input) {
+    if (!input || input->width() != width || input->height() != height) {
+      input = std::make_unique<hm::CudaMat<half4>>(/*batch_size=*/1, width, height, /*pixel_channels=*/1);
+    }
+    return input && input->is_valid();
+  };
+  if (!ensure_input(high_bit_left_) || !ensure_input(high_bit_right_)) {
+    return absl::ResourceExhaustedError("Could not allocate FP16 RGB stitch inputs");
+  }
+
+  HM_RETURN_IF_ERROR(to_status(unpackRgb10A2ToHalf4(
+      incoming_surface_left.get(), high_bit_left_->data(), high_bit_left_->pitch(), cuda_stream_)));
+  HM_RETURN_IF_ERROR(to_status(unpackRgb10A2ToHalf4(
+      incoming_surface_right.get(), high_bit_right_->data(), high_bit_right_->pitch(), cuda_stream_)));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::pair<hm::surface::Surface, hm::surface::Surface>> StitcherPriv::high_bit_calibration_surfaces() {
+  if (!high_bit_left_ || !high_bit_right_) {
+    return absl::FailedPreconditionError("RGB10 calibration inputs have not been prepared");
+  }
+  const int width = high_bit_left_->width();
+  const int height = high_bit_left_->height();
+  auto ensure_calibration_surface = [width, height](std::unique_ptr<hm::CudaMat<uchar4>>& surface) {
+    if (!surface || surface->width() != width || surface->height() != height) {
+      surface = std::make_unique<hm::CudaMat<uchar4>>(/*batch_size=*/1, width, height, /*pixel_channels=*/1);
+    }
+    return surface && surface->is_valid();
+  };
+  if (!ensure_calibration_surface(high_bit_calibration_left_) ||
+      !ensure_calibration_surface(high_bit_calibration_right_)) {
+    return absl::ResourceExhaustedError("Could not allocate temporary RGBA8 stitching calibration inputs");
+  }
+
+  high_bit_calibration_left_params_ = cuda_mat_surface_params(*high_bit_calibration_left_, NVBUF_COLOR_FORMAT_RGBA);
+  high_bit_calibration_right_params_ = cuda_mat_surface_params(*high_bit_calibration_right_, NVBUF_COLOR_FORMAT_RGBA);
+  HM_RETURN_IF_ERROR(to_status(convertHalf4ToCalibrationRgba8(
+      high_bit_left_->data(),
+      high_bit_left_->pitch(),
+      width,
+      height,
+      &high_bit_calibration_left_params_,
+      /*rotation_degrees=*/0.0,
+      cuda_stream_)));
+  HM_RETURN_IF_ERROR(to_status(convertHalf4ToCalibrationRgba8(
+      high_bit_right_->data(),
+      high_bit_right_->pitch(),
+      width,
+      height,
+      &high_bit_calibration_right_params_,
+      /*rotation_degrees=*/0.0,
+      cuda_stream_)));
+  // Calibration immediately downloads these temporary RGBA8 surfaces on a
+  // different CUDA path. This one-time synchronization makes their producer
+  // ordering explicit; it is not part of steady-state stitching.
+  HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
+  return std::make_pair(
+      hm::surface::Surface(&high_bit_calibration_left_params_),
+      hm::surface::Surface(&high_bit_calibration_right_params_));
+}
+
+void StitcherPriv::release_high_bit_calibration_surfaces() {
+  high_bit_calibration_left_.reset();
+  high_bit_calibration_right_.reset();
+  std::memset(&high_bit_calibration_left_params_, 0, sizeof(high_bit_calibration_left_params_));
+  std::memset(&high_bit_calibration_right_params_, 0, sizeof(high_bit_calibration_right_params_));
+}
+
+void StitcherPriv::release_high_bit_field_mask_canvas() {
+  high_bit_field_mask_canvas_.reset();
+  std::memset(&high_bit_field_mask_canvas_params_, 0, sizeof(high_bit_field_mask_canvas_params_));
+}
+
 absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     hm::surface::Surface incoming_surface_left,
     hm::surface::Surface incoming_surface_right) {
@@ -701,10 +858,19 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
       }
       orientation_ran_ = true;
     }
+    if (high_bit_depth_) {
+      HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
+      std::pair<hm::surface::Surface, hm::surface::Surface> calibration_surfaces =
+          std::make_pair(incoming_surface_left, incoming_surface_right);
+      HM_ASSIGN_OR_RETURN(calibration_surfaces, high_bit_calibration_surfaces());
+      incoming_surface_left = calibration_surfaces.first;
+      incoming_surface_right = calibration_surfaces.second;
+    }
     absl::Status configure_status = stitching::configure_stitching(
         config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_, [this] {
           return calibration_cancelled_.load(std::memory_order_acquire);
         });
+    release_high_bit_calibration_surfaces();
     if (!configure_status.ok()) {
       std::cerr << configure_status << "\n" << std::flush;
       if (absl::IsCancelled(configure_status)) {
@@ -846,7 +1012,12 @@ bool StitcherPriv::SetProperty(const Property& prop) {
   } else if (prop.key == "force-scoreboard-config" || prop.key == "force_scoreboard_config") {
     force_scoreboard_config_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "show") {
-    show_ = !!std::atol(prop.value.c_str());
+    const bool requested = !!std::atol(prop.value.c_str());
+    if (requested && high_bit_depth_) {
+      std::cerr << "Cannot enable stitcher debug rendering with high-bit-depth input" << std::endl;
+      return false;
+    }
+    show_ = requested;
   } else if (
       prop.key == "stitch-auto-adjust-exposure" || prop.key == "stitch_auto_adjust_exposure" ||
       prop.key == "match-exposure" || prop.key == "match_exposure") {
@@ -855,6 +1026,46 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     minimize_blend_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "require-decoded-frame-sequence-meta" || prop.key == "require_decoded_frame_sequence_meta") {
     require_decoded_frame_sequence_meta_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "high-bit-depth" || prop.key == "high_bit_depth") {
+    bool requested = false;
+    if (!parse_strict_bool(prop.value, requested)) {
+      std::cerr << "Invalid high-bit-depth value: " << prop.value << std::endl;
+      return false;
+    }
+    absl::MutexLock lk(&stitcher_mu_);
+    if ((caps_initialized_ || has_stitcher()) && requested != high_bit_depth_) {
+      std::cerr << "Cannot change high-bit-depth after stitcher caps initialization" << std::endl;
+      return false;
+    }
+    if (requested && show_) {
+      std::cerr << "Cannot enable high-bit-depth while stitcher debug rendering is enabled" << std::endl;
+      return false;
+    }
+    high_bit_depth_ = requested;
+    if (high_bit_depth_) {
+      stitch_compute_precision_ = StitchComputePrecision::kFp16;
+    }
+  } else if (prop.key == "shadow-lift") {
+    double parsed = 0.0;
+    if (!parse_finite_double(prop.value, parsed) || parsed < 0.0 || parsed > 100.0) {
+      std::cerr << "Invalid shadow-lift value: " << prop.value << std::endl;
+      return false;
+    }
+    shadow_lift_percent_.store(static_cast<float>(parsed), std::memory_order_relaxed);
+  } else if (prop.key == "shadow-lift-black-point") {
+    bool parsed = false;
+    if (!parse_strict_bool(prop.value, parsed)) {
+      std::cerr << "Invalid shadow-lift-black-point value: " << prop.value << std::endl;
+      return false;
+    }
+    lift_shadow_black_point_.store(parsed, std::memory_order_relaxed);
+  } else if (prop.key == "exposure") {
+    double parsed = 0.0;
+    if (!parse_finite_double(prop.value, parsed) || parsed < 0.0 || parsed > 1.3) {
+      std::cerr << "Invalid exposure value: " << prop.value << std::endl;
+      return false;
+    }
+    exposure_.store(static_cast<float>(parsed), std::memory_order_relaxed);
   } else if (prop.key == "cancel-pending-work") {
     calibration_cancelled_.store(true, std::memory_order_release);
     RequestShutdown();
@@ -874,6 +1085,10 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       return false;
     }
     absl::MutexLock lk(&stitcher_mu_);
+    if (high_bit_depth_ && requested_precision != StitchComputePrecision::kFp16) {
+      std::cerr << "High-bit-depth stitching requires fp16 stitch compute" << std::endl;
+      return false;
+    }
     if (has_stitcher() && requested_precision != stitch_compute_precision_) {
       std::cerr << "Cannot change stitch compute precision after stitcher initialization" << std::endl;
       return false;
@@ -1300,10 +1515,21 @@ absl::Status StitcherPriv::GenerateOutput(
             }
             orientation_ran_ = true;
           }
+          hm::surface::Surface calibration_surface_left = incoming_surface_left;
+          hm::surface::Surface calibration_surface_right = incoming_surface_right;
+          if (high_bit_depth_) {
+            HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
+            std::pair<hm::surface::Surface, hm::surface::Surface> calibration_surfaces =
+                std::make_pair(incoming_surface_left, incoming_surface_right);
+            HM_ASSIGN_OR_RETURN(calibration_surfaces, high_bit_calibration_surfaces());
+            calibration_surface_left = calibration_surfaces.first;
+            calibration_surface_right = calibration_surfaces.second;
+          }
           absl::Status configure_status = stitching::configure_stitching(
-              config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_, [this] {
+              config_file_, calibration_surface_left, calibration_surface_right, calibration_invalidation_id_, [this] {
                 return calibration_cancelled_.load(std::memory_order_acquire);
               });
+          release_high_bit_calibration_surfaces();
           if (!configure_status.ok()) {
             std::cerr << configure_status << "\n" << std::flush;
             return to_status(CudaStatus(
@@ -1380,7 +1606,45 @@ absl::Status StitcherPriv::GenerateOutput(
 
     assert(cuda_stream_);
 
-    if (stitcher_fp16_) {
+    const double applied_post_stitch_rotation = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+    if (stitcher_rgb10_fp16_) {
+      HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
+      if (!high_bit_canvas_ || high_bit_canvas_->width() != canvas->width() ||
+          high_bit_canvas_->height() != canvas->height()) {
+        high_bit_canvas_ = std::make_unique<hm::CudaMat<half4>>(
+            /*batch_size=*/1, canvas->width(), canvas->height(), /*pixel_channels=*/1);
+      }
+      if (!high_bit_canvas_ || !high_bit_canvas_->is_valid()) {
+        return absl::ResourceExhaustedError("Could not allocate the FP16 stitched canvas");
+      }
+      HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
+          high_bit_canvas_->data_raw(),
+          0,
+          high_bit_canvas_->height() * high_bit_canvas_->pitch() * high_bit_canvas_->batch_size(),
+          cuda_stream_)));
+      std::unique_ptr<hm::CudaMat<half4>> high_bit_canvas = std::move(high_bit_canvas_);
+      HM_CUDA_ASSIGN_OR_RETURN(
+          high_bit_canvas,
+          stitcher_rgb10_fp16_->process(*high_bit_left_, *high_bit_right_, cuda_stream_, std::move(high_bit_canvas)));
+      high_bit_canvas_ = std::move(high_bit_canvas);
+
+      NvBufSurfaceParams* rgba_output = outgoing_surface.get_mutable();
+      rgba_output->width = high_bit_canvas_->width();
+      rgba_output->height = high_bit_canvas_->height();
+      rgba_output->planeParams.width[0] = rgba_output->width;
+      rgba_output->planeParams.height[0] = rgba_output->height;
+      HM_RETURN_IF_ERROR(to_status(convertHalf4ToRgba8(
+          high_bit_canvas_->data(),
+          high_bit_canvas_->pitch(),
+          high_bit_canvas_->width(),
+          high_bit_canvas_->height(),
+          rgba_output,
+          applied_post_stitch_rotation,
+          shadow_lift_percent_.load(std::memory_order_relaxed),
+          lift_shadow_black_point_.load(std::memory_order_relaxed),
+          exposure_.load(std::memory_order_relaxed),
+          cuda_stream_)));
+    } else if (stitcher_fp16_) {
       HM_RETURN_IF_ERROR(to_status(cudaMemsetAsync(
           canvas->data_raw(), 0, canvas->height() * canvas->pitch() * canvas->batch_size(), cuda_stream_)));
       HM_CUDA_ASSIGN_OR_RETURN(canvas, stitcher_fp16_->process(left, right, cuda_stream_, std::move(canvas)));
@@ -1400,9 +1664,10 @@ absl::Status StitcherPriv::GenerateOutput(
     logical_output_params.planeParams.height[0] = canvas->height();
     hm::surface::Surface logical_output_surface(&logical_output_params);
 
-    const double applied_post_stitch_rotation = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
-    HM_RETURN_IF_ERROR(apply_post_stitch_rotation(
-        logical_output_surface, canvas->width(), canvas->height(), applied_post_stitch_rotation));
+    if (!stitcher_rgb10_fp16_) {
+      HM_RETURN_IF_ERROR(apply_post_stitch_rotation(
+          logical_output_surface, canvas->width(), canvas->height(), applied_post_stitch_rotation));
+    }
     std::string hugin_generation;
     {
       absl::MutexLock lk(&stitcher_mu_);
@@ -1427,10 +1692,39 @@ absl::Status StitcherPriv::GenerateOutput(
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
+        hm::surface::Surface field_mask_surface = logical_output_surface;
+        if (stitcher_rgb10_fp16_) {
+          if (!high_bit_field_mask_canvas_ || high_bit_field_mask_canvas_->width() != high_bit_canvas_->width() ||
+              high_bit_field_mask_canvas_->height() != high_bit_canvas_->height()) {
+            high_bit_field_mask_canvas_ = std::make_unique<hm::CudaMat<uchar4>>(
+                /*batch_size=*/1,
+                high_bit_canvas_->width(),
+                high_bit_canvas_->height(),
+                /*pixel_channels=*/1);
+          }
+          if (!high_bit_field_mask_canvas_ || !high_bit_field_mask_canvas_->is_valid()) {
+            return report_calibration_failure(
+                absl::ResourceExhaustedError("Could not allocate the ungraded rink-mask calibration canvas"));
+          }
+          high_bit_field_mask_canvas_params_ =
+              cuda_mat_surface_params(*high_bit_field_mask_canvas_, NVBUF_COLOR_FORMAT_RGBA);
+          HM_RETURN_IF_ERROR(to_status(convertHalf4ToCalibrationRgba8(
+              high_bit_canvas_->data(),
+              high_bit_canvas_->pitch(),
+              high_bit_canvas_->width(),
+              high_bit_canvas_->height(),
+              &high_bit_field_mask_canvas_params_,
+              applied_post_stitch_rotation,
+              cuda_stream_)));
+          // Field-mask calibration downloads this one-time surface immediately.
+          HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
+          field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
+        }
         absl::Status mask_status = stitching::create_field_mask(
-            config_file_, logical_output_surface, output_generation, calibration_invalidation_id_, [this] {
+            config_file_, field_mask_surface, output_generation, calibration_invalidation_id_, [this] {
               return calibration_cancelled_.load(std::memory_order_acquire);
             });
+        release_high_bit_field_mask_canvas();
         if (!mask_status.ok()) {
           std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
           calibration_completion_reported_ = true;

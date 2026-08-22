@@ -133,8 +133,8 @@ cudaError_t EglSurfaceMapper::map() {
   if (nv_error != 0) {
     const NvBufSurfaceParams* params = &surface_->surfaceList[index_];
     std::cerr << "NvBufSurfaceMapEglImage failed for surface index " << index_ << " (" << params->width << "x"
-              << params->height << ", memType=" << surface_->memType << ", colorFormat=" << params->colorFormat
-              << ")" << std::endl;
+              << params->height << ", memType=" << surface_->memType << ", colorFormat=" << params->colorFormat << ")"
+              << std::endl;
     return cudaErrorUnknown;
   }
   egl_image_mapped_ = true;
@@ -160,12 +160,16 @@ cudaError_t EglSurfaceMapper::map() {
 
   pitch_memory_ = eglFrame_.frame.pPitch[0];
   assert(pitch_memory_.ptr);
-  assert(eglFrame_.planeDesc->numChannels == 4);
-  assert(eglFrame_.planeDesc->channelDesc.x == 8);
-  assert(eglFrame_.planeDesc->channelDesc.y == 8);
-  assert(eglFrame_.planeDesc->channelDesc.z == 8);
-  assert(eglFrame_.planeDesc->channelDesc.w == 8);
-  assert(eglFrame_.planeDesc->channelDesc.f == cudaChannelFormatKindUnsigned);
+  const cudaChannelFormatDesc& channel = eglFrame_.planeDesc->channelDesc;
+  const bool rgba8 = eglFrame_.planeDesc->numChannels == 4 && channel.x == 8 && channel.y == 8 && channel.z == 8 &&
+      channel.w == 8 && channel.f == cudaChannelFormatKindUnsigned;
+  const bool rgb10a2 = eglFrame_.planeDesc->numChannels == 4 && channel.x == 10 && channel.y == 10 && channel.z == 10 &&
+      channel.w == 2 && channel.f == cudaChannelFormatKindUnsigned;
+  if (!rgba8 && !rgb10a2) {
+    std::cerr << "Unsupported EGL CUDA surface channel layout: " << channel.x << "/" << channel.y << "/" << channel.z
+              << "/" << channel.w << std::endl;
+    return cudaErrorInvalidChannelDescriptor;
+  }
 #if 0
   // test write
   cuerr_result = cudaMemset(pitch_memory_.ptr, 128, pitch_memory_.ysize * pitch_memory_.pitch);
@@ -181,8 +185,9 @@ cudaError_t EglSurfaceMapper::map() {
       pitch_memory_.xsize,
       pitch_memory_.ysize,
       pitch_memory_.pitch,
-      /*bytes_per_pixel=*/3,
+      /*bytes_per_pixel=*/4,
       /*owns=*/false);
+  surface_list_->operator[](0).get_mutable()->colorFormat = surface_params->colorFormat;
 
   return cudaSuccess;
 }

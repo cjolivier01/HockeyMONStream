@@ -25,6 +25,7 @@
 #include "cupano/pano/cudaMat.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playcropper/ShadowToneCurve.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
@@ -419,12 +420,22 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       std::cerr << "Invalid shadow lift percentage: " << prop.value << std::endl;
       return false;
     }
-    shadow_lift_percent_ = shadow_lift_percent;
+    shadow_lift_percent_.store(shadow_lift_percent, std::memory_order_relaxed);
   } else if (key == "shadow-lift-black-point") {
-    if (!parse_boolean(prop.value, &lift_shadow_black_point_)) {
+    bool lift_shadow_black_point = false;
+    if (!parse_boolean(prop.value, &lift_shadow_black_point)) {
       std::cerr << "Invalid shadow black-point toggle: " << prop.value << std::endl;
       return false;
     }
+    lift_shadow_black_point_.store(lift_shadow_black_point, std::memory_order_relaxed);
+  } else if (key == "exposure") {
+    float exposure = 0.0f;
+    if (!parse_finite_float(prop.value, &exposure) || exposure < hm::playcropper::kExposureMinimumSetting ||
+        exposure > hm::playcropper::kExposureMaximumSetting) {
+      std::cerr << "Invalid exposure setting: " << prop.value << std::endl;
+      return false;
+    }
+    exposure_.store(exposure, std::memory_order_relaxed);
   } else if (key == "no-crop") {
     // TODO: implement, needs to change caps too
     no_crop_ = !!std::atoi(prop.value.c_str());
@@ -658,8 +669,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
           transform.crop_box,
           outgoing_surface.get_mutable(),
           output_rect,
-          shadow_lift_percent_,
-          lift_shadow_black_point_,
+          shadow_lift_percent_.load(std::memory_order_relaxed),
+          lift_shadow_black_point_.load(std::memory_order_relaxed),
+          exposure_.load(std::memory_order_relaxed),
           cuda_stream_));
       completion_fence.MarkSubmitted();
     } else {
