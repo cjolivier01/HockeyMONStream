@@ -18,19 +18,18 @@ bool expect(bool condition, const char* message) {
 
 int main() {
   using hm::playcropper::evaluate_exposure;
-  using hm::playcropper::evaluate_shadow_lift_curve;
+  using hm::playcropper::evaluate_shadow_lift_luma;
   constexpr float kTolerance = 2e-5f;
 
-  if (!expect(evaluate_shadow_lift_curve(0.0f, 100.0f) == 0.0f, "Shadow lift must preserve exact black") ||
-      !expect(evaluate_shadow_lift_curve(0.6f, 100.0f) == 0.6f, "Shadow lift must preserve the shadow boundary") ||
-      !expect(evaluate_shadow_lift_curve(1.0f, 100.0f) == 1.0f, "Shadow lift must preserve exact white")) {
+  if (!expect(evaluate_shadow_lift_luma(0.0f, 100.0f) == 0.0f, "Shadow lift must preserve exact black") ||
+      !expect(evaluate_shadow_lift_luma(1.0f, 100.0f) == 1.0f, "Shadow lift must preserve exact white")) {
     return 1;
   }
 
   for (int sample = 0; sample <= 10000; ++sample) {
     const float value = static_cast<float>(sample) / 10000.0f;
     if (!expect(
-            std::abs(evaluate_shadow_lift_curve(value, 0.0f) - value) <= kTolerance,
+            std::abs(evaluate_shadow_lift_luma(value, 0.0f) - value) <= kTolerance,
             "A zero shadow lift must be a pixel-exact identity")) {
       return 1;
     }
@@ -38,17 +37,14 @@ int main() {
 
   for (bool lift_black_point : {false, true}) {
     for (float amount : std::array<float, 4>{25.0f, 50.0f, 75.0f, 100.0f}) {
-      float previous = evaluate_shadow_lift_curve(0.0f, amount, lift_black_point);
+      float previous = evaluate_shadow_lift_luma(0.0f, amount, lift_black_point);
       for (int sample = 1; sample <= 65535; ++sample) {
         const float value = static_cast<float>(sample) / 65535.0f;
-        const float lifted = evaluate_shadow_lift_curve(value, amount, lift_black_point);
+        const float lifted = evaluate_shadow_lift_luma(value, amount, lift_black_point);
         if (!expect(std::isfinite(lifted), "Shadow lift must remain finite across the full signal range") ||
             !expect(lifted + kTolerance >= previous, "Shadow lift must not introduce a tone reversal") ||
             !expect(lifted + kTolerance >= value, "A positive shadow lift must not darken the input") ||
-            !expect(lifted <= 1.0f + kTolerance, "Shadow lift must remain inside the video signal range") ||
-            !expect(
-                value < hm::playcropper::kShadowLiftVideoStart || std::abs(lifted - value) <= kTolerance,
-                "Shadow lift must leave midtones and highlights unchanged")) {
+            !expect(lifted <= 1.0f + kTolerance, "Shadow lift must remain inside the video signal range")) {
           return 1;
         }
         previous = lifted;
@@ -56,46 +52,82 @@ int main() {
     }
   }
 
-  const std::array<float, 6> ocio_video_inputs = {0.05f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f};
-  const std::array<float, 6> ocio_video_expected = {
-      0.115831240f, 0.179128785f, 0.270156212f, 0.343769410f, 0.421291219f, 0.505902849f};
-  for (size_t i = 0; i < ocio_video_inputs.size(); ++i) {
+  // Gamma 0.812 is the best simple Rec. 709-luma fit to the supplied lifted
+  // reference. It raises midtones as well as shadows and rolls off at white.
+  const std::array<float, 7> reference_inputs = {0.05f, 0.1f, 0.2f, 0.4f, 0.6f, 0.75f, 0.9f};
+  const std::array<float, 7> reference_expected = {
+      0.087813976f, 0.154170045f, 0.270667653f, 0.475195931f, 0.660478698f, 0.791680132f, 0.918004727f};
+  for (size_t i = 0; i < reference_inputs.size(); ++i) {
     if (!expect(
-            std::abs(evaluate_shadow_lift_curve(ocio_video_inputs[i], 100.0f) - ocio_video_expected[i]) <= kTolerance,
-            "Shadow lift must match the OpenColorIO VIDEO-style master Shadows reference")) {
+            std::abs(evaluate_shadow_lift_luma(reference_inputs[i], 100.0f) - reference_expected[i]) <= kTolerance,
+            "Full shadow lift must match the fitted reference gamma")) {
       return 1;
     }
   }
 
   const float dark_sample = 0.1f;
   if (!expect(
-          evaluate_shadow_lift_curve(dark_sample, 100.0f) > evaluate_shadow_lift_curve(dark_sample, 50.0f) &&
-              evaluate_shadow_lift_curve(dark_sample, 50.0f) > dark_sample,
+          evaluate_shadow_lift_luma(dark_sample, 100.0f) > evaluate_shadow_lift_luma(dark_sample, 50.0f) &&
+              evaluate_shadow_lift_luma(dark_sample, 50.0f) > dark_sample,
           "Increasing the slider must progressively reveal more shadow detail") ||
       !expect(
-          evaluate_shadow_lift_curve(dark_sample, -10.0f) == dark_sample,
+          evaluate_shadow_lift_luma(dark_sample, -10.0f) == dark_sample,
           "Out-of-range negative input must clamp to identity") ||
       !expect(
-          std::abs(evaluate_shadow_lift_curve(dark_sample, 150.0f) - evaluate_shadow_lift_curve(dark_sample, 100.0f)) <=
+          std::abs(evaluate_shadow_lift_luma(dark_sample, 150.0f) - evaluate_shadow_lift_luma(dark_sample, 100.0f)) <=
               kTolerance,
           "Out-of-range positive input must clamp to the validated maximum")) {
     return 1;
   }
   if (!expect(
-          evaluate_shadow_lift_curve(0.0f, 0.0f, true) == 0.0f,
+          evaluate_shadow_lift_luma(0.0f, 0.0f, true) == 0.0f,
           "The black-point toggle must remain an identity when shadow lift is zero") ||
       !expect(
-          std::abs(evaluate_shadow_lift_curve(0.0f, 100.0f, true) - hm::playcropper::kShadowLiftMaximumBlackPoint) <=
+          std::abs(evaluate_shadow_lift_luma(0.0f, 100.0f, true) - hm::playcropper::kShadowLiftMaximumBlackPoint) <=
               kTolerance,
           "The black-point toggle must reach its documented maximum at full lift") ||
       !expect(
-          evaluate_shadow_lift_curve(dark_sample, 100.0f, true) >
-              evaluate_shadow_lift_curve(dark_sample, 100.0f, false),
+          evaluate_shadow_lift_luma(dark_sample, 100.0f, true) > evaluate_shadow_lift_luma(dark_sample, 100.0f, false),
           "The black-point toggle must visibly strengthen deep-shadow recovery") ||
       !expect(
-          evaluate_shadow_lift_curve(hm::playcropper::kShadowLiftVideoStart, 100.0f, true) ==
-              hm::playcropper::kShadowLiftVideoStart,
-          "The black-point toe must fade to zero at the protected shadow boundary")) {
+          evaluate_shadow_lift_luma(hm::playcropper::kShadowLiftBlackPointFadeEnd, 100.0f, true) ==
+              evaluate_shadow_lift_luma(hm::playcropper::kShadowLiftBlackPointFadeEnd, 100.0f, false),
+          "The optional black-point toe must fade out by 60% luma")) {
+    return 1;
+  }
+
+  float red = 0.1f;
+  float green = 0.25f;
+  float blue = 0.5f;
+  const float input_luma = red * hm::playcropper::kShadowLiftLumaRed + green * hm::playcropper::kShadowLiftLumaGreen +
+      blue * hm::playcropper::kShadowLiftLumaBlue;
+  const float red_green_ratio = red / green;
+  const float blue_green_ratio = blue / green;
+  hm::playcropper::evaluate_shadow_lift_rgb(
+      &red, &green, &blue, hm::playcropper::shadow_lift_gamma(100.0f), hm::playcropper::shadow_lift_amount(100.0f));
+  const float output_luma = red * hm::playcropper::kShadowLiftLumaRed + green * hm::playcropper::kShadowLiftLumaGreen +
+      blue * hm::playcropper::kShadowLiftLumaBlue;
+  if (!expect(
+          std::abs(output_luma - evaluate_shadow_lift_luma(input_luma, 100.0f)) <= kTolerance,
+          "RGB shadow lift must apply the fitted gamma to Rec. 709 luma") ||
+      !expect(
+          std::abs(red / green - red_green_ratio) <= kTolerance &&
+              std::abs(blue / green - blue_green_ratio) <= kTolerance,
+          "RGB shadow lift must preserve channel ratios when no channel clips")) {
+    return 1;
+  }
+
+  red = green = blue = 0.0f;
+  hm::playcropper::evaluate_shadow_lift_rgb(
+      &red,
+      &green,
+      &blue,
+      hm::playcropper::shadow_lift_gamma(100.0f),
+      hm::playcropper::shadow_lift_amount(100.0f),
+      true);
+  if (!expect(
+          std::abs(red - hm::playcropper::kShadowLiftMaximumBlackPoint) <= kTolerance && red == green && green == blue,
+          "The optional RGB black-point toe must raise exact black neutrally")) {
     return 1;
   }
 

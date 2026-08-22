@@ -98,21 +98,34 @@ bool transform_pixel(
   return transform_sample(input, 0.0f, 0.0f, lift_percent, output, lift_black_point, exposure);
 }
 
-uint8_t lifted_channel(uint8_t value, float lift_percent, bool lift_black_point = false) {
-  const float lifted =
-      hm::playcropper::evaluate_shadow_lift_curve(value / 255.0f, lift_percent, lift_black_point) * 255.0f + 0.5f;
-  return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(lifted, 0.0f, 255.0f));
-}
-
 uint8_t exposed_channel(uint8_t value, float setting) {
   const float lifted = hm::playcropper::evaluate_exposure(value / 255.0f, setting) * 255.0f + 0.5f;
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(lifted, 0.0f, 255.0f));
 }
 
-uint8_t composed_lifted_channel(uint8_t value, float shadow_lift_percent, float exposure) {
-  const float shadow_lifted = hm::playcropper::evaluate_shadow_lift_curve(value / 255.0f, shadow_lift_percent, false);
-  const float composed = hm::playcropper::evaluate_exposure(shadow_lifted, exposure) * 255.0f + 0.5f;
-  return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(composed, 0.0f, 255.0f));
+std::array<uint8_t, 4> graded_pixel(
+    const std::array<uint8_t, 4>& pixel,
+    float shadow_lift_percent,
+    bool lift_black_point = false,
+    float exposure = 0.0f) {
+  float red = pixel[0] / 255.0f;
+  float green = pixel[1] / 255.0f;
+  float blue = pixel[2] / 255.0f;
+  if (shadow_lift_percent > 0.0f) {
+    hm::playcropper::evaluate_shadow_lift_rgb(
+        &red,
+        &green,
+        &blue,
+        hm::playcropper::shadow_lift_gamma(shadow_lift_percent),
+        hm::playcropper::shadow_lift_amount(shadow_lift_percent),
+        lift_black_point);
+  }
+  const float exposure_gain = hm::playcropper::exposure_gain(exposure);
+  const auto quantize = [exposure_gain](float value) {
+    return static_cast<uint8_t>(
+        hm::playcropper::clamp_shadow_value(value * 255.0f * exposure_gain + 0.5f, 0.0f, 255.0f));
+  };
+  return {quantize(red), quantize(green), quantize(blue), pixel[3]};
 }
 
 } // namespace
@@ -127,20 +140,26 @@ int main() {
   if (!transform_pixel(input, 100.0f, &output)) {
     return 1;
   }
-  const std::array<uint8_t, 4> expected = {
-      lifted_channel(input[0], 100.0f),
-      lifted_channel(input[1], 100.0f),
-      lifted_channel(input[2], 100.0f),
-      input[3],
-  };
+  const std::array<uint8_t, 4> expected = graded_pixel(input, 100.0f);
   if (output != expected || output[0] <= input[0] || output[1] <= input[1] || output[2] <= input[2]) {
-    std::cerr << "CUDA shadow lift must match the reference curve while preserving alpha\n";
+    std::cerr << "CUDA shadow lift must match the fitted luma gamma while preserving alpha\n";
     return 1;
   }
 
-  const std::array<uint8_t, 4> protected_input = {0, 153, 255, 203};
-  if (!transform_pixel(protected_input, 100.0f, &output) || output != protected_input) {
-    std::cerr << "CUDA shadow lift must preserve black, the shadow boundary, white, and alpha\n";
+  const std::array<uint8_t, 4> black_input = {0, 0, 0, 203};
+  if (!transform_pixel(black_input, 100.0f, &output) || output != black_input) {
+    std::cerr << "CUDA shadow lift must preserve exact black and alpha\n";
+    return 1;
+  }
+  const std::array<uint8_t, 4> white_input = {255, 255, 255, 203};
+  if (!transform_pixel(white_input, 100.0f, &output) || output != white_input) {
+    std::cerr << "CUDA shadow lift must preserve exact white and alpha\n";
+    return 1;
+  }
+  const std::array<uint8_t, 4> midtone_input = {153, 153, 153, 203};
+  if (!transform_pixel(midtone_input, 100.0f, &output) || output != graded_pixel(midtone_input, 100.0f) ||
+      output[0] <= midtone_input[0]) {
+    std::cerr << "CUDA shadow lift must lift midtones instead of stopping at 60% signal\n";
     return 1;
   }
 
@@ -158,27 +177,17 @@ int main() {
   }
 
   const std::array<uint8_t, 4> composed_input = {16, 64, 128, 203};
-  const std::array<uint8_t, 4> composed_expected = {
-      composed_lifted_channel(composed_input[0], 100.0f, 1.0f),
-      composed_lifted_channel(composed_input[1], 100.0f, 1.0f),
-      composed_lifted_channel(composed_input[2], 100.0f, 1.0f),
-      composed_input[3],
-  };
+  const std::array<uint8_t, 4> composed_expected = graded_pixel(composed_input, 100.0f, false, 1.0f);
   if (!transform_pixel(composed_input, 100.0f, &output, false, 1.0f) || output != composed_expected) {
-    std::cerr << "CUDA exposure must compose after the existing shadow curve\n";
+    std::cerr << "CUDA exposure must compose after the shadow and midtone lift\n";
     return 1;
   }
 
-  const std::array<uint8_t, 4> black_point_input = {0, 16, 153, 203};
-  const std::array<uint8_t, 4> black_point_expected = {
-      lifted_channel(black_point_input[0], 100.0f, true),
-      lifted_channel(black_point_input[1], 100.0f, true),
-      black_point_input[2],
-      black_point_input[3],
-  };
+  const std::array<uint8_t, 4> black_point_input = {0, 0, 0, 203};
+  const std::array<uint8_t, 4> black_point_expected = graded_pixel(black_point_input, 100.0f, true);
   if (!transform_pixel(black_point_input, 100.0f, &output, true) || output != black_point_expected || output[0] == 0 ||
-      output[1] <= lifted_channel(black_point_input[1], 100.0f, false)) {
-    std::cerr << "CUDA black-point lift must visibly raise the toe while protecting the boundary and alpha\n";
+      output[0] != output[1] || output[1] != output[2]) {
+    std::cerr << "CUDA black-point lift must raise exact black neutrally while preserving alpha\n";
     return 1;
   }
 
@@ -200,11 +209,14 @@ int main() {
       201,
       17,
   };
-  const std::array<uint8_t, 4> protected_bilinear_expected = {200, 200, 200, 17};
-  if (!transform_sample(protected_bilinear_input, 0.5f, 0.5f, 0.0f, &output) || output != protected_bilinear_expected ||
-      !transform_sample(protected_bilinear_input, 0.5f, 0.5f, 100.0f, &output) ||
-      output != protected_bilinear_expected) {
-    std::cerr << "Shadow lift must not change legacy interpolation or quantization above the shadow boundary\n";
+  const std::array<uint8_t, 4> bilinear_identity = {200, 200, 200, 17};
+  if (!transform_sample(protected_bilinear_input, 0.5f, 0.5f, 0.0f, &output) || output != bilinear_identity) {
+    std::cerr << "Disabled shadow lift must preserve legacy interpolation and quantization\n";
+    return 1;
+  }
+  if (!transform_sample(protected_bilinear_input, 0.5f, 0.5f, 100.0f, &output) || output[0] <= bilinear_identity[0] ||
+      output[0] != output[1] || output[1] != output[2] || output[3] != bilinear_identity[3]) {
+    std::cerr << "Enabled shadow lift must reach upper midtones without modifying alpha\n";
     return 1;
   }
   return 0;

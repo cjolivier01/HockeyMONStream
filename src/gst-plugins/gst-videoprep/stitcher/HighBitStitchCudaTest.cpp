@@ -30,8 +30,8 @@ uint32_t pack_rgb10a2(uint32_t red, uint32_t green, uint32_t blue, uint32_t alph
 
 uint8_t composed_grade(float value, float shadow_lift_percent, float exposure) {
   float normalized = value / 255.0f;
-  if (shadow_lift_percent > 0.0f && normalized > 0.0f && normalized < hm::playcropper::kShadowLiftVideoStart) {
-    normalized = hm::playcropper::evaluate_shadow_lift_curve(normalized, shadow_lift_percent, false);
+  if (shadow_lift_percent > 0.0f) {
+    normalized = hm::playcropper::evaluate_shadow_lift_luma(normalized, shadow_lift_percent, false);
   }
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(
       normalized * 255.0f * hm::playcropper::exposure_gain(exposure) + 0.5f, 0.0f, 255.0f));
