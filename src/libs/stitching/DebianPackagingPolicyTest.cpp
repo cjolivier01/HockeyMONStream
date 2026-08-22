@@ -103,6 +103,7 @@ int main(int argc, char** argv) {
           contains(publisher, "sha256sum ./*.deb ./*.exe") && contains(publisher, "\"${release_dir}\"/*.exe") &&
           contains(publisher, "WINDOWS_INSTALLER_REPOSITORY=\"${repository}\"") &&
           contains(publisher, "WINDOWS_SIGNING_PKCS12") && contains(publisher, "WINDOWS_SIGNING_CA_FILE") &&
+          contains(publisher, "-CAfile") && contains(publisher, "private/self-signed publisher certificate") &&
           contains(publisher, "osslsigncode verify"),
       "release publication must verify provenance/source compliance, increment strict semver, and publish Windows setup");
   ok &= expect(
@@ -111,7 +112,7 @@ int main(int argc, char** argv) {
           contains(windows_builder, "^v(0|[1-9][0-9]*)") && contains(windows_builder, "sha256sum") &&
           contains(windows_builder, "POWERSHELL_SHA256") && contains(windows_builder, "osslsigncode sign") &&
           contains(windows_builder, "-readpass") && contains(windows_builder, "WINDOWS_SIGNING_CA_FILE") &&
-          contains(windows_builder, "osslsigncode verify"),
+          contains(windows_builder, "-CAfile") && contains(windows_builder, "osslsigncode verify"),
       "Windows setup must cross-build a versioned native executable and preserve the HStream icon");
   ok &= expect(
       contains(windows_nsis, "File /oname=hstream-wsl.ps1") &&

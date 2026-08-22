@@ -81,7 +81,10 @@ make publish \
 
 Do not set `WINDOWS_SIGNING_CA_FILE` for normal public releases. Windows shows
 an unknown-publisher warning for a self-signed installer unless the certificate
-is separately installed into the target machine's trusted publisher store.
+is separately installed into the target machine's Trusted Root Certification
+Authorities store and, where publisher policy requires it, Trusted Publishers.
+Private-signing releases also prepend a prominent warning to the generated
+GitHub release notes.
 
 ## Runtime requirements
 

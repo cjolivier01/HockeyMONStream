@@ -84,6 +84,10 @@ if [[ -n "${SIGNING_PKCS12}" || -n "${SIGNING_PASSWORD_FILE}" ]]; then
     exit 1
   fi
 fi
+if [[ -n "${SIGNING_CA_FILE}" && -z "${SIGNING_PKCS12}" ]]; then
+  echo "ERROR: WINDOWS_SIGNING_CA_FILE is valid only when Authenticode signing is configured." >&2
+  exit 1
+fi
 if [[ -n "${SIGNING_CA_FILE}" && ! -f "${SIGNING_CA_FILE}" ]]; then
   echo "ERROR: WINDOWS_SIGNING_CA_FILE must name a readable PEM certificate file." >&2
   exit 1
