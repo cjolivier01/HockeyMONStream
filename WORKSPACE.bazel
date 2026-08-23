@@ -162,9 +162,7 @@ git_repository(
 ################################ HockeyMOM Sub-Modules ################################
 git_repository(
     name = "hm-cupano",
-    commit = "4792b631a1da8de52534bc1d9078daa4fc0cd4e3",
-    patch_args = ["-p1"],
-    patches = ["//buildfiles/third_party:hm_cupano_half3_remap.patch"],
+    commit = "6578eee77e1a5ba19fcfd5bd38a7f7de188bdece",
     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
 )
 
