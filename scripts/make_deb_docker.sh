@@ -119,8 +119,12 @@ OUTPUT_DIR="$(readlink -f "${OUTPUT_DIR}")"
 # Freeze the complete build input before the slow image build. The container
 # never sees the mutable checkout, ignored artifacts, or untracked files.
 SOURCE_SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/hstream-deb-source.XXXXXX")"
+RELAXED_DEEPSTREAM_DIR=""
 cleanup_snapshot() {
   rm -rf -- "${SOURCE_SNAPSHOT}"
+  if [[ -n "${RELAXED_DEEPSTREAM_DIR}" ]]; then
+    rm -rf -- "${RELAXED_DEEPSTREAM_DIR}"
+  fi
 }
 trap cleanup_snapshot EXIT
 git -C "${TOPDIR}" archive --format=tar "${SOURCE_REVISION}" | tar -xf - -C "${SOURCE_SNAPSHOT}"
@@ -129,7 +133,8 @@ printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.h
 
 DOCKER_DEEPSTREAM_DEB="${DEEPSTREAM_DEB}"
 if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
-  relaxed_deepstream_deb="${SOURCE_SNAPSHOT}/deepstream-9.1_ubuntu26-relaxed.deb"
+  RELAXED_DEEPSTREAM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hstream-deepstream-deb.XXXXXX")"
+  relaxed_deepstream_deb="${RELAXED_DEEPSTREAM_DIR}/deepstream-9.1_ubuntu26-relaxed.deb"
   echo "[make_deb_docker] Relaxing Ubuntu 24.04-pinned DeepStream dependency versions for Ubuntu 26.04..."
   "${TOPDIR}/scripts/remove_deb_dependencies.py" \
     --force \
