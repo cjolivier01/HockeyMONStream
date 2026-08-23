@@ -276,6 +276,8 @@ class HStreamWindow : public QMainWindow {
   void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
   int stitchingCalibrationControlPoints() const;
   QString stitchFrameTime() const;
+  QString controlPointMatcher() const;
+  QString mappingBackend() const;
   bool prepareStitchingCalibrationRun(
       const QString& runner,
       const QString& working_dir,
@@ -339,6 +341,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
   QSpinBox* control_points_spin_{nullptr};
+  QComboBox* control_point_matcher_combo_{nullptr};
+  QComboBox* mapping_backend_combo_{nullptr};
   QTimeEdit* stitch_frame_time_edit_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
@@ -472,6 +476,8 @@ class HStreamWindow : public QMainWindow {
   bool active_run_high_bit_depth_{false};
   int active_calibration_control_points_{0};
   QString active_stitch_frame_time_;
+  QString active_control_point_matcher_;
+  QString active_mapping_backend_;
   QString active_calibration_start_stage_;
   QString active_calibration_invalidation_id_;
   bool calibration_restart_requested_{false};
@@ -502,11 +508,16 @@ class HStreamWindow : public QMainWindow {
   YAML::Node baseline_config_;
   QString baseline_config_root_;
   QString default_stitch_frame_time_{"00:00:00"};
+  QString default_control_point_matcher_{"aliked-lightglue"};
+  QString default_mapping_backend_{"nona"};
   std::map<QString, int> saved_camera_controls_;
+  int saved_stitching_control_points_{0};
   QString development_runtime_root_;
   QString development_pipeline_runner_;
   QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
+  QString saved_control_point_matcher_;
+  QString saved_mapping_backend_;
   std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;

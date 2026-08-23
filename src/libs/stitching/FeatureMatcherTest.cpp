@@ -19,6 +19,14 @@ bool expect(bool condition, const char* message) {
 
 int main() {
   bool ok = true;
+  ok &= expect(
+      hm::stitching::ParseControlPointMatcher("superpoint-lightglue").ok(),
+      "HockeyMOM baseline matcher spelling must be accepted");
+  ok &=
+      expect(hm::stitching::ParseControlPointMatcher("superpoint").ok(), "HockeyMOM superpoint alias must be accepted");
+  ok &= expect(
+      !hm::stitching::ParseControlPointMatcher("dedode-lightglue").ok(),
+      "unsupported matcher engines must still fail explicitly");
   ok &= expect(!hm::stitching::FeatureMatcher::Prepare({}, {}).ok(), "empty images must fail");
   cv::Mat left(90, 160, CV_8UC3, cv::Scalar(30, 20, 10));
   cv::Mat right(100, 100, CV_8UC3, cv::Scalar(60, 50, 40));

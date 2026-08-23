@@ -144,6 +144,23 @@ cc_library(
 )
 
 cc_library(
+  name = "homography_maps",
+  srcs = ["HomographyMaps.cpp"],
+  hdrs = ["HomographyMaps.h"],
+  include_prefix = INCLUDE_PREFIX,
+  linkopts = [
+    "-ltiff",
+  ],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":feature_matcher",
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
   name = "hugin_project",
   srcs = ["HuginProject.cpp"],
   hdrs = ["HuginProject.h"],
@@ -153,10 +170,20 @@ cc_library(
   deps = [
     ":feature_matcher",
     ":game_config",
+    ":homography_maps",
     "//src/libs/common:utils",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "homography_maps_test",
+  srcs = ["HomographyMapsTest.cpp"],
+  deps = [
+    ":homography_maps",
+    "@opencv_linux//:opencv",
   ],
 )
 
@@ -238,7 +265,6 @@ cc_test(
     "HOME",
     "PYTHON_BIN",
   ],
-  linkopts = ["-lopencv_calib3d"],
   deps = [
     ":feature_matcher",
     ":hugin_project",

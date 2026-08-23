@@ -88,6 +88,7 @@ def _build_file_content(
         soname_suffix = None):
     libs = [
         "libopencv_core.so",
+        "libopencv_calib3d.so",
         "libopencv_highgui.so",
         "libopencv_imgcodecs.so",
         "libopencv_imgproc.so",

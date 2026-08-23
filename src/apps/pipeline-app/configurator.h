@@ -86,6 +86,7 @@ class Configurator {
       const std::string& expected_invalidation_id = {},
       bool remove_rink_masks = false);
   absl::Status persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time);
+  absl::Status persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id = {});
   absl::StatusOr<bool> reconcile_stitch_frame_time_override(
       const std::string& normalized_stitch_frame_time,
       const std::string& expected_invalidation_id = {});
@@ -223,6 +224,8 @@ class Configurator {
   YAML::Node persisted_private_config_;
   std::string active_stitching_invalidation_id_;
   bool stitching_calibration_required_{false};
+  bool loaded_generated_stitching_backend_choices_{false};
+  bool restored_generated_stitching_backend_choices_{false};
   mutable std::map<std::string, int> archive_lock_fds_;
   mutable std::map<std::string, int> archive_work_lock_fds_;
   mutable std::map<std::string, std::filesystem::path> archive_run_paths_;

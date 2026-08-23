@@ -34,6 +34,7 @@
 #include "absl/status/status.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HomographyMaps.h"
 
 extern "C" char** environ;
 
@@ -1333,9 +1334,6 @@ absl::Status HuginProject::Configure(
   auto pto_gen = executable("HM_PTO_GEN", "pto_gen");
   if (!pto_gen.ok())
     return pto_gen.status();
-  auto autooptimiser = executable("HM_AUTOOPTIMISER", "autooptimiser");
-  if (!autooptimiser.ok())
-    return autooptimiser.status();
 
   std::ostringstream fov;
   fov.imbue(std::locale::classic());
@@ -1361,24 +1359,38 @@ absl::Status HuginProject::Configure(
   if (!status.ok())
     return status;
 
-  status = run_autooptimiser(*autooptimiser, staging, std::nullopt, options.is_cancelled);
-  if (!status.ok())
-    return status;
-  if (options.progress)
-    options.progress("optimizer", "complete", "Panorama alignment optimized");
+  std::optional<std::string> autooptimiser_path;
+  if (options.mapping_backend == MappingBackend::kNona) {
+    auto autooptimiser = executable("HM_AUTOOPTIMISER", "autooptimiser");
+    if (!autooptimiser.ok())
+      return autooptimiser.status();
+    autooptimiser_path = *autooptimiser;
+    status = run_autooptimiser(*autooptimiser_path, staging, std::nullopt, options.is_cancelled);
+    if (!status.ok())
+      return status;
+    if (options.progress)
+      options.progress("optimizer", "complete", "Panorama alignment optimized");
+  } else {
+    fs::copy_file(
+        staging / "hm_project.pto", staging / "autooptimiser_out.pto", fs::copy_options::overwrite_existing, error);
+    if (error)
+      return absl::InternalError("Unable to copy native OpenCV project file: " + error.message());
+    if (options.progress)
+      options.progress("optimizer", "complete", "Native OpenCV mapping does not require Hugin optimization");
+  }
   if (options.progress)
     options.progress("canvas", "started", "Building stitch maps and panorama preview");
-  auto nona = executable("HM_NONA", "nona");
-  if (!nona.ok())
-    return nona.status();
   std::optional<double> output_scale;
   auto fit_canvas = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
     const size_t longest = std::max(width, height);
     const double factor =
         static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest) * rounding_guard;
     output_scale = output_scale.value_or(1.0) * factor;
-    return run_autooptimiser(*autooptimiser, staging, output_scale, options.is_cancelled);
+    return run_autooptimiser(*autooptimiser_path, staging, output_scale, options.is_cancelled);
   };
+  if (options.mapping_backend != MappingBackend::kNona && output_scale.has_value()) {
+    return absl::InvalidArgumentError("Native OpenCV mapping backends do not accept Hugin output scaling");
+  }
   if (options.max_canvas_dimension.has_value()) {
     auto optimized = read_file(staging / "autooptimiser_out.pto");
     if (!optimized.ok())
@@ -1387,52 +1399,68 @@ absl::Status HuginProject::Configure(
     if (!dimensions.ok())
       return dimensions.status();
     const size_t longest = std::max(dimensions->first, dimensions->second);
-    if (longest > *options.max_canvas_dimension) {
+    if (longest > *options.max_canvas_dimension && options.mapping_backend == MappingBackend::kNona) {
       status = fit_canvas(dimensions->first, dimensions->second, 1.0);
       if (!status.ok())
         return status;
     }
   }
 
-  for (int attempt = 0; attempt < 3; ++attempt) {
-    status = run_nona(*nona, staging, options.is_cancelled);
-    if (!status.ok())
-      return status;
-    bool mappings_valid = true;
-    for (size_t index = 2; index < kRequiredArtifacts.size(); ++index) {
-      status = validate_nonempty_file(staging / kRequiredArtifacts[index]);
-      if (!status.ok()) {
-        mappings_valid = false;
-        break;
+  if (options.mapping_backend == MappingBackend::kNona) {
+    auto nona = executable("HM_NONA", "nona");
+    if (!nona.ok())
+      return nona.status();
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      status = run_nona(*nona, staging, options.is_cancelled);
+      if (!status.ok())
+        return status;
+      bool mappings_valid = true;
+      for (size_t index = 2; index < kRequiredArtifacts.size(); ++index) {
+        status = validate_nonempty_file(staging / kRequiredArtifacts[index]);
+        if (!status.ok()) {
+          mappings_valid = false;
+          break;
+        }
       }
-    }
-    if (!mappings_valid)
-      return status;
-    if (!options.max_canvas_dimension.has_value())
-      break;
+      if (!mappings_valid)
+        return status;
+      if (!options.max_canvas_dimension.has_value())
+        break;
 
-    // Nona derives its mapping canvas from the optimized PTO. Validate that
-    // exact final contract and retry with a small rounding guard if necessary.
-    auto optimized = read_file(staging / "autooptimiser_out.pto");
-    if (!optimized.ok())
-      return optimized.status();
-    auto dimensions = ParseCanvasSize(*optimized);
-    if (!dimensions.ok())
-      return dimensions.status();
-    const size_t longest = std::max(dimensions->first, dimensions->second);
-    if (longest <= *options.max_canvas_dimension)
-      break;
-    if (attempt == 2) {
-      return absl::FailedPreconditionError("Hugin mapping canvas still exceeds maximum dimension after three attempts");
+      // Nona derives its mapping canvas from the optimized PTO. Validate that
+      // exact final contract and retry with a small rounding guard if necessary.
+      auto optimized = read_file(staging / "autooptimiser_out.pto");
+      if (!optimized.ok())
+        return optimized.status();
+      auto dimensions = ParseCanvasSize(*optimized);
+      if (!dimensions.ok())
+        return dimensions.status();
+      const size_t longest = std::max(dimensions->first, dimensions->second);
+      if (longest <= *options.max_canvas_dimension)
+        break;
+      if (attempt == 2) {
+        return absl::FailedPreconditionError(
+            "Hugin mapping canvas still exceeds maximum dimension after three attempts");
+      }
+      status = fit_canvas(dimensions->first, dimensions->second, 0.999);
+      if (!status.ok())
+        return status;
     }
-    status = fit_canvas(dimensions->first, dimensions->second, 0.999);
-    if (!status.ok())
-      return status;
+  } else {
+    const cv::Mat left = cv::imread((staging / "left.png").string(), cv::IMREAD_COLOR);
+    const cv::Mat right = cv::imread((staging / "right.png").string(), cv::IMREAD_COLOR);
+    auto maps =
+        CreateOpenCvMappingFiles(staging, left, right, matches, options.mapping_backend, options.max_canvas_dimension);
+    if (!maps.ok())
+      return maps.status();
+    std::cout << "OpenCV mapping backend " << MappingBackendName(options.mapping_backend) << " generated "
+              << maps->canvas_width << "x" << maps->canvas_height << " canvas with " << maps->inlier_count
+              << " fitted control points" << std::endl;
   }
 
-  // Enblend's preview/seam is required by default. The complete decoded
-  // artifact validator may create a hard-seam fallback only when explicitly
-  // enabled for diagnostics.
+  // Enblend's preview/seam is required by default for both Hugin and native
+  // OpenCV maps. The complete decoded artifact validator may create a hard-seam
+  // fallback only when explicitly enabled for diagnostics.
   auto enblend = executable("HM_ENBLEND", "enblend");
   if (enblend.ok()) {
     status = run_checked(
