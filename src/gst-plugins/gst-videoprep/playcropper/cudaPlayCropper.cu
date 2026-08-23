@@ -27,7 +27,8 @@ __global__ void cropRotateResizeKernel(
     float box_width,
     float box_height,
     int num_channels,
-    float shadow_lift_percent,
+    float shadow_lift_gamma_value,
+    float shadow_lift_amount_value,
     bool lift_shadow_black_point,
     float exposure_gain_value) {
   // Calculate output pixel coordinates
@@ -70,7 +71,8 @@ __global__ void cropRotateResizeKernel(
     float dx_frac = input_x - x0;
     float dy_frac = input_y - y0;
 
-    // Process each channel
+    float results[4] = {};
+#pragma unroll
     for (int c = 0; c < num_channels; c++) {
       // Get four nearest pixel values for this channel
       uint8_t p00 = input[y0 * input_pitch + x0 * num_channels + c];
@@ -81,20 +83,34 @@ __global__ void cropRotateResizeKernel(
       // Bilinear interpolation
       float p0 = p00 * (1.0f - dx_frac) + p01 * dx_frac;
       float p1 = p10 * (1.0f - dx_frac) + p11 * dx_frac;
-      float result = p0 * (1.0f - dy_frac) + p1 * dy_frac;
+      results[c] = p0 * (1.0f - dy_frac) + p1 * dy_frac;
+    }
+
+    const bool apply_shadow_lift = shadow_lift_amount_value > 0.0f;
+    if (apply_shadow_lift && num_channels >= 3) {
+      float red = results[0] / 255.0f;
+      float green = results[1] / 255.0f;
+      float blue = results[2] / 255.0f;
+      evaluate_shadow_lift_rgb(
+          &red, &green, &blue, shadow_lift_gamma_value, shadow_lift_amount_value, lift_shadow_black_point);
+      results[0] = red * 255.0f;
+      results[1] = green * 255.0f;
+      results[2] = blue * 255.0f;
+    } else if (apply_shadow_lift && num_channels == 1) {
+      results[0] =
+          evaluate_shadow_lift_luma(
+              results[0] / 255.0f, shadow_lift_gamma_value, shadow_lift_amount_value, lift_shadow_black_point) *
+          255.0f;
+    }
+
+#pragma unroll
+    for (int c = 0; c < num_channels; c++) {
       const bool is_alpha = num_channels == 4 && c == 3;
-      const float normalized_result = result / 255.0f;
-      bool round_graded_result = false;
-      if (!is_alpha && shadow_lift_percent > 0.0f && normalized_result < kShadowLiftVideoStart &&
-          (normalized_result > 0.0f || lift_shadow_black_point)) {
-        result = evaluate_shadow_lift_curve(normalized_result, shadow_lift_percent, lift_shadow_black_point) * 255.0f;
-        round_graded_result = true;
-      }
+      float result = results[c];
       if (!is_alpha && exposure_gain_value > 1.0f) {
         result *= exposure_gain_value;
-        round_graded_result = true;
       }
-      if (round_graded_result) {
+      if (!is_alpha && (apply_shadow_lift || exposure_gain_value > 1.0f)) {
         result += 0.5f;
       }
 
@@ -168,7 +184,8 @@ cudaError_t combinedTransform(
       crop_box.width(),
       crop_box.height(),
       num_channels,
-      shadow_lift_percent,
+      shadow_lift_gamma(shadow_lift_percent),
+      shadow_lift_amount(shadow_lift_percent),
       lift_shadow_black_point,
       exposure_gain(exposure));
 

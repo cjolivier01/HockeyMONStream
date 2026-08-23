@@ -2704,15 +2704,16 @@ void HStreamWindow::configureControlHelp() {
       {"Apply_To_Fast_Box", "Apply saved tracking and motion tuning to the fast/current-ROI tracking box."},
       {"Apply_To_Follower_Box", "Apply saved tracking and motion tuning to the follower/aspect tracking box."},
       {"Bring_Up_Shadows",
-       "Reveal detail in dark Program areas with a monotone VIDEO grading curve. Midtones, highlights, overlays, "
-       "and alpha are protected. Zero bypasses the grade; 100 is the strongest validated lift."},
+       "Reveal shadow and midtone detail with a hue-preserving luma gamma lift matched to the supplied reference. "
+       "The effect rolls off smoothly toward white; overlays and alpha are protected. Zero bypasses the grade, and "
+       "100 matches the reference strength."},
       {"Lift_Shadow_Black_Point",
-       "Allow Bring up shadows to raise exact black for a visibly stronger Resolve-style toe lift. At 100%, black "
-       "rises to 15% video level and rolls smoothly back to the protected shadow boundary. Disabled by default."},
+       "Allow Bring up shadows to raise exact black with a neutral toe. At 100%, black rises to 15% video level and "
+       "the added toe fades out by 60% luma. Disabled by default."},
       {"Exposure_x100",
        "Apply uniform exposure gain. 30, 60, 100, and 130 select settings 0.3, 0.6, 1.0, and 1.3; 100 is +0.5 "
        "stop (sqrt(2) gain). It preserves exact black, raises the whole signal, and clips at white. When Bring up "
-       "shadows is also enabled, the shadow curve runs first and exposure runs second."},
+       "shadows is also enabled, the luma lift runs first and exposure runs second."},
       {"Use_10_Bit_Grading",
        "Keep 10-bit decoded video in P010 through the lossless camera mux, convert it to RGB10A2, and stitch and "
        "grade in FP16 before the one final RGBA8 conversion. This uses more GPU memory and applies on the next run."},

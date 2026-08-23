@@ -1224,7 +1224,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
       g_param_spec_double(
           "shadow-lift",
           "Bring up shadows",
-          "VIDEO-style monotone shadow lift percentage consumed by playcropper",
+          "Hue-preserving luma gamma lift percentage consumed by playcropper",
           0.0,
           100.0,
           0.0,

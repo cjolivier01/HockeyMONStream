@@ -48,30 +48,6 @@ __device__ float sampleChannel(const half4& pixel, int channel) {
   }
 }
 
-__device__ uint8_t gradeAndQuantize(
-    float value,
-    bool alpha,
-    float shadow_lift_percent,
-    bool lift_shadow_black_point,
-    float exposure_gain_value) {
-  bool round_graded_result = false;
-  const float normalized_value = value / 255.0f;
-  if (!alpha && shadow_lift_percent > 0.0f && normalized_value < playcropper::kShadowLiftVideoStart &&
-      (normalized_value > 0.0f || lift_shadow_black_point)) {
-    value = playcropper::evaluate_shadow_lift_curve(normalized_value, shadow_lift_percent, lift_shadow_black_point) *
-        255.0f;
-    round_graded_result = true;
-  }
-  if (!alpha && exposure_gain_value > 1.0f) {
-    value *= exposure_gain_value;
-    round_graded_result = true;
-  }
-  if (round_graded_result) {
-    value += 0.5f;
-  }
-  return static_cast<uint8_t>(playcropper::clamp_shadow_value(value, 0.0f, 255.0f));
-}
-
 __global__ void convertHalf4ToRgba8Kernel(
     const uint8_t* input,
     size_t input_pitch,
@@ -85,7 +61,8 @@ __global__ void convertHalf4ToRgba8Kernel(
     float sin_angle,
     float center_x,
     float center_y,
-    float shadow_lift_percent,
+    float shadow_lift_gamma_value,
+    float shadow_lift_amount_value,
     bool lift_shadow_black_point,
     float exposure_gain_value) {
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -115,15 +92,38 @@ __global__ void convertHalf4ToRgba8Kernel(
   const half4 p10 = row1[x0];
   const half4 p11 = row1[x1];
 
-  uchar4 result{};
-  uint8_t* channels = reinterpret_cast<uint8_t*>(&result);
+  float interpolated[4] = {};
 #pragma unroll
   for (int channel = 0; channel < 4; ++channel) {
     const float p0 = sampleChannel(p00, channel) * (1.0f - dx) + sampleChannel(p01, channel) * dx;
     const float p1 = sampleChannel(p10, channel) * (1.0f - dx) + sampleChannel(p11, channel) * dx;
-    const float interpolated = p0 * (1.0f - dy) + p1 * dy;
-    channels[channel] =
-        gradeAndQuantize(interpolated, channel == 3, shadow_lift_percent, lift_shadow_black_point, exposure_gain_value);
+    interpolated[channel] = p0 * (1.0f - dy) + p1 * dy;
+  }
+
+  const bool apply_shadow_lift = shadow_lift_amount_value > 0.0f;
+  if (apply_shadow_lift) {
+    float red = interpolated[0] / 255.0f;
+    float green = interpolated[1] / 255.0f;
+    float blue = interpolated[2] / 255.0f;
+    playcropper::evaluate_shadow_lift_rgb(
+        &red, &green, &blue, shadow_lift_gamma_value, shadow_lift_amount_value, lift_shadow_black_point);
+    interpolated[0] = red * 255.0f;
+    interpolated[1] = green * 255.0f;
+    interpolated[2] = blue * 255.0f;
+  }
+
+  uchar4 result{};
+  uint8_t* channels = reinterpret_cast<uint8_t*>(&result);
+#pragma unroll
+  for (int channel = 0; channel < 4; ++channel) {
+    float value = interpolated[channel];
+    if (channel < 3 && exposure_gain_value > 1.0f) {
+      value *= exposure_gain_value;
+    }
+    if (channel < 3 && (apply_shadow_lift || exposure_gain_value > 1.0f)) {
+      value += 0.5f;
+    }
+    channels[channel] = static_cast<uint8_t>(playcropper::clamp_shadow_value(value, 0.0f, 255.0f));
   }
   output_row[x] = result;
 }
@@ -189,7 +189,8 @@ cudaError_t convertHalf4ToRgba8(
       sin_angle,
       center_x,
       center_y,
-      shadow_lift_percent,
+      playcropper::shadow_lift_gamma(shadow_lift_percent),
+      playcropper::shadow_lift_amount(shadow_lift_percent),
       lift_shadow_black_point,
       playcropper::exposure_gain(exposure));
   return cudaGetLastError();
