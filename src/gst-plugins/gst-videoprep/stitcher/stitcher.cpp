@@ -610,7 +610,6 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*batch_size=*/1,
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
-          /*match_exposure=*/match_exposure_,
           /*quiet=*/false,
           /*minimize_blend=*/minimize_blend_);
     } else if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
@@ -619,7 +618,6 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*batch_size=*/1,
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
-          /*match_exposure=*/match_exposure_,
           /*quiet=*/false,
           /*minimize_blend=*/minimize_blend_);
     } else {
@@ -628,7 +626,6 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*batch_size=*/1,
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
-          /*match_exposure=*/match_exposure_,
           /*quiet=*/false,
           /*minimize_blend=*/minimize_blend_);
     }

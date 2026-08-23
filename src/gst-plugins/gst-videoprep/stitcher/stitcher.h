@@ -111,7 +111,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
  private:
   using STITCHER_FP32 = hm::pano::cuda::CudaStitchPano<uchar4, float4>;
   using STITCHER_FP16 = hm::pano::cuda::CudaStitchPano<uchar4, half3>;
-  using STITCHER_RGB10_FP16 = hm::pano::cuda::CudaStitchPano<half4, half3>;
+  using STITCHER_RGB10_FP16 = hm::pano::cuda::CudaStitchPano<half4, half4>;
   enum class StitchComputePrecision {
     kFp32,
     kFp16,
