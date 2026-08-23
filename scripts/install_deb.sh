@@ -335,14 +335,15 @@ fi
 
 HSTREAM_DEB=""
 DEEPSTREAM_DEB=""
-EXPECTED_DEEPSTREAM_VERSION="9.1.0-1+resolute2"
+DEEPSTREAM_MIN_VERSION="9.1.0-1"
+DEEPSTREAM_MAX_VERSION="9.2~"
 SIMULATE=0
 
 usage() {
   cat <<'USAGE'
 Usage:
   sudo ./install-hstream-deb \
-    --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb \
+    --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1_amd64.deb \
     --hstream-deb=/path/to/hstream_*_amd64.deb
 
 Options:
@@ -392,8 +393,11 @@ if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
   echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
   exit 1
 fi
-if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)" != "${EXPECTED_DEEPSTREAM_VERSION}" ]]; then
-  echo "ERROR: DeepStream ${EXPECTED_DEEPSTREAM_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
+deepstream_version="$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)"
+if ! dpkg --compare-versions "${deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
+   ! dpkg --compare-versions "${deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
+  echo "ERROR: DeepStream >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
+  echo "Found version: ${deepstream_version}" >&2
   exit 1
 fi
 

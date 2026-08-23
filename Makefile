@@ -194,7 +194,7 @@ print_targets:
 		'hstream-gst-plugins Build the four HStream-owned GStreamer plugins.' \
 		'qualify-native-onnx Run the non-skippable native/Python ONNX release gate.' \
 		'deb            Build in Docker; write the package under dist/ubuntu<version> (override DEB_OUTPUT_DIR).' \
-		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (output under dist/ubuntu24.04).' \
+		'deb-ubuntu24   Build the Ubuntu 24.04 package in Docker (pass DEEPSTREAM_DEB=/path/to/deb if needed).' \
 		'deb-ubuntu26   Build the Ubuntu 26.04 package in Docker (output under dist/ubuntu26.04).' \
 		'deb-jetson     Build the Ubuntu 22.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \

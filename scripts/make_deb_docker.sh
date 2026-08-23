@@ -11,7 +11,14 @@ TARGET_UBUNTU=""
 DEEPSTREAM_DEB="${DEEPSTREAM_DEB:-}"
 OUTPUT_DIR=""
 PACKAGE_VERSION=""
-EXPECTED_DEEPSTREAM_VERSION="9.1.0-1+resolute2"
+DEEPSTREAM_MIN_VERSION="9.1.0-1"
+DEEPSTREAM_MAX_VERSION="9.2~"
+
+deepstream_version_supported() {
+  local version="$1"
+  dpkg --compare-versions "${version}" ge "${DEEPSTREAM_MIN_VERSION}" &&
+    dpkg --compare-versions "${version}" lt "${DEEPSTREAM_MAX_VERSION}"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,17 +46,18 @@ if [[ -z "${DEEPSTREAM_DEB}" ]]; then
   shopt -u nullglob
   if [[ "${#candidates[@]}" -eq 0 ]]; then
     echo "ERROR: no sibling DeepStream 9.1 artifact found; pass --deepstream-deb=FILE." >&2
+    echo "When using make, pass DEEPSTREAM_DEB=FILE instead." >&2
     exit 1
   fi
   for candidate in "${candidates[@]}"; do
     candidate_version="$(dpkg-deb -f "${candidate}" Version)"
-    if [[ "${candidate_version}" == "${EXPECTED_DEEPSTREAM_VERSION}" ]]; then
+    if deepstream_version_supported "${candidate_version}"; then
       DEEPSTREAM_DEB="${candidate}"
       break
     fi
   done
   if [[ -z "${DEEPSTREAM_DEB}" ]]; then
-    echo "ERROR: sibling DeepStream artifact version ${EXPECTED_DEEPSTREAM_VERSION} is required." >&2
+    echo "ERROR: sibling DeepStream artifact version >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required." >&2
     exit 1
   fi
 fi
@@ -62,8 +70,10 @@ if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
   echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
   exit 1
 fi
-if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)" != "${EXPECTED_DEEPSTREAM_VERSION}" ]]; then
-  echo "ERROR: DeepStream ${EXPECTED_DEEPSTREAM_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
+deepstream_version="$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)"
+if ! deepstream_version_supported "${deepstream_version}"; then
+  echo "ERROR: DeepStream >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
+  echo "Found version: ${deepstream_version}" >&2
   exit 1
 fi
 if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Architecture)" != "amd64" ]]; then

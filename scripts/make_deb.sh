@@ -20,16 +20,19 @@ TARGET_PLATFORM="${HSTREAM_TARGET_PLATFORM:-desktop}"
 case "${TARGET_PLATFORM}" in
   desktop)
     DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-9.1}"
-    DEEPSTREAM_REQUIRED_VERSION="${DEEPSTREAM_REQUIRED_VERSION:-9.1.0-1+resolute2}"
+    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-9.1.0-1}"
+    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-9.2~}"
     EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
     ;;
   jetson)
     DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-7.1}"
-    DEEPSTREAM_REQUIRED_VERSION="${DEEPSTREAM_REQUIRED_VERSION:-7.1.0-1}"
+    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-7.1.0-1}"
+    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-7.2~}"
     EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-12}"
     ;;
   *) echo "ERROR: HSTREAM_TARGET_PLATFORM must be desktop or jetson." >&2; exit 1 ;;
 esac
+DEEPSTREAM_DEPENDS="${DEEPSTREAM_PACKAGE} (>= ${DEEPSTREAM_MIN_VERSION}), ${DEEPSTREAM_PACKAGE} (<< ${DEEPSTREAM_MAX_VERSION})"
 
 # ---------- arg parsing ----------
 PKG_VERSION=""
@@ -124,8 +127,10 @@ if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
   exit 1
 fi
 installed_deepstream_version="$(dpkg-query -W -f='${Version}' "${DEEPSTREAM_PACKAGE}" 2>/dev/null || true)"
-if [[ "${installed_deepstream_version}" != "${DEEPSTREAM_REQUIRED_VERSION}" ]]; then
-  echo "ERROR: ${DEEPSTREAM_PACKAGE} ${DEEPSTREAM_REQUIRED_VERSION} is required to build this package." >&2
+if [[ -z "${installed_deepstream_version}" ]] ||
+   ! dpkg --compare-versions "${installed_deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
+   ! dpkg --compare-versions "${installed_deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
+  echo "ERROR: ${DEEPSTREAM_PACKAGE} >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required to build this package." >&2
   echo "Installed version: ${installed_deepstream_version:-not installed}" >&2
   exit 1
 fi
@@ -1151,10 +1156,9 @@ for elf in "${dependency_elfs[@]}"; do
     done
     [[ -n "${ds_library}" ]] || continue
     if [[ "${needed}" =~ ^(lib.+)[.]so[.]([0-9]+) ]]; then
-      printf '%s %s %s (= %s)\n' \
-        "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${DEEPSTREAM_PACKAGE}" "${DEEPSTREAM_REQUIRED_VERSION}"
+      printf '%s %s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${DEEPSTREAM_DEPENDS}"
     elif [[ "${needed}" =~ ^(lib.+)[.]so$ ]]; then
-      printf '%s 0 %s (= %s)\n' "${BASH_REMATCH[1]}" "${DEEPSTREAM_PACKAGE}" "${DEEPSTREAM_REQUIRED_VERSION}"
+      printf '%s 0 %s\n' "${BASH_REMATCH[1]}" "${DEEPSTREAM_DEPENDS}"
     fi
   done < <(patchelf --print-needed "${elf}")
 done | sort -u >> "${SHLIBS_LOCAL}"
@@ -1251,7 +1255,7 @@ Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${SHLIB_DEPENDS},
  ca-certificates,
- ${DEEPSTREAM_PACKAGE} (= ${DEEPSTREAM_REQUIRED_VERSION}),
+ ${DEEPSTREAM_DEPENDS},
  ffmpeg,
  gstreamer1.0-plugins-bad,
  gstreamer1.0-nice${RUNTIME_TOOL_DEPENDS}
@@ -1322,7 +1326,7 @@ else
   echo ""
   echo "Install with:"
   printf '  sudo %s \\\n' "${INSTALLER_PATH}"
-  printf '    --deepstream-deb=%s \\\n' '/path/to/deepstream-9.1_9.1.0-1+resolute2_amd64.deb'
+  printf '    --deepstream-deb=%s \\\n' '/path/to/deepstream-9.1_9.1.0-1_amd64.deb'
   echo "    --hstream-deb=${DEB_PATH}"
   echo "  (the installer configures NVIDIA repositories; DeepStream itself remains a local release artifact)"
   echo ""
