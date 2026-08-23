@@ -24,9 +24,6 @@ RELATIONSHIP_FIELDS = (
     "Pre-Depends",
     "Recommends",
     "Suggests",
-    "Conflicts",
-    "Breaks",
-    "Replaces",
 )
 
 DEFAULT_VERSION_REGEX = r"(^|[~+.:_-])24[.]04([~+.:_-]|$)|ubuntu[0-9]*[~+.:_-]?24[.]04"

@@ -487,9 +487,20 @@ relax_ubuntu24_dependency_versions() {
     echo "ERROR: DeepStream Debian artifact has no control file." >&2
     exit 1
   fi
-  sed -i -E \
-    '/^(Depends|Pre-Depends|Recommends|Suggests|Conflicts|Breaks|Replaces):/ s/[[:space:]]*\((<<|<=|=|>=|>>)[[:space:]]*[^)]*24[.]04[^)]*\)//g' \
-    "${package_root}/DEBIAN/control"
+  awk '
+    /^[^[:space:]][^:]*:/ {
+      field = $0
+      sub(/:.*/, "", field)
+      in_relationship = field ~ /^(Depends|Pre-Depends|Recommends|Suggests)$/
+    }
+    {
+      if (in_relationship) {
+        gsub(/[[:space:]]*\((<<|<=|=|>=|>>)[[:space:]]*[^)]*24[.]04[^)]*\)/, "")
+      }
+      print
+    }
+  ' "${package_root}/DEBIAN/control" >"${package_root}/DEBIAN/control.relaxed"
+  mv -f "${package_root}/DEBIAN/control.relaxed" "${package_root}/DEBIAN/control"
   dpkg-deb --build --root-owner-group "${package_root}" "${output_deb}" >/dev/null
 }
 
