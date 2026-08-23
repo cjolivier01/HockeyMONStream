@@ -39,5 +39,6 @@ exports_files([
     "make_windows_installer.sh",
     "publish_release.sh",
     "qualify_native_onnx.sh",
+    "remove_deb_dependencies.py",
     "test_hstream_ui_e2e.sh",
 ])

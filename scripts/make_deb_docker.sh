@@ -126,6 +126,16 @@ git -C "${TOPDIR}" archive --format=tar "${SOURCE_REVISION}" | tar -xf - -C "${S
 source_epoch="$(git -C "${TOPDIR}" show -s --format=%ct "${SOURCE_REVISION}")"
 printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hstream-package-source"
 
+if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
+  relaxed_deepstream_deb="${SOURCE_SNAPSHOT}/deepstream-9.1_ubuntu26-relaxed.deb"
+  echo "[make_deb_docker] Relaxing Ubuntu 24.04-pinned DeepStream dependency versions for Ubuntu 26.04..."
+  "${TOPDIR}/scripts/remove_deb_dependencies.py" \
+    --force \
+    --output "${relaxed_deepstream_deb}" \
+    "${DEEPSTREAM_DEB}"
+  DEEPSTREAM_DEB="${relaxed_deepstream_deb}"
+fi
+
 image_tag="hstream-deb-builder:ubuntu${TARGET_UBUNTU}"
 volume_suffix="${TARGET_UBUNTU//./}"
 cache_volume="hstream-deb-bazel-ubuntu${volume_suffix}"

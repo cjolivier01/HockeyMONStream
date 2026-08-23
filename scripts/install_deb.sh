@@ -440,6 +440,7 @@ keyring_deb=""
 compat_keyring_deb=""
 native_dir=""
 compat_dir=""
+relaxed_deepstream_dir=""
 combined_keyring=""
 compat_keyring_target_temp=""
 transition_dir=""
@@ -453,6 +454,7 @@ cleanup() {
   if [[ -n "${compat_keyring_deb}" ]]; then rm -f "${compat_keyring_deb}"; fi
   if [[ -n "${native_dir}" ]]; then rm -rf "${native_dir}"; fi
   if [[ -n "${compat_dir}" ]]; then rm -rf "${compat_dir}"; fi
+  if [[ -n "${relaxed_deepstream_dir}" ]]; then rm -rf "${relaxed_deepstream_dir}"; fi
   if [[ -n "${combined_keyring}" ]]; then rm -f "${combined_keyring}"; fi
   if [[ -n "${compat_keyring_target_temp}" ]]; then rm -f "${compat_keyring_target_temp}"; fi
   if [[ -n "${transition_dir}" ]]; then rm -rf "${transition_dir}"; fi
@@ -473,6 +475,31 @@ fi
 
 apt-get update
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
+
+relax_ubuntu24_dependency_versions() {
+  local input_deb="$1"
+  local output_deb="$2"
+  local package_root
+  package_root="$(dirname "${output_deb}")/package"
+  mkdir -p "${package_root}"
+  dpkg-deb -R "${input_deb}" "${package_root}"
+  if [[ ! -f "${package_root}/DEBIAN/control" ]]; then
+    echo "ERROR: DeepStream Debian artifact has no control file." >&2
+    exit 1
+  fi
+  sed -i -E \
+    '/^(Depends|Pre-Depends|Recommends|Suggests|Conflicts|Breaks|Replaces):/ s/[[:space:]]*\((<<|<=|=|>=|>>)[[:space:]]*[^)]*24[.]04[^)]*\)//g' \
+    "${package_root}/DEBIAN/control"
+  dpkg-deb --build --root-owner-group "${package_root}" "${output_deb}" >/dev/null
+}
+
+if [[ "${VERSION_ID}" == "26.04" ]]; then
+  relaxed_deepstream_dir="$(mktemp -d /tmp/hstream-deepstream-relaxed.XXXXXX)"
+  relaxed_deepstream_deb="${relaxed_deepstream_dir}/deepstream-9.1-ubuntu26-relaxed.deb"
+  echo "Relaxing Ubuntu 24.04-pinned DeepStream dependency versions for Ubuntu 26.04..."
+  relax_ubuntu24_dependency_versions "${DEEPSTREAM_DEB}" "${relaxed_deepstream_deb}"
+  DEEPSTREAM_DEB="${relaxed_deepstream_deb}"
+fi
 
 keyring_deb="$(mktemp --suffix=.deb /tmp/hstream-cuda-keyring.XXXXXX)"
 curl -fsSLo "${keyring_deb}" \
