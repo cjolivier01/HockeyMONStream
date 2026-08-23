@@ -2,12 +2,16 @@
 
 def _conditional_local_repository_impl(repository_ctx):
     selected_path = None
-    candidates = repository_ctx.attr.paths
-    if repository_ctx.os.environ.get("HM_BAZEL_PREFER_FIRST_LOCAL_PATH") != "1":
-        # Call sites list target sysroot first and host path last. Prefer the
-        # host unless an explicit target configuration opts into the sysroot;
-        # merely syncing /opt/jetson-sysroot must not poison later x86 builds.
-        candidates = candidates[::-1]
+    configured_path = repository_ctx.os.environ.get(repository_ctx.attr.path_env_var)
+    if configured_path:
+        candidates = [configured_path]
+    else:
+        candidates = repository_ctx.attr.paths
+        if repository_ctx.os.environ.get("HM_BAZEL_PREFER_FIRST_LOCAL_PATH") != "1":
+            # Call sites list target sysroot first and host path last. Prefer the
+            # host unless an explicit target configuration opts into the sysroot;
+            # merely syncing /opt/jetson-sysroot must not poison later x86 builds.
+            candidates = candidates[::-1]
     for candidate in candidates:
         candidate_path = repository_ctx.path(candidate)
         if candidate_path.exists:
@@ -18,7 +22,7 @@ def _conditional_local_repository_impl(repository_ctx):
         fail(
             "Repository '{}' could not find any existing path from: {}".format(
                 repository_ctx.name,
-                repository_ctx.attr.paths,
+                candidates,
             ),
         )
 
@@ -34,8 +38,12 @@ conditional_local_repository = repository_rule(
     implementation = _conditional_local_repository_impl,
     attrs = {
         "build_file": attr.label(mandatory = True, allow_single_file = True),
+        "path_env_var": attr.string(),
         "paths": attr.string_list(mandatory = True),
     },
-    environ = ["HM_BAZEL_PREFER_FIRST_LOCAL_PATH"],
+    environ = [
+        "DEEPSTREAM_ROOT",
+        "HM_BAZEL_PREFER_FIRST_LOCAL_PATH",
+    ],
     local = True,
 )

@@ -618,6 +618,7 @@ absl::Status validate_bazel_runtime_artifacts(const hm::pipeline_internal::Runti
   if (!runtime.bazel_output)
     return absl::OkStatus();
   const std::vector<fs::path> required = {
+      "src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       "src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",

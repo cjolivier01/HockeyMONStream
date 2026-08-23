@@ -136,6 +136,7 @@ HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
 HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
+  "${TOPDIR}/bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so"
@@ -418,7 +419,7 @@ install -m 0644 "${TOPDIR}/LICENSE.md" "${STAGING}/usr/share/doc/${PKG_NAME}/cop
 # ---------- HStream GStreamer plugins ----------
 echo "[make_deb] Staging GStreamer plugins..."
 
-# DeepStream owns its NVIDIA plugins. Stage only the three plugins built and
+# DeepStream owns its NVIDIA plugins. Stage only the four plugins built and
 # owned by this repository; never pick up stale Bazel outputs opportunistically.
 for so in "${HSTREAM_GST_PLUGINS[@]}"; do
   if ! is_gstreamer_plugin "${so}"; then

@@ -1,0 +1,176 @@
+load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
+
+package(default_visibility = ["//visibility:public"])
+
+gst_cc_plugin(
+    name = "gstdsxvideoconvert",
+    srcs = [
+        "dsxvideoconvert_backend.cpp",
+        "gstdsxvideoconvert.cpp",
+    ],
+    hdrs = [
+        "dsxvideoconvert_backend.h",
+        "gstdsxvideoconvert.h",
+    ],
+    additional_linker_inputs = ["exports.map"],
+    copts = [
+        "-fvisibility=hidden",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+    linkopts = [
+        "-Wl,--version-script=$(location exports.map)",
+        "-l:libnvdsbufferpool.so",
+        "-l:libnvbufsurface.so",
+        "-l:libnvbufsurftransform.so",
+        "-l:libnvdsgst_helper.so",
+        "-l:libnvdsgst_meta.so",
+        "-l:libnvds_meta.so",
+        "-ldl",
+        "-lpthread",
+    ],
+)
+
+cc_binary(
+    name = "metadata_probe",
+    srcs = ["tests/test_metadata.cpp"],
+    deps = [
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_binary(
+    name = "batch_probe",
+    srcs = ["tests/test_batch.cpp"],
+    deps = [
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@local_cuda//:cuda",
+    ],
+)
+
+cc_binary(
+    name = "stride_probe",
+    srcs = ["tests/test_stride.cpp"],
+    deps = ["@gstreamer"],
+)
+
+cc_binary(
+    name = "pool_probe",
+    srcs = ["tests/test_pool.cpp"],
+    deps = ["@gstreamer"],
+)
+
+cc_binary(
+    name = "benchmark_batch",
+    srcs = ["benchmarks/benchmark_batch.cpp"],
+    deps = [
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@local_cuda//:cuda",
+    ],
+)
+
+cc_binary(
+    name = "libcopy_trace.so",
+    srcs = ["tests/copy_trace.cpp"],
+    linkshared = True,
+    linkstatic = False,
+    linkopts = ["-ldl"],
+    deps = [
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@local_cuda//:cuda",
+    ],
+)
+
+PARITY_TEST_TAGS = [
+    "exclusive",
+    "manual",
+    "requires-gpu",
+]
+
+[
+    sh_test(
+        name = name,
+        srcs = ["tests/run_python_test.sh"],
+        args = [
+            "$(location %s)" % script,
+            "$(location :libgstdsxvideoconvert.so)",
+            "$(location @deepstream//:nvvideoconvert_plugin)",
+            "$(location :libcopy_trace.so)",
+        ],
+        data = [
+            script,
+            ":libgstdsxvideoconvert.so",
+            ":libcopy_trace.so",
+            "@deepstream//:nvvideoconvert_plugin",
+        ],
+        size = size,
+        tags = PARITY_TEST_TAGS,
+    )
+    for name, script, size in [
+        ("contract_test", "tests/test_contract.py", "medium"),
+        ("runtime_parity_test", "tests/test_runtime.py", "large"),
+        ("malformed_input_test", "tests/test_malformed.py", "medium"),
+    ]
+]
+
+[
+    sh_test(
+        name = name,
+        srcs = ["tests/run_probe_test.sh"],
+        args = [
+            mode,
+            "$(location :libgstdsxvideoconvert.so)",
+            "$(location @deepstream//:nvvideoconvert_plugin)",
+        ] + ["$(location %s)" % probe for probe in probes],
+        data = [
+            ":libgstdsxvideoconvert.so",
+            "@deepstream//:nvvideoconvert_plugin",
+        ] + probes,
+        size = "medium",
+        tags = PARITY_TEST_TAGS,
+    )
+    for name, mode, probes in [
+        ("metadata_parity_test", "metadata", [":metadata_probe"]),
+        ("batch_parity_test", "batch", [":batch_probe"]),
+        ("stride_parity_test", "stride", [":stride_probe"]),
+        ("allocation_controls_parity_test", "controls", [":batch_probe", ":pool_probe"]),
+    ]
+]
+
+test_suite(
+    name = "parity_tests",
+    tests = [
+        ":allocation_controls_parity_test",
+        ":batch_parity_test",
+        ":contract_test",
+        ":malformed_input_test",
+        ":metadata_parity_test",
+        ":runtime_parity_test",
+        ":stride_parity_test",
+    ],
+    tags = PARITY_TEST_TAGS,
+)
+
+sh_binary(
+    name = "dsxvideoconvert_benchmark",
+    srcs = ["benchmarks/run_benchmark.sh"],
+    args = [
+        "$(location benchmarks/benchmark.py)",
+        "$(location :libgstdsxvideoconvert.so)",
+        "$(location @deepstream//:nvvideoconvert_plugin)",
+        "$(location :benchmark_batch)",
+    ],
+    data = [
+        "benchmarks/benchmark.py",
+        ":benchmark_batch",
+        ":libgstdsxvideoconvert.so",
+        "@deepstream//:nvvideoconvert_plugin",
+    ],
+)
