@@ -27,11 +27,12 @@ __global__ void unpackRgb10A2Kernel(
   const auto* input_row = reinterpret_cast<const uint32_t*>(input + static_cast<size_t>(y) * input_pitch);
   auto* output_row = reinterpret_cast<half4*>(output + static_cast<size_t>(y) * output_pitch);
   const uint32_t packed = input_row[x];
+  // The stitcher uses alpha as remap/blend validity. RGB10A2's 2-bit video alpha is not that signal.
   output_row[x] = half4{
       __float2half(static_cast<float>(packed & kRgb10Mask) * kRgb10ToVideo),
       __float2half(static_cast<float>((packed >> 10) & kRgb10Mask) * kRgb10ToVideo),
       __float2half(static_cast<float>((packed >> 20) & kRgb10Mask) * kRgb10ToVideo),
-      __float2half(static_cast<float>((packed >> 30) & 0x3u) * 85.0f),
+      __float2half(255.0f),
   };
 }
 
