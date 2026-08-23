@@ -1036,6 +1036,19 @@ bool can_configure_stitching(const YAML::Node& config) {
   return true;
 }
 
+std::string read_scalar_or_default(
+    const YAML::Node& root,
+    const std::initializer_list<std::string>& path,
+    const std::string& fallback) {
+  YAML::Node current = root;
+  for (const std::string& key : path) {
+    if (!current || !current.IsMap())
+      return fallback;
+    current = current[key];
+  }
+  return current && current.IsScalar() ? current.as<std::string>() : fallback;
+}
+
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2) {
@@ -1079,6 +1092,25 @@ absl::Status create_control_points(
 
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+  ControlPointMatcher control_point_matcher = ControlPointMatcher::kAlikedLightGlue;
+  MappingBackend mapping_backend = MappingBackend::kNona;
+  const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
+  try {
+    if (fs::exists(game_config_path)) {
+      const YAML::Node config = YAML::LoadFile(game_config_path.string());
+      HM_ASSIGN_OR_RETURN(
+          control_point_matcher,
+          ParseControlPointMatcher(read_scalar_or_default(
+              config, {"stitching", "control_point_matcher"}, ControlPointMatcherName(control_point_matcher))));
+      HM_ASSIGN_OR_RETURN(
+          mapping_backend,
+          ParseMappingBackend(
+              read_scalar_or_default(config, {"stitching", "mapping_backend"}, MappingBackendName(mapping_backend))));
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(TO_STRING(
+        "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
+  }
 
   const cv::Mat left = cv::imread(left_file.string(), cv::IMREAD_COLOR);
   const cv::Mat right = cv::imread(right_file.string(), cv::IMREAD_COLOR);
@@ -1089,7 +1121,7 @@ absl::Status create_control_points(
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
   std::unique_ptr<FeatureMatcher> matcher;
-  HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string()));
+  HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher));
   FeatureMatchResult matched;
   HM_ASSIGN_OR_RETURN(
       matched,
@@ -1118,6 +1150,7 @@ absl::Status create_control_points(
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
+  options.mapping_backend = mapping_backend;
   options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;

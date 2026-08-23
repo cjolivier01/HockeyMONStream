@@ -368,6 +368,39 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
   return true;
 }
 
+bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
+  const auto generated_matcher =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher");
+  const auto generated_backend = get_node(config, "hstream_ui.generated_stitching_backend_choices.mapping_backend");
+  const auto private_matcher = get_node(config, "stitching.control_point_matcher");
+  const auto private_backend = get_node(config, "stitching.mapping_backend");
+  const bool generated_matches_private = generated_matcher.has_value() && generated_matcher->IsScalar() &&
+      generated_backend.has_value() && generated_backend->IsScalar() && private_matcher.has_value() &&
+      private_matcher->IsScalar() && private_backend.has_value() && private_backend->IsScalar() &&
+      private_matcher->as<std::string>() == generated_matcher->as<std::string>() &&
+      private_backend->as<std::string>() == generated_backend->as<std::string>();
+  if (!generated_matches_private) {
+    return false;
+  }
+
+  const auto previous_matcher =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher");
+  const auto previous_backend =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend");
+  if (previous_matcher.has_value() && previous_matcher->IsScalar()) {
+    config["stitching"]["control_point_matcher"] = previous_matcher->as<std::string>();
+  } else {
+    remove_yaml_key_path(config, {"stitching", "control_point_matcher"});
+  }
+  if (previous_backend.has_value() && previous_backend->IsScalar()) {
+    config["stitching"]["mapping_backend"] = previous_backend->as<std::string>();
+  } else {
+    remove_yaml_key_path(config, {"stitching", "mapping_backend"});
+  }
+  remove_yaml_key_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
+  return true;
+}
+
 bool is_cam_video_key(const std::string& key) {
   static const std::regex cam_pattern(R"(cam[0-9]+)", std::regex::icase);
   return std::regex_match(key, cam_pattern);
@@ -3141,6 +3174,129 @@ absl::Status Configurator::persist_stitch_frame_time_override(const std::string&
   return save_private_config(private_config_, expected_invalidation_id);
 }
 
+absl::Status Configurator::persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id) {
+  const auto canonical_matcher = [](const YAML::Node& root) -> absl::StatusOr<std::string> {
+    const auto node = get_node(root, "stitching.control_point_matcher");
+    if (node.has_value() && !node->IsScalar()) {
+      return absl::InvalidArgumentError("stitching.control_point_matcher must be a scalar value");
+    }
+    stitching::ControlPointMatcher matcher = stitching::ControlPointMatcher::kAlikedLightGlue;
+    HM_ASSIGN_OR_RETURN(
+        matcher, stitching::ParseControlPointMatcher(node.has_value() ? node->as<std::string>() : std::string()));
+    return std::string(stitching::ControlPointMatcherName(matcher));
+  };
+  const auto canonical_backend = [](const YAML::Node& root) -> absl::StatusOr<std::string> {
+    const auto node = get_node(root, "stitching.mapping_backend");
+    if (node.has_value() && !node->IsScalar()) {
+      return absl::InvalidArgumentError("stitching.mapping_backend must be a scalar value");
+    }
+    stitching::MappingBackend backend = stitching::MappingBackend::kNona;
+    HM_ASSIGN_OR_RETURN(
+        backend, stitching::ParseMappingBackend(node.has_value() ? node->as<std::string>() : std::string()));
+    return std::string(stitching::MappingBackendName(backend));
+  };
+
+  std::string matcher_name;
+  HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(config_));
+  std::string backend_name;
+  HM_ASSIGN_OR_RETURN(backend_name, canonical_backend(config_));
+
+  const auto generated_matcher =
+      get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.control_point_matcher");
+  const auto generated_backend =
+      get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.mapping_backend");
+  const auto private_matcher = get_node(private_config_, "stitching.control_point_matcher");
+  const auto private_backend = get_node(private_config_, "stitching.mapping_backend");
+  const auto persisted_matcher = get_node(persisted_private_config_, "stitching.control_point_matcher");
+  const auto persisted_backend = get_node(persisted_private_config_, "stitching.mapping_backend");
+  const auto persisted_generated_matcher =
+      get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.control_point_matcher");
+  const auto persisted_generated_backend =
+      get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.mapping_backend");
+  const auto persisted_previous_matcher = get_node(
+      persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher");
+  const auto persisted_previous_backend =
+      get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend");
+  const bool private_values_present = private_matcher.has_value() && private_matcher->IsScalar() &&
+      private_backend.has_value() && private_backend->IsScalar();
+  const bool persisted_matcher_present = persisted_matcher.has_value() && persisted_matcher->IsScalar();
+  const bool persisted_backend_present = persisted_backend.has_value() && persisted_backend->IsScalar();
+  const bool persisted_values_present = persisted_matcher_present && persisted_backend_present;
+  const bool persisted_values_are_generated = persisted_generated_matcher.has_value() &&
+      persisted_generated_matcher->IsScalar() && persisted_generated_backend.has_value() &&
+      persisted_generated_backend->IsScalar() && persisted_values_present &&
+      persisted_matcher->as<std::string>() == persisted_generated_matcher->as<std::string>() &&
+      persisted_backend->as<std::string>() == persisted_generated_backend->as<std::string>();
+  const bool generated_private_values = generated_matcher.has_value() && generated_matcher->IsScalar() &&
+      generated_backend.has_value() && generated_backend->IsScalar() && private_values_present &&
+      private_matcher->as<std::string>() == generated_matcher->as<std::string>() &&
+      private_backend->as<std::string>() == generated_backend->as<std::string>();
+  const bool effective_values_are_generated_private = generated_private_values &&
+      matcher_name == private_matcher->as<std::string>() && backend_name == private_backend->as<std::string>();
+  if (effective_values_are_generated_private) {
+    HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(lower_layer_config_));
+    HM_ASSIGN_OR_RETURN(backend_name, canonical_backend(lower_layer_config_));
+  }
+
+  config_["stitching"]["control_point_matcher"] = matcher_name;
+  config_["stitching"]["mapping_backend"] = backend_name;
+
+  if (restored_generated_stitching_backend_choices_ && explicit_value_rank("stitching.control_point_matcher") < 3 &&
+      explicit_value_rank("stitching.mapping_backend") < 3) {
+    HM_RETURN_IF_ERROR(save_private_config(private_config_, expected_invalidation_id));
+    loaded_generated_stitching_backend_choices_ = false;
+    restored_generated_stitching_backend_choices_ = false;
+    return absl::OkStatus();
+  }
+
+  const bool private_matches = private_matcher.has_value() && private_matcher->IsScalar() &&
+      private_matcher->as<std::string>() == matcher_name && private_backend.has_value() &&
+      private_backend->IsScalar() && private_backend->as<std::string>() == backend_name;
+  if (private_matches) {
+    if (loaded_generated_stitching_backend_choices_) {
+      HM_RETURN_IF_ERROR(save_private_config(private_config_, expected_invalidation_id));
+      loaded_generated_stitching_backend_choices_ = false;
+    }
+    return absl::OkStatus();
+  }
+
+  private_config_["stitching"]["control_point_matcher"] = matcher_name;
+  private_config_["stitching"]["mapping_backend"] = backend_name;
+  if (private_values_present && !generated_private_values &&
+      explicit_value_rank("stitching.control_point_matcher") < 3 &&
+      explicit_value_rank("stitching.mapping_backend") < 3) {
+    remove_yaml_key_path(private_config_, {"hstream_ui", "generated_stitching_backend_choices"});
+  } else {
+    private_config_["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] = matcher_name;
+    private_config_["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = backend_name;
+    if (persisted_values_are_generated && persisted_previous_matcher.has_value() &&
+        persisted_previous_matcher->IsScalar()) {
+      private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
+          persisted_previous_matcher->as<std::string>();
+    } else if (persisted_matcher_present && !persisted_values_are_generated) {
+      private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
+          persisted_matcher->as<std::string>();
+    } else {
+      remove_yaml_key_path(
+          private_config_, {"hstream_ui", "generated_stitching_backend_choices", "previous_control_point_matcher"});
+    }
+    if (persisted_values_are_generated && persisted_previous_backend.has_value() &&
+        persisted_previous_backend->IsScalar()) {
+      private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"] =
+          persisted_previous_backend->as<std::string>();
+    } else if (persisted_backend_present && !persisted_values_are_generated) {
+      private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"] =
+          persisted_backend->as<std::string>();
+    } else {
+      remove_yaml_key_path(
+          private_config_, {"hstream_ui", "generated_stitching_backend_choices", "previous_mapping_backend"});
+    }
+  }
+  HM_RETURN_IF_ERROR(save_private_config(private_config_, expected_invalidation_id));
+  loaded_generated_stitching_backend_choices_ = false;
+  return absl::OkStatus();
+}
+
 absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
     const std::string& normalized_stitch_frame_time,
     const std::string& expected_invalidation_id) {
@@ -3277,9 +3433,21 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   lower_layer_config_ = YAML::Clone(config);
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
+  loaded_generated_stitching_backend_choices_ = false;
+  restored_generated_stitching_backend_choices_ = false;
   if (private_config.has_value()) {
-    private_config_ = *private_config;
-    persisted_private_config_ = YAML::Clone(private_config_);
+    const YAML::Node original_private_config = YAML::Clone(*private_config);
+    private_config_ = YAML::Clone(*private_config);
+    restored_generated_stitching_backend_choices_ =
+        get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher")
+            .has_value() ||
+        get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+            .has_value();
+    loaded_generated_stitching_backend_choices_ = normalize_generated_stitching_backend_choices(private_config_);
+    restored_generated_stitching_backend_choices_ =
+        restored_generated_stitching_backend_choices_ && loaded_generated_stitching_backend_choices_;
+    persisted_private_config_ =
+        YAML::Clone(loaded_generated_stitching_backend_choices_ ? original_private_config : private_config_);
     record_explicit_overlay(private_config_, {}, 2);
     config = merge_nodes(
         config,
@@ -3467,6 +3635,9 @@ absl::Status Configurator::complete_configuration(
   bool control_points_environment_enforced = false;
   bool stitching_artifacts_precleaned = false;
   const bool has_cleanup_owner = clean_requested ? has_hmstitcher_section : has_active_hmstitcher;
+  if (!clean_requested && has_active_hmstitcher) {
+    HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id));
+  }
   if (has_cleanup_owner && !effective_invalidation_id.empty()) {
     bool loaded_invalidation_matches = loaded_invalidation_id == effective_invalidation_id;
     bool loaded_artifacts_invalidated = false;

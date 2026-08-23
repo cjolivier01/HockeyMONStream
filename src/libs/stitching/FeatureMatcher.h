@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,13 @@
 #include "hstream/src/libs/onnx/OnnxSession.h"
 
 namespace hm::stitching {
+
+enum class ControlPointMatcher {
+  kAlikedLightGlue,
+};
+
+const char* ControlPointMatcherName(ControlPointMatcher matcher);
+absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& value);
 
 struct FeaturePairInput {
   std::vector<float> tensor;
@@ -41,7 +49,9 @@ class FeatureMatcher {
   static constexpr int kKeypointsPerImage = 2048;
   static constexpr float kMinimumScore = 0.2f;
 
-  static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(const std::string& model_path);
+  static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(
+      const std::string& model_path,
+      ControlPointMatcher matcher = ControlPointMatcher::kAlikedLightGlue);
   static absl::StatusOr<FeaturePairInput> Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeatureMatchResult> Postprocess(
       const FeaturePairInput& input,

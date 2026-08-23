@@ -1,8 +1,10 @@
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <tuple>
 #include <utility>
 
@@ -24,7 +26,34 @@ absl::Status validate_source_image(const cv::Mat& image, const char* side) {
 
 FeatureMatcher::FeatureMatcher(std::unique_ptr<hm::onnx::Session> session) : session_(std::move(session)) {}
 
-absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(const std::string& model_path) {
+const char* ControlPointMatcherName(ControlPointMatcher matcher) {
+  switch (matcher) {
+    case ControlPointMatcher::kAlikedLightGlue:
+      return "aliked-lightglue";
+  }
+  return "aliked-lightglue";
+}
+
+absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& value) {
+  std::string normalized = value.empty() ? "aliked-lightglue" : value;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+    return c == '_' ? '-' : static_cast<char>(std::tolower(c));
+  });
+  if (normalized == "aliked-lightglue" || normalized == "raco-aliked-lightglue" ||
+      normalized == "native-aliked-lightglue" || normalized == "superpoint-lightglue" || normalized == "superpoint" ||
+      normalized == "lightglue") {
+    return ControlPointMatcher::kAlikedLightGlue;
+  }
+  return absl::InvalidArgumentError(
+      "Unsupported native control-point matcher \"" + value + "\"; choose aliked-lightglue or superpoint-lightglue");
+}
+
+absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
+    const std::string& model_path,
+    ControlPointMatcher matcher) {
+  if (matcher != ControlPointMatcher::kAlikedLightGlue) {
+    return absl::InvalidArgumentError("Unsupported native feature matcher");
+  }
   auto session = hm::onnx::Session::Create(
       model_path,
       {{"images", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, 3, -1, -1}}},

@@ -5587,6 +5587,17 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(!save->isEnabled(), "A successful durability retry should clear the retry-required state")) {
     return false;
   }
+  YAML::Node generated_backend_marker_config = YAML::LoadFile(config.string());
+  generated_backend_marker_config["stitching"]["control_point_matcher"] = "aliked-lightglue";
+  generated_backend_marker_config["stitching"]["mapping_backend"] = "nona";
+  generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
+      "aliked-lightglue";
+  generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
+  std::ofstream(config) << YAML::Dump(generated_backend_marker_config) << '\n';
+  activate(create);
+  if (!expect(!save->isEnabled(), "Reloading generated backend provenance should keep unchanged UI controls clean")) {
+    return false;
+  }
   max_speed_x->setValue(450);
   activate(save);
   if (!expect(!save->isEnabled(), "A successful retry should restore the intended saved snapshot") ||
@@ -5608,6 +5619,8 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   YAML::Node saved = YAML::LoadFile(config.string());
+  const bool removed_generated_backend_marker =
+      !lookup_yaml_path(saved, {"hstream_ui", "generated_stitching_backend_choices"}, nullptr);
   const bool removed_rink_mask = !fs::exists(rink_mask);
   const bool removed_scoreboard_polygon =
       !lookup_yaml_path(saved, {"rink", "scoreboard", "perspective_polygon"}, nullptr);
@@ -5708,6 +5721,9 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(!has_default_follower, "Save preset should omit default control values") ||
       !expect(
           saved_stitch_frame_time_ok, "Save preset should persist a non-default stitching.stitch_frame_time value") ||
+      !expect(
+          removed_generated_backend_marker,
+          "Save preset should make UI-owned stitching matcher/backend choices explicit") ||
       !expect(
           stitch_frame_time_invalidated_calibration,
           "Changing stitch-frame time should reserve a backend-visible input invalidation owner") ||
@@ -6442,6 +6458,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   YAML::Node user_config(YAML::NodeType::Map);
   user_config["stitching"]["stitch_frame_time"] = "00:00:08";
   user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
+  user_config["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
+  user_config["stitching"]["mapping_backend"] = "affine-ransac";
   user_config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
   {
     std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
@@ -6470,6 +6488,10 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   if (copied_config_node["stitching"] && copied_config_node["stitching"].IsMap())
     copied_config_node["stitching"].remove("stitch_frame_time");
   copied_config_node["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
+  copied_config_node["stitching"]["control_point_matcher"] = "aliked-lightglue";
+  copied_config_node["stitching"]["mapping_backend"] = "nona";
+  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] = "aliked-lightglue";
+  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
   if (copied_config_node["rink"] && copied_config_node["rink"].IsMap() && copied_config_node["rink"]["camera"] &&
       copied_config_node["rink"]["camera"].IsMap()) {
     copied_config_node["rink"]["camera"].remove("fixed_edge_rotation_angle");
@@ -6488,20 +6510,22 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* stop = require_child<QPushButton>(&user_default_window, "stopPipelineButton");
     auto* mode = require_child<QComboBox>(&user_default_window, "runModeCombo");
     auto* stitch_frame_time = require_child<QTimeEdit>(&user_default_window, "stitchFrameTimeEdit");
+    auto* mapping_backend = require_child<QComboBox>(&user_default_window, "mappingBackendCombo");
     auto* stitch_rotation = require_child<QSlider>(&user_default_window, "cameraSlider_Stitch_Rotate_Degrees");
     auto* fixed_edge_left =
         require_child<QSlider>(&user_default_window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
     auto* fixed_edge_right =
         require_child<QSlider>(&user_default_window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
-    ok = game_id && create && save && start && stop && mode && stitch_frame_time && stitch_rotation &&
-        fixed_edge_left && fixed_edge_right;
+    ok = game_id && create && save && start && stop && mode && stitch_frame_time && mapping_backend &&
+        stitch_rotation && fixed_edge_left && fixed_edge_right;
     if (ok) {
       game_id->setText("ui-user-stitch-default");
       activate(create);
       ok &= expect(
           stitch_frame_time->time() == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
-              fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 && !save->isEnabled(),
-          "User-level scalar and null defaults must initialize the UI and clean preset snapshot");
+              mapping_backend->currentData().toString() == "opencv-affine-ransac" && fixed_edge_left->value() == 0 &&
+              fixed_edge_right->value() == 0 && !save->isEnabled(),
+          "User-level defaults must initialize the UI and generated private backend choices must not mask them");
       stitch_frame_time->setTime(QTime(0, 0, 0));
       QApplication::processEvents();
       ok &= expect(save->isEnabled(), "Zero must remain an explicit edit against a nonzero user-level default");
@@ -6510,9 +6534,26 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       ok &= expect(
           saved_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
               saved_zero["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
+              saved_zero["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
+              !lookup_yaml_path(saved_zero, {"hstream_ui", "generated_stitching_backend_choices"}, nullptr) &&
               !lookup_yaml_path(saved_zero, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr) &&
               !save->isEnabled(),
-          "Saving against user defaults must preserve game null semantics without materializing a user null default");
+          "Saving against user defaults must preserve game null semantics and make UI-owned backends explicit");
+
+      copied_config_node = YAML::LoadFile(copied_config.string());
+      copied_config_node["stitching"]["mapping_backend"] = "opencv-magsac";
+      copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
+          "aliked-lightglue";
+      copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "opencv-magsac";
+      copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
+          "aliked-lightglue";
+      copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"] =
+          "opencv-affine-ransac";
+      std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+      activate(create);
+      ok &= expect(
+          mapping_backend->currentData().toString() == "opencv-affine-ransac" && !save->isEnabled(),
+          "UI load must restore previous explicit backend choices displaced by CLI materialization");
 
       mode->setCurrentIndex(mode->findData("program"));
       const int zero_argument_count = user_default_window.logText().count("--stitch-frame-time=00:00:00");

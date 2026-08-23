@@ -493,6 +493,70 @@ int main() {
               fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "working fake enblend must be restored");
 
+  const fs::path opencv_game = root / "opencv-game";
+  const fs::path opencv_enblend_args = root / "opencv-enblend.args";
+  fs::create_directories(opencv_game);
+  ok &= expect(
+      write_tool(
+          enblend,
+          "printf '%s\\n' \"$*\" > '" + opencv_enblend_args.string() +
+              "'\n"
+              "test -f seam_file.png\n"
+              "cp '" +
+              fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "OpenCV fake enblend must preserve the native seam");
+  ::setenv("HM_AUTOOPTIMISER", (root / "missing-autooptimiser-for-opencv").c_str(), 1);
+  hm::stitching::HuginProject::Options opencv_options;
+  opencv_options.mapping_backend = hm::stitching::MappingBackend::kOpenCvAffineRansac;
+  opencv_options.max_canvas_dimension = 96;
+  std::vector<hm::stitching::FeatureMatch> opencv_matches;
+  for (int y = 6; y < 48; y += 10) {
+    for (int x = 16; x < 64; x += 10) {
+      opencv_matches.push_back(
+          {{static_cast<float>(x), static_cast<float>(y)},
+           {static_cast<float>(x - 8), static_cast<float>(y + 3)},
+           0.9f});
+    }
+  }
+  const auto opencv_configured = hm::stitching::HuginProject::Configure(
+      opencv_game,
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      opencv_matches,
+      opencv_options);
+  if (!opencv_configured.ok())
+    std::cerr << opencv_configured << '\n';
+  ok &= expect(opencv_configured.ok(), "OpenCV mapping backend must not require autooptimiser");
+  ok &= expect(
+      fs::is_regular_file(opencv_game / "autooptimiser_out.pto") &&
+          fs::is_regular_file(opencv_game / "mapping_0000.tif") &&
+          fs::is_regular_file(opencv_game / "mapping_0001.tif") && fs::is_regular_file(opencv_game / "seam_file.png"),
+      "OpenCV mapping backend must publish project, maps, and seam artifacts");
+  {
+    std::ifstream input(opencv_game / "autooptimiser_out.pto", std::ios::binary);
+    const std::string copied_project((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        copied_project.find("# control points") != std::string::npos,
+        "OpenCV mapping backend must publish the control-point PTO as autooptimiser_out.pto");
+  }
+  {
+    std::ifstream input(opencv_enblend_args, std::ios::binary);
+    const std::string opencv_enblend((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        opencv_enblend.find("mapping_0000.tif") != std::string::npos &&
+            opencv_enblend.find("mapping_0001.tif") != std::string::npos,
+        "OpenCV mapping backend must still run enblend over native mapping TIFFs");
+  }
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
+  ok &= expect(
+      write_tool(
+          enblend,
+          "cp '" + fixtures.string() +
+              "/seam_file.png' seam_file.png\n"
+              "cp '" +
+              fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "working fake enblend must be restored after OpenCV backend test");
+
   const auto previous_project = [&]() {
     std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
