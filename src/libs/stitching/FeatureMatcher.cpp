@@ -22,90 +22,120 @@ absl::Status validate_source_image(const cv::Mat& image, const char* side) {
   return absl::OkStatus();
 }
 
-} // namespace
-
-FeatureMatcher::FeatureMatcher(std::unique_ptr<hm::onnx::Session> session) : session_(std::move(session)) {}
-
-const char* ControlPointMatcherName(ControlPointMatcher matcher) {
-  switch (matcher) {
-    case ControlPointMatcher::kAlikedLightGlue:
-      return "aliked-lightglue";
-  }
-  return "aliked-lightglue";
-}
-
-absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& value) {
-  std::string normalized = value.empty() ? "aliked-lightglue" : value;
-  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
-    return c == '_' ? '-' : static_cast<char>(std::tolower(c));
-  });
-  if (normalized == "aliked-lightglue" || normalized == "raco-aliked-lightglue" ||
-      normalized == "native-aliked-lightglue" || normalized == "superpoint-lightglue" || normalized == "superpoint" ||
-      normalized == "lightglue") {
-    return ControlPointMatcher::kAlikedLightGlue;
-  }
-  return absl::InvalidArgumentError(
-      "Unsupported native control-point matcher \"" + value + "\"; choose aliked-lightglue or superpoint-lightglue");
-}
-
-absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
-    const std::string& model_path,
-    ControlPointMatcher matcher) {
-  if (matcher != ControlPointMatcher::kAlikedLightGlue) {
-    return absl::InvalidArgumentError("Unsupported native feature matcher");
-  }
-  auto session = hm::onnx::Session::Create(
-      model_path,
-      {{"images", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, 3, -1, -1}}},
-      {
-          {"keypoints", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, kKeypointsPerImage, 2}},
-          {"matches", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, 3}},
-          {"mscores", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
-      });
-  if (!session.ok())
-    return session.status();
-  return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(std::move(*session)));
-}
-
-absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
+absl::StatusOr<FeaturePairInput> prepare_feature_pair(
+    const cv::Mat& left_bgr,
+    const cv::Mat& right_bgr,
+    int input_channels) {
   auto status = validate_source_image(left_bgr, "Left");
   if (!status.ok())
     return status;
   status = validate_source_image(right_bgr, "Right");
   if (!status.ok())
     return status;
+  if (input_channels != 1 && input_channels != 3) {
+    return absl::InvalidArgumentError("Feature matcher input channel count must be 1 or 3");
+  }
 
   FeaturePairInput result;
   result.source_sizes[0] = left_bgr.size();
   result.source_sizes[1] = right_bgr.size();
-  const size_t image_plane = static_cast<size_t>(kInputHeight) * kInputWidth;
-  result.tensor.assign(2 * 3 * image_plane, 0.0f);
+  const size_t image_plane = static_cast<size_t>(FeatureMatcher::kInputHeight) * FeatureMatcher::kInputWidth;
+  result.tensor.assign(2 * static_cast<size_t>(input_channels) * image_plane, 0.0f);
   const cv::Mat* images[] = {&left_bgr, &right_bgr};
   for (int image_index = 0; image_index < 2; ++image_index) {
     const cv::Mat& source = *images[image_index];
-    const double scale =
-        std::min(static_cast<double>(kInputWidth) / source.cols, static_cast<double>(kInputHeight) / source.rows);
+    const double scale = std::min(
+        static_cast<double>(FeatureMatcher::kInputWidth) / source.cols,
+        static_cast<double>(FeatureMatcher::kInputHeight) / source.rows);
     const int width = std::max(32, static_cast<int>(std::round(source.cols * scale)));
     const int height = std::max(32, static_cast<int>(std::round(source.rows * scale)));
-    if (width > kInputWidth || height > kInputHeight) {
+    if (width > FeatureMatcher::kInputWidth || height > FeatureMatcher::kInputHeight) {
       return absl::InternalError("Feature resize exceeded its fixed ONNX canvas");
     }
     result.resized_sizes[image_index] = {width, height};
     cv::Mat resized;
     cv::resize(source, resized, {width, height}, 0.0, 0.0, cv::INTER_AREA);
-    const size_t image_base = static_cast<size_t>(image_index) * 3 * image_plane;
+    const size_t image_base = static_cast<size_t>(image_index) * input_channels * image_plane;
     for (int y = 0; y < height; ++y) {
       const cv::Vec3b* row = resized.ptr<cv::Vec3b>(y);
       for (int x = 0; x < width; ++x) {
+        if (input_channels == 1) {
+          result.tensor[image_base + static_cast<size_t>(y) * FeatureMatcher::kInputWidth + x] =
+              (0.299f * row[x][2] + 0.587f * row[x][1] + 0.114f * row[x][0]) / 255.0f;
+          continue;
+        }
         for (int channel = 0; channel < 3; ++channel) {
           result.tensor
-              [image_base + static_cast<size_t>(channel) * image_plane + static_cast<size_t>(y) * kInputWidth + x] =
-              row[x][2 - channel] / 255.0f;
+              [image_base + static_cast<size_t>(channel) * image_plane +
+               static_cast<size_t>(y) * FeatureMatcher::kInputWidth + x] = row[x][2 - channel] / 255.0f;
         }
       }
     }
   }
   return result;
+}
+
+} // namespace
+
+FeatureMatcher::FeatureMatcher(std::unique_ptr<hm::onnx::Session> session, int input_channels)
+    : session_(std::move(session)), input_channels_(input_channels) {}
+
+const char* ControlPointMatcherName(ControlPointMatcher matcher) {
+  switch (matcher) {
+    case ControlPointMatcher::kSuperPointLightGlue:
+      return "superpoint-lightglue";
+    case ControlPointMatcher::kDeDoDeLightGlue:
+      return "dedode-lightglue";
+    case ControlPointMatcher::kLoFTR:
+      return "loftr";
+  }
+  return "superpoint-lightglue";
+}
+
+absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& value) {
+  std::string normalized = value.empty() ? "superpoint-lightglue" : value;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+    return c == '_' ? '-' : static_cast<char>(std::tolower(c));
+  });
+  if (normalized == "aliked-lightglue" || normalized == "raco-aliked-lightglue" ||
+      normalized == "native-aliked-lightglue" || normalized == "superpoint-lightglue" || normalized == "superpoint" ||
+      normalized == "lightglue") {
+    return ControlPointMatcher::kSuperPointLightGlue;
+  }
+  if (normalized == "dedode-lightglue" || normalized == "dedode") {
+    return ControlPointMatcher::kDeDoDeLightGlue;
+  }
+  if (normalized == "loftr") {
+    return ControlPointMatcher::kLoFTR;
+  }
+  return absl::InvalidArgumentError(
+      "Unsupported native control-point matcher \"" + value +
+      "\"; choose superpoint-lightglue, dedode-lightglue, or loftr");
+}
+
+absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
+    const std::string& model_path,
+    ControlPointMatcher matcher) {
+  if (matcher != ControlPointMatcher::kSuperPointLightGlue) {
+    return absl::UnimplementedError(
+        std::string("Native control-point matcher ") + ControlPointMatcherName(matcher) + " is not implemented yet");
+  }
+  constexpr int input_channels = 1;
+  auto session = hm::onnx::Session::Create(
+      model_path,
+      {{"images", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, input_channels, -1, -1}}},
+      {
+          {"keypoints", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, kKeypointsPerImage, 2}},
+          {"matches", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, 3}},
+          {"mscores", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
+      });
+  if (!session.ok())
+    return session.status();
+  return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(std::move(*session), input_channels));
+}
+
+absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
+  return prepare_feature_pair(left_bgr, right_bgr, 3);
 }
 
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
@@ -119,7 +149,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     size_t max_control_points) {
   constexpr size_t expected_keypoints = static_cast<size_t>(2) * kKeypointsPerImage * 2;
   if (keypoints == nullptr || keypoint_count != expected_keypoints) {
-    return absl::InvalidArgumentError("ALIKED keypoints violate the frozen output contract");
+    return absl::InvalidArgumentError("Feature matcher keypoints violate the frozen output contract");
   }
   if (match_value_count % 3 != 0 || match_value_count / 3 != score_count ||
       (score_count > 0 && (matches == nullptr || scores == nullptr))) {
@@ -155,7 +185,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     const float* left = keypoints + static_cast<size_t>(left_index) * 2;
     const float* right = keypoints + (static_cast<size_t>(kKeypointsPerImage) + right_index) * 2;
     if (!std::isfinite(left[0]) || !std::isfinite(left[1]) || !std::isfinite(right[0]) || !std::isfinite(right[1])) {
-      return absl::InvalidArgumentError("ALIKED returned a non-finite keypoint");
+      return absl::InvalidArgumentError("Feature matcher returned a non-finite keypoint");
     }
     if (left[0] < 0.0f || left[1] < 0.0f || right[0] < 0.0f || right[1] < 0.0f ||
         left[0] >= input.resized_sizes[0].width || left[1] >= input.resized_sizes[0].height ||
@@ -174,7 +204,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     });
   }
   if (accepted.empty())
-    return absl::NotFoundError("ALIKED+LightGlue produced no usable matches");
+    return absl::NotFoundError("Feature matcher produced no usable matches");
 
   // Select a spatially distributed, deterministic subset. The former global
   // Y-rank linspace duplicated points when the requested cap exceeded the
@@ -246,16 +276,20 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
   if (is_cancelled && is_cancelled()) {
     return absl::CancelledError("Feature matching cancelled before preprocessing");
   }
-  auto input = Prepare(left_bgr, right_bgr);
+  auto input = prepare_feature_pair(left_bgr, right_bgr, input_channels_);
   if (!input.ok())
     return input.status();
   auto outputs = session_->RunFloat(
-      "images", {2, 3, kInputHeight, kInputWidth}, input->tensor.data(), input->tensor.size(), is_cancelled);
+      "images",
+      {2, input_channels_, kInputHeight, kInputWidth},
+      input->tensor.data(),
+      input->tensor.size(),
+      is_cancelled);
   if (!outputs.ok())
     return outputs.status();
   if (outputs->size() != 3)
     return absl::InternalError("Feature model returned an unexpected output count");
-  auto keypoints = outputs->at(0).float_data();
+  auto keypoints = outputs->at(0).int64_data();
   auto matches = outputs->at(1).int64_data();
   auto scores = outputs->at(2).float_data();
   auto keypoint_count = outputs->at(0).element_count();
@@ -275,8 +309,19 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     return score_count.status();
   if (inference_complete)
     inference_complete();
+  std::vector<float> keypoint_values(*keypoint_count);
+  for (size_t index = 0; index < *keypoint_count; ++index) {
+    keypoint_values[index] = static_cast<float>((*keypoints)[index]);
+  }
   return Postprocess(
-      *input, *keypoints, *keypoint_count, *matches, *match_count, *scores, *score_count, max_control_points);
+      *input,
+      keypoint_values.data(),
+      keypoint_values.size(),
+      *matches,
+      *match_count,
+      *scores,
+      *score_count,
+      max_control_points);
 }
 
 } // namespace hm::stitching

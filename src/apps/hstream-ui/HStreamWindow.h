@@ -508,7 +508,7 @@ class HStreamWindow : public QMainWindow {
   YAML::Node baseline_config_;
   QString baseline_config_root_;
   QString default_stitch_frame_time_{"00:00:00"};
-  QString default_control_point_matcher_{"aliked-lightglue"};
+  QString default_control_point_matcher_{"superpoint-lightglue"};
   QString default_mapping_backend_{"nona"};
   std::map<QString, int> saved_camera_controls_;
   int saved_stitching_control_points_{0};

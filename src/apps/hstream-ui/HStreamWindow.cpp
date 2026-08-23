@@ -31,6 +31,7 @@
 #include <QtGui/QPalette>
 #include <QtGui/QPixmap>
 #include <QtGui/QResizeEvent>
+#include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
@@ -142,7 +143,7 @@ std::optional<QString> canonical_control_point_matcher_choice(QString value) {
   if (value.isEmpty() || value == "aliked-lightglue" || value == "raco-aliked-lightglue" ||
       value == "native-aliked-lightglue" || value == "superpoint-lightglue" || value == "superpoint" ||
       value == "lightglue") {
-    return QString("aliked-lightglue");
+    return QString("superpoint-lightglue");
   }
   return std::nullopt;
 }
@@ -152,10 +153,10 @@ std::optional<QString> canonical_mapping_backend_choice(QString value) {
   if (value.isEmpty() || value == "nona") {
     return QString("nona");
   }
-  if (value == "opencv-magsac" || value == "magsac") {
+  if (value == "opencv-magsac" || value == "magsac" || value == "magsac++") {
     return QString("opencv-magsac");
   }
-  if (value == "opencv-affine-ransac" || value == "affine-ransac") {
+  if (value == "opencv-affine-ransac" || value == "affine-ransac" || value == "ransac") {
     return QString("opencv-affine-ransac");
   }
   return std::nullopt;
@@ -176,6 +177,8 @@ bool set_combo_to_data(QComboBox* combo, const QString& value) {
     return false;
   const int index = combo->findData(value);
   if (index < 0)
+    return false;
+  if (combo->model() && !(combo->model()->flags(combo->model()->index(index, 0)) & Qt::ItemIsEnabled))
     return false;
   combo->setCurrentIndex(index);
   return true;
@@ -1876,9 +1879,9 @@ void HStreamWindow::loadBaselineDefaults() {
       control_point_matcher.IsScalar()) {
     const QString configured = QString::fromStdString(control_point_matcher.as<std::string>());
     const auto canonical = canonical_control_point_matcher_choice(configured);
-    if (!canonical.has_value())
-      throw std::runtime_error("Effective baseline stitching.control_point_matcher is not supported");
-    default_control_point_matcher_ = *canonical;
+    if (canonical.has_value()) {
+      default_control_point_matcher_ = *canonical;
+    }
   }
   YAML::Node mapping_backend;
   if (lookup_yaml_path(baseline_config_, "stitching.mapping_backend", &mapping_backend) && mapping_backend.IsScalar()) {
@@ -2242,9 +2245,18 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_point_matcher_combo_ = new QComboBox();
   control_point_matcher_combo_->setObjectName("controlPointMatcherCombo");
   control_point_matcher_combo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-  control_point_matcher_combo_->setMinimumContentsLength(6);
-  control_point_matcher_combo_->setFixedWidth(60);
-  control_point_matcher_combo_->addItem("ALIKED", "aliked-lightglue");
+  control_point_matcher_combo_->setMinimumContentsLength(20);
+  control_point_matcher_combo_->setMinimumWidth(240);
+  control_point_matcher_combo_->addItem("SuperPoint + LightGlue", "superpoint-lightglue");
+  control_point_matcher_combo_->addItem("DeDoDe + LightGlue", "dedode-lightglue");
+  control_point_matcher_combo_->addItem("LoFTR", "loftr");
+  if (auto* matcher_model = qobject_cast<QStandardItemModel*>(control_point_matcher_combo_->model())) {
+    for (int index = 1; index < control_point_matcher_combo_->count(); ++index) {
+      if (auto* item = matcher_model->item(index)) {
+        item->setEnabled(false);
+      }
+    }
+  }
   int matcher_index = control_point_matcher_combo_->findData(default_control_point_matcher_);
   control_point_matcher_combo_->setCurrentIndex(matcher_index < 0 ? 0 : matcher_index);
   control_point_matcher_combo_->setToolTip("Native feature matcher used to find stitching control points.");
@@ -2253,11 +2265,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   mapping_backend_combo_ = new QComboBox();
   mapping_backend_combo_->setObjectName("mappingBackendCombo");
   mapping_backend_combo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-  mapping_backend_combo_->setMinimumContentsLength(7);
-  mapping_backend_combo_->setFixedWidth(68);
+  mapping_backend_combo_->setMinimumContentsLength(12);
+  mapping_backend_combo_->setMinimumWidth(220);
   mapping_backend_combo_->addItem("NONA", "nona");
-  mapping_backend_combo_->addItem("MAGSAC", "opencv-magsac");
-  mapping_backend_combo_->addItem("AFFINE", "opencv-affine-ransac");
+  mapping_backend_combo_->addItem("MAGSAC++", "opencv-magsac");
+  mapping_backend_combo_->addItem("RANSAC", "opencv-affine-ransac");
   int mapping_index = mapping_backend_combo_->findData(default_mapping_backend_);
   mapping_backend_combo_->setCurrentIndex(mapping_index < 0 ? 0 : mapping_index);
   mapping_backend_combo_->setToolTip("Mapping TIFF generator used after control points are selected.");
@@ -2342,8 +2354,6 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   status_bar->addStretch(1);
   status_bar->addWidget(run_mode_selector_);
   status_bar->addWidget(control_points_spin_);
-  status_bar->addWidget(control_point_matcher_combo_);
-  status_bar->addWidget(mapping_backend_combo_);
   status_bar->addWidget(stitch_frame_time_edit_);
   status_bar->addWidget(render_video_toggle_);
   status_bar->addWidget(show_player_tracking_toggle_);
@@ -3033,6 +3043,25 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
+    auto* algorithms_page = new QWidget();
+    algorithms_page->setObjectName("stitchingAlgorithmsTab");
+    auto* algorithms_layout = new QGridLayout(algorithms_page);
+    algorithms_layout->setContentsMargins(8, 8, 8, 8);
+    algorithms_layout->setColumnStretch(1, 1);
+    auto* matcher_label = new QLabel("Control-point matcher");
+    matcher_label->setObjectName("controlPointMatcherLabel");
+    matcher_label->setBuddy(control_point_matcher_combo_);
+    auto* mapping_label = new QLabel("Mapping backend");
+    mapping_label->setObjectName("mappingBackendLabel");
+    mapping_label->setBuddy(mapping_backend_combo_);
+    control_point_matcher_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    mapping_backend_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    algorithms_layout->addWidget(matcher_label, 0, 0);
+    algorithms_layout->addWidget(control_point_matcher_combo_, 0, 1);
+    algorithms_layout->addWidget(mapping_label, 1, 0);
+    algorithms_layout->addWidget(mapping_backend_combo_, 1, 1);
+    algorithms_layout->setRowStretch(2, 1);
+    control_tabs->addTab(algorithms_page, "Algorithms");
   }
   layout->addWidget(control_tabs);
   parent->addWidget(group);

@@ -1030,7 +1030,8 @@ play-tracker:
   ok &= expect(
       backend_choices_configured.ok() && backend_choices_persisted.ok() && backend_choices_private.ok() &&
           backend_choices_private->has_value() &&
-          (**backend_choices_private)["stitching"]["control_point_matcher"].as<std::string>() == "aliked-lightglue" &&
+          (**backend_choices_private)["stitching"]["control_point_matcher"].as<std::string>() ==
+              "superpoint-lightglue" &&
           (**backend_choices_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac",
       "Effective stitching matcher/backend choices from lower config layers must be materialized into game-private "
       "config with canonical spellings");
@@ -1051,7 +1052,7 @@ play-tracker:
   const fs::path backend_cli_dir = games / "backend-cli";
   fs::create_directories(backend_cli_dir);
   YAML::Node backend_cli_private(YAML::NodeType::Map);
-  backend_cli_private["stitching"]["control_point_matcher"] = "aliked-lightglue";
+  backend_cli_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_cli_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
   ok &= expect(
       hm::stitching::publish_game_config(backend_cli_dir, YAML::Dump(backend_cli_private) + "\n").ok(),

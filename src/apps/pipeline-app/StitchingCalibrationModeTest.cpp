@@ -108,7 +108,7 @@ pipeline:
     }
     ok &= expect(
         assets.ok() && assets->size() == 2 && asset_names.count("ice-rink-mask2former-swin-s") == 1 &&
-            asset_names.count("aliked-lightglue-k2048") == 1,
+            asset_names.count("superpoint-lightglue") == 1,
         "real calibration discovery must retain orientation/matching models and omit Program detector assets");
   }
   return ok ? 0 : 1;

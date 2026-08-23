@@ -42,7 +42,7 @@ absl::StatusOr<std::filesystem::path> rink_model_path() {
 }
 
 absl::StatusOr<std::filesystem::path> feature_matcher_model_path() {
-  return model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "aliked-lightglue-k2048-ea4a4ab2cb556958.onnx");
+  return model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx");
 }
 
 } // namespace hm::stitching

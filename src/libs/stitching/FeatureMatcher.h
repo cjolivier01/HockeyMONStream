@@ -16,7 +16,9 @@
 namespace hm::stitching {
 
 enum class ControlPointMatcher {
-  kAlikedLightGlue,
+  kSuperPointLightGlue,
+  kDeDoDeLightGlue,
+  kLoFTR,
 };
 
 const char* ControlPointMatcherName(ControlPointMatcher matcher);
@@ -46,12 +48,12 @@ class FeatureMatcher {
  public:
   static constexpr int kInputWidth = 1024;
   static constexpr int kInputHeight = 576;
-  static constexpr int kKeypointsPerImage = 2048;
+  static constexpr int kKeypointsPerImage = 1024;
   static constexpr float kMinimumScore = 0.2f;
 
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(
       const std::string& model_path,
-      ControlPointMatcher matcher = ControlPointMatcher::kAlikedLightGlue);
+      ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue);
   static absl::StatusOr<FeaturePairInput> Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeatureMatchResult> Postprocess(
       const FeaturePairInput& input,
@@ -71,8 +73,9 @@ class FeatureMatcher {
       const std::function<bool()>& is_cancelled = {}) const;
 
  private:
-  explicit FeatureMatcher(std::unique_ptr<hm::onnx::Session> session);
+  FeatureMatcher(std::unique_ptr<hm::onnx::Session> session, int input_channels);
   std::unique_ptr<hm::onnx::Session> session_;
+  int input_channels_{3};
 };
 
 } // namespace hm::stitching
