@@ -309,12 +309,13 @@ absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value) {
   const std::string normalized = normalize_choice(value.empty() ? "nona" : value);
   if (normalized == "nona")
     return MappingBackend::kNona;
-  if (normalized == "opencv-magsac" || normalized == "magsac")
+  if (normalized == "opencv-magsac" || normalized == "magsac" || normalized == "magsac++")
     return MappingBackend::kOpenCvMagsac;
-  if (normalized == "opencv-affine-ransac" || normalized == "affine-ransac")
+  if (normalized == "opencv-affine-ransac" || normalized == "affine-ransac" || normalized == "ransac")
     return MappingBackend::kOpenCvAffineRansac;
   return absl::InvalidArgumentError(
-      "Unsupported stitching mapping backend \"" + value + "\"; choose nona, opencv-magsac, or opencv-affine-ransac");
+      "Unsupported stitching mapping backend \"" + value +
+      "\"; choose nona, opencv-magsac/MAGSAC++, or opencv-affine-ransac/RANSAC");
 }
 
 absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(

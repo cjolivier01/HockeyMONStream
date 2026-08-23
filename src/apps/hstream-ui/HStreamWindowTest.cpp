@@ -2186,6 +2186,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+  auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* control_point_matcher_label = require_child<QLabel>(window, "controlPointMatcherLabel");
+  auto* mapping_backend_label = require_child<QLabel>(window, "mappingBackendLabel");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -2232,15 +2236,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
-  if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time || !game_id || !rotate ||
-      !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking || !show_play_tracking ||
-      !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter || !setup_preview_splitter ||
-      !output_routing || !preview_tabs || !pipeline_inspector || !program_host || !preview_surface || !preview_target ||
-      !stitched_surface || !stitched_target || !camera1_host || !camera1_surface || !camera1_target || !camera1_focus ||
-      !camera2_surface || !camera3_surface || !external_notice || !camera1_notice || !stitched_status ||
-      !preview_status || !program_controls || !program_controls_toggle || !stitched_controls || !program_control_tabs ||
-      !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress ||
-      !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time ||
+      !control_point_matcher || !mapping_backend || !control_point_matcher_label || !mapping_backend_label ||
+      !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking ||
+      !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
+      !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
+      !preview_surface || !preview_target || !stitched_surface || !stitched_target || !camera1_host ||
+      !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
+      !external_notice || !camera1_notice || !stitched_status || !preview_status || !program_controls ||
+      !program_controls_toggle || !stitched_controls || !program_control_tabs || !stitched_control_tabs ||
+      !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back ||
+      !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2315,14 +2321,33 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   setup_preview_splitter->setSizes({240, 440});
   QApplication::processEvents();
+  const bool unimplemented_matchers_disabled = control_point_matcher->model() &&
+      !(control_point_matcher->model()->flags(control_point_matcher->model()->index(1, 0)) & Qt::ItemIsEnabled) &&
+      !(control_point_matcher->model()->flags(control_point_matcher->model()->index(2, 0)) & Qt::ItemIsEnabled);
   if (!expect(
           program_controls->isAncestorOf(max_speed_x) && program_controls->isAncestorOf(bring_up_shadows) &&
               stitched_controls->isAncestorOf(rotate) && !camera1_host->isAncestorOf(max_speed_x) &&
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
-              program_control_tabs->count() == 4 && stitched_control_tabs->count() == 1,
+              stitched_controls->isAncestorOf(control_point_matcher) &&
+              stitched_controls->isAncestorOf(mapping_backend) && program_control_tabs->count() == 4 &&
+              stitched_control_tabs->count() == 2 && stitched_control_tabs->tabText(1) == "Algorithms" &&
+              control_point_matcher_label->text() == "Control-point matcher" &&
+              mapping_backend_label->text() == "Mapping backend" && control_point_matcher->count() == 3 &&
+              control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
+              control_point_matcher->itemText(1) == "DeDoDe + LightGlue" &&
+              control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
+              mapping_backend->count() == 3 && mapping_backend->itemText(0) == "NONA" &&
+              mapping_backend->itemText(1) == "MAGSAC++" && mapping_backend->itemText(2) == "RANSAC",
           "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
     return false;
   }
+  preview_tabs->setCurrentIndex(1);
+  stitched_control_tabs->setCurrentIndex(1);
+  QApplication::processEvents();
+  if (!capture_interaction_artifact(window, "stitching-algorithms-controls.png"))
+    return false;
+  preview_tabs->setCurrentIndex(0);
+  QApplication::processEvents();
   if (!expect(
           program_focus->parentWidget() == program_host && program_focus->size() == QSize(24, 24) &&
               program_focus->x() == program_host->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
@@ -4833,7 +4858,7 @@ bool test_output_controls(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 5, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 6, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -5588,10 +5613,10 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   YAML::Node generated_backend_marker_config = YAML::LoadFile(config.string());
-  generated_backend_marker_config["stitching"]["control_point_matcher"] = "aliked-lightglue";
+  generated_backend_marker_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   generated_backend_marker_config["stitching"]["mapping_backend"] = "nona";
   generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
-      "aliked-lightglue";
+      "superpoint-lightglue";
   generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
   std::ofstream(config) << YAML::Dump(generated_backend_marker_config) << '\n';
   activate(create);
@@ -6458,8 +6483,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   YAML::Node user_config(YAML::NodeType::Map);
   user_config["stitching"]["stitch_frame_time"] = "00:00:08";
   user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
-  user_config["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
-  user_config["stitching"]["mapping_backend"] = "affine-ransac";
+  user_config["stitching"]["control_point_matcher"] = "dedode-lightglue";
+  user_config["stitching"]["mapping_backend"] = "RANSAC";
   user_config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
   {
     std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
@@ -6488,9 +6513,10 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   if (copied_config_node["stitching"] && copied_config_node["stitching"].IsMap())
     copied_config_node["stitching"].remove("stitch_frame_time");
   copied_config_node["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
-  copied_config_node["stitching"]["control_point_matcher"] = "aliked-lightglue";
+  copied_config_node["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   copied_config_node["stitching"]["mapping_backend"] = "nona";
-  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] = "aliked-lightglue";
+  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
+      "superpoint-lightglue";
   copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
   if (copied_config_node["rink"] && copied_config_node["rink"].IsMap() && copied_config_node["rink"]["camera"] &&
       copied_config_node["rink"]["camera"].IsMap()) {
@@ -6510,22 +6536,25 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* stop = require_child<QPushButton>(&user_default_window, "stopPipelineButton");
     auto* mode = require_child<QComboBox>(&user_default_window, "runModeCombo");
     auto* stitch_frame_time = require_child<QTimeEdit>(&user_default_window, "stitchFrameTimeEdit");
+    auto* control_point_matcher = require_child<QComboBox>(&user_default_window, "controlPointMatcherCombo");
     auto* mapping_backend = require_child<QComboBox>(&user_default_window, "mappingBackendCombo");
     auto* stitch_rotation = require_child<QSlider>(&user_default_window, "cameraSlider_Stitch_Rotate_Degrees");
     auto* fixed_edge_left =
         require_child<QSlider>(&user_default_window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
     auto* fixed_edge_right =
         require_child<QSlider>(&user_default_window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
-    ok = game_id && create && save && start && stop && mode && stitch_frame_time && mapping_backend &&
-        stitch_rotation && fixed_edge_left && fixed_edge_right;
+    ok = game_id && create && save && start && stop && mode && stitch_frame_time && control_point_matcher &&
+        mapping_backend && stitch_rotation && fixed_edge_left && fixed_edge_right;
     if (ok) {
       game_id->setText("ui-user-stitch-default");
       activate(create);
       ok &= expect(
           stitch_frame_time->time() == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
+              control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
               mapping_backend->currentData().toString() == "opencv-affine-ransac" && fixed_edge_left->value() == 0 &&
               fixed_edge_right->value() == 0 && !save->isEnabled(),
-          "User-level defaults must initialize the UI and generated private backend choices must not mask them");
+          "User-level defaults must initialize the UI, reject unimplemented matchers, accept mapping aliases, and "
+          "generated private backend choices must not mask them");
       stitch_frame_time->setTime(QTime(0, 0, 0));
       QApplication::processEvents();
       ok &= expect(save->isEnabled(), "Zero must remain an explicit edit against a nonzero user-level default");
@@ -6543,10 +6572,10 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       copied_config_node = YAML::LoadFile(copied_config.string());
       copied_config_node["stitching"]["mapping_backend"] = "opencv-magsac";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
-          "aliked-lightglue";
+          "superpoint-lightglue";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "opencv-magsac";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
-          "aliked-lightglue";
+          "superpoint-lightglue";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"] =
           "opencv-affine-ransac";
       std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';

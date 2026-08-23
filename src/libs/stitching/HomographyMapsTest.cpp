@@ -158,6 +158,8 @@ int main() {
 
   ok &= expect(
       hm::stitching::ParseMappingBackend("opencv_magsac").ok(), "mapping backend parser should accept underscores");
+  ok &= expect(hm::stitching::ParseMappingBackend("MAGSAC++").ok(), "mapping backend parser should accept UI label");
+  ok &= expect(hm::stitching::ParseMappingBackend("RANSAC").ok(), "mapping backend parser should accept UI label");
   ok &= expect(
       !hm::stitching::ParseMappingBackend("unknown").ok(), "mapping backend parser should reject unknown choices");
 

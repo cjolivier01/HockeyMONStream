@@ -25,8 +25,12 @@ int main() {
   ok &=
       expect(hm::stitching::ParseControlPointMatcher("superpoint").ok(), "HockeyMOM superpoint alias must be accepted");
   ok &= expect(
-      !hm::stitching::ParseControlPointMatcher("dedode-lightglue").ok(),
-      "unsupported matcher engines must still fail explicitly");
+      hm::stitching::ParseControlPointMatcher("dedode-lightglue").ok(), "HockeyMOM DeDoDe matcher must be accepted");
+  ok &= expect(hm::stitching::ParseControlPointMatcher("loftr").ok(), "HockeyMOM LoFTR matcher must be accepted");
+  auto dedode = hm::stitching::ParseControlPointMatcher("dedode-lightglue");
+  ok &= expect(
+      dedode.ok() && !hm::stitching::FeatureMatcher::Create("/tmp/missing.onnx", *dedode).ok(),
+      "unsupported matcher engines must fail explicitly when instantiated");
   ok &= expect(!hm::stitching::FeatureMatcher::Prepare({}, {}).ok(), "empty images must fail");
   cv::Mat left(90, 160, CV_8UC3, cv::Scalar(30, 20, 10));
   cv::Mat right(100, 100, CV_8UC3, cv::Scalar(60, 50, 40));
@@ -51,9 +55,9 @@ int main() {
   metadata.source_sizes[1] = {7680, 4320};
   metadata.resized_sizes[0] = {1024, 576};
   metadata.resized_sizes[1] = {1024, 576};
-  std::vector<float> keypoints(static_cast<size_t>(2) * 2048 * 2, 0.0f);
+  std::vector<float> keypoints(static_cast<size_t>(2) * hm::stitching::FeatureMatcher::kKeypointsPerImage * 2, 0.0f);
   auto set_keypoint = [&](int image, int index, float x, float y) {
-    const size_t offset = (static_cast<size_t>(image) * 2048 + index) * 2;
+    const size_t offset = (static_cast<size_t>(image) * hm::stitching::FeatureMatcher::kKeypointsPerImage + index) * 2;
     keypoints[offset] = x;
     keypoints[offset + 1] = y;
   };

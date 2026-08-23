@@ -3180,7 +3180,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     if (node.has_value() && !node->IsScalar()) {
       return absl::InvalidArgumentError("stitching.control_point_matcher must be a scalar value");
     }
-    stitching::ControlPointMatcher matcher = stitching::ControlPointMatcher::kAlikedLightGlue;
+    stitching::ControlPointMatcher matcher = stitching::ControlPointMatcher::kSuperPointLightGlue;
     HM_ASSIGN_OR_RETURN(
         matcher, stitching::ParseControlPointMatcher(node.has_value() ? node->as<std::string>() : std::string()));
     return std::string(stitching::ControlPointMatcherName(matcher));
