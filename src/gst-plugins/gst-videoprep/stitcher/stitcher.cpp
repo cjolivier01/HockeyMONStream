@@ -556,20 +556,22 @@ absl::Status StitcherPriv::ensure_stitcher() {
     return absl::NotFoundError("No control masks to load");
   }
 
-  // In one-pass mode, defer loading until configuration has produced the mapping artifacts. Once mappings exist, every
-  // mode validates the seam before hm-cupano loads it: enblend may save a cropped PNG with an oFFs origin that
-  // hm-cupano does not interpret itself.
-  if (one_pass_mode_) {
-    auto is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
-    if (!is_configured.ok()) {
-      return is_configured.status();
+  // Validate artifacts before seam normalization or hm-cupano loading so stale
+  // native-over-cap maps are regenerated instead of decoded and resized here.
+  auto is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
+  if (!is_configured.ok()) {
+    return is_configured.status();
+  }
+  if (!is_configured.value()) {
+    if (!logged_missing_masks_) {
+      g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
+      logged_missing_masks_ = true;
     }
-    if (!is_configured.value()) {
-      if (!logged_missing_masks_) {
-        g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
-        logged_missing_masks_ = true;
-      }
+    if (one_pass_mode_) {
       return absl::OkStatus();
+    } else {
+      config_file_.clear();
+      return absl::NotFoundError("Stitching control masks are missing or need regeneration");
     }
   }
 

@@ -991,7 +991,24 @@ absl::Status create_hard_seam(
   return absl::OkStatus();
 }
 
-absl::Status validate_staged_artifacts(const fs::path& directory, const std::optional<size_t>& maximum_dimension) {
+absl::StatusOr<std::pair<int, int>> measure_staged_remap_canvas(
+    const fs::path& directory,
+    const std::optional<size_t>& maximum_dimension) {
+  auto first_result = read_tiff_placement(directory / "mapping_0000.tif", maximum_dimension);
+  auto second_result = read_tiff_placement(directory / "mapping_0001.tif", maximum_dimension);
+  if (!first_result.ok())
+    return first_result.status();
+  if (!second_result.ok())
+    return second_result.status();
+  TiffPlacement first = *first_result;
+  TiffPlacement second = *second_result;
+  return normalize_and_measure(&first, &second);
+}
+
+absl::Status validate_staged_artifacts(
+    const fs::path& directory,
+    const std::optional<size_t>& maximum_dimension,
+    const std::optional<size_t>& max_output_width) {
   for (const char* artifact : kRequiredArtifacts) {
     auto status = validate_nonempty_file(directory / artifact);
     if (!status.ok())
@@ -1005,16 +1022,14 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
   if (!project_canvas.ok() || !projection.ok())
     return absl::FailedPreconditionError("Hugin optimized project has an invalid canvas or projection");
 
-  TiffPlacement first;
-  TiffPlacement second;
   auto first_result = read_tiff_placement(directory / "mapping_0000.tif", maximum_dimension);
   auto second_result = read_tiff_placement(directory / "mapping_0001.tif", maximum_dimension);
   if (!first_result.ok())
     return first_result.status();
   if (!second_result.ok())
     return second_result.status();
-  first = *first_result;
-  second = *second_result;
+  TiffPlacement first = *first_result;
+  TiffPlacement second = *second_result;
   auto canvas = normalize_and_measure(&first, &second);
   if (!canvas.ok())
     return canvas.status();
@@ -1025,6 +1040,9 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
       "Decoded Hugin remap canvas");
   if (!status.ok())
     return status;
+  if (max_output_width.has_value() && *max_output_width > 0 && static_cast<size_t>(canvas->first) > *max_output_width) {
+    return absl::FailedPreconditionError("Decoded Hugin remap canvas exceeds the configured maximum output width");
+  }
   auto first_source_size = read_png_dimensions(directory / "left.png");
   auto second_source_size = read_png_dimensions(directory / "right.png");
   if (!first_source_size.ok())
@@ -1644,26 +1662,32 @@ absl::Status HuginProject::Configure(
       if (!options.max_canvas_dimension.has_value() && !options.max_output_width.has_value())
         break;
 
-      // Nona derives its mapping canvas from the optimized PTO. Validate that
-      // exact final contract and retry with a small rounding guard if necessary.
+      // Validate the actual TIFF placement canvas because nona's cropped remaps
+      // are the contract hm-cupano loads at runtime.
       auto optimized = read_file(staging / "autooptimiser_out.pto");
       if (!optimized.ok())
         return optimized.status();
       auto dimensions = ParseCanvasSize(*optimized);
       if (!dimensions.ok())
         return dimensions.status();
-      const bool width_ok = !options.max_output_width.has_value() || dimensions->first <= *options.max_output_width;
+      auto remap_canvas = measure_staged_remap_canvas(staging, options.max_canvas_dimension);
+      if (!remap_canvas.ok())
+        return remap_canvas.status();
+      const bool width_ok = !options.max_output_width.has_value() ||
+          static_cast<size_t>(remap_canvas->first) <= *options.max_output_width;
       const bool dimension_ok = !options.max_canvas_dimension.has_value() ||
-          std::max(dimensions->first, dimensions->second) <= *options.max_canvas_dimension;
+          static_cast<size_t>(std::max(remap_canvas->first, remap_canvas->second)) <= *options.max_canvas_dimension;
       if (width_ok && dimension_ok)
         break;
       if (attempt == 2) {
         return absl::FailedPreconditionError("Hugin mapping canvas still exceeds requested size after three attempts");
       }
       if (!width_ok) {
-        status = fit_canvas_width(dimensions->first, dimensions->second, 0.999);
+        status = fit_canvas_width(
+            static_cast<size_t>(remap_canvas->first), static_cast<size_t>(remap_canvas->second), 0.999);
       } else {
-        status = fit_canvas_longest(dimensions->first, dimensions->second, 0.999);
+        status = fit_canvas_longest(
+            static_cast<size_t>(remap_canvas->first), static_cast<size_t>(remap_canvas->second), 0.999);
       }
       if (!status.ok())
         return status;
@@ -1671,12 +1695,8 @@ absl::Status HuginProject::Configure(
   } else {
     const cv::Mat left = cv::imread((staging / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat right = cv::imread((staging / "right.png").string(), cv::IMREAD_COLOR);
-    std::optional<size_t> native_limit = options.max_canvas_dimension;
-    if (options.max_output_width.has_value()) {
-      native_limit =
-          native_limit.has_value() ? std::min(*native_limit, *options.max_output_width) : options.max_output_width;
-    }
-    auto maps = CreateOpenCvMappingFiles(staging, left, right, matches, options.mapping_backend, native_limit);
+    auto maps = CreateOpenCvMappingFiles(
+        staging, left, right, matches, options.mapping_backend, options.max_canvas_dimension, options.max_output_width);
     if (!maps.ok())
       return maps.status();
     std::cout << "OpenCV mapping backend " << MappingBackendName(options.mapping_backend) << " generated "
@@ -1719,7 +1739,7 @@ absl::Status HuginProject::Configure(
               << enblend.status() << '\n';
   }
 
-  status = validate_staged_artifacts(staging, options.max_canvas_dimension);
+  status = validate_staged_artifacts(staging, options.max_canvas_dimension, options.max_output_width);
   if (!status.ok())
     return status;
   if (options.is_cancelled && options.is_cancelled())

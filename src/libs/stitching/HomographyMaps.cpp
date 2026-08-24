@@ -324,7 +324,8 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     const cv::Mat& right_bgr,
     const std::vector<FeatureMatch>& matches,
     MappingBackend backend,
-    const std::optional<size_t>& max_canvas_dimension) {
+    const std::optional<size_t>& max_canvas_dimension,
+    const std::optional<size_t>& max_output_width) {
   auto status = validate_image(left_bgr, "left");
   if (!status.ok())
     return status;
@@ -430,10 +431,13 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
   const double raw_height = std::ceil(max_y - min_y + 1.0);
   if (!std::isfinite(raw_width) || !std::isfinite(raw_height) || raw_width <= 0.0 || raw_height <= 0.0)
     return absl::FailedPreconditionError("OpenCV mapping canvas dimensions are invalid");
+  if (max_output_width.has_value() && raw_width > static_cast<double>(*max_output_width)) {
+    scale = std::min(scale, static_cast<double>(*max_output_width) / raw_width);
+  }
   if (max_canvas_dimension.has_value()) {
     const double longest = std::max(raw_width, raw_height);
     if (longest > static_cast<double>(*max_canvas_dimension))
-      scale = static_cast<double>(*max_canvas_dimension) / longest;
+      scale = std::min(scale, static_cast<double>(*max_canvas_dimension) / longest);
   }
   const int canvas_width = static_cast<int>(std::ceil(raw_width * scale));
   const int canvas_height = static_cast<int>(std::ceil(raw_height * scale));
