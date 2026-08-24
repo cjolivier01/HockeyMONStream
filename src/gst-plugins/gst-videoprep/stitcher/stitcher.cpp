@@ -563,15 +563,24 @@ absl::Status StitcherPriv::ensure_stitcher() {
     return is_configured.status();
   }
   if (!is_configured.value()) {
-    if (!logged_missing_masks_) {
-      g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
-      logged_missing_masks_ = true;
+    const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
+    if (seam_status.ok()) {
+      is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
+      if (!is_configured.ok()) {
+        return is_configured.status();
+      }
     }
-    if (one_pass_mode_) {
-      return absl::OkStatus();
-    } else {
-      config_file_.clear();
-      return absl::NotFoundError("Stitching control masks are missing or need regeneration");
+    if (!is_configured.value()) {
+      if (!logged_missing_masks_) {
+        g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
+        logged_missing_masks_ = true;
+      }
+      if (one_pass_mode_) {
+        return absl::OkStatus();
+      } else {
+        config_file_.clear();
+        return absl::NotFoundError("Stitching control masks are missing or need regeneration");
+      }
     }
   }
 

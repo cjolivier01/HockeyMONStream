@@ -723,8 +723,9 @@ bool expect_missing_placement_tiff_is_not_configured(const fs::path& tmpdir) {
   }
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
-  if (configured.ok()) {
-    std::cerr << "missing TIFF placement tags must fail artifact validation" << std::endl;
+  if (!configured.ok() || *configured) {
+    std::cerr << "missing TIFF placement tags must make stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
     return false;
   }
   return true;

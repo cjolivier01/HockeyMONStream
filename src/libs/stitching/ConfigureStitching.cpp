@@ -1017,9 +1017,22 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   CanvasSize effective_canvas_size;
   TiffPlacement p0;
   TiffPlacement p1;
-  HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif"));
-  HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif"));
-  HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
+  auto p0_status = read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif");
+  auto p1_status = read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif");
+  if (!p0_status.ok() || !p1_status.ok()) {
+    std::cout << "Stitching artifacts exist but mapping TIFF placement metadata is invalid: "
+              << (!p0_status.ok() ? p0_status.status() : p1_status.status()) << std::endl;
+    return false;
+  }
+  p0 = *p0_status;
+  p1 = *p1_status;
+  auto canvas_status = normalize_and_measure_canvas(&p0, &p1);
+  if (!canvas_status.ok()) {
+    std::cout << "Stitching artifacts exist but mapping canvas metadata is invalid: " << canvas_status.status()
+              << std::endl;
+    return false;
+  }
+  canvas_size = *canvas_status;
   const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
   if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
       absl::IsNotFound(remap_status) || absl::IsResourceExhausted(remap_status)) {
