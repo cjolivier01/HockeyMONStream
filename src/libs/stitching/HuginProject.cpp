@@ -466,6 +466,7 @@ struct PngLayout {
   int height{0};
   int offset_x{0};
   int offset_y{0};
+  bool has_offset{false};
 };
 
 uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t size) {
@@ -544,6 +545,7 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
       };
       layout.offset_x = static_cast<int>(signed_coordinate(data.data()));
       layout.offset_y = static_cast<int>(signed_coordinate(data.data() + 4));
+      layout.has_offset = true;
       have_offset = true;
       expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
     } else {
@@ -687,6 +689,13 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
         std::to_string(layout->offset_y) + " canvas=" + std::to_string(canvas_width) + "x" +
         std::to_string(canvas_height));
   }
+  if (!layout->has_offset && layout->offset_x == 0 && layout->offset_y == 0 &&
+      (layout->width != canvas_width || layout->height != canvas_height)) {
+    return absl::FailedPreconditionError(
+        "PNG seam has full-canvas origin but does not match its mapping canvas: " + path.string() +
+        " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
+        " canvas=" + std::to_string(canvas_width) + "x" + std::to_string(canvas_height));
+  }
 
   auto seam = decode_nonuniform_seam(path, *layout);
   if (!seam.ok())
@@ -709,6 +718,44 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
     } catch (const std::bad_alloc&) {
       return absl::ResourceExhaustedError("Unable to allocate normalized seam");
     }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status validate_seam_layout(
+    const fs::path& path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  if (native_canvas_width <= 0 || native_canvas_height <= 0 || effective_canvas_width <= 0 ||
+      effective_canvas_height <= 0) {
+    return absl::InvalidArgumentError("Seam canvas dimensions must be positive");
+  }
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  const int64_t right = static_cast<int64_t>(layout->offset_x) + layout->width;
+  const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
+  const bool matches_native_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == native_canvas_width && layout->height == native_canvas_height;
+  const bool matches_effective_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == effective_canvas_width && layout->height == effective_canvas_height;
+  if (matches_native_canvas || matches_effective_canvas)
+    return absl::OkStatus();
+  if (!layout->has_offset && layout->offset_x == 0 && layout->offset_y == 0) {
+    return absl::FailedPreconditionError(
+        "PNG seam has full-canvas origin but matches neither the native nor capped mapping canvas: " + path.string() +
+        " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
+        " native-canvas=" + std::to_string(native_canvas_width) + "x" + std::to_string(native_canvas_height) +
+        " capped-canvas=" + std::to_string(effective_canvas_width) + "x" + std::to_string(effective_canvas_height));
+  }
+  if (layout->offset_x < 0 || layout->offset_y < 0 || right > native_canvas_width || bottom > native_canvas_height) {
+    return absl::FailedPreconditionError(
+        "PNG seam crop lies outside its mapping canvas: " + path.string() + " crop=" + std::to_string(layout->width) +
+        "x" + std::to_string(layout->height) + "+" + std::to_string(layout->offset_x) + "+" +
+        std::to_string(layout->offset_y) + " canvas=" + std::to_string(native_canvas_width) + "x" +
+        std::to_string(native_canvas_height));
   }
   return absl::OkStatus();
 }
@@ -1223,6 +1270,16 @@ absl::Status HuginProject::ValidateAndNormalizeSeam(
     double scale) {
   return validate_and_normalize_seam(
       seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height, scale);
+}
+
+absl::Status HuginProject::ValidateSeamLayout(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  return validate_seam_layout(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
 }
 
 absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {

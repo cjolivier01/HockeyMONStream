@@ -965,45 +965,31 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   }
   CanvasSize canvas_size;
   CanvasSize effective_canvas_size;
-  double selected_scale = 1.0;
-  bool have_canvas_size = false;
+  TiffPlacement p0;
+  TiffPlacement p1;
+  HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif"));
+  HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif"));
+  HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
+  effective_canvas_size = canvas_size;
   if (max_output_width > 0) {
-    TiffPlacement p0;
-    TiffPlacement p1;
-    HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif"));
-    HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif"));
-    HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
     const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
     effective_canvas_size = scaled.size;
-    selected_scale = scaled.scale;
-    have_canvas_size = true;
-    const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(
-        fs::path(game_dir) / "seam_file.png",
-        static_cast<int>(canvas_size.width),
-        static_cast<int>(canvas_size.height),
-        static_cast<int>(effective_canvas_size.width),
-        static_cast<int>(effective_canvas_size.height),
-        selected_scale);
-    if (absl::IsFailedPrecondition(seam_status)) {
-      std::cout << "Stitching artifacts exist but seam_file.png does not match width cap " << max_output_width << ": "
-                << seam_status << std::endl;
-      return false;
-    }
-    HM_RETURN_IF_ERROR(seam_status);
   }
+  const absl::Status seam_status = HuginProject::ValidateSeamLayout(
+      fs::path(game_dir) / "seam_file.png",
+      static_cast<int>(canvas_size.width),
+      static_cast<int>(canvas_size.height),
+      static_cast<int>(effective_canvas_size.width),
+      static_cast<int>(effective_canvas_size.height));
+  if (absl::IsFailedPrecondition(seam_status)) {
+    std::cout << "Stitching artifacts exist but seam_file.png does not match the requested canvas: " << seam_status
+              << std::endl;
+    return false;
+  }
+  HM_RETURN_IF_ERROR(seam_status);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   if (!max_canvas_dimension.has_value()) {
     return true;
-  }
-  if (!have_canvas_size) {
-    auto canvas_size_result = get_mapping_canvas_size(fs::path(game_dir));
-    if (!canvas_size_result.ok()) {
-      std::cerr << "Warning: stitching artifacts exist but canvas size could not be read: "
-                << canvas_size_result.status() << std::endl;
-      return false;
-    }
-    canvas_size = *canvas_size_result;
-    effective_canvas_size = canvas_size;
   }
   if (artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension)) {
     std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height

@@ -69,6 +69,41 @@ bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, f
   return true;
 }
 
+uint32_t png_crc32(const unsigned char* data, size_t size) {
+  uint32_t crc = 0xffffffffU;
+  for (size_t index = 0; index < size; ++index) {
+    crc ^= data[index];
+    for (int bit = 0; bit < 8; ++bit)
+      crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+  }
+  return crc ^ 0xffffffffU;
+}
+
+void append_big_endian_u32(std::vector<unsigned char>* output, uint32_t value) {
+  output->push_back(static_cast<unsigned char>(value >> 24));
+  output->push_back(static_cast<unsigned char>(value >> 16));
+  output->push_back(static_cast<unsigned char>(value >> 8));
+  output->push_back(static_cast<unsigned char>(value));
+}
+
+bool add_png_pixel_offset(const fs::path& path, int32_t x, int32_t y) {
+  std::ifstream input(path, std::ios::binary);
+  std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  if (png.size() < 33 || std::string(png.begin() + 12, png.begin() + 16) != "IHDR")
+    return false;
+  std::vector<unsigned char> chunk;
+  append_big_endian_u32(&chunk, 9);
+  chunk.insert(chunk.end(), {'o', 'F', 'F', 's'});
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(x));
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(y));
+  chunk.push_back(0);
+  append_big_endian_u32(&chunk, png_crc32(chunk.data() + 4, 13));
+  png.insert(png.begin() + 33, chunk.begin(), chunk.end());
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
+}
+
 void set_write_time(const fs::path& path, int seconds_after_base) {
   const auto base = fs::file_time_type::clock::now() - std::chrono::seconds(60);
   fs::last_write_time(path, base + std::chrono::seconds(seconds_after_base));
@@ -92,6 +127,11 @@ bool write_valid_stitching_artifacts(const fs::path& dir) {
     if (!write_text_file(dir / filename, "placeholder")) {
       return false;
     }
+  }
+  cv::Mat seam(32, 160, CV_8U, cv::Scalar(0));
+  seam.colRange(80, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
   }
 
   set_write_time(dir / "left.png", 0);
@@ -429,7 +469,7 @@ bool expect_cropped_enblend_seam_is_normalized(const fs::path& tmpdir) {
   }
   cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
   seam.colRange(45, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
     return false;
   }
 
@@ -485,6 +525,27 @@ bool expect_mismatched_capped_seam_is_not_configured(const fs::path& tmpdir) {
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
   if (!configured.ok() || *configured) {
     std::cerr << "mismatched capped seam must make capped stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_stale_capped_seam_is_not_configured_when_uncapped(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "stale_capped_seam_uncapped";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(20, 80, CV_8U, cv::Scalar(0));
+  seam.colRange(40, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+  if (!configured.ok() || *configured) {
+    std::cerr << "stale capped seam must make uncapped stitching artifacts unconfigured: " << configured.status()
               << std::endl;
     return false;
   }
@@ -557,6 +618,10 @@ int main() {
 
   if (!expect_mismatched_capped_seam_is_not_configured(tmpdir)) {
     finish(tmpdir, 15);
+  }
+
+  if (!expect_stale_capped_seam_is_not_configured_when_uncapped(tmpdir)) {
+    finish(tmpdir, 16);
   }
 
   finish(tmpdir, 0);
