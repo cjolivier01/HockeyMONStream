@@ -405,8 +405,8 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
   const bool metadata_valid = TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) &&
       TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height) && TIFFGetField(tif, TIFFTAG_XRESOLUTION, &x_resolution) &&
       TIFFGetField(tif, TIFFTAG_YRESOLUTION, &y_resolution);
-  (void)TIFFGetField(tif, TIFFTAG_XPOSITION, &x_position);
-  (void)TIFFGetField(tif, TIFFTAG_YPOSITION, &y_position);
+  const bool placement_valid =
+      TIFFGetField(tif, TIFFTAG_XPOSITION, &x_position) && TIFFGetField(tif, TIFFTAG_YPOSITION, &y_position);
   auto dimensions_status = validate_decoded_dimensions(width, height, maximum_dimension, "Hugin TIFF " + path.string());
   const tmsize_t scanline_size = dimensions_status.ok() ? TIFFScanlineSize(tif) : 0;
   bool pixels_valid = dimensions_status.ok() && scanline_size > 0 && scanline_size <= 256 * 1024 * 1024;
@@ -419,9 +419,10 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
   TIFFClose(tif);
   if (!dimensions_status.ok())
     return dimensions_status;
-  if (!metadata_valid || !pixels_valid || width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
-      height > std::numeric_limits<int>::max() || !std::isfinite(x_resolution) || !std::isfinite(y_resolution) ||
-      x_resolution <= 0.0f || y_resolution <= 0.0f || !std::isfinite(x_position) || !std::isfinite(y_position)) {
+  if (!metadata_valid || !placement_valid || !pixels_valid || width == 0 || height == 0 ||
+      width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max() ||
+      !std::isfinite(x_resolution) || !std::isfinite(y_resolution) || x_resolution <= 0.0f || y_resolution <= 0.0f ||
+      !std::isfinite(x_position) || !std::isfinite(y_position)) {
     return absl::FailedPreconditionError("Hugin TIFF metadata or pixel data is invalid: " + path.string());
   }
   const float x = x_position * x_resolution;

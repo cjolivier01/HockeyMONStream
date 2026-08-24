@@ -70,6 +70,37 @@ bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, f
   return true;
 }
 
+bool write_mapping_tiff_without_position(const fs::path& path, uint32_t width, uint32_t height) {
+  TIFF* tif = TIFFOpen(path.c_str(), "w");
+  if (!tif) {
+    std::cerr << "Failed to open TIFF " << path << " for writing" << std::endl;
+    return false;
+  }
+
+  TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tif, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 8);
+  TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, height);
+  TIFFSetField(tif, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tif, TIFFTAG_YRESOLUTION, 1.0f);
+
+  std::vector<uint8_t> row(width, 0);
+  for (uint32_t y = 0; y < height; ++y) {
+    if (TIFFWriteScanline(tif, row.data(), y, 0) < 0) {
+      std::cerr << "Failed to write TIFF scanline " << y << " in " << path << std::endl;
+      TIFFClose(tif);
+      return false;
+    }
+  }
+
+  TIFFClose(tif);
+  return true;
+}
+
 uint32_t png_crc32(const unsigned char* data, size_t size) {
   uint32_t crc = 0xffffffffU;
   for (size_t index = 0; index < size; ++index) {
@@ -558,8 +589,8 @@ bool expect_native_over_cap_mappings_are_not_configured(const fs::path& tmpdir) 
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
   if (!configured.ok() || *configured) {
-    std::cerr << "native over-cap mapping artifacts must be regenerated for capped stitching: "
-              << configured.status() << std::endl;
+    std::cerr << "native over-cap mapping artifacts must be regenerated for capped stitching: " << configured.status()
+              << std::endl;
     return false;
   }
   return true;
@@ -652,6 +683,21 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_missing_placement_tiff_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "missing_placement_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff_without_position(dir / "mapping_0001.tif", 64, 32)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+  if (configured.ok()) {
+    std::cerr << "missing TIFF placement tags must fail artifact validation" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -738,6 +784,10 @@ int main() {
 
   if (!expect_uniform_seam_is_not_configured(tmpdir)) {
     finish(tmpdir, 17);
+  }
+
+  if (!expect_missing_placement_tiff_is_not_configured(tmpdir)) {
+    finish(tmpdir, 21);
   }
 
   finish(tmpdir, 0);

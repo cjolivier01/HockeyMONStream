@@ -346,9 +346,7 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   const bool have_dims =
       TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
   const bool have_res = TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres) && TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres);
-
-  (void)TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos);
-  (void)TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
+  const bool have_position = TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos) && TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
 
   TIFFClose(tif);
 
@@ -361,6 +359,9 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   }
   if (!have_res || !std::isfinite(xres) || !std::isfinite(yres) || xres <= 0.0f || yres <= 0.0f) {
     return absl::InvalidArgumentError(TO_STRING("Missing TIFF resolution: " << path.string()));
+  }
+  if (!have_position) {
+    return absl::InvalidArgumentError(TO_STRING("Missing TIFF placement: " << path.string()));
   }
 
   const float x_px = xpos * xres;
@@ -972,8 +973,8 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
   if (max_output_width > 0 && canvas_size.width > max_output_width) {
     std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
-              << " exceeds requested max output width " << max_output_width
-              << "; regenerating capped mapping artifacts" << std::endl;
+              << " exceeds requested max output width " << max_output_width << "; regenerating capped mapping artifacts"
+              << std::endl;
     return false;
   }
   effective_canvas_size = canvas_size;
