@@ -584,7 +584,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
   absl::MutexLock lk(&stitcher_mu_);
   if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
-    if (!control_masks.load(config_file_)) {
+    if (!control_masks.load(config_file_, max_output_width_)) {
       std::string config_file_dir = config_file_;
       if (one_pass_mode_) {
         // In one-pass mode, allow the pipeline to bootstrap without masks.

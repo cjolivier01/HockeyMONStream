@@ -802,7 +802,7 @@ absl::Status validate_and_normalize_seam(
   const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
   const bool matches_native_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
       layout->width == native_canvas_width && layout->height == native_canvas_height;
-  const bool matches_effective_canvas = !layout->has_offset && layout->offset_x == 0 && layout->offset_y == 0 &&
+  const bool matches_effective_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
       layout->width == effective_canvas_width && layout->height == effective_canvas_height;
   if (matches_effective_canvas) {
     auto seam = decode_nonuniform_seam(path, *layout);

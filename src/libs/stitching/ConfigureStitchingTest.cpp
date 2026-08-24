@@ -515,6 +515,31 @@ bool expect_origin_zero_cropped_enblend_seam_is_scaled_for_cap(const fs::path& t
   return true;
 }
 
+bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "effective_size_offset_seam_cap";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
+  seam.colRange(40, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/80);
+  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!configured.ok() || !*configured || !status.ok() || preserved.size() != seam.size() ||
+      cv::norm(preserved, seam, cv::NORM_INF) != 0) {
+    std::cerr << "effective-size capped seam with oFFs origin must not be scaled a second time: configured="
+              << configured.status() << " status=" << status << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_mismatched_capped_seam_is_rejected(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "mismatched_capped_seam";
   fs::remove_all(dir);
@@ -664,6 +689,10 @@ int main() {
 
   if (!expect_origin_zero_cropped_enblend_seam_is_scaled_for_cap(tmpdir)) {
     finish(tmpdir, 18);
+  }
+
+  if (!expect_effective_size_offset_seam_is_not_scaled_again(tmpdir)) {
+    finish(tmpdir, 19);
   }
 
   if (!expect_mismatched_capped_seam_is_rejected(tmpdir)) {
