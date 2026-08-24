@@ -275,6 +275,11 @@ struct CanvasSize {
   size_t height{0};
 };
 
+struct ScaledCanvas {
+  CanvasSize size;
+  double scale{1.0};
+};
+
 std::optional<size_t> get_positive_env_size(const char* name) {
   const char* value = std::getenv(name);
   if (!value || !*value) {
@@ -397,13 +402,13 @@ absl::StatusOr<CanvasSize> normalize_and_measure_canvas(TiffPlacement* p0, TiffP
   return CanvasSize{.width = canvas_width, .height = canvas_height};
 }
 
-CanvasSize scale_canvas_to_max_output_width(
+ScaledCanvas scale_canvas_to_max_output_width(
     const TiffPlacement& p0,
     const TiffPlacement& p1,
     const CanvasSize& native,
     size_t max_output_width) {
   if (max_output_width == 0 || native.width <= max_output_width)
-    return native;
+    return ScaledCanvas{.size = native, .scale = 1.0};
   auto size_for_scale = [&](double scale) {
     auto scaled_extent = [scale](const TiffPlacement& placement) {
       const auto x = static_cast<int>(std::floor(placement.x_px * scale));
@@ -421,9 +426,8 @@ CanvasSize scale_canvas_to_max_output_width(
   };
   const double direct_scale = static_cast<double>(max_output_width) / static_cast<double>(native.width);
   CanvasSize direct_size = size_for_scale(direct_scale);
-  if (direct_size.width <= max_output_width) {
-    return direct_size;
-  }
+  if (direct_size.width <= max_output_width)
+    return ScaledCanvas{.size = direct_size, .scale = direct_scale};
   double low = 0.0;
   double high = direct_scale;
   for (int iteration = 0; iteration < 32; ++iteration) {
@@ -434,7 +438,8 @@ CanvasSize scale_canvas_to_max_output_width(
       high = mid;
     }
   }
-  return size_for_scale(low > 0.0 ? low : high);
+  const double selected_scale = low > 0.0 ? low : high;
+  return ScaledCanvas{.size = size_for_scale(selected_scale), .scale = selected_scale};
 }
 
 absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
@@ -460,7 +465,7 @@ absl::StatusOr<CanvasSize> get_effective_mapping_canvas_size(const fs::path& gam
   HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(game_dir / "mapping_0001.tif"));
   CanvasSize native;
   HM_ASSIGN_OR_RETURN(native, normalize_and_measure_canvas(&p0, &p1));
-  return scale_canvas_to_max_output_width(p0, p1, native, max_output_width);
+  return scale_canvas_to_max_output_width(p0, p1, native, max_output_width).size;
 }
 
 bool artifacts_exceed_live_canvas_limit(
@@ -958,26 +963,50 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   if (!up_to_date) {
     return false;
   }
+  CanvasSize canvas_size;
+  CanvasSize effective_canvas_size;
+  double selected_scale = 1.0;
+  bool have_canvas_size = false;
+  if (max_output_width > 0) {
+    TiffPlacement p0;
+    TiffPlacement p1;
+    HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif"));
+    HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif"));
+    HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
+    const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
+    effective_canvas_size = scaled.size;
+    selected_scale = scaled.scale;
+    have_canvas_size = true;
+    const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(
+        fs::path(game_dir) / "seam_file.png",
+        static_cast<int>(canvas_size.width),
+        static_cast<int>(canvas_size.height),
+        static_cast<int>(effective_canvas_size.width),
+        static_cast<int>(effective_canvas_size.height),
+        selected_scale);
+    if (absl::IsFailedPrecondition(seam_status)) {
+      std::cout << "Stitching artifacts exist but seam_file.png does not match width cap " << max_output_width << ": "
+                << seam_status << std::endl;
+      return false;
+    }
+    HM_RETURN_IF_ERROR(seam_status);
+  }
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   if (!max_canvas_dimension.has_value()) {
     return true;
   }
-  auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
-  if (!canvas_size.ok()) {
-    std::cerr << "Warning: stitching artifacts exist but canvas size could not be read: " << canvas_size.status()
-              << std::endl;
-    return false;
-  }
-  CanvasSize effective_canvas_size = *canvas_size;
-  if (max_output_width > 0) {
-    auto scaled_canvas_size = get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width);
-    if (!scaled_canvas_size.ok()) {
-      return scaled_canvas_size.status();
+  if (!have_canvas_size) {
+    auto canvas_size_result = get_mapping_canvas_size(fs::path(game_dir));
+    if (!canvas_size_result.ok()) {
+      std::cerr << "Warning: stitching artifacts exist but canvas size could not be read: "
+                << canvas_size_result.status() << std::endl;
+      return false;
     }
-    effective_canvas_size = *scaled_canvas_size;
+    canvas_size = *canvas_size_result;
+    effective_canvas_size = canvas_size;
   }
-  if (artifacts_exceed_live_canvas_limit(*canvas_size, effective_canvas_size, *max_canvas_dimension)) {
-    std::cout << "Stitching artifacts canvas " << canvas_size->width << "x" << canvas_size->height
+  if (artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension)) {
+    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
               << " exceeds live-stitch max dimension " << *max_canvas_dimension << " even after width cap "
               << max_output_width << " produces " << effective_canvas_size.width << "x" << effective_canvas_size.height
               << "; regenerating at a smaller scale" << std::endl;
@@ -1047,8 +1076,11 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t 
   CanvasSize measured_canvas;
   HM_ASSIGN_OR_RETURN(measured_canvas, normalize_and_measure_canvas(&p0, &p1));
   CanvasSize effective_canvas = measured_canvas;
+  double selected_scale = 1.0;
   if (max_output_width > 0) {
-    effective_canvas = scale_canvas_to_max_output_width(p0, p1, measured_canvas, max_output_width);
+    const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, measured_canvas, max_output_width);
+    effective_canvas = scaled.size;
+    selected_scale = scaled.scale;
   }
   const int canvas_width = static_cast<int>(effective_canvas.width);
   const int canvas_height = static_cast<int>(effective_canvas.height);
@@ -1057,7 +1089,8 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t 
       static_cast<int>(measured_canvas.width),
       static_cast<int>(measured_canvas.height),
       canvas_width,
-      canvas_height);
+      canvas_height,
+      selected_scale);
   if (seam_status.ok())
     return absl::OkStatus();
   if (!absl::IsFailedPrecondition(seam_status))
@@ -1074,16 +1107,13 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t 
   std::cerr << "Existing seam mask is unusable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits regeneration: " << seam_status
             << std::endl;
 
-  const double scale = measured_canvas.width > 0
-      ? static_cast<double>(effective_canvas.width) / static_cast<double>(measured_canvas.width)
-      : 1.0;
-  const int x0 = static_cast<int>(std::floor(p0.x_px * scale));
-  const int y0 = static_cast<int>(std::floor(p0.y_px * scale));
-  const int x1 = static_cast<int>(std::floor(p1.x_px * scale));
-  const int y1 = static_cast<int>(std::floor(p1.y_px * scale));
+  const int x0 = static_cast<int>(std::floor(p0.x_px * selected_scale));
+  const int y0 = static_cast<int>(std::floor(p0.y_px * selected_scale));
+  const int x1 = static_cast<int>(std::floor(p1.x_px * selected_scale));
+  const int y1 = static_cast<int>(std::floor(p1.y_px * selected_scale));
 
-  const int x0_end = static_cast<int>(std::ceil((p0.x_px + p0.width) * scale));
-  const int x1_end = static_cast<int>(std::ceil((p1.x_px + p1.width) * scale));
+  const int x0_end = static_cast<int>(std::ceil((p0.x_px + p0.width) * selected_scale));
+  const int x1_end = static_cast<int>(std::ceil((p1.x_px + p1.width) * selected_scale));
 
   const int overlap_start = std::max(x0, x1);
   const int overlap_end = std::min(x0_end, x1_end);
@@ -1110,8 +1140,8 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t 
     mask.colRange(seam_x, canvas_width).setTo(255);
   }
 
-  const int y0_end = static_cast<int>(std::ceil((p0.y_px + p0.height) * scale));
-  const int y1_end = static_cast<int>(std::ceil((p1.y_px + p1.height) * scale));
+  const int y0_end = static_cast<int>(std::ceil((p0.y_px + p0.height) * selected_scale));
+  const int y1_end = static_cast<int>(std::ceil((p1.y_px + p1.height) * selected_scale));
   const int x0_clamped = std::clamp(x0, 0, canvas_width);
   const int x0_end_clamped = std::clamp(x0_end, 0, canvas_width);
   const int x1_clamped = std::clamp(x1, 0, canvas_width);

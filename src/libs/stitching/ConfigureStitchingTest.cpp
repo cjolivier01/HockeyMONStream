@@ -470,6 +470,27 @@ bool expect_mismatched_capped_seam_is_rejected(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_mismatched_capped_seam_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "mismatched_capped_seam_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(20, 60, CV_8U, cv::Scalar(0));
+  seam.colRange(30, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
+  if (!configured.ok() || *configured) {
+    std::cerr << "mismatched capped seam must make capped stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -532,6 +553,10 @@ int main() {
 
   if (!expect_mismatched_capped_seam_is_rejected(tmpdir)) {
     finish(tmpdir, 14);
+  }
+
+  if (!expect_mismatched_capped_seam_is_not_configured(tmpdir)) {
+    finish(tmpdir, 15);
   }
 
   finish(tmpdir, 0);

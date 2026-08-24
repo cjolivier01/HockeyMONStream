@@ -718,10 +718,14 @@ absl::Status validate_and_normalize_seam(
     int native_canvas_width,
     int native_canvas_height,
     int effective_canvas_width,
-    int effective_canvas_height) {
+    int effective_canvas_height,
+    double scale) {
   if (native_canvas_width <= 0 || native_canvas_height <= 0 || effective_canvas_width <= 0 ||
       effective_canvas_height <= 0) {
     return absl::InvalidArgumentError("Seam canvas dimensions must be positive");
+  }
+  if (!std::isfinite(scale) || scale <= 0.0) {
+    return absl::InvalidArgumentError("Seam scale must be positive and finite");
   }
   if (native_canvas_width == effective_canvas_width && native_canvas_height == effective_canvas_height) {
     return validate_and_normalize_seam(path, native_canvas_width, native_canvas_height);
@@ -760,7 +764,6 @@ absl::Status validate_and_normalize_seam(
   if (!seam.ok())
     return seam.status();
 
-  const double scale = static_cast<double>(effective_canvas_width) / static_cast<double>(native_canvas_width);
   const int scaled_left =
       std::clamp(static_cast<int>(std::floor(layout->offset_x * scale)), 0, effective_canvas_width - 1);
   const int scaled_top =
@@ -1206,8 +1209,20 @@ absl::Status HuginProject::ValidateAndNormalizeSeam(
     int native_canvas_height,
     int effective_canvas_width,
     int effective_canvas_height) {
+  const double scale = static_cast<double>(effective_canvas_width) / static_cast<double>(native_canvas_width);
   return validate_and_normalize_seam(
-      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height, scale);
+}
+
+absl::Status HuginProject::ValidateAndNormalizeSeam(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height,
+    double scale) {
+  return validate_and_normalize_seam(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height, scale);
 }
 
 absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {
