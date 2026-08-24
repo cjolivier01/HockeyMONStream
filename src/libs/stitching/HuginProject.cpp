@@ -1670,7 +1670,7 @@ absl::Status HuginProject::Configure(
       auto dimensions = ParseCanvasSize(*optimized);
       if (!dimensions.ok())
         return dimensions.status();
-      auto remap_canvas = measure_staged_remap_canvas(staging, options.max_canvas_dimension);
+      auto remap_canvas = measure_staged_remap_canvas(staging, std::nullopt);
       if (!remap_canvas.ok())
         return remap_canvas.status();
       const bool width_ok = !options.max_output_width.has_value() ||
