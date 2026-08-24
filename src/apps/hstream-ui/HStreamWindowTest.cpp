@@ -49,6 +49,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -107,6 +108,35 @@ bool expect(bool condition, const std::string& message) {
     return false;
   }
   return true;
+}
+
+std::optional<fs::path> find_test_baseline_yaml() {
+  auto check = [](const fs::path& path) -> std::optional<fs::path> {
+    std::error_code error;
+    if (fs::is_regular_file(path, error) && !error)
+      return path;
+    return std::nullopt;
+  };
+  if (const char* workspace = std::getenv("BUILD_WORKSPACE_DIRECTORY"); workspace && *workspace) {
+    if (auto found = check(fs::path(workspace) / "configs" / "baseline.yaml"))
+      return found;
+  }
+  if (const char* test_srcdir = std::getenv("TEST_SRCDIR"); test_srcdir && *test_srcdir) {
+    const char* test_workspace = std::getenv("TEST_WORKSPACE");
+    if (auto found = check(
+            fs::path(test_srcdir) / (test_workspace && *test_workspace ? test_workspace : "kstream") / "configs" /
+            "baseline.yaml")) {
+      return found;
+    }
+  }
+  std::error_code error;
+  for (fs::path path = fs::current_path(error); !error && !path.empty(); path = path.parent_path()) {
+    if (auto found = check(path / "configs" / "baseline.yaml"))
+      return found;
+    if (path == path.parent_path())
+      break;
+  }
+  return std::nullopt;
 }
 
 bool expect_x11_widget_state(
@@ -6753,14 +6783,28 @@ bool test_camera_controls(HStreamWindow* window) {
 
 bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory) {
   const QByteArray original_home = qgetenv("HOME");
+  const QByteArray original_config_root = qgetenv("HM_CONFIG_ROOT");
   QTemporaryDir user_home;
   if (!user_home.isValid())
     return false;
+  QTemporaryDir baseline_root;
+  if (!baseline_root.isValid())
+    return false;
+  const auto source_baseline = find_test_baseline_yaml();
+  if (!source_baseline.has_value())
+    return expect(false, "Could not locate bundled baseline.yaml for user-default fixture");
+  YAML::Node baseline = YAML::LoadFile(source_baseline->string());
+  baseline["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1234;
+  {
+    std::ofstream out(QDir(baseline_root.path()).filePath("baseline.yaml").toStdString());
+    out << YAML::Dump(baseline) << '\n';
+  }
   const QString user_config_directory = QDir(user_home.path()).filePath(".hstream");
   if (!QDir().mkpath(user_config_directory))
     return false;
   YAML::Node user_config(YAML::NodeType::Map);
   user_config["stitching"]["stitch_frame_time"] = "00:00:08";
+  user_config["stitching"]["max_output_width"] = YAML::Node(YAML::NodeType::Null);
   user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
   user_config["stitching"]["control_point_matcher"] = "dedode-lightglue";
   user_config["stitching"]["mapping_backend"] = "RANSAC";
@@ -6804,6 +6848,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
 
   qputenv("HOME", user_home.path().toLocal8Bit());
+  qputenv("HM_CONFIG_ROOT", baseline_root.path().toLocal8Bit());
   bool ok = true;
   {
     HStreamWindow user_default_window;
@@ -6815,6 +6860,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* stop = require_child<QPushButton>(&user_default_window, "stopPipelineButton");
     auto* mode = require_child<QComboBox>(&user_default_window, "runModeCombo");
     auto* stitch_frame_time = require_child<QTimeEdit>(&user_default_window, "stitchFrameTimeEdit");
+    auto* stitch_max_output_width = require_child<QSpinBox>(&user_default_window, "stitchMaxOutputWidthSpin");
     auto* control_point_matcher = require_child<QComboBox>(&user_default_window, "controlPointMatcherCombo");
     auto* mapping_backend = require_child<QComboBox>(&user_default_window, "mappingBackendCombo");
     auto* stitch_rotation = require_child<QSlider>(&user_default_window, "cameraSlider_Stitch_Rotate_Degrees");
@@ -6822,18 +6868,19 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
         require_child<QSlider>(&user_default_window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
     auto* fixed_edge_right =
         require_child<QSlider>(&user_default_window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
-    ok = game_id && create && save && start && stop && mode && stitch_frame_time && control_point_matcher &&
-        mapping_backend && stitch_rotation && fixed_edge_left && fixed_edge_right;
+    ok = game_id && create && save && start && stop && mode && stitch_frame_time && stitch_max_output_width &&
+        control_point_matcher && mapping_backend && stitch_rotation && fixed_edge_left && fixed_edge_right;
     if (ok) {
       game_id->setText("ui-user-stitch-default");
       activate(create);
       ok &= expect(
           stitch_frame_time->time() == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
+              stitch_max_output_width->value() == 0 &&
               control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
               mapping_backend->currentData().toString() == "opencv-affine-ransac" && fixed_edge_left->value() == 0 &&
               fixed_edge_right->value() == 0 && !save->isEnabled(),
           "User-level defaults must initialize the UI, reject unimplemented matchers, accept mapping aliases, and "
-          "generated private backend choices must not mask them");
+          "generated private backend choices and lower-layer max-width aliases must not mask them");
       stitch_frame_time->setTime(QTime(0, 0, 0));
       QApplication::processEvents();
       ok &= expect(save->isEnabled(), "Zero must remain an explicit edit against a nonzero user-level default");
@@ -6886,6 +6933,10 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     qunsetenv("HOME");
   else
     qputenv("HOME", original_home);
+  if (original_config_root.isEmpty())
+    qunsetenv("HM_CONFIG_ROOT");
+  else
+    qputenv("HM_CONFIG_ROOT", original_config_root);
   return ok;
 }
 

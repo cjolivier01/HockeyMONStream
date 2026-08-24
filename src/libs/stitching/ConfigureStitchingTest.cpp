@@ -3,6 +3,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <tiffio.h>
 #include <yaml-cpp/yaml.h>
 
@@ -485,6 +486,35 @@ bool expect_cropped_enblend_seam_is_normalized(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_origin_zero_cropped_enblend_seam_is_scaled_for_cap(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "origin_zero_cropped_enblend_seam_cap";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+  cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
+  seam.colRange(45, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
+  }
+
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/48);
+  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  cv::Mat scaled;
+  cv::resize(seam, scaled, cv::Size(45, 15), 0.0, 0.0, cv::INTER_NEAREST);
+  cv::Mat expected;
+  cv::copyMakeBorder(scaled, expected, 0, 1, 0, 3, cv::BORDER_REPLICATE);
+  if (!status.ok() || preserved.size() != cv::Size(48, 16) || cv::norm(preserved, expected, cv::NORM_INF) != 0) {
+    std::cerr << "origin-zero cropped enblend seam must be scaled and padded for capped stitching: " << status
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_mismatched_capped_seam_is_rejected(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "mismatched_capped_seam";
   fs::remove_all(dir);
@@ -630,6 +660,10 @@ int main() {
 
   if (!expect_cropped_enblend_seam_is_normalized(tmpdir)) {
     finish(tmpdir, 13);
+  }
+
+  if (!expect_origin_zero_cropped_enblend_seam_is_scaled_for_cap(tmpdir)) {
+    finish(tmpdir, 18);
   }
 
   if (!expect_mismatched_capped_seam_is_rejected(tmpdir)) {

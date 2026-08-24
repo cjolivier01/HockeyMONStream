@@ -1907,6 +1907,10 @@ void HStreamWindow::loadBaselineDefaults() {
     throw std::runtime_error(user_overlay.status().ToString());
   baseline_config_ = merge_yaml_maps(loaded->values, *user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
+  YAML::Node user_stitch_max_output_width;
+  const bool user_clears_stitch_max_output_width =
+      lookup_yaml_path(*user_overlay, "stitching.max_output_width", &user_stitch_max_output_width) &&
+      user_stitch_max_output_width.IsNull();
 
   auto require = [this](const QString& path) {
     YAML::Node value;
@@ -1965,8 +1969,8 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!parsed_stitch_frame_time.has_value())
     throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
   default_stitch_frame_time_ = format_stitch_frame_time(*parsed_stitch_frame_time);
-  default_stitch_max_output_width_ =
-      read_stitch_max_output_width_from_config(baseline_config_, 0, std::numeric_limits<int>::max(), true);
+  default_stitch_max_output_width_ = read_stitch_max_output_width_from_config(
+      baseline_config_, 0, std::numeric_limits<int>::max(), !user_clears_stitch_max_output_width);
   YAML::Node control_point_matcher;
   if (lookup_yaml_path(baseline_config_, "stitching.control_point_matcher", &control_point_matcher) &&
       control_point_matcher.IsScalar()) {

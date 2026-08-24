@@ -704,24 +704,6 @@ void set_all_field_values(
   }
 }
 
-absl::StatusOr<std::optional<std::tuple<int, int>>> get_canvas_size(
-    const std::string& game_dir,
-    int max_output_width = 0) {
-  // Control masks require a valid seam_file.png. Propagate validation errors so
-  // the pipeline cannot quietly boot into a gray passthrough mode.
-  HM_RETURN_IF_ERROR(stitching::maybe_create_default_seam_file(game_dir, max_output_width));
-  auto artifact_lock = stitching::HuginProject::RecoverAndLock(game_dir);
-  if (!artifact_lock.ok()) {
-    return artifact_lock.status();
-  }
-  auto canvas_size = stitching::stitching_canvas_size(game_dir, max_output_width);
-  if (!canvas_size.ok()) {
-    return canvas_size.status();
-  }
-  return std::optional<std::tuple<int, int>>(
-      std::make_tuple(static_cast<int>(canvas_size->width), static_cast<int>(canvas_size->height)));
-}
-
 absl::StatusOr<int> read_stitch_max_output_width_node(const YAML::Node& node, const std::string& path) {
   if (!node.IsDefined() || node.IsNull())
     return 0;
@@ -2717,7 +2699,11 @@ absl::Status Configurator::set_output_dimensions(
       return stitching_configured.status();
     }
     if (stitching_configured.value()) {
-      HM_ASSIGN_OR_RETURN(canvas_size_result, get_canvas_size(game_dir, max_output_width));
+      auto canvas_size = stitching::stitching_canvas_size(game_dir.string(), max_output_width);
+      if (!canvas_size.ok()) {
+        return canvas_size.status();
+      }
+      canvas_size_result = std::make_tuple(static_cast<int>(canvas_size->width), static_cast<int>(canvas_size->height));
     }
     if (canvas_size_result) {
       size_t canvas_width = std::get<0>(*canvas_size_result);
