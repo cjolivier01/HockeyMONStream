@@ -1440,7 +1440,11 @@ void remove_stitch_max_output_width_native_aliases(YAML::Node config) {
   }
 }
 
-int read_stitch_max_output_width_from_config(YAML::Node config, int default_value, int maximum_value) {
+int read_stitch_max_output_width_from_config(
+    YAML::Node config,
+    int default_value,
+    int maximum_value,
+    bool native_fallback_for_null_canonical = false) {
   auto read_node = [&](const QString& path, const YAML::Node& node) -> int {
     if (node.IsNull())
       return 0;
@@ -1453,7 +1457,8 @@ int read_stitch_max_output_width_from_config(YAML::Node config, int default_valu
   };
   YAML::Node value;
   if (lookup_yaml_path(config, "stitching.max_output_width", &value)) {
-    return read_node("stitching.max_output_width", value);
+    if (!value.IsNull() || !native_fallback_for_null_canonical)
+      return read_node("stitching.max_output_width", value);
   }
   for (const char* path : {
            "pipeline.hmstitcher.properties.max-output-width",
@@ -1960,15 +1965,8 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!parsed_stitch_frame_time.has_value())
     throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
   default_stitch_frame_time_ = format_stitch_frame_time(*parsed_stitch_frame_time);
-  YAML::Node max_output_width;
-  if (lookup_yaml_path(baseline_config_, "stitching.max_output_width", &max_output_width) &&
-      !max_output_width.IsNull()) {
-    if (!max_output_width.IsScalar())
-      throw std::runtime_error("Effective baseline stitching.max_output_width must be null or a scalar");
-    default_stitch_max_output_width_ = integer("stitching.max_output_width");
-    if (default_stitch_max_output_width_ < 0)
-      throw std::runtime_error("Effective baseline stitching.max_output_width must be non-negative");
-  }
+  default_stitch_max_output_width_ =
+      read_stitch_max_output_width_from_config(baseline_config_, 0, std::numeric_limits<int>::max(), true);
   YAML::Node control_point_matcher;
   if (lookup_yaml_path(baseline_config_, "stitching.control_point_matcher", &control_point_matcher) &&
       control_point_matcher.IsScalar()) {

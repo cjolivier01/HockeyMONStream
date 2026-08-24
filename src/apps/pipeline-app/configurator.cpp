@@ -1711,61 +1711,112 @@ absl::Status Configurator::map_common_config_keys() {
     }
     YAML::Node stitcher_properties = stitcher["properties"];
     YAML::Node stitcher_private_properties = stitcher["private-properties"];
-    for (const char* alias : {"max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
-      if (!stitcher_properties["max-output-width"].IsDefined() && stitcher_properties[alias].IsDefined()) {
-        stitcher_properties["max-output-width"] = stitcher_properties[alias];
-      }
-      stitcher_properties.remove(alias);
-    }
-    auto has_private_max_output_width = [&]() {
-      if (!stitcher_private_properties.IsMap())
-        return false;
-      for (const char* alias :
-           {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
-        if (stitcher_private_properties[alias].IsDefined())
-          return true;
-      }
-      return false;
-    };
     HM_RETURN_IF_ERROR(map_bool("stitching.enabled", "pipeline.hmstitcher.enable", stitcher, "enable"));
     HM_RETURN_IF_ERROR(
         map_bool("stitching.minimize_blend", "pipeline.hmstitcher.minimize-blend", stitcher, "minimize-blend"));
-    std::optional<YAML::Node> max_output_width;
-    if (stitcher_properties["max-output-width"].IsDefined() || !has_private_max_output_width() ||
-        explicit_value_rank("stitching.max_output_width") >= 1) {
-      HM_ASSIGN_OR_RETURN(
-          max_output_width,
-          canonical_source(
-              "stitching.max_output_width",
-              "pipeline.hmstitcher.properties.max-output-width",
-              stitcher_properties["max-output-width"],
-              false));
-    }
-    auto clear_lower_ranked_private_max_output_width = [&]() {
-      if (!stitcher_private_properties.IsMap())
+    struct MaxOutputWidthCandidate {
+      std::string path;
+      YAML::Node node;
+      YAML::Node container;
+      std::string key;
+      int rank;
+      int effective_rank;
+      int priority;
+      bool canonical;
+      bool private_property;
+    };
+    std::vector<MaxOutputWidthCandidate> max_output_width_candidates;
+    auto add_max_output_width_candidate = [&](const std::string& path,
+                                              const YAML::Node& node,
+                                              YAML::Node container,
+                                              const std::string& key,
+                                              int priority,
+                                              bool canonical,
+                                              bool private_property) {
+      if (!node.IsDefined())
         return;
-      const int source_rank = std::max(0, explicit_value_rank("stitching.max_output_width"));
+      const int rank = explicit_value_rank(path);
+      if (rank < 1 && node.IsNull())
+        priority = -1;
+      max_output_width_candidates.push_back(
+          {path, node, container, key, rank, std::max(0, rank), priority, canonical, private_property});
+    };
+    if (const std::optional<YAML::Node> canonical = get_node(config_, "stitching.max_output_width");
+        canonical.has_value() && canonical->IsDefined()) {
+      add_max_output_width_candidate("stitching.max_output_width", *canonical, YAML::Node(), "", 0, true, false);
+    }
+    for (const char* alias :
+         {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
+      const std::string path = std::string("pipeline.hmstitcher.properties.") + alias;
+      const std::optional<YAML::Node> node = get_node(config_, path);
+      if (!node.has_value() || !node->IsDefined())
+        continue;
+      add_max_output_width_candidate(
+          path, *node, stitcher_properties, alias, std::string(alias) == "max-output-width" ? 3 : 2, false, false);
+    }
+    if (stitcher_private_properties.IsMap()) {
       for (const char* alias :
            {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
-        const int private_rank = explicit_value_rank(std::string("pipeline.hmstitcher.private-properties.") + alias);
-        if (private_rank < source_rank)
-          stitcher_private_properties.remove(alias);
+        const std::string path = std::string("pipeline.hmstitcher.private-properties.") + alias;
+        const std::optional<YAML::Node> node = get_node(config_, path);
+        if (!node.has_value() || !node->IsDefined())
+          continue;
+        add_max_output_width_candidate(path, *node, stitcher_private_properties, alias, 1, false, true);
+      }
+    }
+    auto parse_max_output_width = [](const YAML::Node& node,
+                                     const std::string& path) -> absl::StatusOr<std::optional<int>> {
+      if (node.IsNull())
+        return std::optional<int>();
+      if (!node.IsScalar())
+        return absl::InvalidArgumentError(path + " must be null or a non-negative integer");
+      try {
+        const int value = node.as<int>();
+        if (value < 0)
+          return absl::InvalidArgumentError(path + " must be null or a non-negative integer");
+        return value;
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError("Invalid " + path + ": " + std::string(error.what()));
       }
     };
-    if (max_output_width.has_value() && (*max_output_width).IsNull()) {
-      stitcher_properties.remove("max-output-width");
-      clear_lower_ranked_private_max_output_width();
-    } else if (max_output_width.has_value()) {
-      if (!(*max_output_width).IsScalar())
-        return absl::InvalidArgumentError("stitching.max_output_width must be null or a non-negative integer");
-      try {
-        const int value = (*max_output_width).as<int>();
-        if (value < 0)
-          return absl::InvalidArgumentError("stitching.max_output_width must be null or a non-negative integer");
-        stitcher_properties["max-output-width"] = value;
-        clear_lower_ranked_private_max_output_width();
-      } catch (const YAML::Exception& error) {
-        return absl::InvalidArgumentError("Invalid stitching.max_output_width: " + std::string(error.what()));
+    if (!max_output_width_candidates.empty()) {
+      const MaxOutputWidthCandidate* winner = &max_output_width_candidates.front();
+      for (const MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
+        if (candidate.effective_rank > winner->effective_rank ||
+            (candidate.effective_rank == winner->effective_rank && candidate.priority > winner->priority)) {
+          winner = &candidate;
+        }
+      }
+      std::optional<int> value;
+      HM_ASSIGN_OR_RETURN(value, parse_max_output_width(winner->node, winner->path));
+      auto remove_lower_ranked_aliases = [&](bool preserve_public_property) {
+        for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
+          if (candidate.canonical || !candidate.container.IsMap()) {
+            continue;
+          }
+          if (preserve_public_property && !candidate.private_property && candidate.key == "max-output-width")
+            continue;
+          if (candidate.effective_rank <= winner->effective_rank)
+            candidate.container.remove(candidate.key);
+        }
+      };
+      if (!value.has_value()) {
+        if (winner->rank >= 1) {
+          stitcher_properties.remove("max-output-width");
+          remove_lower_ranked_aliases(false);
+        }
+      } else if (winner->private_property && winner->rank < 1) {
+        for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
+          if (!candidate.canonical && !candidate.private_property && candidate.container.IsMap() &&
+              candidate.effective_rank < winner->effective_rank) {
+            candidate.container.remove(candidate.key);
+          }
+        }
+      } else {
+        stitcher_properties["max-output-width"] = *value;
+        if (winner->rank >= 1)
+          explicit_value_ranks_["pipeline.hmstitcher.properties.max-output-width"] = winner->rank;
+        remove_lower_ranked_aliases(true);
       }
     }
 

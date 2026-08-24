@@ -539,6 +539,24 @@ play-tracker:
                   .as<int>() == 1536,
       "Bundled baseline null max stitched width must not clear a private-only native cap");
 
+  const fs::path ranked_width_game_dir = games / "mapping-ranked-max-width-alias";
+  fs::create_directories(ranked_width_game_dir);
+  YAML::Node lower_ranked_canonical(YAML::NodeType::Map);
+  lower_ranked_canonical["stitching"]["max_output_width"] = 1024;
+  std::ofstream(ranked_width_game_dir / "config.yaml") << YAML::Dump(lower_ranked_canonical) << '\n';
+  hm::Configurator mapping_ranked_width(
+      "mapping-ranked-max-width-alias", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_ranked_width_loaded = mapping_ranked_width.configure().ok() &&
+      mapping_ranked_width.apply_config_item("pipeline.hmstitcher.properties.stitch_max_output_width", "3072").ok();
+  const absl::Status mapping_ranked_width_status = mapping_ranked_width_loaded
+      ? mapping_ranked_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping ranked-width fixture did not load");
+  ok &= expect(
+      mapping_ranked_width_status.ok() &&
+          mapping_ranked_width.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].as<int>() == 3072 &&
+          !mapping_ranked_width.config()["pipeline"]["hmstitcher"]["properties"]["stitch_max_output_width"].IsDefined(),
+      "A higher-ranked native max-width alias must beat a lower-ranked canonical value and normalize to max-output-width");
+
   const fs::path malformed_properties_game_dir = games / "mapping-malformed-properties";
   fs::create_directories(malformed_properties_game_dir);
   YAML::Node malformed_properties(YAML::NodeType::Map);

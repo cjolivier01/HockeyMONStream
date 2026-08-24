@@ -5234,6 +5234,36 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   {
+    YAML::Node private_only(YAML::NodeType::Map);
+    private_only["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1536;
+    private_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    private_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    std::ofstream out(config);
+    out << private_only << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stitch_max_output_width->value() == 1536 && !save->isEnabled(),
+          "A private-only native max stitched width should load as the clean preset state")) {
+    return false;
+  }
+  bring_up_shadows->setValue(36);
+  activate(save);
+  const YAML::Node after_private_only_width_save = YAML::LoadFile(config.string());
+  const YAML::Node after_private_only_width_calibration =
+      after_private_only_width_save["hstream_ui"]["stitching_calibration"];
+  if (!expect(
+          after_private_only_width_save["stitching"]["max_output_width"].as<int>() == 1536 &&
+              !lookup_yaml_path(
+                  after_private_only_width_save,
+                  {"pipeline", "hmstitcher", "private-properties", "stitch_max_output_width"},
+                  nullptr) &&
+              after_private_only_width_calibration["status"].as<std::string>() == "complete" &&
+              after_private_only_width_calibration["rink_mask_status"].as<std::string>() == "complete",
+          "Saving an unedited private-only native max stitched width must preserve the cap and calibration while migrating aliases")) {
+    return false;
+  }
+  {
     YAML::Node existing(YAML::NodeType::Map);
     existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
     std::ofstream out(config);
