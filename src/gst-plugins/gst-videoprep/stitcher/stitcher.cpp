@@ -569,6 +569,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
       try_seam_repair = native_canvas.ok() && native_canvas->width <= static_cast<size_t>(max_output_width_);
     }
     if (try_seam_repair) {
+      const auto exceeds_live_limit =
+          hm::stitching::stitching_artifacts_exceed_live_canvas_limit(config_file_, max_output_width_);
+      try_seam_repair = exceeds_live_limit.ok() && !exceeds_live_limit.value();
+    }
+    if (try_seam_repair) {
       const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
       if (seam_status.ok()) {
         is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
