@@ -2611,6 +2611,45 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
   if (!legacy_max_width_invalidated)
     return false;
+
+  {
+    YAML::Node malformed_width = YAML::LoadFile(stitch_time_transition_config.string());
+    YAML::Node calibration = malformed_width["hstream_ui"]["stitching_calibration"];
+    calibration["control_points"] = control_points->value();
+    calibration["status"] = "complete";
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+    calibration.remove("invalidation_id");
+    malformed_width["stitching"]["max_output_width"] = "bad-width";
+    const auto published = hm::stitching::publish_game_config(
+        stitch_time_transition_config.parent_path(), YAML::Dump(malformed_width) + "\n");
+    if (!published.ok()) {
+      std::cerr << "Could not prepare malformed max-width Play regression: " << published << '\n';
+      return false;
+    }
+  }
+  stitch_max_output_width->setValue(2048);
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
+  activate(start);
+  const YAML::Node repaired_max_width = YAML::LoadFile(stitch_time_transition_config.string());
+  const bool malformed_max_width_repaired =
+      expect(
+          repaired_max_width["stitching"]["max_output_width"].as<int>() == 2048,
+          "Play must replace malformed existing max stitched width with the active UI value") &&
+      expect(
+          repaired_max_width["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending",
+          "Play must invalidate calibration after replacing malformed max stitched width");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
+  if (!malformed_max_width_repaired)
+    return false;
+
   stitch_max_output_width->setValue(0);
   QApplication::processEvents();
 

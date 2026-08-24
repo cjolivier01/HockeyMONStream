@@ -732,16 +732,21 @@ absl::Status validate_and_normalize_seam(
     return layout.status();
   const int64_t right = static_cast<int64_t>(layout->offset_x) + layout->width;
   const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
+  const bool matches_native_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == native_canvas_width && layout->height == native_canvas_height;
+  const bool matches_effective_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == effective_canvas_width && layout->height == effective_canvas_height;
+  if (matches_native_canvas || matches_effective_canvas) {
+    auto seam = decode_nonuniform_seam(path, *layout);
+    return seam.ok() ? absl::OkStatus() : seam.status();
+  }
+
   if (layout->offset_x < 0 || layout->offset_y < 0 || right > native_canvas_width || bottom > native_canvas_height) {
     return absl::FailedPreconditionError(
         "PNG seam crop lies outside its mapping canvas: " + path.string() + " crop=" + std::to_string(layout->width) +
         "x" + std::to_string(layout->height) + "+" + std::to_string(layout->offset_x) + "+" +
         std::to_string(layout->offset_y) + " canvas=" + std::to_string(native_canvas_width) + "x" +
         std::to_string(native_canvas_height));
-  }
-  if (layout->offset_x == 0 && layout->offset_y == 0 && layout->width == native_canvas_width &&
-      layout->height == native_canvas_height) {
-    return absl::OkStatus();
   }
 
   auto seam = decode_nonuniform_seam(path, *layout);

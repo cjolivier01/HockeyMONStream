@@ -445,6 +445,37 @@ bool expect_cropped_enblend_seam_is_normalized(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_capped_cropped_enblend_seam_is_idempotent(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "capped_cropped_enblend_seam";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+  cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
+  seam.colRange(45, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto first = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/48);
+  const cv::Mat normalized = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!first.ok() || normalized.size() != cv::Size(48, 16)) {
+    std::cerr << "capped cropped seam must normalize to the capped canvas: " << first << std::endl;
+    return false;
+  }
+
+  const auto second = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/48);
+  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!second.ok() || preserved.size() != normalized.size() || cv::norm(preserved, normalized, cv::NORM_INF) != 0) {
+    std::cerr << "already capped seam must validate without being scaled again: " << second << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -503,6 +534,10 @@ int main() {
 
   if (!expect_cropped_enblend_seam_is_normalized(tmpdir)) {
     finish(tmpdir, 13);
+  }
+
+  if (!expect_capped_cropped_enblend_seam_is_idempotent(tmpdir)) {
+    finish(tmpdir, 14);
   }
 
   finish(tmpdir, 0);

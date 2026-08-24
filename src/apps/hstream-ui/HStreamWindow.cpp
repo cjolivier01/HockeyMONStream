@@ -3570,10 +3570,15 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_mapping_backend = canonical_or_normalized_mapping_choice(
             QString::fromStdString(mapping_backend.as<std::string>()), default_mapping_backend_);
       }
-      saved_max_output_width = read_stitch_max_output_width_from_config(
-          config,
-          default_stitch_max_output_width_,
-          stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+      try {
+        saved_max_output_width = read_stitch_max_output_width_from_config(
+            config,
+            default_stitch_max_output_width_,
+            stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+      } catch (const std::exception& ex) {
+        qWarning() << "Ignoring malformed existing stitch max output width while preparing play:" << ex.what();
+        saved_max_output_width = std::numeric_limits<int>::min();
+      }
       YAML::Node status;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
