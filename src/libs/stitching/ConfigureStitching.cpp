@@ -970,6 +970,12 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif"));
   HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif"));
   HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
+  if (max_output_width > 0 && canvas_size.width > max_output_width) {
+    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
+              << " exceeds requested max output width " << max_output_width
+              << "; regenerating capped mapping artifacts" << std::endl;
+    return false;
+  }
   effective_canvas_size = canvas_size;
   if (max_output_width > 0) {
     const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
