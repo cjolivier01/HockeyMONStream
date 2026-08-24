@@ -760,6 +760,23 @@ absl::Status validate_seam_layout(
   return absl::OkStatus();
 }
 
+absl::Status validate_seam_for_configured_artifacts(
+    const fs::path& path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  const absl::Status layout_status = validate_seam_layout(
+      path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
+  if (!layout_status.ok())
+    return layout_status;
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  auto seam = decode_nonuniform_seam(path, *layout);
+  return seam.ok() ? absl::OkStatus() : seam.status();
+}
+
 absl::Status validate_and_normalize_seam(
     const fs::path& path,
     int native_canvas_width,
@@ -1279,6 +1296,16 @@ absl::Status HuginProject::ValidateSeamLayout(
     int effective_canvas_width,
     int effective_canvas_height) {
   return validate_seam_layout(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
+}
+
+absl::Status HuginProject::ValidateSeamForConfiguredArtifacts(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  return validate_seam_for_configured_artifacts(
       seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
 }
 

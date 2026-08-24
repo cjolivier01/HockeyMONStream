@@ -85,6 +85,12 @@ class HuginProject {
       int native_canvas_height,
       int effective_canvas_width,
       int effective_canvas_height);
+  static absl::Status ValidateSeamForConfiguredArtifacts(
+      const std::filesystem::path& seam_path,
+      int native_canvas_width,
+      int native_canvas_height,
+      int effective_canvas_width,
+      int effective_canvas_height);
 
   // Builds all Hugin products in a private same-filesystem directory and only
   // publishes them into game_dir after every required mapping has validated.

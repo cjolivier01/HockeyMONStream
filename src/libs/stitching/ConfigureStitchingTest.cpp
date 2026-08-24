@@ -552,6 +552,26 @@ bool expect_stale_capped_seam_is_not_configured_when_uncapped(const fs::path& tm
   return true;
 }
 
+bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "uniform_seam_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(32, 160, CV_8U, cv::Scalar(255));
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+  if (!configured.ok() || *configured) {
+    std::cerr << "uniform same-size seam must make stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -622,6 +642,10 @@ int main() {
 
   if (!expect_stale_capped_seam_is_not_configured_when_uncapped(tmpdir)) {
     finish(tmpdir, 16);
+  }
+
+  if (!expect_uniform_seam_is_not_configured(tmpdir)) {
+    finish(tmpdir, 17);
   }
 
   finish(tmpdir, 0);

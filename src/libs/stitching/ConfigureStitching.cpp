@@ -975,7 +975,7 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
     const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
     effective_canvas_size = scaled.size;
   }
-  const absl::Status seam_status = HuginProject::ValidateSeamLayout(
+  const absl::Status seam_status = HuginProject::ValidateSeamForConfiguredArtifacts(
       fs::path(game_dir) / "seam_file.png",
       static_cast<int>(canvas_size.width),
       static_cast<int>(canvas_size.height),
