@@ -493,7 +493,10 @@ absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
   return CanvasSize{.width = static_cast<size_t>(width), .height = static_cast<size_t>(height)};
 }
 
-absl::Status validate_remap_artifact_headers(const fs::path& game_dir) {
+absl::Status validate_remap_artifact_headers(
+    const fs::path& game_dir,
+    const TiffPlacement& left_placement,
+    const TiffPlacement& right_placement) {
   CanvasSize left_x;
   CanvasSize left_y;
   CanvasSize right_x;
@@ -505,6 +508,12 @@ absl::Status validate_remap_artifact_headers(const fs::path& game_dir) {
   if (left_x.width != left_y.width || left_x.height != left_y.height || right_x.width != right_y.width ||
       right_x.height != right_y.height) {
     return absl::FailedPreconditionError("Stitching remap X/Y dimensions do not match");
+  }
+  if (left_x.width != static_cast<size_t>(left_placement.width) ||
+      left_x.height != static_cast<size_t>(left_placement.height) ||
+      right_x.width != static_cast<size_t>(right_placement.width) ||
+      right_x.height != static_cast<size_t>(right_placement.height)) {
+    return absl::FailedPreconditionError("Stitching placement and remap dimensions do not match");
   }
   return absl::OkStatus();
 }
@@ -1011,7 +1020,7 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif"));
   HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif"));
   HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
-  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir));
+  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
   if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
       absl::IsNotFound(remap_status) || absl::IsResourceExhausted(remap_status)) {
     std::cout << "Stitching artifacts exist but remap TIFF metadata is invalid: " << remap_status << std::endl;

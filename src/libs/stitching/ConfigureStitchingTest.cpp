@@ -584,6 +584,10 @@ bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdi
       !write_mapping_tiff(dir / "mapping_0001.tif", 40, 16, 40.0f, 0.0f)) {
     return false;
   }
+  if (!write_remap_tiff(dir / "mapping_0000_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0000_y.tif", 40, 16) ||
+      !write_remap_tiff(dir / "mapping_0001_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0001_y.tif", 40, 16)) {
+    return false;
+  }
   cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
   seam.colRange(40, seam.cols).setTo(255);
   if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
@@ -745,6 +749,22 @@ bool expect_mismatched_remap_headers_are_not_configured(const fs::path& tmpdir) 
   return true;
 }
 
+bool expect_placement_remap_size_mismatch_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "placement_remap_size_mismatch_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff(dir / "mapping_0001.tif", 32, 16, 96.0f, 0.0f)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/160);
+  if (!configured.ok() || *configured) {
+    std::cerr << "placement/remap size mismatch must make stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -839,6 +859,10 @@ int main() {
 
   if (!expect_mismatched_remap_headers_are_not_configured(tmpdir)) {
     finish(tmpdir, 22);
+  }
+
+  if (!expect_placement_remap_size_mismatch_is_not_configured(tmpdir)) {
+    finish(tmpdir, 23);
   }
 
   finish(tmpdir, 0);
