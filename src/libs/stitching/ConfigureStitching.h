@@ -44,6 +44,10 @@ absl::StatusOr<std::string> stitched_output_generation_id(
     size_t output_width = 0,
     size_t output_height = 0);
 
+absl::StatusOr<std::string> configured_stitched_output_generation_id(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
 // Validates that a completion event describes the current Hugin artifacts and
 // calibration owner without requiring a downstream rink mask. The rotation in
 // the reported generation is the authoritative live hmstitcher value.
@@ -55,6 +59,11 @@ absl::Status validate_stitched_output_generation(
 bool is_field_mask_configured(
     const std::string& game_dir,
     const std::string& expected_output_generation = {},
+    const std::string& expected_invalidation_id = {});
+
+bool is_field_mask_configured_for_stitching_config(
+    const std::string& game_dir,
+    size_t max_output_width = 0,
     const std::string& expected_invalidation_id = {});
 
 // Validates and decodes rink_mask_0.png while holding the Hugin and
@@ -123,7 +132,7 @@ absl::Status configure_stitching(
 //
 // With HM_ALLOW_HARD_SEAM_FALLBACK=1, a missing or invalid seam is replaced by a simple "hard seam" mask based on the
 // mapping TIFF placements. Without that explicit diagnostic opt-in, a missing or invalid seam fails closed.
-absl::Status maybe_create_default_seam_file(const std::string& game_dir);
+absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t max_output_width = 0);
 
 } // namespace stitching
 } // namespace hm

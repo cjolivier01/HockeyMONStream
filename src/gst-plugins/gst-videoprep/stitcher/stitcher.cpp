@@ -560,7 +560,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
   // mode validates the seam before hm-cupano loads it: enblend may save a cropped PNG with an oFFs origin that
   // hm-cupano does not interpret itself.
   if (one_pass_mode_) {
-    auto is_configured = hm::stitching::is_stitching_configured(config_file_);
+    auto is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
     if (!is_configured.ok()) {
       return is_configured.status();
     }
@@ -573,7 +573,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
     }
   }
 
-  const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_);
+  const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
   if (!seam_status.ok())
     return seam_status;
 
@@ -838,7 +838,7 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     hm::surface::Surface incoming_surface_left,
     hm::surface::Surface incoming_surface_right) {
   bool is_configured;
-  HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_));
+  HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
   if (!is_configured) {
     if (!one_pass_mode_) {
       return absl::FailedPreconditionError("Stitching is not configured");
@@ -1513,7 +1513,7 @@ absl::Status StitcherPriv::GenerateOutput(
     // Maybe configure stitching with these frames
     if (!process_pass_++) {
       bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_));
+      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
       if (!is_configured || configure_only_) {
         if (one_pass_mode_ && !is_configured) {
           HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));

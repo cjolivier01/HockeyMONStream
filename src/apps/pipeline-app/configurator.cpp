@@ -710,7 +710,7 @@ absl::StatusOr<std::optional<std::tuple<int, int>>> get_canvas_size(
     int max_output_width = 0) {
   // Control masks require a valid seam_file.png. Propagate validation errors so
   // the pipeline cannot quietly boot into a gray passthrough mode.
-  HM_RETURN_IF_ERROR(stitching::maybe_create_default_seam_file(game_dir));
+  HM_RETURN_IF_ERROR(stitching::maybe_create_default_seam_file(game_dir, max_output_width));
   auto artifact_lock = stitching::HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok()) {
     return artifact_lock.status();
@@ -1589,11 +1589,13 @@ absl::Status Configurator::setup_stitcher_and_masks(
     const bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", FALSE);
     const bool one_pass_mode = get_node_value(pipeline, "hmstitcher.one-pass-mode", FALSE);
     if (enabled && (configure_only || one_pass_mode)) {
+      int max_output_width = 0;
+      HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
       bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir));
+      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir, max_output_width));
       const bool calibrate_field_mask = StitcherCalibratesFieldMask(pipeline);
-      const bool field_mask_configured =
-          calibrate_field_mask && is_configured && stitching::is_field_mask_configured(game_dir.string());
+      const bool field_mask_configured = calibrate_field_mask && is_configured &&
+          stitching::is_field_mask_configured_for_stitching_config(game_dir.string(), max_output_width);
       const char* calibration_pending = g_getenv("HSTREAM_CALIBRATION_PENDING");
       const bool calibration_completion_requested =
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;

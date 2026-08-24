@@ -713,6 +713,77 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
   return absl::OkStatus();
 }
 
+absl::Status validate_and_normalize_seam(
+    const fs::path& path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  if (native_canvas_width <= 0 || native_canvas_height <= 0 || effective_canvas_width <= 0 ||
+      effective_canvas_height <= 0) {
+    return absl::InvalidArgumentError("Seam canvas dimensions must be positive");
+  }
+  if (native_canvas_width == effective_canvas_width && native_canvas_height == effective_canvas_height) {
+    return validate_and_normalize_seam(path, native_canvas_width, native_canvas_height);
+  }
+
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  const int64_t right = static_cast<int64_t>(layout->offset_x) + layout->width;
+  const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
+  if (layout->offset_x < 0 || layout->offset_y < 0 || right > native_canvas_width || bottom > native_canvas_height) {
+    return absl::FailedPreconditionError(
+        "PNG seam crop lies outside its mapping canvas: " + path.string() + " crop=" + std::to_string(layout->width) +
+        "x" + std::to_string(layout->height) + "+" + std::to_string(layout->offset_x) + "+" +
+        std::to_string(layout->offset_y) + " canvas=" + std::to_string(native_canvas_width) + "x" +
+        std::to_string(native_canvas_height));
+  }
+  if (layout->offset_x == 0 && layout->offset_y == 0 && layout->width == native_canvas_width &&
+      layout->height == native_canvas_height) {
+    return absl::OkStatus();
+  }
+
+  auto seam = decode_nonuniform_seam(path, *layout);
+  if (!seam.ok())
+    return seam.status();
+
+  const double scale = static_cast<double>(effective_canvas_width) / static_cast<double>(native_canvas_width);
+  const int scaled_left =
+      std::clamp(static_cast<int>(std::floor(layout->offset_x * scale)), 0, effective_canvas_width - 1);
+  const int scaled_top =
+      std::clamp(static_cast<int>(std::floor(layout->offset_y * scale)), 0, effective_canvas_height - 1);
+  const int scaled_right = std::clamp(
+      static_cast<int>(std::ceil(static_cast<double>(right) * scale)), scaled_left + 1, effective_canvas_width);
+  const int scaled_bottom = std::clamp(
+      static_cast<int>(std::ceil(static_cast<double>(bottom) * scale)), scaled_top + 1, effective_canvas_height);
+
+  cv::Mat scaled_crop;
+  cv::Mat normalized;
+  try {
+    cv::resize(
+        *seam,
+        scaled_crop,
+        cv::Size(scaled_right - scaled_left, scaled_bottom - scaled_top),
+        0.0,
+        0.0,
+        cv::INTER_NEAREST);
+    cv::copyMakeBorder(
+        scaled_crop,
+        normalized,
+        scaled_top,
+        effective_canvas_height - scaled_bottom,
+        scaled_left,
+        effective_canvas_width - scaled_right,
+        cv::BORDER_REPLICATE);
+    return publish_normalized_seam(path, normalized, effective_canvas_width, effective_canvas_height);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to normalize seam: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate normalized seam");
+  }
+}
+
 absl::Status validate_remaps(
     const fs::path& directory,
     int index,
@@ -1115,6 +1186,16 @@ absl::Status HuginProject::Recover(const fs::path& game_dir) {
 
 absl::Status HuginProject::ValidateAndNormalizeSeam(const fs::path& seam_path, int canvas_width, int canvas_height) {
   return validate_and_normalize_seam(seam_path, canvas_width, canvas_height);
+}
+
+absl::Status HuginProject::ValidateAndNormalizeSeam(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  return validate_and_normalize_seam(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
 }
 
 absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {

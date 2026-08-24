@@ -404,20 +404,37 @@ CanvasSize scale_canvas_to_max_output_width(
     size_t max_output_width) {
   if (max_output_width == 0 || native.width <= max_output_width)
     return native;
-  const double scale = static_cast<double>(max_output_width) / static_cast<double>(native.width);
-  auto scaled_extent = [scale](const TiffPlacement& placement) {
-    const auto x = static_cast<int>(std::floor(placement.x_px * scale));
-    const auto y = static_cast<int>(std::floor(placement.y_px * scale));
-    const auto right = static_cast<int>(std::ceil((placement.x_px + placement.width) * scale));
-    const auto bottom = static_cast<int>(std::ceil((placement.y_px + placement.height) * scale));
-    return std::tuple<int, int>{std::max(1, right - x) + x, std::max(1, bottom - y) + y};
+  auto size_for_scale = [&](double scale) {
+    auto scaled_extent = [scale](const TiffPlacement& placement) {
+      const auto x = static_cast<int>(std::floor(placement.x_px * scale));
+      const auto y = static_cast<int>(std::floor(placement.y_px * scale));
+      const auto right = static_cast<int>(std::ceil((placement.x_px + placement.width) * scale));
+      const auto bottom = static_cast<int>(std::ceil((placement.y_px + placement.height) * scale));
+      return std::tuple<int, int>{std::max(1, right - x) + x, std::max(1, bottom - y) + y};
+    };
+    auto [right0, bottom0] = scaled_extent(p0);
+    auto [right1, bottom1] = scaled_extent(p1);
+    return CanvasSize{
+        .width = static_cast<size_t>(std::max(right0, right1)),
+        .height = static_cast<size_t>(std::max(bottom0, bottom1)),
+    };
   };
-  auto [right0, bottom0] = scaled_extent(p0);
-  auto [right1, bottom1] = scaled_extent(p1);
-  return CanvasSize{
-      .width = static_cast<size_t>(std::max(right0, right1)),
-      .height = static_cast<size_t>(std::max(bottom0, bottom1)),
-  };
+  const double direct_scale = static_cast<double>(max_output_width) / static_cast<double>(native.width);
+  CanvasSize direct_size = size_for_scale(direct_scale);
+  if (direct_size.width <= max_output_width) {
+    return direct_size;
+  }
+  double low = 0.0;
+  double high = direct_scale;
+  for (int iteration = 0; iteration < 32; ++iteration) {
+    const double mid = (low + high) / 2.0;
+    if (size_for_scale(mid).width <= max_output_width) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return size_for_scale(low > 0.0 ? low : high);
 }
 
 absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
@@ -992,7 +1009,7 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
   return artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension);
 }
 
-absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
+absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t max_output_width) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Game dir is empty");
   }
@@ -1017,9 +1034,18 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
 
   CanvasSize measured_canvas;
   HM_ASSIGN_OR_RETURN(measured_canvas, normalize_and_measure_canvas(&p0, &p1));
-  const int canvas_width = static_cast<int>(measured_canvas.width);
-  const int canvas_height = static_cast<int>(measured_canvas.height);
-  const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(seam_path, canvas_width, canvas_height);
+  CanvasSize effective_canvas = measured_canvas;
+  if (max_output_width > 0) {
+    effective_canvas = scale_canvas_to_max_output_width(p0, p1, measured_canvas, max_output_width);
+  }
+  const int canvas_width = static_cast<int>(effective_canvas.width);
+  const int canvas_height = static_cast<int>(effective_canvas.height);
+  const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(
+      seam_path,
+      static_cast<int>(measured_canvas.width),
+      static_cast<int>(measured_canvas.height),
+      canvas_width,
+      canvas_height);
   if (seam_status.ok())
     return absl::OkStatus();
   if (!absl::IsFailedPrecondition(seam_status))
@@ -1036,13 +1062,16 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   std::cerr << "Existing seam mask is unusable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits regeneration: " << seam_status
             << std::endl;
 
-  const int x0 = static_cast<int>(p0.x_px);
-  const int y0 = static_cast<int>(p0.y_px);
-  const int x1 = static_cast<int>(p1.x_px);
-  const int y1 = static_cast<int>(p1.y_px);
+  const double scale =
+      measured_canvas.width > 0 ? static_cast<double>(effective_canvas.width) / static_cast<double>(measured_canvas.width)
+                                : 1.0;
+  const int x0 = static_cast<int>(std::floor(p0.x_px * scale));
+  const int y0 = static_cast<int>(std::floor(p0.y_px * scale));
+  const int x1 = static_cast<int>(std::floor(p1.x_px * scale));
+  const int y1 = static_cast<int>(std::floor(p1.y_px * scale));
 
-  const int x0_end = x0 + p0.width;
-  const int x1_end = x1 + p1.width;
+  const int x0_end = static_cast<int>(std::ceil((p0.x_px + p0.width) * scale));
+  const int x1_end = static_cast<int>(std::ceil((p1.x_px + p1.width) * scale));
 
   const int overlap_start = std::max(x0, x1);
   const int overlap_end = std::min(x0_end, x1_end);
@@ -1069,8 +1098,8 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
     mask.colRange(seam_x, canvas_width).setTo(255);
   }
 
-  const int y0_end = y0 + p0.height;
-  const int y1_end = y1 + p1.height;
+  const int y0_end = static_cast<int>(std::ceil((p0.y_px + p0.height) * scale));
+  const int y1_end = static_cast<int>(std::ceil((p1.y_px + p1.height) * scale));
   const int x0_clamped = std::clamp(x0, 0, canvas_width);
   const int x0_end_clamped = std::clamp(x0_end, 0, canvas_width);
   const int x1_clamped = std::clamp(x1, 0, canvas_width);
@@ -1463,6 +1492,15 @@ absl::StatusOr<std::string> configured_output_generation(
   return stitched_output_generation_id(hugin_generation, rotation);
 }
 
+absl::StatusOr<std::string> configured_output_generation(
+    const YAML::Node& config,
+    const std::string& hugin_generation,
+    const CanvasSize& output_size) {
+  double rotation = 0.0;
+  HM_ASSIGN_OR_RETURN(rotation, configured_post_stitch_rotation(config));
+  return stitched_output_generation_id(hugin_generation, rotation, output_size.width, output_size.height);
+}
+
 absl::Status validate_output_generation_hugin(
     const std::string& output_generation,
     const std::string& expected_hugin_generation) {
@@ -1581,6 +1619,30 @@ absl::Status validate_stitched_output_generation(
   return validate_stitching_generation_owner(*config, expected_invalidation_id);
 }
 
+absl::StatusOr<std::string> configured_stitched_output_generation_id(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  auto config = load_config_or_empty(root / "config.yaml");
+  if (!config.ok())
+    return config.status();
+  CanvasSize output_size;
+  if (max_output_width > 0) {
+    HM_ASSIGN_OR_RETURN(output_size, get_effective_mapping_canvas_size(root, max_output_width));
+  } else {
+    HM_ASSIGN_OR_RETURN(output_size, get_mapping_canvas_size(root));
+  }
+  return configured_output_generation(*config, *hugin_generation, output_size);
+}
+
 absl::Status visit_current_field_mask(
     const std::string& game_dir,
     const std::string& expected_output_generation,
@@ -1693,6 +1755,17 @@ bool is_field_mask_configured(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id) {
   return load_field_mask(game_dir, expected_output_generation, expected_invalidation_id).ok();
+}
+
+bool is_field_mask_configured_for_stitching_config(
+    const std::string& game_dir,
+    size_t max_output_width,
+    const std::string& expected_invalidation_id) {
+  auto output_generation = configured_stitched_output_generation_id(game_dir, max_output_width);
+  if (output_generation.ok() && is_field_mask_configured(game_dir, *output_generation, expected_invalidation_id)) {
+    return true;
+  }
+  return is_field_mask_configured(game_dir, {}, expected_invalidation_id);
 }
 
 absl::Status save_rink_profile_locked(

@@ -7977,10 +7977,15 @@ bool HStreamWindow::applySavedControlConfig(
     config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
   }
 
-  const int previous_max_output_width = read_stitch_max_output_width_from_config(
-      config,
-      default_stitch_max_output_width_,
-      stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+  int previous_max_output_width = std::numeric_limits<int>::min();
+  try {
+    previous_max_output_width = read_stitch_max_output_width_from_config(
+        config,
+        default_stitch_max_output_width_,
+        stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+  } catch (const std::exception& ex) {
+    qWarning() << "Ignoring malformed existing stitch max output width while saving preset:" << ex.what();
+  }
   QString previous_stitch_frame_time = default_stitch_frame_time_;
   const bool previous_stitch_frame_time_valid =
       read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
