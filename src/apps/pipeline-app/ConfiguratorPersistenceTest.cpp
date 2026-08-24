@@ -519,6 +519,26 @@ play-tracker:
                .IsDefined(),
       "An explicit canonical null max stitched width must clear lower-ranked native caps");
 
+  const fs::path private_only_width_game_dir = games / "mapping-private-only-width";
+  fs::create_directories(private_only_width_game_dir);
+  YAML::Node private_only_width(YAML::NodeType::Map);
+  private_only_width["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1536;
+  std::ofstream(root / "mapping-private-only-width.yaml") << YAML::Dump(private_only_width) << '\n';
+  hm::Configurator mapping_private_only_width(
+      "mapping-private-only-width", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_private_only_width_loaded = mapping_private_only_width.configure().ok() &&
+      mapping_private_only_width.underlay_config("pipeline", (root / "mapping-private-only-width.yaml").string());
+  const absl::Status mapping_private_only_width_status = mapping_private_only_width_loaded
+      ? mapping_private_only_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping private-only-width fixture did not load");
+  ok &= expect(
+      mapping_private_only_width_status.ok() &&
+          !mapping_private_only_width.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"]
+               .IsDefined() &&
+          mapping_private_only_width.config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+                  .as<int>() == 1536,
+      "Bundled baseline null max stitched width must not clear a private-only native cap");
+
   const fs::path malformed_properties_game_dir = games / "mapping-malformed-properties";
   fs::create_directories(malformed_properties_game_dir);
   YAML::Node malformed_properties(YAML::NodeType::Map);

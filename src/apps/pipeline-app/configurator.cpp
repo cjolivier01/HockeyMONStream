@@ -1717,17 +1717,30 @@ absl::Status Configurator::map_common_config_keys() {
       }
       stitcher_properties.remove(alias);
     }
+    auto has_private_max_output_width = [&]() {
+      if (!stitcher_private_properties.IsMap())
+        return false;
+      for (const char* alias :
+           {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
+        if (stitcher_private_properties[alias].IsDefined())
+          return true;
+      }
+      return false;
+    };
     HM_RETURN_IF_ERROR(map_bool("stitching.enabled", "pipeline.hmstitcher.enable", stitcher, "enable"));
     HM_RETURN_IF_ERROR(
         map_bool("stitching.minimize_blend", "pipeline.hmstitcher.minimize-blend", stitcher, "minimize-blend"));
     std::optional<YAML::Node> max_output_width;
-    HM_ASSIGN_OR_RETURN(
-        max_output_width,
-        canonical_source(
-            "stitching.max_output_width",
-            "pipeline.hmstitcher.properties.max-output-width",
-            stitcher_properties["max-output-width"],
-            false));
+    if (stitcher_properties["max-output-width"].IsDefined() || !has_private_max_output_width() ||
+        explicit_value_rank("stitching.max_output_width") >= 1) {
+      HM_ASSIGN_OR_RETURN(
+          max_output_width,
+          canonical_source(
+              "stitching.max_output_width",
+              "pipeline.hmstitcher.properties.max-output-width",
+              stitcher_properties["max-output-width"],
+              false));
+    }
     auto clear_lower_ranked_private_max_output_width = [&]() {
       if (!stitcher_private_properties.IsMap())
         return;
