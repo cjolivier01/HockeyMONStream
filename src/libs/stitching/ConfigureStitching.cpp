@@ -469,6 +469,46 @@ absl::StatusOr<CanvasSize> get_effective_mapping_canvas_size(const fs::path& gam
   return scale_canvas_to_max_output_width(p0, p1, native, max_output_width).size;
 }
 
+absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
+  TIFF* tif = TIFFOpen(path.c_str(), "r");
+  if (!tif) {
+    return absl::NotFoundError(TO_STRING("Could not open remap TIFF: " << path.string()));
+  }
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint16_t samples = 0;
+  uint16_t bits = 0;
+  uint16_t sample_format = SAMPLEFORMAT_UINT;
+  const bool have_dims =
+      TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
+  TIFFClose(tif);
+  if (!have_dims || !width || !height || width > kHardMaximumArtifactDimension ||
+      height > kHardMaximumArtifactDimension || static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels ||
+      samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid remap TIFF metadata: " << path.string()));
+  }
+  return CanvasSize{.width = static_cast<size_t>(width), .height = static_cast<size_t>(height)};
+}
+
+absl::Status validate_remap_artifact_headers(const fs::path& game_dir) {
+  CanvasSize left_x;
+  CanvasSize left_y;
+  CanvasSize right_x;
+  CanvasSize right_y;
+  HM_ASSIGN_OR_RETURN(left_x, read_remap_tiff_header(game_dir / "mapping_0000_x.tif"));
+  HM_ASSIGN_OR_RETURN(left_y, read_remap_tiff_header(game_dir / "mapping_0000_y.tif"));
+  HM_ASSIGN_OR_RETURN(right_x, read_remap_tiff_header(game_dir / "mapping_0001_x.tif"));
+  HM_ASSIGN_OR_RETURN(right_y, read_remap_tiff_header(game_dir / "mapping_0001_y.tif"));
+  if (left_x.width != left_y.width || left_x.height != left_y.height || right_x.width != right_y.width ||
+      right_x.height != right_y.height) {
+    return absl::FailedPreconditionError("Stitching remap X/Y dimensions do not match");
+  }
+  return absl::OkStatus();
+}
+
 bool artifacts_exceed_live_canvas_limit(
     const CanvasSize& native_canvas,
     const CanvasSize& effective_canvas,
@@ -971,6 +1011,13 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif"));
   HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif"));
   HM_ASSIGN_OR_RETURN(canvas_size, normalize_and_measure_canvas(&p0, &p1));
+  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir));
+  if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
+      absl::IsNotFound(remap_status) || absl::IsResourceExhausted(remap_status)) {
+    std::cout << "Stitching artifacts exist but remap TIFF metadata is invalid: " << remap_status << std::endl;
+    return false;
+  }
+  HM_RETURN_IF_ERROR(remap_status);
   if (max_output_width > 0 && canvas_size.width > max_output_width) {
     std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
               << " exceeds requested max output width " << max_output_width << "; regenerating capped mapping artifacts"

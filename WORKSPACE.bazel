@@ -162,7 +162,7 @@ git_repository(
 ################################ HockeyMOM Sub-Modules ################################
 git_repository(
     name = "hm-cupano",
-    commit = "40947e418445c4192acaf0ae591ffb54df2de4ce",
+    commit = "7f5b827cb1ce42d59c0142c5f988c708375f0f71",
     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
 )
 
