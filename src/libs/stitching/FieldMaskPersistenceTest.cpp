@@ -52,11 +52,13 @@ int main() {
   cv::imwrite((root / "seam_file.png").string(), initial_seam);
   auto initial_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
   ok &= expect(initial_hugin_lock.ok(), "generation test must lock initial Hugin artifacts");
+  std::string initial_hugin_generation_id;
   std::string initial_output_generation;
   if (initial_hugin_lock.ok()) {
     auto initial_hugin_generation = hm::stitching::HuginProject::GenerationId(root, **initial_hugin_lock);
     ok &= expect(initial_hugin_generation.ok(), "generation test must identify initial Hugin artifacts");
     if (initial_hugin_generation.ok()) {
+      initial_hugin_generation_id = *initial_hugin_generation;
       auto generation = hm::stitching::stitched_output_generation_id(*initial_hugin_generation, 0.0);
       ok &= expect(generation.ok(), "generation test must identify initial stitched output");
       if (generation.ok())
@@ -141,6 +143,29 @@ int main() {
         "rink profile must persist the exact stitched-output generation");
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
+
+    auto scaled_generation = hm::stitching::stitched_output_generation_id(initial_hugin_generation_id, 0.0, 16, 12);
+    ok &= expect(scaled_generation.ok(), "scaled field-mask test must identify output dimensions");
+    if (scaled_generation.ok()) {
+      YAML::Node scaled_config = YAML::LoadFile((root / "config.yaml").string());
+      scaled_config["rink"]["stitched_output_generation"] = *scaled_generation;
+      {
+        std::ofstream output(root / "config.yaml");
+        output << scaled_config << '\n';
+      }
+      cv::imwrite((root / "rink_mask_0.png").string(), cv::Mat(12, 16, CV_8U, cv::Scalar(255)));
+      ok &= expect(
+          hm::stitching::is_field_mask_configured(root.string(), *scaled_generation) &&
+              !hm::stitching::is_field_mask_configured(root.string(), initial_output_generation),
+          "dimensioned runtime generation must validate field masks against the scaled live canvas");
+      cv::imwrite((root / "rink_mask_0.png").string(), first);
+      YAML::Node restored_config = YAML::LoadFile((root / "config.yaml").string());
+      restored_config["rink"]["stitched_output_generation"] = initial_output_generation;
+      {
+        std::ofstream output(root / "config.yaml");
+        output << restored_config << '\n';
+      }
+    }
 
     YAML::Node guarded_config = YAML::LoadFile((root / "config.yaml").string());
     YAML::Node guarded_calibration = guarded_config["hstream_ui"]["stitching_calibration"];

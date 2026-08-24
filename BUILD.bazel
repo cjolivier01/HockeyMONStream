@@ -3,6 +3,16 @@ exports_files([
     "run.sh",
 ])
 
+config_setting(
+    name = "use_hip",
+    values = {"define": "backend=hip"},
+)
+
+config_setting(
+    name = "use_vulkan",
+    values = {"define": "backend=vulkan"},
+)
+
 filegroup(
     name = "all_source",
     srcs = glob([

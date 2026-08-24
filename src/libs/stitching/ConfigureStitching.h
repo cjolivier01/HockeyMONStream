@@ -30,15 +30,19 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2);
 
-absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir);
+absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
-absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::string& game_dir);
+absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
 
 bool can_configure_stitching(const YAML::Node& config);
 
 absl::StatusOr<std::string> stitched_output_generation_id(
     const std::string& hugin_generation,
-    double post_stitch_rotate_degrees);
+    double post_stitch_rotate_degrees,
+    size_t output_width = 0,
+    size_t output_height = 0);
 
 // Validates that a completion event describes the current Hugin artifacts and
 // calibration owner without requiring a downstream rink mask. The rotation in

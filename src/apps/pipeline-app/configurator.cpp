@@ -705,7 +705,9 @@ void set_all_field_values(
   }
 }
 
-absl::StatusOr<std::optional<std::tuple<int, int>>> get_canvas_size(const std::string& game_dir) {
+absl::StatusOr<std::optional<std::tuple<int, int>>> get_canvas_size(
+    const std::string& game_dir,
+    int max_output_width = 0) {
   // Control masks require a valid seam_file.png. Propagate validation errors so
   // the pipeline cannot quietly boot into a gray passthrough mode.
   HM_RETURN_IF_ERROR(stitching::maybe_create_default_seam_file(game_dir));
@@ -717,8 +719,47 @@ absl::StatusOr<std::optional<std::tuple<int, int>>> get_canvas_size(const std::s
   if (!control_masks.is_valid()) {
     return std::optional<std::tuple<int, int>>{};
   }
+  control_masks.scale_to_max_output_width(max_output_width);
   return std::optional<std::tuple<int, int>>(
       std::make_tuple(control_masks.canvas_width(), control_masks.canvas_height()));
+}
+
+absl::StatusOr<int> read_stitch_max_output_width_node(const YAML::Node& node, const std::string& path) {
+  if (!node.IsDefined() || node.IsNull())
+    return 0;
+  if (!node.IsScalar())
+    return absl::InvalidArgumentError(path + " must be a non-negative integer");
+  try {
+    const int value = node.as<int>();
+    if (value < 0)
+      return absl::InvalidArgumentError(path + " must be a non-negative integer");
+    return value;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid " + path + ": " + std::string(error.what()));
+  }
+}
+
+absl::StatusOr<int> effective_hmstitcher_max_output_width(const YAML::Node& pipeline) {
+  if (!pipeline.IsMap())
+    return 0;
+  YAML::Node stitcher = pipeline["hmstitcher"];
+  if (!stitcher.IsMap())
+    return 0;
+  for (const auto& [node, prefix] : {
+           std::pair<YAML::Node, std::string>{stitcher["properties"], "pipeline.hmstitcher.properties."},
+           std::pair<YAML::Node, std::string>{
+               stitcher["private-properties"], "pipeline.hmstitcher.private-properties."},
+       }) {
+    if (!node.IsMap())
+      continue;
+    for (const char* alias :
+         {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
+      if (node[alias].IsDefined()) {
+        return read_stitch_max_output_width_node(node[alias], prefix + alias);
+      }
+    }
+  }
+  return 0;
 }
 
 std::optional<YAML::Node> get_node_if_enabled(const YAML::Node& pipeline, const std::string& name) {
@@ -1663,9 +1704,57 @@ absl::Status Configurator::map_common_config_keys() {
 
   if (pipeline["hmstitcher"].IsMap()) {
     YAML::Node stitcher = pipeline["hmstitcher"];
+    if (!stitcher["properties"].IsDefined() || stitcher["properties"].IsNull()) {
+      stitcher["properties"] = YAML::Node(YAML::NodeType::Map);
+    } else if (!stitcher["properties"].IsMap()) {
+      return absl::InvalidArgumentError("pipeline.hmstitcher.properties must be a map");
+    }
+    YAML::Node stitcher_properties = stitcher["properties"];
+    YAML::Node stitcher_private_properties = stitcher["private-properties"];
+    for (const char* alias : {"max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
+      if (!stitcher_properties["max-output-width"].IsDefined() && stitcher_properties[alias].IsDefined()) {
+        stitcher_properties["max-output-width"] = stitcher_properties[alias];
+      }
+      stitcher_properties.remove(alias);
+    }
     HM_RETURN_IF_ERROR(map_bool("stitching.enabled", "pipeline.hmstitcher.enable", stitcher, "enable"));
     HM_RETURN_IF_ERROR(
         map_bool("stitching.minimize_blend", "pipeline.hmstitcher.minimize-blend", stitcher, "minimize-blend"));
+    std::optional<YAML::Node> max_output_width;
+    HM_ASSIGN_OR_RETURN(
+        max_output_width,
+        canonical_source(
+            "stitching.max_output_width",
+            "pipeline.hmstitcher.properties.max-output-width",
+            stitcher_properties["max-output-width"],
+            false));
+    auto clear_lower_ranked_private_max_output_width = [&]() {
+      if (!stitcher_private_properties.IsMap())
+        return;
+      const int source_rank = std::max(0, explicit_value_rank("stitching.max_output_width"));
+      for (const char* alias :
+           {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
+        const int private_rank = explicit_value_rank(std::string("pipeline.hmstitcher.private-properties.") + alias);
+        if (private_rank < source_rank)
+          stitcher_private_properties.remove(alias);
+      }
+    };
+    if (max_output_width.has_value() && (*max_output_width).IsNull()) {
+      stitcher_properties.remove("max-output-width");
+      clear_lower_ranked_private_max_output_width();
+    } else if (max_output_width.has_value()) {
+      if (!(*max_output_width).IsScalar())
+        return absl::InvalidArgumentError("stitching.max_output_width must be null or a non-negative integer");
+      try {
+        const int value = (*max_output_width).as<int>();
+        if (value < 0)
+          return absl::InvalidArgumentError("stitching.max_output_width must be null or a non-negative integer");
+        stitcher_properties["max-output-width"] = value;
+        clear_lower_ranked_private_max_output_width();
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError("Invalid stitching.max_output_width: " + std::string(error.what()));
+      }
+    }
 
     std::optional<YAML::Node> dtype;
     HM_ASSIGN_OR_RETURN(
@@ -2251,7 +2340,10 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
 
 absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs::path& game_dir) {
   bool exceeds_limit = false;
-  HM_ASSIGN_OR_RETURN(exceeds_limit, stitching::stitching_artifacts_exceed_live_canvas_limit(game_dir.string()));
+  int max_output_width = 0;
+  HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(config_["pipeline"]));
+  HM_ASSIGN_OR_RETURN(
+      exceeds_limit, stitching::stitching_artifacts_exceed_live_canvas_limit(game_dir.string(), max_output_width));
   if (!exceeds_limit) {
     return absl::OkStatus();
   }
@@ -2553,13 +2645,15 @@ absl::Status Configurator::set_output_dimensions(
     }
   } else if (!left_files.empty() && !right_files.empty() && has_hmstitcher) {
     StitcherSizingConfig sizing_cfg = ParseStitcherSizingConfig(pipeline);
+    int max_output_width = 0;
+    HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
     std::optional<std::tuple<int, int>> canvas_size_result;
-    auto stitching_configured = stitching::is_stitching_configured(game_dir.string());
+    auto stitching_configured = stitching::is_stitching_configured(game_dir.string(), max_output_width);
     if (!stitching_configured.ok()) {
       return stitching_configured.status();
     }
     if (stitching_configured.value()) {
-      HM_ASSIGN_OR_RETURN(canvas_size_result, get_canvas_size(game_dir));
+      HM_ASSIGN_OR_RETURN(canvas_size_result, get_canvas_size(game_dir, max_output_width));
     }
     if (canvas_size_result) {
       size_t canvas_width = std::get<0>(*canvas_size_result);

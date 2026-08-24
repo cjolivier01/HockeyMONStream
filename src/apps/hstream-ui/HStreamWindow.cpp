@@ -58,6 +58,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <limits>
+
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
@@ -1423,6 +1425,53 @@ bool lookup_yaml_path(YAML::Node root, const QString& dotted_path, YAML::Node* v
   return lookup_yaml_path_at(root, parts, 0, value);
 }
 
+void remove_stitch_max_output_width_native_aliases(YAML::Node config) {
+  for (const char* path : {
+           "pipeline.hmstitcher.properties.max-output-width",
+           "pipeline.hmstitcher.properties.max_output_width",
+           "pipeline.hmstitcher.properties.stitch-max-output-width",
+           "pipeline.hmstitcher.properties.stitch_max_output_width",
+           "pipeline.hmstitcher.private-properties.max-output-width",
+           "pipeline.hmstitcher.private-properties.max_output_width",
+           "pipeline.hmstitcher.private-properties.stitch-max-output-width",
+           "pipeline.hmstitcher.private-properties.stitch_max_output_width",
+       }) {
+    remove_yaml_path(config, QString::fromLatin1(path));
+  }
+}
+
+int read_stitch_max_output_width_from_config(YAML::Node config, int default_value, int maximum_value) {
+  auto read_node = [&](const QString& path, const YAML::Node& node) -> int {
+    if (node.IsNull())
+      return 0;
+    if (!node.IsScalar())
+      throw std::invalid_argument((path + " must be null or a non-negative integer").toStdString());
+    const int value = node.as<int>();
+    if (value < 0 || value > maximum_value)
+      throw std::out_of_range((path + " is outside the supported range").toStdString());
+    return value;
+  };
+  YAML::Node value;
+  if (lookup_yaml_path(config, "stitching.max_output_width", &value)) {
+    return read_node("stitching.max_output_width", value);
+  }
+  for (const char* path : {
+           "pipeline.hmstitcher.properties.max-output-width",
+           "pipeline.hmstitcher.properties.max_output_width",
+           "pipeline.hmstitcher.properties.stitch-max-output-width",
+           "pipeline.hmstitcher.properties.stitch_max_output_width",
+           "pipeline.hmstitcher.private-properties.max-output-width",
+           "pipeline.hmstitcher.private-properties.max_output_width",
+           "pipeline.hmstitcher.private-properties.stitch-max-output-width",
+           "pipeline.hmstitcher.private-properties.stitch_max_output_width",
+       }) {
+    if (lookup_yaml_path(config, QString::fromLatin1(path), &value)) {
+      return read_node(QString::fromLatin1(path), value);
+    }
+  }
+  return default_value;
+}
+
 bool generated_stitching_backend_choices_match_private(
     const YAML::Node& config,
     QString* previous_matcher = nullptr,
@@ -1874,6 +1923,15 @@ void HStreamWindow::loadBaselineDefaults() {
   if (!parsed_stitch_frame_time.has_value())
     throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be HH:MM:SS or HH:MM:SS.mmm");
   default_stitch_frame_time_ = format_stitch_frame_time(*parsed_stitch_frame_time);
+  YAML::Node max_output_width;
+  if (lookup_yaml_path(baseline_config_, "stitching.max_output_width", &max_output_width) &&
+      !max_output_width.IsNull()) {
+    if (!max_output_width.IsScalar())
+      throw std::runtime_error("Effective baseline stitching.max_output_width must be null or a scalar");
+    default_stitch_max_output_width_ = integer("stitching.max_output_width");
+    if (default_stitch_max_output_width_ < 0)
+      throw std::runtime_error("Effective baseline stitching.max_output_width must be non-negative");
+  }
   YAML::Node control_point_matcher;
   if (lookup_yaml_path(baseline_config_, "stitching.control_point_matcher", &control_point_matcher) &&
       control_point_matcher.IsScalar()) {
@@ -2205,6 +2263,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       mapping_backend_combo_->setEnabled(!running);
     }
+    if (stitch_max_output_width_spin_) {
+      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+      stitch_max_output_width_spin_->setEnabled(!running);
+    }
     if (stitch_frame_time_edit_) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       stitch_frame_time_edit_->setEnabled(!running);
@@ -2241,6 +2303,17 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       "Control-point limit for stitching calibration. Changing this in Program mode recalibrates stitching before "
       "the full pipeline continues.");
   connect(control_points_spin_, &QSpinBox::valueChanged, this, [this]() { updatePresetDirtyState(); });
+
+  stitch_max_output_width_spin_ = new QSpinBox();
+  stitch_max_output_width_spin_->setObjectName("stitchMaxOutputWidthSpin");
+  stitch_max_output_width_spin_->setRange(0, std::numeric_limits<int>::max());
+  stitch_max_output_width_spin_->setSingleStep(256);
+  stitch_max_output_width_spin_->setSpecialValueText("Auto");
+  stitch_max_output_width_spin_->setValue(default_stitch_max_output_width_);
+  set_control_help(
+      stitch_max_output_width_spin_,
+      "Maximum stitched canvas width. Auto keeps the native mapping size; lower values reduce stitching memory.");
+  connect(stitch_max_output_width_spin_, &QSpinBox::valueChanged, this, [this]() { updatePresetDirtyState(); });
 
   control_point_matcher_combo_ = new QComboBox();
   control_point_matcher_combo_->setObjectName("controlPointMatcherCombo");
@@ -3054,13 +3127,19 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* mapping_label = new QLabel("Mapping backend");
     mapping_label->setObjectName("mappingBackendLabel");
     mapping_label->setBuddy(mapping_backend_combo_);
+    auto* max_width_label = new QLabel("Max stitched width");
+    max_width_label->setObjectName("stitchMaxOutputWidthLabel");
+    max_width_label->setBuddy(stitch_max_output_width_spin_);
     control_point_matcher_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     mapping_backend_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    stitch_max_output_width_spin_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     algorithms_layout->addWidget(matcher_label, 0, 0);
     algorithms_layout->addWidget(control_point_matcher_combo_, 0, 1);
     algorithms_layout->addWidget(mapping_label, 1, 0);
     algorithms_layout->addWidget(mapping_backend_combo_, 1, 1);
-    algorithms_layout->setRowStretch(2, 1);
+    algorithms_layout->addWidget(max_width_label, 2, 0);
+    algorithms_layout->addWidget(stitch_max_output_width_spin_, 2, 1);
+    algorithms_layout->setRowStretch(3, 1);
     control_tabs->addTab(algorithms_page, "Algorithms");
   }
   layout->addWidget(control_tabs);
@@ -3251,6 +3330,10 @@ int HStreamWindow::stitchingCalibrationControlPoints() const {
   return control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
 }
 
+int HStreamWindow::stitchingMaxOutputWidth() const {
+  return stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->value() : default_stitch_max_output_width_;
+}
+
 QString HStreamWindow::stitchFrameTime() const {
   return stitch_frame_time_edit_ ? format_stitch_frame_time(stitch_frame_time_edit_->time())
                                  : default_stitch_frame_time_;
@@ -3359,6 +3442,10 @@ bool HStreamWindow::saveStitchingCalibrationState(
             ? QString::fromStdString(config["stitching"]["mapping_backend"].as<std::string>())
             : QString(),
         default_mapping_backend_);
+    const int current_max_output_width = read_stitch_max_output_width_from_config(
+        config,
+        default_stitch_max_output_width_,
+        stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
     const QString current_status = calibration["status"] && calibration["status"].IsScalar()
         ? QString::fromStdString(calibration["status"].as<std::string>())
         : QString();
@@ -3374,7 +3461,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
         current_invalidation_id == expected_invalidation_id && !current_invalidated &&
         current_stitch_frame_time_valid && current_stitch_frame_time == active_stitch_frame_time_ &&
         current_control_points == control_points && current_control_point_matcher == active_control_point_matcher_ &&
-        current_mapping_backend == active_mapping_backend_;
+        current_mapping_backend == active_mapping_backend_ &&
+        current_max_output_width == active_stitch_max_output_width_;
     if (already_completed) {
       if (applied)
         *applied = true;
@@ -3383,7 +3471,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
     const bool expected_invalidated = status != "pending";
     if (!current_stitch_frame_time_valid || current_stitch_frame_time != active_stitch_frame_time_ ||
         current_control_points != control_points || current_control_point_matcher != active_control_point_matcher_ ||
-        current_mapping_backend != active_mapping_backend_ || current_status != "pending" ||
+        current_mapping_backend != active_mapping_backend_ ||
+        current_max_output_width != active_stitch_max_output_width_ || current_status != "pending" ||
         current_stale != stale_from || current_invalidation_id != expected_invalidation_id ||
         current_invalidated != expected_invalidated) {
       appendLog(
@@ -3395,8 +3484,12 @@ bool HStreamWindow::saveStitchingCalibrationState(
 
   calibration["control_points"] = control_points;
   remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
+  remove_stitch_max_output_width_native_aliases(config);
   config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
   config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
+  config["stitching"]["max_output_width"] = active_stitch_max_output_width_ > 0
+      ? YAML::Node(active_stitch_max_output_width_)
+      : YAML::Node(YAML::NodeType::Null);
   calibration["status"] = status.toStdString();
   if (status == "pending")
     calibration["rink_mask_status"] = "pending";
@@ -3438,6 +3531,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   int saved_control_points = 0;
   QString saved_stitch_frame_time = default_stitch_frame_time_;
   bool saved_stitch_frame_time_valid = true;
+  int saved_max_output_width = default_stitch_max_output_width_;
   QString saved_control_point_matcher = default_control_point_matcher_;
   QString saved_mapping_backend = default_mapping_backend_;
   QString saved_status;
@@ -3476,6 +3570,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         saved_mapping_backend = canonical_or_normalized_mapping_choice(
             QString::fromStdString(mapping_backend.as<std::string>()), default_mapping_backend_);
       }
+      saved_max_output_width = read_stitch_max_output_width_from_config(
+          config,
+          default_stitch_max_output_width_,
+          stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
       YAML::Node status;
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) && status.IsScalar()) {
         saved_status = QString::fromStdString(status.as<std::string>());
@@ -3496,6 +3594,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
 
     const bool control_points_changed = !saved_found || saved_control_points != control_points;
+    const bool max_output_width_changed = saved_max_output_width != active_stitch_max_output_width_;
     const bool control_point_matcher_changed = saved_control_point_matcher != active_control_point_matcher_;
     const bool mapping_backend_changed = saved_mapping_backend != active_mapping_backend_;
     const bool stitch_frame_time_changed =
@@ -3503,14 +3602,20 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
     remove_yaml_path(config, {"stitching", "mapping_backend"});
+    remove_yaml_path(config, {"stitching", "max_output_width"});
+    remove_stitch_max_output_width_native_aliases(config);
     remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
     if (active_stitch_frame_time_ != default_stitch_frame_time_) {
       config["stitching"]["stitch_frame_time"] = active_stitch_frame_time_.toStdString();
     }
     config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
     config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
+    config["stitching"]["max_output_width"] = active_stitch_max_output_width_ > 0
+        ? YAML::Node(active_stitch_max_output_width_)
+        : YAML::Node(YAML::NodeType::Null);
     const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed ||
-        control_point_matcher_changed || mapping_backend_changed || saved_status != "complete";
+        control_point_matcher_changed || mapping_backend_changed || max_output_width_changed ||
+        saved_status != "complete";
     if (!needs_calibration) {
       active_calibration_start_stage_.clear();
       // Reserve one generation owner before the process starts. Program can
@@ -3532,7 +3637,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
 
     QString stale_from = saved_stale_from;
     if (!calibration_stage_index(stale_from).has_value()) {
-      stale_from = mapping_backend_changed && !control_point_matcher_changed && !control_points_changed
+      stale_from = (mapping_backend_changed || max_output_width_changed) && !control_point_matcher_changed &&
+              !control_points_changed
           ? QString("canvas")
           : QString("input");
     }
@@ -3545,8 +3651,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       stale_from = "features";
     }
     const size_t canvas_index = *calibration_stage_index("canvas");
-    if (mapping_backend_changed && !control_point_matcher_changed && !control_points_changed &&
-        canvas_index < *calibration_stage_index(stale_from)) {
+    if ((mapping_backend_changed || max_output_width_changed) && !control_point_matcher_changed &&
+        !control_points_changed && canvas_index < *calibration_stage_index(stale_from)) {
       stale_from = "canvas";
     }
     if (active_force_reconfigure_ || stitch_frame_time_changed)
@@ -3558,7 +3664,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     clean_all = active_force_reconfigure_ || stitch_frame_time_changed ||
         (stale_from != "features" &&
          (!saved_artifacts_invalidated || control_points_changed || control_point_matcher_changed ||
-          mapping_backend_changed));
+          mapping_backend_changed || max_output_width_changed));
 
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
@@ -4238,6 +4344,7 @@ void HStreamWindow::startPipeline() {
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
   active_calibration_control_points_ = 0;
+  active_stitch_max_output_width_ = stitchingMaxOutputWidth();
   active_stitch_frame_time_ = stitchFrameTime();
   active_control_point_matcher_ = controlPointMatcher();
   active_mapping_backend_ = mappingBackend();
@@ -4331,6 +4438,7 @@ void HStreamWindow::startPipeline() {
     active_archive_initial_mtime_ms_ = -1;
   };
   active_calibration_control_points_ = stitchingCalibrationControlPoints();
+  active_stitch_max_output_width_ = stitchingMaxOutputWidth();
   bool calibration_required = false;
   if (!prepareStitchingCalibrationRun(runner, working_dir, env, &calibration_required)) {
     abandon_archive_start("stitching setup failed");
@@ -4350,6 +4458,7 @@ void HStreamWindow::startPipeline() {
   }
   saved_stitch_frame_time_ = active_stitch_frame_time_;
   saved_stitching_control_points_ = active_calibration_control_points_;
+  saved_stitch_max_output_width_ = active_stitch_max_output_width_;
   saved_control_point_matcher_ = active_control_point_matcher_;
   saved_mapping_backend_ = active_mapping_backend_;
   updatePresetDirtyState();
@@ -7154,6 +7263,9 @@ void HStreamWindow::updateRunControls() {
   if (mapping_backend_combo_) {
     mapping_backend_combo_->setEnabled(!running && !finalizing);
   }
+  if (stitch_max_output_width_spin_) {
+    stitch_max_output_width_spin_->setEnabled(!running && !finalizing);
+  }
   if (stitch_frame_time_edit_) {
     stitch_frame_time_edit_->setEnabled(!running && !finalizing);
   }
@@ -7345,6 +7457,7 @@ void HStreamWindow::savePreset() {
 }
 
 void HStreamWindow::resetCameraControls() {
+  const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   for (const auto& [id, value] : camera_defaults_) {
     const auto it = camera_sliders_.find(id);
     if (it != camera_sliders_.end()) {
@@ -7356,18 +7469,21 @@ void HStreamWindow::resetCameraControls() {
       checkbox->second->setChecked(value != 0);
     }
   }
-  if (stitch_frame_time_edit_) {
+  if (!pipeline_running && stitch_frame_time_edit_) {
     const auto parsed = parse_stitch_frame_time(default_stitch_frame_time_);
     if (parsed.has_value())
       stitch_frame_time_edit_->setTime(*parsed);
   }
-  if (control_point_matcher_combo_) {
+  if (!pipeline_running && control_point_matcher_combo_) {
     set_combo_to_data(control_point_matcher_combo_, default_control_point_matcher_);
   }
-  if (mapping_backend_combo_) {
+  if (!pipeline_running && mapping_backend_combo_) {
     set_combo_to_data(mapping_backend_combo_, default_mapping_backend_);
   }
-  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+  if (!pipeline_running && stitch_max_output_width_spin_) {
+    stitch_max_output_width_spin_->setValue(default_stitch_max_output_width_);
+  }
+  if (pipeline_running) {
     // Reset every runtime-tunable field on both boxes, including a box that
     // was tuned before its target selector was returned to the default.
     const QStringList playtracker_reset_controls = {
@@ -7402,6 +7518,7 @@ void HStreamWindow::captureSavedControlState() {
   }
   saved_stitch_frame_time_ = stitchFrameTime();
   saved_stitching_control_points_ = stitchingCalibrationControlPoints();
+  saved_stitch_max_output_width_ = stitchingMaxOutputWidth();
   saved_control_point_matcher_ = controlPointMatcher();
   saved_mapping_backend_ = mappingBackend();
   updatePresetDirtyState();
@@ -7415,6 +7532,7 @@ void HStreamWindow::updatePresetDirtyState() {
   bool dirty = retry_required || saved_camera_controls_.size() != camera_defaults_.size() ||
       saved_stitch_frame_time_ != stitchFrameTime() ||
       saved_stitching_control_points_ != stitchingCalibrationControlPoints() ||
+      saved_stitch_max_output_width_ != stitchingMaxOutputWidth() ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend();
   if (!dirty) {
     for (const auto& [id, default_value] : camera_defaults_) {
@@ -7457,6 +7575,11 @@ void HStreamWindow::loadSavedControlConfig() {
     const bool blocked = mapping_backend_combo_->blockSignals(true);
     set_combo_to_data(mapping_backend_combo_, default_mapping_backend_);
     mapping_backend_combo_->blockSignals(blocked);
+  }
+  if (stitch_max_output_width_spin_) {
+    const bool blocked = stitch_max_output_width_spin_->blockSignals(true);
+    stitch_max_output_width_spin_->setValue(default_stitch_max_output_width_);
+    stitch_max_output_width_spin_->blockSignals(blocked);
   }
   if (stitch_frame_time_edit_) {
     const bool blocked = stitch_frame_time_edit_->blockSignals(true);
@@ -7589,6 +7712,7 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
+    int staged_max_output_width = default_stitch_max_output_width_;
     QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     QString staged_control_point_matcher = default_control_point_matcher_;
     QString staged_mapping_backend = default_mapping_backend_;
@@ -7597,6 +7721,10 @@ void HStreamWindow::loadSavedControlConfig() {
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
         control_points.IsScalar()) {
       staged_control_points = control_points.as<int>();
+    }
+    if (stitch_max_output_width_spin_) {
+      staged_max_output_width = read_stitch_max_output_width_from_config(
+          config, default_stitch_max_output_width_, stitch_max_output_width_spin_->maximum());
     }
     QString configured_stitch_frame_time;
     bool stitch_frame_time_present = false;
@@ -7742,6 +7870,11 @@ void HStreamWindow::loadSavedControlConfig() {
       set_combo_to_data(mapping_backend_combo_, staged_mapping_backend);
       mapping_backend_combo_->blockSignals(blocked);
     }
+    if (stitch_max_output_width_spin_) {
+      const bool blocked = stitch_max_output_width_spin_->blockSignals(true);
+      stitch_max_output_width_spin_->setValue(staged_max_output_width);
+      stitch_max_output_width_spin_->blockSignals(blocked);
+    }
     for (const auto& [id, value] : staged_controls) {
       const auto slider_it = camera_sliders_.find(id);
       if (slider_it == camera_sliders_.end() || !slider_it->second) {
@@ -7844,6 +7977,14 @@ bool HStreamWindow::applySavedControlConfig(
     config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
   }
 
+  const int previous_max_output_width = read_stitch_max_output_width_from_config(
+      config,
+      default_stitch_max_output_width_,
+      stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+  QString previous_stitch_frame_time = default_stitch_frame_time_;
+  const bool previous_stitch_frame_time_valid =
+      read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
+
   // Every canonical key represented by a UI control is owned by the current
   // slider state on Save, including keys written directly by an operator.
   // Remove the old values first, then serialize only non-default controls.
@@ -7851,6 +7992,7 @@ bool HStreamWindow::applySavedControlConfig(
            "stitching.post_stitch_rotate_degrees",
            "stitching.control_point_matcher",
            "stitching.mapping_backend",
+           "stitching.max_output_width",
            "pipeline.hmplaycropper.properties.shadow-lift",
            "pipeline.hmplaycropper.properties.shadow-lift-black-point",
            "pipeline.hmplaycropper.properties.exposure",
@@ -7873,6 +8015,7 @@ bool HStreamWindow::applySavedControlConfig(
        }) {
     remove_yaml_path(config, QString::fromLatin1(path));
   }
+  remove_stitch_max_output_width_native_aliases(config);
   YAML::Node generated_runtime_keys(YAML::NodeType::Sequence);
   YAML::Node generated_runtime_values(YAML::NodeType::Map);
   std::set<std::string> generated_key_set;
@@ -7896,15 +8039,14 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["hstream_ui"]["camera_controls"] = controls;
 
-  QString previous_stitch_frame_time = default_stitch_frame_time_;
-  const bool previous_stitch_frame_time_valid =
-      read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
   const QString stitch_frame_time = stitchFrameTime();
   const int selected_control_points = stitchingCalibrationControlPoints();
+  const int selected_max_output_width = stitchingMaxOutputWidth();
   const bool stitch_frame_time_changed =
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
+  const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
   const QString selected_control_point_matcher = controlPointMatcher();
   const QString selected_mapping_backend = mappingBackend();
   const QString previous_control_point_matcher =
@@ -7919,7 +8061,10 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
-  if (stitch_frame_time_changed || control_points_changed || control_point_matcher_changed || mapping_backend_changed) {
+  config["stitching"]["max_output_width"] =
+      selected_max_output_width > 0 ? YAML::Node(selected_max_output_width) : YAML::Node(YAML::NodeType::Null);
+  if (stitch_frame_time_changed || control_points_changed || control_point_matcher_changed || mapping_backend_changed ||
+      max_output_width_changed) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["control_points"] = selected_control_points;
     calibration["status"] = "pending";

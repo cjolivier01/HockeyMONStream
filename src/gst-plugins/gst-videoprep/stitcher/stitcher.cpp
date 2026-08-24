@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include "nvdsmeta.h"
 
 #include <assert.h>
@@ -611,7 +612,8 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
           /*quiet=*/false,
-          /*minimize_blend=*/minimize_blend_);
+          /*minimize_blend=*/minimize_blend_,
+          /*max_output_width=*/max_output_width_);
     } else if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
       g_print("hmstitcher: using fp16 stitch compute\n");
       stitcher_fp16_ = std::make_unique<STITCHER_FP16>(
@@ -619,7 +621,8 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
           /*quiet=*/false,
-          /*minimize_blend=*/minimize_blend_);
+          /*minimize_blend=*/minimize_blend_,
+          /*max_output_width=*/max_output_width_);
     } else {
       g_print("hmstitcher: using fp32 stitch compute\n");
       stitcher_fp32_ = std::make_unique<STITCHER_FP32>(
@@ -627,7 +630,8 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
           /*quiet=*/false,
-          /*minimize_blend=*/minimize_blend_);
+          /*minimize_blend=*/minimize_blend_,
+          /*max_output_width=*/max_output_width_);
     }
   }
   if (stitcher_fp16_ && !stitcher_fp16_->status().ok()) {
@@ -1021,6 +1025,21 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     match_exposure_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
+  } else if (
+      prop.key == "max-output-width" || prop.key == "max_output_width" || prop.key == "stitch-max-output-width" ||
+      prop.key == "stitch_max_output_width") {
+    char* end = nullptr;
+    const long parsed = std::strtol(prop.value.c_str(), &end, 10);
+    if (end == prop.value.c_str() || *end != '\0' || parsed < 0 || parsed > std::numeric_limits<int>::max()) {
+      std::cerr << "Invalid stitch max-output-width value: " << prop.value << std::endl;
+      return false;
+    }
+    absl::MutexLock lk(&stitcher_mu_);
+    if (has_stitcher() && parsed != max_output_width_) {
+      std::cerr << "Cannot change stitch max-output-width after stitcher initialization" << std::endl;
+      return false;
+    }
+    max_output_width_ = static_cast<int>(parsed);
   } else if (prop.key == "require-decoded-frame-sequence-meta" || prop.key == "require_decoded_frame_sequence_meta") {
     require_decoded_frame_sequence_meta_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "high-bit-depth" || prop.key == "high_bit_depth") {
@@ -1672,7 +1691,9 @@ absl::Status StitcherPriv::GenerateOutput(
     }
     std::string output_generation;
     HM_ASSIGN_OR_RETURN(
-        output_generation, stitching::stitched_output_generation_id(hugin_generation, applied_post_stitch_rotation));
+        output_generation,
+        stitching::stitched_output_generation_id(
+            hugin_generation, applied_post_stitch_rotation, canvas->width(), canvas->height()));
     const std::string completion_scope = stitching::calibration_completion_scope(
         output_generation, calibration_invalidation_id_, calibration_run_generation_);
 

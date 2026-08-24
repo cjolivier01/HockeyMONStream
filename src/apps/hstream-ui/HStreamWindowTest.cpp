@@ -48,6 +48,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -2188,8 +2189,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   auto* control_point_matcher_label = require_child<QLabel>(window, "controlPointMatcherLabel");
   auto* mapping_backend_label = require_child<QLabel>(window, "mappingBackendLabel");
+  auto* stitch_max_output_width_label = require_child<QLabel>(window, "stitchMaxOutputWidthLabel");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -2238,15 +2241,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time ||
       !control_point_matcher || !mapping_backend || !control_point_matcher_label || !mapping_backend_label ||
-      !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking ||
-      !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
-      !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
-      !preview_surface || !preview_target || !stitched_surface || !stitched_target || !camera1_host ||
-      !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
-      !external_notice || !camera1_notice || !stitched_status || !preview_status || !program_controls ||
-      !program_controls_toggle || !stitched_controls || !program_control_tabs || !stitched_control_tabs ||
-      !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back ||
-      !seek_forward || !seek_position || !pipeline_process) {
+      !stitch_max_output_width || !stitch_max_output_width_label || !game_id || !rotate || !max_speed_x ||
+      !bring_up_shadows || !render_video || !show_player_tracking || !show_play_tracking || !show_rink_mask ||
+      !drivegpt_csv || !log || !clear_log || !main_log_splitter || !setup_preview_splitter || !output_routing ||
+      !preview_tabs || !pipeline_inspector || !program_host || !preview_surface || !preview_target ||
+      !stitched_surface || !stitched_target || !camera1_host || !camera1_surface || !camera1_target || !camera1_focus ||
+      !camera2_surface || !camera3_surface || !external_notice || !camera1_notice || !stitched_status ||
+      !preview_status || !program_controls || !program_controls_toggle || !stitched_controls || !program_control_tabs ||
+      !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress ||
+      !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2329,11 +2332,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls->isAncestorOf(rotate) && !camera1_host->isAncestorOf(max_speed_x) &&
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
               stitched_controls->isAncestorOf(control_point_matcher) &&
-              stitched_controls->isAncestorOf(mapping_backend) && program_control_tabs->count() == 4 &&
+              stitched_controls->isAncestorOf(mapping_backend) &&
+              stitched_controls->isAncestorOf(stitch_max_output_width) && program_control_tabs->count() == 4 &&
               stitched_control_tabs->count() == 2 && stitched_control_tabs->tabText(1) == "Algorithms" &&
               control_point_matcher_label->text() == "Control-point matcher" &&
-              mapping_backend_label->text() == "Mapping backend" && control_point_matcher->count() == 3 &&
-              control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
+              mapping_backend_label->text() == "Mapping backend" &&
+              stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
+              stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
+              control_point_matcher->count() == 3 && control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
               control_point_matcher->itemText(1) == "DeDoDe + LightGlue" &&
               control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
               mapping_backend->count() == 3 && mapping_backend->itemText(0) == "NONA" &&
@@ -2555,6 +2561,59 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   stitch_frame_time->setTime(QTime(0, 0, 0));
   QApplication::processEvents();
 
+  {
+    YAML::Node legacy_completed = YAML::LoadFile(stitch_time_transition_config.string());
+    YAML::Node calibration = legacy_completed["hstream_ui"]["stitching_calibration"];
+    calibration["control_points"] = control_points->value();
+    calibration["status"] = "complete";
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+    calibration.remove("invalidation_id");
+    YAML::Node stitching = legacy_completed["stitching"];
+    if (stitching && stitching.IsMap()) {
+      stitching.remove("stitch_frame_time");
+      stitching.remove("max_output_width");
+    }
+    const auto published = hm::stitching::publish_game_config(
+        stitch_time_transition_config.parent_path(), YAML::Dump(legacy_completed) + "\n");
+    if (!published.ok()) {
+      std::cerr << "Could not prepare the legacy max-width Play regression: " << published << '\n';
+      return false;
+    }
+  }
+  const int max_width_clean_commands = window->logText().count("stitching calibration clean command");
+  stitch_max_output_width->setValue(4096);
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
+  activate(start);
+  const YAML::Node pending_max_width = YAML::LoadFile(stitch_time_transition_config.string());
+  const YAML::Node pending_max_width_calibration = pending_max_width["hstream_ui"]["stitching_calibration"];
+  const bool legacy_max_width_invalidated =
+      expect(
+          pending_max_width["stitching"]["max_output_width"].as<int>() == 4096,
+          "Play must persist a newly edited max stitched width without requiring Save Preset") &&
+      expect(
+          pending_max_width_calibration["status"].as<std::string>() == "pending" &&
+              pending_max_width_calibration["stale_from"].as<std::string>() == "canvas" &&
+              pending_max_width_calibration["artifacts_invalidated"].as<bool>() &&
+              pending_max_width_calibration["invalidation_id"].IsScalar(),
+          "Changing max stitched width from a legacy completed config must invalidate canvas artifacts before playback") &&
+      expect(
+          window->logText().count("stitching calibration clean command") == max_width_clean_commands + 1 &&
+              window->logText().contains("stitching calibration dependency canvas is stale"),
+          "Max stitched width changes must clean cached canvas-dependent artifacts");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
+  if (!legacy_max_width_invalidated)
+    return false;
+  stitch_max_output_width->setValue(0);
+  QApplication::processEvents();
+
   mode->setCurrentIndex(mode->findData("program"));
   if (!expect(
           control_points->isEnabled(),
@@ -2590,6 +2649,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
                   "startup [stitching]: Discovering source chapters and validating saved stitching artifacts") &&
               !window->logText().contains("HSTREAM_STARTUP"),
           "A configured or calibrating run must explain each pre-first-frame startup stage without protocol noise")) {
+    return false;
+  }
+  if (!expect(
+          !stitch_max_output_width->isEnabled(),
+          "Max stitched width must be locked while the running pipeline uses the previously captured value")) {
     return false;
   }
   const QString initial_program_preview_state = preview_surface->property("previewRendererState").toString();
@@ -4884,10 +4948,11 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+  auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !zoom_in_aggressiveness ||
       !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !exposure ||
       !lift_shadow_black_point || !use_10_bit_grading || !reset || !save || !create || !game_id || !start || !stop ||
-      !mode || !stitch_frame_time) {
+      !mode || !stitch_frame_time || !stitch_max_output_width) {
     return false;
   }
 
@@ -4895,6 +4960,7 @@ bool test_camera_controls(HStreamWindow* window) {
       "runModeCombo",
       "controlPointsSpin",
       "stitchFrameTimeEdit",
+      "stitchMaxOutputWidthSpin",
       "renderVideoCheck",
       "startPipelineButton",
       "pausePipelineButton",
@@ -4995,6 +5061,76 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  {
+    YAML::Node capped(YAML::NodeType::Map);
+    capped["stitching"]["max_output_width"] = 4096;
+    capped["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
+    capped["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 2048;
+    capped["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    capped["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    std::ofstream out(config);
+    out << capped << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stitch_max_output_width->value() == 4096 && !save->isEnabled(),
+          "A saved max stitched width should load as the clean preset state")) {
+    return false;
+  }
+  stitch_max_output_width->setValue(0);
+  if (!expect(save->isEnabled(), "Changing max stitched width back to Auto should enable Save Preset")) {
+    return false;
+  }
+  activate(save);
+  const YAML::Node after_max_width_auto = YAML::LoadFile(config.string());
+  const YAML::Node after_max_width_auto_calibration = after_max_width_auto["hstream_ui"]["stitching_calibration"];
+  if (!expect(
+          after_max_width_auto["stitching"]["max_output_width"].IsNull() &&
+              !lookup_yaml_path(
+                  after_max_width_auto, {"pipeline", "hmstitcher", "properties", "max-output-width"}, nullptr) &&
+              !lookup_yaml_path(
+                  after_max_width_auto,
+                  {"pipeline", "hmstitcher", "private-properties", "stitch_max_output_width"},
+                  nullptr) &&
+              after_max_width_auto_calibration["status"].as<std::string>() == "pending" &&
+              after_max_width_auto_calibration["stale_from"].as<std::string>() == "canvas" &&
+              after_max_width_auto_calibration["rink_mask_status"].as<std::string>() == "pending" &&
+              !after_max_width_auto_calibration["artifacts_invalidated"].as<bool>(),
+          "Saving 4096 -> Auto must mark capped canvas artifacts stale")) {
+    return false;
+  }
+  {
+    YAML::Node native_only(YAML::NodeType::Map);
+    native_only["pipeline"]["hmstitcher"]["properties"]["max_output_width"] = 2048;
+    native_only["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 2048;
+    native_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    native_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    std::ofstream out(config);
+    out << native_only << "\n";
+  }
+  activate(create);
+  if (!expect(
+          stitch_max_output_width->value() == 2048 && !save->isEnabled(),
+          "A legacy native-only max stitched width should load as the clean preset state")) {
+    return false;
+  }
+  stitch_max_output_width->setValue(0);
+  activate(save);
+  const YAML::Node after_native_width_auto = YAML::LoadFile(config.string());
+  const YAML::Node after_native_width_auto_calibration = after_native_width_auto["hstream_ui"]["stitching_calibration"];
+  if (!expect(
+          after_native_width_auto["stitching"]["max_output_width"].IsNull() &&
+              !lookup_yaml_path(
+                  after_native_width_auto, {"pipeline", "hmstitcher", "properties", "max_output_width"}, nullptr) &&
+              !lookup_yaml_path(
+                  after_native_width_auto,
+                  {"pipeline", "hmstitcher", "private-properties", "stitch_max_output_width"},
+                  nullptr) &&
+              after_native_width_auto_calibration["status"].as<std::string>() == "pending" &&
+              after_native_width_auto_calibration["stale_from"].as<std::string>() == "canvas",
+          "Saving a legacy native-only cap to Auto must migrate aliases and mark canvas artifacts stale")) {
+    return false;
+  }
   {
     YAML::Node existing(YAML::NodeType::Map);
     existing["rink"]["camera"]["fixed_edge_rotation_angle"] = 22.0;
@@ -5612,6 +5748,17 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(!save->isEnabled(), "A successful durability retry should clear the retry-required state")) {
     return false;
   }
+  stitch_max_output_width->setValue(4096);
+  game_id->setText("ui-camera-control-empty-game");
+  activate(create);
+  if (!expect(
+          stitch_max_output_width->value() == 0 && !save->isEnabled(),
+          "A game without config.yaml must reset max stitched width to the effective default instead of inheriting the "
+          "previous game")) {
+    return false;
+  }
+  game_id->setText(durability_retry_game_id);
+  activate(create);
   YAML::Node generated_backend_marker_config = YAML::LoadFile(config.string());
   generated_backend_marker_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   generated_backend_marker_config["stitching"]["mapping_backend"] = "nona";
