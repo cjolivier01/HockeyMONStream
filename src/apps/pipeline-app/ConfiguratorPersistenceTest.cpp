@@ -557,6 +557,22 @@ play-tracker:
           !mapping_ranked_width.config()["pipeline"]["hmstitcher"]["properties"]["stitch_max_output_width"].IsDefined(),
       "A higher-ranked native max-width alias must beat a lower-ranked canonical value and normalize to max-output-width");
 
+  const fs::path max_width_tie_game_dir = games / "mapping-max-width-tie";
+  fs::create_directories(max_width_tie_game_dir);
+  YAML::Node max_width_tie(YAML::NodeType::Map);
+  max_width_tie["stitching"]["max_output_width"] = 4096;
+  max_width_tie["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
+  std::ofstream(max_width_tie_game_dir / "config.yaml") << YAML::Dump(max_width_tie) << '\n';
+  hm::Configurator mapping_max_width_tie(
+      "mapping-max-width-tie", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status mapping_max_width_tie_status = mapping_max_width_tie.configure().ok()
+      ? mapping_max_width_tie.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping max-width-tie fixture did not load");
+  ok &= expect(
+      mapping_max_width_tie_status.ok() &&
+          mapping_max_width_tie.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].as<int>() == 4096,
+      "A same-ranked canonical max stitched width must match UI precedence and beat conflicting native aliases");
+
   const fs::path malformed_properties_game_dir = games / "mapping-malformed-properties";
   fs::create_directories(malformed_properties_game_dir);
   YAML::Node malformed_properties(YAML::NodeType::Map);

@@ -1743,7 +1743,7 @@ absl::Status Configurator::map_common_config_keys() {
     };
     if (const std::optional<YAML::Node> canonical = get_node(config_, "stitching.max_output_width");
         canonical.has_value() && canonical->IsDefined()) {
-      add_max_output_width_candidate("stitching.max_output_width", *canonical, YAML::Node(), "", 0, true, false);
+      add_max_output_width_candidate("stitching.max_output_width", *canonical, YAML::Node(), "", 4, true, false);
     }
     for (const char* alias :
          {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"}) {
