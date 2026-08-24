@@ -868,9 +868,12 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
       incoming_surface_right = calibration_surfaces.second;
     }
     absl::Status configure_status = stitching::configure_stitching(
-        config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_, [this] {
-          return calibration_cancelled_.load(std::memory_order_acquire);
-        });
+        config_file_,
+        incoming_surface_left,
+        incoming_surface_right,
+        calibration_invalidation_id_,
+        [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+        max_output_width_);
     release_high_bit_calibration_surfaces();
     if (!configure_status.ok()) {
       std::cerr << configure_status << "\n" << std::flush;
@@ -1542,9 +1545,12 @@ absl::Status StitcherPriv::GenerateOutput(
             calibration_surface_right = calibration_surfaces.second;
           }
           absl::Status configure_status = stitching::configure_stitching(
-              config_file_, calibration_surface_left, calibration_surface_right, calibration_invalidation_id_, [this] {
-                return calibration_cancelled_.load(std::memory_order_acquire);
-              });
+              config_file_,
+              calibration_surface_left,
+              calibration_surface_right,
+              calibration_invalidation_id_,
+              [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+              max_output_width_);
           release_high_bit_calibration_surfaces();
           if (!configure_status.ok()) {
             std::cerr << configure_status << "\n" << std::flush;

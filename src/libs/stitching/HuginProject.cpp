@@ -1573,28 +1573,53 @@ absl::Status HuginProject::Configure(
   if (options.progress)
     options.progress("canvas", "started", "Building stitch maps and panorama preview");
   std::optional<double> output_scale;
-  auto fit_canvas = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
-    const size_t longest = std::max(width, height);
-    const double factor =
-        static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest) * rounding_guard;
-    output_scale = output_scale.value_or(1.0) * factor;
+  auto fit_canvas = [&](size_t width, size_t height, double factor, double rounding_guard) -> absl::Status {
+    (void)width;
+    (void)height;
+    output_scale = output_scale.value_or(1.0) * factor * rounding_guard;
     return run_autooptimiser(*autooptimiser_path, staging, output_scale, options.is_cancelled);
+  };
+  auto fit_canvas_longest = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
+    const size_t longest = std::max(width, height);
+    const double factor = static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest);
+    return fit_canvas(width, height, factor, rounding_guard);
+  };
+  auto fit_canvas_width = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
+    if (!options.max_output_width.has_value() || *options.max_output_width == 0 || width <= *options.max_output_width)
+      return absl::OkStatus();
+    const double factor = static_cast<double>(*options.max_output_width) / static_cast<double>(width);
+    return fit_canvas(width, height, factor, rounding_guard);
   };
   if (options.mapping_backend != MappingBackend::kNona && output_scale.has_value()) {
     return absl::InvalidArgumentError("Native OpenCV mapping backends do not accept Hugin output scaling");
   }
-  if (options.max_canvas_dimension.has_value()) {
+  if (options.max_canvas_dimension.has_value() || options.max_output_width.has_value()) {
     auto optimized = read_file(staging / "autooptimiser_out.pto");
     if (!optimized.ok())
       return optimized.status();
     auto dimensions = ParseCanvasSize(*optimized);
     if (!dimensions.ok())
       return dimensions.status();
-    const size_t longest = std::max(dimensions->first, dimensions->second);
-    if (longest > *options.max_canvas_dimension && options.mapping_backend == MappingBackend::kNona) {
-      status = fit_canvas(dimensions->first, dimensions->second, 1.0);
-      if (!status.ok())
-        return status;
+    if (options.mapping_backend == MappingBackend::kNona) {
+      if (options.max_output_width.has_value() && dimensions->first > *options.max_output_width) {
+        status = fit_canvas_width(dimensions->first, dimensions->second, 1.0);
+        if (!status.ok())
+          return status;
+        optimized = read_file(staging / "autooptimiser_out.pto");
+        if (!optimized.ok())
+          return optimized.status();
+        dimensions = ParseCanvasSize(*optimized);
+        if (!dimensions.ok())
+          return dimensions.status();
+      }
+      if (options.max_canvas_dimension.has_value()) {
+        const size_t longest = std::max(dimensions->first, dimensions->second);
+        if (longest > *options.max_canvas_dimension) {
+          status = fit_canvas_longest(dimensions->first, dimensions->second, 1.0);
+          if (!status.ok())
+            return status;
+        }
+      }
     }
   }
 
@@ -1616,7 +1641,7 @@ absl::Status HuginProject::Configure(
       }
       if (!mappings_valid)
         return status;
-      if (!options.max_canvas_dimension.has_value())
+      if (!options.max_canvas_dimension.has_value() && !options.max_output_width.has_value())
         break;
 
       // Nona derives its mapping canvas from the optimized PTO. Validate that
@@ -1627,22 +1652,31 @@ absl::Status HuginProject::Configure(
       auto dimensions = ParseCanvasSize(*optimized);
       if (!dimensions.ok())
         return dimensions.status();
-      const size_t longest = std::max(dimensions->first, dimensions->second);
-      if (longest <= *options.max_canvas_dimension)
+      const bool width_ok = !options.max_output_width.has_value() || dimensions->first <= *options.max_output_width;
+      const bool dimension_ok = !options.max_canvas_dimension.has_value() ||
+          std::max(dimensions->first, dimensions->second) <= *options.max_canvas_dimension;
+      if (width_ok && dimension_ok)
         break;
       if (attempt == 2) {
-        return absl::FailedPreconditionError(
-            "Hugin mapping canvas still exceeds maximum dimension after three attempts");
+        return absl::FailedPreconditionError("Hugin mapping canvas still exceeds requested size after three attempts");
       }
-      status = fit_canvas(dimensions->first, dimensions->second, 0.999);
+      if (!width_ok) {
+        status = fit_canvas_width(dimensions->first, dimensions->second, 0.999);
+      } else {
+        status = fit_canvas_longest(dimensions->first, dimensions->second, 0.999);
+      }
       if (!status.ok())
         return status;
     }
   } else {
     const cv::Mat left = cv::imread((staging / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat right = cv::imread((staging / "right.png").string(), cv::IMREAD_COLOR);
-    auto maps =
-        CreateOpenCvMappingFiles(staging, left, right, matches, options.mapping_backend, options.max_canvas_dimension);
+    std::optional<size_t> native_limit = options.max_canvas_dimension;
+    if (options.max_output_width.has_value()) {
+      native_limit =
+          native_limit.has_value() ? std::min(*native_limit, *options.max_output_width) : options.max_output_width;
+    }
+    auto maps = CreateOpenCvMappingFiles(staging, left, right, matches, options.mapping_backend, native_limit);
     if (!maps.ok())
       return maps.status();
     std::cout << "OpenCV mapping backend " << MappingBackendName(options.mapping_backend) << " generated "

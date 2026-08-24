@@ -1193,7 +1193,8 @@ absl::Status create_control_points(
     surface::Surface left_surface,
     surface::Surface right_surface,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
   std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -1279,6 +1280,8 @@ absl::Status create_control_points(
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
+  if (max_output_width > 0)
+    options.max_output_width = max_output_width;
   options.mapping_backend = mapping_backend;
   options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
@@ -2194,9 +2197,10 @@ absl::Status configure_stitching(
     surface::Surface left_surface,
     surface::Surface right_surface,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
-  HM_RETURN_IF_ERROR(
-      create_control_points(game_dir, left_surface, right_surface, expected_invalidation_id, is_cancelled));
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
+  HM_RETURN_IF_ERROR(create_control_points(
+      game_dir, left_surface, right_surface, expected_invalidation_id, is_cancelled, max_output_width));
   return absl::OkStatus();
 }
 

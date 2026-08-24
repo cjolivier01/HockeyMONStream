@@ -130,7 +130,8 @@ absl::Status configure_stitching(
     surface::Surface left_surface,
     surface::Surface right_surface,
     const std::string& expected_invalidation_id = {},
-    const std::function<bool()>& is_cancelled = {});
+    const std::function<bool()>& is_cancelled = {},
+    size_t max_output_width = 0);
 
 // Validate that `${game_dir}/seam_file.png` exists.
 //
