@@ -5159,6 +5159,26 @@ bool test_camera_controls(HStreamWindow* window) {
           "A saved max stitched width should load as the clean preset state")) {
     return false;
   }
+  bring_up_shadows->setValue(36);
+  if (!expect(save->isEnabled(), "Changing an unrelated stitching control should enable Save Preset")) {
+    return false;
+  }
+  activate(save);
+  const YAML::Node after_conflicting_width_save = YAML::LoadFile(config.string());
+  const YAML::Node after_conflicting_width_calibration =
+      after_conflicting_width_save["hstream_ui"]["stitching_calibration"];
+  if (!expect(
+          after_conflicting_width_save["stitching"]["max_output_width"].as<int>() == 4096 &&
+              !lookup_yaml_path(
+                  after_conflicting_width_save,
+                  {"pipeline", "hmstitcher", "properties", "max-output-width"},
+                  nullptr) &&
+              after_conflicting_width_calibration["status"].as<std::string>() == "pending" &&
+              after_conflicting_width_calibration["stale_from"].as<std::string>() == "canvas",
+          "Saving a config with conflicting native max-width aliases must invalidate calibration before removing them")) {
+    return false;
+  }
+  bring_up_shadows->setValue(35);
   stitch_max_output_width->setValue(0);
   if (!expect(save->isEnabled(), "Changing max stitched width back to Auto should enable Save Preset")) {
     return false;

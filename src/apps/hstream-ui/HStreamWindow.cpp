@@ -8036,6 +8036,11 @@ bool HStreamWindow::applySavedControlConfig(
   QString previous_stitch_frame_time = default_stitch_frame_time_;
   const bool previous_stitch_frame_time_valid =
       read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
+  const int selected_max_output_width = stitchingMaxOutputWidth();
+  const bool had_conflicting_max_output_width_native_alias = has_conflicting_stitch_max_output_width_native_alias(
+      config,
+      selected_max_output_width,
+      stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
 
   // Every canonical key represented by a UI control is owned by the current
   // slider state on Save, including keys written directly by an operator.
@@ -8093,17 +8098,12 @@ bool HStreamWindow::applySavedControlConfig(
 
   const QString stitch_frame_time = stitchFrameTime();
   const int selected_control_points = stitchingCalibrationControlPoints();
-  const int selected_max_output_width = stitchingMaxOutputWidth();
   const bool stitch_frame_time_changed =
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
   const bool max_output_width_changed =
-      previous_max_output_width != selected_max_output_width ||
-      has_conflicting_stitch_max_output_width_native_alias(
-          config,
-          selected_max_output_width,
-          stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+      previous_max_output_width != selected_max_output_width || had_conflicting_max_output_width_native_alias;
   const QString selected_control_point_matcher = controlPointMatcher();
   const QString selected_mapping_backend = mappingBackend();
   const QString previous_control_point_matcher =
