@@ -26,11 +26,18 @@ struct Synchronization {
   double video2_frame_offset{0};
 };
 
+struct StitchingCanvasSize {
+  size_t width{0};
+  size_t height{0};
+};
+
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2);
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
+
+absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width = 0);
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
     const std::string& game_dir,

@@ -2650,6 +2650,49 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!malformed_max_width_repaired)
     return false;
 
+  {
+    YAML::Node conflicting_width = YAML::LoadFile(stitch_time_transition_config.string());
+    YAML::Node calibration = conflicting_width["hstream_ui"]["stitching_calibration"];
+    calibration["control_points"] = control_points->value();
+    calibration["status"] = "complete";
+    calibration.remove("stale_from");
+    calibration.remove("artifacts_invalidated");
+    calibration.remove("invalidation_id");
+    conflicting_width["stitching"]["max_output_width"] = 4096;
+    conflicting_width["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
+    const auto published = hm::stitching::publish_game_config(
+        stitch_time_transition_config.parent_path(), YAML::Dump(conflicting_width) + "\n");
+    if (!published.ok()) {
+      std::cerr << "Could not prepare conflicting max-width Play regression: " << published << '\n';
+      return false;
+    }
+  }
+  stitch_max_output_width->setValue(4096);
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
+  activate(start);
+  const YAML::Node repaired_conflict_width = YAML::LoadFile(stitch_time_transition_config.string());
+  const YAML::Node repaired_conflict_calibration = repaired_conflict_width["hstream_ui"]["stitching_calibration"];
+  const bool conflicting_max_width_invalidated =
+      expect(
+          repaired_conflict_width["stitching"]["max_output_width"].as<int>() == 4096 &&
+              !lookup_yaml_path(
+                  repaired_conflict_width, {"pipeline", "hmstitcher", "properties", "max-output-width"}, nullptr),
+          "Play must remove conflicting native max-width aliases while keeping the canonical value") &&
+      expect(
+          repaired_conflict_calibration["status"].as<std::string>() == "pending" &&
+              repaired_conflict_calibration["stale_from"].as<std::string>() == "canvas",
+          "Removing a conflicting native max-width alias at Play must invalidate canvas artifacts");
+  activate(stop);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
+  if (!conflicting_max_width_invalidated)
+    return false;
+
   stitch_max_output_width->setValue(0);
   QApplication::processEvents();
 

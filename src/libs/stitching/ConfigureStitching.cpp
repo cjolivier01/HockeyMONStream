@@ -1009,6 +1009,18 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
   return artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension);
 }
 
+absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  CanvasSize canvas_size;
+  if (max_output_width > 0) {
+    HM_ASSIGN_OR_RETURN(canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));
+  } else {
+    HM_ASSIGN_OR_RETURN(canvas_size, get_mapping_canvas_size(fs::path(game_dir)));
+  }
+  return StitchingCanvasSize{.width = canvas_size.width, .height = canvas_size.height};
+}
+
 absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t max_output_width) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Game dir is empty");
@@ -1062,9 +1074,9 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t 
   std::cerr << "Existing seam mask is unusable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits regeneration: " << seam_status
             << std::endl;
 
-  const double scale =
-      measured_canvas.width > 0 ? static_cast<double>(effective_canvas.width) / static_cast<double>(measured_canvas.width)
-                                : 1.0;
+  const double scale = measured_canvas.width > 0
+      ? static_cast<double>(effective_canvas.width) / static_cast<double>(measured_canvas.width)
+      : 1.0;
   const int x0 = static_cast<int>(std::floor(p0.x_px * scale));
   const int y0 = static_cast<int>(std::floor(p0.y_px * scale));
   const int x1 = static_cast<int>(std::floor(p1.x_px * scale));
@@ -1764,6 +1776,14 @@ bool is_field_mask_configured_for_stitching_config(
   auto output_generation = configured_stitched_output_generation_id(game_dir, max_output_width);
   if (output_generation.ok() && is_field_mask_configured(game_dir, *output_generation, expected_invalidation_id)) {
     return true;
+  }
+  if (max_output_width > 0) {
+    auto native_size = stitching_canvas_size(game_dir);
+    auto effective_size = stitching_canvas_size(game_dir, max_output_width);
+    if (!native_size.ok() || !effective_size.ok() || native_size->width != effective_size->width ||
+        native_size->height != effective_size->height) {
+      return false;
+    }
   }
   return is_field_mask_configured(game_dir, {}, expected_invalidation_id);
 }

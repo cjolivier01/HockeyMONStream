@@ -36,7 +36,6 @@
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
-#include "cupano/pano/controlMasks.h"
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
@@ -715,13 +714,12 @@ absl::StatusOr<std::optional<std::tuple<int, int>>> get_canvas_size(
   if (!artifact_lock.ok()) {
     return artifact_lock.status();
   }
-  hm::pano::ControlMasks control_masks(game_dir);
-  if (!control_masks.is_valid()) {
-    return std::optional<std::tuple<int, int>>{};
+  auto canvas_size = stitching::stitching_canvas_size(game_dir, max_output_width);
+  if (!canvas_size.ok()) {
+    return canvas_size.status();
   }
-  control_masks.scale_to_max_output_width(max_output_width);
   return std::optional<std::tuple<int, int>>(
-      std::make_tuple(control_masks.canvas_width(), control_masks.canvas_height()));
+      std::make_tuple(static_cast<int>(canvas_size->width), static_cast<int>(canvas_size->height)));
 }
 
 absl::StatusOr<int> read_stitch_max_output_width_node(const YAML::Node& node, const std::string& path) {

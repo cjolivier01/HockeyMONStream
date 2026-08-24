@@ -740,6 +740,13 @@ absl::Status validate_and_normalize_seam(
     auto seam = decode_nonuniform_seam(path, *layout);
     return seam.ok() ? absl::OkStatus() : seam.status();
   }
+  if (layout->offset_x == 0 && layout->offset_y == 0) {
+    return absl::FailedPreconditionError(
+        "PNG seam has full-canvas origin but matches neither the native nor capped mapping canvas: " + path.string() +
+        " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
+        " native-canvas=" + std::to_string(native_canvas_width) + "x" + std::to_string(native_canvas_height) +
+        " capped-canvas=" + std::to_string(effective_canvas_width) + "x" + std::to_string(effective_canvas_height));
+  }
 
   if (layout->offset_x < 0 || layout->offset_y < 0 || right > native_canvas_width || bottom > native_canvas_height) {
     return absl::FailedPreconditionError(

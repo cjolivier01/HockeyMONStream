@@ -1472,6 +1472,43 @@ int read_stitch_max_output_width_from_config(YAML::Node config, int default_valu
   return default_value;
 }
 
+bool has_conflicting_stitch_max_output_width_native_alias(YAML::Node config, int canonical_value, int maximum_value) {
+  YAML::Node value;
+  if (!lookup_yaml_path(config, "stitching.max_output_width", &value)) {
+    return false;
+  }
+  for (const char* path : {
+           "pipeline.hmstitcher.properties.max-output-width",
+           "pipeline.hmstitcher.properties.max_output_width",
+           "pipeline.hmstitcher.properties.stitch-max-output-width",
+           "pipeline.hmstitcher.properties.stitch_max_output_width",
+           "pipeline.hmstitcher.private-properties.max-output-width",
+           "pipeline.hmstitcher.private-properties.max_output_width",
+           "pipeline.hmstitcher.private-properties.stitch-max-output-width",
+           "pipeline.hmstitcher.private-properties.stitch_max_output_width",
+       }) {
+    YAML::Node alias;
+    if (!lookup_yaml_path(config, QString::fromLatin1(path), &alias)) {
+      continue;
+    }
+    try {
+      if (alias.IsNull()) {
+        if (canonical_value != 0)
+          return true;
+        continue;
+      }
+      if (!alias.IsScalar())
+        return true;
+      const int alias_value = alias.as<int>();
+      if (alias_value < 0 || alias_value > maximum_value || alias_value != canonical_value)
+        return true;
+    } catch (const std::exception&) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool generated_stitching_backend_choices_match_private(
     const YAML::Node& config,
     QString* previous_matcher = nullptr,
@@ -3599,7 +3636,12 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
 
     const bool control_points_changed = !saved_found || saved_control_points != control_points;
-    const bool max_output_width_changed = saved_max_output_width != active_stitch_max_output_width_;
+    const bool max_output_width_changed =
+        saved_max_output_width != active_stitch_max_output_width_ ||
+        has_conflicting_stitch_max_output_width_native_alias(
+            config,
+            active_stitch_max_output_width_,
+            stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
     const bool control_point_matcher_changed = saved_control_point_matcher != active_control_point_matcher_;
     const bool mapping_backend_changed = saved_mapping_backend != active_mapping_backend_;
     const bool stitch_frame_time_changed =
@@ -8056,7 +8098,12 @@ bool HStreamWindow::applySavedControlConfig(
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
-  const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
+  const bool max_output_width_changed =
+      previous_max_output_width != selected_max_output_width ||
+      has_conflicting_stitch_max_output_width_native_alias(
+          config,
+          selected_max_output_width,
+          stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
   const QString selected_control_point_matcher = controlPointMatcher();
   const QString selected_mapping_backend = mappingBackend();
   const QString previous_control_point_matcher =
