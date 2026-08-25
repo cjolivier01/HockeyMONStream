@@ -1151,6 +1151,9 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width) {
   if (game_dir.empty())
     return absl::InvalidArgumentError("A game directory is required");
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
   CanvasSize canvas_size;
   if (max_output_width > 0) {
     HM_ASSIGN_OR_RETURN(canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));

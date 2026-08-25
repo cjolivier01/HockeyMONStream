@@ -5260,7 +5260,7 @@ absl::Status Configurator::map_common_config_keys() {
       } else if (winner->private_property && winner->rank < 1) {
         for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
           if (!candidate.canonical && !candidate.private_property && candidate.container.IsMap() &&
-              candidate.effective_rank < winner->effective_rank) {
+              candidate.effective_rank <= winner->effective_rank) {
             candidate.container.remove(candidate.key);
           }
         }

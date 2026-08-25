@@ -225,6 +225,27 @@ int main() {
     ok &= expect(tall->canvas_height > 80, "OpenCV width cap must not act as a longest-side cap");
   }
 
+  fs::path rounding_dir = root / "width-cap-rounding";
+  fs::create_directories(rounding_dir);
+  const std::vector<hm::stitching::FeatureMatch> rounding_matches = {
+      {{2005.0f, 0.0f}, {0.0f, 0.0f}, 0.9f},
+      {{2055.0f, 0.0f}, {50.0f, 0.0f}, 0.9f},
+      {{2005.0f, 50.0f}, {0.0f, 50.0f}, 0.9f},
+      {{2055.0f, 50.0f}, {50.0f, 50.0f}, 0.9f},
+  };
+  auto rounding = hm::stitching::CreateOpenCvMappingFiles(
+      rounding_dir,
+      left,
+      right,
+      rounding_matches,
+      hm::stitching::MappingBackend::kOpenCvAffineRansac,
+      std::nullopt,
+      1536);
+  ok &= expect(rounding.ok(), "OpenCV width cap rounding fixture should generate artifacts");
+  if (rounding.ok()) {
+    ok &= expect(rounding->canvas_width == 1536, "floating-point rounding must not exceed the OpenCV width cap");
+  }
+
   fs::remove_all(root);
   return ok ? 0 : 1;
 }

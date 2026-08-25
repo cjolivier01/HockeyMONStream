@@ -570,6 +570,29 @@ play-tracker:
                   .as<int>() == 1536,
       "Bundled baseline null max stitched width must not clear a private-only native cap");
 
+  const fs::path private_width_public_null_game_dir = games / "mapping-private-width-public-null";
+  fs::create_directories(private_width_public_null_game_dir);
+  YAML::Node private_width_public_null(YAML::NodeType::Map);
+  private_width_public_null["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
+  private_width_public_null["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1536;
+  const fs::path private_width_public_null_path = root / "mapping-private-width-public-null.yaml";
+  std::ofstream(private_width_public_null_path) << YAML::Dump(private_width_public_null) << '\n';
+  hm::Configurator mapping_private_width_public_null(
+      "mapping-private-width-public-null", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_private_width_public_null_loaded = mapping_private_width_public_null.configure().ok() &&
+      mapping_private_width_public_null.underlay_config("pipeline", private_width_public_null_path.string());
+  const absl::Status mapping_private_width_public_null_status = mapping_private_width_public_null_loaded
+      ? mapping_private_width_public_null.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping private-width/public-null fixture did not load");
+  ok &= expect(
+      mapping_private_width_public_null_status.ok() &&
+          !mapping_private_width_public_null.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"]
+               .IsDefined() &&
+          mapping_private_width_public_null
+                  .config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+                  .as<int>() == 1536,
+      "An unranked private max-width cap must remove a same-rank public null alias");
+
   const fs::path ranked_width_game_dir = games / "mapping-ranked-max-width-alias";
   fs::create_directories(ranked_width_game_dir);
   YAML::Node lower_ranked_canonical(YAML::NodeType::Map);

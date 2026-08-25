@@ -439,8 +439,20 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     if (longest > static_cast<double>(*max_canvas_dimension))
       scale = std::min(scale, static_cast<double>(*max_canvas_dimension) / longest);
   }
-  const int canvas_width = static_cast<int>(std::ceil(raw_width * scale));
-  const int canvas_height = static_cast<int>(std::ceil(raw_height * scale));
+  double rounded_width = std::ceil(raw_width * scale);
+  double rounded_height = std::ceil(raw_height * scale);
+  if (max_output_width.has_value())
+    rounded_width = std::min(rounded_width, static_cast<double>(*max_output_width));
+  if (max_canvas_dimension.has_value()) {
+    rounded_width = std::min(rounded_width, static_cast<double>(*max_canvas_dimension));
+    rounded_height = std::min(rounded_height, static_cast<double>(*max_canvas_dimension));
+  }
+  if (rounded_width > static_cast<double>(std::numeric_limits<int>::max()) ||
+      rounded_height > static_cast<double>(std::numeric_limits<int>::max())) {
+    return absl::ResourceExhaustedError("OpenCV mapping canvas dimensions exceed integer limits");
+  }
+  const int canvas_width = static_cast<int>(rounded_width);
+  const int canvas_height = static_cast<int>(rounded_height);
   status = validate_output_size(canvas_width, canvas_height);
   if (!status.ok())
     return status;

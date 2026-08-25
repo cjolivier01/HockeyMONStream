@@ -473,6 +473,43 @@ bool expect_clean_waits_for_transaction_locks(const fs::path& tmpdir) {
       hm::stitching::GameConfigTransactionLock::Acquire(dir), "clean must wait for the config/rink transaction lock");
 }
 
+bool expect_canvas_size_waits_for_hugin_lock(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "canvas_size_locking";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+
+  auto held_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!held_lock.ok())
+    return false;
+  std::atomic<bool> finished{false};
+  absl::Status canvas_status;
+  size_t canvas_width = 0;
+  size_t canvas_height = 0;
+  std::thread reader([&]() {
+    auto canvas = hm::stitching::stitching_canvas_size(dir.string());
+    canvas_status = canvas.status();
+    if (canvas.ok()) {
+      canvas_width = canvas->width;
+      canvas_height = canvas->height;
+    }
+    finished = true;
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const bool waited = !finished.load();
+  held_lock->reset();
+  reader.join();
+  if (!waited || !canvas_status.ok() || canvas_width != 96 || canvas_height != 32) {
+    std::cerr << "canvas sizing must hold the Hugin artifact lock: waited=" << waited << " status=" << canvas_status
+              << " size=" << canvas_width << 'x' << canvas_height << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "oversized_legacy_tiff";
   fs::remove_all(dir);
@@ -812,6 +849,10 @@ int main() {
 
   if (!expect_clean_waits_for_transaction_locks(tmpdir)) {
     finish(tmpdir, 9);
+  }
+
+  if (!expect_canvas_size_waits_for_hugin_lock(tmpdir)) {
+    finish(tmpdir, 24);
   }
 
   if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
