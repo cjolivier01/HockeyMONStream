@@ -103,6 +103,12 @@ absl::Status apply_hmstitcher_calibration_sample_span(YAML::Node& pipeline, cons
   if (stitch_frame_time_ns != 0)
     return absl::OkStatus();
   pipeline["hmstitcher"].remove("calibration-sample-span-ns");
+  pipeline["hmstitcher"].remove("calibration_sample_span_ns");
+  YAML::Node private_properties = pipeline["hmstitcher"]["private-properties"];
+  if (private_properties && private_properties.IsMap()) {
+    private_properties.remove("calibration-sample-span-ns");
+    private_properties.remove("calibration_sample_span_ns");
+  }
   return absl::OkStatus();
 }
 

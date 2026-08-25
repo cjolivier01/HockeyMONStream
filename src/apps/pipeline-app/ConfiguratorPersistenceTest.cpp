@@ -806,6 +806,57 @@ play-tracker:
           !fs::exists(canonical_clean_game_dir / "seam_file.png"),
       "canonical stitching.enabled=true must own direct clean-only artifact cleanup");
 
+  const fs::path zero_sample_span_game_dir = games / "zero-sample-span";
+  fs::create_directories(zero_sample_span_game_dir);
+  YAML::Node zero_sample_span_game(YAML::NodeType::Map);
+  zero_sample_span_game["stitching"]["stitch_frame_time"] = "00:00:00";
+  std::ofstream(zero_sample_span_game_dir / "config.yaml") << YAML::Dump(zero_sample_span_game) << '\n';
+  const fs::path zero_sample_span_pipeline_path = root / "zero-sample-span-pipeline.yaml";
+  std::ofstream(zero_sample_span_pipeline_path) << "application:\n"
+                                                << "  complete-configuration: 1\n"
+                                                << "hmstitcher:\n"
+                                                << "  enable: 1\n"
+                                                << "  one-pass-mode: 1\n"
+                                                << "  calibration-sample-span-ns: 120000000000\n"
+                                                << "  calibration_sample_span_ns: 120000000000\n"
+                                                << "  private-properties:\n"
+                                                << "    calibration-sample-span-ns: 120000000000\n"
+                                                << "    calibration_sample_span_ns: 120000000000\n"
+                                                << "hmplaycropper: {}\n"
+                                                << "streammux: {}\n"
+                                                << "source0:\n"
+                                                << "  enable: 1\n"
+                                                << "  type: 5\n"
+                                                << "  source-id: 0\n"
+                                                << "  camera-width: 1920\n"
+                                                << "  camera-height: 1080\n"
+                                                << "source1:\n"
+                                                << "  enable: 1\n"
+                                                << "  type: 5\n"
+                                                << "  source-id: 1\n"
+                                                << "  camera-width: 1920\n"
+                                                << "  camera-height: 1080\n";
+  hm::Configurator zero_sample_span("zero-sample-span", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool zero_sample_span_loaded = zero_sample_span.configure().ok() &&
+      zero_sample_span.underlay_config("pipeline", zero_sample_span_pipeline_path.string());
+  const absl::Status zero_sample_span_status = zero_sample_span_loaded
+      ? zero_sample_span.complete_configuration(
+            /*force=*/false,
+            /*clean_stitching_artifacts=*/false,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            zero_sample_span_pipeline_path.parent_path())
+      : absl::InternalError("zero sample-span fixture did not load");
+  const YAML::Node zero_sample_stitcher = zero_sample_span.config()["pipeline"]["hmstitcher"];
+  ok &= expect(
+      zero_sample_span_status.ok() && !zero_sample_stitcher["calibration-sample-span-ns"].IsDefined() &&
+          !zero_sample_stitcher["calibration_sample_span_ns"].IsDefined() &&
+          !zero_sample_stitcher["private-properties"]["calibration-sample-span-ns"].IsDefined() &&
+          !zero_sample_stitcher["private-properties"]["calibration_sample_span_ns"].IsDefined(),
+      "Zero stitch-frame calibration must remove all sample-span aliases so startup captures the first pairs");
+
   const fs::path clear_game_dir = games / "mapping-explicit-clear";
   fs::create_directories(clear_game_dir);
   YAML::Node explicit_clears(YAML::NodeType::Map);
