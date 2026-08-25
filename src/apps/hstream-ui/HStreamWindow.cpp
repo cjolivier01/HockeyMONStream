@@ -3477,9 +3477,11 @@ int read_stitch_max_output_width_from_config(
     return value;
   };
   YAML::Node value;
+  bool found_native_null = false;
   if (lookup_yaml_path(config, "stitching.max_output_width", &value)) {
     if (!value.IsNull() || !native_fallback_for_null_canonical)
       return read_node("stitching.max_output_width", value);
+    found_native_null = true;
   }
   for (const char* path : {
            "pipeline.hmstitcher.properties.max-output-width",
@@ -3492,9 +3494,15 @@ int read_stitch_max_output_width_from_config(
            "pipeline.hmstitcher.private-properties.stitch_max_output_width",
        }) {
     if (lookup_yaml_path(config, QString::fromLatin1(path), &value)) {
+      if (value.IsNull() && native_fallback_for_null_canonical) {
+        found_native_null = true;
+        continue;
+      }
       return read_node(QString::fromLatin1(path), value);
     }
   }
+  if (found_native_null)
+    return 0;
   return default_value;
 }
 

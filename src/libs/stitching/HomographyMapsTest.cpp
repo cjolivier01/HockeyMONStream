@@ -147,7 +147,11 @@ int main() {
       affine_dir, left, right, matches, hm::stitching::MappingBackend::kOpenCvAffineRansac, 64);
   ok &= expect(affine.ok(), "affine RANSAC mapping should generate artifacts");
   if (affine.ok()) {
-    ok &= expect(std::max(affine->canvas_width, affine->canvas_height) <= 64, "max canvas dimension should be honored");
+    ok &= expect(
+        std::max(affine->canvas_width, affine->canvas_height) <= 64 && affine->max_canvas_dimension_applied &&
+            !affine->max_output_width_applied &&
+            affine->source_canvas_width > static_cast<size_t>(affine->canvas_width),
+        "max canvas dimension and its provenance state should be honored");
     ok &= expect(affine->inlier_mask.size() == matches.size(), "affine inlier mask should cover input matches");
     cv::Mat scaled_left_x =
         cv::imread((affine_dir / "mapping_0000_x.tif").string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
@@ -221,7 +225,9 @@ int main() {
       tall_dir, left, right, tall_matches, hm::stitching::MappingBackend::kOpenCvAffineRansac, std::nullopt, 80);
   ok &= expect(tall.ok(), "OpenCV width cap should allow tall canvas generation");
   if (tall.ok()) {
-    ok &= expect(tall->canvas_width == 80, "OpenCV width cap must constrain width");
+    ok &= expect(
+        tall->canvas_width == 80 && tall->max_output_width_applied && !tall->max_canvas_dimension_applied,
+        "OpenCV width cap must constrain width and record that it was applied");
     ok &= expect(tall->canvas_height > 80, "OpenCV width cap must not act as a longest-side cap");
   }
 

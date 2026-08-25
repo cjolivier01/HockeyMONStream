@@ -181,6 +181,10 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
   };
 }
 
+bool should_defer_validated_artifact_load_failure(bool one_pass_mode, bool retry_already_failed) {
+  return one_pass_mode && !retry_already_failed;
+}
+
 bool OnePassCalibrationCompletionLatch::delivered(const std::string& calibration_scope) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto state = state_by_scope_.find(calibration_scope);
@@ -221,6 +225,7 @@ void StitcherPriv::Shutdown() {
     stitcher_fp16_.reset();
     stitcher_rgb10_fp16_.reset();
     hugin_generation_id_.clear();
+    validated_artifact_load_failed_ = false;
   }
   high_bit_left_.reset();
   high_bit_right_.reset();
@@ -563,11 +568,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
 
   // Validate artifacts and normalize the seam in one pass before hm-cupano
   // loading so stale native-over-cap maps are regenerated instead of resized here.
-  auto artifact_lock = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
-  if (!artifact_lock.ok()) {
-    return artifact_lock.status();
+  auto artifacts = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
+  if (!artifacts.ok()) {
+    return artifacts.status();
   }
-  if (!artifact_lock->get()) {
+  if (!artifacts->artifact_lock) {
     bool try_seam_repair = true;
     if (max_output_width_ > 0) {
       const auto native_canvas = hm::stitching::stitching_canvas_size(config_file_);
@@ -581,13 +586,17 @@ absl::Status StitcherPriv::ensure_stitcher() {
     if (try_seam_repair) {
       const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
       if (seam_status.ok()) {
-        artifact_lock = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
-        if (!artifact_lock.ok()) {
-          return artifact_lock.status();
+        artifacts = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
+        if (!artifacts.ok()) {
+          return artifacts.status();
         }
       }
     }
-    if (!artifact_lock->get()) {
+    if (!artifacts->artifact_lock) {
+      {
+        absl::MutexLock lk(&stitcher_mu_);
+        validated_artifact_load_failed_ = false;
+      }
       if (!logged_missing_masks_) {
         g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
         logged_missing_masks_ = true;
@@ -606,25 +615,32 @@ absl::Status StitcherPriv::ensure_stitcher() {
     hm::pano::ControlMasks control_masks;
     if (!control_masks.load(config_file_, max_output_width_)) {
       std::string config_file_dir = config_file_;
+      artifacts->artifact_lock.reset();
       if (one_pass_mode_) {
-        // In one-pass mode, allow the pipeline to bootstrap without masks.
+        const bool retry_failed = validated_artifact_load_failed_;
+        validated_artifact_load_failed_ = true;
         if (!logged_missing_masks_) {
-          g_print("hmstitcher: missing control masks in %s\n", config_file_dir.c_str());
+          g_print("hmstitcher: validated control masks could not be loaded from %s\n", config_file_dir.c_str());
           logged_missing_masks_ = true;
         }
-        return absl::OkStatus();
+        if (should_defer_validated_artifact_load_failure(one_pass_mode_, retry_failed))
+          return absl::OkStatus();
+        return absl::FailedPreconditionError(
+            TO_STRING("Validated control masks could not be loaded after retry from " << config_file_dir));
       } else {
         // Don't try again unless one-pass mode wants to re-attempt after configure.
         config_file_.clear();
         return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
       }
     }
-    auto generation = hm::stitching::HuginProject::GenerationId(config_file_, **artifact_lock);
-    if (!generation.ok()) {
-      return generation.status();
+    validated_artifact_load_failed_ = false;
+    if (control_masks.canvas_width() != artifacts->canvas_size.width ||
+        control_masks.canvas_height() != artifacts->canvas_size.height) {
+      return absl::FailedPreconditionError("Control-mask loading changed the validated stitched canvas dimensions");
     }
-    hugin_generation_id_ = std::move(*generation);
+    hugin_generation_id_ = std::move(artifacts->generation_id);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
+    artifacts->artifact_lock.reset();
     if (high_bit_depth_) {
       g_print("hmstitcher: using RGB10A2 input with fp16 stitch compute\n");
       stitcher_rgb10_fp16_ = std::make_unique<STITCHER_RGB10_FP16>(
@@ -1051,6 +1067,20 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   }
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
+  }
+  bool retry_validated_artifacts = false;
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    retry_validated_artifacts = validated_artifact_load_failed_;
+  }
+  if (retry_validated_artifacts) {
+    HM_RETURN_IF_ERROR(reload_stitcher());
+    absl::MutexLock lk(&stitcher_mu_);
+    if (!has_stitcher() || !canvas_width_hint_ || !canvas_height_hint_) {
+      return absl::FailedPreconditionError("Validated control masks did not produce a usable stitcher after retry");
+    }
+    return videoprep::RuntimeOutputSize{
+        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
   }
   if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 || in_surface->numFilled > in_surface->batchSize) {
     return absl::FailedPreconditionError(

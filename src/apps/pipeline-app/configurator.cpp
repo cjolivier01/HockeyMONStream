@@ -5853,13 +5853,12 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
 }
 
 absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs::path& game_dir) {
-  bool requires_regeneration = false;
   int max_output_width = 0;
   HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(config_["pipeline"]));
+  stitching::LockedCanvasRegenerationCheck regeneration_check;
   HM_ASSIGN_OR_RETURN(
-      requires_regeneration,
-      stitching::stitching_artifacts_require_canvas_regeneration(game_dir.string(), max_output_width));
-  if (!requires_regeneration) {
+      regeneration_check, stitching::lock_canvas_regeneration_check(game_dir.string(), max_output_width));
+  if (!regeneration_check.requires_regeneration) {
     return absl::OkStatus();
   }
 
@@ -5869,6 +5868,8 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
   remove_rotation_dependent_rink_cache_keys(config_);
   remove_rotation_dependent_rink_cache_keys(private_config_);
   if (private_config_.IsDefined()) {
+    // regeneration_check retains the reviewed Hugin generation until the
+    // config transaction has durably removed its canvas-relative geometry.
     HM_RETURN_IF_ERROR(save_private_config(private_config_, active_stitching_invalidation_id_));
   }
   return absl::OkStatus();
@@ -6164,16 +6165,13 @@ absl::Status Configurator::set_output_dimensions(
     int max_output_width = 0;
     HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
     std::optional<std::tuple<int, int>> canvas_size_result;
-    auto stitching_configured = stitching::is_stitching_configured(game_dir.string(), max_output_width);
-    if (!stitching_configured.ok()) {
-      return stitching_configured.status();
+    auto artifacts = stitching::lock_validated_stitching_artifacts(game_dir.string(), max_output_width);
+    if (!artifacts.ok()) {
+      return artifacts.status();
     }
-    if (stitching_configured.value()) {
-      auto canvas_size = stitching::stitching_canvas_size(game_dir.string(), max_output_width);
-      if (!canvas_size.ok()) {
-        return canvas_size.status();
-      }
-      canvas_size_result = std::make_tuple(static_cast<int>(canvas_size->width), static_cast<int>(canvas_size->height));
+    if (artifacts->artifact_lock) {
+      canvas_size_result = std::make_tuple(
+          static_cast<int>(artifacts->canvas_size.width), static_cast<int>(artifacts->canvas_size.height));
     }
     if (canvas_size_result) {
       size_t canvas_width = std::get<0>(*canvas_size_result);

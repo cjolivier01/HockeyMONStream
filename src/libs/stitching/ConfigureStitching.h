@@ -34,6 +34,17 @@ struct StitchingCanvasSize {
   size_t height{0};
 };
 
+struct LockedStitchingArtifacts {
+  std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
+  StitchingCanvasSize canvas_size;
+  std::string generation_id;
+};
+
+struct LockedCanvasRegenerationCheck {
+  std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
+  bool requires_regeneration{false};
+};
+
 struct StitchingCalibrationFramePair {
   surface::Surface left;
   surface::Surface right;
@@ -47,8 +58,8 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
 
 // Validates one artifact generation, normalizes its seam, and retains the
 // publication lock so the caller can load the same generation atomically.
-// A null lock denotes a valid game directory without configured artifacts.
-absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> lock_validated_stitching_artifacts(
+// A null artifact_lock denotes a valid game directory without configured artifacts.
+absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
     const std::string& game_dir,
     size_t max_output_width = 0);
 
@@ -59,6 +70,12 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
     size_t max_output_width = 0);
 
 absl::StatusOr<bool> stitching_artifacts_require_canvas_regeneration(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+// Retains the reviewed Hugin generation while a caller transactionally clears
+// canvas-dependent cache data using Hugin -> config lock ordering.
+absl::StatusOr<LockedCanvasRegenerationCheck> lock_canvas_regeneration_check(
     const std::string& game_dir,
     size_t max_output_width = 0);
 

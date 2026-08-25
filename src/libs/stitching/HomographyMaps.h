@@ -22,8 +22,12 @@ const char* MappingBackendName(MappingBackend backend);
 absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value);
 
 struct HomographyMapResult {
+  size_t source_canvas_width{0};
+  size_t source_canvas_height{0};
   int canvas_width{0};
   int canvas_height{0};
+  bool max_output_width_applied{false};
+  bool max_canvas_dimension_applied{false};
   size_t inlier_count{0};
   std::vector<double> right_to_left_homography;
   std::vector<unsigned char> inlier_mask;

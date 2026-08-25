@@ -7755,7 +7755,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   if (!source_baseline.has_value())
     return expect(false, "Could not locate bundled baseline.yaml for user-default fixture");
   YAML::Node baseline = YAML::LoadFile(source_baseline->string());
-  baseline["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2468;
+  baseline["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
   baseline["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1234;
   {
     std::ofstream out(QDir(baseline_root.path()).filePath("baseline.yaml").toStdString());
@@ -7921,6 +7921,33 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
           saved_auto_override["stitching"]["max_output_width"].IsNull(),
           "Selecting Auto against a nonzero inherited max width must persist an explicit game override");
     }
+  }
+  user_config["pipeline"]["hmstitcher"]["private-properties"].remove("stitch_max_output_width");
+  {
+    std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
+    out << YAML::Dump(user_config) << '\n';
+  }
+  copied_config_node = YAML::LoadFile(copied_config.string());
+  copied_config_node["stitching"].remove("max_output_width");
+  if (copied_config_node["pipeline"] && copied_config_node["pipeline"]["hmstitcher"]) {
+    copied_config_node["pipeline"]["hmstitcher"]["properties"].remove("max-output-width");
+    copied_config_node["pipeline"]["hmstitcher"]["private-properties"].remove("stitch_max_output_width");
+  }
+  std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+  {
+    HStreamWindow baseline_alias_default_window;
+    auto* game_id = require_child<QLineEdit>(&baseline_alias_default_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&baseline_alias_default_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&baseline_alias_default_window, "savePresetButton");
+    auto* stitch_max_output_width = require_child<QSpinBox>(&baseline_alias_default_window, "stitchMaxOutputWidthSpin");
+    if (game_id && create) {
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+    }
+    ok &= expect(
+        game_id && create && save && stitch_max_output_width && stitch_max_output_width->value() == 1234 &&
+            !save->isEnabled(),
+        "A baseline native null must not mask a later numeric private max-width alias used by the pipeline");
   }
   if (original_home.isEmpty())
     qunsetenv("HOME");

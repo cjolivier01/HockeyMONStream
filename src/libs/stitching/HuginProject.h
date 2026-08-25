@@ -42,8 +42,13 @@ class HuginProject {
 
   struct CanvasProvenance {
     size_t max_output_width{0};
+    size_t max_canvas_dimension{0};
+    size_t source_canvas_width{0};
+    size_t source_canvas_height{0};
     size_t canvas_width{0};
     size_t canvas_height{0};
+    bool max_output_width_applied{false};
+    bool max_canvas_dimension_applied{false};
   };
 
   struct Options {
@@ -130,8 +135,8 @@ class HuginProject {
   // lock must still be held so every artifact belongs to one generation.
   static absl::StatusOr<std::string> GenerationId(const std::filesystem::path& game_dir, const ArtifactLock& lock);
 
-  // Reads cap and canvas metadata published with newer mapping generations.
-  // A missing file denotes a valid legacy generation without provenance.
+  // Reads constraint and canvas metadata published with newer mapping generations.
+  // Callers decide the migration policy for a missing legacy provenance file.
   static absl::StatusOr<std::optional<CanvasProvenance>> ReadCanvasProvenance(
       const std::filesystem::path& game_dir,
       const ArtifactLock& lock);

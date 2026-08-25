@@ -174,6 +174,14 @@ int main() {
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
 
+    auto native_dimensioned_generation =
+        hm::stitching::stitched_output_generation_id(initial_hugin_generation_id, 0.0, 32, 24);
+    ok &= expect(
+        native_dimensioned_generation.ok() &&
+            hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/0) &&
+            hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation),
+        "startup and dimensioned runtime checks must both accept a size-validated legacy native field mask");
+
     auto scaled_canvas = hm::stitching::stitching_canvas_size(root.string(), /*max_output_width=*/16);
     ok &= expect(scaled_canvas.ok(), "scaled field-mask test must identify output dimensions");
     auto scaled_generation = scaled_canvas.ok()

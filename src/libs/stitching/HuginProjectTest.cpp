@@ -472,8 +472,11 @@ int main() {
     const auto provenance = hm::stitching::HuginProject::ReadCanvasProvenance(root / "game", **provenance_lock);
     ok &= expect(
         provenance.ok() && provenance->has_value() && (*provenance)->max_output_width == 0 &&
-            (*provenance)->canvas_width == 42 && (*provenance)->canvas_height == 32,
-        "published Hugin provenance must record the requested cap and measured remap canvas");
+            (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 100 &&
+            (*provenance)->source_canvas_height == 50 && (*provenance)->canvas_width == 42 &&
+            (*provenance)->canvas_height == 32 && !(*provenance)->max_output_width_applied &&
+            (*provenance)->max_canvas_dimension_applied,
+        "published Hugin provenance must record source/final canvases and applied generation constraints");
     provenance_lock->reset();
   }
 
@@ -682,6 +685,7 @@ int main() {
       "mapping_0001_y.tif",
       "seam_file.png",
       "panorama.tif",
+      "stitching_canvas_provenance",
   };
   std::vector<fs::file_time_type> expected_mtimes;
   const auto generation_start = fs::file_time_type::clock::now() - std::chrono::minutes(1);

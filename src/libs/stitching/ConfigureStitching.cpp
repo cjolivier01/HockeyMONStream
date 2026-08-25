@@ -526,6 +526,43 @@ bool artifacts_exceed_live_canvas_limit(
       canvas_exceeds_max_dimension(effective_canvas, max_dimension);
 }
 
+struct CanvasProvenanceCompatibility {
+  bool compatible{false};
+  std::string reason;
+};
+
+CanvasProvenanceCompatibility check_canvas_provenance_compatibility(
+    const std::optional<HuginProject::CanvasProvenance>& provenance,
+    const CanvasSize& published_canvas,
+    size_t max_output_width,
+    const std::optional<size_t>& max_canvas_dimension) {
+  if (!provenance.has_value()) {
+    return {false, "canvas provenance is missing; legacy capped artifacts cannot be identified safely"};
+  }
+  if (provenance->canvas_width != published_canvas.width || provenance->canvas_height != published_canvas.height) {
+    return {false, "published canvas dimensions do not match canvas provenance"};
+  }
+  if (provenance->max_output_width_applied) {
+    if (provenance->max_output_width != max_output_width) {
+      return {false, "the applied maximum output width changed"};
+    }
+  } else if (max_output_width > 0 && published_canvas.width > max_output_width) {
+    return {false, "the published canvas exceeds the current maximum output width"};
+  }
+
+  const size_t current_max_canvas_dimension = max_canvas_dimension.value_or(0);
+  if (provenance->max_canvas_dimension_applied) {
+    if (provenance->max_canvas_dimension != current_max_canvas_dimension) {
+      return {false, "the applied live canvas limit changed"};
+    }
+  } else if (
+      current_max_canvas_dimension > 0 &&
+      canvas_exceeds_max_dimension(published_canvas, current_max_canvas_dimension)) {
+    return {false, "the published canvas exceeds the current live canvas limit"};
+  }
+  return {true, {}};
+}
+
 // -----------------------------------------------------------------------------
 // FileNode: Represents one file and its dependency children.
 // A file that depends on multiple parents can simply be listed as a child
@@ -1057,13 +1094,13 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     const std::string& game_dir,
     size_t max_output_width,
     bool normalize_seam,
-    const HuginProject::ArtifactLock& artifact_lock) {
+    const HuginProject::ArtifactLock& artifact_lock,
+    CanvasSize* validated_canvas = nullptr) {
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
   }
   CanvasSize canvas_size;
-  CanvasSize effective_canvas_size;
   TiffPlacement p0;
   TiffPlacement p1;
   auto p0_status = read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif");
@@ -1091,13 +1128,10 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     }
     return provenance.status();
   }
-  if (provenance->has_value() &&
-      ((*provenance)->max_output_width != max_output_width || (*provenance)->canvas_width != canvas_size.width ||
-       (*provenance)->canvas_height != canvas_size.height)) {
-    std::cout << "Stitching artifacts were generated for max output width " << (*provenance)->max_output_width
-              << " and canvas " << (*provenance)->canvas_width << "x" << (*provenance)->canvas_height
-              << "; requested max output width is " << max_output_width << " and published canvas is "
-              << canvas_size.width << "x" << canvas_size.height << "; regenerating mapping artifacts" << std::endl;
+  const auto compatibility = check_canvas_provenance_compatibility(
+      *provenance, canvas_size, max_output_width, live_stitch_max_canvas_dimension());
+  if (!compatibility.compatible) {
+    std::cout << "Stitching artifacts require mapping regeneration because " << compatibility.reason << std::endl;
     return false;
   }
   const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
@@ -1107,47 +1141,27 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     return false;
   }
   HM_RETURN_IF_ERROR(remap_status);
-  if (max_output_width > 0 && canvas_size.width > max_output_width) {
-    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
-              << " exceeds requested max output width " << max_output_width << "; regenerating capped mapping artifacts"
-              << std::endl;
-    return false;
-  }
-  effective_canvas_size = canvas_size;
-  double selected_scale = 1.0;
-  if (max_output_width > 0) {
-    const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
-    effective_canvas_size = scaled.size;
-    selected_scale = scaled.scale;
-  }
-  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
-  if (max_canvas_dimension.has_value() &&
-      artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension)) {
-    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
-              << " exceeds live-stitch max dimension " << *max_canvas_dimension << " even after width cap "
-              << max_output_width << " produces " << effective_canvas_size.width << "x" << effective_canvas_size.height
-              << "; regenerating at a smaller scale" << std::endl;
-    return false;
-  }
   const absl::Status seam_status = normalize_seam ? HuginProject::ValidateAndNormalizeSeam(
                                                         fs::path(game_dir) / "seam_file.png",
                                                         static_cast<int>(canvas_size.width),
                                                         static_cast<int>(canvas_size.height),
-                                                        static_cast<int>(effective_canvas_size.width),
-                                                        static_cast<int>(effective_canvas_size.height),
-                                                        selected_scale)
+                                                        static_cast<int>(canvas_size.width),
+                                                        static_cast<int>(canvas_size.height),
+                                                        1.0)
                                                   : HuginProject::ValidateSeamForConfiguredArtifacts(
                                                         fs::path(game_dir) / "seam_file.png",
                                                         static_cast<int>(canvas_size.width),
                                                         static_cast<int>(canvas_size.height),
-                                                        static_cast<int>(effective_canvas_size.width),
-                                                        static_cast<int>(effective_canvas_size.height));
+                                                        static_cast<int>(canvas_size.width),
+                                                        static_cast<int>(canvas_size.height));
   if (absl::IsFailedPrecondition(seam_status)) {
     std::cout << "Stitching artifacts exist but seam_file.png does not match the requested canvas: " << seam_status
               << std::endl;
     return false;
   }
   HM_RETURN_IF_ERROR(seam_status);
+  if (validated_canvas != nullptr)
+    *validated_canvas = canvas_size;
   return true;
 }
 
@@ -1161,22 +1175,30 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   return validate_stitching_artifacts_locked(game_dir, max_output_width, /*normalize_seam=*/false, **artifact_lock);
 }
 
-absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> lock_validated_stitching_artifacts(
+absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
     const std::string& game_dir,
     size_t max_output_width) {
   std::error_code directory_error;
   if (!fs::is_directory(game_dir, directory_error) || directory_error)
-    return std::unique_ptr<HuginProject::ArtifactLock>();
+    return LockedStitchingArtifacts{};
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
   bool configured = false;
+  CanvasSize canvas_size;
   HM_ASSIGN_OR_RETURN(
       configured,
-      validate_stitching_artifacts_locked(game_dir, max_output_width, /*normalize_seam=*/true, **artifact_lock));
+      validate_stitching_artifacts_locked(
+          game_dir, max_output_width, /*normalize_seam=*/true, **artifact_lock, &canvas_size));
   if (!configured)
-    return std::unique_ptr<HuginProject::ArtifactLock>();
-  return std::move(*artifact_lock);
+    return LockedStitchingArtifacts{};
+  std::string generation_id;
+  HM_ASSIGN_OR_RETURN(generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
+  return LockedStitchingArtifacts{
+      .artifact_lock = std::move(*artifact_lock),
+      .canvas_size = {.width = canvas_size.width, .height = canvas_size.height},
+      .generation_id = std::move(generation_id),
+  };
 }
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
@@ -1202,39 +1224,57 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
   return artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension);
 }
 
-absl::StatusOr<bool> stitching_artifacts_require_canvas_regeneration(
+absl::StatusOr<LockedCanvasRegenerationCheck> lock_canvas_regeneration_check(
     const std::string& game_dir,
     size_t max_output_width) {
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  if (!test_dependency_tree(game_dir, /*add_rink_mask=*/false))
-    return false;
-  CanvasSize canvas_size;
-  HM_ASSIGN_OR_RETURN(canvas_size, get_mapping_canvas_size(fs::path(game_dir)));
+  const fs::path root(game_dir);
+  const bool has_mapping_artifacts = fs::exists(root / "mapping_0000.tif") || fs::exists(root / "mapping_0001.tif") ||
+      fs::exists(root / "mapping_0000_x.tif") || fs::exists(root / "mapping_0001_x.tif");
+  if (!test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
+    return LockedCanvasRegenerationCheck{
+        .artifact_lock = std::move(*artifact_lock),
+        .requires_regeneration = has_mapping_artifacts,
+    };
+  }
+  auto canvas_size = get_mapping_canvas_size(root);
+  if (!canvas_size.ok()) {
+    if (absl::IsFailedPrecondition(canvas_size.status()) || absl::IsInvalidArgument(canvas_size.status()) ||
+        absl::IsNotFound(canvas_size.status()) || absl::IsResourceExhausted(canvas_size.status())) {
+      return LockedCanvasRegenerationCheck{
+          .artifact_lock = std::move(*artifact_lock),
+          .requires_regeneration = has_mapping_artifacts,
+      };
+    }
+    return canvas_size.status();
+  }
   auto provenance = HuginProject::ReadCanvasProvenance(game_dir, **artifact_lock);
   if (!provenance.ok()) {
     if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
         absl::IsNotFound(provenance.status())) {
-      return true;
+      return LockedCanvasRegenerationCheck{
+          .artifact_lock = std::move(*artifact_lock),
+          .requires_regeneration = true,
+      };
     }
     return provenance.status();
   }
-  if (provenance->has_value() &&
-      ((*provenance)->max_output_width != max_output_width || (*provenance)->canvas_width != canvas_size.width ||
-       (*provenance)->canvas_height != canvas_size.height)) {
-    return true;
-  }
-  if (max_output_width > 0 && canvas_size.width > max_output_width)
-    return true;
-  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
-  if (!max_canvas_dimension.has_value())
-    return false;
-  CanvasSize effective_canvas_size = canvas_size;
-  if (max_output_width > 0) {
-    HM_ASSIGN_OR_RETURN(effective_canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));
-  }
-  return artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension);
+  const auto compatibility = check_canvas_provenance_compatibility(
+      *provenance, *canvas_size, max_output_width, live_stitch_max_canvas_dimension());
+  return LockedCanvasRegenerationCheck{
+      .artifact_lock = std::move(*artifact_lock),
+      .requires_regeneration = !compatibility.compatible,
+  };
+}
+
+absl::StatusOr<bool> stitching_artifacts_require_canvas_regeneration(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  LockedCanvasRegenerationCheck check;
+  HM_ASSIGN_OR_RETURN(check, lock_canvas_regeneration_check(game_dir, max_output_width));
+  return check.requires_regeneration;
 }
 
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width) {
@@ -2029,10 +2069,12 @@ absl::Status visit_current_field_mask_impl(
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
     current_output_generation = expected_output_generation;
     HM_ASSIGN_OR_RETURN(expected_canvas_size, stitched_output_size_from_generation(expected_output_generation));
+    CanvasSize native_size;
+    HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
     if (!expected_canvas_size.has_value()) {
-      CanvasSize native_size;
-      HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
       expected_canvas_size = native_size;
+    } else if (expected_canvas_size->width == native_size.width && expected_canvas_size->height == native_size.height) {
+      HM_ASSIGN_OR_RETURN(compatible_legacy_generation, configured_output_generation(*config, *hugin_generation));
     }
   } else if (max_output_width.has_value()) {
     CanvasSize native_size;

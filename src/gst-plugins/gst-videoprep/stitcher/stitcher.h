@@ -76,6 +76,8 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool report_latched = false,
     bool process_completion_latched = false);
 
+bool should_defer_validated_artifact_load_failure(bool one_pass_mode, bool retry_already_failed);
+
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
 class StitcherPriv : public STITCH_PRIV_BASE {
@@ -178,6 +180,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unique_ptr<STITCHER_FP16> stitcher_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::unique_ptr<STITCHER_RGB10_FP16> stitcher_rgb10_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
+  bool validated_artifact_load_failed_{false} ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::string calibration_invalidation_id_;
   std::string calibration_run_generation_;

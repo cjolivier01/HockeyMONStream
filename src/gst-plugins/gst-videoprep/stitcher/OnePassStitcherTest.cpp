@@ -312,6 +312,19 @@ bool expect_resumed_calibration_progress_contract() {
   return true;
 }
 
+bool expect_validated_artifact_load_failure_retries_once() {
+  if (!hm::stitcher::should_defer_validated_artifact_load_failure(
+          /*one_pass_mode=*/true, /*retry_already_failed=*/false) ||
+      hm::stitcher::should_defer_validated_artifact_load_failure(
+          /*one_pass_mode=*/true, /*retry_already_failed=*/true) ||
+      hm::stitcher::should_defer_validated_artifact_load_failure(
+          /*one_pass_mode=*/false, /*retry_already_failed=*/false)) {
+    std::cerr << "Validated artifact loading should defer exactly once for an immediate one-pass retry" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_prepare_runtime_partial_fails() {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   stitcher.SetProperty({"one-pass-mode", "1"});
@@ -510,6 +523,9 @@ int main() {
   }
   if (!expect_resumed_calibration_progress_contract()) {
     return 33;
+  }
+  if (!expect_validated_artifact_load_failure_retries_once()) {
+    return 35;
   }
   if (!expect_prepare_runtime_partial_fails()) {
     return 14;

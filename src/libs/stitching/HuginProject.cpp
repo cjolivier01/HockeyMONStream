@@ -155,14 +155,32 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
-  if (lines.size() != 4 || lines[0] != "version=1")
+  if (lines.size() != 9 || lines[0] != "version=2")
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
   HM_ASSIGN_OR_RETURN(provenance.max_output_width, parse_canvas_provenance_value(lines[1], "max-output-width"));
-  HM_ASSIGN_OR_RETURN(provenance.canvas_width, parse_canvas_provenance_value(lines[2], "canvas-width"));
-  HM_ASSIGN_OR_RETURN(provenance.canvas_height, parse_canvas_provenance_value(lines[3], "canvas-height"));
-  if (provenance.canvas_width == 0 || provenance.canvas_height == 0)
+  HM_ASSIGN_OR_RETURN(provenance.max_canvas_dimension, parse_canvas_provenance_value(lines[2], "max-canvas-dimension"));
+  HM_ASSIGN_OR_RETURN(provenance.source_canvas_width, parse_canvas_provenance_value(lines[3], "source-canvas-width"));
+  HM_ASSIGN_OR_RETURN(provenance.source_canvas_height, parse_canvas_provenance_value(lines[4], "source-canvas-height"));
+  HM_ASSIGN_OR_RETURN(provenance.canvas_width, parse_canvas_provenance_value(lines[5], "canvas-width"));
+  HM_ASSIGN_OR_RETURN(provenance.canvas_height, parse_canvas_provenance_value(lines[6], "canvas-height"));
+  size_t max_output_width_applied = 0;
+  size_t max_canvas_dimension_applied = 0;
+  HM_ASSIGN_OR_RETURN(max_output_width_applied, parse_canvas_provenance_value(lines[7], "max-output-width-applied"));
+  HM_ASSIGN_OR_RETURN(
+      max_canvas_dimension_applied, parse_canvas_provenance_value(lines[8], "max-canvas-dimension-applied"));
+  if (provenance.source_canvas_width == 0 || provenance.source_canvas_height == 0 || provenance.canvas_width == 0 ||
+      provenance.canvas_height == 0 || provenance.source_canvas_width < provenance.canvas_width ||
+      provenance.source_canvas_height < provenance.canvas_height) {
     return absl::FailedPreconditionError("Stitching canvas provenance dimensions must be positive");
+  }
+  if (max_output_width_applied > 1 || max_canvas_dimension_applied > 1 ||
+      (max_output_width_applied != 0 && provenance.max_output_width == 0) ||
+      (max_canvas_dimension_applied != 0 && provenance.max_canvas_dimension == 0)) {
+    return absl::FailedPreconditionError("Invalid stitching canvas provenance constraint state");
+  }
+  provenance.max_output_width_applied = max_output_width_applied != 0;
+  provenance.max_canvas_dimension_applied = max_canvas_dimension_applied != 0;
   return provenance;
 }
 
@@ -1676,6 +1694,9 @@ absl::Status HuginProject::Configure(
   if (options.progress)
     options.progress("canvas", "started", "Building stitch maps and panorama preview");
   std::optional<double> output_scale;
+  std::pair<size_t, size_t> source_canvas{0, 0};
+  bool max_output_width_applied = false;
+  bool max_canvas_dimension_applied = false;
   auto fit_canvas = [&](size_t width, size_t height, double factor, double rounding_guard) -> absl::Status {
     (void)width;
     (void)height;
@@ -1685,12 +1706,14 @@ absl::Status HuginProject::Configure(
   auto fit_canvas_longest = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
     const size_t longest = std::max(width, height);
     const double factor = static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest);
+    max_canvas_dimension_applied = true;
     return fit_canvas(width, height, factor, rounding_guard);
   };
   auto fit_canvas_width = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
     if (!options.max_output_width.has_value() || *options.max_output_width == 0 || width <= *options.max_output_width)
       return absl::OkStatus();
     const double factor = static_cast<double>(*options.max_output_width) / static_cast<double>(width);
+    max_output_width_applied = true;
     return fit_canvas(width, height, factor, rounding_guard);
   };
   if (options.mapping_backend != MappingBackend::kNona && output_scale.has_value()) {
@@ -1703,6 +1726,7 @@ absl::Status HuginProject::Configure(
     auto dimensions = ParseCanvasSize(*optimized);
     if (!dimensions.ok())
       return dimensions.status();
+    source_canvas = *dimensions;
     if (options.mapping_backend == MappingBackend::kNona) {
       if (options.max_output_width.has_value() && dimensions->first > *options.max_output_width) {
         status = fit_canvas_width(dimensions->first, dimensions->second, 1.0);
@@ -1784,6 +1808,9 @@ absl::Status HuginProject::Configure(
         staging, left, right, matches, options.mapping_backend, options.max_canvas_dimension, options.max_output_width);
     if (!maps.ok())
       return maps.status();
+    source_canvas = {maps->source_canvas_width, maps->source_canvas_height};
+    max_output_width_applied = maps->max_output_width_applied;
+    max_canvas_dimension_applied = maps->max_canvas_dimension_applied;
     std::cout << "OpenCV mapping backend " << MappingBackendName(options.mapping_backend) << " generated "
               << maps->canvas_width << "x" << maps->canvas_height << " canvas with " << maps->inlier_count
               << " fitted control points" << std::endl;
@@ -1827,11 +1854,19 @@ absl::Status HuginProject::Configure(
   auto published_canvas = measure_staged_remap_canvas(staging, std::nullopt);
   if (!published_canvas.ok())
     return published_canvas.status();
+  if (source_canvas.first == 0 || source_canvas.second == 0) {
+    source_canvas = {static_cast<size_t>(published_canvas->first), static_cast<size_t>(published_canvas->second)};
+  }
   std::ostringstream provenance;
-  provenance << "version=1\n"
+  provenance << "version=2\n"
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
+             << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
+             << "source-canvas-width=" << source_canvas.first << '\n'
+             << "source-canvas-height=" << source_canvas.second << '\n'
              << "canvas-width=" << published_canvas->first << '\n'
-             << "canvas-height=" << published_canvas->second << '\n';
+             << "canvas-height=" << published_canvas->second << '\n'
+             << "max-output-width-applied=" << (max_output_width_applied ? 1 : 0) << '\n'
+             << "max-canvas-dimension-applied=" << (max_canvas_dimension_applied ? 1 : 0) << '\n';
   status = write_file(staging / kCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;
