@@ -71,6 +71,7 @@ constexpr const char* kEnableFlagField = "enable";
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 constexpr size_t kDefaultStitchingControlPoints = 1500;
+constexpr size_t kDefaultStitchingCalibrationFrameCount = 4;
 
 absl::StatusOr<uint64_t> private_stitch_frame_time(const YAML::Node& config) {
   const auto value = get_node(config, "stitching.stitch_frame_time");
@@ -103,6 +104,73 @@ absl::StatusOr<size_t> persisted_stitching_control_points(const YAML::Node& conf
   }
 }
 
+absl::StatusOr<size_t> persisted_stitching_calibration_frame_count(const YAML::Node& config) {
+  auto parse_frame_count = [](const YAML::Node& value, const char* path) -> absl::StatusOr<size_t> {
+    if (!value.IsScalar()) {
+      return absl::InvalidArgumentError(std::string(path) + " must be a positive scalar value");
+    }
+    try {
+      const uint64_t frame_count = value.as<uint64_t>();
+      if (frame_count == 0 || frame_count > 64) {
+        return absl::InvalidArgumentError(std::string(path) + " must be in the range 1..64");
+      }
+      return static_cast<size_t>(frame_count);
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + std::string(path) + ": " + std::string(error.what()));
+    }
+  };
+  const auto ui_value = get_node(config, "hstream_ui.stitching_calibration.frame_count");
+  const auto canonical_value = get_node(config, "stitching.calibration_frame_count");
+  if (!ui_value.has_value() && !canonical_value.has_value()) {
+    return kDefaultStitchingCalibrationFrameCount;
+  }
+  std::optional<size_t> ui_frame_count;
+  if (ui_value.has_value()) {
+    HM_ASSIGN_OR_RETURN(ui_frame_count, parse_frame_count(*ui_value, "hstream_ui.stitching_calibration.frame_count"));
+  }
+  std::optional<size_t> canonical_frame_count;
+  if (canonical_value.has_value()) {
+    HM_ASSIGN_OR_RETURN(
+        canonical_frame_count, parse_frame_count(*canonical_value, "stitching.calibration_frame_count"));
+  }
+  if (ui_frame_count.has_value() && canonical_frame_count.has_value() && *ui_frame_count != *canonical_frame_count) {
+    return absl::InvalidArgumentError(
+        "hstream_ui.stitching_calibration.frame_count conflicts with stitching.calibration_frame_count");
+  }
+  return ui_frame_count.has_value() ? *ui_frame_count : *canonical_frame_count;
+}
+
+absl::StatusOr<size_t> configured_stitching_calibration_frame_count_from_environment() {
+  const char* configured = g_getenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
+  if (!configured || !*configured) {
+    return kDefaultStitchingCalibrationFrameCount;
+  }
+  if (!std::all_of(configured, configured + std::strlen(configured), [](unsigned char character) {
+        return std::isdigit(character);
+      })) {
+    return absl::InvalidArgumentError("HM_STITCH_CALIBRATION_FRAME_COUNT must be a positive integer");
+  }
+  size_t consumed = 0;
+  unsigned long long parsed = 0;
+  try {
+    parsed = std::stoull(configured, &consumed);
+  } catch (const std::exception&) {
+    return absl::InvalidArgumentError("HM_STITCH_CALIBRATION_FRAME_COUNT must be a positive integer");
+  }
+  if (consumed != std::strlen(configured) || parsed == 0 || parsed > 64) {
+    return absl::InvalidArgumentError("HM_STITCH_CALIBRATION_FRAME_COUNT must be in the range 1..64");
+  }
+  return static_cast<size_t>(parsed);
+}
+
+absl::StatusOr<size_t> saved_or_environment_stitching_calibration_frame_count(const YAML::Node& config) {
+  if (get_node(config, "hstream_ui.stitching_calibration.frame_count").has_value() ||
+      get_node(config, "stitching.calibration_frame_count").has_value()) {
+    return persisted_stitching_calibration_frame_count(config);
+  }
+  return configured_stitching_calibration_frame_count_from_environment();
+}
+
 absl::Status enforce_stitching_control_points_environment(size_t control_points) {
   const char* configured = g_getenv("HM_MAX_CONTROL_POINTS");
   if (configured && *configured) {
@@ -132,6 +200,28 @@ absl::Status enforce_stitching_control_points_environment(size_t control_points)
     return absl::InternalError("Unable to publish saved stitching control points to calibration workers");
   }
   std::cout << "Using persisted stitching calibration control-point limit " << control_points << std::endl;
+  return absl::OkStatus();
+}
+
+absl::Status enforce_stitching_calibration_frame_count_environment(size_t frame_count) {
+  const char* configured = g_getenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
+  if (configured && *configured) {
+    auto runtime_frame_count_or = configured_stitching_calibration_frame_count_from_environment();
+    if (!runtime_frame_count_or.ok())
+      return runtime_frame_count_or.status();
+    const size_t runtime_frame_count = *runtime_frame_count_or;
+    if (runtime_frame_count != frame_count) {
+      return absl::InvalidArgumentError(TO_STRING(
+          "HM_STITCH_CALIBRATION_FRAME_COUNT="
+          << runtime_frame_count << " conflicts with pending stitching calibration frame_count=" << frame_count));
+    }
+  } else if (!g_setenv(
+                 "HM_STITCH_CALIBRATION_FRAME_COUNT",
+                 std::to_string(frame_count).c_str(),
+                 /*overwrite=*/TRUE)) {
+    return absl::InternalError("Unable to publish saved stitching calibration frame count to calibration workers");
+  }
+  std::cout << "Using persisted stitching calibration frame count " << frame_count << std::endl;
   return absl::OkStatus();
 }
 
@@ -873,6 +963,25 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 
 } // namespace
 
+bool configurator_internal::hmstitcher_owns_stitching_cleanup(const YAML::Node& config) {
+  const auto stitcher = get_node(config, "pipeline.hmstitcher");
+  if (!stitcher.has_value() || !stitcher->IsMap()) {
+    return false;
+  }
+  auto bool_at = [&](const std::string& path) {
+    const auto value = get_node(config, path);
+    return value.has_value() && parse_one_pass_bool(*value, false);
+  };
+  if (bool_at("pipeline.hmstitcher.enable") || bool_at("pipeline.hmstitcher.configure-only") ||
+      bool_at("pipeline.hmstitcher.one-pass-mode")) {
+    return true;
+  }
+  if (get_node(config, "pipeline.hmstitcher.enable").has_value()) {
+    return false;
+  }
+  return bool_at("stitching.enabled");
+}
+
 std::vector<std::string> configurator_internal::enabled_source_video_uris(const YAML::Node& pipeline) {
   std::vector<std::string> uris;
   for (const auto& item : pipeline) {
@@ -1565,6 +1674,11 @@ absl::Status Configurator::setup_stitcher_and_masks(
   const bool has_hmstitcher_section = get_node(pipeline, "hmstitcher")->IsDefined();
   has_hmstitcher = has_hmstitcher_section && get_node_value(pipeline, "hmstitcher.enable", FALSE);
   if (has_hmstitcher_section) {
+    auto calibration_frame_count_or = saved_or_environment_stitching_calibration_frame_count(config_);
+    if (!calibration_frame_count_or.ok())
+      return calibration_frame_count_or.status();
+    const size_t calibration_frame_count = *calibration_frame_count_or;
+    pipeline["hmstitcher"]["calibration-frame-count"] = calibration_frame_count;
     const bool enabled = get_node_value(pipeline, "hmstitcher.enable", FALSE);
     const bool configure_only = get_node_value(pipeline, "hmstitcher.configure-only", FALSE);
     const bool one_pass_mode = get_node_value(pipeline, "hmstitcher.one-pass-mode", FALSE);
@@ -1581,6 +1695,13 @@ absl::Status Configurator::setup_stitcher_and_masks(
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
       stitching_calibration_required_ = OnePassCalibrationRequiredForMode(
           one_pass_mode, is_configured, field_mask_configured, calibrate_field_mask, calibration_completion_requested);
+      if (!is_configured || configure_only || stitching_calibration_required_) {
+        const size_t requested_batch_size = calibration_frame_count * 2;
+        const size_t configured_batch_size = get_node_value(pipeline, "streammux.batch-size", size_t{0});
+        if (configured_batch_size < requested_batch_size) {
+          pipeline["streammux"]["batch-size"] = requested_batch_size;
+        }
+      }
       if (configure_only && is_configured && !force) {
         return absl::CancelledError("Stitching is already configured.");
       }
@@ -3534,9 +3655,14 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
         }
         control_points = static_cast<size_t>(parsed);
       }
+      auto frame_count_or = saved_or_environment_stitching_calibration_frame_count(latest);
+      if (!frame_count_or.ok())
+        return frame_count_or.status();
+      const size_t frame_count = *frame_count_or;
 
       YAML::Node calibration = latest["hstream_ui"]["stitching_calibration"];
       calibration["control_points"] = control_points;
+      calibration["frame_count"] = frame_count;
       calibration["status"] = "pending";
       calibration["rink_mask_status"] = "pending";
       calibration["stale_from"] = "input";
@@ -3759,12 +3885,16 @@ absl::Status Configurator::complete_configuration(
     return absl::OkStatus();
   }
 
-  // Stitching config mask config dir. Section presence owns offline cleanup;
+  // Stitching config mask config dir. Cleanup ownership is explicit, while
   // enabled state owns every runtime stitching operation.
   const bool has_hmstitcher_section = has_node(pipeline, "hmstitcher", false);
   const bool has_active_hmstitcher = has_hmstitcher_section && get_node_value(pipeline, "hmstitcher.enable", false);
+  const bool has_stitching_cleanup_owner = configurator_internal::hmstitcher_owns_stitching_cleanup(config_);
   if (clean_requested && !has_hmstitcher_section) {
     return absl::FailedPreconditionError("No hmstitcher section is configured; nothing to clean");
+  }
+  if (clean_requested && !has_stitching_cleanup_owner) {
+    return absl::FailedPreconditionError("No active hmstitcher configuration is eligible for cleaning");
   }
   const std::string loaded_invalidation_id =
       get_node_value(config_, "hstream_ui.stitching_calibration.invalidation_id", std::string());
@@ -3776,9 +3906,11 @@ absl::Status Configurator::complete_configuration(
   const std::string effective_invalidation_id =
       resume_pending_invalidation ? loaded_invalidation_id : clean_expected_invalidation_id;
   std::optional<size_t> loaded_control_points;
+  std::optional<size_t> loaded_frame_count;
   bool control_points_environment_enforced = false;
+  bool frame_count_environment_enforced = false;
   bool stitching_artifacts_precleaned = false;
-  const bool has_cleanup_owner = clean_requested ? has_hmstitcher_section : has_active_hmstitcher;
+  const bool has_cleanup_owner = clean_requested ? has_stitching_cleanup_owner : has_active_hmstitcher;
   if (!clean_requested && has_active_hmstitcher) {
     HM_RETURN_IF_ERROR(persist_effective_stitching_backend_choices(effective_invalidation_id));
   }
@@ -3799,6 +3931,7 @@ absl::Status Configurator::complete_configuration(
       size_t control_points = 0;
       HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(config_));
       loaded_control_points = control_points;
+      HM_ASSIGN_OR_RETURN(loaded_frame_count, persisted_stitching_calibration_frame_count(config_));
     }
 
     // load_config() and this final launch boundary are separated by command-line
@@ -3824,6 +3957,11 @@ absl::Status Configurator::complete_configuration(
         if (!loaded_control_points.has_value() || current_control_points != *loaded_control_points) {
           return absl::AbortedError("Stitching control-point limit changed before pipeline launch");
         }
+        size_t current_frame_count = 0;
+        HM_ASSIGN_OR_RETURN(current_frame_count, persisted_stitching_calibration_frame_count(current));
+        if (!loaded_frame_count.has_value() || current_frame_count != *loaded_frame_count) {
+          return absl::AbortedError("Stitching calibration frame count changed before pipeline launch");
+        }
         bool current_artifacts_invalidated = false;
         HM_ASSIGN_OR_RETURN(
             current_artifacts_invalidated,
@@ -3840,6 +3978,10 @@ absl::Status Configurator::complete_configuration(
     if (loaded_control_points.has_value()) {
       HM_RETURN_IF_ERROR(enforce_stitching_control_points_environment(*loaded_control_points));
       control_points_environment_enforced = true;
+    }
+    if (loaded_frame_count.has_value()) {
+      HM_RETURN_IF_ERROR(enforce_stitching_calibration_frame_count_environment(*loaded_frame_count));
+      frame_count_environment_enforced = true;
     }
     active_stitching_invalidation_id_ = effective_invalidation_id;
   }
@@ -3909,6 +4051,8 @@ absl::Status Configurator::complete_configuration(
     if (!loaded_control_points.has_value() && loaded_status == "complete") {
       size_t control_points = 0;
       HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(config_));
+      size_t frame_count = 0;
+      HM_ASSIGN_OR_RETURN(frame_count, persisted_stitching_calibration_frame_count(config_));
 
       auto config_transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
       if (!config_transaction.ok())
@@ -3922,8 +4066,10 @@ absl::Status Configurator::complete_configuration(
             get_node_value(current, "hstream_ui.stitching_calibration.invalidation_id", std::string());
         size_t current_control_points = 0;
         HM_ASSIGN_OR_RETURN(current_control_points, persisted_stitching_control_points(current));
+        size_t current_frame_count = 0;
+        HM_ASSIGN_OR_RETURN(current_frame_count, persisted_stitching_calibration_frame_count(current));
         if (current_status != loaded_status || current_invalidation_id != loaded_invalidation_id ||
-            current_control_points != control_points) {
+            current_control_points != control_points || current_frame_count != frame_count) {
           return absl::AbortedError("Completed stitching calibration state changed before pipeline launch");
         }
       } catch (const YAML::Exception& error) {
@@ -3931,9 +4077,13 @@ absl::Status Configurator::complete_configuration(
             "Unable to revalidate completed stitching calibration before launch: " + std::string(error.what()));
       }
       loaded_control_points = control_points;
+      loaded_frame_count = frame_count;
     }
     if (loaded_control_points.has_value() && !control_points_environment_enforced) {
       HM_RETURN_IF_ERROR(enforce_stitching_control_points_environment(*loaded_control_points));
+    }
+    if (loaded_frame_count.has_value() && !frame_count_environment_enforced) {
+      HM_RETURN_IF_ERROR(enforce_stitching_calibration_frame_count_environment(*loaded_frame_count));
     }
   }
 

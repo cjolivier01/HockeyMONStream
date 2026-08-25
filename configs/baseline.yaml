@@ -95,6 +95,7 @@ stitching:
   enabled: true
   pto_project_file: null
   stitch_frame_time: "00:00:00"
+  calibration_frame_count: 4
   frame_offsets:
     left: null
     right: null

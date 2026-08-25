@@ -763,6 +763,49 @@ play-tracker:
           fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
       "stitching.enabled=false must skip runtime discovery and preserve negotiated source dimensions");
 
+  hm::Configurator disabled_stitching_clean(
+      "disabled-stitching", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool disabled_stitching_clean_loaded = disabled_stitching_clean.configure().ok() &&
+      disabled_stitching_clean.underlay_config("pipeline", disabled_stitching_pipeline_path.string());
+  const absl::Status disabled_stitching_clean_status = disabled_stitching_clean_loaded
+      ? disabled_stitching_clean.complete_configuration(
+            /*force=*/true,
+            /*clean_stitching_artifacts=*/true,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            disabled_stitching_pipeline_path.parent_path())
+      : absl::InternalError("disabled stitching clean fixture did not load");
+  ok &= expect(
+      !disabled_stitching_clean_status.ok() && fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
+      "stitching.enabled=false must not own direct clean-only artifact cleanup");
+
+  const fs::path canonical_clean_game_dir = games / "canonical-clean-stitching";
+  fs::create_directories(canonical_clean_game_dir);
+  std::ofstream(canonical_clean_game_dir / "seam_file.png") << "must be cleaned\n";
+  const fs::path canonical_clean_pipeline_path = root / "canonical-clean-stitching-pipeline.yaml";
+  std::ofstream(canonical_clean_pipeline_path) << "application:\n  complete-configuration: 1\n"
+                                               << "hmstitcher: {}\n";
+  hm::Configurator canonical_clean_stitching(
+      "canonical-clean-stitching", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool canonical_clean_stitching_loaded = canonical_clean_stitching.configure().ok() &&
+      canonical_clean_stitching.underlay_config("pipeline", canonical_clean_pipeline_path.string());
+  const absl::Status canonical_clean_stitching_status = canonical_clean_stitching_loaded
+      ? canonical_clean_stitching.complete_configuration(
+            /*force=*/true,
+            /*clean_stitching_artifacts=*/true,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            canonical_clean_pipeline_path.parent_path())
+      : absl::InternalError("canonical clean stitching fixture did not load");
+  ok &= expect(
+      canonical_clean_stitching_status.code() == absl::StatusCode::kCancelled &&
+          !fs::exists(canonical_clean_game_dir / "seam_file.png"),
+      "canonical stitching.enabled=true must own direct clean-only artifact cleanup");
+
   const fs::path clear_game_dir = games / "mapping-explicit-clear";
   fs::create_directories(clear_game_dir);
   YAML::Node explicit_clears(YAML::NodeType::Map);

@@ -37,6 +37,7 @@
 #include <cuda.h>
 #include <unistd.h>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -860,6 +861,17 @@ void StitcherPriv::release_high_bit_field_mask_canvas() {
 absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     hm::surface::Surface incoming_surface_left,
     hm::surface::Surface incoming_surface_right) {
+  return configure_one_pass_from_frame_pairs({hm::stitching::StitchingCalibrationFramePair{
+      .left = incoming_surface_left,
+      .right = incoming_surface_right,
+  }});
+}
+
+absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
+    const std::vector<hm::stitching::StitchingCalibrationFramePair>& frame_pairs) {
+  if (frame_pairs.empty()) {
+    return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
+  }
   bool is_configured;
   HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
   if (!is_configured) {
@@ -882,18 +894,9 @@ absl::Status StitcherPriv::configure_one_pass_from_surfaces(
       }
       orientation_ran_ = true;
     }
-    if (high_bit_depth_) {
-      HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
-      std::pair<hm::surface::Surface, hm::surface::Surface> calibration_surfaces =
-          std::make_pair(incoming_surface_left, incoming_surface_right);
-      HM_ASSIGN_OR_RETURN(calibration_surfaces, high_bit_calibration_surfaces());
-      incoming_surface_left = calibration_surfaces.first;
-      incoming_surface_right = calibration_surfaces.second;
-    }
     absl::Status configure_status = stitching::configure_stitching(
         config_file_,
-        incoming_surface_left,
-        incoming_surface_right,
+        frame_pairs,
         calibration_invalidation_id_,
         [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
         max_output_width_);
@@ -1003,24 +1006,65 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   if (!selected_pair.ok()) {
     return selected_pair.status();
   }
-  const RuntimeFrameInfo& frame_info_left = runtime_frames[selected_pair->first];
-  const RuntimeFrameInfo& frame_info_right = runtime_frames[selected_pair->second];
+  std::map<gint, std::map<guint, size_t>> frame_indices;
+  for (size_t index = 0; index < runtime_frame_keys.size(); ++index) {
+    frame_indices[runtime_frame_keys[index].frame_num].emplace(runtime_frame_keys[index].source_id, index);
+  }
+  std::vector<std::pair<size_t, size_t>> selected_pairs;
+  selected_pairs.reserve(std::min(calibration_frame_count_, frame_indices.size()));
+  for (const auto& [frame_num, by_source] : frame_indices) {
+    (void)frame_num;
+    if (by_source.size() != 2) {
+      continue;
+    }
+    selected_pairs.emplace_back(by_source.begin()->second, by_source.rbegin()->second);
+    if (selected_pairs.size() == calibration_frame_count_) {
+      break;
+    }
+  }
+  if (selected_pairs.empty()) {
+    selected_pairs.push_back(*selected_pair);
+  }
+  if (selected_pairs.size() < calibration_frame_count_) {
+    return absl::FailedPreconditionError(
+        absl::StrFormat(
+            "Stitching calibration requested %zu synchronized frame pairs but runtime sizing batch provided %zu",
+            calibration_frame_count_,
+            selected_pairs.size()));
+  }
 
 #ifdef __aarch64__
-  hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
-      in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
-  HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
-  hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
-  hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
-      in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
-  HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
-  hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
+  std::vector<std::unique_ptr<hm::surface::EglSurfaceMapper>> egl_surface_mappers;
+  egl_surface_mappers.reserve(selected_pairs.size() * 2);
+  std::vector<hm::stitching::StitchingCalibrationFramePair> calibration_frame_pairs;
+  calibration_frame_pairs.reserve(selected_pairs.size());
+  for (const auto& [left_index, right_index] : selected_pairs) {
+    const RuntimeFrameInfo& frame_info_left = runtime_frames[left_index];
+    const RuntimeFrameInfo& frame_info_right = runtime_frames[right_index];
+    auto incoming_left_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+        in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_left_egl_surface_mapper->status()));
+    hm::surface::Surface incoming_surface_left = incoming_left_egl_surface_mapper->get_surface();
+    egl_surface_mappers.push_back(std::move(incoming_left_egl_surface_mapper));
+    auto incoming_right_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+        in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_right_egl_surface_mapper->status()));
+    hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
+    egl_surface_mappers.push_back(std::move(incoming_right_egl_surface_mapper));
+    calibration_frame_pairs.push_back({incoming_surface_left, incoming_surface_right});
+  }
 #else
-  hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
-  hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
+  std::vector<hm::stitching::StitchingCalibrationFramePair> calibration_frame_pairs;
+  calibration_frame_pairs.reserve(selected_pairs.size());
+  for (const auto& [left_index, right_index] : selected_pairs) {
+    const RuntimeFrameInfo& frame_info_left = runtime_frames[left_index];
+    const RuntimeFrameInfo& frame_info_right = runtime_frames[right_index];
+    calibration_frame_pairs.push_back(
+        {hm::surface::Surface(frame_info_left.surface_params), hm::surface::Surface(frame_info_right.surface_params)});
+  }
 #endif
 
-  HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
+  HM_RETURN_IF_ERROR(configure_one_pass_from_frame_pairs(calibration_frame_pairs));
   return videoprep::RuntimeOutputSize{
       canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
 }
@@ -1051,6 +1095,14 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     match_exposure_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "calibration-frame-count" || prop.key == "calibration_frame_count") {
+    char* end = nullptr;
+    const long parsed = std::strtol(prop.value.c_str(), &end, 10);
+    if (end == prop.value.c_str() || *end != '\0' || parsed < 1 || parsed > 64) {
+      std::cerr << "Invalid stitch calibration-frame-count value: " << prop.value << std::endl;
+      return false;
+    }
+    calibration_frame_count_ = static_cast<size_t>(parsed);
   } else if (
       prop.key == "max-output-width" || prop.key == "max_output_width" || prop.key == "stitch-max-output-width" ||
       prop.key == "stitch_max_output_width") {
@@ -1469,6 +1521,57 @@ absl::Status StitcherPriv::GenerateOutput(
   const size_t batch_size = frame_source_surfaces.size();
   HM_RETURN_IF_ERROR(prepare_stitch_output_surface(out_surface, batch_size));
 
+#ifdef __aarch64__
+  std::vector<std::unique_ptr<hm::surface::EglSurfaceMapper>> calibration_egl_surface_mappers;
+#endif
+  std::vector<hm::stitching::StitchingCalibrationFramePair> batch_calibration_frame_pairs;
+  bool first_pass_is_configured = false;
+  bool first_pass_configuration_state_known = false;
+  bool first_pass_will_configure_stitching = false;
+  if (process_pass_ == 0) {
+    HM_ASSIGN_OR_RETURN(first_pass_is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+    first_pass_configuration_state_known = true;
+    first_pass_will_configure_stitching = configure_only_ || (!first_pass_is_configured && one_pass_mode_);
+  }
+  if (first_pass_will_configure_stitching) {
+    batch_calibration_frame_pairs.reserve(std::min(calibration_frame_count_, frame_source_surfaces.size()));
+    for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
+      (void)frame_number;
+      if (batch_calibration_frame_pairs.size() == calibration_frame_count_) {
+        break;
+      }
+      if (source_to_surface.size() != 2) {
+        continue;
+      }
+      const FrameInfo& frame_info_left = source_to_surface.begin()->second;
+      const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
+#ifdef __aarch64__
+      auto incoming_left_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+          in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+      HM_RETURN_IF_ERROR(to_status(incoming_left_egl_surface_mapper->status()));
+      hm::surface::Surface incoming_surface_left = incoming_left_egl_surface_mapper->get_surface();
+      calibration_egl_surface_mappers.push_back(std::move(incoming_left_egl_surface_mapper));
+      auto incoming_right_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+          in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+      HM_RETURN_IF_ERROR(to_status(incoming_right_egl_surface_mapper->status()));
+      hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
+      calibration_egl_surface_mappers.push_back(std::move(incoming_right_egl_surface_mapper));
+      batch_calibration_frame_pairs.push_back({incoming_surface_left, incoming_surface_right});
+#else
+      batch_calibration_frame_pairs.push_back(
+          {hm::surface::Surface(frame_info_left.surface_params),
+           hm::surface::Surface(frame_info_right.surface_params)});
+#endif
+    }
+    if (batch_calibration_frame_pairs.size() < calibration_frame_count_) {
+      return absl::FailedPreconditionError(
+          absl::StrFormat(
+              "Stitching calibration requested %zu synchronized frame pairs but input batch provided %zu",
+              calibration_frame_count_,
+              batch_calibration_frame_pairs.size()));
+    }
+  }
+
   if (log_batches_enabled()) {
     g_print(
         "hmstitcher batch in: surface batchSize=%u numFilled=%u frame_meta_count=%u frame_meta_list_len=%u "
@@ -1538,11 +1641,13 @@ absl::Status StitcherPriv::GenerateOutput(
 
     // Maybe configure stitching with these frames
     if (!process_pass_++) {
-      bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+      bool is_configured = first_pass_is_configured;
+      if (!first_pass_configuration_state_known) {
+        HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+      }
       if (!is_configured || configure_only_) {
         if (one_pass_mode_ && !is_configured) {
-          HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
+          HM_RETURN_IF_ERROR(configure_one_pass_from_frame_pairs(batch_calibration_frame_pairs));
         } else if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
@@ -1557,20 +1662,9 @@ absl::Status StitcherPriv::GenerateOutput(
             }
             orientation_ran_ = true;
           }
-          hm::surface::Surface calibration_surface_left = incoming_surface_left;
-          hm::surface::Surface calibration_surface_right = incoming_surface_right;
-          if (high_bit_depth_) {
-            HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
-            std::pair<hm::surface::Surface, hm::surface::Surface> calibration_surfaces =
-                std::make_pair(incoming_surface_left, incoming_surface_right);
-            HM_ASSIGN_OR_RETURN(calibration_surfaces, high_bit_calibration_surfaces());
-            calibration_surface_left = calibration_surfaces.first;
-            calibration_surface_right = calibration_surfaces.second;
-          }
           absl::Status configure_status = stitching::configure_stitching(
               config_file_,
-              calibration_surface_left,
-              calibration_surface_right,
+              batch_calibration_frame_pairs,
               calibration_invalidation_id_,
               [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
               max_output_width_);

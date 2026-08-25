@@ -98,6 +98,7 @@ namespace {
 
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
+constexpr int kDefaultStitchCalibrationFrameCount = 4;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
@@ -2294,6 +2295,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       control_points_spin_->setEnabled(!running);
     }
+    if (calibration_frame_count_spin_) {
+      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+      calibration_frame_count_spin_->setEnabled(!running);
+    }
     if (control_point_matcher_combo_) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       control_point_matcher_combo_->setEnabled(!running);
@@ -2342,6 +2347,18 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       "Control-point limit for stitching calibration. Changing this in Program mode recalibrates stitching before "
       "the full pipeline continues.");
   connect(control_points_spin_, &QSpinBox::valueChanged, this, [this]() { updatePresetDirtyState(); });
+
+  calibration_frame_count_spin_ = new QSpinBox();
+  calibration_frame_count_spin_->setObjectName("calibrationFrameCountSpin");
+  calibration_frame_count_spin_->setRange(1, 16);
+  calibration_frame_count_spin_->setSingleStep(1);
+  calibration_frame_count_spin_->setValue(kDefaultStitchCalibrationFrameCount);
+  calibration_frame_count_spin_->setEnabled(true);
+  calibration_frame_count_spin_->setPrefix("Frames ");
+  calibration_frame_count_spin_->setFixedWidth(86);
+  calibration_frame_count_spin_->setToolTip(
+      "Synchronized frame pairs to use for stitching calibration. Changing this captures new calibration inputs.");
+  connect(calibration_frame_count_spin_, &QSpinBox::valueChanged, this, [this]() { updatePresetDirtyState(); });
 
   stitch_max_output_width_spin_ = new QSpinBox();
   stitch_max_output_width_spin_->setObjectName("stitchMaxOutputWidthSpin");
@@ -2466,6 +2483,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   status_bar->addStretch(1);
   status_bar->addWidget(run_mode_selector_);
   status_bar->addWidget(control_points_spin_);
+  status_bar->addWidget(calibration_frame_count_spin_);
   status_bar->addWidget(stitch_frame_time_edit_);
   status_bar->addWidget(render_video_toggle_);
   status_bar->addWidget(show_player_tracking_toggle_);
@@ -3369,6 +3387,10 @@ int HStreamWindow::stitchingCalibrationControlPoints() const {
   return control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
 }
 
+int HStreamWindow::stitchingCalibrationFrameCount() const {
+  return calibration_frame_count_spin_ ? calibration_frame_count_spin_->value() : kDefaultStitchCalibrationFrameCount;
+}
+
 int HStreamWindow::stitchingMaxOutputWidth() const {
   return stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->value() : default_stitch_max_output_width_;
 }
@@ -3471,6 +3493,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
     const int current_control_points = calibration["control_points"] && calibration["control_points"].IsScalar()
         ? calibration["control_points"].as<int>()
         : -1;
+    const int current_frame_count =
+        calibration["frame_count"] && calibration["frame_count"].IsScalar() ? calibration["frame_count"].as<int>() : -1;
     const QString current_control_point_matcher = canonical_or_normalized_matcher_choice(
         config["stitching"]["control_point_matcher"] && config["stitching"]["control_point_matcher"].IsScalar()
             ? QString::fromStdString(config["stitching"]["control_point_matcher"].as<std::string>())
@@ -3499,7 +3523,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
     const bool already_completed = status == "complete" && current_status == "complete" && current_stale.isEmpty() &&
         current_invalidation_id == expected_invalidation_id && !current_invalidated &&
         current_stitch_frame_time_valid && current_stitch_frame_time == active_stitch_frame_time_ &&
-        current_control_points == control_points && current_control_point_matcher == active_control_point_matcher_ &&
+        current_control_points == control_points && current_frame_count == active_calibration_frame_count_ &&
+        current_control_point_matcher == active_control_point_matcher_ &&
         current_mapping_backend == active_mapping_backend_ &&
         current_max_output_width == active_stitch_max_output_width_;
     if (already_completed) {
@@ -3509,7 +3534,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
     }
     const bool expected_invalidated = status != "pending";
     if (!current_stitch_frame_time_valid || current_stitch_frame_time != active_stitch_frame_time_ ||
-        current_control_points != control_points || current_control_point_matcher != active_control_point_matcher_ ||
+        current_control_points != control_points || current_frame_count != active_calibration_frame_count_ ||
+        current_control_point_matcher != active_control_point_matcher_ ||
         current_mapping_backend != active_mapping_backend_ ||
         current_max_output_width != active_stitch_max_output_width_ || current_status != "pending" ||
         current_stale != stale_from || current_invalidation_id != expected_invalidation_id ||
@@ -3522,10 +3548,15 @@ bool HStreamWindow::saveStitchingCalibrationState(
   }
 
   calibration["control_points"] = control_points;
+  calibration["frame_count"] = active_calibration_frame_count_;
   remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
+  remove_yaml_path(config, {"stitching", "calibration_frame_count"});
   remove_stitch_max_output_width_native_aliases(config);
   config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
   config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
+  if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
+    config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
+  }
   config["stitching"]["max_output_width"] = active_stitch_max_output_width_ > 0
       ? YAML::Node(active_stitch_max_output_width_)
       : YAML::Node(YAML::NodeType::Null);
@@ -3565,9 +3596,12 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
   *calibration_required = false;
   const int control_points = active_calibration_control_points_;
+  const int frame_count = active_calibration_frame_count_;
   const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
+  int saved_frame_count = kDefaultStitchCalibrationFrameCount;
+  bool saved_frame_count_found = false;
   QString saved_stitch_frame_time = default_stitch_frame_time_;
   bool saved_stitch_frame_time_valid = true;
   int saved_max_output_width = default_stitch_max_output_width_;
@@ -3595,6 +3629,12 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &saved) && saved.IsScalar()) {
         saved_control_points = saved.as<int>();
         saved_found = true;
+      }
+      YAML::Node saved_frame_count_node;
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.frame_count", &saved_frame_count_node) &&
+          saved_frame_count_node.IsScalar()) {
+        saved_frame_count = saved_frame_count_node.as<int>();
+        saved_frame_count_found = true;
       }
       saved_stitch_frame_time_valid =
           read_stitch_frame_time(config, &saved_stitch_frame_time, nullptr, default_stitch_frame_time_);
@@ -3638,6 +3678,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
 
     const bool control_points_changed = !saved_found || saved_control_points != control_points;
+    const bool frame_count_changed = !saved_frame_count_found || saved_frame_count != frame_count;
     const bool max_output_width_changed =
         saved_max_output_width != active_stitch_max_output_width_ ||
         has_conflicting_stitch_max_output_width_native_alias(
@@ -3652,6 +3693,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
     remove_yaml_path(config, {"stitching", "mapping_backend"});
     remove_yaml_path(config, {"stitching", "max_output_width"});
+    remove_yaml_path(config, {"stitching", "calibration_frame_count"});
     remove_stitch_max_output_width_native_aliases(config);
     remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
     if (active_stitch_frame_time_ != default_stitch_frame_time_) {
@@ -3659,11 +3701,14 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
     config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
     config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
+    if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
+      config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
+    }
     config["stitching"]["max_output_width"] = active_stitch_max_output_width_ > 0
         ? YAML::Node(active_stitch_max_output_width_)
         : YAML::Node(YAML::NodeType::Null);
     const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed ||
-        control_point_matcher_changed || mapping_backend_changed || max_output_width_changed ||
+        frame_count_changed || control_point_matcher_changed || mapping_backend_changed || max_output_width_changed ||
         saved_status != "complete";
     if (!needs_calibration) {
       active_calibration_start_stage_.clear();
@@ -3687,7 +3732,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     QString stale_from = saved_stale_from;
     if (!calibration_stage_index(stale_from).has_value()) {
       stale_from = (mapping_backend_changed || max_output_width_changed) && !control_point_matcher_changed &&
-              !control_points_changed
+              !control_points_changed && !frame_count_changed
           ? QString("canvas")
           : QString("input");
     }
@@ -3701,10 +3746,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
     const size_t canvas_index = *calibration_stage_index("canvas");
     if ((mapping_backend_changed || max_output_width_changed) && !control_point_matcher_changed &&
-        !control_points_changed && canvas_index < *calibration_stage_index(stale_from)) {
+        !control_points_changed && !frame_count_changed && canvas_index < *calibration_stage_index(stale_from)) {
       stale_from = "canvas";
     }
-    if (active_force_reconfigure_ || stitch_frame_time_changed)
+    if (active_force_reconfigure_ || stitch_frame_time_changed || frame_count_changed)
       stale_from = "input";
     active_calibration_start_stage_ = stale_from;
 
@@ -3719,6 +3764,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
 
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["control_points"] = control_points;
+    calibration["frame_count"] = frame_count;
     calibration["status"] = "pending";
     calibration["rink_mask_status"] = "pending";
     calibration["stale_from"] = stale_from.toStdString();
@@ -3990,6 +4036,7 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
     }
     active_calibration_start_stage_ = current_start_stage;
     calibration["control_points"] = active_calibration_control_points_;
+    calibration["frame_count"] = active_calibration_frame_count_;
     calibration["status"] = "pending";
     calibration["rink_mask_status"] = "pending";
     calibration["stale_from"] = active_calibration_start_stage_.toStdString();
@@ -4284,6 +4331,16 @@ QStringList HStreamWindow::pipelineArguments() const {
   }
   if (isCalibrationRun() || calibration_pending_) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
+    args << QString(
+                "--options=pipeline.streammux.batch-size=%2,"
+                "pipeline.hmstitcher.calibration-frame-count=%1")
+                .arg(
+                    active_calibration_frame_count_ > 0 ? active_calibration_frame_count_
+                                                        : stitchingCalibrationFrameCount())
+                .arg(
+                    2 *
+                    (active_calibration_frame_count_ > 0 ? active_calibration_frame_count_
+                                                         : stitchingCalibrationFrameCount()));
   }
   if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != default_stitch_frame_time_) {
     args << QString("--stitch-frame-time=%1").arg(active_stitch_frame_time_);
@@ -4393,6 +4450,7 @@ void HStreamWindow::startPipeline() {
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
   active_calibration_control_points_ = 0;
+  active_calibration_frame_count_ = stitchingCalibrationFrameCount();
   active_stitch_max_output_width_ = stitchingMaxOutputWidth();
   active_stitch_frame_time_ = stitchFrameTime();
   active_control_point_matcher_ = controlPointMatcher();
@@ -4487,6 +4545,7 @@ void HStreamWindow::startPipeline() {
     active_archive_initial_mtime_ms_ = -1;
   };
   active_calibration_control_points_ = stitchingCalibrationControlPoints();
+  active_calibration_frame_count_ = stitchingCalibrationFrameCount();
   active_stitch_max_output_width_ = stitchingMaxOutputWidth();
   bool calibration_required = false;
   if (!prepareStitchingCalibrationRun(runner, working_dir, env, &calibration_required)) {
@@ -4497,6 +4556,7 @@ void HStreamWindow::startPipeline() {
     active_run_game_id_.clear();
     active_run_is_calibration_ = false;
     active_calibration_control_points_ = 0;
+    active_calibration_frame_count_ = 0;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Stitching setup failed");
     if (stitched_status_)
@@ -4507,6 +4567,7 @@ void HStreamWindow::startPipeline() {
   }
   saved_stitch_frame_time_ = active_stitch_frame_time_;
   saved_stitching_control_points_ = active_calibration_control_points_;
+  saved_stitching_calibration_frame_count_ = active_calibration_frame_count_;
   saved_stitch_max_output_width_ = active_stitch_max_output_width_;
   saved_control_point_matcher_ = active_control_point_matcher_;
   saved_mapping_backend_ = active_mapping_backend_;
@@ -4535,6 +4596,7 @@ void HStreamWindow::startPipeline() {
     active_run_game_id_.clear();
     active_run_is_calibration_ = false;
     active_calibration_control_points_ = 0;
+    active_calibration_frame_count_ = 0;
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Asset setup failed");
     if (stitched_status_)
@@ -4595,17 +4657,22 @@ void HStreamWindow::startPipeline() {
     appendLog("video rendering disabled; pipeline will run without a display sink");
   if (calibration_pending_) {
     const int control_points = active_calibration_control_points_;
+    const int frame_count =
+        active_calibration_frame_count_ > 0 ? active_calibration_frame_count_ : kDefaultStitchCalibrationFrameCount;
     env.insert("HM_MAX_CONTROL_POINTS", QString::number(control_points));
+    env.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(frame_count));
     env.insert("HSTREAM_CALIBRATION_PENDING", "1");
     env.insert("HSTREAM_CALIBRATION_START_STAGE", active_calibration_start_stage_);
     if (active_run_is_calibration_) {
-      appendLog(
-          QString("stitching calibration control points=%1; starting one-pass stitched playback").arg(control_points));
+      appendLog(QString("stitching calibration control points=%1 frames=%2; starting one-pass stitched playback")
+                    .arg(control_points)
+                    .arg(frame_count));
     } else {
       appendLog(QString(
                     "video inputs require stitching calibration; starting one-pass program playback with control "
-                    "points=%1")
-                    .arg(control_points));
+                    "points=%1 frames=%2")
+                    .arg(control_points)
+                    .arg(frame_count));
     }
   } else if (active_run_is_calibration_) {
     appendLog(
@@ -4919,6 +4986,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_run_high_bit_depth_ = false;
   active_run_local_render_only_ = false;
   active_calibration_control_points_ = 0;
+  active_calibration_frame_count_ = 0;
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
@@ -5059,6 +5127,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
   active_calibration_control_points_ = 0;
+  active_calibration_frame_count_ = 0;
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
@@ -7306,6 +7375,9 @@ void HStreamWindow::updateRunControls() {
   if (control_points_spin_) {
     control_points_spin_->setEnabled(!running && !finalizing);
   }
+  if (calibration_frame_count_spin_) {
+    calibration_frame_count_spin_->setEnabled(!running && !finalizing);
+  }
   if (control_point_matcher_combo_) {
     control_point_matcher_combo_->setEnabled(!running && !finalizing);
   }
@@ -7567,6 +7639,7 @@ void HStreamWindow::captureSavedControlState() {
   }
   saved_stitch_frame_time_ = stitchFrameTime();
   saved_stitching_control_points_ = stitchingCalibrationControlPoints();
+  saved_stitching_calibration_frame_count_ = stitchingCalibrationFrameCount();
   saved_stitch_max_output_width_ = stitchingMaxOutputWidth();
   saved_control_point_matcher_ = controlPointMatcher();
   saved_mapping_backend_ = mappingBackend();
@@ -7581,6 +7654,7 @@ void HStreamWindow::updatePresetDirtyState() {
   bool dirty = retry_required || saved_camera_controls_.size() != camera_defaults_.size() ||
       saved_stitch_frame_time_ != stitchFrameTime() ||
       saved_stitching_control_points_ != stitchingCalibrationControlPoints() ||
+      saved_stitching_calibration_frame_count_ != stitchingCalibrationFrameCount() ||
       saved_stitch_max_output_width_ != stitchingMaxOutputWidth() ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend();
   if (!dirty) {
@@ -7614,6 +7688,11 @@ void HStreamWindow::loadSavedControlConfig() {
     const bool blocked = control_points_spin_->blockSignals(true);
     control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
     control_points_spin_->blockSignals(blocked);
+  }
+  if (calibration_frame_count_spin_) {
+    const bool blocked = calibration_frame_count_spin_->blockSignals(true);
+    calibration_frame_count_spin_->setValue(kDefaultStitchCalibrationFrameCount);
+    calibration_frame_count_spin_->blockSignals(blocked);
   }
   if (control_point_matcher_combo_) {
     const bool blocked = control_point_matcher_combo_->blockSignals(true);
@@ -7761,6 +7840,8 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
+    int staged_frame_count =
+        calibration_frame_count_spin_ ? calibration_frame_count_spin_->value() : kDefaultStitchCalibrationFrameCount;
     int staged_max_output_width = default_stitch_max_output_width_;
     QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     QString staged_control_point_matcher = default_control_point_matcher_;
@@ -7770,6 +7851,16 @@ void HStreamWindow::loadSavedControlConfig() {
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
         control_points.IsScalar()) {
       staged_control_points = control_points.as<int>();
+    }
+    YAML::Node frame_count;
+    if (calibration_frame_count_spin_) {
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.frame_count", &frame_count) &&
+          frame_count.IsScalar()) {
+        staged_frame_count = frame_count.as<int>();
+      } else if (
+          lookup_yaml_path(config, "stitching.calibration_frame_count", &frame_count) && frame_count.IsScalar()) {
+        staged_frame_count = frame_count.as<int>();
+      }
     }
     if (stitch_max_output_width_spin_) {
       staged_max_output_width = read_stitch_max_output_width_from_config(
@@ -7901,6 +7992,11 @@ void HStreamWindow::loadSavedControlConfig() {
       const bool blocked = control_points_spin_->blockSignals(true);
       control_points_spin_->setValue(staged_control_points);
       control_points_spin_->blockSignals(blocked);
+    }
+    if (calibration_frame_count_spin_) {
+      const bool blocked = calibration_frame_count_spin_->blockSignals(true);
+      calibration_frame_count_spin_->setValue(staged_frame_count);
+      calibration_frame_count_spin_->blockSignals(blocked);
     }
     if (stitch_frame_time_edit_) {
       const bool blocked = stitch_frame_time_edit_->blockSignals(true);
@@ -8100,10 +8196,13 @@ bool HStreamWindow::applySavedControlConfig(
 
   const QString stitch_frame_time = stitchFrameTime();
   const int selected_control_points = stitchingCalibrationControlPoints();
+  const int selected_frame_count = stitchingCalibrationFrameCount();
   const bool stitch_frame_time_changed =
       !previous_stitch_frame_time_valid || previous_stitch_frame_time != stitch_frame_time;
   const bool control_points_changed =
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
+  const bool frame_count_changed =
+      saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
   const bool max_output_width_changed =
       previous_max_output_width != selected_max_output_width || had_conflicting_max_output_width_native_alias;
   const QString selected_control_point_matcher = controlPointMatcher();
@@ -8115,20 +8214,25 @@ bool HStreamWindow::applySavedControlConfig(
   const bool control_point_matcher_changed = previous_control_point_matcher != selected_control_point_matcher;
   const bool mapping_backend_changed = previous_mapping_backend != selected_mapping_backend;
   remove_yaml_path(config, {"stitching", "stitch_frame_time"});
+  remove_yaml_path(config, {"stitching", "calibration_frame_count"});
   if (stitch_frame_time != default_stitch_frame_time_) {
     config["stitching"]["stitch_frame_time"] = stitch_frame_time.toStdString();
+  }
+  if (selected_frame_count != kDefaultStitchCalibrationFrameCount) {
+    config["stitching"]["calibration_frame_count"] = selected_frame_count;
   }
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   config["stitching"]["max_output_width"] =
       selected_max_output_width > 0 ? YAML::Node(selected_max_output_width) : YAML::Node(YAML::NodeType::Null);
-  if (stitch_frame_time_changed || control_points_changed || control_point_matcher_changed || mapping_backend_changed ||
-      max_output_width_changed) {
+  if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
+      mapping_backend_changed || max_output_width_changed) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["control_points"] = selected_control_points;
+    calibration["frame_count"] = selected_frame_count;
     calibration["status"] = "pending";
     calibration["rink_mask_status"] = "pending";
-    calibration["stale_from"] = stitch_frame_time_changed
+    calibration["stale_from"] = stitch_frame_time_changed || frame_count_changed
         ? "input"
         : ((control_points_changed || control_point_matcher_changed) ? "features" : "canvas");
     calibration["artifacts_invalidated"] = false;

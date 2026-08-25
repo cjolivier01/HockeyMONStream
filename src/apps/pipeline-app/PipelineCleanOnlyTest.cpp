@@ -23,7 +23,8 @@ int main(int argc, char** argv) {
   auto run_clean = [&](const char* game_id,
                        const std::vector<const char*>& clean_flags,
                        const char* runtime_invalidation_id,
-                       const fs::path* leading_config = nullptr) {
+                       const fs::path* leading_config = nullptr,
+                       bool append_calibration_config = true) {
     const pid_t child = ::fork();
     if (child == 0) {
       ::setenv("HOME", (root / "home").c_str(), 1);
@@ -44,8 +45,10 @@ int main(int argc, char** argv) {
         child_argv.push_back(const_cast<char*>("-c"));
         child_argv.push_back(const_cast<char*>(leading_config->c_str()));
       }
-      child_argv.push_back(const_cast<char*>("-c"));
-      child_argv.push_back(argv[2]);
+      if (append_calibration_config) {
+        child_argv.push_back(const_cast<char*>("-c"));
+        child_argv.push_back(argv[2]);
+      }
       for (const char* flag : clean_flags)
         child_argv.push_back(const_cast<char*>(flag));
       child_argv.push_back(nullptr);
@@ -114,6 +117,34 @@ int main(int argc, char** argv) {
       run_clean("clean-only-test", {"--clean"}, nullptr, &incomplete_missing_subconfig) &&
       !fs::exists(full_game / "seam_file.png");
 
+  const fs::path configure_only_game = root / "games" / "configure-only-clean-test";
+  fs::create_directories(configure_only_game);
+  std::ofstream(configure_only_game / "seam_file.png") << "generated artifact\n";
+  const fs::path configure_only_config = root / "configure-only-stitching.yaml";
+  std::ofstream(configure_only_config) << "application:\n  stage: -1\n  complete-configuration: 1\n"
+                                       << "hmstitcher:\n  configure-only: 1\n";
+  const bool configure_only_clean_ok = run_clean(
+                                           "configure-only-clean-test",
+                                           {"--clean"},
+                                           nullptr,
+                                           &configure_only_config,
+                                           /*append_calibration_config=*/false) &&
+      !fs::exists(configure_only_game / "seam_file.png");
+
+  const fs::path one_pass_game = root / "games" / "one-pass-clean-test";
+  fs::create_directories(one_pass_game);
+  std::ofstream(one_pass_game / "seam_file.png") << "generated artifact\n";
+  const fs::path one_pass_config = root / "one-pass-stitching.yaml";
+  std::ofstream(one_pass_config) << "application:\n  stage: 0\n  complete-configuration: 1\n"
+                                 << "hmstitcher:\n  one-pass-mode: 1\n";
+  const bool one_pass_clean_ok = run_clean(
+                                     "one-pass-clean-test",
+                                     {"--clean"},
+                                     nullptr,
+                                     &one_pass_config,
+                                     /*append_calibration_config=*/false) &&
+      !fs::exists(one_pass_game / "seam_file.png");
+
   const fs::path malformed_camera_game = root / "games" / "malformed-camera-clean-only-test";
   fs::create_directories(malformed_camera_game);
   std::ofstream(malformed_camera_game / "seam_file.png") << "generated artifact\n";
@@ -134,7 +165,8 @@ int main(int argc, char** argv) {
   fs::remove_all(root);
   if (!full_clean_ok || !partial_clean_ok || !synchronization_preserved || !combined_clean_ok ||
       !mismatched_runtime_token_rejected || !incomplete_context_skipped || !incomplete_subconfig_skipped ||
-      !malformed_camera_ignored || !missing_tracker_ignored || !no_asset_download) {
+      !configure_only_clean_ok || !one_pass_clean_ok || !malformed_camera_ignored || !missing_tracker_ignored ||
+      !no_asset_download) {
     std::cerr << "FAIL: clean-only modes must respect dependency boundaries without downloading pretrained models\n";
     return 1;
   }

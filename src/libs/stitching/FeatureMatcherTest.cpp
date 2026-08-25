@@ -49,6 +49,17 @@ int main() {
         "second image must use the same preprocessing");
     ok &= expect(prepared->tensor[second_image + 575 * 1024 + 900] == 0.0f, "aspect padding must remain zero");
   }
+  cv::Mat left16(90, 160, CV_16UC3, cv::Scalar(3000, 2000, 1000));
+  cv::Mat right16(100, 100, CV_16UC3, cv::Scalar(6000, 5000, 4000));
+  auto prepared16 = hm::stitching::FeatureMatcher::Prepare(left16, right16);
+  ok &= expect(prepared16.ok(), "16-bit feature images must preprocess");
+  if (prepared16.ok()) {
+    ok &= expect(std::abs(prepared16->tensor[0] - 1000.0f / 65535.0f) < 1e-6f, "16-bit BGR must become RGB in [0,1]");
+    const size_t second_image = static_cast<size_t>(3) * 576 * 1024;
+    ok &= expect(
+        std::abs(prepared16->tensor[second_image] - 4000.0f / 65535.0f) < 1e-6f,
+        "second 16-bit image must use the same preprocessing");
+  }
 
   hm::stitching::FeaturePairInput metadata;
   metadata.source_sizes[0] = {7680, 4320};

@@ -17,6 +17,9 @@
 #include <vector>
 
 namespace hm {
+namespace stitching {
+struct StitchingCalibrationFramePair;
+}
 namespace stitcher {
 
 struct RuntimeFrameKey {
@@ -126,6 +129,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   absl::Status configure_one_pass_from_surfaces(
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);
+  absl::Status configure_one_pass_from_frame_pairs(
+      const std::vector<hm::stitching::StitchingCalibrationFramePair>& frame_pairs);
   absl::Status apply_post_stitch_rotation(
       hm::surface::Surface surface,
       size_t width,
@@ -177,6 +182,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  size_t calibration_frame_count_{4};
   int max_output_width_{0};
   bool require_decoded_frame_sequence_meta_{false};
   bool high_bit_depth_{false};

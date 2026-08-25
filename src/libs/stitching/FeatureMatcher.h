@@ -64,6 +64,10 @@ class FeatureMatcher {
       const float* scores,
       size_t score_count,
       size_t max_control_points);
+  static absl::StatusOr<std::vector<FeatureMatch>> SelectControlPoints(
+      const std::vector<FeatureMatch>& accepted,
+      cv::Size left_source_size,
+      size_t max_control_points);
 
   absl::StatusOr<FeatureMatchResult> Infer(
       const cv::Mat& left_bgr,

@@ -830,19 +830,49 @@ bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
 }
 
 absl::Status save_image(surface::Surface surf, const std::string& filename) {
-  // CudaMat<typename T>
-  if (surf.get_image_format() != IMAGE_RGBA8) {
+  cv::Mat cpu_img;
+  if (surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA) {
+    CudaMat<uchar4> gpu_image(
+        SurfaceInfo{
+            .width = (int)surf.width(),
+            .height = (int)surf.height(),
+            .pitch = (int)surf.pitch(),
+            .data_ptr = surf.dataptr(),
+        },
+        /*B=*/1);
+    cpu_img = gpu_image.download();
+  } else if (
+      surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709 ||
+      surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020) {
+    std::vector<uint32_t> packed(static_cast<size_t>(surf.width()) * surf.height());
+    const cudaError_t copy_status = cudaMemcpy2D(
+        packed.data(),
+        static_cast<size_t>(surf.width()) * sizeof(uint32_t),
+        surf.dataptr(),
+        surf.pitch(),
+        static_cast<size_t>(surf.width()) * sizeof(uint32_t),
+        surf.height(),
+        cudaMemcpyDeviceToHost);
+    if (copy_status != cudaSuccess) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Unable to download RGB10 calibration image from GPU: " << cudaGetErrorString(copy_status)));
+    }
+    cpu_img = cv::Mat(static_cast<int>(surf.height()), static_cast<int>(surf.width()), CV_16UC3);
+    constexpr uint32_t kRgb10Mask = 0x3ffu;
+    for (int y = 0; y < cpu_img.rows; ++y) {
+      auto* row = cpu_img.ptr<cv::Vec3w>(y);
+      const auto* packed_row = packed.data() + static_cast<size_t>(y) * surf.width();
+      for (int x = 0; x < cpu_img.cols; ++x) {
+        const uint32_t pixel = packed_row[x];
+        const uint16_t red = static_cast<uint16_t>(((pixel & kRgb10Mask) * 65535u + 511u) / 1023u);
+        const uint16_t green = static_cast<uint16_t>(((((pixel >> 10) & kRgb10Mask) * 65535u + 511u) / 1023u));
+        const uint16_t blue = static_cast<uint16_t>(((((pixel >> 20) & kRgb10Mask) * 65535u + 511u) / 1023u));
+        row[x] = cv::Vec3w(blue, green, red);
+      }
+    }
+  } else {
     return absl::InvalidArgumentError("Invalid image format");
   }
-  CudaMat<uchar4> gpu_image(
-      SurfaceInfo{
-          .width = (int)surf.width(),
-          .height = (int)surf.height(),
-          .pitch = (int)surf.pitch(),
-          .data_ptr = surf.dataptr(),
-      },
-      /*B=*/1);
-  cv::Mat cpu_img = gpu_image.download();
   if (cpu_img.empty()) {
     return absl::FailedPreconditionError("Unable to download image from GPU");
   }
@@ -850,6 +880,26 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
     return absl::FailedPreconditionError("Unable to write image to file");
   }
   return absl::OkStatus();
+}
+
+absl::StatusOr<cv::Mat> load_feature_image(const fs::path& image_file) {
+  cv::Mat image = cv::imread(image_file.string(), cv::IMREAD_UNCHANGED);
+  if (image.empty()) {
+    return absl::FailedPreconditionError("Unable to reload synchronized frames for native feature matching");
+  }
+  if (image.channels() == 4) {
+    cv::Mat bgr;
+    if (image.depth() == CV_16U) {
+      cv::cvtColor(image, bgr, cv::COLOR_BGRA2BGR);
+    } else {
+      cv::cvtColor(image, bgr, cv::COLOR_BGRA2BGR);
+    }
+    image = std::move(bgr);
+  }
+  if (image.channels() != 3 || (image.depth() != CV_8U && image.depth() != CV_16U)) {
+    return absl::FailedPreconditionError("Reloaded feature image must be 8-bit or 16-bit BGR");
+  }
+  return image;
 }
 
 } // namespace
@@ -1264,11 +1314,13 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 
 absl::Status create_control_points(
     const std::string& game_dir,
-    surface::Surface left_surface,
-    surface::Surface right_surface,
+    const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width) {
+  if (frame_pairs.empty()) {
+    return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
+  }
   std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -1289,10 +1341,19 @@ absl::Status create_control_points(
     return absl::InternalError("Unable to protect private calibration input directory");
   }
 
-  const fs::path left_file = input_dir / "left.png";
-  const fs::path right_file = input_dir / "right.png";
-  HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
-  HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
+  std::vector<std::pair<fs::path, fs::path>> input_files;
+  input_files.reserve(frame_pairs.size());
+  for (size_t index = 0; index < frame_pairs.size(); ++index) {
+    const fs::path left_file = input_dir /
+        (index == 0 ? "left.png" : TO_STRING("left_" << std::setw(4) << std::setfill('0') << index << ".png"));
+    const fs::path right_file = input_dir /
+        (index == 0 ? "right.png" : TO_STRING("right_" << std::setw(4) << std::setfill('0') << index << ".png"));
+    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].left, left_file));
+    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].right, right_file));
+    input_files.emplace_back(left_file, right_file);
+  }
+  const fs::path& left_file = input_files.front().first;
+  const fs::path& right_file = input_files.front().second;
 
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
@@ -1316,41 +1377,70 @@ absl::Status create_control_points(
         "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
   }
 
-  const cv::Mat left = cv::imread(left_file.string(), cv::IMREAD_COLOR);
-  const cv::Mat right = cv::imread(right_file.string(), cv::IMREAD_COLOR);
-  if (left.empty() || right.empty()) {
-    return absl::FailedPreconditionError("Unable to reload synchronized frames for native feature matching");
-  }
-  report_calibration_progress("features", "started", "Looking for control points in both camera frames");
+  report_calibration_progress(
+      "features",
+      "started",
+      TO_STRING(
+          "Looking for control points in " << input_files.size() << " synchronized camera frame pair"
+                                           << (input_files.size() == 1 ? "" : "s")));
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
   std::unique_ptr<FeatureMatcher> matcher;
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher));
-  FeatureMatchResult matched;
-  HM_ASSIGN_OR_RETURN(
-      matched,
-      matcher->Infer(
-          left,
-          right,
-          max_control_points,
-          [] {
-            report_calibration_progress("features", "complete", "Control points found in both camera frames");
-            report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
-          },
-          is_cancelled));
+  std::vector<FeatureMatch> pooled_accepted;
+  cv::Size left_source_size;
+  cv::Size right_source_size;
+  for (size_t index = 0; index < input_files.size(); ++index) {
+    auto left_or = load_feature_image(input_files[index].first);
+    if (!left_or.ok())
+      return left_or.status();
+    auto right_or = load_feature_image(input_files[index].second);
+    if (!right_or.ok())
+      return right_or.status();
+    cv::Mat left = std::move(*left_or);
+    cv::Mat right = std::move(*right_or);
+    if (index == 0) {
+      left_source_size = left.size();
+      right_source_size = right.size();
+    } else if (left.size() != left_source_size || right.size() != right_source_size) {
+      return absl::FailedPreconditionError("Stitching calibration frame pairs must have stable input dimensions");
+    }
+    FeatureMatchResult frame_matches;
+    HM_ASSIGN_OR_RETURN(frame_matches, matcher->Infer(left, right, max_control_points, {}, is_cancelled));
+    pooled_accepted.insert(pooled_accepted.end(), frame_matches.accepted.begin(), frame_matches.accepted.end());
+  }
+  report_calibration_progress(
+      "features",
+      "complete",
+      TO_STRING(
+          "Control points found in " << input_files.size() << " synchronized camera frame pair"
+                                     << (input_files.size() == 1 ? "" : "s")));
+  report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
   if (is_cancelled && is_cancelled()) {
     return absl::CancelledError("Stitching calibration cancelled");
   }
-  if (matched.accepted_match_count < 16) {
+  if (pooled_accepted.size() < 16) {
     return absl::FailedPreconditionError(TO_STRING(
-        "Native feature matcher produced only " << matched.accepted_match_count
+        "Native feature matcher produced only " << pooled_accepted.size()
                                                 << " usable matches; at least 16 are required"));
+  }
+  auto selected_or = FeatureMatcher::SelectControlPoints(pooled_accepted, left_source_size, max_control_points);
+  if (!selected_or.ok())
+    return selected_or.status();
+  std::vector<FeatureMatch> selected = std::move(*selected_or);
+  for (const FeatureMatch& match : selected) {
+    if (match.left.x < 0.0f || match.left.y < 0.0f || match.right.x < 0.0f || match.right.y < 0.0f ||
+        match.left.x >= left_source_size.width || match.left.y >= left_source_size.height ||
+        match.right.x >= right_source_size.width || match.right.y >= right_source_size.height) {
+      return absl::FailedPreconditionError("Selected control point falls outside the representative Hugin images");
+    }
   }
   report_calibration_progress(
       "matching",
       "complete",
       TO_STRING(
-          "Matched " << matched.selected.size() << " control points (" << matched.accepted_match_count << " usable)"));
+          "Matched " << selected.size() << " control points (" << pooled_accepted.size() << " usable across "
+                     << input_files.size() << " frame pair" << (input_files.size() == 1 ? "" : "s") << ")"));
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
@@ -1360,7 +1450,7 @@ absl::Status create_control_points(
   options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
-  return HuginProject::Configure(game_dir, left_file, right_file, matched.selected, options);
+  return HuginProject::Configure(game_dir, left_file, right_file, selected, options);
 }
 
 namespace {
@@ -2273,8 +2363,22 @@ absl::Status configure_stitching(
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width) {
-  HM_RETURN_IF_ERROR(create_control_points(
-      game_dir, left_surface, right_surface, expected_invalidation_id, is_cancelled, max_output_width));
+  return configure_stitching(
+      game_dir,
+      std::vector<StitchingCalibrationFramePair>{{left_surface, right_surface}},
+      expected_invalidation_id,
+      is_cancelled,
+      max_output_width);
+}
+
+absl::Status configure_stitching(
+    const std::string& game_dir,
+    const std::vector<StitchingCalibrationFramePair>& frame_pairs,
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
+  HM_RETURN_IF_ERROR(
+      create_control_points(game_dir, frame_pairs, expected_invalidation_id, is_cancelled, max_output_width));
   return absl::OkStatus();
 }
 

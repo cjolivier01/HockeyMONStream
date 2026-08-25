@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/common/Surface.h"
@@ -29,6 +30,11 @@ struct Synchronization {
 struct StitchingCanvasSize {
   size_t width{0};
   size_t height{0};
+};
+
+struct StitchingCalibrationFramePair {
+  surface::Surface left;
+  surface::Surface right;
 };
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
@@ -129,6 +135,13 @@ absl::Status configure_stitching(
     const std::string& game_dir,
     surface::Surface left_surface,
     surface::Surface right_surface,
+    const std::string& expected_invalidation_id = {},
+    const std::function<bool()>& is_cancelled = {},
+    size_t max_output_width = 0);
+
+absl::Status configure_stitching(
+    const std::string& game_dir,
+    const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
     size_t max_output_width = 0);
