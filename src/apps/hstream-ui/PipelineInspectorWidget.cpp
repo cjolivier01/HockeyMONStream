@@ -15,7 +15,6 @@
 #include <QtWidgets/QGraphicsPolygonItem>
 #include <QtWidgets/QGraphicsRectItem>
 #include <QtWidgets/QGraphicsScene>
-#include <QtWidgets/QGraphicsSimpleTextItem>
 #include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QHeaderView>
@@ -23,11 +22,13 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QStyleOptionGraphicsItem>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <queue>
@@ -39,6 +40,17 @@ namespace {
 
 constexpr char kProtocolPrefix[] = "HSTREAM_PIPELINE_INSPECTOR ";
 constexpr int kNodeIdRole = 1;
+
+struct NodeVisual {
+  QString name;
+  QString factory;
+  QString type;
+  QString state;
+  QString path;
+  QStringList source_pads;
+  QStringList sink_pads;
+  bool bin{false};
+};
 
 class PipelineGraphView : public QGraphicsView {
  public:
@@ -71,24 +83,193 @@ class PipelineGraphView : public QGraphicsView {
   }
 };
 
-QString elidedLabel(const QString& value, int maximum) {
-  if (value.size() <= maximum) {
-    return value;
-  }
-  return value.left(maximum - 1) + QChar(0x2026);
+QString elidedLabel(QPainter* painter, const QString& value, qreal maximum_width) {
+  return painter->fontMetrics().elidedText(value, Qt::ElideRight, static_cast<int>(maximum_width));
 }
 
-QColor nodeColor(bool bin, const QString& state) {
-  if (bin) {
-    return QColor("#274060");
+QString normalizedKind(const NodeVisual& node) {
+  if (node.bin) {
+    return "bin";
   }
+  const QString value = QString("%1 %2").arg(node.factory, node.type).toLower();
+  if (value.contains("sink")) {
+    return "sink";
+  }
+  if (value.contains("src") || value.contains("source") || value.contains("decode")) {
+    return "source";
+  }
+  if (value.contains("infer") || value.contains("gie") || value.contains("yolo")) {
+    return "inference";
+  }
+  if (value.contains("track")) {
+    return "tracking";
+  }
+  if (value.contains("streammux") || value.contains("mux")) {
+    return "mux";
+  }
+  if (value.contains("osd") || value.contains("overlay") || value.contains("draw")) {
+    return "overlay";
+  }
+  if (value.contains("convert") || value.contains("scale") || value.contains("caps") || value.contains("filter")) {
+    return "transform";
+  }
+  if (value.contains("queue") || value.contains("tee")) {
+    return "routing";
+  }
+  return "element";
+}
+
+QColor nodeColor(const NodeVisual& node) {
+  const QString kind = normalizedKind(node);
+  if (kind == "bin") {
+    return QColor("#26364f");
+  }
+  if (kind == "source") {
+    return QColor("#1f6f8b");
+  }
+  if (kind == "sink") {
+    return QColor("#7a4f1d");
+  }
+  if (kind == "inference") {
+    return QColor("#7c3aed");
+  }
+  if (kind == "tracking") {
+    return QColor("#b83280");
+  }
+  if (kind == "mux") {
+    return QColor("#0f766e");
+  }
+  if (kind == "overlay") {
+    return QColor("#b7791f");
+  }
+  if (kind == "transform") {
+    return QColor("#4263a3");
+  }
+  if (kind == "routing") {
+    return QColor("#4c566a");
+  }
+  return QColor("#394150");
+}
+
+QColor stateColor(const QString& state) {
   if (state.compare("PLAYING", Qt::CaseInsensitive) == 0) {
-    return QColor("#175c3a");
+    return QColor("#8ce99a");
   }
   if (state.compare("PAUSED", Qt::CaseInsensitive) == 0) {
-    return QColor("#725314");
+    return QColor("#ffd166");
   }
-  return QColor("#343b46");
+  return QColor("#cbd5e1");
+}
+
+class PipelineNodeItem : public QGraphicsRectItem {
+ public:
+  PipelineNodeItem(const QRectF& rect, NodeVisual visual, QGraphicsItem* parent = nullptr)
+      : QGraphicsRectItem(rect, parent), visual_(std::move(visual)) {}
+
+  void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget = nullptr) override {
+    (void)widget;
+    const QRectF bounds = rect();
+    const qreal lod = option->levelOfDetailFromTransform(painter->worldTransform());
+    QColor fill = nodeColor(visual_);
+    if (visual_.bin) {
+      fill.setAlphaF(lod < 0.55 ? 0.24 : 0.34);
+    }
+    painter->setPen(QPen(isSelected() ? QColor("#f8fafc") : QColor("#91a4bf"), isSelected() ? 2.0 : 1.2));
+    painter->setBrush(fill);
+    painter->drawRoundedRect(bounds, visual_.bin ? 8.0 : 5.0, visual_.bin ? 8.0 : 5.0);
+
+    if (lod < 0.34) {
+      return;
+    }
+
+    const qreal inset = visual_.bin ? 12.0 : 8.0;
+    const qreal text_width = std::max<qreal>(24.0, bounds.width() - inset * 2.0);
+    QFont title_font = painter->font();
+    title_font.setBold(true);
+    title_font.setPointSizeF(visual_.bin ? title_font.pointSizeF() + 0.5 : title_font.pointSizeF());
+    painter->setFont(title_font);
+    painter->setPen(Qt::white);
+    painter->drawText(
+        QPointF(bounds.left() + inset, bounds.top() + (visual_.bin ? 20.0 : 18.0)),
+        elidedLabel(painter, visual_.name, text_width));
+
+    if (lod < 0.68) {
+      return;
+    }
+
+    QFont detail_font = painter->font();
+    detail_font.setBold(false);
+    detail_font.setPointSizeF(std::max(7.0, detail_font.pointSizeF() - 1.0));
+    painter->setFont(detail_font);
+    painter->setPen(QColor("#d9e2ef"));
+    const QString detail = visual_.factory.isEmpty() ? visual_.type : visual_.factory;
+    painter->drawText(
+        QPointF(bounds.left() + inset, bounds.top() + (visual_.bin ? 39.0 : 36.0)),
+        elidedLabel(painter, detail, text_width));
+    painter->setPen(stateColor(visual_.state));
+    painter->drawText(
+        QPointF(bounds.left() + inset, bounds.top() + (visual_.bin ? 57.0 : 53.0)),
+        elidedLabel(painter, visual_.state, text_width));
+
+    if (lod < 1.25 || visual_.bin) {
+      return;
+    }
+
+    painter->setPen(QColor("#b8c2d4"));
+    painter->drawText(
+        QPointF(bounds.left() + inset, bounds.top() + 70.0), elidedLabel(painter, visual_.type, text_width));
+    if (lod < 1.85) {
+      return;
+    }
+    painter->setPen(QColor("#94a3b8"));
+    painter->drawText(
+        QPointF(bounds.left() + inset, bounds.top() + 87.0), elidedLabel(painter, visual_.path, text_width));
+    const QString pads = QString("src: %1   sink: %2")
+                             .arg(
+                                 visual_.source_pads.isEmpty() ? "-" : visual_.source_pads.join(", "),
+                                 visual_.sink_pads.isEmpty() ? "-" : visual_.sink_pads.join(", "));
+    painter->drawText(QPointF(bounds.left() + inset, bounds.top() + 104.0), elidedLabel(painter, pads, text_width));
+  }
+
+ private:
+  NodeVisual visual_;
+};
+
+QPointF edgeAnchor(const QRectF& rect, const QPointF& other) {
+  const QPointF center = rect.center();
+  const qreal dx = other.x() - center.x();
+  const qreal dy = other.y() - center.y();
+  if (std::abs(dx) * rect.height() > std::abs(dy) * rect.width()) {
+    return QPointF(dx >= 0.0 ? rect.right() : rect.left(), center.y() + dy * (rect.width() / 2.0) / std::abs(dx));
+  }
+  if (std::abs(dy) < 0.001) {
+    return QPointF(dx >= 0.0 ? rect.right() : rect.left(), center.y());
+  }
+  return QPointF(center.x() + dx * (rect.height() / 2.0) / std::abs(dy), dy >= 0.0 ? rect.bottom() : rect.top());
+}
+
+QLineF childBinEdgeLine(const QRectF& child_rect, const QRectF& bin_rect) {
+  const qreal y = std::clamp(child_rect.center().y(), bin_rect.top() + 26.0, bin_rect.bottom() - 12.0);
+  const bool use_left = child_rect.center().x() - bin_rect.left() <= bin_rect.right() - child_rect.center().x();
+  if (use_left) {
+    return QLineF(QPointF(child_rect.left(), y), QPointF(bin_rect.left() + 12.0, y));
+  }
+  return QLineF(QPointF(child_rect.right(), y), QPointF(bin_rect.right() - 12.0, y));
+}
+
+QLineF edgeLine(
+    const QRectF& source_rect,
+    const QRectF& sink_rect,
+    bool source_descends_from_sink,
+    bool sink_descends_from_source) {
+  if (source_descends_from_sink) {
+    return childBinEdgeLine(source_rect, sink_rect);
+  }
+  if (sink_descends_from_source) {
+    const QLineF line = childBinEdgeLine(sink_rect, source_rect);
+    return QLineF(line.p2(), line.p1());
+  }
+  return QLineF(edgeAnchor(source_rect, sink_rect.center()), edgeAnchor(sink_rect, source_rect.center()));
 }
 
 QString propertySummary(const QJsonObject& property) {
@@ -486,9 +667,6 @@ void PipelineInspectorWidget::renderGraph() {
   for (const EdgeData& edge : edges_) {
     add_layout_edge(edge.source, edge.sink);
   }
-  for (const auto& [id, node] : nodes_) {
-    add_layout_edge(node.parent_id, id);
-  }
 
   std::queue<QString> ready;
   std::map<QString, int> layer;
@@ -513,87 +691,199 @@ void PipelineInspectorWidget::renderGraph() {
       layer[id] = std::max(layer[id], fallback_layer++ % 8);
     }
   }
-  std::map<int, std::vector<QString>> layers;
+  std::map<QString, std::vector<QString>> children;
   for (const auto& [id, node] : nodes_) {
-    (void)node;
-    layers[layer[id]].push_back(id);
-  }
-  for (auto& [layer_index, ids] : layers) {
-    (void)layer_index;
-    std::sort(ids.begin(), ids.end(), [&](const QString& lhs, const QString& rhs) {
-      return nodes_.at(lhs).path < nodes_.at(rhs).path;
-    });
-  }
-
-  constexpr qreal kNodeWidth = 190.0;
-  constexpr qreal kNodeHeight = 62.0;
-  constexpr qreal kLayerSpacing = 265.0;
-  constexpr qreal kRowSpacing = 92.0;
-  std::map<QString, QPointF> positions;
-  for (const auto& [layer_index, ids] : layers) {
-    const qreal column_height = static_cast<qreal>(ids.size() - 1) * kRowSpacing;
-    for (size_t row = 0; row < ids.size(); ++row) {
-      positions[ids[row]] = QPointF(layer_index * kLayerSpacing, row * kRowSpacing - column_height / 2.0);
+    if (!node.parent_id.isEmpty() && nodes_.count(node.parent_id)) {
+      children[node.parent_id].push_back(id);
     }
   }
 
-  QPen edge_pen(QColor("#718096"), 1.4);
+  auto containment_key = [&](const QString& id) {
+    QStringList parts;
+    std::set<QString> visited;
+    QString current = id;
+    while (!current.isEmpty() && nodes_.count(current) && !visited.count(current)) {
+      visited.insert(current);
+      parts.prepend(nodes_.at(current).id);
+      current = nodes_.at(current).parent_id;
+    }
+    return parts.join(QChar(0x001f));
+  };
+
+  constexpr qreal kNodeWidth = 190.0;
+  constexpr qreal kNodeHeight = 116.0;
+  constexpr qreal kLayerSpacing = 265.0;
+  constexpr qreal kRowSpacing = 148.0;
+  constexpr qreal kBinMargin = 30.0;
+  std::vector<QString> ordered_ids;
+  ordered_ids.reserve(nodes_.size());
+  for (const auto& [id, node] : nodes_) {
+    (void)node;
+    ordered_ids.push_back(id);
+  }
+  std::sort(ordered_ids.begin(), ordered_ids.end(), [&](const QString& lhs, const QString& rhs) {
+    const QString lhs_key = containment_key(lhs);
+    const QString rhs_key = containment_key(rhs);
+    if (lhs_key == rhs_key) {
+      return layer[lhs] < layer[rhs];
+    }
+    return lhs_key < rhs_key;
+  });
+
+  std::map<QString, QPointF> positions;
+  const qreal graph_height = static_cast<qreal>(ordered_ids.size() - 1) * kRowSpacing;
+  for (size_t row = 0; row < ordered_ids.size(); ++row) {
+    positions[ordered_ids[row]] =
+        QPointF(layer[ordered_ids[row]] * kLayerSpacing, row * kRowSpacing - graph_height / 2.0);
+  }
+
+  std::map<QString, QRectF> node_rects;
+  for (const auto& [id, node] : nodes_) {
+    (void)node;
+    node_rects[id] = QRectF(positions[id], QSizeF(kNodeWidth, kNodeHeight));
+  }
+  std::set<QString> computing_bins;
+  std::function<QRectF(const QString&)> resolve_rect = [&](const QString& id) -> QRectF {
+    auto node = nodes_.find(id);
+    if (node == nodes_.end()) {
+      return QRectF{};
+    }
+    if (!node->second.bin || children[id].empty()) {
+      return node_rects[id];
+    }
+    if (computing_bins.count(id)) {
+      return node_rects[id];
+    }
+    computing_bins.insert(id);
+    QRectF bounds;
+    bool have_child = false;
+    for (const QString& child : children[id]) {
+      const QRectF child_rect = resolve_rect(child);
+      if (!child_rect.isValid()) {
+        continue;
+      }
+      bounds = have_child ? bounds.united(child_rect) : child_rect;
+      have_child = true;
+    }
+    computing_bins.erase(id);
+    if (!have_child) {
+      return node_rects[id];
+    }
+    bounds = bounds.adjusted(-kBinMargin, -kBinMargin - 22.0, kBinMargin, kBinMargin);
+    if (bounds.width() < kNodeWidth) {
+      const qreal extra = (kNodeWidth - bounds.width()) / 2.0;
+      bounds.adjust(-extra, 0.0, extra, 0.0);
+    }
+    if (bounds.height() < kNodeHeight) {
+      bounds.setHeight(kNodeHeight);
+    }
+    node_rects[id] = bounds;
+    return bounds;
+  };
+  for (const auto& [id, node] : nodes_) {
+    if (node.bin) {
+      resolve_rect(id);
+    }
+  }
+
+  std::map<QString, QStringList> source_pads_by_node;
+  std::map<QString, QStringList> sink_pads_by_node;
+  auto append_unique = [](QStringList* values, const QString& value) {
+    if (!value.isEmpty() && !values->contains(value)) {
+      values->append(value);
+    }
+  };
   for (const EdgeData& edge : edges_) {
-    const QPointF start = positions[edge.source] + QPointF(kNodeWidth, kNodeHeight / 2.0);
-    const QPointF end = positions[edge.sink] + QPointF(0.0, kNodeHeight / 2.0);
-    auto* line = graph_scene_->addLine(QLineF(start, end), edge_pen);
+    append_unique(&source_pads_by_node[edge.source], edge.source_pad);
+    append_unique(&sink_pads_by_node[edge.sink], edge.sink_pad);
+  }
+
+  std::vector<QString> bin_order;
+  for (const auto& [id, node] : nodes_) {
+    if (node.bin) {
+      bin_order.push_back(id);
+    }
+  }
+  std::sort(bin_order.begin(), bin_order.end(), [&](const QString& lhs, const QString& rhs) {
+    return node_rects[lhs].width() * node_rects[lhs].height() > node_rects[rhs].width() * node_rects[rhs].height();
+  });
+  for (size_t index = 0; index < bin_order.size(); ++index) {
+    const QString& id = bin_order[index];
+    const NodeData& node = nodes_.at(id);
+    NodeVisual visual{
+        .name = node.name,
+        .factory = node.factory,
+        .type = node.type,
+        .state = node.state,
+        .path = node.path,
+        .source_pads = source_pads_by_node[id],
+        .sink_pads = sink_pads_by_node[id],
+        .bin = true,
+    };
+    auto* rectangle = new PipelineNodeItem(node_rects[id], std::move(visual));
+    rectangle->setFlag(QGraphicsItem::ItemIsSelectable);
+    rectangle->setData(kNodeIdRole, id);
+    rectangle->setToolTip(QString("%1\nBin: %2\nType: %3\nState: %4").arg(node.path, node.name, node.type, node.state));
+    rectangle->setZValue(-20.0 + static_cast<qreal>(index) * 0.1);
+    graph_scene_->addItem(rectangle);
+    node_items_[id] = rectangle;
+  }
+
+  QPen edge_pen(QColor("#718096"), 1.4);
+  auto descends_from = [&](const QString& descendant, const QString& ancestor) {
+    std::set<QString> visited;
+    QString current = nodes_.count(descendant) ? nodes_.at(descendant).parent_id : QString{};
+    while (!current.isEmpty() && nodes_.count(current) && !visited.count(current)) {
+      if (current == ancestor) {
+        return true;
+      }
+      visited.insert(current);
+      current = nodes_.at(current).parent_id;
+    }
+    return false;
+  };
+  for (const EdgeData& edge : edges_) {
+    const QRectF source_rect = node_rects[edge.source];
+    const QRectF sink_rect = node_rects[edge.sink];
+    auto* line = graph_scene_->addLine(
+        edgeLine(source_rect, sink_rect, descends_from(edge.source, edge.sink), descends_from(edge.sink, edge.source)),
+        edge_pen);
     line->setZValue(-2.0);
     line->setToolTip(QString("%1 → %2").arg(edge.source_pad, edge.sink_pad));
-    const QLineF direction(start, end);
+    const QLineF direction = line->line();
     if (direction.length() > 1.0) {
       const qreal angle = std::atan2(-direction.dy(), direction.dx());
       constexpr qreal kArrow = 8.0;
       QPolygonF arrow;
+      const QPointF end = direction.p2();
       arrow << end << end - QPointF(std::cos(angle - 0.45) * kArrow, -std::sin(angle - 0.45) * kArrow)
             << end - QPointF(std::cos(angle + 0.45) * kArrow, -std::sin(angle + 0.45) * kArrow);
       auto* arrow_item = graph_scene_->addPolygon(arrow, QPen(Qt::NoPen), edge_pen.color());
       arrow_item->setZValue(-1.0);
     }
   }
-  QPen containment_pen(QColor("#3d4a5c"), 1.0, Qt::DashLine);
-  for (const auto& [id, node] : nodes_) {
-    if (node.parent_id.isEmpty() || !positions.count(node.parent_id)) {
-      continue;
-    }
-    auto* line = graph_scene_->addLine(
-        QLineF(
-            positions[node.parent_id] + QPointF(kNodeWidth / 2.0, kNodeHeight),
-            positions[id] + QPointF(kNodeWidth / 2.0, 0.0)),
-        containment_pen);
-    line->setZValue(-3.0);
-    line->setToolTip("Bin membership");
-  }
 
   for (const auto& [id, node] : nodes_) {
-    auto* rectangle = graph_scene_->addRect(
-        QRectF(positions[id], QSizeF(kNodeWidth, kNodeHeight)),
-        QPen(QColor("#8ca0b8"), 1.2),
-        nodeColor(node.bin, node.state));
+    if (node.bin) {
+      continue;
+    }
+    NodeVisual visual{
+        .name = node.name,
+        .factory = node.factory,
+        .type = node.type,
+        .state = node.state,
+        .path = node.path,
+        .source_pads = source_pads_by_node[id],
+        .sink_pads = sink_pads_by_node[id],
+        .bin = false,
+    };
+    auto* rectangle = new PipelineNodeItem(node_rects[id], std::move(visual));
     rectangle->setFlag(QGraphicsItem::ItemIsSelectable);
     rectangle->setData(kNodeIdRole, id);
     rectangle->setToolTip(QString("%1\nFactory: %2\nType: %3\nState: %4")
                               .arg(node.path, node.factory.isEmpty() ? "(bin)" : node.factory, node.type, node.state));
-    auto* title = new QGraphicsSimpleTextItem(elidedLabel(node.name, 25), rectangle);
-    QFont title_font = title->font();
-    title_font.setBold(true);
-    title->setFont(title_font);
-    title->setBrush(Qt::white);
-    title->setPos(8.0, 6.0);
-    title->setAcceptedMouseButtons(Qt::NoButton);
-    const QString subtitle_text = node.factory.isEmpty() ? node.type : node.factory;
-    auto* subtitle = new QGraphicsSimpleTextItem(elidedLabel(subtitle_text, 27), rectangle);
-    subtitle->setBrush(QColor("#d5dde8"));
-    subtitle->setPos(8.0, 28.0);
-    subtitle->setAcceptedMouseButtons(Qt::NoButton);
-    auto* state = new QGraphicsSimpleTextItem(node.state, rectangle);
-    state->setBrush(QColor("#b7f7d1"));
-    state->setPos(kNodeWidth - state->boundingRect().width() - 7.0, 44.0);
-    state->setAcceptedMouseButtons(Qt::NoButton);
+    rectangle->setZValue(0.0);
+    graph_scene_->addItem(rectangle);
     node_items_[id] = rectangle;
   }
   graph_scene_->setSceneRect(graph_scene_->itemsBoundingRect().adjusted(-50, -50, 50, 50));
