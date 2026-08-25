@@ -1352,9 +1352,6 @@ absl::Status create_control_points(
     HM_RETURN_IF_ERROR(save_image(frame_pairs[index].right, right_file));
     input_files.emplace_back(left_file, right_file);
   }
-  const fs::path& left_file = input_files.front().first;
-  const fs::path& right_file = input_files.front().second;
-
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   ControlPointMatcher control_point_matcher = ControlPointMatcher::kSuperPointLightGlue;
@@ -1387,9 +1384,16 @@ absl::Status create_control_points(
   HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
   std::unique_ptr<FeatureMatcher> matcher;
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher));
+  struct CandidateFramePair {
+    size_t index{0};
+    std::vector<FeatureMatch> accepted;
+  };
   std::vector<FeatureMatch> pooled_accepted;
+  std::vector<CandidateFramePair> candidates;
   cv::Size left_source_size;
   cv::Size right_source_size;
+  size_t matched_frame_pairs = 0;
+  size_t skipped_frame_pairs = 0;
   for (size_t index = 0; index < input_files.size(); ++index) {
     auto left_or = load_feature_image(input_files[index].first);
     if (!left_or.ok())
@@ -1405,42 +1409,53 @@ absl::Status create_control_points(
     } else if (left.size() != left_source_size || right.size() != right_source_size) {
       return absl::FailedPreconditionError("Stitching calibration frame pairs must have stable input dimensions");
     }
-    FeatureMatchResult frame_matches;
-    HM_ASSIGN_OR_RETURN(frame_matches, matcher->Infer(left, right, max_control_points, {}, is_cancelled));
+    auto frame_matches_or = matcher->Infer(left, right, max_control_points, {}, is_cancelled);
+    if (!frame_matches_or.ok()) {
+      if (absl::IsNotFound(frame_matches_or.status())) {
+        ++skipped_frame_pairs;
+        std::cerr << "Skipping stitching calibration frame pair " << (index + 1) << "/" << input_files.size() << ": "
+                  << frame_matches_or.status() << std::endl;
+        continue;
+      }
+      return frame_matches_or.status();
+    }
+    const FeatureMatchResult frame_matches = std::move(*frame_matches_or);
+    ++matched_frame_pairs;
+    candidates.push_back(CandidateFramePair{.index = index, .accepted = frame_matches.accepted});
     pooled_accepted.insert(pooled_accepted.end(), frame_matches.accepted.begin(), frame_matches.accepted.end());
   }
   report_calibration_progress(
       "features",
       "complete",
       TO_STRING(
-          "Control points found in " << input_files.size() << " synchronized camera frame pair"
-                                     << (input_files.size() == 1 ? "" : "s")));
+          "Control points found in " << matched_frame_pairs << "/" << input_files.size()
+                                     << " synchronized camera frame pair" << (input_files.size() == 1 ? "" : "s")));
   report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
   if (is_cancelled && is_cancelled()) {
     return absl::CancelledError("Stitching calibration cancelled");
   }
   if (pooled_accepted.size() < 16) {
     return absl::FailedPreconditionError(TO_STRING(
-        "Native feature matcher produced only " << pooled_accepted.size()
-                                                << " usable matches; at least 16 are required"));
+        "Native feature matcher produced only " << pooled_accepted.size() << " usable matches across "
+                                                << matched_frame_pairs << "/" << input_files.size()
+                                                << " frame pairs; at least 16 are required"));
   }
-  auto selected_or = FeatureMatcher::SelectControlPoints(pooled_accepted, left_source_size, max_control_points);
-  if (!selected_or.ok())
-    return selected_or.status();
-  std::vector<FeatureMatch> selected = std::move(*selected_or);
-  for (const FeatureMatch& match : selected) {
-    if (match.left.x < 0.0f || match.left.y < 0.0f || match.right.x < 0.0f || match.right.y < 0.0f ||
-        match.left.x >= left_source_size.width || match.left.y >= left_source_size.height ||
-        match.right.x >= right_source_size.width || match.right.y >= right_source_size.height) {
-      return absl::FailedPreconditionError("Selected control point falls outside the representative Hugin images");
-    }
+  if (matched_frame_pairs == 0) {
+    return absl::FailedPreconditionError("No stitching calibration frame pair produced usable matches");
   }
+  std::stable_sort(
+      candidates.begin(), candidates.end(), [](const CandidateFramePair& lhs, const CandidateFramePair& rhs) {
+        return lhs.accepted.size() > rhs.accepted.size();
+      });
   report_calibration_progress(
       "matching",
       "complete",
       TO_STRING(
-          "Matched " << selected.size() << " control points (" << pooled_accepted.size() << " usable across "
-                     << input_files.size() << " frame pair" << (input_files.size() == 1 ? "" : "s") << ")"));
+          "Matched candidates from " << pooled_accepted.size() << " usable control points across "
+                                     << matched_frame_pairs << "/" << input_files.size() << " frame pair"
+                                     << (input_files.size() == 1 ? "" : "s")
+                                     << (skipped_frame_pairs == 0 ? "" : TO_STRING(", skipped " << skipped_frame_pairs))
+                                     << ")"));
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
@@ -1450,7 +1465,53 @@ absl::Status create_control_points(
   options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
-  return HuginProject::Configure(game_dir, left_file, right_file, selected, options);
+  absl::Status last_candidate_status =
+      absl::FailedPreconditionError("No stitching calibration frame pair had enough usable matches");
+  size_t attempted_candidates = 0;
+  for (const CandidateFramePair& candidate : candidates) {
+    if (candidate.accepted.size() < 16) {
+      continue;
+    }
+    auto selected_or = FeatureMatcher::SelectControlPoints(candidate.accepted, left_source_size, max_control_points);
+    if (!selected_or.ok()) {
+      last_candidate_status = selected_or.status();
+      if (absl::IsFailedPrecondition(last_candidate_status) || absl::IsNotFound(last_candidate_status)) {
+        continue;
+      }
+      return last_candidate_status;
+    }
+    std::vector<FeatureMatch> selected = std::move(*selected_or);
+    for (const FeatureMatch& match : selected) {
+      if (match.left.x < 0.0f || match.left.y < 0.0f || match.right.x < 0.0f || match.right.y < 0.0f ||
+          match.left.x >= left_source_size.width || match.left.y >= left_source_size.height ||
+          match.right.x >= right_source_size.width || match.right.y >= right_source_size.height) {
+        return absl::FailedPreconditionError("Selected control point falls outside the representative Hugin images");
+      }
+    }
+    ++attempted_candidates;
+    std::cerr << "Trying stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()
+              << " with " << selected.size() << " selected control points" << std::endl;
+    absl::Status configure_status = HuginProject::Configure(
+        game_dir, input_files[candidate.index].first, input_files[candidate.index].second, selected, options);
+    if (configure_status.ok()) {
+      return absl::OkStatus();
+    }
+    last_candidate_status = configure_status;
+    if (absl::IsCancelled(configure_status) || absl::IsAborted(configure_status) ||
+        absl::IsInvalidArgument(configure_status) || absl::IsInternal(configure_status) ||
+        absl::IsResourceExhausted(configure_status)) {
+      return configure_status;
+    }
+    if (!absl::IsFailedPrecondition(configure_status) && !absl::IsNotFound(configure_status)) {
+      return configure_status;
+    }
+    std::cerr << "Skipping stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()
+              << ": " << configure_status << std::endl;
+  }
+  return absl::FailedPreconditionError(TO_STRING(
+      "No stitching calibration frame pair produced a usable Hugin solution after "
+      << attempted_candidates << " candidate attempt" << (attempted_candidates == 1 ? "" : "s") << ": "
+      << last_candidate_status));
 }
 
 namespace {

@@ -761,6 +761,9 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   ppc << ";post-stitch-rotate-degrees=" << config->post_stitch_rotate_degrees;
   ppc << ";minimize-blend=" << config->minimize_blend;
   ppc << ";calibration-frame-count=" << (config->calibration_frame_count ? config->calibration_frame_count : 4);
+  if (config->calibration_sample_span_ns > 0) {
+    ppc << ";calibration-sample-span-ns=" << config->calibration_sample_span_ns;
+  }
   if (config->stitch_compute_precision[0] != '\0') {
     ppc << ";stitch-compute-precision=" << config->stitch_compute_precision;
   }

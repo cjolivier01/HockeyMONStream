@@ -4331,16 +4331,10 @@ QStringList HStreamWindow::pipelineArguments() const {
   }
   if (isCalibrationRun() || calibration_pending_) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
-    args << QString(
-                "--options=pipeline.streammux.batch-size=%2,"
-                "pipeline.hmstitcher.calibration-frame-count=%1")
+    args << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1")
                 .arg(
                     active_calibration_frame_count_ > 0 ? active_calibration_frame_count_
-                                                        : stitchingCalibrationFrameCount())
-                .arg(
-                    2 *
-                    (active_calibration_frame_count_ > 0 ? active_calibration_frame_count_
-                                                         : stitchingCalibrationFrameCount()));
+                                                        : stitchingCalibrationFrameCount());
   }
   if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != default_stitch_frame_time_) {
     args << QString("--stitch-frame-time=%1").arg(active_stitch_frame_time_);

@@ -163,10 +163,17 @@ bool expect_runtime_pair_contract() {
 
   const auto offset_complete = hm::stitcher::select_runtime_stitch_pair({{4, 0}, {3, 1}});
   const auto skipped_initial = hm::stitcher::select_runtime_stitch_pair({{4, 0}, {4, 1}});
+  const auto skipped_initial_for_calibration = hm::stitcher::select_runtime_stitch_pair(
+      {{4, 0}, {4, 1}},
+      {},
+      /*pipeline_eos_seen=*/false,
+      /*require_initial_continuity=*/false);
   if (offset_complete.status().code() != absl::StatusCode::kFailedPrecondition ||
-      skipped_initial.status().code() != absl::StatusCode::kFailedPrecondition) {
+      skipped_initial.status().code() != absl::StatusCode::kFailedPrecondition ||
+      !skipped_initial_for_calibration.ok()) {
     std::cerr << "Expected mismatched or skipped camera counters to fail before runtime sizing; mismatch="
-              << offset_complete.status() << ", skipped=" << skipped_initial.status() << std::endl;
+              << offset_complete.status() << ", skipped=" << skipped_initial.status()
+              << ", calibration skipped=" << skipped_initial_for_calibration.status() << std::endl;
     return false;
   }
   return true;

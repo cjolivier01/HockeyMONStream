@@ -196,8 +196,10 @@ class PipelineProcess {
       }
       if (inject_calibration_eos) {
         ::setenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS", "1", 1);
+        ::setenv("HM_STITCH_CALIBRATION_FRAME_COUNT", "1", 1);
       } else {
         ::unsetenv("HM_TEST_INJECT_STITCHING_CALIBRATION_EOS");
+        ::unsetenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
       }
       if (start_from_features && supply_runtime_invalidation) {
         ::setenv("HSTREAM_CALIBRATION_START_STAGE", "features", 1);
@@ -485,7 +487,8 @@ bool write_game_config(
     const fs::path& path,
     int control_points,
     const std::string& invalidation_id,
-    bool artifacts_invalidated) {
+    bool artifacts_invalidated,
+    int frame_count = 0) {
   std::ofstream output(path);
   output << "game:\n"
          << "  videos:\n"
@@ -495,13 +498,14 @@ bool write_game_config(
          << "    frame_offsets:\n"
          << "      left: 0\n"
          << "      right: 0\n"
+         << (frame_count > 0 ? "stitching:\n  calibration_frame_count: " + std::to_string(frame_count) + "\n" : "")
          << "hstream_ui:\n"
          << "  video_roles:\n"
          << "    left: [cam1/GX010001.MP4]\n"
          << "    right: [cam2/GX010002.MP4]\n"
          << "  stitching_calibration:\n"
          << "    control_points: " << control_points << "\n"
-         << "    status: pending\n"
+         << (frame_count > 0 ? "    frame_count: " + std::to_string(frame_count) + "\n" : "") << "    status: pending\n"
          << "    stale_from: features\n"
          << "    artifacts_invalidated: " << (artifacts_invalidated ? "true" : "false") << "\n"
          << "    invalidation_id: " << invalidation_id << "\n";
@@ -517,7 +521,9 @@ bool write_saved_stitch_time_invalidation(
     config["game"]["stitching"]["frame_offsets"]["left"] = 0;
     config["game"]["stitching"]["frame_offsets"]["right"] = 0;
     config["stitching"]["stitch_frame_time"] = stitch_frame_time;
+    config["stitching"]["calibration_frame_count"] = 4;
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["frame_count"] = 4;
     calibration["status"] = "pending";
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
@@ -758,7 +764,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "periodic-recreation", false),
+              write_game_config(game / "config.yaml", 128, "periodic-recreation", false, 1),
               "periodic recreation calibration config must be written") ||
           !expect(
               periodic_recreation.Start(
@@ -793,11 +799,43 @@ int main(int argc, char** argv) {
     }();
   }
 
+  PipelineProcess partial_eos;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              write_game_config(game / "config.yaml", 128, "partial-eos", false),
+              "partial-EOS config must be written") ||
+          !expect(
+              partial_eos.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  "partial-eos",
+                  128,
+                  false,
+                  /*stitch_frame_time=*/"00:00:59.900",
+                  /*time_limit_seconds=*/1),
+              "partial-EOS calibration pipeline must start") ||
+          !expect(
+              partial_eos.WaitFor("Stitching calibration reached EOS after capturing", 0, kCalibrationTimeout),
+              "partial-EOS calibration must reject fewer than the requested frame pairs")) {
+        return false;
+      }
+      int exit_code = 0;
+      return expect(partial_eos.Interrupt(), "partial-EOS calibration must remain interruptible after under-capture") &&
+          expect(partial_eos.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 "partial-EOS calibration must exit after interruption") &&
+          expect(exit_code != 0, "partial-EOS calibration must return a failure status");
+    }();
+  }
+
   PipelineProcess initial;
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "initial", false), "initial game config must be written") ||
+              write_game_config(game / "config.yaml", 128, "initial", false, 1),
+              "initial game config must be written") ||
           !expect(
               initial.Start(
                   argv[1],
@@ -886,7 +924,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "zero-missing-completion", false),
+              write_game_config(game / "config.yaml", 128, "zero-missing-completion", false, 1),
               "zero-time missing-completion config must be written") ||
           !expect(
               zero_missing_completion.Start(
@@ -939,7 +977,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "zero-eos-completion", false),
+              write_game_config(game / "config.yaml", 128, "zero-eos-completion", false, 1),
               "zero-time EOS completion config must be written") ||
           !expect(
               zero_eos_completion.Start(
@@ -1415,7 +1453,7 @@ int main(int argc, char** argv) {
                   false,
                   /*stitch_frame_time=*/"00:00:02",
                   /*time_limit_seconds=*/1,
-                  /*stitch_rotate_degrees=*/"10"),
+                  /*stitch_rotate_degrees=*/"5"),
               "rotation-invalidated calibration pipeline must start") ||
           !expect(
               rotated.WaitFor("HSTREAM_CALIBRATION stage=calibration status=complete", 0, kCalibrationTimeout),
@@ -1568,6 +1606,7 @@ int main(int argc, char** argv) {
 
   if (!ok) {
     initial.DumpOutput("initial calibration");
+    partial_eos.DumpOutput("partial-EOS calibration");
     missing_completion.DumpOutput("missing-completion calibration");
     zero_missing_completion.DumpOutput("zero-time missing-completion calibration");
     zero_eos_completion.DumpOutput("zero-time consumed-EOS completion calibration");

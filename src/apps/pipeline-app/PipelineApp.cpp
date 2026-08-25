@@ -6381,6 +6381,14 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     stitch_frame_calibration_active_.store(false, std::memory_order_release);
     g_print("HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted\n");
     std::fflush(stdout);
+    if (std::all_of(active_stage->second.begin(), active_stage->second.end(), [](const auto& context) {
+          return !context || context->quit;
+        })) {
+      quit_ = TRUE;
+      if (main_loop_) {
+        g_main_loop_quit(main_loop_);
+      }
+    }
   }
   return TRUE;
 }
@@ -6667,6 +6675,10 @@ gboolean PipelineApplication::event_thread_func() {
     return TRUE;
   }
   if (timed_run_stop_requested_.exchange(false, std::memory_order_acq_rel)) {
+    if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
+      reset_playback_timing_state(current_stage_);
+      return TRUE;
+    }
     if (runtime_seek_pending_) {
       finish_runtime_seek("failed", "pipeline-stopped");
     }

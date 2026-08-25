@@ -73,6 +73,9 @@ constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 constexpr size_t kDefaultStitchingControlPoints = 1500;
 constexpr size_t kDefaultStitchingCalibrationFrameCount = 4;
 
+bool is_enabled(YAML::Node n);
+std::optional<std::string> local_video_path_from_uri(const std::string& uri);
+
 absl::StatusOr<uint64_t> private_stitch_frame_time(const YAML::Node& config) {
   const auto value = get_node(config, "stitching.stitch_frame_time");
   if (!value.has_value())
@@ -85,6 +88,22 @@ absl::StatusOr<uint64_t> private_stitch_frame_time(const YAML::Node& config) {
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Invalid stitching.stitch_frame_time: " + std::string(error.what()));
   }
+}
+
+absl::Status apply_hmstitcher_calibration_sample_span(YAML::Node& pipeline, const YAML::Node& config) {
+  if (!get_node(pipeline, "hmstitcher")->IsDefined()) {
+    return absl::OkStatus();
+  }
+  uint64_t stitch_frame_time_ns = 0;
+  HM_ASSIGN_OR_RETURN(stitch_frame_time_ns, private_stitch_frame_time(config));
+  // hstream's one-pass path reaches calibration frames by normal forward decode,
+  // not by video-stitcher's source-side keyframe seek/extract pass. A zero stitch
+  // time must therefore calibrate from the first synchronized pairs so playback
+  // can begin promptly and no pre-calibration content is consumed.
+  if (stitch_frame_time_ns != 0)
+    return absl::OkStatus();
+  pipeline["hmstitcher"].remove("calibration-sample-span-ns");
+  return absl::OkStatus();
 }
 
 absl::StatusOr<size_t> persisted_stitching_control_points(const YAML::Node& config) {
@@ -1695,13 +1714,6 @@ absl::Status Configurator::setup_stitcher_and_masks(
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
       stitching_calibration_required_ = OnePassCalibrationRequiredForMode(
           one_pass_mode, is_configured, field_mask_configured, calibrate_field_mask, calibration_completion_requested);
-      if (!is_configured || configure_only || stitching_calibration_required_) {
-        const size_t requested_batch_size = calibration_frame_count * 2;
-        const size_t configured_batch_size = get_node_value(pipeline, "streammux.batch-size", size_t{0});
-        if (configured_batch_size < requested_batch_size) {
-          pipeline["streammux"]["batch-size"] = requested_batch_size;
-        }
-      }
       if (configure_only && is_configured && !force) {
         return absl::CancelledError("Stitching is already configured.");
       }
@@ -4114,6 +4126,7 @@ absl::Status Configurator::complete_configuration(
       num_video_sources));
 
   configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
+  HM_RETURN_IF_ERROR(apply_hmstitcher_calibration_sample_span(pipeline, config_));
   if (pipeline_has_hmstitcher && get_node_value<int>(pipeline, "hmstitcher.enable", false)) {
     // URI playlist construction selects HStream's full-batch-only new mux for two-camera file stitching. The legacy
     // mux uses -1 for the same infinite wait. Decode and stitcher sequence guards turn a missing peer into a hard

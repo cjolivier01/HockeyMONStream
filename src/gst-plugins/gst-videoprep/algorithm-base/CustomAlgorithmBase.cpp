@@ -14,13 +14,33 @@
 
 #include <pthread.h>
 #include "absl/status/status.h"
+#include "absl/strings/cord.h"
 
 namespace hm {
+
+namespace {
+
+constexpr char kRuntimeOutputPoolDeferredPayload[] = "runtime-output-pool-deferred";
+
+} // namespace
+
+absl::Status videoprep::runtime_output_pool_deferred_status(const std::string& reason) {
+  absl::Status status = absl::UnavailableError(reason);
+  status.SetPayload(kRuntimeOutputPoolDeferredPayload, absl::Cord("1"));
+  return status;
+}
+
+bool videoprep::is_runtime_output_pool_deferred_status(const absl::Status& status) {
+  return status.GetPayload(kRuntimeOutputPoolDeferredPayload).has_value();
+}
 
 videoprep::RuntimeOutputPoolStatusDisposition videoprep::classify_runtime_output_pool_status(
     const absl::Status& status) {
   if (status.ok()) {
     return RuntimeOutputPoolStatusDisposition::kProceed;
+  }
+  if (is_runtime_output_pool_deferred_status(status)) {
+    return RuntimeOutputPoolStatusDisposition::kDefer;
   }
   if (absl::IsCancelled(status)) {
     return RuntimeOutputPoolStatusDisposition::kSendEos;
@@ -36,6 +56,9 @@ bool videoprep::RuntimeOutputPoolFlow::handle_status(
     return true;
   }
   switch (classify_runtime_output_pool_status(status)) {
+    case RuntimeOutputPoolStatusDisposition::kDefer:
+      gst_buffer_unref(input_buffer);
+      return true;
     case RuntimeOutputPoolStatusDisposition::kSendEos:
       gst_buffer_unref(input_buffer);
       eos_terminal_ = true;
@@ -950,6 +973,14 @@ void CustomAlgorithmBase::OutputThread(void) {
         assert(cuda_stream_);
         if (in_surf && out_surf) {
           const absl::Status generate_status = GenerateOutput(batch_meta, in_surf, out_surf);
+          if (videoprep::is_runtime_output_pool_deferred_status(generate_status)) {
+            gst_buffer_unref(newGstOutBuf);
+            newGstOutBuf = nullptr;
+            outBuffer = nullptr;
+            gst_buffer_unref(packetInfo.inbuf);
+            lk.lock();
+            continue;
+          }
           cuda_status.Update(generate_status);
           if (!cuda_status.ok()) {
             std::cerr << cuda_status << std::endl;
