@@ -36,6 +36,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -274,6 +275,11 @@ struct CanvasSize {
   size_t height{0};
 };
 
+struct ScaledCanvas {
+  CanvasSize size;
+  double scale{1.0};
+};
+
 std::optional<size_t> get_positive_env_size(const char* name) {
   const char* value = std::getenv(name);
   if (!value || !*value) {
@@ -309,6 +315,21 @@ bool canvas_exceeds_max_dimension(const CanvasSize& canvas, size_t max_dimension
   return canvas.width > max_dimension || canvas.height > max_dimension;
 }
 
+absl::StatusOr<size_t> parse_exact_size_t(const std::string& value, const char* field_name) {
+  if (value.empty())
+    return absl::InvalidArgumentError(TO_STRING("Invalid stitched-output " << field_name));
+  size_t parsed = 0;
+  size_t consumed = 0;
+  try {
+    parsed = std::stoull(value, &consumed);
+  } catch (const std::exception&) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid stitched-output " << field_name));
+  }
+  if (consumed != value.size() || parsed == 0)
+    return absl::InvalidArgumentError(TO_STRING("Invalid stitched-output " << field_name));
+  return parsed;
+}
+
 absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   TIFF* tif = TIFFOpen(path.c_str(), "r");
   if (!tif) {
@@ -325,9 +346,7 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   const bool have_dims =
       TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
   const bool have_res = TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres) && TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres);
-
-  (void)TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos);
-  (void)TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
+  const bool have_position = TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos) && TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
 
   TIFFClose(tif);
 
@@ -340,6 +359,9 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   }
   if (!have_res || !std::isfinite(xres) || !std::isfinite(yres) || xres <= 0.0f || yres <= 0.0f) {
     return absl::InvalidArgumentError(TO_STRING("Missing TIFF resolution: " << path.string()));
+  }
+  if (!have_position) {
+    return absl::InvalidArgumentError(TO_STRING("Missing TIFF placement: " << path.string()));
   }
 
   const float x_px = xpos * xres;
@@ -381,6 +403,46 @@ absl::StatusOr<CanvasSize> normalize_and_measure_canvas(TiffPlacement* p0, TiffP
   return CanvasSize{.width = canvas_width, .height = canvas_height};
 }
 
+ScaledCanvas scale_canvas_to_max_output_width(
+    const TiffPlacement& p0,
+    const TiffPlacement& p1,
+    const CanvasSize& native,
+    size_t max_output_width) {
+  if (max_output_width == 0 || native.width <= max_output_width)
+    return ScaledCanvas{.size = native, .scale = 1.0};
+  auto size_for_scale = [&](double scale) {
+    auto scaled_extent = [scale](const TiffPlacement& placement) {
+      const auto x = static_cast<int>(std::floor(placement.x_px * scale));
+      const auto y = static_cast<int>(std::floor(placement.y_px * scale));
+      const auto right = static_cast<int>(std::ceil((placement.x_px + placement.width) * scale));
+      const auto bottom = static_cast<int>(std::ceil((placement.y_px + placement.height) * scale));
+      return std::tuple<int, int>{std::max(1, right - x) + x, std::max(1, bottom - y) + y};
+    };
+    auto [right0, bottom0] = scaled_extent(p0);
+    auto [right1, bottom1] = scaled_extent(p1);
+    return CanvasSize{
+        .width = static_cast<size_t>(std::max(right0, right1)),
+        .height = static_cast<size_t>(std::max(bottom0, bottom1)),
+    };
+  };
+  const double direct_scale = static_cast<double>(max_output_width) / static_cast<double>(native.width);
+  CanvasSize direct_size = size_for_scale(direct_scale);
+  if (direct_size.width <= max_output_width)
+    return ScaledCanvas{.size = direct_size, .scale = direct_scale};
+  double low = 0.0;
+  double high = direct_scale;
+  for (int iteration = 0; iteration < 32; ++iteration) {
+    const double mid = (low + high) / 2.0;
+    if (size_for_scale(mid).width <= max_output_width) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  const double selected_scale = low > 0.0 ? low : high;
+  return ScaledCanvas{.size = size_for_scale(selected_scale), .scale = selected_scale};
+}
+
 absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
   const fs::path mapping0_path = game_dir / "mapping_0000.tif";
   const fs::path mapping1_path = game_dir / "mapping_0001.tif";
@@ -395,6 +457,73 @@ absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
   HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(mapping1_path));
 
   return normalize_and_measure_canvas(&p0, &p1);
+}
+
+absl::StatusOr<CanvasSize> get_effective_mapping_canvas_size(const fs::path& game_dir, size_t max_output_width) {
+  TiffPlacement p0;
+  TiffPlacement p1;
+  HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(game_dir / "mapping_0000.tif"));
+  HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(game_dir / "mapping_0001.tif"));
+  CanvasSize native;
+  HM_ASSIGN_OR_RETURN(native, normalize_and_measure_canvas(&p0, &p1));
+  return scale_canvas_to_max_output_width(p0, p1, native, max_output_width).size;
+}
+
+absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
+  TIFF* tif = TIFFOpen(path.c_str(), "r");
+  if (!tif) {
+    return absl::NotFoundError(TO_STRING("Could not open remap TIFF: " << path.string()));
+  }
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint16_t samples = 0;
+  uint16_t bits = 0;
+  uint16_t sample_format = SAMPLEFORMAT_UINT;
+  const bool have_dims =
+      TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
+  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
+  TIFFClose(tif);
+  if (!have_dims || !width || !height || width > kHardMaximumArtifactDimension ||
+      height > kHardMaximumArtifactDimension || static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels ||
+      samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT) {
+    return absl::InvalidArgumentError(TO_STRING("Invalid remap TIFF metadata: " << path.string()));
+  }
+  return CanvasSize{.width = static_cast<size_t>(width), .height = static_cast<size_t>(height)};
+}
+
+absl::Status validate_remap_artifact_headers(
+    const fs::path& game_dir,
+    const TiffPlacement& left_placement,
+    const TiffPlacement& right_placement) {
+  CanvasSize left_x;
+  CanvasSize left_y;
+  CanvasSize right_x;
+  CanvasSize right_y;
+  HM_ASSIGN_OR_RETURN(left_x, read_remap_tiff_header(game_dir / "mapping_0000_x.tif"));
+  HM_ASSIGN_OR_RETURN(left_y, read_remap_tiff_header(game_dir / "mapping_0000_y.tif"));
+  HM_ASSIGN_OR_RETURN(right_x, read_remap_tiff_header(game_dir / "mapping_0001_x.tif"));
+  HM_ASSIGN_OR_RETURN(right_y, read_remap_tiff_header(game_dir / "mapping_0001_y.tif"));
+  if (left_x.width != left_y.width || left_x.height != left_y.height || right_x.width != right_y.width ||
+      right_x.height != right_y.height) {
+    return absl::FailedPreconditionError("Stitching remap X/Y dimensions do not match");
+  }
+  if (left_x.width != static_cast<size_t>(left_placement.width) ||
+      left_x.height != static_cast<size_t>(left_placement.height) ||
+      right_x.width != static_cast<size_t>(right_placement.width) ||
+      right_x.height != static_cast<size_t>(right_placement.height)) {
+    return absl::FailedPreconditionError("Stitching placement and remap dimensions do not match");
+  }
+  return absl::OkStatus();
+}
+
+bool artifacts_exceed_live_canvas_limit(
+    const CanvasSize& native_canvas,
+    const CanvasSize& effective_canvas,
+    size_t max_dimension) {
+  return canvas_exceeds_max_dimension(native_canvas, max_dimension) &&
+      canvas_exceeds_max_dimension(effective_canvas, max_dimension);
 }
 
 // -----------------------------------------------------------------------------
@@ -701,19 +830,49 @@ bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
 }
 
 absl::Status save_image(surface::Surface surf, const std::string& filename) {
-  // CudaMat<typename T>
-  if (surf.get_image_format() != IMAGE_RGBA8) {
+  cv::Mat cpu_img;
+  if (surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA) {
+    CudaMat<uchar4> gpu_image(
+        SurfaceInfo{
+            .width = (int)surf.width(),
+            .height = (int)surf.height(),
+            .pitch = (int)surf.pitch(),
+            .data_ptr = surf.dataptr(),
+        },
+        /*B=*/1);
+    cpu_img = gpu_image.download();
+  } else if (
+      surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709 ||
+      surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020) {
+    std::vector<uint32_t> packed(static_cast<size_t>(surf.width()) * surf.height());
+    const cudaError_t copy_status = cudaMemcpy2D(
+        packed.data(),
+        static_cast<size_t>(surf.width()) * sizeof(uint32_t),
+        surf.dataptr(),
+        surf.pitch(),
+        static_cast<size_t>(surf.width()) * sizeof(uint32_t),
+        surf.height(),
+        cudaMemcpyDeviceToHost);
+    if (copy_status != cudaSuccess) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Unable to download RGB10 calibration image from GPU: " << cudaGetErrorString(copy_status)));
+    }
+    cpu_img = cv::Mat(static_cast<int>(surf.height()), static_cast<int>(surf.width()), CV_16UC3);
+    constexpr uint32_t kRgb10Mask = 0x3ffu;
+    for (int y = 0; y < cpu_img.rows; ++y) {
+      auto* row = cpu_img.ptr<cv::Vec3w>(y);
+      const auto* packed_row = packed.data() + static_cast<size_t>(y) * surf.width();
+      for (int x = 0; x < cpu_img.cols; ++x) {
+        const uint32_t pixel = packed_row[x];
+        const uint16_t red = static_cast<uint16_t>(((pixel & kRgb10Mask) * 65535u + 511u) / 1023u);
+        const uint16_t green = static_cast<uint16_t>(((((pixel >> 10) & kRgb10Mask) * 65535u + 511u) / 1023u));
+        const uint16_t blue = static_cast<uint16_t>(((((pixel >> 20) & kRgb10Mask) * 65535u + 511u) / 1023u));
+        row[x] = cv::Vec3w(blue, green, red);
+      }
+    }
+  } else {
     return absl::InvalidArgumentError("Invalid image format");
   }
-  CudaMat<uchar4> gpu_image(
-      SurfaceInfo{
-          .width = (int)surf.width(),
-          .height = (int)surf.height(),
-          .pitch = (int)surf.pitch(),
-          .data_ptr = surf.dataptr(),
-      },
-      /*B=*/1);
-  cv::Mat cpu_img = gpu_image.download();
   if (cpu_img.empty()) {
     return absl::FailedPreconditionError("Unable to download image from GPU");
   }
@@ -721,6 +880,26 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
     return absl::FailedPreconditionError("Unable to write image to file");
   }
   return absl::OkStatus();
+}
+
+absl::StatusOr<cv::Mat> load_feature_image(const fs::path& image_file) {
+  cv::Mat image = cv::imread(image_file.string(), cv::IMREAD_UNCHANGED);
+  if (image.empty()) {
+    return absl::FailedPreconditionError("Unable to reload synchronized frames for native feature matching");
+  }
+  if (image.channels() == 4) {
+    cv::Mat bgr;
+    if (image.depth() == CV_16U) {
+      cv::cvtColor(image, bgr, cv::COLOR_BGRA2BGR);
+    } else {
+      cv::cvtColor(image, bgr, cv::COLOR_BGRA2BGR);
+    }
+    image = std::move(bgr);
+  }
+  if (image.channels() != 3 || (image.depth() != CV_8U && image.depth() != CV_16U)) {
+    return absl::FailedPreconditionError("Reloaded feature image must be 8-bit or 16-bit BGR");
+  }
+  return image;
 }
 
 } // namespace
@@ -873,7 +1052,7 @@ absl::Status clean_stitching_artifacts_from_control_points(
   return clean_stitching_artifacts_impl(game_dir, /*preserve_synchronized_inputs=*/true, expected_invalidation_id);
 }
 
-absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
+absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width) {
   std::error_code directory_error;
   if (!fs::is_directory(game_dir, directory_error) || directory_error)
     return false;
@@ -884,26 +1063,71 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir) {
   if (!up_to_date) {
     return false;
   }
+  CanvasSize canvas_size;
+  CanvasSize effective_canvas_size;
+  TiffPlacement p0;
+  TiffPlacement p1;
+  auto p0_status = read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif");
+  auto p1_status = read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif");
+  if (!p0_status.ok() || !p1_status.ok()) {
+    std::cout << "Stitching artifacts exist but mapping TIFF placement metadata is invalid: "
+              << (!p0_status.ok() ? p0_status.status() : p1_status.status()) << std::endl;
+    return false;
+  }
+  p0 = *p0_status;
+  p1 = *p1_status;
+  auto canvas_status = normalize_and_measure_canvas(&p0, &p1);
+  if (!canvas_status.ok()) {
+    std::cout << "Stitching artifacts exist but mapping canvas metadata is invalid: " << canvas_status.status()
+              << std::endl;
+    return false;
+  }
+  canvas_size = *canvas_status;
+  const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
+  if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
+      absl::IsNotFound(remap_status) || absl::IsResourceExhausted(remap_status)) {
+    std::cout << "Stitching artifacts exist but remap TIFF metadata is invalid: " << remap_status << std::endl;
+    return false;
+  }
+  HM_RETURN_IF_ERROR(remap_status);
+  if (max_output_width > 0 && canvas_size.width > max_output_width) {
+    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
+              << " exceeds requested max output width " << max_output_width << "; regenerating capped mapping artifacts"
+              << std::endl;
+    return false;
+  }
+  effective_canvas_size = canvas_size;
+  if (max_output_width > 0) {
+    const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
+    effective_canvas_size = scaled.size;
+  }
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
-  if (!max_canvas_dimension.has_value()) {
-    return true;
+  if (max_canvas_dimension.has_value() &&
+      artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension)) {
+    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
+              << " exceeds live-stitch max dimension " << *max_canvas_dimension << " even after width cap "
+              << max_output_width << " produces " << effective_canvas_size.width << "x" << effective_canvas_size.height
+              << "; regenerating at a smaller scale" << std::endl;
+    return false;
   }
-  auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
-  if (!canvas_size.ok()) {
-    std::cerr << "Warning: stitching artifacts exist but canvas size could not be read: " << canvas_size.status()
+  const absl::Status seam_status = HuginProject::ValidateSeamForConfiguredArtifacts(
+      fs::path(game_dir) / "seam_file.png",
+      static_cast<int>(canvas_size.width),
+      static_cast<int>(canvas_size.height),
+      static_cast<int>(effective_canvas_size.width),
+      static_cast<int>(effective_canvas_size.height));
+  if (absl::IsFailedPrecondition(seam_status)) {
+    std::cout << "Stitching artifacts exist but seam_file.png does not match the requested canvas: " << seam_status
               << std::endl;
     return false;
   }
-  if (canvas_exceeds_max_dimension(canvas_size.value(), *max_canvas_dimension)) {
-    std::cout << "Stitching artifacts canvas " << canvas_size->width << "x" << canvas_size->height
-              << " exceeds live-stitch max dimension " << *max_canvas_dimension << "; regenerating at a smaller scale"
-              << std::endl;
-    return false;
-  }
+  HM_RETURN_IF_ERROR(seam_status);
   return true;
 }
 
-absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::string& game_dir) {
+absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
+    const std::string& game_dir,
+    size_t max_output_width) {
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
@@ -917,10 +1141,26 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(const std::str
   }
   CanvasSize canvas_size;
   HM_ASSIGN_OR_RETURN(canvas_size, get_mapping_canvas_size(fs::path(game_dir)));
-  return canvas_exceeds_max_dimension(canvas_size, *max_canvas_dimension);
+  CanvasSize effective_canvas_size = canvas_size;
+  if (max_output_width > 0) {
+    HM_ASSIGN_OR_RETURN(effective_canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));
+  }
+  return artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension);
 }
 
-absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
+absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  CanvasSize canvas_size;
+  if (max_output_width > 0) {
+    HM_ASSIGN_OR_RETURN(canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));
+  } else {
+    HM_ASSIGN_OR_RETURN(canvas_size, get_mapping_canvas_size(fs::path(game_dir)));
+  }
+  return StitchingCanvasSize{.width = canvas_size.width, .height = canvas_size.height};
+}
+
+absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t max_output_width) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Game dir is empty");
   }
@@ -945,9 +1185,22 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
 
   CanvasSize measured_canvas;
   HM_ASSIGN_OR_RETURN(measured_canvas, normalize_and_measure_canvas(&p0, &p1));
-  const int canvas_width = static_cast<int>(measured_canvas.width);
-  const int canvas_height = static_cast<int>(measured_canvas.height);
-  const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(seam_path, canvas_width, canvas_height);
+  CanvasSize effective_canvas = measured_canvas;
+  double selected_scale = 1.0;
+  if (max_output_width > 0) {
+    const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, measured_canvas, max_output_width);
+    effective_canvas = scaled.size;
+    selected_scale = scaled.scale;
+  }
+  const int canvas_width = static_cast<int>(effective_canvas.width);
+  const int canvas_height = static_cast<int>(effective_canvas.height);
+  const absl::Status seam_status = HuginProject::ValidateAndNormalizeSeam(
+      seam_path,
+      static_cast<int>(measured_canvas.width),
+      static_cast<int>(measured_canvas.height),
+      canvas_width,
+      canvas_height,
+      selected_scale);
   if (seam_status.ok())
     return absl::OkStatus();
   if (!absl::IsFailedPrecondition(seam_status))
@@ -964,13 +1217,13 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
   std::cerr << "Existing seam mask is unusable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits regeneration: " << seam_status
             << std::endl;
 
-  const int x0 = static_cast<int>(p0.x_px);
-  const int y0 = static_cast<int>(p0.y_px);
-  const int x1 = static_cast<int>(p1.x_px);
-  const int y1 = static_cast<int>(p1.y_px);
+  const int x0 = static_cast<int>(std::floor(p0.x_px * selected_scale));
+  const int y0 = static_cast<int>(std::floor(p0.y_px * selected_scale));
+  const int x1 = static_cast<int>(std::floor(p1.x_px * selected_scale));
+  const int y1 = static_cast<int>(std::floor(p1.y_px * selected_scale));
 
-  const int x0_end = x0 + p0.width;
-  const int x1_end = x1 + p1.width;
+  const int x0_end = static_cast<int>(std::ceil((p0.x_px + p0.width) * selected_scale));
+  const int x1_end = static_cast<int>(std::ceil((p1.x_px + p1.width) * selected_scale));
 
   const int overlap_start = std::max(x0, x1);
   const int overlap_end = std::min(x0_end, x1_end);
@@ -997,8 +1250,8 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir) {
     mask.colRange(seam_x, canvas_width).setTo(255);
   }
 
-  const int y0_end = y0 + p0.height;
-  const int y1_end = y1 + p1.height;
+  const int y0_end = static_cast<int>(std::ceil((p0.y_px + p0.height) * selected_scale));
+  const int y1_end = static_cast<int>(std::ceil((p1.y_px + p1.height) * selected_scale));
   const int x0_clamped = std::clamp(x0, 0, canvas_width);
   const int x0_end_clamped = std::clamp(x0_end, 0, canvas_width);
   const int x1_clamped = std::clamp(x1, 0, canvas_width);
@@ -1061,10 +1314,13 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 
 absl::Status create_control_points(
     const std::string& game_dir,
-    surface::Surface left_surface,
-    surface::Surface right_surface,
+    const std::vector<StitchingCalibrationFramePair>& frame_pairs,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
+  if (frame_pairs.empty()) {
+    return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
+  }
   std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -1085,11 +1341,17 @@ absl::Status create_control_points(
     return absl::InternalError("Unable to protect private calibration input directory");
   }
 
-  const fs::path left_file = input_dir / "left.png";
-  const fs::path right_file = input_dir / "right.png";
-  HM_RETURN_IF_ERROR(save_image(left_surface, left_file));
-  HM_RETURN_IF_ERROR(save_image(right_surface, right_file));
-
+  std::vector<std::pair<fs::path, fs::path>> input_files;
+  input_files.reserve(frame_pairs.size());
+  for (size_t index = 0; index < frame_pairs.size(); ++index) {
+    const fs::path left_file = input_dir /
+        (index == 0 ? "left.png" : TO_STRING("left_" << std::setw(4) << std::setfill('0') << index << ".png"));
+    const fs::path right_file = input_dir /
+        (index == 0 ? "right.png" : TO_STRING("right_" << std::setw(4) << std::setfill('0') << index << ".png"));
+    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].left, left_file));
+    HM_RETURN_IF_ERROR(save_image(frame_pairs[index].right, right_file));
+    input_files.emplace_back(left_file, right_file);
+  }
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   ControlPointMatcher control_point_matcher = ControlPointMatcher::kSuperPointLightGlue;
@@ -1112,49 +1374,144 @@ absl::Status create_control_points(
         "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
   }
 
-  const cv::Mat left = cv::imread(left_file.string(), cv::IMREAD_COLOR);
-  const cv::Mat right = cv::imread(right_file.string(), cv::IMREAD_COLOR);
-  if (left.empty() || right.empty()) {
-    return absl::FailedPreconditionError("Unable to reload synchronized frames for native feature matching");
-  }
-  report_calibration_progress("features", "started", "Looking for control points in both camera frames");
+  report_calibration_progress(
+      "features",
+      "started",
+      TO_STRING(
+          "Looking for control points in " << input_files.size() << " synchronized camera frame pair"
+                                           << (input_files.size() == 1 ? "" : "s")));
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
   std::unique_ptr<FeatureMatcher> matcher;
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher));
-  FeatureMatchResult matched;
-  HM_ASSIGN_OR_RETURN(
-      matched,
-      matcher->Infer(
-          left,
-          right,
-          max_control_points,
-          [] {
-            report_calibration_progress("features", "complete", "Control points found in both camera frames");
-            report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
-          },
-          is_cancelled));
+  struct CandidateFramePair {
+    size_t index{0};
+    std::vector<FeatureMatch> accepted;
+  };
+  std::vector<FeatureMatch> pooled_accepted;
+  std::vector<CandidateFramePair> candidates;
+  cv::Size left_source_size;
+  cv::Size right_source_size;
+  size_t matched_frame_pairs = 0;
+  size_t skipped_frame_pairs = 0;
+  for (size_t index = 0; index < input_files.size(); ++index) {
+    auto left_or = load_feature_image(input_files[index].first);
+    if (!left_or.ok())
+      return left_or.status();
+    auto right_or = load_feature_image(input_files[index].second);
+    if (!right_or.ok())
+      return right_or.status();
+    cv::Mat left = std::move(*left_or);
+    cv::Mat right = std::move(*right_or);
+    if (index == 0) {
+      left_source_size = left.size();
+      right_source_size = right.size();
+    } else if (left.size() != left_source_size || right.size() != right_source_size) {
+      return absl::FailedPreconditionError("Stitching calibration frame pairs must have stable input dimensions");
+    }
+    auto frame_matches_or = matcher->Infer(left, right, max_control_points, {}, is_cancelled);
+    if (!frame_matches_or.ok()) {
+      if (absl::IsNotFound(frame_matches_or.status())) {
+        ++skipped_frame_pairs;
+        std::cerr << "Skipping stitching calibration frame pair " << (index + 1) << "/" << input_files.size() << ": "
+                  << frame_matches_or.status() << std::endl;
+        continue;
+      }
+      return frame_matches_or.status();
+    }
+    const FeatureMatchResult frame_matches = std::move(*frame_matches_or);
+    ++matched_frame_pairs;
+    candidates.push_back(CandidateFramePair{.index = index, .accepted = frame_matches.accepted});
+    pooled_accepted.insert(pooled_accepted.end(), frame_matches.accepted.begin(), frame_matches.accepted.end());
+  }
+  report_calibration_progress(
+      "features",
+      "complete",
+      TO_STRING(
+          "Control points found in " << matched_frame_pairs << "/" << input_files.size()
+                                     << " synchronized camera frame pair" << (input_files.size() == 1 ? "" : "s")));
+  report_calibration_progress("matching", "started", "Selecting and validating control-point matches");
   if (is_cancelled && is_cancelled()) {
     return absl::CancelledError("Stitching calibration cancelled");
   }
-  if (matched.accepted_match_count < 16) {
+  if (pooled_accepted.size() < 16) {
     return absl::FailedPreconditionError(TO_STRING(
-        "Native feature matcher produced only " << matched.accepted_match_count
-                                                << " usable matches; at least 16 are required"));
+        "Native feature matcher produced only " << pooled_accepted.size() << " usable matches across "
+                                                << matched_frame_pairs << "/" << input_files.size()
+                                                << " frame pairs; at least 16 are required"));
   }
+  if (matched_frame_pairs == 0) {
+    return absl::FailedPreconditionError("No stitching calibration frame pair produced usable matches");
+  }
+  std::stable_sort(
+      candidates.begin(), candidates.end(), [](const CandidateFramePair& lhs, const CandidateFramePair& rhs) {
+        return lhs.accepted.size() > rhs.accepted.size();
+      });
   report_calibration_progress(
       "matching",
       "complete",
       TO_STRING(
-          "Matched " << matched.selected.size() << " control points (" << matched.accepted_match_count << " usable)"));
+          "Matched candidates from " << pooled_accepted.size() << " usable control points across "
+                                     << matched_frame_pairs << "/" << input_files.size() << " frame pair"
+                                     << (input_files.size() == 1 ? "" : "s")
+                                     << (skipped_frame_pairs == 0 ? "" : TO_STRING(", skipped " << skipped_frame_pairs))
+                                     << ")"));
 
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
+  if (max_output_width > 0)
+    options.max_output_width = max_output_width;
   options.mapping_backend = mapping_backend;
   options.expected_invalidation_id = expected_invalidation_id;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
-  return HuginProject::Configure(game_dir, left_file, right_file, matched.selected, options);
+  absl::Status last_candidate_status =
+      absl::FailedPreconditionError("No stitching calibration frame pair had enough usable matches");
+  size_t attempted_candidates = 0;
+  for (const CandidateFramePair& candidate : candidates) {
+    if (candidate.accepted.size() < 16) {
+      continue;
+    }
+    auto selected_or = FeatureMatcher::SelectControlPoints(candidate.accepted, left_source_size, max_control_points);
+    if (!selected_or.ok()) {
+      last_candidate_status = selected_or.status();
+      if (absl::IsFailedPrecondition(last_candidate_status) || absl::IsNotFound(last_candidate_status)) {
+        continue;
+      }
+      return last_candidate_status;
+    }
+    std::vector<FeatureMatch> selected = std::move(*selected_or);
+    for (const FeatureMatch& match : selected) {
+      if (match.left.x < 0.0f || match.left.y < 0.0f || match.right.x < 0.0f || match.right.y < 0.0f ||
+          match.left.x >= left_source_size.width || match.left.y >= left_source_size.height ||
+          match.right.x >= right_source_size.width || match.right.y >= right_source_size.height) {
+        return absl::FailedPreconditionError("Selected control point falls outside the representative Hugin images");
+      }
+    }
+    ++attempted_candidates;
+    std::cerr << "Trying stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()
+              << " with " << selected.size() << " selected control points" << std::endl;
+    absl::Status configure_status = HuginProject::Configure(
+        game_dir, input_files[candidate.index].first, input_files[candidate.index].second, selected, options);
+    if (configure_status.ok()) {
+      return absl::OkStatus();
+    }
+    last_candidate_status = configure_status;
+    if (absl::IsCancelled(configure_status) || absl::IsAborted(configure_status) ||
+        absl::IsInvalidArgument(configure_status) || absl::IsInternal(configure_status) ||
+        absl::IsResourceExhausted(configure_status)) {
+      return configure_status;
+    }
+    if (!absl::IsFailedPrecondition(configure_status) && !absl::IsNotFound(configure_status)) {
+      return configure_status;
+    }
+    std::cerr << "Skipping stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()
+              << ": " << configure_status << std::endl;
+  }
+  return absl::FailedPreconditionError(TO_STRING(
+      "No stitching calibration frame pair produced a usable Hugin solution after "
+      << attempted_candidates << " candidate attempt" << (attempted_candidates == 1 ? "" : "s") << ": "
+      << last_candidate_status));
 }
 
 namespace {
@@ -1325,11 +1682,15 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
 
 absl::StatusOr<std::string> stitched_output_generation_id(
     const std::string& hugin_generation,
-    double post_stitch_rotate_degrees) {
+    double post_stitch_rotate_degrees,
+    size_t output_width,
+    size_t output_height) {
   if (hugin_generation.empty())
     return absl::InvalidArgumentError("A Hugin generation is required");
   if (!std::isfinite(post_stitch_rotate_degrees))
     return absl::InvalidArgumentError("Post-stitch rotation must be finite");
+  if ((output_width == 0) != (output_height == 0))
+    return absl::InvalidArgumentError("Stitched output dimensions must both be set or both be omitted");
   if (post_stitch_rotate_degrees == 0.0)
     post_stitch_rotate_degrees = 0.0;
   std::ostringstream generation;
@@ -1337,6 +1698,9 @@ absl::StatusOr<std::string> stitched_output_generation_id(
   generation << std::setprecision(std::numeric_limits<double>::max_digits10);
   generation << "hstream-stitched-output-v1\nhugin-bytes:" << hugin_generation.size() << '\n'
              << hugin_generation << "post-stitch-rotate-degrees:" << post_stitch_rotate_degrees << '\n';
+  if (output_width > 0) {
+    generation << "output-size:" << output_width << 'x' << output_height << '\n';
+  }
   return generation.str();
 }
 
@@ -1384,6 +1748,15 @@ absl::StatusOr<std::string> configured_output_generation(
   return stitched_output_generation_id(hugin_generation, rotation);
 }
 
+absl::StatusOr<std::string> configured_output_generation(
+    const YAML::Node& config,
+    const std::string& hugin_generation,
+    const CanvasSize& output_size) {
+  double rotation = 0.0;
+  HM_ASSIGN_OR_RETURN(rotation, configured_post_stitch_rotation(config));
+  return stitched_output_generation_id(hugin_generation, rotation, output_size.width, output_size.height);
+}
+
 absl::Status validate_output_generation_hugin(
     const std::string& output_generation,
     const std::string& expected_hugin_generation) {
@@ -1415,9 +1788,10 @@ absl::Status validate_output_generation_hugin(
   if (output_generation.compare(rotation_start, rotation_prefix.size(), rotation_prefix) != 0)
     return absl::InvalidArgumentError("Invalid stitched-output rotation field");
   const size_t value_start = rotation_start + rotation_prefix.size();
-  if (value_start >= output_generation.size() || output_generation.back() != '\n')
+  const size_t value_end = output_generation.find('\n', value_start);
+  if (value_end == std::string::npos || value_end == value_start)
     return absl::InvalidArgumentError("Invalid stitched-output rotation value");
-  const std::string value = output_generation.substr(value_start, output_generation.size() - value_start - 1);
+  const std::string value = output_generation.substr(value_start, value_end - value_start);
   std::istringstream parser(value);
   parser.imbue(std::locale::classic());
   double rotation = 0.0;
@@ -1427,7 +1801,42 @@ absl::Status validate_output_generation_hugin(
   parser >> std::ws;
   if (!parser.eof())
     return absl::InvalidArgumentError("Invalid stitched-output rotation value");
+  if (value_end + 1 < output_generation.size()) {
+    constexpr std::string_view output_size_prefix = "output-size:";
+    const size_t output_size_start = value_end + 1;
+    if (output_generation.compare(output_size_start, output_size_prefix.size(), output_size_prefix) != 0 ||
+        output_generation.back() != '\n') {
+      return absl::InvalidArgumentError("Invalid stitched-output generation trailer");
+    }
+    const std::string dimensions = output_generation.substr(
+        output_size_start + output_size_prefix.size(),
+        output_generation.size() - output_size_start - output_size_prefix.size() - 1);
+    const size_t separator = dimensions.find('x');
+    if (separator == std::string::npos || separator == 0 || separator + 1 >= dimensions.size())
+      return absl::InvalidArgumentError("Invalid stitched-output dimensions");
+    HM_RETURN_IF_ERROR(parse_exact_size_t(dimensions.substr(0, separator), "width").status());
+    HM_RETURN_IF_ERROR(parse_exact_size_t(dimensions.substr(separator + 1), "height").status());
+  }
   return absl::OkStatus();
+}
+
+absl::StatusOr<std::optional<CanvasSize>> stitched_output_size_from_generation(const std::string& output_generation) {
+  constexpr std::string_view output_size_marker = "\noutput-size:";
+  const size_t marker = output_generation.rfind(output_size_marker);
+  if (marker == std::string::npos)
+    return std::nullopt;
+  if (output_generation.empty() || output_generation.back() != '\n')
+    return absl::InvalidArgumentError("Invalid stitched-output dimensions");
+  const size_t value_start = marker + output_size_marker.size();
+  const std::string dimensions = output_generation.substr(value_start, output_generation.size() - value_start - 1);
+  const size_t separator = dimensions.find('x');
+  if (separator == std::string::npos || separator == 0 || separator + 1 >= dimensions.size())
+    return absl::InvalidArgumentError("Invalid stitched-output dimensions");
+  size_t width = 0;
+  size_t height = 0;
+  HM_ASSIGN_OR_RETURN(width, parse_exact_size_t(dimensions.substr(0, separator), "width"));
+  HM_ASSIGN_OR_RETURN(height, parse_exact_size_t(dimensions.substr(separator + 1), "height"));
+  return CanvasSize{.width = width, .height = height};
 }
 
 absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
@@ -1464,6 +1873,30 @@ absl::Status validate_stitched_output_generation(
   if (!config.ok())
     return config.status();
   return validate_stitching_generation_owner(*config, expected_invalidation_id);
+}
+
+absl::StatusOr<std::string> configured_stitched_output_generation_id(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  auto config = load_config_or_empty(root / "config.yaml");
+  if (!config.ok())
+    return config.status();
+  CanvasSize output_size;
+  if (max_output_width > 0) {
+    HM_ASSIGN_OR_RETURN(output_size, get_effective_mapping_canvas_size(root, max_output_width));
+  } else {
+    HM_ASSIGN_OR_RETURN(output_size, get_mapping_canvas_size(root));
+  }
+  return configured_output_generation(*config, *hugin_generation, output_size);
 }
 
 absl::Status visit_current_field_mask(
@@ -1550,11 +1983,20 @@ absl::StatusOr<cv::Mat> load_field_mask(
             return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
           }
         }
-        auto canvas_size = get_mapping_canvas_size(fs::path(game_dir));
-        if (canvas_size.ok() &&
-            (mask.cols != static_cast<int>(canvas_size->width) || mask.rows != static_cast<int>(canvas_size->height))) {
+        std::optional<CanvasSize> expected_canvas_size;
+        if (!expected_output_generation.empty()) {
+          HM_ASSIGN_OR_RETURN(expected_canvas_size, stitched_output_size_from_generation(expected_output_generation));
+        }
+        absl::StatusOr<CanvasSize> mapping_canvas_size = get_mapping_canvas_size(fs::path(game_dir));
+        if (!expected_canvas_size.has_value() && mapping_canvas_size.ok()) {
+          expected_canvas_size = *mapping_canvas_size;
+        }
+        if (expected_canvas_size.has_value() &&
+            (mask.cols != static_cast<int>(expected_canvas_size->width) ||
+             mask.rows != static_cast<int>(expected_canvas_size->height))) {
           std::cout << "Field mask size " << mask.cols << "x" << mask.rows << " does not match stitched canvas "
-                    << canvas_size->width << "x" << canvas_size->height << "; regenerating" << std::endl;
+                    << expected_canvas_size->width << "x" << expected_canvas_size->height << "; regenerating"
+                    << std::endl;
           return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
         }
         return absl::OkStatus();
@@ -1569,6 +2011,25 @@ bool is_field_mask_configured(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id) {
   return load_field_mask(game_dir, expected_output_generation, expected_invalidation_id).ok();
+}
+
+bool is_field_mask_configured_for_stitching_config(
+    const std::string& game_dir,
+    size_t max_output_width,
+    const std::string& expected_invalidation_id) {
+  auto output_generation = configured_stitched_output_generation_id(game_dir, max_output_width);
+  if (output_generation.ok() && is_field_mask_configured(game_dir, *output_generation, expected_invalidation_id)) {
+    return true;
+  }
+  if (max_output_width > 0) {
+    auto native_size = stitching_canvas_size(game_dir);
+    auto effective_size = stitching_canvas_size(game_dir, max_output_width);
+    if (!native_size.ok() || !effective_size.ok() || native_size->width != effective_size->width ||
+        native_size->height != effective_size->height) {
+      return false;
+    }
+  }
+  return is_field_mask_configured(game_dir, {}, expected_invalidation_id);
 }
 
 absl::Status save_rink_profile_locked(
@@ -1961,9 +2422,24 @@ absl::Status configure_stitching(
     surface::Surface left_surface,
     surface::Surface right_surface,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
+  return configure_stitching(
+      game_dir,
+      std::vector<StitchingCalibrationFramePair>{{left_surface, right_surface}},
+      expected_invalidation_id,
+      is_cancelled,
+      max_output_width);
+}
+
+absl::Status configure_stitching(
+    const std::string& game_dir,
+    const std::vector<StitchingCalibrationFramePair>& frame_pairs,
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled,
+    size_t max_output_width) {
   HM_RETURN_IF_ERROR(
-      create_control_points(game_dir, left_surface, right_surface, expected_invalidation_id, is_cancelled));
+      create_control_points(game_dir, frame_pairs, expected_invalidation_id, is_cancelled, max_output_width));
   return absl::OkStatus();
 }
 

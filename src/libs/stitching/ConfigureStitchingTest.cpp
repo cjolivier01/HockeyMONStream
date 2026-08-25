@@ -3,6 +3,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <tiffio.h>
 #include <yaml-cpp/yaml.h>
 
@@ -69,6 +70,102 @@ bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, f
   return true;
 }
 
+bool write_remap_tiff(const fs::path& path, uint32_t width, uint32_t height) {
+  TIFF* tif = TIFFOpen(path.c_str(), "w");
+  if (!tif) {
+    std::cerr << "Failed to open TIFF " << path << " for writing" << std::endl;
+    return false;
+  }
+
+  TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tif, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 16);
+  TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
+  TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, height);
+
+  std::vector<uint16_t> row(width, 0);
+  for (uint32_t y = 0; y < height; ++y) {
+    if (TIFFWriteScanline(tif, row.data(), y, 0) < 0) {
+      std::cerr << "Failed to write TIFF scanline " << y << " in " << path << std::endl;
+      TIFFClose(tif);
+      return false;
+    }
+  }
+
+  TIFFClose(tif);
+  return true;
+}
+
+bool write_mapping_tiff_without_position(const fs::path& path, uint32_t width, uint32_t height) {
+  TIFF* tif = TIFFOpen(path.c_str(), "w");
+  if (!tif) {
+    std::cerr << "Failed to open TIFF " << path << " for writing" << std::endl;
+    return false;
+  }
+
+  TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tif, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 8);
+  TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, height);
+  TIFFSetField(tif, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tif, TIFFTAG_YRESOLUTION, 1.0f);
+
+  std::vector<uint8_t> row(width, 0);
+  for (uint32_t y = 0; y < height; ++y) {
+    if (TIFFWriteScanline(tif, row.data(), y, 0) < 0) {
+      std::cerr << "Failed to write TIFF scanline " << y << " in " << path << std::endl;
+      TIFFClose(tif);
+      return false;
+    }
+  }
+
+  TIFFClose(tif);
+  return true;
+}
+
+uint32_t png_crc32(const unsigned char* data, size_t size) {
+  uint32_t crc = 0xffffffffU;
+  for (size_t index = 0; index < size; ++index) {
+    crc ^= data[index];
+    for (int bit = 0; bit < 8; ++bit)
+      crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+  }
+  return crc ^ 0xffffffffU;
+}
+
+void append_big_endian_u32(std::vector<unsigned char>* output, uint32_t value) {
+  output->push_back(static_cast<unsigned char>(value >> 24));
+  output->push_back(static_cast<unsigned char>(value >> 16));
+  output->push_back(static_cast<unsigned char>(value >> 8));
+  output->push_back(static_cast<unsigned char>(value));
+}
+
+bool add_png_pixel_offset(const fs::path& path, int32_t x, int32_t y) {
+  std::ifstream input(path, std::ios::binary);
+  std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  if (png.size() < 33 || std::string(png.begin() + 12, png.begin() + 16) != "IHDR")
+    return false;
+  std::vector<unsigned char> chunk;
+  append_big_endian_u32(&chunk, 9);
+  chunk.insert(chunk.end(), {'o', 'F', 'F', 's'});
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(x));
+  append_big_endian_u32(&chunk, static_cast<uint32_t>(y));
+  chunk.push_back(0);
+  append_big_endian_u32(&chunk, png_crc32(chunk.data() + 4, 13));
+  png.insert(png.begin() + 33, chunk.begin(), chunk.end());
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return output.good();
+}
+
 void set_write_time(const fs::path& path, int seconds_after_base) {
   const auto base = fs::file_time_type::clock::now() - std::chrono::seconds(60);
   fs::last_write_time(path, base + std::chrono::seconds(seconds_after_base));
@@ -87,11 +184,14 @@ bool write_valid_stitching_artifacts(const fs::path& dir) {
     return false;
   }
 
-  for (const char* filename :
-       {"mapping_0000_x.tif", "mapping_0000_y.tif", "mapping_0001_x.tif", "mapping_0001_y.tif"}) {
-    if (!write_text_file(dir / filename, "placeholder")) {
-      return false;
-    }
+  if (!write_remap_tiff(dir / "mapping_0000_x.tif", 64, 32) || !write_remap_tiff(dir / "mapping_0000_y.tif", 64, 32) ||
+      !write_remap_tiff(dir / "mapping_0001_x.tif", 64, 32) || !write_remap_tiff(dir / "mapping_0001_y.tif", 64, 32)) {
+    return false;
+  }
+  cv::Mat seam(32, 160, CV_8U, cv::Scalar(0));
+  seam.colRange(80, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
   }
 
   set_write_time(dir / "left.png", 0);
@@ -429,7 +529,7 @@ bool expect_cropped_enblend_seam_is_normalized(const fs::path& tmpdir) {
   }
   cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
   seam.colRange(45, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
     return false;
   }
 
@@ -440,6 +540,227 @@ bool expect_cropped_enblend_seam_is_normalized(const fs::path& tmpdir) {
   cv::copyMakeBorder(seam, expected, 0, 2, 0, 6, cv::BORDER_REPLICATE);
   if (!status.ok() || preserved.size() != cv::Size(96, 32) || cv::norm(preserved, expected, cv::NORM_INF) != 0) {
     std::cerr << "cropped enblend seam within the mapping canvas must be normalized: " << status << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_origin_zero_cropped_enblend_seam_is_scaled_for_cap(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "origin_zero_cropped_enblend_seam_cap";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+  cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
+  seam.colRange(45, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
+  }
+
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/48);
+  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  cv::Mat scaled;
+  cv::resize(seam, scaled, cv::Size(45, 15), 0.0, 0.0, cv::INTER_NEAREST);
+  cv::Mat expected;
+  cv::copyMakeBorder(scaled, expected, 0, 1, 0, 3, cv::BORDER_REPLICATE);
+  if (!status.ok() || preserved.size() != cv::Size(48, 16) || cv::norm(preserved, expected, cv::NORM_INF) != 0) {
+    std::cerr << "origin-zero cropped enblend seam must be scaled and padded for capped stitching: " << status
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "effective_size_offset_seam_cap";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 40, 16, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 40, 16, 40.0f, 0.0f)) {
+    return false;
+  }
+  if (!write_remap_tiff(dir / "mapping_0000_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0000_y.tif", 40, 16) ||
+      !write_remap_tiff(dir / "mapping_0001_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0001_y.tif", 40, 16)) {
+    return false;
+  }
+  cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
+  seam.colRange(40, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/80);
+  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!configured.ok() || !*configured || !status.ok() || preserved.size() != seam.size() ||
+      cv::norm(preserved, seam, cv::NORM_INF) != 0) {
+    std::cerr << "effective-size capped seam with oFFs origin must not be scaled a second time: configured="
+              << configured.status() << " status=" << status << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_native_over_cap_mappings_are_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "native_over_cap_mappings";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
+  seam.colRange(40, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
+  if (!configured.ok() || *configured) {
+    std::cerr << "native over-cap mapping artifacts must be regenerated for capped stitching: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_mismatched_capped_seam_is_rejected(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "mismatched_capped_seam";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+  cv::Mat seam(20, 60, CV_8U, cv::Scalar(0));
+  seam.colRange(30, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/48);
+  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!absl::IsFailedPrecondition(status) || preserved.size() != seam.size() ||
+      cv::norm(preserved, seam, cv::NORM_INF) != 0) {
+    std::cerr << "mismatched capped seam must be rejected without being scaled again: " << status << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_mismatched_capped_seam_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "mismatched_capped_seam_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(20, 60, CV_8U, cv::Scalar(0));
+  seam.colRange(30, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
+  if (!configured.ok() || *configured) {
+    std::cerr << "mismatched capped seam must make capped stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_stale_capped_seam_is_not_configured_when_uncapped(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "stale_capped_seam_uncapped";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(20, 80, CV_8U, cv::Scalar(0));
+  seam.colRange(40, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+  if (!configured.ok() || *configured) {
+    std::cerr << "stale capped seam must make uncapped stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "uniform_seam_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(32, 160, CV_8U, cv::Scalar(255));
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+  if (!configured.ok() || *configured) {
+    std::cerr << "uniform same-size seam must make stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_missing_placement_tiff_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "missing_placement_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff_without_position(dir / "mapping_0001.tif", 64, 32)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+  if (!configured.ok() || *configured) {
+    std::cerr << "missing TIFF placement tags must make stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_mismatched_remap_headers_are_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "mismatched_remap_headers_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  if (!write_mapping_tiff(dir / "mapping_0001_y.tif", 640, 320, 0.0f, 0.0f)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/160);
+  if (!configured.ok() || *configured) {
+    std::cerr << "mismatched remap X/Y headers must make stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_placement_remap_size_mismatch_is_not_configured(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "placement_remap_size_mismatch_configured";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff(dir / "mapping_0001.tif", 32, 16, 96.0f, 0.0f)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/160);
+  if (!configured.ok() || *configured) {
+    std::cerr << "placement/remap size mismatch must make stitching artifacts unconfigured: " << configured.status()
+              << std::endl;
     return false;
   }
   return true;
@@ -503,6 +824,46 @@ int main() {
 
   if (!expect_cropped_enblend_seam_is_normalized(tmpdir)) {
     finish(tmpdir, 13);
+  }
+
+  if (!expect_origin_zero_cropped_enblend_seam_is_scaled_for_cap(tmpdir)) {
+    finish(tmpdir, 18);
+  }
+
+  if (!expect_effective_size_offset_seam_is_not_scaled_again(tmpdir)) {
+    finish(tmpdir, 19);
+  }
+
+  if (!expect_native_over_cap_mappings_are_not_configured(tmpdir)) {
+    finish(tmpdir, 20);
+  }
+
+  if (!expect_mismatched_capped_seam_is_rejected(tmpdir)) {
+    finish(tmpdir, 14);
+  }
+
+  if (!expect_mismatched_capped_seam_is_not_configured(tmpdir)) {
+    finish(tmpdir, 15);
+  }
+
+  if (!expect_stale_capped_seam_is_not_configured_when_uncapped(tmpdir)) {
+    finish(tmpdir, 16);
+  }
+
+  if (!expect_uniform_seam_is_not_configured(tmpdir)) {
+    finish(tmpdir, 17);
+  }
+
+  if (!expect_missing_placement_tiff_is_not_configured(tmpdir)) {
+    finish(tmpdir, 21);
+  }
+
+  if (!expect_mismatched_remap_headers_are_not_configured(tmpdir)) {
+    finish(tmpdir, 22);
+  }
+
+  if (!expect_placement_remap_size_mismatch_is_not_configured(tmpdir)) {
+    finish(tmpdir, 23);
   }
 
   finish(tmpdir, 0);

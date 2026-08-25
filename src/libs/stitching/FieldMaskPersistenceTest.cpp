@@ -15,6 +15,7 @@
 
 #include <opencv2/imgcodecs.hpp>
 #include <sys/stat.h>
+#include <tiffio.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
@@ -23,6 +24,34 @@ bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
   return condition;
+}
+
+bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint32_t height) {
+  TIFF* tif = TIFFOpen(path.c_str(), "w");
+  if (!tif)
+    return false;
+  TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tif, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 32);
+  TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_IEEEFP);
+  TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+  TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tif, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tif, TIFFTAG_YRESOLUTION, 1.0f);
+  TIFFSetField(tif, TIFFTAG_XPOSITION, 0.0f);
+  TIFFSetField(tif, TIFFTAG_YPOSITION, 0.0f);
+  std::vector<float> row(width, 0.0f);
+  bool ok = true;
+  for (uint32_t y = 0; y < height; ++y) {
+    if (TIFFWriteScanline(tif, row.data(), y, 0) < 0) {
+      ok = false;
+      break;
+    }
+  }
+  TIFFClose(tif);
+  return ok;
 }
 } // namespace
 
@@ -37,11 +66,12 @@ int main() {
   }
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
     std::ofstream(root / name) << "p f2 w32 h24\n";
+  ok &= expect(
+      write_mapping_tiff(root / "mapping_0000.tif", 32, 24) && write_mapping_tiff(root / "mapping_0001.tif", 32, 24),
+      "mapping placement TIFFs must be written with spatial metadata");
   for (const char* name : {
-           "mapping_0000.tif",
            "mapping_0000_x.tif",
            "mapping_0000_y.tif",
-           "mapping_0001.tif",
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
        }) {
@@ -52,11 +82,13 @@ int main() {
   cv::imwrite((root / "seam_file.png").string(), initial_seam);
   auto initial_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
   ok &= expect(initial_hugin_lock.ok(), "generation test must lock initial Hugin artifacts");
+  std::string initial_hugin_generation_id;
   std::string initial_output_generation;
   if (initial_hugin_lock.ok()) {
     auto initial_hugin_generation = hm::stitching::HuginProject::GenerationId(root, **initial_hugin_lock);
     ok &= expect(initial_hugin_generation.ok(), "generation test must identify initial Hugin artifacts");
     if (initial_hugin_generation.ok()) {
+      initial_hugin_generation_id = *initial_hugin_generation;
       auto generation = hm::stitching::stitched_output_generation_id(*initial_hugin_generation, 0.0);
       ok &= expect(generation.ok(), "generation test must identify initial stitched output");
       if (generation.ok())
@@ -141,6 +173,41 @@ int main() {
         "rink profile must persist the exact stitched-output generation");
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
+
+    auto scaled_canvas = hm::stitching::stitching_canvas_size(root.string(), /*max_output_width=*/16);
+    ok &= expect(scaled_canvas.ok(), "scaled field-mask test must identify output dimensions");
+    auto scaled_generation = scaled_canvas.ok()
+        ? hm::stitching::stitched_output_generation_id(
+              initial_hugin_generation_id, 0.0, scaled_canvas->width, scaled_canvas->height)
+        : absl::InvalidArgumentError("scaled canvas unavailable");
+    ok &= expect(scaled_generation.ok(), "scaled field-mask test must identify output dimensions");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/16),
+        "capped field-mask preflight must not accept legacy native-sized masks");
+    if (scaled_generation.ok()) {
+      YAML::Node scaled_config = YAML::LoadFile((root / "config.yaml").string());
+      scaled_config["rink"]["stitched_output_generation"] = *scaled_generation;
+      {
+        std::ofstream output(root / "config.yaml");
+        output << scaled_config << '\n';
+      }
+      cv::imwrite(
+          (root / "rink_mask_0.png").string(),
+          cv::Mat(
+              static_cast<int>(scaled_canvas->height), static_cast<int>(scaled_canvas->width), CV_8U, cv::Scalar(255)));
+      ok &= expect(
+          hm::stitching::is_field_mask_configured(root.string(), *scaled_generation) &&
+              hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/16) &&
+              !hm::stitching::is_field_mask_configured(root.string(), initial_output_generation),
+          "dimensioned runtime generation must validate field masks against the scaled live canvas");
+      cv::imwrite((root / "rink_mask_0.png").string(), first);
+      YAML::Node restored_config = YAML::LoadFile((root / "config.yaml").string());
+      restored_config["rink"]["stitched_output_generation"] = initial_output_generation;
+      {
+        std::ofstream output(root / "config.yaml");
+        output << restored_config << '\n';
+      }
+    }
 
     YAML::Node guarded_config = YAML::LoadFile((root / "config.yaml").string());
     YAML::Node guarded_calibration = guarded_config["hstream_ui"]["stitching_calibration"];

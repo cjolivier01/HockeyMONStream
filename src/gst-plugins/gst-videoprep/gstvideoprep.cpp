@@ -10,6 +10,7 @@
 #include <gstreamer-1.0/gst/gstpad.h>
 #include <npp.h>
 #include <cmath>
+#include <initializer_list>
 #include <iostream>
 #include <mutex>
 #include <string_view>
@@ -145,6 +146,7 @@ enum {
   PROP_INTERPOLATION_METHOD,
   PROP_PLUGIN_PRIVATE_CONFIG,
   PROP_POST_STITCH_ROTATE_DEGREES,
+  PROP_MAX_OUTPUT_WIDTH,
   PROP_FIXED_EDGE_ROTATION_ANGLE,
   PROP_FIXED_EDGE_ROTATION_ANGLE_LEFT,
   PROP_FIXED_EDGE_ROTATION_ANGLE_RIGHT,
@@ -1150,6 +1152,18 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_MAX_OUTPUT_WIDTH,
+      g_param_spec_uint(
+          "max-output-width",
+          "Maximum stitched output width",
+          "Scale stitch mapping masks before warped canvas allocation so stitched output does not exceed this width",
+          0,
+          INT_MAX,
+          0,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_FIXED_EDGE_ROTATION_ANGLE,
       g_param_spec_double(
           "fixed-edge-rotation-angle",
@@ -1322,6 +1336,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   assert(!videoprep->plugin_type);
   videoprep->plugin_type = NULL; // strdup("videoprep");
   videoprep->post_stitch_rotate_degrees = 0.0;
+  videoprep->max_output_width = 0;
   videoprep->fixed_edge_rotation_angle = 10.0;
   videoprep->fixed_edge_rotation_angle_left = 10.0;
   videoprep->fixed_edge_rotation_angle_right = 10.0;
@@ -1333,6 +1348,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->exposure = 0.0;
   videoprep->last_property_set_ok = TRUE;
   videoprep->post_stitch_rotate_degrees_set = FALSE;
+  videoprep->max_output_width_set = FALSE;
   videoprep->fixed_edge_rotation_angle_set = FALSE;
   videoprep->fixed_edge_rotation_angle_left_set = FALSE;
   videoprep->fixed_edge_rotation_angle_right_set = FALSE;
@@ -1344,6 +1360,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->property_set_sequence = 0;
   videoprep->plugin_private_config_sequence = 0;
   videoprep->post_stitch_rotate_degrees_sequence = 0;
+  videoprep->max_output_width_sequence = 0;
   videoprep->fixed_edge_rotation_angle_sequence = 0;
   videoprep->fixed_edge_rotation_angle_left_sequence = 0;
   videoprep->fixed_edge_rotation_angle_right_sequence = 0;
@@ -1479,6 +1496,20 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
         videoprep->post_stitch_rotate_degrees = previous;
         videoprep->post_stitch_rotate_degrees_set = previous_set;
         videoprep->post_stitch_rotate_degrees_sequence = previous_sequence;
+      }
+      break;
+    }
+    case PROP_MAX_OUTPUT_WIDTH: {
+      const guint previous = videoprep->max_output_width;
+      const gboolean previous_set = videoprep->max_output_width_set;
+      const guint previous_sequence = videoprep->max_output_width_sequence;
+      videoprep->max_output_width = g_value_get_uint(value);
+      videoprep->max_output_width_set = TRUE;
+      videoprep->max_output_width_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("max-output-width", std::to_string(videoprep->max_output_width))) {
+        videoprep->max_output_width = previous;
+        videoprep->max_output_width_set = previous_set;
+        videoprep->max_output_width_sequence = previous_sequence;
       }
       break;
     }
@@ -1646,6 +1677,21 @@ static bool typed_property_wins_over_private_config(GstVideoPrep* videoprep, gui
       !plugin_private_config_has_key(videoprep->plugin_private_config, key);
 }
 
+static bool typed_property_wins_over_private_config_aliases(
+    GstVideoPrep* videoprep,
+    guint typed_sequence,
+    std::initializer_list<const char*> keys) {
+  if (typed_sequence > videoprep->plugin_private_config_sequence) {
+    return true;
+  }
+  for (const char* key : keys) {
+    if (plugin_private_config_has_key(videoprep->plugin_private_config, key)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
   if (!videoprep || !videoprep->priv) {
     return true;
@@ -1657,6 +1703,13 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
     ok = videoprep->priv->SetProperty(
              Property("post-stitch-rotate-degrees", std::to_string(videoprep->post_stitch_rotate_degrees))) &&
         ok;
+  }
+  if (videoprep->max_output_width_set &&
+      typed_property_wins_over_private_config_aliases(
+          videoprep,
+          videoprep->max_output_width_sequence,
+          {"max-output-width", "max_output_width", "stitch-max-output-width", "stitch_max_output_width"})) {
+    ok = videoprep->priv->SetProperty(Property("max-output-width", std::to_string(videoprep->max_output_width))) && ok;
   }
   if (videoprep->fixed_edge_rotation_angle_set &&
       typed_property_wins_over_private_config(
@@ -1733,6 +1786,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       PROPERTY_GET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
     case PROP_POST_STITCH_ROTATE_DEGREES:
       g_value_set_double(value, videoprep->post_stitch_rotate_degrees);
+      break;
+    case PROP_MAX_OUTPUT_WIDTH:
+      g_value_set_uint(value, videoprep->max_output_width);
       break;
     case PROP_FIXED_EDGE_ROTATION_ANGLE:
       g_value_set_double(value, videoprep->fixed_edge_rotation_angle);

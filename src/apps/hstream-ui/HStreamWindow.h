@@ -275,6 +275,8 @@ class HStreamWindow : public QMainWindow {
   bool setupPretrainedAssets(const QStringList& pipeline_args);
   void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
   int stitchingCalibrationControlPoints() const;
+  int stitchingCalibrationFrameCount() const;
+  int stitchingMaxOutputWidth() const;
   QString stitchFrameTime() const;
   QString controlPointMatcher() const;
   QString mappingBackend() const;
@@ -341,6 +343,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* game_selector_{nullptr};
   QComboBox* run_mode_selector_{nullptr};
   QSpinBox* control_points_spin_{nullptr};
+  QSpinBox* calibration_frame_count_spin_{nullptr};
+  QSpinBox* stitch_max_output_width_spin_{nullptr};
   QComboBox* control_point_matcher_combo_{nullptr};
   QComboBox* mapping_backend_combo_{nullptr};
   QTimeEdit* stitch_frame_time_edit_{nullptr};
@@ -475,6 +479,8 @@ class HStreamWindow : public QMainWindow {
   bool active_run_is_calibration_{false};
   bool active_run_high_bit_depth_{false};
   int active_calibration_control_points_{0};
+  int active_calibration_frame_count_{0};
+  int active_stitch_max_output_width_{0};
   QString active_stitch_frame_time_;
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
@@ -508,10 +514,13 @@ class HStreamWindow : public QMainWindow {
   YAML::Node baseline_config_;
   QString baseline_config_root_;
   QString default_stitch_frame_time_{"00:00:00"};
+  int default_stitch_max_output_width_{0};
   QString default_control_point_matcher_{"superpoint-lightglue"};
   QString default_mapping_backend_{"nona"};
   std::map<QString, int> saved_camera_controls_;
   int saved_stitching_control_points_{0};
+  int saved_stitching_calibration_frame_count_{0};
+  int saved_stitch_max_output_width_{0};
   QString development_runtime_root_;
   QString development_pipeline_runner_;
   QString development_bazel_bin_;

@@ -30,12 +30,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include "nvdsmeta.h"
 
 #include <assert.h>
 #include <cuda.h>
 #include <unistd.h>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -54,6 +56,7 @@ namespace stitcher {
 namespace {
 
 OnePassCalibrationCompletionLatch process_calibration_completion_latch;
+std::mutex process_calibration_artifact_mu;
 
 std::string calibration_message(std::string message) {
   std::replace(message.begin(), message.end(), '\n', ' ');
@@ -406,7 +409,8 @@ absl::Status frame_sequence_mismatch_status(
 absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
     const std::vector<RuntimeFrameKey>& frames,
     const std::set<guint>& eos_source_ids,
-    bool pipeline_eos_seen) {
+    bool pipeline_eos_seen,
+    bool require_initial_continuity) {
   if (frames.empty()) {
     return absl::FailedPreconditionError("Runtime stitching requires at least one input frame");
   }
@@ -438,15 +442,17 @@ absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
       every_frame_has_both_sources = every_frame_has_both_sources && source_ids == expected_source_ids;
     }
     if (every_frame_has_both_sources) {
-      std::vector<gint> complete_frame_numbers;
-      complete_frame_numbers.reserve(frame_indices.size());
-      for (const auto& [frame_num, by_source] : frame_indices) {
-        (void)by_source;
-        complete_frame_numbers.push_back(frame_num);
-      }
-      const auto continuity = validate_stitch_frame_continuity(complete_frame_numbers);
-      if (!continuity.ok()) {
-        return continuity.status();
+      if (require_initial_continuity) {
+        std::vector<gint> complete_frame_numbers;
+        complete_frame_numbers.reserve(frame_indices.size());
+        for (const auto& [frame_num, by_source] : frame_indices) {
+          (void)by_source;
+          complete_frame_numbers.push_back(frame_num);
+        }
+        const auto continuity = validate_stitch_frame_continuity(complete_frame_numbers);
+        if (!continuity.ok()) {
+          return continuity.status();
+        }
       }
       const auto& first_pair = frame_indices.begin()->second;
       return std::make_pair(first_pair.begin()->second, first_pair.rbegin()->second);
@@ -555,24 +561,47 @@ absl::Status StitcherPriv::ensure_stitcher() {
     return absl::NotFoundError("No control masks to load");
   }
 
-  // In one-pass mode, defer loading until configuration has produced the mapping artifacts. Once mappings exist, every
-  // mode validates the seam before hm-cupano loads it: enblend may save a cropped PNG with an oFFs origin that
-  // hm-cupano does not interpret itself.
-  if (one_pass_mode_) {
-    auto is_configured = hm::stitching::is_stitching_configured(config_file_);
-    if (!is_configured.ok()) {
-      return is_configured.status();
+  // Validate artifacts before seam normalization or hm-cupano loading so stale
+  // native-over-cap maps are regenerated instead of decoded and resized here.
+  auto is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
+  if (!is_configured.ok()) {
+    return is_configured.status();
+  }
+  if (!is_configured.value()) {
+    bool try_seam_repair = true;
+    if (max_output_width_ > 0) {
+      const auto native_canvas = hm::stitching::stitching_canvas_size(config_file_);
+      try_seam_repair = native_canvas.ok() && native_canvas->width <= static_cast<size_t>(max_output_width_);
+    }
+    if (try_seam_repair) {
+      const auto exceeds_live_limit =
+          hm::stitching::stitching_artifacts_exceed_live_canvas_limit(config_file_, max_output_width_);
+      try_seam_repair = exceeds_live_limit.ok() && !exceeds_live_limit.value();
+    }
+    if (try_seam_repair) {
+      const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
+      if (seam_status.ok()) {
+        is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
+        if (!is_configured.ok()) {
+          return is_configured.status();
+        }
+      }
     }
     if (!is_configured.value()) {
       if (!logged_missing_masks_) {
         g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
         logged_missing_masks_ = true;
       }
-      return absl::OkStatus();
+      if (one_pass_mode_) {
+        return absl::OkStatus();
+      } else {
+        config_file_.clear();
+        return absl::NotFoundError("Stitching control masks are missing or need regeneration");
+      }
     }
   }
 
-  const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_);
+  const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
   if (!seam_status.ok())
     return seam_status;
 
@@ -583,7 +612,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
   absl::MutexLock lk(&stitcher_mu_);
   if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
-    if (!control_masks.load(config_file_)) {
+    if (!control_masks.load(config_file_, max_output_width_)) {
       std::string config_file_dir = config_file_;
       if (one_pass_mode_) {
         // In one-pass mode, allow the pipeline to bootstrap without masks.
@@ -611,7 +640,8 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
           /*quiet=*/false,
-          /*minimize_blend=*/minimize_blend_);
+          /*minimize_blend=*/minimize_blend_,
+          /*max_output_width=*/max_output_width_);
     } else if (stitch_compute_precision_ == StitchComputePrecision::kFp16) {
       g_print("hmstitcher: using fp16 stitch compute\n");
       stitcher_fp16_ = std::make_unique<STITCHER_FP16>(
@@ -619,7 +649,8 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
           /*quiet=*/false,
-          /*minimize_blend=*/minimize_blend_);
+          /*minimize_blend=*/minimize_blend_,
+          /*max_output_width=*/max_output_width_);
     } else {
       g_print("hmstitcher: using fp32 stitch compute\n");
       stitcher_fp32_ = std::make_unique<STITCHER_FP32>(
@@ -627,7 +658,8 @@ absl::Status StitcherPriv::ensure_stitcher() {
           /*num_levels=*/kNumStitcherLaplacianLevels,
           control_masks,
           /*quiet=*/false,
-          /*minimize_blend=*/minimize_blend_);
+          /*minimize_blend=*/minimize_blend_,
+          /*max_output_width=*/max_output_width_);
     }
   }
   if (stitcher_fp16_ && !stitcher_fp16_->status().ok()) {
@@ -825,6 +857,100 @@ void StitcherPriv::release_high_bit_calibration_surfaces() {
   std::memset(&high_bit_calibration_right_params_, 0, sizeof(high_bit_calibration_right_params_));
 }
 
+absl::StatusOr<StitcherPriv::CalibrationSurfaceSnapshot> StitcherPriv::capture_calibration_surface(
+    hm::surface::Surface surface) {
+  if (surface.width() == 0 || surface.height() == 0 || surface.pitch() == 0 || !surface.dataptr()) {
+    return absl::FailedPreconditionError("Cannot capture an empty stitching calibration surface");
+  }
+  auto storage = std::make_unique<hm::CudaMat<uchar4>>(
+      /*batch_size=*/1,
+      static_cast<int>(surface.width()),
+      static_cast<int>(surface.height()),
+      /*pixel_channels=*/1);
+  if (!storage || !storage->is_valid()) {
+    return absl::ResourceExhaustedError("Could not allocate stitching calibration frame snapshot");
+  }
+  HM_RETURN_IF_ERROR(to_status(cudaMemcpy2DAsync(
+      storage->data_raw(),
+      storage->pitch(),
+      surface.dataptr(),
+      surface.pitch(),
+      static_cast<size_t>(surface.width()) * surface.bytes_per_pixel(),
+      surface.height(),
+      cudaMemcpyDeviceToDevice,
+      cuda_stream_)));
+
+  CalibrationSurfaceSnapshot snapshot;
+  snapshot.storage = std::move(storage);
+  snapshot.params = cuda_mat_surface_params(*snapshot.storage, surface->colorFormat);
+  HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
+  return snapshot;
+}
+
+absl::Status StitcherPriv::capture_calibration_pair(hm::surface::Surface left, hm::surface::Surface right) {
+  const size_t required_frame_count = calibration_frame_count_;
+  if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
+    return absl::OkStatus();
+  }
+  CalibrationFramePairSnapshot snapshot;
+  HM_ASSIGN_OR_RETURN(snapshot.left, capture_calibration_surface(left));
+  HM_ASSIGN_OR_RETURN(snapshot.right, capture_calibration_surface(right));
+  captured_calibration_frame_pairs_.push_back(std::move(snapshot));
+  g_print(
+      "hmstitcher: captured stitching calibration frame pair %zu/%zu\n",
+      captured_calibration_frame_pairs_.size(),
+      required_frame_count);
+  return absl::OkStatus();
+}
+
+std::vector<hm::stitching::StitchingCalibrationFramePair> StitcherPriv::captured_calibration_frame_pairs() {
+  std::vector<hm::stitching::StitchingCalibrationFramePair> frame_pairs;
+  frame_pairs.reserve(captured_calibration_frame_pairs_.size());
+  for (CalibrationFramePairSnapshot& snapshot : captured_calibration_frame_pairs_) {
+    frame_pairs.push_back({hm::surface::Surface(&snapshot.left.params), hm::surface::Surface(&snapshot.right.params)});
+  }
+  return frame_pairs;
+}
+
+bool StitcherPriv::should_capture_calibration_pair(uint64_t pair_pts_ns) const {
+  const size_t required_frame_count = calibration_frame_count_;
+  if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
+    return false;
+  }
+  if (calibration_sample_span_ns_ == 0 || pair_pts_ns == GST_CLOCK_TIME_NONE || required_frame_count <= 1) {
+    return true;
+  }
+  constexpr long double kUsableStartFraction = 0.05L;
+  constexpr long double kUsableEndFraction = 0.95L;
+  const long double usable_start = static_cast<long double>(calibration_sample_span_ns_) * kUsableStartFraction;
+  const long double usable_end = static_cast<long double>(calibration_sample_span_ns_) * kUsableEndFraction;
+  const long double segment_width = (usable_end - usable_start) / static_cast<long double>(required_frame_count);
+  const long double target =
+      usable_start + segment_width * (static_cast<long double>(captured_calibration_frame_pairs_.size()) + 0.5L);
+  return static_cast<long double>(pair_pts_ns) >= target;
+}
+
+bool StitcherPriv::calibration_input_exhausted(const EosSnapshot& eos_snapshot) {
+  if (eos_snapshot.pipeline_eos_seen || !eos_snapshot.source_ids.empty()) {
+    return true;
+  }
+  std::lock_guard<std::mutex> lock(eos_mu_);
+  return pipeline_eos_seen_ || !eos_source_ids_.empty();
+}
+
+absl::Status StitcherPriv::report_fatal_calibration_failure(const absl::Status& status) {
+  (void)report_calibration_failure(status);
+  if (owner_element_) {
+    GError* error = g_error_new_literal(GST_CORE_ERROR, GST_CORE_ERROR_FAILED, status.ToString().c_str());
+    gst_element_post_message(owner_element_, gst_message_new_error(GST_OBJECT(owner_element_), error, nullptr));
+  }
+  return status;
+}
+
+void StitcherPriv::release_captured_calibration_surfaces() {
+  captured_calibration_frame_pairs_.clear();
+}
+
 void StitcherPriv::release_high_bit_field_mask_canvas() {
   high_bit_field_mask_canvas_.reset();
   std::memset(&high_bit_field_mask_canvas_params_, 0, sizeof(high_bit_field_mask_canvas_params_));
@@ -833,53 +959,62 @@ void StitcherPriv::release_high_bit_field_mask_canvas() {
 absl::Status StitcherPriv::configure_one_pass_from_surfaces(
     hm::surface::Surface incoming_surface_left,
     hm::surface::Surface incoming_surface_right) {
-  bool is_configured;
-  HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_));
-  if (!is_configured) {
-    if (!one_pass_mode_) {
-      return absl::FailedPreconditionError("Stitching is not configured");
-    }
-    g_print("hmstitcher: configuring stitching in one-pass mode\n");
-    if (!calibration_starts_from_control_points()) {
-      report_calibration_progress("input", "started", "Waiting for synchronized frames from both cameras");
-      report_calibration_progress("input", "complete", "Captured synchronized frames from both cameras");
-    }
-    if (!orientation_ran_) {
-      // Configurator resolves auto camera orientation and synchronization before
-      // constructing this pipeline. Explicit UI Left/Right roles are authoritative
-      // inputs, so rerunning discovery here could overwrite them after the source
-      // pads have already been assigned.
-      if (!calibration_starts_from_control_points()) {
-        report_calibration_progress("orientation", "started", "Loading the configured camera orientation");
-        report_calibration_progress("orientation", "complete", "Camera orientation is configured");
-      }
-      orientation_ran_ = true;
-    }
-    if (high_bit_depth_) {
-      HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
-      std::pair<hm::surface::Surface, hm::surface::Surface> calibration_surfaces =
-          std::make_pair(incoming_surface_left, incoming_surface_right);
-      HM_ASSIGN_OR_RETURN(calibration_surfaces, high_bit_calibration_surfaces());
-      incoming_surface_left = calibration_surfaces.first;
-      incoming_surface_right = calibration_surfaces.second;
-    }
-    absl::Status configure_status = stitching::configure_stitching(
-        config_file_, incoming_surface_left, incoming_surface_right, calibration_invalidation_id_, [this] {
-          return calibration_cancelled_.load(std::memory_order_acquire);
-        });
-    release_high_bit_calibration_surfaces();
-    if (!configure_status.ok()) {
-      std::cerr << configure_status << "\n" << std::flush;
-      if (absl::IsCancelled(configure_status)) {
-        // cancel-pending-work also requests base-class shutdown, so Cancelled
-        // terminates the worker without pushing a second EOS or posting an
-        // error on the pipeline bus.
-        return configure_status;
-      }
-      return report_calibration_failure(configure_status);
-    }
-    configured_during_run_ = true;
+  return configure_one_pass_from_frame_pairs({hm::stitching::StitchingCalibrationFramePair{
+      .left = incoming_surface_left,
+      .right = incoming_surface_right,
+  }});
+}
+
+absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
+    const std::vector<hm::stitching::StitchingCalibrationFramePair>& frame_pairs) {
+  if (frame_pairs.empty()) {
+    return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
+  {
+    std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
+    bool is_configured;
+    HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+    if (!is_configured) {
+      if (!one_pass_mode_) {
+        return absl::FailedPreconditionError("Stitching is not configured");
+      }
+      g_print("hmstitcher: configuring stitching in one-pass mode\n");
+      if (!calibration_starts_from_control_points()) {
+        report_calibration_progress("input", "started", "Waiting for synchronized frames from both cameras");
+        report_calibration_progress("input", "complete", "Captured synchronized frames from both cameras");
+      }
+      if (!orientation_ran_) {
+        // Configurator resolves auto camera orientation and synchronization before
+        // constructing this pipeline. Explicit UI Left/Right roles are authoritative
+        // inputs, so rerunning discovery here could overwrite them after the source
+        // pads have already been assigned.
+        if (!calibration_starts_from_control_points()) {
+          report_calibration_progress("orientation", "started", "Loading the configured camera orientation");
+          report_calibration_progress("orientation", "complete", "Camera orientation is configured");
+        }
+        orientation_ran_ = true;
+      }
+      absl::Status configure_status = stitching::configure_stitching(
+          config_file_,
+          frame_pairs,
+          calibration_invalidation_id_,
+          [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+          max_output_width_);
+      release_high_bit_calibration_surfaces();
+      if (!configure_status.ok()) {
+        std::cerr << configure_status << "\n" << std::flush;
+        if (absl::IsCancelled(configure_status)) {
+          // cancel-pending-work also requests base-class shutdown, so Cancelled
+          // terminates the worker without pushing a second EOS or posting an
+          // error on the pipeline bus.
+          return configure_status;
+        }
+        return report_calibration_failure(configure_status);
+      }
+      configured_during_run_ = true;
+    }
+  }
+  release_captured_calibration_surfaces();
 
   bool stitcher_ready = false;
   {
@@ -925,6 +1060,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   struct RuntimeFrameInfo {
     NvBufSurfaceParams* surface_params;
     size_t incoming_surface_index;
+    uint64_t buf_pts{GST_CLOCK_TIME_NONE};
   };
   std::vector<RuntimeFrameInfo> runtime_frames;
   std::vector<RuntimeFrameKey> runtime_frame_keys;
@@ -949,6 +1085,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
         RuntimeFrameInfo{
             .surface_params = surface_params,
             .incoming_surface_index = surface_index,
+            .buf_pts = static_cast<uint64_t>(frame_meta->buf_pts),
         });
     runtime_frame_keys.push_back(RuntimeFrameKey{frame_meta->frame_num, frame_meta->source_id});
     ++surface_index;
@@ -968,29 +1105,94 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
         "runtime-sizing frame");
   }
   const EosSnapshot eos_snapshot = snapshot_eos_for_surface(in_surface);
-  absl::StatusOr<std::pair<size_t, size_t>> selected_pair =
-      select_runtime_stitch_pair(runtime_frame_keys, eos_snapshot.source_ids, eos_snapshot.pipeline_eos_seen);
+  absl::StatusOr<std::pair<size_t, size_t>> selected_pair = select_runtime_stitch_pair(
+      runtime_frame_keys,
+      eos_snapshot.source_ids,
+      eos_snapshot.pipeline_eos_seen,
+      /*require_initial_continuity=*/false);
   if (!selected_pair.ok()) {
     return selected_pair.status();
   }
-  const RuntimeFrameInfo& frame_info_left = runtime_frames[selected_pair->first];
-  const RuntimeFrameInfo& frame_info_right = runtime_frames[selected_pair->second];
+  std::map<gint, std::map<guint, size_t>> frame_indices;
+  for (size_t index = 0; index < runtime_frame_keys.size(); ++index) {
+    frame_indices[runtime_frame_keys[index].frame_num].emplace(runtime_frame_keys[index].source_id, index);
+  }
+  const size_t required_frame_count = calibration_frame_count_;
+  std::vector<std::pair<size_t, size_t>> selected_pairs;
+  selected_pairs.reserve(std::min(required_frame_count, frame_indices.size()));
+  for (const auto& [frame_num, by_source] : frame_indices) {
+    (void)frame_num;
+    if (by_source.size() != 2) {
+      continue;
+    }
+    selected_pairs.emplace_back(by_source.begin()->second, by_source.rbegin()->second);
+    if (selected_pairs.size() == required_frame_count) {
+      break;
+    }
+  }
+  if (selected_pairs.empty()) {
+    selected_pairs.push_back(*selected_pair);
+  }
+  for (const auto& [left_index, right_index] : selected_pairs) {
+    const RuntimeFrameInfo& selected_left = runtime_frames[left_index];
+    const RuntimeFrameInfo& selected_right = runtime_frames[right_index];
+    const uint64_t pair_pts_ns =
+        GST_CLOCK_TIME_IS_VALID(selected_left.buf_pts) && GST_CLOCK_TIME_IS_VALID(selected_right.buf_pts)
+        ? std::min<uint64_t>(selected_left.buf_pts, selected_right.buf_pts)
+        : GST_CLOCK_TIME_NONE;
 
+    if (!should_capture_calibration_pair(pair_pts_ns)) {
+      continue;
+    }
 #ifdef __aarch64__
-  hm::surface::EglSurfaceMapper incoming_left_elg_surface_mapper(
-      in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
-  HM_RETURN_IF_ERROR(to_status(incoming_left_elg_surface_mapper.status()));
-  hm::surface::Surface incoming_surface_left = incoming_left_elg_surface_mapper.get_surface();
-  hm::surface::EglSurfaceMapper incoming_right_elg_surface_mapper(
-      in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
-  HM_RETURN_IF_ERROR(to_status(incoming_right_elg_surface_mapper.status()));
-  hm::surface::Surface incoming_surface_right = incoming_right_elg_surface_mapper.get_surface();
+    auto incoming_left_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+        in_surface, selected_left.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_left_egl_surface_mapper->status()));
+    hm::surface::Surface incoming_surface_left = incoming_left_egl_surface_mapper->get_surface();
+    auto incoming_right_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+        in_surface, selected_right.incoming_surface_index, /*read_only=*/true);
+    HM_RETURN_IF_ERROR(to_status(incoming_right_egl_surface_mapper->status()));
+    hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
+    HM_RETURN_IF_ERROR(capture_calibration_pair(incoming_surface_left, incoming_surface_right));
 #else
-  hm::surface::Surface incoming_surface_left(frame_info_left.surface_params);
-  hm::surface::Surface incoming_surface_right(frame_info_right.surface_params);
+    HM_RETURN_IF_ERROR(capture_calibration_pair(
+        hm::surface::Surface(selected_left.surface_params), hm::surface::Surface(selected_right.surface_params)));
+#endif
+    if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
+      break;
+    }
+  }
+  if (captured_calibration_frame_pairs_.empty()) {
+    if (calibration_input_exhausted(eos_snapshot)) {
+      return report_fatal_calibration_failure(
+          absl::FailedPreconditionError("Stitching calibration reached EOS before capturing synchronized frame pairs"));
+    }
+    dropped_runtime_calibration_batches_before_output_ = true;
+    return videoprep::runtime_output_pool_deferred_status("Waiting for at least one stitching calibration frame pair");
+  }
+  if (captured_calibration_frame_pairs_.size() < required_frame_count) {
+    if (calibration_input_exhausted(eos_snapshot)) {
+      return report_fatal_calibration_failure(
+          absl::FailedPreconditionError(
+              absl::StrFormat(
+                  "Stitching calibration reached EOS after capturing %zu/%zu synchronized frame pairs",
+                  captured_calibration_frame_pairs_.size(),
+                  required_frame_count)));
+    }
+    dropped_runtime_calibration_batches_before_output_ = true;
+    return videoprep::runtime_output_pool_deferred_status(
+        absl::StrFormat(
+            "Waiting for stitching calibration frame pairs %zu/%zu",
+            captured_calibration_frame_pairs_.size(),
+            required_frame_count));
+  }
+  std::vector<hm::stitching::StitchingCalibrationFramePair> captured_frame_pairs = captured_calibration_frame_pairs();
+#ifdef __aarch64__
+  std::vector<std::unique_ptr<hm::surface::EglSurfaceMapper>> egl_surface_mappers;
+  (void)egl_surface_mappers;
 #endif
 
-  HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
+  HM_RETURN_IF_ERROR(configure_one_pass_from_frame_pairs(captured_frame_pairs));
   return videoprep::RuntimeOutputSize{
       canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
 }
@@ -1021,6 +1223,38 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     match_exposure_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "minimize-blend" || prop.key == "minimize_blend") {
     minimize_blend_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "calibration-frame-count" || prop.key == "calibration_frame_count") {
+    char* end = nullptr;
+    const long parsed = std::strtol(prop.value.c_str(), &end, 10);
+    if (end == prop.value.c_str() || *end != '\0' || parsed < 1 || parsed > 64) {
+      std::cerr << "Invalid stitch calibration-frame-count value: " << prop.value << std::endl;
+      return false;
+    }
+    calibration_frame_count_ = static_cast<size_t>(parsed);
+  } else if (prop.key == "calibration-sample-span-ns" || prop.key == "calibration_sample_span_ns") {
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(prop.value.c_str(), &end, 10);
+    if (end == prop.value.c_str() || *end != '\0' || errno == ERANGE) {
+      std::cerr << "Invalid stitch calibration-sample-span-ns value: " << prop.value << std::endl;
+      return false;
+    }
+    calibration_sample_span_ns_ = static_cast<uint64_t>(parsed);
+  } else if (
+      prop.key == "max-output-width" || prop.key == "max_output_width" || prop.key == "stitch-max-output-width" ||
+      prop.key == "stitch_max_output_width") {
+    char* end = nullptr;
+    const long parsed = std::strtol(prop.value.c_str(), &end, 10);
+    if (end == prop.value.c_str() || *end != '\0' || parsed < 0 || parsed > std::numeric_limits<int>::max()) {
+      std::cerr << "Invalid stitch max-output-width value: " << prop.value << std::endl;
+      return false;
+    }
+    absl::MutexLock lk(&stitcher_mu_);
+    if (has_stitcher() && parsed != max_output_width_) {
+      std::cerr << "Cannot change stitch max-output-width after stitcher initialization" << std::endl;
+      return false;
+    }
+    max_output_width_ = static_cast<int>(parsed);
   } else if (prop.key == "require-decoded-frame-sequence-meta" || prop.key == "require_decoded_frame_sequence_meta") {
     require_decoded_frame_sequence_meta_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "high-bit-depth" || prop.key == "high_bit_depth") {
@@ -1413,6 +1647,13 @@ absl::Status StitcherPriv::GenerateOutput(
     (void)source_to_surface;
     complete_frame_numbers.push_back(frame_number);
   }
+  if (dropped_runtime_calibration_batches_before_output_ && !last_stitched_frame_num_.has_value() &&
+      !complete_frame_numbers.empty()) {
+    const gint first_output_frame = complete_frame_numbers.front();
+    last_stitched_frame_num_ =
+        first_output_frame == std::numeric_limits<gint>::min() ? first_output_frame : first_output_frame - 1;
+    dropped_runtime_calibration_batches_before_output_ = false;
+  }
   HM_ASSIGN_OR_RETURN(
       last_stitched_frame_num_, validate_stitch_frame_continuity(complete_frame_numbers, last_stitched_frame_num_));
 
@@ -1423,6 +1664,86 @@ absl::Status StitcherPriv::GenerateOutput(
   // We will have this many output frames
   const size_t batch_size = frame_source_surfaces.size();
   HM_RETURN_IF_ERROR(prepare_stitch_output_surface(out_surface, batch_size));
+
+#ifdef __aarch64__
+  std::vector<std::unique_ptr<hm::surface::EglSurfaceMapper>> calibration_egl_surface_mappers;
+#endif
+  std::vector<hm::stitching::StitchingCalibrationFramePair> batch_calibration_frame_pairs;
+  bool first_pass_is_configured = false;
+  bool first_pass_configuration_state_known = false;
+  bool first_pass_will_configure_stitching = false;
+  if (process_pass_ == 0) {
+    HM_ASSIGN_OR_RETURN(first_pass_is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+    first_pass_configuration_state_known = true;
+    first_pass_will_configure_stitching = configure_only_ || (!first_pass_is_configured && one_pass_mode_);
+  }
+  if (first_pass_will_configure_stitching) {
+    const size_t required_frame_count = calibration_frame_count_;
+    batch_calibration_frame_pairs.reserve(std::min(required_frame_count, frame_source_surfaces.size()));
+    for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
+      (void)frame_number;
+      if (captured_calibration_frame_pairs_.size() + batch_calibration_frame_pairs.size() == required_frame_count) {
+        break;
+      }
+      if (source_to_surface.size() != 2) {
+        continue;
+      }
+      const FrameInfo& frame_info_left = source_to_surface.begin()->second;
+      const FrameInfo& frame_info_right = source_to_surface.rbegin()->second;
+      const uint64_t pair_pts_ns = GST_CLOCK_TIME_IS_VALID(frame_info_left.frame_meta->buf_pts) &&
+              GST_CLOCK_TIME_IS_VALID(frame_info_right.frame_meta->buf_pts)
+          ? std::min<uint64_t>(frame_info_left.frame_meta->buf_pts, frame_info_right.frame_meta->buf_pts)
+          : GST_CLOCK_TIME_NONE;
+      if (!should_capture_calibration_pair(pair_pts_ns)) {
+        continue;
+      }
+#ifdef __aarch64__
+      auto incoming_left_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+          in_surface, frame_info_left.incoming_surface_index, /*read_only=*/true);
+      HM_RETURN_IF_ERROR(to_status(incoming_left_egl_surface_mapper->status()));
+      hm::surface::Surface incoming_surface_left = incoming_left_egl_surface_mapper->get_surface();
+      calibration_egl_surface_mappers.push_back(std::move(incoming_left_egl_surface_mapper));
+      auto incoming_right_egl_surface_mapper = std::make_unique<hm::surface::EglSurfaceMapper>(
+          in_surface, frame_info_right.incoming_surface_index, /*read_only=*/true);
+      HM_RETURN_IF_ERROR(to_status(incoming_right_egl_surface_mapper->status()));
+      hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
+      calibration_egl_surface_mappers.push_back(std::move(incoming_right_egl_surface_mapper));
+      HM_RETURN_IF_ERROR(capture_calibration_pair(incoming_surface_left, incoming_surface_right));
+#else
+      HM_RETURN_IF_ERROR(capture_calibration_pair(
+          hm::surface::Surface(frame_info_left.surface_params), hm::surface::Surface(frame_info_right.surface_params)));
+#endif
+    }
+    batch_calibration_frame_pairs = captured_calibration_frame_pairs();
+    if (batch_calibration_frame_pairs.empty()) {
+      if (calibration_input_exhausted(eos_snapshot)) {
+        return report_fatal_calibration_failure(
+            absl::FailedPreconditionError(
+                "Stitching calibration reached EOS before capturing synchronized frame pairs"));
+      }
+      return videoprep::runtime_output_pool_deferred_status(
+          "Waiting for at least one stitching calibration frame pair");
+    }
+    if (batch_calibration_frame_pairs.size() < required_frame_count) {
+      if (calibration_input_exhausted(eos_snapshot)) {
+        return report_fatal_calibration_failure(
+            absl::FailedPreconditionError(
+                absl::StrFormat(
+                    "Stitching calibration reached EOS after capturing %zu/%zu synchronized frame pairs",
+                    batch_calibration_frame_pairs.size(),
+                    required_frame_count)));
+      }
+      g_print(
+          "hmstitcher: waiting for stitching calibration frame pairs %zu/%zu\n",
+          batch_calibration_frame_pairs.size(),
+          required_frame_count);
+      return videoprep::runtime_output_pool_deferred_status(
+          absl::StrFormat(
+              "Waiting for stitching calibration frame pairs %zu/%zu",
+              batch_calibration_frame_pairs.size(),
+              required_frame_count));
+    }
+  }
 
   if (log_batches_enabled()) {
     g_print(
@@ -1493,11 +1814,13 @@ absl::Status StitcherPriv::GenerateOutput(
 
     // Maybe configure stitching with these frames
     if (!process_pass_++) {
-      bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_));
+      bool is_configured = first_pass_is_configured;
+      if (!first_pass_configuration_state_known) {
+        HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+      }
       if (!is_configured || configure_only_) {
         if (one_pass_mode_ && !is_configured) {
-          HM_RETURN_IF_ERROR(configure_one_pass_from_surfaces(incoming_surface_left, incoming_surface_right));
+          HM_RETURN_IF_ERROR(configure_one_pass_from_frame_pairs(batch_calibration_frame_pairs));
         } else if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
@@ -1512,26 +1835,19 @@ absl::Status StitcherPriv::GenerateOutput(
             }
             orientation_ran_ = true;
           }
-          hm::surface::Surface calibration_surface_left = incoming_surface_left;
-          hm::surface::Surface calibration_surface_right = incoming_surface_right;
-          if (high_bit_depth_) {
-            HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
-            std::pair<hm::surface::Surface, hm::surface::Surface> calibration_surfaces =
-                std::make_pair(incoming_surface_left, incoming_surface_right);
-            HM_ASSIGN_OR_RETURN(calibration_surfaces, high_bit_calibration_surfaces());
-            calibration_surface_left = calibration_surfaces.first;
-            calibration_surface_right = calibration_surfaces.second;
-          }
           absl::Status configure_status = stitching::configure_stitching(
-              config_file_, calibration_surface_left, calibration_surface_right, calibration_invalidation_id_, [this] {
-                return calibration_cancelled_.load(std::memory_order_acquire);
-              });
+              config_file_,
+              batch_calibration_frame_pairs,
+              calibration_invalidation_id_,
+              [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+              max_output_width_);
           release_high_bit_calibration_surfaces();
           if (!configure_status.ok()) {
             std::cerr << configure_status << "\n" << std::flush;
             return to_status(CudaStatus(
                 cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
           }
+          release_captured_calibration_surfaces();
           // return absl::CancelledError("Stitching has been configured");
           if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
             std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
@@ -1672,7 +1988,9 @@ absl::Status StitcherPriv::GenerateOutput(
     }
     std::string output_generation;
     HM_ASSIGN_OR_RETURN(
-        output_generation, stitching::stitched_output_generation_id(hugin_generation, applied_post_stitch_rotation));
+        output_generation,
+        stitching::stitched_output_generation_id(
+            hugin_generation, applied_post_stitch_rotation, canvas->width(), canvas->height()));
     const std::string completion_scope = stitching::calibration_completion_scope(
         output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
@@ -1689,48 +2007,53 @@ absl::Status StitcherPriv::GenerateOutput(
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
       }
       if (progress.create_mask) {
-        hm::surface::Surface field_mask_surface = logical_output_surface;
-        if (stitcher_rgb10_fp16_) {
-          if (!high_bit_field_mask_canvas_ || high_bit_field_mask_canvas_->width() != high_bit_canvas_->width() ||
-              high_bit_field_mask_canvas_->height() != high_bit_canvas_->height()) {
-            high_bit_field_mask_canvas_ = std::make_unique<hm::CudaMat<uchar4>>(
-                /*batch_size=*/1,
+        std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
+        mask_configured = !calibrate_field_mask_ ||
+            stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
+        if (!mask_configured) {
+          hm::surface::Surface field_mask_surface = logical_output_surface;
+          if (stitcher_rgb10_fp16_) {
+            if (!high_bit_field_mask_canvas_ || high_bit_field_mask_canvas_->width() != high_bit_canvas_->width() ||
+                high_bit_field_mask_canvas_->height() != high_bit_canvas_->height()) {
+              high_bit_field_mask_canvas_ = std::make_unique<hm::CudaMat<uchar4>>(
+                  /*batch_size=*/1,
+                  high_bit_canvas_->width(),
+                  high_bit_canvas_->height(),
+                  /*pixel_channels=*/1);
+            }
+            if (!high_bit_field_mask_canvas_ || !high_bit_field_mask_canvas_->is_valid()) {
+              return report_calibration_failure(
+                  absl::ResourceExhaustedError("Could not allocate the ungraded rink-mask calibration canvas"));
+            }
+            high_bit_field_mask_canvas_params_ =
+                cuda_mat_surface_params(*high_bit_field_mask_canvas_, NVBUF_COLOR_FORMAT_RGBA);
+            HM_RETURN_IF_ERROR(to_status(convertHalf4ToCalibrationRgba8(
+                high_bit_canvas_->data(),
+                high_bit_canvas_->pitch(),
                 high_bit_canvas_->width(),
                 high_bit_canvas_->height(),
-                /*pixel_channels=*/1);
+                &high_bit_field_mask_canvas_params_,
+                applied_post_stitch_rotation,
+                cuda_stream_)));
+            // Field-mask calibration downloads this one-time surface immediately.
+            HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
+            field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
           }
-          if (!high_bit_field_mask_canvas_ || !high_bit_field_mask_canvas_->is_valid()) {
-            return report_calibration_failure(
-                absl::ResourceExhaustedError("Could not allocate the ungraded rink-mask calibration canvas"));
+          absl::Status mask_status = stitching::create_field_mask(
+              config_file_, field_mask_surface, output_generation, calibration_invalidation_id_, [this] {
+                return calibration_cancelled_.load(std::memory_order_acquire);
+              });
+          release_high_bit_field_mask_canvas();
+          if (!mask_status.ok()) {
+            std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
+            calibration_completion_reported_ = true;
+            if (absl::IsCancelled(mask_status)) {
+              return mask_status;
+            }
+            return report_calibration_failure(mask_status);
+          } else {
+            mask_configured = true;
           }
-          high_bit_field_mask_canvas_params_ =
-              cuda_mat_surface_params(*high_bit_field_mask_canvas_, NVBUF_COLOR_FORMAT_RGBA);
-          HM_RETURN_IF_ERROR(to_status(convertHalf4ToCalibrationRgba8(
-              high_bit_canvas_->data(),
-              high_bit_canvas_->pitch(),
-              high_bit_canvas_->width(),
-              high_bit_canvas_->height(),
-              &high_bit_field_mask_canvas_params_,
-              applied_post_stitch_rotation,
-              cuda_stream_)));
-          // Field-mask calibration downloads this one-time surface immediately.
-          HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
-          field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
-        }
-        absl::Status mask_status = stitching::create_field_mask(
-            config_file_, field_mask_surface, output_generation, calibration_invalidation_id_, [this] {
-              return calibration_cancelled_.load(std::memory_order_acquire);
-            });
-        release_high_bit_field_mask_canvas();
-        if (!mask_status.ok()) {
-          std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
-          calibration_completion_reported_ = true;
-          if (absl::IsCancelled(mask_status)) {
-            return mask_status;
-          }
-          return report_calibration_failure(mask_status);
-        } else {
-          mask_configured = true;
         }
       }
       progress = one_pass_calibration_progress_plan(

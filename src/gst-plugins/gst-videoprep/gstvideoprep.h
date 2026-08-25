@@ -85,6 +85,7 @@ struct GstVideoPrep
   gchar* plugin_type;
   gchar* plugin_private_config;
   gdouble post_stitch_rotate_degrees;
+  guint max_output_width;
   gdouble fixed_edge_rotation_angle;
   gdouble fixed_edge_rotation_angle_left;
   gdouble fixed_edge_rotation_angle_right;
@@ -96,6 +97,7 @@ struct GstVideoPrep
   gdouble exposure;
   gboolean last_property_set_ok;
   gboolean post_stitch_rotate_degrees_set;
+  gboolean max_output_width_set;
   gboolean fixed_edge_rotation_angle_set;
   gboolean fixed_edge_rotation_angle_left_set;
   gboolean fixed_edge_rotation_angle_right_set;
@@ -107,6 +109,7 @@ struct GstVideoPrep
   guint property_set_sequence;
   guint plugin_private_config_sequence;
   guint post_stitch_rotate_degrees_sequence;
+  guint max_output_width_sequence;
   guint fixed_edge_rotation_angle_sequence;
   guint fixed_edge_rotation_angle_left_sequence;
   guint fixed_edge_rotation_angle_right_sequence;

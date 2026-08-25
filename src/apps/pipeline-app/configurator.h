@@ -51,6 +51,7 @@ absl::Status claim_unique_archive_output_path(
 absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_files(
     const std::filesystem::path& configured_path);
 absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config);
+bool hmstitcher_owns_stitching_cleanup(const YAML::Node& config);
 std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
 using ConfigLeafRanks = std::map<std::string, int>;
 absl::StatusOr<YAML::Node> build_effective_playtracker_config(

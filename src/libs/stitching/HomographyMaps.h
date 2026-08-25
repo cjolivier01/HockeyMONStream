@@ -35,6 +35,7 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     const cv::Mat& right_bgr,
     const std::vector<FeatureMatch>& matches,
     MappingBackend backend,
-    const std::optional<size_t>& max_canvas_dimension = std::nullopt);
+    const std::optional<size_t>& max_canvas_dimension = std::nullopt,
+    const std::optional<size_t>& max_output_width = std::nullopt);
 
 } // namespace hm::stitching

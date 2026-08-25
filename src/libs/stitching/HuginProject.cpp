@@ -405,8 +405,8 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
   const bool metadata_valid = TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) &&
       TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height) && TIFFGetField(tif, TIFFTAG_XRESOLUTION, &x_resolution) &&
       TIFFGetField(tif, TIFFTAG_YRESOLUTION, &y_resolution);
-  (void)TIFFGetField(tif, TIFFTAG_XPOSITION, &x_position);
-  (void)TIFFGetField(tif, TIFFTAG_YPOSITION, &y_position);
+  const bool placement_valid =
+      TIFFGetField(tif, TIFFTAG_XPOSITION, &x_position) && TIFFGetField(tif, TIFFTAG_YPOSITION, &y_position);
   auto dimensions_status = validate_decoded_dimensions(width, height, maximum_dimension, "Hugin TIFF " + path.string());
   const tmsize_t scanline_size = dimensions_status.ok() ? TIFFScanlineSize(tif) : 0;
   bool pixels_valid = dimensions_status.ok() && scanline_size > 0 && scanline_size <= 256 * 1024 * 1024;
@@ -419,9 +419,10 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
   TIFFClose(tif);
   if (!dimensions_status.ok())
     return dimensions_status;
-  if (!metadata_valid || !pixels_valid || width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
-      height > std::numeric_limits<int>::max() || !std::isfinite(x_resolution) || !std::isfinite(y_resolution) ||
-      x_resolution <= 0.0f || y_resolution <= 0.0f || !std::isfinite(x_position) || !std::isfinite(y_position)) {
+  if (!metadata_valid || !placement_valid || !pixels_valid || width == 0 || height == 0 ||
+      width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max() ||
+      !std::isfinite(x_resolution) || !std::isfinite(y_resolution) || x_resolution <= 0.0f || y_resolution <= 0.0f ||
+      !std::isfinite(x_position) || !std::isfinite(y_position)) {
     return absl::FailedPreconditionError("Hugin TIFF metadata or pixel data is invalid: " + path.string());
   }
   const float x = x_position * x_resolution;
@@ -466,6 +467,7 @@ struct PngLayout {
   int height{0};
   int offset_x{0};
   int offset_y{0};
+  bool has_offset{false};
 };
 
 uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t size) {
@@ -544,6 +546,7 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
       };
       layout.offset_x = static_cast<int>(signed_coordinate(data.data()));
       layout.offset_y = static_cast<int>(signed_coordinate(data.data() + 4));
+      layout.has_offset = true;
       have_offset = true;
       expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
     } else {
@@ -687,6 +690,13 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
         std::to_string(layout->offset_y) + " canvas=" + std::to_string(canvas_width) + "x" +
         std::to_string(canvas_height));
   }
+  if (!layout->has_offset && layout->offset_x == 0 && layout->offset_y == 0 &&
+      (layout->width != canvas_width || layout->height != canvas_height)) {
+    return absl::FailedPreconditionError(
+        "PNG seam has full-canvas origin but does not match its mapping canvas: " + path.string() +
+        " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
+        " canvas=" + std::to_string(canvas_width) + "x" + std::to_string(canvas_height));
+  }
 
   auto seam = decode_nonuniform_seam(path, *layout);
   if (!seam.ok())
@@ -711,6 +721,147 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
     }
   }
   return absl::OkStatus();
+}
+
+absl::Status validate_seam_layout(
+    const fs::path& path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  if (native_canvas_width <= 0 || native_canvas_height <= 0 || effective_canvas_width <= 0 ||
+      effective_canvas_height <= 0) {
+    return absl::InvalidArgumentError("Seam canvas dimensions must be positive");
+  }
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  const int64_t right = static_cast<int64_t>(layout->offset_x) + layout->width;
+  const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
+  const bool matches_native_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == native_canvas_width && layout->height == native_canvas_height;
+  const bool matches_effective_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == effective_canvas_width && layout->height == effective_canvas_height;
+  if (matches_native_canvas || matches_effective_canvas)
+    return absl::OkStatus();
+  if (!layout->has_offset && layout->offset_x == 0 && layout->offset_y == 0) {
+    return absl::FailedPreconditionError(
+        "PNG seam has full-canvas origin but matches neither the native nor capped mapping canvas: " + path.string() +
+        " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
+        " native-canvas=" + std::to_string(native_canvas_width) + "x" + std::to_string(native_canvas_height) +
+        " capped-canvas=" + std::to_string(effective_canvas_width) + "x" + std::to_string(effective_canvas_height));
+  }
+  if (layout->offset_x < 0 || layout->offset_y < 0 || right > native_canvas_width || bottom > native_canvas_height) {
+    return absl::FailedPreconditionError(
+        "PNG seam crop lies outside its mapping canvas: " + path.string() + " crop=" + std::to_string(layout->width) +
+        "x" + std::to_string(layout->height) + "+" + std::to_string(layout->offset_x) + "+" +
+        std::to_string(layout->offset_y) + " canvas=" + std::to_string(native_canvas_width) + "x" +
+        std::to_string(native_canvas_height));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status validate_seam_for_configured_artifacts(
+    const fs::path& path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  const absl::Status layout_status = validate_seam_layout(
+      path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
+  if (!layout_status.ok())
+    return layout_status;
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  auto seam = decode_nonuniform_seam(path, *layout);
+  return seam.ok() ? absl::OkStatus() : seam.status();
+}
+
+absl::Status validate_and_normalize_seam(
+    const fs::path& path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height,
+    double scale) {
+  if (native_canvas_width <= 0 || native_canvas_height <= 0 || effective_canvas_width <= 0 ||
+      effective_canvas_height <= 0) {
+    return absl::InvalidArgumentError("Seam canvas dimensions must be positive");
+  }
+  if (!std::isfinite(scale) || scale <= 0.0) {
+    return absl::InvalidArgumentError("Seam scale must be positive and finite");
+  }
+  if (native_canvas_width == effective_canvas_width && native_canvas_height == effective_canvas_height) {
+    return validate_and_normalize_seam(path, native_canvas_width, native_canvas_height);
+  }
+
+  auto layout = read_png_layout(path);
+  if (!layout.ok())
+    return layout.status();
+  const int64_t right = static_cast<int64_t>(layout->offset_x) + layout->width;
+  const int64_t bottom = static_cast<int64_t>(layout->offset_y) + layout->height;
+  const bool matches_native_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == native_canvas_width && layout->height == native_canvas_height;
+  const bool matches_effective_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == effective_canvas_width && layout->height == effective_canvas_height;
+  if (matches_effective_canvas) {
+    auto seam = decode_nonuniform_seam(path, *layout);
+    return seam.ok() ? absl::OkStatus() : seam.status();
+  }
+  if (!layout->has_offset && !matches_native_canvas) {
+    return absl::FailedPreconditionError(
+        "PNG seam has full-canvas origin but matches neither the native nor capped mapping canvas: " + path.string() +
+        " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
+        " native-canvas=" + std::to_string(native_canvas_width) + "x" + std::to_string(native_canvas_height) +
+        " capped-canvas=" + std::to_string(effective_canvas_width) + "x" + std::to_string(effective_canvas_height));
+  }
+
+  if (layout->offset_x < 0 || layout->offset_y < 0 || right > native_canvas_width || bottom > native_canvas_height) {
+    return absl::FailedPreconditionError(
+        "PNG seam crop lies outside its mapping canvas: " + path.string() + " crop=" + std::to_string(layout->width) +
+        "x" + std::to_string(layout->height) + "+" + std::to_string(layout->offset_x) + "+" +
+        std::to_string(layout->offset_y) + " canvas=" + std::to_string(native_canvas_width) + "x" +
+        std::to_string(native_canvas_height));
+  }
+
+  auto seam = decode_nonuniform_seam(path, *layout);
+  if (!seam.ok())
+    return seam.status();
+
+  const int scaled_left =
+      std::clamp(static_cast<int>(std::floor(layout->offset_x * scale)), 0, effective_canvas_width - 1);
+  const int scaled_top =
+      std::clamp(static_cast<int>(std::floor(layout->offset_y * scale)), 0, effective_canvas_height - 1);
+  const int scaled_right = std::clamp(
+      static_cast<int>(std::ceil(static_cast<double>(right) * scale)), scaled_left + 1, effective_canvas_width);
+  const int scaled_bottom = std::clamp(
+      static_cast<int>(std::ceil(static_cast<double>(bottom) * scale)), scaled_top + 1, effective_canvas_height);
+
+  cv::Mat scaled_crop;
+  cv::Mat normalized;
+  try {
+    cv::resize(
+        *seam,
+        scaled_crop,
+        cv::Size(scaled_right - scaled_left, scaled_bottom - scaled_top),
+        0.0,
+        0.0,
+        cv::INTER_NEAREST);
+    cv::copyMakeBorder(
+        scaled_crop,
+        normalized,
+        scaled_top,
+        effective_canvas_height - scaled_bottom,
+        scaled_left,
+        effective_canvas_width - scaled_right,
+        cv::BORDER_REPLICATE);
+    return publish_normalized_seam(path, normalized, effective_canvas_width, effective_canvas_height);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to normalize seam: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate normalized seam");
+  }
 }
 
 absl::Status validate_remaps(
@@ -841,7 +992,24 @@ absl::Status create_hard_seam(
   return absl::OkStatus();
 }
 
-absl::Status validate_staged_artifacts(const fs::path& directory, const std::optional<size_t>& maximum_dimension) {
+absl::StatusOr<std::pair<int, int>> measure_staged_remap_canvas(
+    const fs::path& directory,
+    const std::optional<size_t>& maximum_dimension) {
+  auto first_result = read_tiff_placement(directory / "mapping_0000.tif", maximum_dimension);
+  auto second_result = read_tiff_placement(directory / "mapping_0001.tif", maximum_dimension);
+  if (!first_result.ok())
+    return first_result.status();
+  if (!second_result.ok())
+    return second_result.status();
+  TiffPlacement first = *first_result;
+  TiffPlacement second = *second_result;
+  return normalize_and_measure(&first, &second);
+}
+
+absl::Status validate_staged_artifacts(
+    const fs::path& directory,
+    const std::optional<size_t>& maximum_dimension,
+    const std::optional<size_t>& max_output_width) {
   for (const char* artifact : kRequiredArtifacts) {
     auto status = validate_nonempty_file(directory / artifact);
     if (!status.ok())
@@ -855,16 +1023,14 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
   if (!project_canvas.ok() || !projection.ok())
     return absl::FailedPreconditionError("Hugin optimized project has an invalid canvas or projection");
 
-  TiffPlacement first;
-  TiffPlacement second;
   auto first_result = read_tiff_placement(directory / "mapping_0000.tif", maximum_dimension);
   auto second_result = read_tiff_placement(directory / "mapping_0001.tif", maximum_dimension);
   if (!first_result.ok())
     return first_result.status();
   if (!second_result.ok())
     return second_result.status();
-  first = *first_result;
-  second = *second_result;
+  TiffPlacement first = *first_result;
+  TiffPlacement second = *second_result;
   auto canvas = normalize_and_measure(&first, &second);
   if (!canvas.ok())
     return canvas.status();
@@ -875,6 +1041,9 @@ absl::Status validate_staged_artifacts(const fs::path& directory, const std::opt
       "Decoded Hugin remap canvas");
   if (!status.ok())
     return status;
+  if (max_output_width.has_value() && *max_output_width > 0 && static_cast<size_t>(canvas->first) > *max_output_width) {
+    return absl::FailedPreconditionError("Decoded Hugin remap canvas exceeds the configured maximum output width");
+  }
   auto first_source_size = read_png_dimensions(directory / "left.png");
   auto second_source_size = read_png_dimensions(directory / "right.png");
   if (!first_source_size.ok())
@@ -1115,6 +1284,48 @@ absl::Status HuginProject::Recover(const fs::path& game_dir) {
 
 absl::Status HuginProject::ValidateAndNormalizeSeam(const fs::path& seam_path, int canvas_width, int canvas_height) {
   return validate_and_normalize_seam(seam_path, canvas_width, canvas_height);
+}
+
+absl::Status HuginProject::ValidateAndNormalizeSeam(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  const double scale = static_cast<double>(effective_canvas_width) / static_cast<double>(native_canvas_width);
+  return validate_and_normalize_seam(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height, scale);
+}
+
+absl::Status HuginProject::ValidateAndNormalizeSeam(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height,
+    double scale) {
+  return validate_and_normalize_seam(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height, scale);
+}
+
+absl::Status HuginProject::ValidateSeamLayout(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  return validate_seam_layout(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
+}
+
+absl::Status HuginProject::ValidateSeamForConfiguredArtifacts(
+    const fs::path& seam_path,
+    int native_canvas_width,
+    int native_canvas_height,
+    int effective_canvas_width,
+    int effective_canvas_height) {
+  return validate_seam_for_configured_artifacts(
+      seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
 }
 
 absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {
@@ -1381,28 +1592,53 @@ absl::Status HuginProject::Configure(
   if (options.progress)
     options.progress("canvas", "started", "Building stitch maps and panorama preview");
   std::optional<double> output_scale;
-  auto fit_canvas = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
-    const size_t longest = std::max(width, height);
-    const double factor =
-        static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest) * rounding_guard;
-    output_scale = output_scale.value_or(1.0) * factor;
+  auto fit_canvas = [&](size_t width, size_t height, double factor, double rounding_guard) -> absl::Status {
+    (void)width;
+    (void)height;
+    output_scale = output_scale.value_or(1.0) * factor * rounding_guard;
     return run_autooptimiser(*autooptimiser_path, staging, output_scale, options.is_cancelled);
+  };
+  auto fit_canvas_longest = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
+    const size_t longest = std::max(width, height);
+    const double factor = static_cast<double>(*options.max_canvas_dimension) / static_cast<double>(longest);
+    return fit_canvas(width, height, factor, rounding_guard);
+  };
+  auto fit_canvas_width = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
+    if (!options.max_output_width.has_value() || *options.max_output_width == 0 || width <= *options.max_output_width)
+      return absl::OkStatus();
+    const double factor = static_cast<double>(*options.max_output_width) / static_cast<double>(width);
+    return fit_canvas(width, height, factor, rounding_guard);
   };
   if (options.mapping_backend != MappingBackend::kNona && output_scale.has_value()) {
     return absl::InvalidArgumentError("Native OpenCV mapping backends do not accept Hugin output scaling");
   }
-  if (options.max_canvas_dimension.has_value()) {
+  if (options.max_canvas_dimension.has_value() || options.max_output_width.has_value()) {
     auto optimized = read_file(staging / "autooptimiser_out.pto");
     if (!optimized.ok())
       return optimized.status();
     auto dimensions = ParseCanvasSize(*optimized);
     if (!dimensions.ok())
       return dimensions.status();
-    const size_t longest = std::max(dimensions->first, dimensions->second);
-    if (longest > *options.max_canvas_dimension && options.mapping_backend == MappingBackend::kNona) {
-      status = fit_canvas(dimensions->first, dimensions->second, 1.0);
-      if (!status.ok())
-        return status;
+    if (options.mapping_backend == MappingBackend::kNona) {
+      if (options.max_output_width.has_value() && dimensions->first > *options.max_output_width) {
+        status = fit_canvas_width(dimensions->first, dimensions->second, 1.0);
+        if (!status.ok())
+          return status;
+        optimized = read_file(staging / "autooptimiser_out.pto");
+        if (!optimized.ok())
+          return optimized.status();
+        dimensions = ParseCanvasSize(*optimized);
+        if (!dimensions.ok())
+          return dimensions.status();
+      }
+      if (options.max_canvas_dimension.has_value()) {
+        const size_t longest = std::max(dimensions->first, dimensions->second);
+        if (longest > *options.max_canvas_dimension) {
+          status = fit_canvas_longest(dimensions->first, dimensions->second, 1.0);
+          if (!status.ok())
+            return status;
+        }
+      }
     }
   }
 
@@ -1424,33 +1660,44 @@ absl::Status HuginProject::Configure(
       }
       if (!mappings_valid)
         return status;
-      if (!options.max_canvas_dimension.has_value())
+      if (!options.max_canvas_dimension.has_value() && !options.max_output_width.has_value())
         break;
 
-      // Nona derives its mapping canvas from the optimized PTO. Validate that
-      // exact final contract and retry with a small rounding guard if necessary.
+      // Validate the actual TIFF placement canvas because nona's cropped remaps
+      // are the contract hm-cupano loads at runtime.
       auto optimized = read_file(staging / "autooptimiser_out.pto");
       if (!optimized.ok())
         return optimized.status();
       auto dimensions = ParseCanvasSize(*optimized);
       if (!dimensions.ok())
         return dimensions.status();
-      const size_t longest = std::max(dimensions->first, dimensions->second);
-      if (longest <= *options.max_canvas_dimension)
+      auto remap_canvas = measure_staged_remap_canvas(staging, std::nullopt);
+      if (!remap_canvas.ok())
+        return remap_canvas.status();
+      const bool width_ok = !options.max_output_width.has_value() ||
+          static_cast<size_t>(remap_canvas->first) <= *options.max_output_width;
+      const bool dimension_ok = !options.max_canvas_dimension.has_value() ||
+          static_cast<size_t>(std::max(remap_canvas->first, remap_canvas->second)) <= *options.max_canvas_dimension;
+      if (width_ok && dimension_ok)
         break;
       if (attempt == 2) {
-        return absl::FailedPreconditionError(
-            "Hugin mapping canvas still exceeds maximum dimension after three attempts");
+        return absl::FailedPreconditionError("Hugin mapping canvas still exceeds requested size after three attempts");
       }
-      status = fit_canvas(dimensions->first, dimensions->second, 0.999);
+      if (!width_ok) {
+        status = fit_canvas_width(
+            static_cast<size_t>(remap_canvas->first), static_cast<size_t>(remap_canvas->second), 0.999);
+      } else {
+        status = fit_canvas_longest(
+            static_cast<size_t>(remap_canvas->first), static_cast<size_t>(remap_canvas->second), 0.999);
+      }
       if (!status.ok())
         return status;
     }
   } else {
     const cv::Mat left = cv::imread((staging / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat right = cv::imread((staging / "right.png").string(), cv::IMREAD_COLOR);
-    auto maps =
-        CreateOpenCvMappingFiles(staging, left, right, matches, options.mapping_backend, options.max_canvas_dimension);
+    auto maps = CreateOpenCvMappingFiles(
+        staging, left, right, matches, options.mapping_backend, options.max_canvas_dimension, options.max_output_width);
     if (!maps.ok())
       return maps.status();
     std::cout << "OpenCV mapping backend " << MappingBackendName(options.mapping_backend) << " generated "
@@ -1493,7 +1740,7 @@ absl::Status HuginProject::Configure(
               << enblend.status() << '\n';
   }
 
-  status = validate_staged_artifacts(staging, options.max_canvas_dimension);
+  status = validate_staged_artifacts(staging, options.max_canvas_dimension, options.max_output_width);
   if (!status.ok())
     return status;
   if (options.is_cancelled && options.is_cancelled())

@@ -192,6 +192,8 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gfloat post_stitch_rotate_degrees;
   gboolean minimize_blend;
   gboolean ui_preview;
+  guint calibration_frame_count;
+  gulong calibration_sample_span_ns;
   gchar stitch_compute_precision[32];
 };
 

@@ -337,6 +337,7 @@ play-tracker:
       mapping_defaults_status.ok() && mapping_defaults_second_status.ok() && mapping_defaults_rotation.ok() &&
           *mapping_defaults_rotation == 0.0 && mapped_defaults["hmstitcher"]["enable"].as<int>() == 1 &&
           mapped_defaults["hmstitcher"]["minimize-blend"].as<int>() == 0 &&
+          !mapped_defaults["hmstitcher"]["properties"]["max-output-width"].IsDefined() &&
           mapped_defaults["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp32" &&
           mapped_defaults["hmplaycropper"]["no-crop"].as<int>() == 0 &&
           mapped_defaults["hmplaycropper"]["plot-play-tracking"].as<int>() == 0 &&
@@ -428,6 +429,7 @@ play-tracker:
   YAML::Node canonical_overrides(YAML::NodeType::Map);
   canonical_overrides["stitching"]["enabled"] = false;
   canonical_overrides["stitching"]["minimize_blend"] = true;
+  canonical_overrides["stitching"]["max_output_width"] = 4096;
   canonical_overrides["stitching"]["dtype"] = "float16";
   canonical_overrides["stitching"]["post_stitch_rotate_degrees"] = 15.0;
   canonical_overrides["apply_camera"]["crop_output_image"] = false;
@@ -462,6 +464,7 @@ play-tracker:
   ok &= expect(
       mapping_canonical_status.ok() && mapped_canonical["hmstitcher"]["enable"].as<int>() == 0 &&
           mapped_canonical["hmstitcher"]["minimize-blend"].as<int>() == 1 &&
+          mapped_canonical["hmstitcher"]["properties"]["max-output-width"].as<int>() == 4096 &&
           mapped_canonical["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp16" &&
           mapped_canonical["hmstitcher"]["post-stitch-rotate-degrees"].as<double>() == 15.0 &&
           mapped_canonical["hmplaycropper"]["no-crop"].as<int>() == 1 &&
@@ -483,6 +486,126 @@ play-tracker:
           mapped_canonical["sink0"]["output-file"].as<std::string>() == "/tmp/canonical.mkv" &&
           mapped_canonical["sink0"]["width"].as<int>() == 1280 && mapped_canonical["sink0"]["height"].as<int>() == 720,
       "Explicit canonical game values must replace lower-ranked structural native values for every supported mapping");
+
+  const fs::path canonical_null_game_dir = games / "mapping-canonical-null";
+  fs::create_directories(canonical_null_game_dir);
+  YAML::Node native_width(YAML::NodeType::Map);
+  native_width["hmstitcher"]["properties"]["max-output-width"] = 2048;
+  native_width["hmstitcher"]["private-properties"]["max-output-width"] = 2048;
+  native_width["hmstitcher"]["private-properties"]["max_output_width"] = 2048;
+  native_width["hmstitcher"]["private-properties"]["stitch-max-output-width"] = 2048;
+  native_width["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 2048;
+  std::ofstream(root / "mapping-native-width.yaml") << YAML::Dump(native_width) << '\n';
+  YAML::Node canonical_null(YAML::NodeType::Map);
+  canonical_null["stitching"]["max_output_width"] = YAML::Node(YAML::NodeType::Null);
+  std::ofstream(canonical_null_game_dir / "config.yaml") << YAML::Dump(canonical_null) << '\n';
+  hm::Configurator mapping_canonical_null(
+      "mapping-canonical-null", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_canonical_null_loaded = mapping_canonical_null.configure().ok() &&
+      mapping_canonical_null.underlay_config("pipeline", (root / "mapping-native-width.yaml").string());
+  const absl::Status mapping_canonical_null_status = mapping_canonical_null_loaded
+      ? mapping_canonical_null.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping canonical-null fixture did not load");
+  ok &= expect(
+      mapping_canonical_null_status.ok() &&
+          !mapping_canonical_null.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].IsDefined() &&
+          !mapping_canonical_null.config()["pipeline"]["hmstitcher"]["private-properties"]["max-output-width"]
+               .IsDefined() &&
+          !mapping_canonical_null.config()["pipeline"]["hmstitcher"]["private-properties"]["max_output_width"]
+               .IsDefined() &&
+          !mapping_canonical_null.config()["pipeline"]["hmstitcher"]["private-properties"]["stitch-max-output-width"]
+               .IsDefined() &&
+          !mapping_canonical_null.config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+               .IsDefined(),
+      "An explicit canonical null max stitched width must clear lower-ranked native caps");
+
+  const fs::path private_only_width_game_dir = games / "mapping-private-only-width";
+  fs::create_directories(private_only_width_game_dir);
+  YAML::Node private_only_width(YAML::NodeType::Map);
+  private_only_width["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1536;
+  std::ofstream(root / "mapping-private-only-width.yaml") << YAML::Dump(private_only_width) << '\n';
+  hm::Configurator mapping_private_only_width(
+      "mapping-private-only-width", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_private_only_width_loaded = mapping_private_only_width.configure().ok() &&
+      mapping_private_only_width.underlay_config("pipeline", (root / "mapping-private-only-width.yaml").string());
+  const absl::Status mapping_private_only_width_status = mapping_private_only_width_loaded
+      ? mapping_private_only_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping private-only-width fixture did not load");
+  ok &= expect(
+      mapping_private_only_width_status.ok() &&
+          !mapping_private_only_width.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"]
+               .IsDefined() &&
+          mapping_private_only_width.config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+                  .as<int>() == 1536,
+      "Bundled baseline null max stitched width must not clear a private-only native cap");
+
+  const fs::path ranked_width_game_dir = games / "mapping-ranked-max-width-alias";
+  fs::create_directories(ranked_width_game_dir);
+  YAML::Node lower_ranked_canonical(YAML::NodeType::Map);
+  lower_ranked_canonical["stitching"]["max_output_width"] = 1024;
+  std::ofstream(ranked_width_game_dir / "config.yaml") << YAML::Dump(lower_ranked_canonical) << '\n';
+  hm::Configurator mapping_ranked_width(
+      "mapping-ranked-max-width-alias", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_ranked_width_loaded = mapping_ranked_width.configure().ok() &&
+      mapping_ranked_width.apply_config_item("pipeline.hmstitcher.properties.stitch_max_output_width", "3072").ok();
+  const absl::Status mapping_ranked_width_status = mapping_ranked_width_loaded
+      ? mapping_ranked_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping ranked-width fixture did not load");
+  ok &= expect(
+      mapping_ranked_width_status.ok() &&
+          mapping_ranked_width.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].as<int>() == 3072 &&
+          !mapping_ranked_width.config()["pipeline"]["hmstitcher"]["properties"]["stitch_max_output_width"].IsDefined(),
+      "A higher-ranked native max-width alias must beat a lower-ranked canonical value and normalize to max-output-width");
+
+  const fs::path max_width_tie_game_dir = games / "mapping-max-width-tie";
+  fs::create_directories(max_width_tie_game_dir);
+  YAML::Node max_width_tie(YAML::NodeType::Map);
+  max_width_tie["stitching"]["max_output_width"] = 4096;
+  max_width_tie["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
+  std::ofstream(max_width_tie_game_dir / "config.yaml") << YAML::Dump(max_width_tie) << '\n';
+  hm::Configurator mapping_max_width_tie(
+      "mapping-max-width-tie", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status mapping_max_width_tie_status = mapping_max_width_tie.configure().ok()
+      ? mapping_max_width_tie.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping max-width-tie fixture did not load");
+  ok &= expect(
+      mapping_max_width_tie_status.ok() &&
+          mapping_max_width_tie.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].as<int>() == 4096,
+      "A same-ranked canonical max stitched width must match UI precedence and beat conflicting native aliases");
+
+  const fs::path malformed_properties_game_dir = games / "mapping-malformed-properties";
+  fs::create_directories(malformed_properties_game_dir);
+  YAML::Node malformed_properties(YAML::NodeType::Map);
+  malformed_properties["hmstitcher"]["properties"] = "not-a-map";
+  std::ofstream(root / "mapping-malformed-properties.yaml") << YAML::Dump(malformed_properties) << '\n';
+  hm::Configurator mapping_malformed_properties(
+      "mapping-malformed-properties", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_malformed_properties_loaded = mapping_malformed_properties.configure().ok() &&
+      mapping_malformed_properties.underlay_config("pipeline", (root / "mapping-malformed-properties.yaml").string());
+  const absl::Status mapping_malformed_properties_status = mapping_malformed_properties_loaded
+      ? mapping_malformed_properties.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping malformed-properties fixture did not load");
+  ok &= expect(
+      absl::IsInvalidArgument(mapping_malformed_properties_status),
+      "A malformed native hmstitcher properties node must be rejected instead of replaced");
+
+  const fs::path public_alias_game_dir = games / "mapping-public-max-width-alias";
+  fs::create_directories(public_alias_game_dir);
+  YAML::Node public_alias(YAML::NodeType::Map);
+  public_alias["hmstitcher"]["properties"]["stitch_max_output_width"] = 3072;
+  std::ofstream(root / "mapping-public-max-width-alias.yaml") << YAML::Dump(public_alias) << '\n';
+  hm::Configurator mapping_public_alias(
+      "mapping-public-max-width-alias", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_public_alias_loaded = mapping_public_alias.configure().ok() &&
+      mapping_public_alias.underlay_config("pipeline", (root / "mapping-public-max-width-alias.yaml").string());
+  const absl::Status mapping_public_alias_status = mapping_public_alias_loaded
+      ? mapping_public_alias.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping public-alias fixture did not load");
+  ok &= expect(
+      mapping_public_alias_status.ok() &&
+          mapping_public_alias.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].as<int>() == 3072 &&
+          !mapping_public_alias.config()["pipeline"]["hmstitcher"]["properties"]["stitch_max_output_width"].IsDefined(),
+      "A public hmstitcher max-width alias must normalize to the typed GObject property");
 
   ok &= expect(
       mapping_canonical.apply_config_item("pipeline.hmstitcher.enable", "1").ok() &&
@@ -639,6 +762,49 @@ play-tracker:
           !disabled_stitching.config()["pipeline"]["hmplaycropper"]["output-height"].IsDefined() &&
           fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
       "stitching.enabled=false must skip runtime discovery and preserve negotiated source dimensions");
+
+  hm::Configurator disabled_stitching_clean(
+      "disabled-stitching", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool disabled_stitching_clean_loaded = disabled_stitching_clean.configure().ok() &&
+      disabled_stitching_clean.underlay_config("pipeline", disabled_stitching_pipeline_path.string());
+  const absl::Status disabled_stitching_clean_status = disabled_stitching_clean_loaded
+      ? disabled_stitching_clean.complete_configuration(
+            /*force=*/true,
+            /*clean_stitching_artifacts=*/true,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            disabled_stitching_pipeline_path.parent_path())
+      : absl::InternalError("disabled stitching clean fixture did not load");
+  ok &= expect(
+      !disabled_stitching_clean_status.ok() && fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
+      "stitching.enabled=false must not own direct clean-only artifact cleanup");
+
+  const fs::path canonical_clean_game_dir = games / "canonical-clean-stitching";
+  fs::create_directories(canonical_clean_game_dir);
+  std::ofstream(canonical_clean_game_dir / "seam_file.png") << "must be cleaned\n";
+  const fs::path canonical_clean_pipeline_path = root / "canonical-clean-stitching-pipeline.yaml";
+  std::ofstream(canonical_clean_pipeline_path) << "application:\n  complete-configuration: 1\n"
+                                               << "hmstitcher: {}\n";
+  hm::Configurator canonical_clean_stitching(
+      "canonical-clean-stitching", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool canonical_clean_stitching_loaded = canonical_clean_stitching.configure().ok() &&
+      canonical_clean_stitching.underlay_config("pipeline", canonical_clean_pipeline_path.string());
+  const absl::Status canonical_clean_stitching_status = canonical_clean_stitching_loaded
+      ? canonical_clean_stitching.complete_configuration(
+            /*force=*/true,
+            /*clean_stitching_artifacts=*/true,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            canonical_clean_pipeline_path.parent_path())
+      : absl::InternalError("canonical clean stitching fixture did not load");
+  ok &= expect(
+      canonical_clean_stitching_status.code() == absl::StatusCode::kCancelled &&
+          !fs::exists(canonical_clean_game_dir / "seam_file.png"),
+      "canonical stitching.enabled=true must own direct clean-only artifact cleanup");
 
   const fs::path clear_game_dir = games / "mapping-explicit-clear";
   fs::create_directories(clear_game_dir);

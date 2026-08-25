@@ -25,6 +25,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"plugin-type", G_TYPE_STRING, true},
           {"plugin-private-config", G_TYPE_STRING, true},
           {"post-stitch-rotate-degrees", G_TYPE_DOUBLE, true},
+          {"max-output-width", G_TYPE_UINT, true},
           {"fixed-edge-rotation-angle", G_TYPE_DOUBLE, true},
           {"fixed-edge-rotation-angle-left", G_TYPE_DOUBLE, true},
           {"fixed-edge-rotation-angle-right", G_TYPE_DOUBLE, true},
@@ -134,6 +135,7 @@ int main(int argc, char** argv) {
               {"plugin-type", "playcropper"},
               {"plugin-private-config", "show=1;runtime-output-max-width=3840"},
               {"fixed-edge-rotation-angle", "12.5"},
+              {"max-output-width", "4096"},
               {"fixed-edge-rotation-angle-left", "25.0"},
               {"fixed-edge-rotation-angle-right", "75.0"},
               {"dynamic-acceleration-scaling", "1.25"},
@@ -151,6 +153,7 @@ int main(int argc, char** argv) {
   guint output_width = 0;
   gchar* plugin_type = nullptr;
   gchar* private_config = nullptr;
+  guint max_output_width = 0;
   gdouble fixed_edge_rotation_angle = 0.0;
   gdouble fixed_edge_rotation_angle_left = 0.0;
   gdouble fixed_edge_rotation_angle_right = 0.0;
@@ -172,6 +175,8 @@ int main(int argc, char** argv) {
       &plugin_type,
       "plugin-private-config",
       &private_config,
+      "max-output-width",
+      &max_output_width,
       "fixed-edge-rotation-angle",
       &fixed_edge_rotation_angle,
       "fixed-edge-rotation-angle-left",
@@ -194,7 +199,7 @@ int main(int argc, char** argv) {
 
   const bool ok = silent == TRUE && source_id == 3 && output_width == 1920 && plugin_type &&
       std::string(plugin_type) == "playcropper" && private_config &&
-      std::string(private_config) == "show=1;runtime-output-max-width=3840" &&
+      std::string(private_config) == "show=1;runtime-output-max-width=3840" && max_output_width == 4096 &&
       std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 && std::abs(fixed_edge_rotation_angle_left - 25.0) < 1e-6 &&
       std::abs(fixed_edge_rotation_angle_right - 75.0) < 1e-6 && std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 &&
       high_bit_depth == TRUE && std::abs(shadow_lift - 42.5) < 1e-6 && shadow_lift_black_point == TRUE &&
@@ -239,6 +244,30 @@ int main(int argc, char** argv) {
       !invalid_exposure_rejected || std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
       high_bit_depth_after_invalid != TRUE) {
     std::cerr << "videoprep property roundtrip failed\n";
+    return 1;
+  }
+
+  GstElement* alias_precedence = gst_element_factory_make("playcropper", nullptr);
+  if (!alias_precedence) {
+    std::cerr << "Could not create playcropper alias precedence element\n";
+    return 1;
+  }
+  g_object_set(
+      G_OBJECT(alias_precedence),
+      "plugin-type",
+      "playcropper",
+      "max-output-width",
+      4096U,
+      "plugin-private-config",
+      "stitch_max_output_width=2048",
+      nullptr);
+  const GstStateChangeReturn alias_state = gst_element_set_state(alias_precedence, GST_STATE_READY);
+  guint alias_width = 0;
+  g_object_get(G_OBJECT(alias_precedence), "max-output-width", &alias_width, nullptr);
+  gst_element_set_state(alias_precedence, GST_STATE_NULL);
+  gst_object_unref(alias_precedence);
+  if (alias_state != GST_STATE_CHANGE_SUCCESS || alias_width != 4096U) {
+    std::cerr << "videoprep max-output-width alias precedence failed\n";
     return 1;
   }
 

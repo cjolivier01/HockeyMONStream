@@ -16,10 +16,17 @@ namespace hm::stitching {
 namespace {
 
 absl::Status validate_source_image(const cv::Mat& image, const char* side) {
-  if (image.empty() || image.type() != CV_8UC3) {
-    return absl::InvalidArgumentError(std::string(side) + " feature image must be non-empty CV_8UC3 BGR");
+  if (image.empty() || image.channels() != 3 || (image.depth() != CV_8U && image.depth() != CV_16U)) {
+    return absl::InvalidArgumentError(std::string(side) + " feature image must be non-empty 8-bit or 16-bit BGR");
   }
   return absl::OkStatus();
+}
+
+float bgr_channel_to_unit_float(const cv::Mat& image, int y, int x, int channel) {
+  if (image.depth() == CV_16U) {
+    return static_cast<float>(image.ptr<cv::Vec3w>(y)[x][channel]) / 65535.0f;
+  }
+  return static_cast<float>(image.ptr<cv::Vec3b>(y)[x][channel]) / 255.0f;
 }
 
 absl::StatusOr<FeaturePairInput> prepare_feature_pair(
@@ -57,18 +64,24 @@ absl::StatusOr<FeaturePairInput> prepare_feature_pair(
     cv::resize(source, resized, {width, height}, 0.0, 0.0, cv::INTER_AREA);
     const size_t image_base = static_cast<size_t>(image_index) * input_channels * image_plane;
     for (int y = 0; y < height; ++y) {
-      const cv::Vec3b* row = resized.ptr<cv::Vec3b>(y);
       for (int x = 0; x < width; ++x) {
+        const float blue = bgr_channel_to_unit_float(resized, y, x, 0);
+        const float green = bgr_channel_to_unit_float(resized, y, x, 1);
+        const float red = bgr_channel_to_unit_float(resized, y, x, 2);
         if (input_channels == 1) {
           result.tensor[image_base + static_cast<size_t>(y) * FeatureMatcher::kInputWidth + x] =
-              (0.299f * row[x][2] + 0.587f * row[x][1] + 0.114f * row[x][0]) / 255.0f;
+              0.299f * red + 0.587f * green + 0.114f * blue;
           continue;
         }
-        for (int channel = 0; channel < 3; ++channel) {
-          result.tensor
-              [image_base + static_cast<size_t>(channel) * image_plane +
-               static_cast<size_t>(y) * FeatureMatcher::kInputWidth + x] = row[x][2 - channel] / 255.0f;
-        }
+        result.tensor
+            [image_base + static_cast<size_t>(0) * image_plane + static_cast<size_t>(y) * FeatureMatcher::kInputWidth +
+             x] = red;
+        result.tensor
+            [image_base + static_cast<size_t>(1) * image_plane + static_cast<size_t>(y) * FeatureMatcher::kInputWidth +
+             x] = green;
+        result.tensor
+            [image_base + static_cast<size_t>(2) * image_plane + static_cast<size_t>(y) * FeatureMatcher::kInputWidth +
+             x] = blue;
       }
     }
   }
@@ -206,6 +219,30 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
   if (accepted.empty())
     return absl::NotFoundError("Feature matcher produced no usable matches");
 
+  auto selected = SelectControlPoints(accepted, input.source_sizes[0], max_control_points);
+  if (!selected.ok())
+    return selected.status();
+  FeatureMatchResult result;
+  result.accepted_match_count = accepted.size();
+  result.accepted = std::move(accepted);
+  result.selected = std::move(*selected);
+  return result;
+}
+
+absl::StatusOr<std::vector<FeatureMatch>> FeatureMatcher::SelectControlPoints(
+    const std::vector<FeatureMatch>& accepted,
+    cv::Size left_source_size,
+    size_t max_control_points) {
+  if (max_control_points == 0) {
+    return absl::InvalidArgumentError("Maximum control point count must be positive");
+  }
+  if (left_source_size.width <= 0 || left_source_size.height <= 0) {
+    return absl::InvalidArgumentError("Feature match selection source size is invalid");
+  }
+  if (accepted.empty()) {
+    return absl::NotFoundError("Feature matcher produced no usable matches");
+  }
+
   // Select a spatially distributed, deterministic subset. The former global
   // Y-rank linspace duplicated points when the requested cap exceeded the
   // model output and allowed one marginal match to shift every later rank.
@@ -215,10 +252,12 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
   constexpr size_t grid_rows = 9;
   std::vector<std::vector<size_t>> cells(grid_columns * grid_rows);
   for (size_t index = 0; index < accepted.size(); ++index) {
-    const size_t column = std::min(
-        grid_columns - 1, static_cast<size_t>(accepted[index].left.x / input.source_sizes[0].width * grid_columns));
-    const size_t row =
-        std::min(grid_rows - 1, static_cast<size_t>(accepted[index].left.y / input.source_sizes[0].height * grid_rows));
+    const double normalized_x =
+        std::clamp(static_cast<double>(accepted[index].left.x) / left_source_size.width, 0.0, 1.0);
+    const double normalized_y =
+        std::clamp(static_cast<double>(accepted[index].left.y) / left_source_size.height, 0.0, 1.0);
+    const size_t column = std::min(grid_columns - 1, static_cast<size_t>(normalized_x * grid_columns));
+    const size_t row = std::min(grid_rows - 1, static_cast<size_t>(normalized_y * grid_rows));
     cells[row * grid_columns + column].push_back(index);
   }
   const auto ranked = [&](size_t lhs, size_t rhs) {
@@ -258,13 +297,11 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     };
     return key(left) < key(right);
   });
-  FeatureMatchResult result;
-  result.accepted_match_count = accepted.size();
-  result.accepted = accepted;
-  result.selected.reserve(selection_count);
+  std::vector<FeatureMatch> selected;
+  selected.reserve(selection_count);
   for (size_t index : selected_indices)
-    result.selected.push_back(accepted[index]);
-  return result;
+    selected.push_back(accepted[index]);
+  return selected;
 }
 
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(

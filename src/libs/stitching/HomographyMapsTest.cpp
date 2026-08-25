@@ -206,6 +206,25 @@ int main() {
         seam_only_selects_valid_remaps(rotated_dir), "OpenCV validity seam should not select unmapped rotated corners");
   }
 
+  fs::path tall_dir = root / "tall-width-cap";
+  fs::create_directories(tall_dir);
+  std::vector<hm::stitching::FeatureMatch> tall_matches;
+  for (int y = 10; y < 75; y += 16) {
+    for (int x = 10; x < 95; x += 16) {
+      tall_matches.push_back(
+          {{static_cast<float>(x), static_cast<float>(y)},
+           {static_cast<float>(x - 30), static_cast<float>(y - 160)},
+           0.9f});
+    }
+  }
+  auto tall = hm::stitching::CreateOpenCvMappingFiles(
+      tall_dir, left, right, tall_matches, hm::stitching::MappingBackend::kOpenCvAffineRansac, std::nullopt, 80);
+  ok &= expect(tall.ok(), "OpenCV width cap should allow tall canvas generation");
+  if (tall.ok()) {
+    ok &= expect(tall->canvas_width == 80, "OpenCV width cap must constrain width");
+    ok &= expect(tall->canvas_height > 80, "OpenCV width cap must not act as a longest-side cap");
+  }
+
   fs::remove_all(root);
   return ok ? 0 : 1;
 }

@@ -9,6 +9,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -17,6 +18,11 @@
 #include <vector>
 
 namespace hm {
+template <typename T>
+class CudaMat;
+namespace stitching {
+struct StitchingCalibrationFramePair;
+}
 namespace stitcher {
 
 struct RuntimeFrameKey {
@@ -27,7 +33,8 @@ struct RuntimeFrameKey {
 absl::StatusOr<std::pair<size_t, size_t>> select_runtime_stitch_pair(
     const std::vector<RuntimeFrameKey>& frames,
     const std::set<guint>& eos_source_ids = {},
-    bool pipeline_eos_seen = false);
+    bool pipeline_eos_seen = false,
+    bool require_initial_continuity = true);
 
 /**
  * Enforces the lossless stitched-frame contract. The first frame must be zero, every later frame must be exactly the
@@ -120,12 +127,22 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     bool pipeline_eos_seen{false};
     std::set<guint> source_ids;
   };
+  struct CalibrationSurfaceSnapshot {
+    std::unique_ptr<hm::CudaMat<uchar4>> storage;
+    NvBufSurfaceParams params{};
+  };
+  struct CalibrationFramePairSnapshot {
+    CalibrationSurfaceSnapshot left;
+    CalibrationSurfaceSnapshot right;
+  };
 
   absl::Status ensure_stitcher();
   absl::Status reload_stitcher();
   absl::Status configure_one_pass_from_surfaces(
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);
+  absl::Status configure_one_pass_from_frame_pairs(
+      const std::vector<hm::stitching::StitchingCalibrationFramePair>& frame_pairs);
   absl::Status apply_post_stitch_rotation(
       hm::surface::Surface surface,
       size_t width,
@@ -146,7 +163,14 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);
   absl::StatusOr<std::pair<hm::surface::Surface, hm::surface::Surface>> high_bit_calibration_surfaces();
+  absl::StatusOr<CalibrationSurfaceSnapshot> capture_calibration_surface(hm::surface::Surface surface);
+  absl::Status capture_calibration_pair(hm::surface::Surface left, hm::surface::Surface right);
+  std::vector<hm::stitching::StitchingCalibrationFramePair> captured_calibration_frame_pairs();
+  bool should_capture_calibration_pair(uint64_t pair_pts_ns) const;
+  bool calibration_input_exhausted(const EosSnapshot& eos_snapshot);
+  absl::Status report_fatal_calibration_failure(const absl::Status& status);
   void release_high_bit_calibration_surfaces();
+  void release_captured_calibration_surfaces();
   void release_high_bit_field_mask_canvas();
 
   absl::Mutex stitcher_mu_;
@@ -177,6 +201,9 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool show_{false};
   bool match_exposure_{false};
   bool minimize_blend_{false};
+  size_t calibration_frame_count_{4};
+  uint64_t calibration_sample_span_ns_{0};
+  int max_output_width_{0};
   bool require_decoded_frame_sequence_meta_{false};
   bool high_bit_depth_{false};
   bool caps_initialized_{false};
@@ -189,6 +216,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::set<guint> eos_source_ids_;
   std::unordered_map<NvBufSurface*, EosSnapshot> eos_snapshot_by_surface_;
   std::optional<gint> last_stitched_frame_num_;
+  bool dropped_runtime_calibration_batches_before_output_{false};
   std::atomic<double> post_stitch_rotate_degrees_{0.0};
   void* rotation_scratch_data_{nullptr};
   size_t rotation_scratch_pitch_{0};
@@ -200,6 +228,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unique_ptr<hm::CudaMat<half4>> high_bit_canvas_;
   std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_left_;
   std::unique_ptr<hm::CudaMat<uchar4>> high_bit_calibration_right_;
+  std::vector<CalibrationFramePairSnapshot> captured_calibration_frame_pairs_;
   std::unique_ptr<hm::CudaMat<uchar4>> high_bit_field_mask_canvas_;
   NvBufSurfaceParams high_bit_calibration_left_params_{};
   NvBufSurfaceParams high_bit_calibration_right_params_{};

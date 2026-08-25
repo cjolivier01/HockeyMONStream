@@ -76,6 +76,7 @@ hmstitcher:
   plugin-type: hmstitcher
   post-stitch-rotate-degrees: 2.5
   ui-preview: 1
+  calibration-sample-span-ns: 120000000000
   properties:
     num-output-buffers: 6
   private-properties:
@@ -123,8 +124,10 @@ ds-playtracker:
       !expect_property(stitcher.private_properties, "one-pass-mode", "true")) {
     return 1;
   }
-  if (std::abs(stitcher.post_stitch_rotate_degrees - 2.5) > 1e-6 || !stitcher.ui_preview) {
-    std::cerr << "Expected post-stitch rotation and UI preview settings to parse into HmStitcherConfig\n";
+  if (std::abs(stitcher.post_stitch_rotate_degrees - 2.5) > 1e-6 || !stitcher.ui_preview ||
+      stitcher.calibration_sample_span_ns != 120000000000UL) {
+    std::cerr << "Expected post-stitch rotation, UI preview, and calibration sample span settings to parse into "
+                 "HmStitcherConfig\n";
     return 1;
   }
 
