@@ -462,8 +462,19 @@ int main() {
            "panorama.tif",
            "left.png",
            "right.png",
+           "stitching_canvas_provenance",
        }) {
     ok &= expect(fs::is_regular_file(root / "game" / artifact), "configured Hugin artifact must be published");
+  }
+  auto provenance_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  ok &= expect(provenance_lock.ok(), "published Hugin provenance must be readable under the artifact lock");
+  if (provenance_lock.ok()) {
+    const auto provenance = hm::stitching::HuginProject::ReadCanvasProvenance(root / "game", **provenance_lock);
+    ok &= expect(
+        provenance.ok() && provenance->has_value() && (*provenance)->max_output_width == 0 &&
+            (*provenance)->canvas_width == 42 && (*provenance)->canvas_height == 32,
+        "published Hugin provenance must record the requested cap and measured remap canvas");
+    provenance_lock->reset();
   }
 
   const fs::path fallback_game = root / "fallback-game";

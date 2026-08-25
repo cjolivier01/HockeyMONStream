@@ -6178,7 +6178,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const YAML::Node after_max_width_auto = YAML::LoadFile(config.string());
   const YAML::Node after_max_width_auto_calibration = after_max_width_auto["hstream_ui"]["stitching_calibration"];
   if (!expect(
-          after_max_width_auto["stitching"]["max_output_width"].IsNull() &&
+          !lookup_yaml_path(after_max_width_auto, {"stitching", "max_output_width"}, nullptr) &&
               !lookup_yaml_path(
                   after_max_width_auto, {"pipeline", "hmstitcher", "properties", "max-output-width"}, nullptr) &&
               !lookup_yaml_path(
@@ -6212,7 +6212,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const YAML::Node after_native_width_auto = YAML::LoadFile(config.string());
   const YAML::Node after_native_width_auto_calibration = after_native_width_auto["hstream_ui"]["stitching_calibration"];
   if (!expect(
-          after_native_width_auto["stitching"]["max_output_width"].IsNull() &&
+          !lookup_yaml_path(after_native_width_auto, {"stitching", "max_output_width"}, nullptr) &&
               !lookup_yaml_path(
                   after_native_width_auto, {"pipeline", "hmstitcher", "properties", "max_output_width"}, nullptr) &&
               !lookup_yaml_path(
@@ -7852,6 +7852,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
           saved_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
               saved_zero["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
               saved_zero["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
+              !lookup_yaml_path(saved_zero, {"stitching", "max_output_width"}, nullptr) &&
               !lookup_yaml_path(saved_zero, {"hstream_ui", "generated_stitching_backend_choices"}, nullptr) &&
               !lookup_yaml_path(saved_zero, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr) &&
               !save->isEnabled(),
@@ -7885,8 +7886,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       const YAML::Node played_zero = YAML::LoadFile(copied_config.string());
       ok &= expect(
           user_default_window.logText().count("--stitch-frame-time=00:00:00") == zero_argument_count + 1 &&
-              played_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00",
-          "Play must pass and retain an explicit zero stitch frame when the lower-layer default is nonzero");
+              played_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
+              !lookup_yaml_path(played_zero, {"stitching", "max_output_width"}, nullptr),
+          "Play must retain explicit non-default values without materializing an inherited Auto max width");
       activate(stop);
       qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
     }
@@ -7899,10 +7901,26 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   }
   {
     HStreamWindow user_native_default_window;
+    auto* game_id = require_child<QLineEdit>(&user_native_default_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&user_native_default_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&user_native_default_window, "savePresetButton");
     auto* stitch_max_output_width = require_child<QSpinBox>(&user_native_default_window, "stitchMaxOutputWidthSpin");
+    if (game_id && create) {
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+    }
     ok &= expect(
-        stitch_max_output_width && stitch_max_output_width->value() == 4321,
-        "A user-level private max-width alias must beat lower-layer public and private aliases");
+        game_id && create && save && stitch_max_output_width && stitch_max_output_width->value() == 4321,
+        "A later user-level private max-width default must reach a game that previously inherited Auto");
+    if (save && stitch_max_output_width) {
+      stitch_max_output_width->setValue(0);
+      QApplication::processEvents();
+      activate(save);
+      const YAML::Node saved_auto_override = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          saved_auto_override["stitching"]["max_output_width"].IsNull(),
+          "Selecting Auto against a nonzero inherited max width must persist an explicit game override");
+    }
   }
   if (original_home.isEmpty())
     qunsetenv("HOME");

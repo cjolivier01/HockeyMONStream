@@ -3453,6 +3453,14 @@ void remove_stitch_max_output_width_native_aliases(YAML::Node config) {
   }
 }
 
+void write_stitch_max_output_width_override(YAML::Node config, int value, int inherited_value) {
+  remove_yaml_path(config, {"stitching", "max_output_width"});
+  remove_stitch_max_output_width_native_aliases(config);
+  if (value == inherited_value)
+    return;
+  config["stitching"]["max_output_width"] = value > 0 ? YAML::Node(value) : YAML::Node(YAML::NodeType::Null);
+}
+
 int read_stitch_max_output_width_from_config(
     YAML::Node config,
     int default_value,
@@ -5604,15 +5612,12 @@ bool HStreamWindow::saveStitchingCalibrationState(
   calibration["frame_count"] = active_calibration_frame_count_;
   remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
   remove_yaml_path(config, {"stitching", "calibration_frame_count"});
-  remove_stitch_max_output_width_native_aliases(config);
   config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
   config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
   if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
     config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
   }
-  config["stitching"]["max_output_width"] = active_stitch_max_output_width_ > 0
-      ? YAML::Node(active_stitch_max_output_width_)
-      : YAML::Node(YAML::NodeType::Null);
+  write_stitch_max_output_width_override(config, active_stitch_max_output_width_, default_stitch_max_output_width_);
   calibration["status"] = status.toStdString();
   if (status == "pending")
     calibration["rink_mask_status"] = "pending";
@@ -5757,9 +5762,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
       config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
     }
-    config["stitching"]["max_output_width"] = active_stitch_max_output_width_ > 0
-        ? YAML::Node(active_stitch_max_output_width_)
-        : YAML::Node(YAML::NodeType::Null);
+    write_stitch_max_output_width_override(config, active_stitch_max_output_width_, default_stitch_max_output_width_);
     const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed ||
         frame_count_changed || control_point_matcher_changed || mapping_backend_changed || max_output_width_changed ||
         saved_status != "complete";
@@ -11895,8 +11898,7 @@ bool HStreamWindow::applySavedControlConfig(
   }
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
-  config["stitching"]["max_output_width"] =
-      selected_max_output_width > 0 ? YAML::Node(selected_max_output_width) : YAML::Node(YAML::NodeType::Null);
+  write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
   if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
       mapping_backend_changed || max_output_width_changed) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];

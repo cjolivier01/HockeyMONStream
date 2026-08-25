@@ -997,6 +997,7 @@ absl::Status clean_stitching_artifacts_impl(
   HM_RETURN_IF_ERROR(clean_pattern("*.pto"));
   HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tif"));
   HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tiff"));
+  HM_RETURN_IF_ERROR(clean_pattern("stitching_canvas_provenance"));
   HM_RETURN_IF_ERROR(clean_pattern("panorama.tif"));
   HM_RETURN_IF_ERROR(clean_pattern("seam_file.png"));
   HM_RETURN_IF_ERROR(clean_pattern("matches.png"));
@@ -1052,16 +1053,11 @@ absl::Status clean_stitching_artifacts_from_control_points(
   return clean_stitching_artifacts_impl(game_dir, /*preserve_synchronized_inputs=*/true, expected_invalidation_id);
 }
 
-static absl::StatusOr<bool> validate_stitching_artifacts(
+static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     const std::string& game_dir,
     size_t max_output_width,
-    bool normalize_seam) {
-  std::error_code directory_error;
-  if (!fs::is_directory(game_dir, directory_error) || directory_error)
-    return false;
-  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
-  if (!artifact_lock.ok())
-    return artifact_lock.status();
+    bool normalize_seam,
+    const HuginProject::ArtifactLock& artifact_lock) {
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
@@ -1086,6 +1082,24 @@ static absl::StatusOr<bool> validate_stitching_artifacts(
     return false;
   }
   canvas_size = *canvas_status;
+  auto provenance = HuginProject::ReadCanvasProvenance(game_dir, artifact_lock);
+  if (!provenance.ok()) {
+    if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
+        absl::IsNotFound(provenance.status())) {
+      std::cout << "Stitching canvas provenance is invalid: " << provenance.status() << std::endl;
+      return false;
+    }
+    return provenance.status();
+  }
+  if (provenance->has_value() &&
+      ((*provenance)->max_output_width != max_output_width || (*provenance)->canvas_width != canvas_size.width ||
+       (*provenance)->canvas_height != canvas_size.height)) {
+    std::cout << "Stitching artifacts were generated for max output width " << (*provenance)->max_output_width
+              << " and canvas " << (*provenance)->canvas_width << "x" << (*provenance)->canvas_height
+              << "; requested max output width is " << max_output_width << " and published canvas is "
+              << canvas_size.width << "x" << canvas_size.height << "; regenerating mapping artifacts" << std::endl;
+    return false;
+  }
   const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
   if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
       absl::IsNotFound(remap_status) || absl::IsResourceExhausted(remap_status)) {
@@ -1138,11 +1152,31 @@ static absl::StatusOr<bool> validate_stitching_artifacts(
 }
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width) {
-  return validate_stitching_artifacts(game_dir, max_output_width, /*normalize_seam=*/false);
+  std::error_code directory_error;
+  if (!fs::is_directory(game_dir, directory_error) || directory_error)
+    return false;
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  return validate_stitching_artifacts_locked(game_dir, max_output_width, /*normalize_seam=*/false, **artifact_lock);
 }
 
-absl::StatusOr<bool> validate_and_normalize_stitching_artifacts(const std::string& game_dir, size_t max_output_width) {
-  return validate_stitching_artifacts(game_dir, max_output_width, /*normalize_seam=*/true);
+absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> lock_validated_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  std::error_code directory_error;
+  if (!fs::is_directory(game_dir, directory_error) || directory_error)
+    return std::unique_ptr<HuginProject::ArtifactLock>();
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  bool configured = false;
+  HM_ASSIGN_OR_RETURN(
+      configured,
+      validate_stitching_artifacts_locked(game_dir, max_output_width, /*normalize_seam=*/true, **artifact_lock));
+  if (!configured)
+    return std::unique_ptr<HuginProject::ArtifactLock>();
+  return std::move(*artifact_lock);
 }
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
@@ -1161,6 +1195,41 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
   }
   CanvasSize canvas_size;
   HM_ASSIGN_OR_RETURN(canvas_size, get_mapping_canvas_size(fs::path(game_dir)));
+  CanvasSize effective_canvas_size = canvas_size;
+  if (max_output_width > 0) {
+    HM_ASSIGN_OR_RETURN(effective_canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));
+  }
+  return artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension);
+}
+
+absl::StatusOr<bool> stitching_artifacts_require_canvas_regeneration(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  if (!test_dependency_tree(game_dir, /*add_rink_mask=*/false))
+    return false;
+  CanvasSize canvas_size;
+  HM_ASSIGN_OR_RETURN(canvas_size, get_mapping_canvas_size(fs::path(game_dir)));
+  auto provenance = HuginProject::ReadCanvasProvenance(game_dir, **artifact_lock);
+  if (!provenance.ok()) {
+    if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
+        absl::IsNotFound(provenance.status())) {
+      return true;
+    }
+    return provenance.status();
+  }
+  if (provenance->has_value() &&
+      ((*provenance)->max_output_width != max_output_width || (*provenance)->canvas_width != canvas_size.width ||
+       (*provenance)->canvas_height != canvas_size.height)) {
+    return true;
+  }
+  if (max_output_width > 0 && canvas_size.width > max_output_width)
+    return true;
+  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+  if (!max_canvas_dimension.has_value())
+    return false;
   CanvasSize effective_canvas_size = canvas_size;
   if (max_output_width > 0) {
     HM_ASSIGN_OR_RETURN(effective_canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));
@@ -1922,11 +1991,17 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
   return configured_output_generation(*config, *hugin_generation, output_size);
 }
 
-absl::Status visit_current_field_mask(
+namespace {
+
+using FieldMaskConsumer =
+    std::function<absl::Status(const std::string& mask_path, const std::optional<CanvasSize>& expected_size)>;
+
+absl::Status visit_current_field_mask_impl(
     const std::string& game_dir,
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id,
-    const std::function<absl::Status(const std::string& mask_path)>& consumer) {
+    const std::optional<size_t>& max_output_width,
+    const FieldMaskConsumer& consumer) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
@@ -1948,19 +2023,42 @@ absl::Status visit_current_field_mask(
     return config.status();
   HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
   std::string current_output_generation;
+  std::optional<std::string> compatible_legacy_generation;
+  std::optional<CanvasSize> expected_canvas_size;
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
     current_output_generation = expected_output_generation;
+    HM_ASSIGN_OR_RETURN(expected_canvas_size, stitched_output_size_from_generation(expected_output_generation));
+    if (!expected_canvas_size.has_value()) {
+      CanvasSize native_size;
+      HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
+      expected_canvas_size = native_size;
+    }
+  } else if (max_output_width.has_value()) {
+    CanvasSize native_size;
+    HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
+    CanvasSize effective_size = native_size;
+    if (*max_output_width > 0)
+      HM_ASSIGN_OR_RETURN(effective_size, get_effective_mapping_canvas_size(root, *max_output_width));
+    HM_ASSIGN_OR_RETURN(
+        current_output_generation, configured_output_generation(*config, *hugin_generation, effective_size));
+    expected_canvas_size = effective_size;
+    if (effective_size.width == native_size.width && effective_size.height == native_size.height) {
+      HM_ASSIGN_OR_RETURN(compatible_legacy_generation, configured_output_generation(*config, *hugin_generation));
+    }
   } else {
-    auto configured_generation = configured_output_generation(*config, *hugin_generation);
-    if (!configured_generation.ok())
-      return configured_generation.status();
-    current_output_generation = *configured_generation;
+    HM_ASSIGN_OR_RETURN(current_output_generation, configured_output_generation(*config, *hugin_generation));
+    CanvasSize native_size;
+    HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
+    expected_canvas_size = native_size;
   }
   try {
     const YAML::Node saved_generation = (*config)["rink"]["stitched_output_generation"];
-    if (!saved_generation || !saved_generation.IsScalar() ||
-        saved_generation.as<std::string>() != current_output_generation) {
+    const bool current_matches = saved_generation && saved_generation.IsScalar() &&
+        saved_generation.as<std::string>() == current_output_generation;
+    const bool legacy_matches = compatible_legacy_generation.has_value() && saved_generation &&
+        saved_generation.IsScalar() && saved_generation.as<std::string>() == *compatible_legacy_generation;
+    if (!current_matches && !legacy_matches) {
       return absl::FailedPreconditionError("Field mask does not match the current stitched-output generation");
     }
   } catch (const YAML::Exception& exception) {
@@ -1976,16 +2074,21 @@ absl::Status visit_current_field_mask(
     return absl::FailedPreconditionError("Field mask is empty or unreadable: " + mask_path.string());
   }
 
-  return consumer(mask_path.string());
+  return consumer(mask_path.string(), expected_canvas_size);
 }
 
-absl::StatusOr<cv::Mat> load_field_mask(
+absl::StatusOr<cv::Mat> load_field_mask_impl(
     const std::string& game_dir,
     const std::string& expected_output_generation,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::optional<size_t>& max_output_width) {
   cv::Mat mask;
-  const absl::Status visit_status = visit_current_field_mask(
-      game_dir, expected_output_generation, expected_invalidation_id, [&](const std::string& mask_path) {
+  const absl::Status visit_status = visit_current_field_mask_impl(
+      game_dir,
+      expected_output_generation,
+      expected_invalidation_id,
+      max_output_width,
+      [&](const std::string& mask_path, const std::optional<CanvasSize>& expected_canvas_size) {
         if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
           const long delay_ms = std::strtol(delay, nullptr, 10);
           if (delay_ms > 0)
@@ -2006,14 +2109,6 @@ absl::StatusOr<cv::Mat> load_field_mask(
             return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
           }
         }
-        std::optional<CanvasSize> expected_canvas_size;
-        if (!expected_output_generation.empty()) {
-          HM_ASSIGN_OR_RETURN(expected_canvas_size, stitched_output_size_from_generation(expected_output_generation));
-        }
-        absl::StatusOr<CanvasSize> mapping_canvas_size = get_mapping_canvas_size(fs::path(game_dir));
-        if (!expected_canvas_size.has_value() && mapping_canvas_size.ok()) {
-          expected_canvas_size = *mapping_canvas_size;
-        }
         if (expected_canvas_size.has_value() &&
             (mask.cols != static_cast<int>(expected_canvas_size->width) ||
              mask.rows != static_cast<int>(expected_canvas_size->height))) {
@@ -2029,6 +2124,30 @@ absl::StatusOr<cv::Mat> load_field_mask(
   return mask;
 }
 
+} // namespace
+
+absl::Status visit_current_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id,
+    const std::function<absl::Status(const std::string& mask_path)>& consumer) {
+  if (!consumer)
+    return absl::InvalidArgumentError("A field-mask consumer is required");
+  return visit_current_field_mask_impl(
+      game_dir,
+      expected_output_generation,
+      expected_invalidation_id,
+      std::nullopt,
+      [&](const std::string& mask_path, const std::optional<CanvasSize>&) { return consumer(mask_path); });
+}
+
+absl::StatusOr<cv::Mat> load_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask_impl(game_dir, expected_output_generation, expected_invalidation_id, std::nullopt);
+}
+
 bool is_field_mask_configured(
     const std::string& game_dir,
     const std::string& expected_output_generation,
@@ -2040,19 +2159,7 @@ bool is_field_mask_configured_for_stitching_config(
     const std::string& game_dir,
     size_t max_output_width,
     const std::string& expected_invalidation_id) {
-  auto output_generation = configured_stitched_output_generation_id(game_dir, max_output_width);
-  if (output_generation.ok() && is_field_mask_configured(game_dir, *output_generation, expected_invalidation_id)) {
-    return true;
-  }
-  if (max_output_width > 0) {
-    auto native_size = stitching_canvas_size(game_dir);
-    auto effective_size = stitching_canvas_size(game_dir, max_output_width);
-    if (!native_size.ok() || !effective_size.ok() || native_size->width != effective_size->width ||
-        native_size->height != effective_size->height) {
-      return false;
-    }
-  }
-  return is_field_mask_configured(game_dir, {}, expected_invalidation_id);
+  return load_field_mask_impl(game_dir, {}, expected_invalidation_id, max_output_width).ok();
 }
 
 absl::Status save_rink_profile_locked(

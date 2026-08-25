@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -33,6 +34,7 @@
 
 #include "absl/status/status.h"
 #include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HomographyMaps.h"
 
@@ -54,8 +56,25 @@ constexpr double kMaximumOptimizationRmsPixels = 50.0;
 constexpr size_t kHardMaximumCanvasDimension = 32768;
 constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
+constexpr const char* kCanvasProvenanceArtifact = "stitching_canvas_provenance";
 
-const std::array<const char*, 10> kRequiredArtifacts = {
+const std::array<const char*, 11> kRequiredArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "left.png",
+    "right.png",
+    kCanvasProvenanceArtifact,
+};
+
+// Publications from before canvas provenance was introduced used this
+// manifest. Keep it recoverable across an interrupted upgrade.
+const std::array<const char*, 10> kPreviousRequiredArtifacts = {
     "hm_project.pto",
     "autooptimiser_out.pto",
     "mapping_0000.tif",
@@ -116,6 +135,35 @@ absl::Status write_file(const fs::path& path, const std::string& contents) {
   if (!output)
     return absl::InternalError("Failed writing Hugin file: " + path.string());
   return absl::OkStatus();
+}
+
+absl::StatusOr<size_t> parse_canvas_provenance_value(const std::string& line, const std::string& key) {
+  const std::string prefix = key + "=";
+  if (line.rfind(prefix, 0) != 0 || line.size() == prefix.size())
+    return absl::FailedPreconditionError("Invalid stitching canvas provenance field: " + key);
+  size_t value = 0;
+  const char* begin = line.data() + prefix.size();
+  const char* end = line.data() + line.size();
+  const auto parsed = std::from_chars(begin, end, value);
+  if (parsed.ec != std::errc() || parsed.ptr != end)
+    return absl::FailedPreconditionError("Invalid stitching canvas provenance value: " + key);
+  return value;
+}
+
+absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std::string& contents) {
+  std::istringstream input(contents);
+  std::vector<std::string> lines;
+  for (std::string line; std::getline(input, line);)
+    lines.push_back(std::move(line));
+  if (lines.size() != 4 || lines[0] != "version=1")
+    return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
+  HuginProject::CanvasProvenance provenance;
+  HM_ASSIGN_OR_RETURN(provenance.max_output_width, parse_canvas_provenance_value(lines[1], "max-output-width"));
+  HM_ASSIGN_OR_RETURN(provenance.canvas_width, parse_canvas_provenance_value(lines[2], "canvas-width"));
+  HM_ASSIGN_OR_RETURN(provenance.canvas_height, parse_canvas_provenance_value(lines[3], "canvas-height"));
+  if (provenance.canvas_width == 0 || provenance.canvas_height == 0)
+    return absl::FailedPreconditionError("Stitching canvas provenance dimensions must be positive");
+  return provenance;
 }
 
 std::map<std::string, std::string> environment() {
@@ -200,6 +248,12 @@ std::vector<std::string> artifact_names() {
 
 std::set<std::string> legacy_artifact_names() {
   std::set<std::string> names(kLegacyRequiredArtifacts.begin(), kLegacyRequiredArtifacts.end());
+  names.insert(kOptionalArtifacts.begin(), kOptionalArtifacts.end());
+  return names;
+}
+
+std::set<std::string> previous_artifact_names() {
+  std::set<std::string> names(kPreviousRequiredArtifacts.begin(), kPreviousRequiredArtifacts.end());
   names.insert(kOptionalArtifacts.begin(), kOptionalArtifacts.end());
   return names;
 }
@@ -321,7 +375,9 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       }
       const std::vector<std::string> current_name_list = artifact_names();
       const std::set<std::string> current_names(current_name_list.begin(), current_name_list.end());
-      if (!manifest.eof() || (manifested != current_names && manifested != legacy_artifact_names())) {
+      if (!manifest.eof() ||
+          (manifested != current_names && manifested != previous_artifact_names() &&
+           manifested != legacy_artifact_names())) {
         return absl::FailedPreconditionError("Prepared stitch transaction has an incomplete artifact manifest");
       }
       const fs::path previous = transaction / "previous";
@@ -723,7 +779,7 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
   return absl::OkStatus();
 }
 
-absl::Status validate_seam_layout(
+absl::StatusOr<PngLayout> validated_seam_layout(
     const fs::path& path,
     int native_canvas_width,
     int native_canvas_height,
@@ -743,7 +799,7 @@ absl::Status validate_seam_layout(
   const bool matches_effective_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
       layout->width == effective_canvas_width && layout->height == effective_canvas_height;
   if (matches_native_canvas || matches_effective_canvas)
-    return absl::OkStatus();
+    return *layout;
   if (!layout->has_offset && layout->offset_x == 0 && layout->offset_y == 0) {
     return absl::FailedPreconditionError(
         "PNG seam has full-canvas origin but matches neither the native nor capped mapping canvas: " + path.string() +
@@ -758,7 +814,7 @@ absl::Status validate_seam_layout(
         std::to_string(layout->offset_y) + " canvas=" + std::to_string(native_canvas_width) + "x" +
         std::to_string(native_canvas_height));
   }
-  return absl::OkStatus();
+  return *layout;
 }
 
 absl::Status validate_seam_for_configured_artifacts(
@@ -767,11 +823,8 @@ absl::Status validate_seam_for_configured_artifacts(
     int native_canvas_height,
     int effective_canvas_width,
     int effective_canvas_height) {
-  const absl::Status layout_status = validate_seam_layout(
+  auto layout = validated_seam_layout(
       path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
-  if (!layout_status.ok())
-    return layout_status;
-  auto layout = read_png_layout(path);
   if (!layout.ok())
     return layout.status();
   auto seam = decode_nonuniform_seam(path, *layout);
@@ -1314,8 +1367,9 @@ absl::Status HuginProject::ValidateSeamLayout(
     int native_canvas_height,
     int effective_canvas_width,
     int effective_canvas_height) {
-  return validate_seam_layout(
+  auto layout = validated_seam_layout(
       seam_path, native_canvas_width, native_canvas_height, effective_canvas_width, effective_canvas_height);
+  return layout.ok() ? absl::OkStatus() : layout.status();
 }
 
 absl::Status HuginProject::ValidateSeamForConfiguredArtifacts(
@@ -1343,7 +1397,37 @@ absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir,
                << ':' << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':'
                << metadata.st_mtim.tv_nsec << '\n';
   }
+  const fs::path provenance_path = game_dir / kCanvasProvenanceArtifact;
+  std::error_code provenance_error;
+  if (fs::exists(provenance_path, provenance_error) && !provenance_error) {
+    struct stat metadata{};
+    if (::stat(provenance_path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
+      return absl::NotFoundError("Hugin generation artifact is invalid: " + provenance_path.string());
+    generation << kCanvasProvenanceArtifact << ':' << static_cast<uint64_t>(metadata.st_dev) << ':'
+               << static_cast<uint64_t>(metadata.st_ino) << ':' << static_cast<uint64_t>(metadata.st_size) << ':'
+               << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec << '\n';
+  } else if (provenance_error) {
+    return absl::InternalError("Unable to inspect Hugin canvas provenance: " + provenance_error.message());
+  }
   return generation.str();
+}
+
+absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::ReadCanvasProvenance(
+    const fs::path& game_dir,
+    const ArtifactLock&) {
+  const fs::path path = game_dir / kCanvasProvenanceArtifact;
+  std::error_code error;
+  if (!fs::exists(path, error)) {
+    if (error)
+      return absl::InternalError("Unable to inspect stitching canvas provenance: " + error.message());
+    return std::nullopt;
+  }
+  auto contents = read_file(path);
+  if (!contents.ok())
+    return contents.status();
+  CanvasProvenance provenance;
+  HM_ASSIGN_OR_RETURN(provenance, parse_canvas_provenance(*contents));
+  return provenance;
 }
 
 absl::StatusOr<std::string> HuginProject::InsertControlPoints(
@@ -1651,7 +1735,7 @@ absl::Status HuginProject::Configure(
       if (!status.ok())
         return status;
       bool mappings_valid = true;
-      for (size_t index = 2; index < kRequiredArtifacts.size(); ++index) {
+      for (size_t index = 2; index + 1 < kRequiredArtifacts.size(); ++index) {
         status = validate_nonempty_file(staging / kRequiredArtifacts[index]);
         if (!status.ok()) {
           mappings_valid = false;
@@ -1739,6 +1823,18 @@ absl::Status HuginProject::Configure(
     std::cerr << "Warning: enblend is unavailable; HM_ALLOW_HARD_SEAM_FALLBACK=1 permits a hard seam: "
               << enblend.status() << '\n';
   }
+
+  auto published_canvas = measure_staged_remap_canvas(staging, std::nullopt);
+  if (!published_canvas.ok())
+    return published_canvas.status();
+  std::ostringstream provenance;
+  provenance << "version=1\n"
+             << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
+             << "canvas-width=" << published_canvas->first << '\n'
+             << "canvas-height=" << published_canvas->second << '\n';
+  status = write_file(staging / kCanvasProvenanceArtifact, provenance.str());
+  if (!status.ok())
+    return status;
 
   status = validate_staged_artifacts(staging, options.max_canvas_dimension, options.max_output_width);
   if (!status.ok())

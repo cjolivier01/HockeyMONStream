@@ -5853,16 +5853,18 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
 }
 
 absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs::path& game_dir) {
-  bool exceeds_limit = false;
+  bool requires_regeneration = false;
   int max_output_width = 0;
   HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(config_["pipeline"]));
   HM_ASSIGN_OR_RETURN(
-      exceeds_limit, stitching::stitching_artifacts_exceed_live_canvas_limit(game_dir.string(), max_output_width));
-  if (!exceeds_limit) {
+      requires_regeneration,
+      stitching::stitching_artifacts_require_canvas_regeneration(game_dir.string(), max_output_width));
+  if (!requires_regeneration) {
     return absl::OkStatus();
   }
 
-  std::cout << "Stitching canvas exceeds live-stitch max dimension; clearing canvas-dependent cached rink geometry"
+  std::cout << "Stitching canvas requires regeneration for the active size constraints; clearing canvas-dependent "
+               "cached rink geometry"
             << std::endl;
   remove_rotation_dependent_rink_cache_keys(config_);
   remove_rotation_dependent_rink_cache_keys(private_config_);

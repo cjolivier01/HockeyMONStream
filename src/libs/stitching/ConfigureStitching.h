@@ -1,12 +1,14 @@
 #pragma once
 
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 
 /* clang-format off */
 #include "src/libs/common/Status.h"
 /* clang-format on */
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 #include "absl/status/status.h"
@@ -43,15 +45,20 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
-// Performs the configured-artifact checks while also normalizing a valid
-// cropped or native-size seam to the effective runtime canvas.
-absl::StatusOr<bool> validate_and_normalize_stitching_artifacts(
+// Validates one artifact generation, normalizes its seam, and retains the
+// publication lock so the caller can load the same generation atomically.
+// A null lock denotes a valid game directory without configured artifacts.
+absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> lock_validated_stitching_artifacts(
     const std::string& game_dir,
     size_t max_output_width = 0);
 
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width = 0);
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+absl::StatusOr<bool> stitching_artifacts_require_canvas_regeneration(
     const std::string& game_dir,
     size_t max_output_width = 0);
 

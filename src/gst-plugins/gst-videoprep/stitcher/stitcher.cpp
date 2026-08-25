@@ -563,11 +563,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
 
   // Validate artifacts and normalize the seam in one pass before hm-cupano
   // loading so stale native-over-cap maps are regenerated instead of resized here.
-  auto is_configured = hm::stitching::validate_and_normalize_stitching_artifacts(config_file_, max_output_width_);
-  if (!is_configured.ok()) {
-    return is_configured.status();
+  auto artifact_lock = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
+  if (!artifact_lock.ok()) {
+    return artifact_lock.status();
   }
-  if (!is_configured.value()) {
+  if (!artifact_lock->get()) {
     bool try_seam_repair = true;
     if (max_output_width_ > 0) {
       const auto native_canvas = hm::stitching::stitching_canvas_size(config_file_);
@@ -581,13 +581,13 @@ absl::Status StitcherPriv::ensure_stitcher() {
     if (try_seam_repair) {
       const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
       if (seam_status.ok()) {
-        is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
-        if (!is_configured.ok()) {
-          return is_configured.status();
+        artifact_lock = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
+        if (!artifact_lock.ok()) {
+          return artifact_lock.status();
         }
       }
     }
-    if (!is_configured.value()) {
+    if (!artifact_lock->get()) {
       if (!logged_missing_masks_) {
         g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
         logged_missing_masks_ = true;
@@ -601,10 +601,6 @@ absl::Status StitcherPriv::ensure_stitcher() {
     }
   }
 
-  auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(config_file_);
-  if (!artifact_lock.ok()) {
-    return artifact_lock.status();
-  }
   absl::MutexLock lk(&stitcher_mu_);
   if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
@@ -1006,6 +1002,14 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
           return configure_status;
         }
         return report_calibration_failure(configure_status);
+      }
+      {
+        absl::MutexLock lk(&stitcher_mu_);
+        stitcher_fp32_.reset();
+        stitcher_fp16_.reset();
+        stitcher_rgb10_fp16_.reset();
+        hugin_generation_id_.clear();
+        update_canvas_hints(0, 0);
       }
       configured_during_run_ = true;
     }
@@ -1665,13 +1669,14 @@ absl::Status StitcherPriv::GenerateOutput(
   std::vector<std::unique_ptr<hm::surface::EglSurfaceMapper>> calibration_egl_surface_mappers;
 #endif
   std::vector<hm::stitching::StitchingCalibrationFramePair> batch_calibration_frame_pairs;
-  bool first_pass_is_configured = false;
-  bool first_pass_configuration_state_known = false;
+  bool first_pass_stitcher_ready = false;
   bool first_pass_will_configure_stitching = false;
   if (process_pass_ == 0) {
-    HM_ASSIGN_OR_RETURN(first_pass_is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
-    first_pass_configuration_state_known = true;
-    first_pass_will_configure_stitching = configure_only_ || (!first_pass_is_configured && one_pass_mode_);
+    {
+      absl::MutexLock lk(&stitcher_mu_);
+      first_pass_stitcher_ready = has_stitcher();
+    }
+    first_pass_will_configure_stitching = configure_only_ || (!first_pass_stitcher_ready && one_pass_mode_);
   }
   if (first_pass_will_configure_stitching) {
     const size_t required_frame_count = calibration_frame_count_;
@@ -1810,12 +1815,13 @@ absl::Status StitcherPriv::GenerateOutput(
 
     // Maybe configure stitching with these frames
     if (!process_pass_++) {
-      bool is_configured = first_pass_is_configured;
-      if (!first_pass_configuration_state_known) {
-        HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+      bool stitcher_ready = false;
+      {
+        absl::MutexLock lk(&stitcher_mu_);
+        stitcher_ready = has_stitcher();
       }
-      if (!is_configured || configure_only_) {
-        if (one_pass_mode_ && !is_configured) {
+      if (!stitcher_ready || configure_only_) {
+        if (one_pass_mode_ && !stitcher_ready) {
           HM_RETURN_IF_ERROR(configure_one_pass_from_frame_pairs(batch_calibration_frame_pairs));
         } else if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
@@ -1848,25 +1854,6 @@ absl::Status StitcherPriv::GenerateOutput(
           if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
             std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
             return absl::CancelledError("Stitching has been configured");
-          }
-        }
-      } else if (one_pass_mode_) {
-        // Masks existed but we had no stitcher due to earlier failure; retry once in one-pass mode.
-        bool needs_reload = false;
-        {
-          absl::MutexLock lk(&stitcher_mu_);
-          needs_reload = !has_stitcher();
-        }
-        if (needs_reload) {
-          absl::Status reload_status = reload_stitcher();
-          if (!reload_status.ok()) {
-            return reload_status;
-          }
-        }
-        {
-          absl::MutexLock lk(&stitcher_mu_);
-          if (configured_during_run_ && !has_stitcher()) {
-            return absl::FailedPreconditionError("One-pass stitching configured but control masks could not be loaded");
           }
         }
       }
