@@ -1052,7 +1052,10 @@ absl::Status clean_stitching_artifacts_from_control_points(
   return clean_stitching_artifacts_impl(game_dir, /*preserve_synchronized_inputs=*/true, expected_invalidation_id);
 }
 
-absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width) {
+static absl::StatusOr<bool> validate_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width,
+    bool normalize_seam) {
   std::error_code directory_error;
   if (!fs::is_directory(game_dir, directory_error) || directory_error)
     return false;
@@ -1097,9 +1100,11 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
     return false;
   }
   effective_canvas_size = canvas_size;
+  double selected_scale = 1.0;
   if (max_output_width > 0) {
     const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
     effective_canvas_size = scaled.size;
+    selected_scale = scaled.scale;
   }
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   if (max_canvas_dimension.has_value() &&
@@ -1110,12 +1115,19 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
               << "; regenerating at a smaller scale" << std::endl;
     return false;
   }
-  const absl::Status seam_status = HuginProject::ValidateSeamForConfiguredArtifacts(
-      fs::path(game_dir) / "seam_file.png",
-      static_cast<int>(canvas_size.width),
-      static_cast<int>(canvas_size.height),
-      static_cast<int>(effective_canvas_size.width),
-      static_cast<int>(effective_canvas_size.height));
+  const absl::Status seam_status = normalize_seam ? HuginProject::ValidateAndNormalizeSeam(
+                                                        fs::path(game_dir) / "seam_file.png",
+                                                        static_cast<int>(canvas_size.width),
+                                                        static_cast<int>(canvas_size.height),
+                                                        static_cast<int>(effective_canvas_size.width),
+                                                        static_cast<int>(effective_canvas_size.height),
+                                                        selected_scale)
+                                                  : HuginProject::ValidateSeamForConfiguredArtifacts(
+                                                        fs::path(game_dir) / "seam_file.png",
+                                                        static_cast<int>(canvas_size.width),
+                                                        static_cast<int>(canvas_size.height),
+                                                        static_cast<int>(effective_canvas_size.width),
+                                                        static_cast<int>(effective_canvas_size.height));
   if (absl::IsFailedPrecondition(seam_status)) {
     std::cout << "Stitching artifacts exist but seam_file.png does not match the requested canvas: " << seam_status
               << std::endl;
@@ -1123,6 +1135,14 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   }
   HM_RETURN_IF_ERROR(seam_status);
   return true;
+}
+
+absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width) {
+  return validate_stitching_artifacts(game_dir, max_output_width, /*normalize_seam=*/false);
+}
+
+absl::StatusOr<bool> validate_and_normalize_stitching_artifacts(const std::string& game_dir, size_t max_output_width) {
+  return validate_stitching_artifacts(game_dir, max_output_width, /*normalize_seam=*/true);
 }
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(

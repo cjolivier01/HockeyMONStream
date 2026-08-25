@@ -7755,6 +7755,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   if (!source_baseline.has_value())
     return expect(false, "Could not locate bundled baseline.yaml for user-default fixture");
   YAML::Node baseline = YAML::LoadFile(source_baseline->string());
+  baseline["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2468;
   baseline["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1234;
   {
     std::ofstream out(QDir(baseline_root.path()).filePath("baseline.yaml").toStdString());
@@ -7889,6 +7890,19 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(stop);
       qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
     }
+  }
+  user_config["stitching"].remove("max_output_width");
+  user_config["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 4321;
+  {
+    std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
+    out << YAML::Dump(user_config) << '\n';
+  }
+  {
+    HStreamWindow user_native_default_window;
+    auto* stitch_max_output_width = require_child<QSpinBox>(&user_native_default_window, "stitchMaxOutputWidthSpin");
+    ok &= expect(
+        stitch_max_output_width && stitch_max_output_width->value() == 4321,
+        "A user-level private max-width alias must beat lower-layer public and private aliases");
   }
   if (original_home.isEmpty())
     qunsetenv("HOME");

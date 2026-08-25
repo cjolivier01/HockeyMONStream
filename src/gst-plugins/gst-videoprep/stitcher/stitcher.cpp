@@ -561,9 +561,9 @@ absl::Status StitcherPriv::ensure_stitcher() {
     return absl::NotFoundError("No control masks to load");
   }
 
-  // Validate artifacts before seam normalization or hm-cupano loading so stale
-  // native-over-cap maps are regenerated instead of decoded and resized here.
-  auto is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
+  // Validate artifacts and normalize the seam in one pass before hm-cupano
+  // loading so stale native-over-cap maps are regenerated instead of resized here.
+  auto is_configured = hm::stitching::validate_and_normalize_stitching_artifacts(config_file_, max_output_width_);
   if (!is_configured.ok()) {
     return is_configured.status();
   }
@@ -600,10 +600,6 @@ absl::Status StitcherPriv::ensure_stitcher() {
       }
     }
   }
-
-  const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
-  if (!seam_status.ok())
-    return seam_status;
 
   auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(config_file_);
   if (!artifact_lock.ok()) {

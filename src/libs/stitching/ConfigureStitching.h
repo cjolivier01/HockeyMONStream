@@ -43,6 +43,12 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
+// Performs the configured-artifact checks while also normalizing a valid
+// cropped or native-size seam to the effective runtime canvas.
+absl::StatusOr<bool> validate_and_normalize_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width = 0);
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(

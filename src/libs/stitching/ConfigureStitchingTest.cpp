@@ -644,6 +644,28 @@ bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdi
   return true;
 }
 
+bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "runtime_validation_cropped_seam";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(30, 150, CV_8U, cv::Scalar(0));
+  seam.colRange(75, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 5, 1)) {
+    return false;
+  }
+
+  const auto configured = hm::stitching::validate_and_normalize_stitching_artifacts(dir.string());
+  const cv::Mat normalized = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!configured.ok() || !*configured || normalized.size() != cv::Size(160, 32)) {
+    std::cerr << "runtime artifact validation must normalize a valid cropped seam: " << configured.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_native_over_cap_mappings_are_not_configured(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "native_over_cap_mappings";
   fs::remove_all(dir);
@@ -873,6 +895,10 @@ int main() {
 
   if (!expect_effective_size_offset_seam_is_not_scaled_again(tmpdir)) {
     finish(tmpdir, 19);
+  }
+
+  if (!expect_runtime_validation_normalizes_cropped_seam(tmpdir)) {
+    finish(tmpdir, 25);
   }
 
   if (!expect_native_over_cap_mappings_are_not_configured(tmpdir)) {

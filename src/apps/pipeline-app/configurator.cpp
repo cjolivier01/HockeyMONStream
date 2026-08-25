@@ -5253,13 +5253,11 @@ absl::Status Configurator::map_common_config_keys() {
         }
       };
       if (!value.has_value()) {
-        if (winner->rank >= 1) {
-          stitcher_properties.remove("max-output-width");
-          remove_lower_ranked_aliases(false);
-        }
+        stitcher_properties.remove("max-output-width");
+        remove_lower_ranked_aliases(false);
       } else if (winner->private_property && winner->rank < 1) {
         for (MaxOutputWidthCandidate& candidate : max_output_width_candidates) {
-          if (!candidate.canonical && !candidate.private_property && candidate.container.IsMap() &&
+          if (&candidate != winner && !candidate.canonical && candidate.container.IsMap() &&
               candidate.effective_rank <= winner->effective_rank) {
             candidate.container.remove(candidate.key);
           }

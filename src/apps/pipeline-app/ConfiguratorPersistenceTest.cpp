@@ -593,6 +593,50 @@ play-tracker:
                   .as<int>() == 1536,
       "An unranked private max-width cap must remove a same-rank public null alias");
 
+  const fs::path conflicting_private_width_game_dir = games / "mapping-conflicting-private-width";
+  fs::create_directories(conflicting_private_width_game_dir);
+  YAML::Node conflicting_private_width(YAML::NodeType::Map);
+  conflicting_private_width["hmstitcher"]["private-properties"]["max-output-width"] = 1536;
+  conflicting_private_width["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 3072;
+  const fs::path conflicting_private_width_path = root / "mapping-conflicting-private-width.yaml";
+  std::ofstream(conflicting_private_width_path) << YAML::Dump(conflicting_private_width) << '\n';
+  hm::Configurator mapping_conflicting_private_width(
+      "mapping-conflicting-private-width", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_conflicting_private_width_loaded = mapping_conflicting_private_width.configure().ok() &&
+      mapping_conflicting_private_width.underlay_config("pipeline", conflicting_private_width_path.string());
+  const absl::Status mapping_conflicting_private_width_status = mapping_conflicting_private_width_loaded
+      ? mapping_conflicting_private_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping conflicting-private-width fixture did not load");
+  ok &= expect(
+      mapping_conflicting_private_width_status.ok() &&
+          mapping_conflicting_private_width.config()["pipeline"]["hmstitcher"]["private-properties"]["max-output-width"]
+                  .as<int>() == 1536 &&
+          !mapping_conflicting_private_width
+               .config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+               .IsDefined(),
+      "Conflicting unranked private max-width aliases must normalize to the deterministic winner");
+
+  const fs::path native_null_width_game_dir = games / "mapping-native-null-width";
+  fs::create_directories(native_null_width_game_dir);
+  YAML::Node native_null_width(YAML::NodeType::Map);
+  native_null_width["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
+  native_null_width["hmstitcher"]["private-properties"]["stitch_max_output_width"] = YAML::Node(YAML::NodeType::Null);
+  const fs::path native_null_width_path = root / "mapping-native-null-width.yaml";
+  std::ofstream(native_null_width_path) << YAML::Dump(native_null_width) << '\n';
+  hm::Configurator mapping_native_null_width(
+      "mapping-native-null-width", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_native_null_width_loaded = mapping_native_null_width.configure().ok() &&
+      mapping_native_null_width.underlay_config("pipeline", native_null_width_path.string());
+  const absl::Status mapping_native_null_width_status = mapping_native_null_width_loaded
+      ? mapping_native_null_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping native-null-width fixture did not load");
+  ok &= expect(
+      mapping_native_null_width_status.ok() &&
+          !mapping_native_null_width.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].IsDefined() &&
+          !mapping_native_null_width.config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+               .IsDefined(),
+      "Unranked null native max-width aliases must normalize to an absent GObject property");
+
   const fs::path ranked_width_game_dir = games / "mapping-ranked-max-width-alias";
   fs::create_directories(ranked_width_game_dir);
   YAML::Node lower_ranked_canonical(YAML::NodeType::Map);
