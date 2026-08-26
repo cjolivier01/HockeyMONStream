@@ -35,7 +35,8 @@ absl::Status fsync_directory(const fs::path& directory) {
 
 absl::Status publish_transaction_state(const fs::path& transaction, const std::string& contents) {
   if (contents != "PREPARED\n" && contents != "BACKING_UP\n" && contents != "BACKED_UP\n" &&
-      contents != "ROLLING_BACK\n" && contents != "COMMITTED\n" && contents != "ROLLED_BACK\n") {
+      contents != "LEGACY_MIGRATE\n" && contents != "ROLLING_BACK\n" && contents != "COMMITTED\n" &&
+      contents != "ROLLED_BACK\n") {
     return absl::InvalidArgumentError("Invalid transaction state contents");
   }
 

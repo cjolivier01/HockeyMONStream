@@ -893,6 +893,10 @@ int main() {
   std::ofstream(root / "game" / "mapping_0000.tif", std::ios::trunc) << 'x';
   fs::remove(root / "game" / "autooptimiser_out.pto");
   std::ofstream(root / "game" / "panorama.tif", std::ios::trunc) << "partially-published";
+  ::setenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST", "1", 1);
+  const auto interrupted_legacy_migration = hm::stitching::HuginProject::Recover(root / "game");
+  ::unsetenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST");
+  ok &= expect(!interrupted_legacy_migration.ok(), "legacy Hugin journal migration must be resumable");
   const auto recovered = hm::stitching::HuginProject::Recover(root / "game");
   ok &= expect(recovered.ok(), "prepared Hugin publication must recover after an interrupted publish");
   ok &= expect(!fs::exists(interrupted), "recovered Hugin transaction must be cleaned");

@@ -670,6 +670,8 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     return std::string("BACKING_UP");
   if (contents == "BACKED_UP\n")
     return std::string("BACKED_UP");
+  if (contents == "LEGACY_MIGRATE\n")
+    return std::string("LEGACY_MIGRATE");
   if (contents == "ROLLING_BACK\n")
     return std::string("ROLLING_BACK");
   if (contents == "COMMITTED\n")
@@ -742,7 +744,8 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     auto state = read_stitch_transaction_state(transaction);
     if (!state.ok())
       return state.status();
-    if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
+    if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "LEGACY_MIGRATE" ||
+        *state == "ROLLING_BACK") {
       std::ifstream manifest(transaction / "artifacts");
       if (!manifest)
         return absl::FailedPreconditionError("Prepared stitch transaction has no artifact manifest");
@@ -775,7 +778,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         if (!prior_manifest.eof()) {
           return absl::FailedPreconditionError("Prepared stitch transaction has an invalid prior-artifact manifest");
         }
-      } else if (*state != "PREPARED") {
+      } else if (*state != "PREPARED" && *state != "LEGACY_MIGRATE") {
         return absl::FailedPreconditionError("Active stitch transaction has no prior-artifact manifest");
       }
 
@@ -796,20 +799,38 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         }
       }
 
-      if (!has_prior_manifest) {
+      const bool legacy_migration = !has_prior_manifest || *state == "LEGACY_MIGRATE";
+      if (legacy_migration) {
         // Old hard-link journals identify the prior generation only through
         // their durable backups. Any manifested root-only entry may be a
         // partially published replacement and must not survive rollback.
+        if (*state == "PREPARED") {
+          auto status = publish_transaction_state(transaction, "LEGACY_MIGRATE\n");
+          if (!status.ok())
+            return status;
+        }
+        std::set<std::string> migrated_prior_artifacts;
         for (const auto& [name, old] : backups) {
           (void)old;
-          prior_artifacts.insert(name);
+          migrated_prior_artifacts.insert(name);
         }
-        std::ostringstream prior_manifest;
-        for (const std::string& name : prior_artifacts)
-          prior_manifest << name << '\n';
-        auto status = write_stitch_transaction_file(prior_manifest_path, prior_manifest.str());
-        if (!status.ok())
-          return status;
+        if (has_prior_manifest) {
+          if (prior_artifacts != migrated_prior_artifacts) {
+            return absl::FailedPreconditionError("Legacy stitch migration prior-artifact manifest changed");
+          }
+        } else {
+          prior_artifacts = std::move(migrated_prior_artifacts);
+          std::ostringstream prior_manifest;
+          for (const std::string& name : prior_artifacts)
+            prior_manifest << name << '\n';
+          auto status = write_stitch_transaction_file(prior_manifest_path, prior_manifest.str());
+          if (!status.ok())
+            return status;
+          if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST");
+              interrupt != nullptr && std::string(interrupt) == "1") {
+            return absl::InternalError("Injected stitch interruption after legacy migration manifest");
+          }
+        }
       } else if (*state == "PREPARED") {
         if (!backups.empty()) {
           return absl::FailedPreconditionError("Prepared stitch transaction unexpectedly contains backups");
@@ -819,7 +840,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           return status;
       }
 
-      if (!has_prior_manifest || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
+      if (legacy_migration || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
         // A crash between the two directory fsyncs for a cross-directory
         // rename may expose both names. Do not reject that recoverable state;
         // the private backup remains authoritative during rollback.
