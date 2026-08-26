@@ -1468,28 +1468,27 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
                                                             << "\": " << std::strerror(saved_errno)));
     }
 
-    fs::path recovery_log_path;
+    const fs::path recovery_log_path = archive_log_sidecar(recovery_path);
+    const int log_reservation_fd =
+        ::open(recovery_log_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (log_reservation_fd < 0) {
+      const int saved_errno = errno;
+      ::unlink(recovery_path.c_str());
+      if (saved_errno == EEXIST)
+        continue;
+      return absl::InternalError(TO_STRING(
+          "Failed to reserve archive log recovery path \"" << recovery_log_path.string()
+                                                           << "\": " << std::strerror(saved_errno)));
+    }
+    if (::close(log_reservation_fd) != 0) {
+      const int saved_errno = errno;
+      ::unlink(recovery_log_path.c_str());
+      ::unlink(recovery_path.c_str());
+      return absl::InternalError(TO_STRING(
+          "Failed to close archive log recovery reservation \"" << recovery_log_path.string()
+                                                                << "\": " << std::strerror(saved_errno)));
+    }
     if (has_output_log) {
-      recovery_log_path = archive_log_sidecar(recovery_path);
-      const int log_reservation_fd =
-          ::open(recovery_log_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
-      if (log_reservation_fd < 0) {
-        const int saved_errno = errno;
-        ::unlink(recovery_path.c_str());
-        if (saved_errno == EEXIST)
-          continue;
-        return absl::InternalError(TO_STRING(
-            "Failed to reserve archive log recovery path \"" << recovery_log_path.string()
-                                                             << "\": " << std::strerror(saved_errno)));
-      }
-      if (::close(log_reservation_fd) != 0) {
-        const int saved_errno = errno;
-        ::unlink(recovery_log_path.c_str());
-        ::unlink(recovery_path.c_str());
-        return absl::InternalError(TO_STRING(
-            "Failed to close archive log recovery reservation \"" << recovery_log_path.string()
-                                                                  << "\": " << std::strerror(saved_errno)));
-      }
       if (::rename(output_log_path.c_str(), recovery_log_path.c_str()) != 0) {
         const int saved_errno = errno;
         ::unlink(recovery_log_path.c_str());
@@ -1505,8 +1504,16 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
       bool log_rolled_back = true;
       if (has_output_log) {
         log_rolled_back = ::rename(recovery_log_path.c_str(), output_log_path.c_str()) == 0;
+      } else {
+        log_rolled_back = ::unlink(recovery_log_path.c_str()) == 0 || errno == ENOENT;
       }
       if (!log_rolled_back) {
+        if (!has_output_log) {
+          return absl::InternalError(TO_STRING(
+              "Failed to retain existing archive \""
+              << output_path.string() << "\" at \"" << recovery_path.string() << "\": " << std::strerror(saved_errno)
+              << "; failed to remove the unused log reservation at \"" << recovery_log_path.string() << "\""));
+        }
         return absl::InternalError(TO_STRING(
             "Failed to retain existing archive \""
             << output_path.string() << "\" at \"" << recovery_path.string() << "\": " << std::strerror(saved_errno)
@@ -1515,6 +1522,13 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
       return absl::InternalError(TO_STRING(
           "Failed to retain existing archive \"" << output_path.string() << "\" at \"" << recovery_path.string()
                                                  << "\": " << std::strerror(saved_errno)));
+    }
+    if (!has_output_log && ::unlink(recovery_log_path.c_str()) != 0 && errno != ENOENT) {
+      const int saved_errno = errno;
+      return absl::InternalError(TO_STRING(
+          "Recovered existing archive at \"" << recovery_path.string()
+                                             << "\", but failed to remove its unused log reservation \""
+                                             << recovery_log_path.string() << "\": " << std::strerror(saved_errno)));
     }
     HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_path));
     if (has_output_log)

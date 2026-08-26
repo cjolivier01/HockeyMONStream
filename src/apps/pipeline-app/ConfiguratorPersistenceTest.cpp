@@ -1660,6 +1660,26 @@ play-tracker:
           fs::is_regular_file(stale_recoveries->front()),
       "Restart recovery must leave an already-recovered unique run at its stable recovery path");
 
+  const fs::path log_collision_dir = root / "archive-log-collision";
+  fs::create_directories(log_collision_dir);
+  const fs::path log_collision_archive = log_collision_dir / "collision.mkv";
+  const fs::path log_collision_stale = log_collision_dir / "collision.hstream-run-99999999-dead.mkv";
+  const fs::path occupied_log = log_collision_dir / "collision-finalization-failed.mkv.log";
+  const fs::path expected_collision_recovery = log_collision_dir / "collision-finalization-failed-1.mkv";
+  std::ofstream(log_collision_stale, std::ios::binary) << "legacy work without a log";
+  std::ofstream(occupied_log, std::ios::binary) << "unrelated existing log";
+  const auto collision_recoveries = hm::configurator_internal::recover_stale_archive_work_files(log_collision_archive);
+  std::ifstream occupied_log_stream(occupied_log, std::ios::binary);
+  const std::string occupied_log_content{
+      std::istreambuf_iterator<char>(occupied_log_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      collision_recoveries.ok() && collision_recoveries->size() == 1 &&
+          collision_recoveries->front() == expected_collision_recovery &&
+          fs::is_regular_file(expected_collision_recovery) &&
+          !fs::exists(expected_collision_recovery.string() + ".log") &&
+          occupied_log_content == "unrelated existing log",
+      "Recovery of a video without a log must skip basenames occupied by unrelated log sidecars");
+
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /
       ("finalizer-ownership.hstream-run-v3-99999996-" + std::to_string(::getpid()) +
