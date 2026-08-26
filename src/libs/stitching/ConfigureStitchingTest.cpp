@@ -1244,6 +1244,25 @@ bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
   first_config["rink"]["stitched_output_generation"] = *first_output_generation;
   if (!write_text_file(dir / "config.yaml", YAML::Dump(first_config) + "\n"))
     return false;
+  hugin_lock->reset();
+
+  auto stale_surface_generation = hm::stitching::stitched_output_generation_id(*first_hugin_generation, 1.0, 160, 32);
+  NvBufSurfaceParams stale_surface_params{};
+  stale_surface_params.width = 160;
+  stale_surface_params.height = 32;
+  stale_surface_params.pitch = 160 * 4;
+  stale_surface_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+  hm::surface::Surface stale_surface(&stale_surface_params);
+  const auto stale_surface_status = stale_surface_generation.ok()
+      ? hm::stitching::save_stitched_image(dir.string(), stale_surface, *stale_surface_generation)
+      : stale_surface_generation.status();
+  if (!absl::IsAborted(stale_surface_status)) {
+    std::cerr << "a stale surface must be rejected before GPU readback: " << stale_surface_status << std::endl;
+    return false;
+  }
+  hugin_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!hugin_lock.ok())
+    return false;
 
   cv::Mat stale_snapshot(32, 160, CV_8UC3, cv::Scalar(0, 0, 255));
   absl::Status publisher_status;

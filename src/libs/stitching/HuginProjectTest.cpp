@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <opencv2/imgcodecs.hpp>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <tiffio.h>
 #include <unistd.h>
 
@@ -769,6 +770,92 @@ int main() {
   ok &= expect(
       fs::remove(root / "game" / "stitching_generation_id"),
       "legacy generation fixture must remove the logical identity sidecar");
+
+  const fs::path symlinked_artifact = root / "game" / "panorama.tif";
+  const fs::path symlink_target = root / "symlink-target.tif";
+  std::error_code symlink_error;
+  fs::copy_file(symlinked_artifact, symlink_target, fs::copy_options::overwrite_existing, symlink_error);
+  const std::vector<unsigned char> symlink_target_contents = read_binary_file(symlink_target);
+  fs::remove(symlinked_artifact, symlink_error);
+  fs::create_symlink(symlink_target, symlinked_artifact, symlink_error);
+  const auto symlinked_publication = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  const bool symlink_rejected = !symlink_error && absl::IsFailedPrecondition(symlinked_publication) &&
+      fs::is_symlink(fs::symlink_status(symlinked_artifact)) &&
+      read_binary_file(symlink_target) == symlink_target_contents;
+  if (!symlink_rejected)
+    std::cerr << "symlinked prior-artifact publication: " << symlinked_publication << '\n';
+  ok &=
+      expect(symlink_rejected, "Hugin publication must reject a symlinked prior artifact without mutating its target");
+  fs::remove(symlinked_artifact, symlink_error);
+  fs::copy_file(symlink_target, symlinked_artifact, fs::copy_options::overwrite_existing, symlink_error);
+  fs::remove(symlink_target, symlink_error);
+  ok &= expect(!symlink_error, "symlinked prior-artifact fixture must restore the regular artifact");
+  ok &= expect(
+      fs::remove(root / "game" / "stitching_generation_id"),
+      "weak-filesystem legacy fixture must remove the identity sidecar recreated during rollback");
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  std::string weak_parent_generation;
+  std::string weak_parent_repeat;
+  {
+    auto weak_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    ok &= expect(weak_lock.ok(), "sidecar-free weak-filesystem fixture must lock");
+    if (weak_lock.ok()) {
+      const auto first = hm::stitching::HuginProject::GenerationId(root / "game", **weak_lock);
+      const auto second = hm::stitching::HuginProject::GenerationId(root / "game", **weak_lock);
+      if (first.ok())
+        weak_parent_generation = *first;
+      if (second.ok())
+        weak_parent_repeat = *second;
+    }
+  }
+  int weak_pipe[2] = {-1, -1};
+  const bool weak_pipe_created = ::pipe(weak_pipe) == 0;
+  const pid_t weak_child = weak_pipe_created ? ::fork() : -1;
+  if (weak_child == 0) {
+    ::close(weak_pipe[0]);
+    auto weak_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    const auto generation = weak_lock.ok() ? hm::stitching::HuginProject::GenerationId(root / "game", **weak_lock)
+                                           : absl::StatusOr<std::string>(weak_lock.status());
+    size_t written = 0;
+    while (generation.ok() && written < generation->size()) {
+      const ssize_t count = ::write(weak_pipe[1], generation->data() + written, generation->size() - written);
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        break;
+      written += static_cast<size_t>(count);
+    }
+    _exit(generation.ok() && written == generation->size() ? 0 : 1);
+  }
+  std::string weak_child_generation;
+  if (weak_child > 0) {
+    ::close(weak_pipe[1]);
+    std::array<char, 2048> buffer{};
+    ssize_t count = 0;
+    while ((count = ::read(weak_pipe[0], buffer.data(), buffer.size())) > 0)
+      weak_child_generation.append(buffer.data(), static_cast<size_t>(count));
+    ::close(weak_pipe[0]);
+  } else if (weak_pipe_created) {
+    ::close(weak_pipe[0]);
+    ::close(weak_pipe[1]);
+  }
+  int weak_child_status = 0;
+  if (weak_child > 0)
+    ::waitpid(weak_child, &weak_child_status, 0);
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  const bool weak_generation_scoped = weak_child > 0 && !weak_parent_generation.empty() &&
+      weak_parent_generation == weak_parent_repeat && !weak_child_generation.empty() &&
+      weak_child_generation != weak_parent_generation && WIFEXITED(weak_child_status) &&
+      WEXITSTATUS(weak_child_status) == 0 && !fs::exists(root / "game" / "stitching_generation_id");
+  if (!weak_generation_scoped) {
+    std::cerr << "sidecar-free weak generation fixture: child=" << weak_child
+              << " parent-bytes=" << weak_parent_generation.size() << " repeat-bytes=" << weak_parent_repeat.size()
+              << " child-bytes=" << weak_child_generation.size() << " status=" << weak_child_status
+              << " sidecar=" << fs::exists(root / "game" / "stitching_generation_id") << '\n';
+  }
+  ok &= expect(
+      weak_generation_scoped, "sidecar-free generations on weak filesystems must be stable only within one process");
+
   std::string generation_before_interrupted_publication;
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
@@ -998,6 +1085,33 @@ int main() {
           read_text_file(historical_backing_root / "mapping_0000.tif") == "old-mapping_0000.tif\n",
       "historical BACKING_UP recovery must recreate suspect backups before restoring a missing root artifact");
   fs::remove_all(historical_backing_root);
+
+  const fs::path symlink_rollback_root = root / "symlinked-rollback-source";
+  const fs::path symlink_rollback_transaction = symlink_rollback_root / ".hstream-stitch-backing";
+  const fs::path rollback_symlink_target = root / "rollback-symlink-target.tif";
+  fs::create_directories(symlink_rollback_root);
+  write_legacy_transaction_fixture(symlink_rollback_root, symlink_rollback_transaction);
+  {
+    std::ofstream prior(symlink_rollback_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+  }
+  fs::remove(symlink_rollback_root / "hm_project.pto");
+  std::ofstream(rollback_symlink_target) << "outside-target\n";
+  std::error_code rollback_symlink_error;
+  fs::remove(symlink_rollback_root / "mapping_0000.tif", rollback_symlink_error);
+  fs::create_symlink(rollback_symlink_target, symlink_rollback_root / "mapping_0000.tif", rollback_symlink_error);
+  std::ofstream(symlink_rollback_transaction / "journal_version") << "2\n";
+  std::ofstream(symlink_rollback_transaction / "state") << "BACKING_UP\n";
+  const auto symlink_rollback_recovery = hm::stitching::HuginProject::Recover(symlink_rollback_root);
+  ok &= expect(
+      !rollback_symlink_error && absl::IsFailedPrecondition(symlink_rollback_recovery) &&
+          fs::exists(symlink_rollback_transaction) &&
+          fs::is_symlink(fs::symlink_status(symlink_rollback_root / "mapping_0000.tif")) &&
+          read_text_file(rollback_symlink_target) == "outside-target\n",
+      "rollback recovery must reject a symlinked root artifact without following or backing up its target");
+  fs::remove_all(symlink_rollback_root);
+  fs::remove(rollback_symlink_target);
 
   const fs::path consumed_root = root / "legacy-consumed-rollback";
   const fs::path consumed_transaction = consumed_root / ".hstream-stitch-consumed";

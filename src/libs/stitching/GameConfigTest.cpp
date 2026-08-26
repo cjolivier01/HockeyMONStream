@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -283,6 +284,13 @@ int main() {
       ::close(owner_pipe[0]);
       ::close(owner_pipe[1]);
     }
+    siginfo_t zombie_info{};
+    int zombie_wait_result = -1;
+    if (zombie_owner > 0) {
+      do {
+        zombie_wait_result = ::waitid(P_PID, zombie_owner, &zombie_info, WEXITED | WNOWAIT);
+      } while (zombie_wait_result != 0 && errno == EINTR);
+    }
     const auto zombie_active = zombie_identity.empty()
         ? absl::StatusOr<bool>(absl::InternalError("Zombie owner fixture did not report an identity"))
         : hm::stitching::live_stitched_output_owner_process_is_active(zombie_identity);
@@ -290,8 +298,8 @@ int main() {
     if (zombie_owner > 0)
       ::waitpid(zombie_owner, &zombie_status, 0);
     ok &= expect(
-        zombie_owner > 0 && zombie_active.ok() && !*zombie_active && WIFEXITED(zombie_status) &&
-            WEXITSTATUS(zombie_status) == 0,
+        zombie_owner > 0 && zombie_wait_result == 0 && zombie_info.si_pid == zombie_owner && zombie_active.ok() &&
+            !*zombie_active && WIFEXITED(zombie_status) && WEXITSTATUS(zombie_status) == 0,
         "an exited but unreaped owner process must not retain publication authority");
     ok &= expect(
         hm::stitching::publish_game_config(

@@ -1045,14 +1045,15 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   if (!status.ok())
     return status;
   for (const std::string& name : names) {
-    const bool exists = fs::exists(game_dir / name, error);
-    if (error)
-      return absl::InternalError("Unable to inspect previous stitch artifact " + name + ": " + error.message());
-    if (exists) {
-      if (!fs::is_regular_file(game_dir / name, error) || error) {
+    struct stat metadata{};
+    if (::lstat((game_dir / name).c_str(), &metadata) == 0) {
+      if (!S_ISREG(metadata.st_mode)) {
         return absl::FailedPreconditionError("Previous stitch artifact is not a regular file: " + name);
       }
       prior_manifest << name << '\n';
+    } else if (errno != ENOENT) {
+      return absl::InternalError(
+          "Unable to inspect previous stitch artifact " + name + ": " + std::string(std::strerror(errno)));
     }
   }
   status = write_stitch_transaction_file(staging / "previous_artifacts", prior_manifest.str());
@@ -1093,11 +1094,16 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
     return status;
   size_t backup_count = 0;
   for (const std::string& name : names) {
-    const bool exists = fs::exists(game_dir / name, error);
-    if (error)
-      return rollback_error("Unable to inspect old stitch artifact " + name + ": " + error.message());
-    if (!exists)
+    struct stat metadata{};
+    if (::lstat((game_dir / name).c_str(), &metadata) != 0) {
+      if (errno != ENOENT) {
+        return rollback_error(
+            "Unable to inspect old stitch artifact " + name + ": " + std::string(std::strerror(errno)));
+      }
       continue;
+    }
+    if (!S_ISREG(metadata.st_mode))
+      return rollback_error("Old stitch artifact is not a regular file: " + name);
     status = clone_or_copy_stitch_rollback_file(game_dir / name, backups / name);
     if (!status.ok())
       return rollback_error(

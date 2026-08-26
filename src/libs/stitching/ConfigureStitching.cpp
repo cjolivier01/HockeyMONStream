@@ -1003,12 +1003,68 @@ absl::StatusOr<cv::Mat> load_feature_image(const fs::path& image_file) {
   return image;
 }
 
+absl::Status validate_stitched_snapshot_generation_locked(
+    const std::string& game_dir,
+    const fs::path& root,
+    const std::string& producer_output_generation,
+    const HuginProject::ArtifactLock& hugin_lock) {
+  auto hugin_generation = HuginProject::GenerationId(root, hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    if (fs::is_regular_file(root / "config.yaml"))
+      config = YAML::LoadFile((root / "config.yaml").string());
+    const YAML::Node configured_generation = config["rink"]["stitched_output_generation"];
+    if (!configured_generation || !configured_generation.IsScalar()) {
+      return absl::FailedPreconditionError(
+          "Cannot publish a scoreboard snapshot without a current stitched-output generation");
+    }
+    std::string current_generation;
+    HM_ASSIGN_OR_RETURN(
+        current_generation, current_stitched_output_generation_id_locked(game_dir, config, *hugin_generation));
+    if (configured_generation.as<std::string>() != current_generation) {
+      return absl::AbortedError("Cannot publish a scoreboard snapshot for stale stitched-output geometry");
+    }
+    if (producer_output_generation != current_generation) {
+      return absl::AbortedError(
+          "Cannot publish a scoreboard snapshot from a frame produced by a superseded stitched-output generation");
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate scoreboard snapshot generation: " + std::string(exception.what()));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status preflight_stitched_snapshot_generation(
+    const std::string& game_dir,
+    const std::string& producer_output_generation) {
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
+  return validate_stitched_snapshot_generation_locked(game_dir, root, producer_output_generation, **hugin_lock);
+}
+
 } // namespace
 
 absl::Status save_stitched_image(
     const std::string& game_dir,
     surface::Surface surface,
     const std::string& producer_output_generation) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("Cannot save stitched scoreboard image without a game directory");
+  if (producer_output_generation.empty()) {
+    return absl::FailedPreconditionError(
+        "Cannot publish a scoreboard snapshot without the stitched-output generation that produced it");
+  }
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+      producer_output_generation, static_cast<size_t>(surface.width()), static_cast<size_t>(surface.height())));
+  HM_RETURN_IF_ERROR(preflight_stitched_snapshot_generation(game_dir, producer_output_generation));
   cv::Mat image;
   HM_ASSIGN_OR_RETURN(image, download_image(surface));
   return save_stitched_image(game_dir, image, producer_output_generation);
@@ -1075,32 +1131,8 @@ absl::Status save_stitched_image(
   auto config_lock = GameConfigTransactionLock::Acquire(root);
   if (!config_lock.ok())
     return config_lock.status();
-  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
-  if (!hugin_generation.ok())
-    return hugin_generation.status();
-  YAML::Node config(YAML::NodeType::Map);
-  try {
-    if (fs::is_regular_file(root / "config.yaml"))
-      config = YAML::LoadFile((root / "config.yaml").string());
-    const YAML::Node configured_generation = config["rink"]["stitched_output_generation"];
-    if (!configured_generation || !configured_generation.IsScalar()) {
-      return absl::FailedPreconditionError(
-          "Cannot publish a scoreboard snapshot without a current stitched-output generation");
-    }
-    std::string current_generation;
-    HM_ASSIGN_OR_RETURN(
-        current_generation, current_stitched_output_generation_id_locked(game_dir, config, *hugin_generation));
-    if (configured_generation.as<std::string>() != current_generation) {
-      return absl::AbortedError("Cannot publish a scoreboard snapshot for stale stitched-output geometry");
-    }
-    if (producer_output_generation != current_generation) {
-      return absl::AbortedError(
-          "Cannot publish a scoreboard snapshot from a frame produced by a superseded stitched-output generation");
-    }
-  } catch (const YAML::Exception& exception) {
-    return absl::InvalidArgumentError(
-        "Unable to validate scoreboard snapshot generation: " + std::string(exception.what()));
-  }
+  HM_RETURN_IF_ERROR(
+      validate_stitched_snapshot_generation_locked(game_dir, root, producer_output_generation, **hugin_lock));
   fs::rename(temporary, root / "s.png", ec);
   if (ec)
     return absl::InternalError("Unable to atomically publish stitched scoreboard image: " + ec.message());
