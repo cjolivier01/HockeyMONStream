@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include "absl/status/status.h"
@@ -8,9 +9,14 @@
 namespace hm::stitching {
 
 struct LiveStitchedOutputAuthorization {
-  // Empty when the requested rotation already matches the completed output or
-  // when no completed output exists to fence.
   std::string pending_generation;
+  std::string authorization_id;
+  bool invalidate_scoreboard{false};
+  std::string scoreboard_property_value;
+
+  explicit operator bool() const {
+    return !pending_generation.empty() && !authorization_id.empty();
+  }
 };
 
 // Authorizes one exact live rotation generation. The authorization preserves
@@ -19,17 +25,23 @@ struct LiveStitchedOutputAuthorization {
 // later call supersedes an earlier authorization.
 absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_rotation(
     const std::string& game_dir,
-    double post_stitch_rotate_degrees);
+    double post_stitch_rotate_degrees,
+    const std::string& authorization_id);
 
-// Removes an abandoned authorization only when the exact pending generation
-// still owns it. Returns false when it was already consumed or superseded.
-absl::StatusOr<bool> cancel_live_stitched_output_rotation(
+// Rolls back an abandoned authorization only when both its generation and
+// unique epoch still own the pending slot. Returns the predecessor restored by
+// the rollback, if any.
+absl::StatusOr<std::optional<LiveStitchedOutputAuthorization>> rollback_live_stitched_output_rotation(
     const std::string& game_dir,
-    const std::string& pending_generation);
+    const std::string& pending_generation,
+    const std::string& authorization_id);
 
 // Invalidates geometry after the backend accepts a previously authorized live
 // rotation. Publication of the exact generation is also accepted as an
 // idempotent completion because that transaction performs the same invalidation.
-absl::Status commit_live_stitched_output_rotation(const std::string& game_dir, const std::string& pending_generation);
+absl::Status commit_live_stitched_output_rotation(
+    const std::string& game_dir,
+    const std::string& pending_generation,
+    const std::string& authorization_id);
 
 } // namespace hm::stitching

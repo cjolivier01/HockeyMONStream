@@ -38,12 +38,14 @@ struct DsFieldMaskCtx {
   bool logged_mask_size_mismatch{false};
   std::string loaded_output_generation;
   std::optional<std::string> superseded_output_generation;
+  size_t superseded_retry_frames_remaining{0};
   std::string calibration_invalidation_id;
 };
 
 namespace {
 
 constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
+constexpr size_t kSupersededPublicationRetryFrames = 30;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
   int byteIndex = (point.y * mask.cols + point.x / 8); // Byte index in the data
@@ -289,11 +291,24 @@ absl::Status DsFieldMaskProcessFrame(
   const bool output_generation_changed = output_generation != ctx->loaded_output_generation;
   if (ctx->superseded_output_generation.has_value() && *ctx->superseded_output_generation != output_generation) {
     ctx->superseded_output_generation.reset();
+    ctx->superseded_retry_frames_remaining = 0;
   }
   if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
-    if (ctx->superseded_output_generation.has_value())
-      return absl::OkStatus();
     fs::path mask_path = ctx->initParams.detection_mask_file;
+    if (ctx->superseded_output_generation.has_value()) {
+      if (ctx->superseded_retry_frames_remaining > 0) {
+        --ctx->superseded_retry_frames_remaining;
+        return absl::OkStatus();
+      }
+      const absl::Status authority =
+          hm::stitching::validate_field_mask_publication_authority(mask_path.parent_path().string(), output_generation);
+      if (absl::IsAborted(authority)) {
+        ctx->superseded_retry_frames_remaining = kSupersededPublicationRetryFrames;
+        return absl::OkStatus();
+      }
+      HM_RETURN_IF_ERROR(authority);
+      ctx->superseded_output_generation.reset();
+    }
     auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     if (is_obsolete_detection_mask || !loaded_mask.ok()) {
       if (!surface) {
@@ -311,6 +326,7 @@ absl::Status DsFieldMaskProcessFrame(
           mask_path.parent_path().string(), this_surface, output_generation, ctx->calibration_invalidation_id);
       if (absl::IsAborted(created)) {
         ctx->superseded_output_generation = output_generation;
+        ctx->superseded_retry_frames_remaining = kSupersededPublicationRetryFrames;
         return absl::OkStatus();
       }
       HM_RETURN_IF_ERROR(created);

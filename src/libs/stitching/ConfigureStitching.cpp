@@ -264,6 +264,10 @@ void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "stitched_output_generation"});
   remove_yaml_key_path(config, {"rink", "stitched_output_persisted_rotation_degrees"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_generation"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_authorization_id"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_generation"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_authorization_id"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"});
 }
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -2482,6 +2486,26 @@ bool is_field_mask_configured_for_stitching_config(
       .ok();
 }
 
+absl::Status validate_field_mask_publication_authority(
+    const std::string& game_dir,
+    const std::string& expected_output_generation) {
+  if (game_dir.empty() || expected_output_generation.empty())
+    return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
+  const fs::path root(game_dir);
+  std::optional<YAML::Node> config;
+  HM_ASSIGN_OR_RETURN(config, load_game_config_file(root / "config.yaml"));
+  if (!config.has_value())
+    return absl::NotFoundError("Game config is missing");
+  const YAML::Node pending = (*config)["rink"]["stitched_output_pending_generation"];
+  if (!pending || !pending.IsDefined())
+    return absl::OkStatus();
+  if (!pending.IsScalar())
+    return absl::InvalidArgumentError("Pending stitched-output generation must be a scalar");
+  if (pending.as<std::string>() != expected_output_generation)
+    return absl::AbortedError("A newer live stitched-output generation owns field-mask publication");
+  return absl::OkStatus();
+}
+
 namespace {
 
 bool scoreboard_polygon_is_disabled(const YAML::Node& polygon) {
@@ -2672,12 +2696,20 @@ absl::Status save_rink_profile_locked(
     if (expected_output_generation.empty()) {
       config["rink"].remove("stitched_output_persisted_rotation_degrees");
       config["rink"].remove("stitched_output_pending_generation");
+      config["rink"].remove("stitched_output_pending_authorization_id");
+      config["rink"].remove("stitched_output_pending_previous_generation");
+      config["rink"].remove("stitched_output_pending_previous_authorization_id");
+      config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
     } else {
       config["rink"]["stitched_output_persisted_rotation_degrees"] = *expected_persisted_rotation;
       const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
       if (pending_generation && pending_generation.IsScalar() &&
           pending_generation.as<std::string>() == expected_output_generation) {
         config["rink"].remove("stitched_output_pending_generation");
+        config["rink"].remove("stitched_output_pending_authorization_id");
+        config["rink"].remove("stitched_output_pending_previous_generation");
+        config["rink"].remove("stitched_output_pending_previous_authorization_id");
+        config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
       }
     }
     if (!expected_invalidation_id.empty()) {

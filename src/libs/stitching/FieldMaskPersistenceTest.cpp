@@ -430,7 +430,8 @@ int main() {
         }
       }
     }
-    const auto live_override_authorization = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0);
+    const auto live_override_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0, "field-mask-live-9-a");
     const YAML::Node after_live_override_authorization = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         live_override_authorization.ok() &&
@@ -441,7 +442,11 @@ int main() {
             after_live_override_authorization["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
         "live rotation authorization must defer scoreboard invalidation until the request is committed");
     const auto newer_live_override_authorization =
-        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 10.0);
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 10.0, "field-mask-live-10");
+    const absl::Status superseded_publication_authority =
+        hm::stitching::validate_field_mask_publication_authority(root.string(), live_override_generation);
+    const absl::Status current_publication_authority =
+        hm::stitching::validate_field_mask_publication_authority(root.string(), newer_live_override_generation);
     const auto superseded_same_owner_publication = hm::stitching::save_rink_profile_with_stitched_image(
         root.string(),
         profile,
@@ -452,16 +457,19 @@ int main() {
     ok &= expect(
         newer_live_override_authorization.ok() &&
             newer_live_override_authorization->pending_generation == newer_live_override_generation &&
+            absl::IsAborted(superseded_publication_authority) && current_publication_authority.ok() &&
             absl::IsAborted(superseded_same_owner_publication) &&
             after_superseded_same_owner["rink"]["stitched_output_pending_generation"].as<std::string>() ==
                 newer_live_override_generation &&
             after_superseded_same_owner["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
         "a newer pending live generation must reject the completed same-owner producer without deleting scoreboard data");
     const auto current_live_override_authorization =
-        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0);
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0, "field-mask-live-9-b");
     const absl::Status current_live_override_commit = current_live_override_authorization.ok()
         ? hm::stitching::commit_live_stitched_output_rotation(
-              root.string(), current_live_override_authorization->pending_generation)
+              root.string(),
+              current_live_override_authorization->pending_generation,
+              current_live_override_authorization->authorization_id)
         : current_live_override_authorization.status();
     ok &= expect(
         current_live_override_authorization.ok() &&

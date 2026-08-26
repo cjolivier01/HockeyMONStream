@@ -133,6 +133,13 @@ bool is_field_mask_configured_for_stitching_config(
     double post_stitch_rotate_degrees,
     const std::string& expected_invalidation_id = {});
 
+// Cheap publication preflight used before retrying expensive field-mask
+// inference. A pending live rotation fences every producer except its exact
+// output generation.
+absl::Status validate_field_mask_publication_authority(
+    const std::string& game_dir,
+    const std::string& expected_output_generation);
+
 // Validates and decodes rink_mask_0.png while holding the Hugin and
 // config/rink transaction locks for one complete artifact generation.
 absl::StatusOr<cv::Mat> load_field_mask(

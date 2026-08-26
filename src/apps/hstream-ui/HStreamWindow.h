@@ -24,6 +24,8 @@
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 
+#include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -125,7 +127,16 @@ class HStreamWindow : public QMainWindow {
 
   struct LiveRotationAuthorization {
     QString game_id;
+    std::string game_dir;
     std::string pending_generation;
+    std::string authorization_id;
+    bool invalidate_scoreboard{false};
+    QString scoreboard_property_value;
+  };
+
+  struct LiveRotationConfigTask {
+    std::function<void()> work;
+    std::function<void()> complete;
   };
 
   struct RuntimeControlBatch {
@@ -369,9 +380,15 @@ class HStreamWindow : public QMainWindow {
       std::map<QString, int> controls,
       const std::optional<int>& authorized_stitch_rotation,
       const std::optional<LiveRotationAuthorization>& live_rotation_authorization);
-  bool cancelLiveRotationAuthorization(const LiveRotationAuthorization& authorization, const QString& reason);
-  void cancelActiveLiveRotationAuthorization(const QString& reason);
-  void finalizeLiveRotationAuthorization(const LiveRotationAuthorization& authorization);
+  void enqueueLiveRotationConfigTask(std::function<void()> work, std::function<void()> complete);
+  void startNextLiveRotationConfigTask();
+  void rollbackLiveRotationAuthorization(
+      const LiveRotationAuthorization& authorization,
+      const QString& reason,
+      std::function<void(bool, const std::optional<LiveRotationAuthorization>&, const QString&)> complete = {});
+  void rollbackActiveLiveRotationAuthorization(const QString& reason);
+  void resolveLiveRotationRuntimeBatch(quint64 batch_id);
+  void finishRuntimeControlBatch(quint64 batch_id, bool failed, const QString& reason = {});
   void startLiveRotationAuthorization(std::map<QString, int> controls, int rotation);
   void completeLiveRotationAuthorization(
       std::map<QString, int> controls,
@@ -381,6 +398,10 @@ class HStreamWindow : public QMainWindow {
       int rotation,
       bool authorized,
       const std::string& pending_generation,
+      const std::string& authorization_id,
+      bool invalidate_scoreboard,
+      const QString& scoreboard_property_value,
+      const std::string& game_dir,
       const QString& error);
   void flushScheduledRuntimeControls();
   void timeoutRuntimeControlBatch(quint64 batch_id);
@@ -623,6 +644,7 @@ class HStreamWindow : public QMainWindow {
   bool live_rotation_authorization_pending_{false};
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
   QThread* live_rotation_authorization_worker_{nullptr};
+  std::deque<LiveRotationConfigTask> live_rotation_config_tasks_;
   bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};

@@ -785,7 +785,7 @@ bool write_fake_runner(const QString& path) {
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
       "delayed_seek_generation, timeout_next_seek, backend_seek_position, reject_next_preview_overlays, "
-      "delay_next_preview_overlays, delayed_preview_overlay_responses\n");
+      "delay_next_preview_overlays, delayed_preview_overlay_responses, runtime_control_delay_seconds\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-exit'):\n");
   file.write("        print('test process exit requested', flush=True)\n");
@@ -805,6 +805,10 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-complete-preview-overlays'):\n");
   file.write("        if delayed_preview_overlay_responses:\n");
   file.write("            print(delayed_preview_overlay_responses.pop(0), flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-delay-runtime-control '):\n");
+  file.write("        runtime_control_delay_seconds = float(line.rstrip('\\n').split(' ')[1]) / 1000.0\n");
+  file.write("        print('test runtime control delay armed', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-drop-progress-resets'):\n");
   file.write("        drop_progress_resets = True\n");
@@ -989,6 +993,7 @@ bool write_fake_runner(const QString& path) {
   file.write("            property_name, runtime_value = assignment.split('=', 1)\n");
   file.write("            print('stdin:@set-property ' + update, flush=True)\n");
   file.write("            if not reject and not stall:\n");
+  file.write("                if runtime_control_delay_seconds > 0: time.sleep(runtime_control_delay_seconds)\n");
   file.write(
       "                print('runtime property ' + element + ' ' + property_name + '=' + runtime_value, flush=True)\n");
   file.write("preview_activation_count = 0\n");
@@ -1004,6 +1009,7 @@ bool write_fake_runner(const QString& path) {
   file.write("reject_next_preview_overlays = False\n");
   file.write("delay_next_preview_overlays = False\n");
   file.write("delayed_preview_overlay_responses = []\n");
+  file.write("runtime_control_delay_seconds = 0.0\n");
   file.write("deadline = time.monotonic() + 15.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
@@ -4240,6 +4246,24 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       activate(stop);
       return false;
     }
+    {
+      auto generation_fixture_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      if (!generation_fixture_lock.ok()) {
+        std::cerr << "Could not lock live-rotation generation fixture: " << generation_fixture_lock.status() << '\n';
+        return false;
+      }
+      YAML::Node generation_fixture = YAML::LoadFile(config.string());
+      const std::string hugin_generation = "ui-live-rotation-generation\n";
+      generation_fixture["rink"]["stitched_output_generation"] =
+          "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin_generation.size()) + "\n" +
+          hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
+      const auto published =
+          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(generation_fixture) + "\n");
+      if (!published.ok()) {
+        std::cerr << "Could not publish live-rotation generation fixture: " << published << '\n';
+        return false;
+      }
+    }
     std::atomic<bool> config_lock_acquired{false};
     std::atomic<bool> config_lock_failed{false};
     std::thread config_locker([&]() {
@@ -4277,8 +4301,63 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       activate(stop);
       return false;
     }
+    pipeline_process->write("@test-delay-runtime-control 250\n");
+    for (int i = 0; i < 100 && !window->logText().contains("test runtime control delay armed"); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(5);
+    }
+    rotate->setValue(72);
+    for (int i = 0;
+         i < 100 && !window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=18");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(5);
+    }
+    std::atomic<bool> commit_lock_acquired{false};
+    std::thread commit_locker([&]() {
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      if (!config_lock.ok())
+        return;
+      commit_lock_acquired = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(850));
+    });
+    for (int i = 0; i < 100 && !commit_lock_acquired; ++i)
+      QTest::qWait(5);
+    QElapsedTimer commit_responsiveness_timer;
+    commit_responsiveness_timer.start();
+    qint64 commit_responsive_callback_ms = -1;
+    QTimer::singleShot(650, window, [&]() { commit_responsive_callback_ms = commit_responsiveness_timer.elapsed(); });
+    for (int i = 0; i < 200 && commit_responsive_callback_ms < 0; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(5);
+    }
+    const bool commit_was_async = commit_lock_acquired &&
+        HStreamWindowTestAccess::liveRotationAuthorizationPending(window) && commit_responsive_callback_ms >= 0 &&
+        commit_responsive_callback_ms < 775;
+    commit_locker.join();
+    for (int i = 0; i < 100 && !window->logText().contains("camera control Stitch_Rotate_Degrees=72 apply=live"); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    if (!commit_was_async || !window->logText().contains("camera control Stitch_Rotate_Degrees=72 apply=live")) {
+      std::cerr << "commit async diagnostic: result=" << commit_was_async << " lock=" << commit_lock_acquired
+                << " pending=" << HStreamWindowTestAccess::liveRotationAuthorizationPending(window)
+                << " callback-ms=" << commit_responsive_callback_ms << '\n'
+                << window->logText().right(2500).toStdString() << '\n';
+    }
+    if (!expect(
+            commit_was_async && window->logText().contains("camera control Stitch_Rotate_Degrees=72 apply=live"),
+            "Live rotation finalization must not block the UI on the game config transaction")) {
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+      activate(stop);
+      return false;
+    }
     activate(stop);
     for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    for (int i = 0; i < 200 && HStreamWindowTestAccess::liveRotationAuthorizationPending(window); ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
@@ -4295,6 +4374,29 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             stitched_status->text() == "Stitched canvas preview",
             "Stopping a completed calibration preview should clear the active stitched status")) {
       return false;
+    }
+
+    {
+      auto fixture_cleanup_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      if (!fixture_cleanup_lock.ok()) {
+        std::cerr << "Could not lock live-rotation generation fixture cleanup: " << fixture_cleanup_lock.status()
+                  << '\n';
+        return false;
+      }
+      YAML::Node fixture_cleanup = YAML::LoadFile(config.string());
+      fixture_cleanup["rink"].remove("stitched_output_generation");
+      fixture_cleanup["rink"].remove("stitched_output_persisted_rotation_degrees");
+      fixture_cleanup["rink"].remove("stitched_output_pending_generation");
+      fixture_cleanup["rink"].remove("stitched_output_pending_authorization_id");
+      fixture_cleanup["rink"].remove("stitched_output_pending_previous_generation");
+      fixture_cleanup["rink"].remove("stitched_output_pending_previous_authorization_id");
+      fixture_cleanup["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
+      const auto published =
+          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(fixture_cleanup) + "\n");
+      if (!published.ok()) {
+        std::cerr << "Could not clean live-rotation generation fixture: " << published << '\n';
+        return false;
+      }
     }
 
     {
@@ -7716,9 +7818,67 @@ bool test_camera_controls(HStreamWindow* window) {
                   "camera control Max_Speed_X_x10=490 apply=failed "
                   "reason=acknowledgement-timeout"),
           "A stalled live-control backend should time out both the in-flight and coalesced latest values");
+  {
+    auto timeout_fixture_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    if (!timeout_fixture_lock.ok()) {
+      qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+      qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
+      return false;
+    }
+    YAML::Node timeout_fixture = YAML::LoadFile(config.string());
+    const std::string hugin_generation = "ui-timeout-generation\n";
+    timeout_fixture["rink"]["stitched_output_generation"] =
+        "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin_generation.size()) + "\n" + hugin_generation +
+        "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
+    const auto published = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(timeout_fixture) + "\n");
+    if (!published.ok()) {
+      qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+      qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
+      return false;
+    }
+  }
+  const int stalled_rotation_value = rotate->value() == 67 ? 68 : 67;
+  rotate->setValue(stalled_rotation_value);
+  for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  for (int i = 0; i < 200 && HStreamWindowTestAccess::liveRotationAuthorizationPending(window); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const YAML::Node after_stalled_rotation = YAML::LoadFile(config.string());
+  const bool stalled_rotation_reconciled =
+      expect(
+          window->pipelineStateText() == "STOPPED" &&
+              window->logText().contains(
+                  QString("camera control Stitch_Rotate_Degrees=%1 apply=failed reason=acknowledgement-timeout")
+                      .arg(stalled_rotation_value)),
+          "An ambiguous live-rotation timeout must stop the pipeline") &&
+      expect(
+          !HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
+              !after_stalled_rotation["rink"]["stitched_output_pending_generation"].IsDefined() &&
+              !after_stalled_rotation["rink"]["stitched_output_pending_authorization_id"].IsDefined(),
+          "Pipeline-stop reconciliation must retire a timed-out live-rotation authorization");
+  bool timeout_fixture_cleaned = false;
+  {
+    auto timeout_fixture_cleanup_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    if (timeout_fixture_cleanup_lock.ok()) {
+      YAML::Node timeout_fixture_cleanup = YAML::LoadFile(config.string());
+      timeout_fixture_cleanup["rink"].remove("stitched_output_generation");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_persisted_rotation_degrees");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_pending_generation");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_pending_authorization_id");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_pending_previous_generation");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_pending_previous_authorization_id");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
+      timeout_fixture_cleaned =
+          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(timeout_fixture_cleanup) + "\n").ok();
+    }
+  }
   qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
   qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
-  if (!stalled_controls_bounded) {
+  if (!stalled_controls_bounded || !stalled_rotation_reconciled || !timeout_fixture_cleaned) {
     std::cerr << window->logText().toStdString() << '\n';
     activate(stop);
     return false;

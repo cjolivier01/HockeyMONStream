@@ -165,6 +165,7 @@ NvBufSurfaceParams cuda_mat_surface_params(hm::CudaMat<Pixel>& mat, NvBufSurface
 } // namespace
 
 static constexpr int kNumStitcherLaplacianLevels = 11;
+static constexpr size_t kSupersededFieldMaskRetryFrames = 30;
 
 OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool configured_during_run,
@@ -2014,9 +2015,29 @@ absl::Status StitcherPriv::GenerateOutput(
     const std::string completion_scope = stitching::calibration_completion_scope(
         output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
-    if (one_pass_mode_ &&
-        should_attempt_one_pass_field_mask(
-            field_mask_attempted_, field_mask_attempted_generation_, output_generation)) {
+    bool attempt_field_mask =
+        should_attempt_one_pass_field_mask(field_mask_attempted_, field_mask_attempted_generation_, output_generation);
+    if (attempt_field_mask && field_mask_attempted_generation_ != output_generation) {
+      field_mask_publication_superseded_ = false;
+      field_mask_superseded_retry_frames_remaining_ = 0;
+    } else if (!attempt_field_mask && field_mask_publication_superseded_) {
+      if (field_mask_superseded_retry_frames_remaining_ > 0) {
+        --field_mask_superseded_retry_frames_remaining_;
+      } else {
+        const absl::Status authority =
+            stitching::validate_field_mask_publication_authority(config_file_, output_generation);
+        if (authority.ok()) {
+          field_mask_publication_superseded_ = false;
+          attempt_field_mask = true;
+        } else if (absl::IsAborted(authority)) {
+          field_mask_superseded_retry_frames_remaining_ = kSupersededFieldMaskRetryFrames;
+        } else {
+          return report_calibration_failure(authority);
+        }
+      }
+    }
+
+    if (one_pass_mode_ && attempt_field_mask) {
       if (field_mask_attempted_)
         calibration_completion_ready_ = false;
       field_mask_attempted_ = true;
@@ -2075,6 +2096,8 @@ absl::Status StitcherPriv::GenerateOutput(
               // generation latched so expensive inference is retried only when
               // a frame carrying that newer generation arrives.
               std::cout << "Field-mask publication superseded: " << mask_status << "\n" << std::flush;
+              field_mask_publication_superseded_ = true;
+              field_mask_superseded_retry_frames_remaining_ = kSupersededFieldMaskRetryFrames;
               return absl::OkStatus();
             }
             std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
@@ -2084,6 +2107,7 @@ absl::Status StitcherPriv::GenerateOutput(
             calibration_completion_reported_ = true;
             return report_calibration_failure(mask_status);
           } else {
+            field_mask_publication_superseded_ = false;
             mask_configured = true;
           }
         }

@@ -203,6 +203,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
   std::string field_mask_attempted_generation_;
+  bool field_mask_publication_superseded_{false};
+  size_t field_mask_superseded_retry_frames_remaining_{0};
   bool calibration_completion_reported_{false};
   bool calibration_completion_ready_{false};
   std::atomic_bool calibration_cancelled_{false};
