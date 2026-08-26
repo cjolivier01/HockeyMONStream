@@ -1095,10 +1095,12 @@ absl::StatusOr<std::string> read_stitch_manifest(const fs::path& path, const cha
 absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transaction) {
   const fs::path state_path = transaction / "state";
   std::error_code error;
-  const bool exists = fs::exists(state_path, error);
-  if (error)
+  const fs::file_status state_status = fs::symlink_status(state_path, error);
+  if (error == std::errc::no_such_file_or_directory)
+    error.clear();
+  else if (error)
     return absl::InternalError("Unable to inspect stitch transaction state: " + error.message());
-  if (!exists)
+  if (state_status.type() == fs::file_type::not_found)
     return std::string("UNPREPARED");
   const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (descriptor < 0)
@@ -1545,11 +1547,13 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    const bool is_directory = entry.is_directory(error);
+    if (directory_name.rfind(kStitchTransactionPrefix, 0) != 0)
+      continue;
+    const fs::file_status transaction_status = entry.symlink_status(error);
     if (error)
       return absl::InternalError("Unable to inspect stitch transaction entry: " + error.message());
-    if (!is_directory || directory_name.rfind(kStitchTransactionPrefix, 0) != 0)
-      continue;
+    if (transaction_status.type() != fs::file_type::directory)
+      return absl::FailedPreconditionError("Stitch transaction is not a physical directory: " + directory_name);
     recovered = true;
     const fs::path transaction = entry.path();
     auto state = read_stitch_transaction_state(transaction);
@@ -1603,10 +1607,12 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
 
       const fs::path previous = transaction / "previous";
       std::map<std::string, fs::path> backups;
-      const bool previous_exists = fs::exists(previous, error);
-      if (error)
+      const fs::file_status previous_status = fs::symlink_status(previous, error);
+      if (error == std::errc::no_such_file_or_directory)
+        error.clear();
+      else if (error)
         return absl::InternalError("Unable to inspect stitch transaction backup directory: " + error.message());
-      if (!previous_exists || !fs::is_directory(previous, error) || error)
+      if (previous_status.type() != fs::file_type::directory)
         return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
       auto previous_entries = stitch_directory_entries(previous, "stitch transaction backup");
       if (!previous_entries.ok())

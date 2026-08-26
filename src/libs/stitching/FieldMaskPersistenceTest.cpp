@@ -665,6 +665,19 @@ int main() {
         hm::stitching::save_rink_profile(root.string(), profile).ok() &&
             hm::stitching::is_field_mask_configured(root.string()),
         "regenerating the profile must bind it to the replacement seam generation");
+    const fs::path rink_symlink_target = root / "rink-mask-symlink-target.png";
+    std::error_code rink_symlink_error;
+    fs::rename(root / "rink_mask_0.png", rink_symlink_target, rink_symlink_error);
+    fs::create_symlink(rink_symlink_target, root / "rink_mask_0.png", rink_symlink_error);
+    const auto symlinked_rink_publication = hm::stitching::save_rink_profile(root.string(), profile);
+    ok &= expect(
+        !rink_symlink_error && absl::IsFailedPrecondition(symlinked_rink_publication) &&
+            fs::is_symlink(fs::symlink_status(root / "rink_mask_0.png")) &&
+            cv::imread(rink_symlink_target.string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(32, 24),
+        "rink profile publication must reject a symlinked prior mask without mutating its target");
+    fs::remove(root / "rink_mask_0.png", rink_symlink_error);
+    fs::rename(rink_symlink_target, root / "rink_mask_0.png", rink_symlink_error);
+    ok &= expect(!rink_symlink_error, "symlinked prior-mask fixture must restore the regular mask");
     ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
     const auto portable_publication = hm::stitching::save_rink_profile(root.string(), profile);
     ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
@@ -780,6 +793,7 @@ int main() {
       std::ofstream(root / "config.yaml") << "interrupted: true\n";
       cv::imwrite((root / "rink_mask_0.png").string(), cv::Mat(2, 2, CV_8U, cv::Scalar(255)));
     }
+    ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
     ::setenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER", "1", 1);
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()),
@@ -797,7 +811,78 @@ int main() {
     ok &= expect(
         cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(32, 24),
         "rink recovery must restore the prior mask generation");
+    ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
     ok &= expect(!fs::exists(interrupted), "recovered rink transaction must be cleaned");
+
+    const fs::path symlinked_transaction = root / ".hstream-rink-symlinked-transaction";
+    const fs::path transaction_target = root / "rink-transaction-symlink-target";
+    fs::create_directories(transaction_target / "previous");
+    fs::copy_file(root / "config.yaml", transaction_target / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", transaction_target / "previous" / "rink_mask_0.png");
+    std::ofstream(transaction_target / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(transaction_target / "state") << "PREPARED\n";
+    fs::create_directory_symlink(transaction_target, symlinked_transaction);
+    const std::string config_before_symlinked_transaction = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) &&
+            fs::is_symlink(fs::symlink_status(symlinked_transaction)) &&
+            [&]() {
+              std::ifstream input(transaction_target / "state", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  "PREPARED\n";
+            }() &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_symlinked_transaction;
+            }(),
+        "rink recovery must reject a symlinked transaction directory without mutating either generation");
+    fs::remove(symlinked_transaction);
+    fs::remove_all(transaction_target);
+
+    const fs::path symlinked_previous = root / ".hstream-rink-symlinked-previous";
+    const fs::path previous_target = root / "rink-previous-symlink-target";
+    fs::create_directories(symlinked_previous);
+    fs::create_directories(previous_target);
+    fs::copy_file(root / "config.yaml", previous_target / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", previous_target / "rink_mask_0.png");
+    fs::create_directory_symlink(previous_target, symlinked_previous / "previous");
+    std::ofstream(symlinked_previous / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(symlinked_previous / "state") << "PREPARED\n";
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(symlinked_previous) &&
+            fs::is_symlink(fs::symlink_status(symlinked_previous / "previous")) &&
+            fs::is_regular_file(previous_target / "config.yaml"),
+        "rink recovery must reject a symlinked rollback directory without consuming its target");
+    fs::remove_all(symlinked_previous);
+    fs::remove_all(previous_target);
+
+    const fs::path symlinked_backup = root / ".hstream-rink-symlinked-backup";
+    const fs::path symlinked_backup_target = root / "rink-backup-symlink-target.yaml";
+    fs::create_directories(symlinked_backup / "previous");
+    fs::copy_file(root / "config.yaml", symlinked_backup_target);
+    fs::create_symlink(symlinked_backup_target, symlinked_backup / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", symlinked_backup / "previous" / "rink_mask_0.png");
+    std::ofstream(symlinked_backup / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(symlinked_backup / "state") << "PREPARED\n";
+    const std::string config_before_symlinked_backup = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(symlinked_backup) &&
+            fs::is_symlink(fs::symlink_status(symlinked_backup / "previous" / "config.yaml")) &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_symlinked_backup;
+            }(),
+        "rink recovery must reject a symlinked backup before mutating the committed profile");
+    fs::remove_all(symlinked_backup);
+    fs::remove(symlinked_backup_target);
 
     const fs::path unreadable = root / ".hstream-rink-unreadable";
     fs::create_directories(unreadable / "previous");

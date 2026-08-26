@@ -151,7 +151,9 @@ int main() {
   std::ofstream(interrupted / "state") << "PREPARED\n";
   std::ofstream(root / "config.yaml") << "interrupted: true\n";
   std::ofstream(root / "rink_mask_0.png") << "new-mask";
+  ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
   auto recovered_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
   ok &= expect(
       recovered_read.ok() && recovered_read->has_value(),
       "recovery-aware config reads must recover a prepared rink transaction");
@@ -171,6 +173,53 @@ int main() {
       recovered["recovered"]["old"].as<bool>() && recovered["after_recovery"].as<bool>() && !recovered["interrupted"],
       "rink recovery must precede and preserve the subsequent config mutation");
   ok &= expect(!fs::exists(interrupted), "recovered rink journal must be removed");
+
+  const fs::path symlinked_transaction = root / ".hstream-rink-symlinked-transaction";
+  const fs::path transaction_target = root / "rink-transaction-symlink-target";
+  fs::create_directories(transaction_target / "previous");
+  fs::copy_file(root / "config.yaml", transaction_target / "previous" / "config.yaml");
+  fs::copy_file(root / "rink_mask_0.png", transaction_target / "previous" / "rink_mask_0.png");
+  std::ofstream(transaction_target / "new-files") << "config.yaml\nrink_mask_0.png\n";
+  std::ofstream(transaction_target / "state") << "PREPARED\n";
+  fs::create_directory_symlink(transaction_target, symlinked_transaction);
+  const std::string config_before_symlinked_transaction = [&]() {
+    std::ifstream input(root / "config.yaml", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  const auto symlinked_transaction_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsFailedPrecondition(symlinked_transaction_read.status()) &&
+          fs::is_symlink(fs::symlink_status(symlinked_transaction)) &&
+          [&]() {
+            std::ifstream input(transaction_target / "state", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) == "PREPARED\n";
+          }() &&
+          [&]() {
+            std::ifstream input(root / "config.yaml", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                config_before_symlinked_transaction;
+          }(),
+      "config recovery must reject a symlinked transaction directory without mutating either generation");
+  fs::remove(symlinked_transaction);
+  fs::remove_all(transaction_target);
+
+  const fs::path symlinked_previous = root / ".hstream-rink-symlinked-previous";
+  const fs::path previous_target = root / "rink-previous-symlink-target";
+  fs::create_directories(symlinked_previous);
+  fs::create_directories(previous_target);
+  fs::copy_file(root / "config.yaml", previous_target / "config.yaml");
+  fs::copy_file(root / "rink_mask_0.png", previous_target / "rink_mask_0.png");
+  fs::create_directory_symlink(previous_target, symlinked_previous / "previous");
+  std::ofstream(symlinked_previous / "new-files") << "config.yaml\nrink_mask_0.png\n";
+  std::ofstream(symlinked_previous / "state") << "PREPARED\n";
+  const auto symlinked_previous_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsFailedPrecondition(symlinked_previous_read.status()) && fs::exists(symlinked_previous) &&
+          fs::is_symlink(fs::symlink_status(symlinked_previous / "previous")) &&
+          fs::is_regular_file(previous_target / "config.yaml"),
+      "config recovery must reject a symlinked rollback directory without consuming its target");
+  fs::remove_all(symlinked_previous);
+  fs::remove_all(previous_target);
 
   const fs::path unreadable = root / ".hstream-rink-unreadable";
   fs::create_directories(unreadable / "previous");
@@ -195,10 +244,60 @@ int main() {
   fs::permissions(unreadable / "previous", fs::perms::owner_all, fs::perm_options::replace);
   fs::remove_all(unreadable);
 
+  const fs::path symlinked_backup = root / ".hstream-rink-symlinked-backup";
+  const fs::path symlinked_backup_target = root / "config-backup-symlink-target.yaml";
+  fs::create_directories(symlinked_backup / "previous");
+  fs::copy_file(root / "config.yaml", symlinked_backup_target);
+  fs::create_symlink(symlinked_backup_target, symlinked_backup / "previous" / "config.yaml");
+  fs::copy_file(root / "rink_mask_0.png", symlinked_backup / "previous" / "rink_mask_0.png");
+  std::ofstream(symlinked_backup / "new-files") << "config.yaml\nrink_mask_0.png\n";
+  std::ofstream(symlinked_backup / "state") << "PREPARED\n";
+  const std::string config_before_symlinked_backup = [&]() {
+    std::ifstream input(root / "config.yaml", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  const auto symlinked_backup_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      !symlinked_backup_read.ok() && fs::exists(symlinked_backup) &&
+          fs::is_symlink(fs::symlink_status(symlinked_backup / "previous" / "config.yaml")) &&
+          [&]() {
+            std::ifstream input(root / "config.yaml", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                config_before_symlinked_backup;
+          }(),
+      "config recovery must reject a symlinked rollback backup before mutating the committed config");
+  fs::remove_all(symlinked_backup);
+  fs::remove(symlinked_backup_target);
+
   std::ofstream(root / "config.yaml") << "generation: old\n";
   std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";
   std::ofstream(root / "rink_mask_1.png") << "old-mask-one";
   std::ofstream(root / "s.png") << "old-stitched-snapshot";
+  const fs::path invalidation_symlink_target = root / "snapshot-symlink-target.png";
+  std::error_code invalidation_symlink_error;
+  fs::rename(root / "s.png", invalidation_symlink_target, invalidation_symlink_error);
+  fs::create_symlink(invalidation_symlink_target, root / "s.png", invalidation_symlink_error);
+  absl::StatusOr<size_t> symlinked_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
+  {
+    auto symlinked_invalidation_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    if (symlinked_invalidation_lock.ok()) {
+      symlinked_invalidation = hm::stitching::publish_game_config_without_rink_masks(
+          root, "generation: new\n", /*remove_stitched_snapshot=*/true);
+    }
+  }
+  ok &= expect(
+      !invalidation_symlink_error && absl::IsFailedPrecondition(symlinked_invalidation.status()) &&
+          fs::is_symlink(fs::symlink_status(root / "s.png")) &&
+          [&]() {
+            std::ifstream input(invalidation_symlink_target, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                "old-stitched-snapshot";
+          }() &&
+          YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "old",
+      "rink invalidation must reject a symlinked snapshot without mutating its target or config");
+  fs::remove(root / "s.png", invalidation_symlink_error);
+  fs::rename(invalidation_symlink_target, root / "s.png", invalidation_symlink_error);
+  ok &= expect(!invalidation_symlink_error, "symlinked invalidation fixture must restore the regular snapshot");
   struct stat original_snapshot_metadata{};
   ok &= expect(
       ::stat((root / "s.png").c_str(), &original_snapshot_metadata) == 0,

@@ -43,10 +43,8 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <linux/fs.h>
 #include <opencv2/opencv.hpp>
 #include <sys/file.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
@@ -96,40 +94,7 @@ absl::Status link_clone_or_copy_rink_rollback_file(const fs::path& source, const
     const char* value = std::getenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
     return value != nullptr && std::string(value) == "1";
   }();
-  if (!force_portable_fallback && ::link(source.c_str(), destination.c_str()) == 0)
-    return absl::OkStatus();
-  const int link_error = force_portable_fallback ? EOPNOTSUPP : errno;
-  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (source_fd < 0)
-    return absl::InternalError("Unable to open rink artifact for rollback: " + source.string());
-  struct stat metadata{};
-  if (::fstat(source_fd, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
-    ::close(source_fd);
-    return absl::FailedPreconditionError("Rink rollback source is not a regular file: " + source.string());
-  }
-  const int destination_fd =
-      ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, metadata.st_mode & 0777);
-  if (destination_fd < 0) {
-    ::close(source_fd);
-    return absl::InternalError("Unable to create rink rollback artifact: " + destination.string());
-  }
-  const bool cloned = !force_portable_fallback && ::ioctl(destination_fd, FICLONE, source_fd) == 0;
-  const int clone_error = force_portable_fallback ? EOPNOTSUPP : errno;
-  ::close(destination_fd);
-  ::close(source_fd);
-  if (cloned)
-    return absl::OkStatus();
-
-  std::error_code error;
-  fs::remove(destination, error);
-  error.clear();
-  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
-  if (error) {
-    return absl::InternalError(
-        "Unable to preserve old rink artifact after hard link (" + std::string(std::strerror(link_error)) +
-        ") and reflink (" + std::string(std::strerror(clone_error)) + ") failed: " + error.message());
-  }
-  return absl::OkStatus();
+  return snapshot_regular_file_for_rollback(source, destination, force_portable_fallback);
 }
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
@@ -1868,10 +1833,12 @@ bool is_rink_artifact_name(const std::string& name) {
 absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transaction) {
   const fs::path state_path = transaction / "state";
   std::error_code error;
-  const bool exists = fs::exists(state_path, error);
-  if (error)
+  const fs::file_status state_status = fs::symlink_status(state_path, error);
+  if (error == std::errc::no_such_file_or_directory)
+    error.clear();
+  else if (error)
     return absl::InternalError("Unable to inspect rink transaction state: " + error.message());
-  if (!exists)
+  if (state_status.type() == fs::file_type::not_found)
     return std::string("UNPREPARED");
   const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (descriptor < 0)
@@ -1934,11 +1901,13 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    const bool is_directory = entry.is_directory(error);
+    if (directory_name.rfind(kRinkTransactionPrefix, 0) != 0)
+      continue;
+    const fs::file_status transaction_status = entry.symlink_status(error);
     if (error)
       return absl::InternalError("Unable to inspect rink transaction entry: " + error.message());
-    if (!is_directory || directory_name.rfind(kRinkTransactionPrefix, 0) != 0)
-      continue;
+    if (transaction_status.type() != fs::file_type::directory)
+      return absl::FailedPreconditionError("Rink transaction is not a physical directory: " + directory_name);
     const fs::path transaction = entry.path();
     auto state = read_rink_transaction_state(transaction);
     if (!state.ok())
@@ -1949,18 +1918,20 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         return manifest.status();
       const fs::path previous = transaction / "previous";
       std::vector<fs::path> backups;
-      const bool previous_exists = fs::exists(previous, error);
-      if (error)
+      const fs::file_status previous_status = fs::symlink_status(previous, error);
+      if (error == std::errc::no_such_file_or_directory)
+        error.clear();
+      else if (error)
         return absl::InternalError("Unable to inspect rink transaction backup directory: " + error.message());
-      if (previous_exists) {
-        if (!fs::is_directory(previous, error) || error)
+      if (previous_status.type() != fs::file_type::not_found) {
+        if (previous_status.type() != fs::file_type::directory)
           return absl::FailedPreconditionError("Rink transaction backup is not a directory");
         auto previous_entries = directory_entries(previous, "rink transaction backup");
         if (!previous_entries.ok())
           return previous_entries.status();
         for (const auto& old : *previous_entries) {
           const std::string old_name = old.path().filename().string();
-          const bool is_regular = old.is_regular_file(error);
+          const bool is_regular = old.symlink_status(error).type() == fs::file_type::regular;
           if (error)
             return absl::InternalError("Unable to inspect rink transaction backup entry: " + error.message());
           if (!is_regular || !is_rink_artifact_name(old_name))

@@ -1086,6 +1086,25 @@ int main() {
       "historical BACKING_UP recovery must recreate suspect backups before restoring a missing root artifact");
   fs::remove_all(historical_backing_root);
 
+  const fs::path symlinked_transaction_root = root / "symlinked-transaction-root";
+  const fs::path stitch_transaction_target = root / "stitch-transaction-symlink-target";
+  const fs::path symlinked_stitch_transaction = symlinked_transaction_root / ".hstream-stitch-external";
+  fs::create_directories(symlinked_transaction_root);
+  fs::create_directories(stitch_transaction_target / "previous");
+  std::ofstream(stitch_transaction_target / "previous" / "sentinel") << "preserved\n";
+  std::ofstream(stitch_transaction_target / "journal_version") << "2\n";
+  std::ofstream(stitch_transaction_target / "state") << "RESTORED\n";
+  fs::create_directory_symlink(stitch_transaction_target, symlinked_stitch_transaction);
+  const auto symlinked_transaction_recovery = hm::stitching::HuginProject::Recover(symlinked_transaction_root);
+  ok &= expect(
+      absl::IsFailedPrecondition(symlinked_transaction_recovery) &&
+          fs::is_symlink(fs::symlink_status(symlinked_stitch_transaction)) &&
+          read_text_file(stitch_transaction_target / "state") == "RESTORED\n" &&
+          read_text_file(stitch_transaction_target / "previous" / "sentinel") == "preserved\n",
+      "Hugin recovery must reject a symlinked transaction directory without mutating its external target");
+  fs::remove_all(symlinked_transaction_root);
+  fs::remove_all(stitch_transaction_target);
+
   const fs::path symlink_rollback_root = root / "symlinked-rollback-source";
   const fs::path symlink_rollback_transaction = symlink_rollback_root / ".hstream-stitch-backing";
   const fs::path rollback_symlink_target = root / "rollback-symlink-target.tif";
