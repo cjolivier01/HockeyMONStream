@@ -1030,7 +1030,7 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   status = write_stitch_transaction_file(staging / "previous_artifacts", prior_manifest.str());
   if (!status.ok())
     return status;
-  status = write_stitch_transaction_file(staging / "journal_version", "2\n");
+  status = publish_stitch_file_atomically(staging / "journal_version", "2\n");
   if (!status.ok())
     return status;
   status = fsync_stitch_path(backups, true);

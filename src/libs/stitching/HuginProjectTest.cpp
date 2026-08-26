@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -130,6 +132,45 @@ bool add_png_pixel_offset(const std::filesystem::path& path, int32_t x, int32_t 
 std::vector<unsigned char> read_binary_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   return std::vector<unsigned char>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+std::string read_text_file(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+std::string generation_stat_identity(const std::filesystem::path& directory, bool portable) {
+  static constexpr std::array<const char*, 10> names = {
+      "hm_project.pto",
+      "autooptimiser_out.pto",
+      "mapping_0000.tif",
+      "mapping_0000_x.tif",
+      "mapping_0000_y.tif",
+      "mapping_0001.tif",
+      "mapping_0001_x.tif",
+      "mapping_0001_y.tif",
+      "seam_file.png",
+      "stitching_canvas_provenance",
+  };
+  std::ostringstream identity;
+  for (size_t index = 0; index < names.size(); ++index) {
+    struct stat metadata{};
+    if (::stat((directory / names[index]).c_str(), &metadata) != 0) {
+      if (index + 1 == names.size() && errno == ENOENT)
+        continue;
+      return {};
+    }
+    identity << names[index] << ':';
+    if (!portable) {
+      identity << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':';
+    }
+    identity << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':'
+             << metadata.st_mtim.tv_nsec;
+    if (!portable)
+      identity << ':' << metadata.st_ctim.tv_sec << ':' << metadata.st_ctim.tv_nsec;
+    identity << '\n';
+  }
+  return identity.str();
 }
 
 bool corrupt_png_pixel_offset_without_updating_crc(const std::filesystem::path& path) {
@@ -816,7 +857,19 @@ int main() {
   ok &= expect(
       !fs::exists(root / "game" / "hm_project.pto") && !fs::exists(root / "game" / "autooptimiser_out.pto"),
       "backed-up interruption must happen before publishing replacement artifacts");
+  fs::path rollback_transaction;
+  for (const auto& entry : fs::directory_iterator(root / "game")) {
+    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0) {
+      rollback_transaction = entry.path();
+      break;
+    }
+  }
+  ok &= expect(!rollback_transaction.empty(), "backed-up interruption must retain its transaction journal");
+  const auto journal_version_time = rollback_transaction.empty()
+      ? fs::file_time_type::min()
+      : fs::last_write_time(rollback_transaction / "journal_version");
   ::setenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER", "1", 1);
+  ::setenv("HM_TEST_STITCH_DISABLE_LINK_CLONE", "1", 1);
   const auto interrupted_rollback = hm::stitching::HuginProject::Recover(root / "game");
   ::unsetenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER");
   ok &= expect(!interrupted_rollback.ok(), "interrupted Hugin rollback must retain a resumable journal");
@@ -826,8 +879,13 @@ int main() {
   ok &= expect(
       !interrupted_restored_cleanup.ok(), "restored Hugin generation must retain its journal before backup cleanup");
   ok &= expect(
+      !rollback_transaction.empty() &&
+          fs::last_write_time(rollback_transaction / "journal_version") == journal_version_time,
+      "rollback recovery must not rewrite an already-durable journal version");
+  ok &= expect(
       hm::stitching::HuginProject::Recover(root / "game").ok(),
       "durably backed-up Hugin publication must recover after interrupted restore and cleanup");
+  ::unsetenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
     ok &= expect(generation_lock.ok(), "fully backed-up Hugin generation must remain lockable");
@@ -868,8 +926,6 @@ int main() {
   ok &= expect(
       fs::file_size(root / "game" / "mapping_0000.tif") > 1, "failed Hugin validation must not publish a corrupt TIFF");
 
-  const fs::path interrupted = root / "game" / ".hstream-stitch-interrupted";
-  fs::create_directories(interrupted / "previous");
   const std::vector<std::string> artifact_names = {
       "left.png",
       "right.png",
@@ -885,56 +941,6 @@ int main() {
       "panorama.tif",
       "stitching_canvas_provenance",
   };
-  std::vector<fs::file_time_type> expected_mtimes;
-  const auto generation_start = fs::file_time_type::clock::now() - std::chrono::minutes(1);
-  {
-    std::ofstream manifest(interrupted / "artifacts");
-    for (size_t index = 0; index < artifact_names.size(); ++index) {
-      const std::string& name = artifact_names[index];
-      const auto modified = generation_start + std::chrono::seconds(index);
-      fs::last_write_time(root / "game" / name, modified);
-      expected_mtimes.push_back(fs::last_write_time(root / "game" / name));
-      manifest << name << '\n';
-      if (name != "panorama.tif") {
-        fs::copy_file(root / "game" / name, interrupted / "previous" / name);
-        fs::last_write_time(interrupted / "previous" / name, expected_mtimes.back());
-      }
-    }
-    std::ofstream(interrupted / "state") << "PREPARED\n";
-  }
-  std::ofstream(root / "game" / "mapping_0000.tif", std::ios::trunc) << 'x';
-  fs::remove(root / "game" / "autooptimiser_out.pto");
-  fs::remove(root / "game" / "panorama.tif");
-  ::setenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST", "1", 1);
-  const auto interrupted_legacy_migration = hm::stitching::HuginProject::Recover(root / "game");
-  ::unsetenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST");
-  ok &= expect(!interrupted_legacy_migration.ok(), "legacy Hugin journal migration must be resumable");
-  std::ofstream(interrupted / "previous_artifacts", std::ios::trunc) << "hm_project.pto\n";
-  std::ofstream(interrupted / "state", std::ios::trunc) << "PREPARED\n";
-  ::setenv("HM_TEST_STITCH_DISABLE_LINK_CLONE", "1", 1);
-  const auto recovered = hm::stitching::HuginProject::Recover(root / "game");
-  ::unsetenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
-  ok &= expect(recovered.ok(), "prepared Hugin publication must recover after an interrupted publish");
-  ok &= expect(!fs::exists(interrupted), "recovered Hugin transaction must be cleaned");
-  ok &= expect(
-      fs::file_size(root / "game" / "mapping_0000.tif") > 1 &&
-          fs::is_regular_file(root / "game" / "autooptimiser_out.pto") && !fs::exists(root / "game" / "panorama.tif"),
-      "Hugin recovery must restore the prior generation without root-only replacement artifacts");
-  for (size_t index = 0; index < artifact_names.size(); ++index) {
-    if (artifact_names[index] == "panorama.tif")
-      continue;
-    ok &= expect(
-        fs::last_write_time(root / "game" / artifact_names[index]) == expected_mtimes[index],
-        "Hugin recovery must preserve dependency timestamps");
-  }
-  ok &= expect(
-      fs::last_write_time(root / "game" / "right.png") < fs::last_write_time(root / "game" / "hm_project.pto") &&
-          fs::last_write_time(root / "game" / "hm_project.pto") <
-              fs::last_write_time(root / "game" / "autooptimiser_out.pto") &&
-          fs::last_write_time(root / "game" / "autooptimiser_out.pto") <
-              fs::last_write_time(root / "game" / "mapping_0000.tif"),
-      "restored Hugin dependency ordering must remain usable");
-
   const auto write_legacy_transaction_fixture = [&](const fs::path& game, const fs::path& transaction) {
     fs::create_directories(transaction / "previous");
     std::ofstream manifest(transaction / "artifacts");
@@ -944,10 +950,26 @@ int main() {
       std::ofstream(transaction / "previous" / name) << "old-" << name << '\n';
     }
   };
-  const auto read_fixture_file = [](const fs::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-  };
+
+  const fs::path ambiguous_root = root / "legacy-complete-unversioned";
+  const fs::path ambiguous_transaction = ambiguous_root / ".hstream-stitch-ambiguous";
+  fs::create_directories(ambiguous_root);
+  write_legacy_transaction_fixture(ambiguous_root, ambiguous_transaction);
+  {
+    std::ofstream prior(ambiguous_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+  }
+  std::ofstream(ambiguous_root / "mapping_0000.tif", std::ios::trunc) << "replacement\n";
+  for (const char* state : {"PREPARED\n", "LEGACY_MIGRATE\n", "ROLLING_BACK\n"}) {
+    std::ofstream(ambiguous_transaction / "state", std::ios::trunc) << state;
+    const auto recovery = hm::stitching::HuginProject::Recover(ambiguous_root);
+    ok &= expect(
+        !recovery.ok() && fs::exists(ambiguous_transaction) &&
+            read_text_file(ambiguous_root / "mapping_0000.tif") == "replacement\n",
+        "an unversioned active journal must fail closed without restoring ambiguous backups");
+  }
+  fs::remove_all(ambiguous_root);
 
   const fs::path consumed_root = root / "legacy-consumed-rollback";
   const fs::path consumed_transaction = consumed_root / ".hstream-stitch-consumed";
@@ -958,7 +980,7 @@ int main() {
   const auto consumed_recovery = hm::stitching::HuginProject::Recover(consumed_root);
   ok &= expect(
       !consumed_recovery.ok() && fs::exists(consumed_transaction) &&
-          read_fixture_file(consumed_root / "hm_project.pto") == "old-hm_project.pto\n",
+          read_text_file(consumed_root / "hm_project.pto") == "old-hm_project.pto\n",
       "legacy PREPARED recovery must fail closed when a backup may already have been consumed");
   fs::remove_all(consumed_root);
 
@@ -977,7 +999,7 @@ int main() {
   const auto root_inclusive_recovery = hm::stitching::HuginProject::Recover(root_inclusive);
   ok &= expect(
       !root_inclusive_recovery.ok() && fs::exists(root_inclusive_transaction) &&
-          read_fixture_file(root_inclusive / "stitching_canvas_provenance") == "replacement\n",
+          read_text_file(root_inclusive / "stitching_canvas_provenance") == "replacement\n",
       "legacy PREPARED recovery must not promote a root-inclusive manifest into the old generation");
   fs::remove_all(root_inclusive);
 
@@ -990,9 +1012,10 @@ int main() {
   std::ofstream(torn_transaction / "state") << "PREPARED\n";
   const auto torn_recovery = hm::stitching::HuginProject::Recover(torn_root);
   ok &= expect(
-      torn_recovery.ok() && !fs::exists(torn_transaction) &&
-          read_fixture_file(torn_root / "mapping_0000.tif") == "old-mapping_0000.tif\n",
-      "legacy PREPARED recovery must rebuild a torn prior manifest from intact backups");
+      !torn_recovery.ok() && fs::exists(torn_transaction) &&
+          read_text_file(torn_root / "mapping_0000.tif") == "replacement\n",
+      "an unversioned PREPARED journal with a torn manifest must fail closed");
+  fs::remove_all(torn_root);
 
   const fs::path unsafe_root = root / "legacy-unsafe-rollback";
   const fs::path unsafe_transaction = unsafe_root / ".hstream-stitch-unsafe";
@@ -1009,9 +1032,83 @@ int main() {
   const auto unsafe_recovery = hm::stitching::HuginProject::Recover(unsafe_root);
   ok &= expect(
       !unsafe_recovery.ok() && fs::exists(unsafe_transaction) &&
-          read_fixture_file(unsafe_root / "hm_project.pto") == "replacement\n",
+          read_text_file(unsafe_root / "hm_project.pto") == "replacement\n",
       "legacy ROLLING_BACK recovery must fail closed instead of accepting a mixed generation");
   fs::remove_all(unsafe_root);
+
+  const fs::path torn_version_root = root / "torn-journal-version";
+  const fs::path torn_version_transaction = torn_version_root / ".hstream-stitch-torn-version";
+  fs::create_directories(torn_version_root);
+  write_legacy_transaction_fixture(torn_version_root, torn_version_transaction);
+  {
+    std::ofstream prior(torn_version_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+  }
+  std::ofstream(torn_version_root / "mapping_0000.tif", std::ios::trunc) << "replacement\n";
+  std::ofstream(torn_version_transaction / "journal_version") << '2';
+  std::ofstream(torn_version_transaction / "state") << "ROLLING_BACK\n";
+  const auto torn_version_recovery = hm::stitching::HuginProject::Recover(torn_version_root);
+  ok &= expect(
+      !torn_version_recovery.ok() && fs::exists(torn_version_transaction) &&
+          read_text_file(torn_version_root / "mapping_0000.tif") == "replacement\n",
+      "a torn journal version must fail closed without consuming intact backups");
+  fs::remove_all(torn_version_root);
+
+  const std::string portable_metadata = generation_stat_identity(root / "game", true);
+  const std::string adopted_v1_generation = "adopted-v1-generation\n";
+  std::ofstream(root / "game" / "stitching_generation_id", std::ios::binary | std::ios::trunc)
+      << "version=1\nlegacy-size=" << adopted_v1_generation.size() << "\nmetadata-size=" << portable_metadata.size()
+      << '\n'
+      << adopted_v1_generation << portable_metadata;
+  auto v1_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  ok &= expect(v1_lock.ok(), "version-1 Hugin generation fixture must lock");
+  if (v1_lock.ok()) {
+    const auto first = hm::stitching::HuginProject::GenerationId(root / "game", **v1_lock);
+    const auto second = hm::stitching::HuginProject::GenerationId(root / "game", **v1_lock);
+    ok &= expect(
+        first.ok() && second.ok() && *first == adopted_v1_generation && *second == adopted_v1_generation &&
+            read_text_file(root / "game" / "stitching_generation_id").rfind("version=3\n", 0) == 0,
+        "version-1 generation identities must upgrade atomically without changing their effective generation");
+  }
+  if (v1_lock.ok())
+    v1_lock->reset();
+
+  const std::string token_v1_identity =
+      "version=1\ntoken=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n";
+  const std::string token_v1_generation =
+      "hstream-stitch-generation-v1\nidentity-bytes=" + std::to_string(token_v1_identity.size()) + '\n' +
+      token_v1_identity + "metadata-bytes=" + std::to_string(portable_metadata.size()) + '\n' + portable_metadata;
+  std::ofstream(root / "game" / "stitching_generation_id", std::ios::binary | std::ios::trunc) << token_v1_identity;
+  auto token_v1_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  ok &= expect(token_v1_lock.ok(), "token-based version-1 Hugin generation fixture must lock");
+  if (token_v1_lock.ok()) {
+    const auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **token_v1_lock);
+    ok &= expect(
+        generation.ok() && *generation == token_v1_generation &&
+            read_text_file(root / "game" / "stitching_generation_id").rfind("version=3\n", 0) == 0,
+        "token-based version-1 identities must preserve their previous effective generation during upgrade");
+  }
+  if (token_v1_lock.ok())
+    token_v1_lock->reset();
+
+  const std::string current_bindings = generation_stat_identity(root / "game", false);
+  const std::string preserved_v2_generation = "preserved-v2-generation\n";
+  std::ofstream(root / "game" / "stitching_generation_id", std::ios::binary | std::ios::trunc)
+      << "version=2\nlogical-size=" << preserved_v2_generation.size() << "\nbindings-size=" << current_bindings.size()
+      << '\n'
+      << preserved_v2_generation << current_bindings;
+  auto v2_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  ok &= expect(v2_lock.ok(), "version-2 Hugin generation fixture must lock");
+  if (v2_lock.ok()) {
+    const auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **v2_lock);
+    ok &= expect(
+        generation.ok() && *generation == preserved_v2_generation &&
+            read_text_file(root / "game" / "stitching_generation_id").rfind("version=3\n", 0) == 0,
+        "version-2 generation identities must upgrade without changing their effective generation");
+  }
+  if (v2_lock.ok())
+    v2_lock->reset();
 
   const fs::path replacement_root = root / "same-metadata-replacement";
   fs::create_directories(replacement_root);
@@ -1020,16 +1117,13 @@ int main() {
       fs::copy_file(root / "game" / name, replacement_root / name);
   }
   fs::copy_file(root / "game" / "stitching_generation_id", replacement_root / "stitching_generation_id");
-  const fs::path rebind_directory = replacement_root / ".generation-rebind";
-  fs::create_directories(rebind_directory);
   auto replacement_lock = hm::stitching::HuginProject::RecoverAndLock(replacement_root);
   ok &= expect(replacement_lock.ok(), "same-metadata replacement fixture must lock");
   if (replacement_lock.ok()) {
-    const auto rebound = hm::stitching::rebind_stitch_generation_artifact(rebind_directory, replacement_root);
     const auto before = hm::stitching::HuginProject::GenerationId(replacement_root, **replacement_lock);
     const fs::path target = replacement_root / "hm_project.pto";
     struct stat metadata{};
-    const std::string original = read_fixture_file(target);
+    const std::string original = read_text_file(target);
     std::string changed = original;
     if (!changed.empty())
       changed.front() = changed.front() == 'x' ? 'y' : 'x';
@@ -1044,8 +1138,8 @@ int main() {
     fs::rename(temporary, target, replace_error);
     const auto after = hm::stitching::HuginProject::GenerationId(replacement_root, **replacement_lock);
     ok &= expect(
-        rebound.ok() && before.ok() && !original.empty() && changed.size() == original.size() && timestamp_preserved &&
-            !replace_error && after.ok() && *after != *before,
+        before.ok() && *before == preserved_v2_generation && !original.empty() && changed.size() == original.size() &&
+            timestamp_preserved && !replace_error && after.ok() && *after != *before,
         "same-size same-mtime external replacement must invalidate the logical generation");
   }
   if (replacement_lock.ok())
@@ -1056,12 +1150,18 @@ int main() {
   const fs::path unreadable_transaction = unreadable_root / ".hstream-stitch-unreadable";
   fs::create_directories(unreadable_root);
   write_legacy_transaction_fixture(unreadable_root, unreadable_transaction);
+  {
+    std::ofstream prior(unreadable_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+  }
+  std::ofstream(unreadable_transaction / "journal_version") << "2\n";
   std::ofstream(unreadable_transaction / "state") << "PREPARED\n";
   fs::permissions(unreadable_transaction / "previous", fs::perms::owner_exec, fs::perm_options::replace);
   const auto unreadable_recovery = hm::stitching::HuginProject::Recover(unreadable_root);
   ok &= expect(
       !unreadable_recovery.ok() && fs::exists(unreadable_transaction) &&
-          read_fixture_file(unreadable_root / "hm_project.pto") == "old-hm_project.pto\n",
+          read_text_file(unreadable_root / "hm_project.pto") == "old-hm_project.pto\n",
       "failed backup directory enumeration must preserve the journal and root generation");
   fs::permissions(unreadable_transaction / "previous", fs::perms::owner_all, fs::perm_options::replace);
   fs::remove_all(unreadable_root);
@@ -1076,7 +1176,7 @@ int main() {
   fs::permissions(unreadable_journal_root, fs::perms::owner_all, fs::perm_options::replace);
   ok &= expect(
       !unreadable_journal_recovery.ok() && fs::exists(unreadable_journal) &&
-          read_fixture_file(unreadable_journal_root / "hm_project.pto") == "old-hm_project.pto\n",
+          read_text_file(unreadable_journal_root / "hm_project.pto") == "old-hm_project.pto\n",
       "failed journal directory enumeration must not skip a pending stitch transaction");
   fs::remove_all(unreadable_journal_root);
 

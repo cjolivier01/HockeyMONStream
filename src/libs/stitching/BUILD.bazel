@@ -139,6 +139,7 @@ cc_library(
   hdrs = ["CanvasConstraintCheck.h"],
   include_prefix = INCLUDE_PREFIX,
   linkopts = [
+    "-lcrypto",
     "-lpng",
     "-ltiff",
   ],
