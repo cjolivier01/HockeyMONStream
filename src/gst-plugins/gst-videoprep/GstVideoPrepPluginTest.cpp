@@ -25,7 +25,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"plugin-type", G_TYPE_STRING, true},
           {"plugin-private-config", G_TYPE_STRING, true},
           {"post-stitch-rotate-degrees", G_TYPE_DOUBLE, true},
-          {"stitched-output-authorization-id", G_TYPE_STRING, true},
+          {"stitched-output-epoch", G_TYPE_STRING, true},
           {"max-output-width", G_TYPE_UINT, true},
           {"fixed-edge-rotation-angle", G_TYPE_DOUBLE, true},
           {"fixed-edge-rotation-angle-left", G_TYPE_DOUBLE, true},
@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
               {"output-height", "1080"},
               {"plugin-type", "playcropper"},
               {"plugin-private-config", "show=1;runtime-output-max-width=3840"},
-              {"stitched-output-authorization-id", "authorization-b2"},
+              {"stitched-output-epoch", "16:authorization-b218.25"},
               {"fixed-edge-rotation-angle", "12.5"},
               {"max-output-width", "4096"},
               {"fixed-edge-rotation-angle-left", "25.0"},
@@ -155,7 +155,8 @@ int main(int argc, char** argv) {
   guint output_width = 0;
   gchar* plugin_type = nullptr;
   gchar* private_config = nullptr;
-  gchar* stitched_output_authorization_id = nullptr;
+  gchar* stitched_output_epoch = nullptr;
+  gdouble post_stitch_rotate_degrees = 0.0;
   guint max_output_width = 0;
   gdouble fixed_edge_rotation_angle = 0.0;
   gdouble fixed_edge_rotation_angle_left = 0.0;
@@ -178,8 +179,10 @@ int main(int argc, char** argv) {
       &plugin_type,
       "plugin-private-config",
       &private_config,
-      "stitched-output-authorization-id",
-      &stitched_output_authorization_id,
+      "stitched-output-epoch",
+      &stitched_output_epoch,
+      "post-stitch-rotate-degrees",
+      &post_stitch_rotate_degrees,
       "max-output-width",
       &max_output_width,
       "fixed-edge-rotation-angle",
@@ -202,10 +205,12 @@ int main(int argc, char** argv) {
       &last_property_set_ok,
       NULL);
 
+  const std::string stitched_output_epoch_value = stitched_output_epoch ? stitched_output_epoch : "";
   const bool ok = silent == TRUE && source_id == 3 && output_width == 1920 && plugin_type &&
       std::string(plugin_type) == "playcropper" && private_config &&
-      std::string(private_config) == "show=1;runtime-output-max-width=3840" && stitched_output_authorization_id &&
-      std::string(stitched_output_authorization_id) == "authorization-b2" && max_output_width == 4096 &&
+      std::string(private_config) == "show=1;runtime-output-max-width=3840" && stitched_output_epoch &&
+      stitched_output_epoch_value == "16:authorization-b218.25" &&
+      std::abs(post_stitch_rotate_degrees - 18.25) < 1e-6 && max_output_width == 4096 &&
       std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 && std::abs(fixed_edge_rotation_angle_left - 25.0) < 1e-6 &&
       std::abs(fixed_edge_rotation_angle_right - 75.0) < 1e-6 && std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 &&
       high_bit_depth == TRUE && std::abs(shadow_lift - 42.5) < 1e-6 && shadow_lift_black_point == TRUE &&
@@ -246,17 +251,33 @@ int main(int argc, char** argv) {
       !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"high-bit-depth", "2"}});
   gboolean high_bit_depth_after_invalid = FALSE;
   g_object_get(G_OBJECT(element), "high-bit-depth", &high_bit_depth_after_invalid, NULL);
+  const bool invalid_epoch_applied =
+      hm::gst::apply_plugin_properties(G_OBJECT(element), {{"stitched-output-epoch", "authorization-b2:18.25"}});
+  gboolean invalid_epoch_accepted = TRUE;
+  gchar* epoch_after_invalid = nullptr;
+  g_object_get(
+      G_OBJECT(element),
+      "last-property-set-ok",
+      &invalid_epoch_accepted,
+      "stitched-output-epoch",
+      &epoch_after_invalid,
+      NULL);
+  const bool invalid_epoch_rejected = invalid_epoch_applied && invalid_epoch_accepted == FALSE && epoch_after_invalid &&
+      std::string(epoch_after_invalid) == "16:authorization-b218.25";
   g_free(plugin_type);
   g_free(private_config);
-  g_free(stitched_output_authorization_id);
+  g_free(stitched_output_epoch);
+  g_free(epoch_after_invalid);
   gst_object_unref(element);
 
   if (!ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 || !black_point_mutable_while_playing ||
       !exposure_mutable_while_playing || !scoreboard_polygon_mutable_while_playing || !invalid_black_point_rejected ||
       black_point_after_invalid != TRUE || !invalid_exposure_rejected ||
       std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
-      high_bit_depth_after_invalid != TRUE) {
-    std::cerr << "videoprep property roundtrip failed\n";
+      high_bit_depth_after_invalid != TRUE || !invalid_epoch_rejected) {
+    std::cerr << "videoprep property roundtrip failed: epoch=" << stitched_output_epoch_value
+              << " rotation=" << post_stitch_rotate_degrees << " last-ok=" << last_property_set_ok
+              << " invalid-epoch=" << invalid_epoch_rejected << '\n';
     return 1;
   }
 

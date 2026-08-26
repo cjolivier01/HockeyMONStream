@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -92,6 +93,17 @@ absl::Status validate_pending_stitching_invalidation_file_locked(
 absl::Status validate_stitching_generation_owner_file_locked(
     const std::filesystem::path& config_path,
     const std::string& expected_invalidation_id);
+
+// Rejects Hugin publication while a live stitched-output generation owns the
+// current artifacts. The caller must hold GameConfigTransactionLock.
+absl::Status validate_no_pending_live_stitched_output_authorization_file_locked(
+    const std::filesystem::path& config_path);
+
+// Process-start identities prevent a crashed live controller from retaining
+// publication authority and also fence PID reuse.
+absl::StatusOr<std::string> current_live_stitched_output_owner_process();
+absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_view identity);
+absl::StatusOr<bool> live_stitched_output_authorization_is_active(const YAML::Node& config);
 
 // Applies only changes made between baseline and desired to latest. This is a
 // three-way merge for independently owned config paths, not a conflict

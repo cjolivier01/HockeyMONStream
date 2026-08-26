@@ -56,18 +56,6 @@ constexpr size_t kMinimumUsableMatches = 16;
 constexpr double kMaximumOptimizationRmsPixels = 50.0;
 constexpr size_t kHardMaximumCanvasDimension = 32768;
 constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
-const std::array<const char*, 9> kGenerationArtifacts = {
-    "hm_project.pto",
-    "autooptimiser_out.pto",
-    "mapping_0000.tif",
-    "mapping_0000_x.tif",
-    "mapping_0000_y.tif",
-    "mapping_0001.tif",
-    "mapping_0001_x.tif",
-    "mapping_0001_y.tif",
-    "seam_file.png",
-};
-
 absl::StatusOr<std::string> read_file(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
@@ -1179,33 +1167,7 @@ absl::Status HuginProject::ValidateSeamForConfiguredArtifacts(
 }
 
 absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir, const ArtifactLock&) {
-  std::ostringstream generation;
-  // The stitched surface is determined by the PTO/remaps and seam. Legacy
-  // valid generations did not publish left.png/right.png, so do not make those
-  // provenance images part of the runtime identity.
-  for (const char* name : kGenerationArtifacts) {
-    struct stat metadata{};
-    const fs::path path = game_dir / name;
-    if (::stat(path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
-      return absl::NotFoundError("Hugin generation artifact is missing: " + path.string());
-    }
-    generation << name << ':' << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino)
-               << ':' << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':'
-               << metadata.st_mtim.tv_nsec << '\n';
-  }
-  const fs::path provenance_path = game_dir / kStitchCanvasProvenanceArtifact;
-  std::error_code provenance_error;
-  if (fs::exists(provenance_path, provenance_error) && !provenance_error) {
-    struct stat metadata{};
-    if (::stat(provenance_path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
-      return absl::NotFoundError("Hugin generation artifact is invalid: " + provenance_path.string());
-    generation << kStitchCanvasProvenanceArtifact << ':' << static_cast<uint64_t>(metadata.st_dev) << ':'
-               << static_cast<uint64_t>(metadata.st_ino) << ':' << static_cast<uint64_t>(metadata.st_size) << ':'
-               << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec << '\n';
-  } else if (provenance_error) {
-    return absl::InternalError("Unable to inspect Hugin canvas provenance: " + provenance_error.message());
-  }
-  return generation.str();
+  return stitch_artifact_generation_id_locked(game_dir);
 }
 
 absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::ReadCanvasProvenance(
@@ -1670,18 +1632,19 @@ absl::Status HuginProject::Configure(
     return status;
   if (options.is_cancelled && options.is_cancelled())
     return absl::CancelledError("Hugin calibration cancelled before publication");
+  auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  status = validate_no_pending_live_stitched_output_authorization_file_locked(game_dir / "config.yaml");
+  if (!status.ok())
+    return status;
   if (!options.expected_invalidation_id.empty()) {
-    auto config_transaction = GameConfigTransactionLock::Acquire(game_dir);
-    if (!config_transaction.ok())
-      return config_transaction.status();
     auto validation =
         validate_pending_stitching_invalidation_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
     if (!validation.ok())
       return validation;
-    status = publish_artifacts(staging, game_dir, &cleanup.prepared);
-  } else {
-    status = publish_artifacts(staging, game_dir, &cleanup.prepared);
   }
+  status = publish_artifacts(staging, game_dir, &cleanup.prepared);
   if (status.ok() && options.progress)
     options.progress("canvas", "complete", "Stitch maps and panorama preview are ready");
   return status;

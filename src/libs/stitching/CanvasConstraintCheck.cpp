@@ -39,6 +39,18 @@ constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
 
+const std::array<const char*, 9> kGenerationArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "seam_file.png",
+};
+
 const std::vector<std::string> kRequiredArtifacts = {
     "hm_project.pto",
     "autooptimiser_out.pto",
@@ -129,7 +141,7 @@ std::optional<size_t> positive_environment_size(const char* name) {
   return result.ec == std::errc() && result.ptr == end && parsed > 0 ? std::optional<size_t>(parsed) : std::nullopt;
 }
 
-std::optional<size_t> live_canvas_limit() {
+std::optional<size_t> live_canvas_limit_impl() {
   if (const char* allow = std::getenv("HM_ALLOW_OVERSIZED_LIVE_STITCH"); allow && std::strcmp(allow, "1") == 0)
     return std::nullopt;
   if (auto configured = positive_environment_size("HM_MAX_LIVE_STITCH_EGL_DIMENSION"))
@@ -139,6 +151,30 @@ std::optional<size_t> live_canvas_limit() {
 #else
   return std::nullopt;
 #endif
+}
+
+absl::StatusOr<int> lock_canvas_constraint_artifacts_impl(const fs::path& game_dir, bool wait) {
+  std::error_code error;
+  if (!fs::is_directory(game_dir, error) || error)
+    return absl::NotFoundError("Canvas compatibility check requires an existing game directory");
+  const fs::path lock_path = game_dir / ".hstream-stitch.lock";
+  const int descriptor = ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to open stitching artifact lock: " + std::string(std::strerror(errno)));
+  if (::flock(descriptor, LOCK_EX | (wait ? 0 : LOCK_NB)) != 0) {
+    const int lock_error = errno;
+    ::close(descriptor);
+    if (!wait && (lock_error == EWOULDBLOCK || lock_error == EAGAIN))
+      return -1;
+    return absl::InternalError("Unable to lock stitching artifacts: " + std::string(std::strerror(lock_error)));
+  }
+  auto recovery = recover_stitch_transactions_locked(game_dir);
+  if (!recovery.ok()) {
+    ::flock(descriptor, LOCK_UN);
+    ::close(descriptor);
+    return recovery;
+  }
+  return descriptor;
 }
 
 bool any_mapping_artifact_exists(const fs::path& game_dir) {
@@ -769,6 +805,10 @@ CanvasConstraintArtifactLock::~CanvasConstraintArtifactLock() {
   }
 }
 
+std::optional<size_t> live_stitch_max_canvas_dimension() {
+  return live_canvas_limit_impl();
+}
+
 absl::StatusOr<LightweightCanvasConstraintCheck> try_lock_canvas_constraint_check(
     const fs::path& game_dir,
     size_t max_output_width) {
@@ -794,29 +834,45 @@ absl::StatusOr<LightweightCanvasConstraintCheck> try_lock_canvas_constraint_chec
 
 absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
     const fs::path& game_dir) {
-  std::error_code error;
-  if (!fs::is_directory(game_dir, error) || error)
-    return absl::NotFoundError("Canvas compatibility check requires an existing game directory");
-  const fs::path lock_path = game_dir / ".hstream-stitch.lock";
-  const int descriptor = ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-  if (descriptor < 0)
-    return absl::InternalError("Unable to open stitching artifact lock: " + std::string(std::strerror(errno)));
-  if (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
-    const int lock_error = errno;
-    ::close(descriptor);
-    if (lock_error == EWOULDBLOCK || lock_error == EAGAIN) {
-      return std::unique_ptr<CanvasConstraintArtifactLock>();
-    }
-    return absl::InternalError("Unable to lock stitching artifacts: " + std::string(std::strerror(lock_error)));
+  auto descriptor = lock_canvas_constraint_artifacts_impl(game_dir, /*wait=*/false);
+  if (!descriptor.ok())
+    return descriptor.status();
+  return *descriptor < 0 ? std::unique_ptr<CanvasConstraintArtifactLock>()
+                         : std::unique_ptr<CanvasConstraintArtifactLock>(new CanvasConstraintArtifactLock(*descriptor));
+}
+
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constraint_artifacts(
+    const fs::path& game_dir) {
+  auto descriptor = lock_canvas_constraint_artifacts_impl(game_dir, /*wait=*/true);
+  if (!descriptor.ok())
+    return descriptor.status();
+  return std::unique_ptr<CanvasConstraintArtifactLock>(new CanvasConstraintArtifactLock(*descriptor));
+}
+
+absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path& game_dir) {
+  std::ostringstream generation;
+  for (const char* name : kGenerationArtifacts) {
+    struct stat metadata{};
+    const fs::path path = game_dir / name;
+    if (::stat(path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
+      return absl::NotFoundError("Hugin generation artifact is missing: " + path.string());
+    generation << name << ':' << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino)
+               << ':' << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':'
+               << metadata.st_mtim.tv_nsec << '\n';
   }
-  auto recovery = recover_stitch_transactions_locked(game_dir);
-  if (!recovery.ok()) {
-    ::flock(descriptor, LOCK_UN);
-    ::close(descriptor);
-    return recovery;
+  const fs::path provenance_path = game_dir / kStitchCanvasProvenanceArtifact;
+  std::error_code provenance_error;
+  if (fs::exists(provenance_path, provenance_error) && !provenance_error) {
+    struct stat metadata{};
+    if (::stat(provenance_path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
+      return absl::NotFoundError("Hugin generation artifact is invalid: " + provenance_path.string());
+    generation << kStitchCanvasProvenanceArtifact << ':' << static_cast<uint64_t>(metadata.st_dev) << ':'
+               << static_cast<uint64_t>(metadata.st_ino) << ':' << static_cast<uint64_t>(metadata.st_size) << ':'
+               << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec << '\n';
+  } else if (provenance_error) {
+    return absl::InternalError("Unable to inspect Hugin canvas provenance: " + provenance_error.message());
   }
-  auto lock = std::unique_ptr<CanvasConstraintArtifactLock>(new CanvasConstraintArtifactLock(descriptor));
-  return lock;
+  return generation.str();
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_impl(
@@ -847,7 +903,7 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
     return provenance.status();
   }
   const bool compatible =
-      artifacts_are_compatible(*provenance, *canvas, max_output_width, live_canvas_limit().value_or(0));
+      artifacts_are_compatible(*provenance, *canvas, max_output_width, live_stitch_max_canvas_dimension().value_or(0));
   if (!compatible) {
     return CanvasConstraintCompatibility{
         .artifacts_compatible = false,

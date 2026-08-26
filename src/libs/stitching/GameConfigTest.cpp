@@ -208,6 +208,44 @@ int main() {
         ::stat((root / "config.yaml").c_str(), &invalidated_metadata) == 0 &&
             (invalidated_metadata.st_mode & 0777) == 0600,
         "rink invalidation must publish the replacement private config as owner-only");
+
+    ok &= expect(
+        hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml").ok(),
+        "Hugin publication validation must allow a config without a live authorization");
+    ok &= expect(
+        hm::stitching::publish_game_config(root, "rink:\n  stitched_output_pending_generation: pending-generation\n")
+            .ok(),
+        "incomplete live authorization fixture must publish");
+    ok &= expect(
+        absl::IsInvalidArgument(
+            hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml")),
+        "Hugin publication validation must reject an incomplete live authorization");
+    const auto live_owner = hm::stitching::current_live_stitched_output_owner_process();
+    ok &= expect(live_owner.ok(), "live authorization fixture must identify its owner process");
+    ok &= expect(
+        hm::stitching::publish_game_config(
+            root,
+            "rink:\n  stitched_output_pending_generation: pending-generation\n"
+            "  stitched_output_pending_authorization_id: pending-authorization\n"
+            "  stitched_output_pending_owner_process: " +
+                (live_owner.ok() ? *live_owner : std::string("invalid")) + "\n")
+            .ok(),
+        "complete live authorization fixture must publish");
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml")),
+        "Hugin publication validation must fence artifact replacement during a live authorization");
+    ok &= expect(
+        hm::stitching::publish_game_config(
+            root,
+            "rink:\n  stitched_output_pending_generation: pending-generation\n"
+            "  stitched_output_pending_authorization_id: pending-authorization\n"
+            "  stitched_output_pending_owner_process: 999999999:1\n")
+            .ok(),
+        "crashed live authorization fixture must publish");
+    ok &= expect(
+        hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml").ok(),
+        "a dead owner process must not permanently fence artifact publication");
   }
 
   fs::remove_all(root);

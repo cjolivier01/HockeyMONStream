@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,8 @@ class CanvasConstraintArtifactLock {
       size_t max_output_width);
   friend absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
       const std::filesystem::path& game_dir);
+  friend absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constraint_artifacts(
+      const std::filesystem::path& game_dir);
   explicit CanvasConstraintArtifactLock(int descriptor) : descriptor_(descriptor) {}
   int descriptor_{-1};
 };
@@ -39,6 +42,10 @@ struct CanvasConstraintCompatibility {
 };
 
 inline constexpr char kStitchCanvasProvenanceArtifact[] = "stitching_canvas_provenance";
+
+// Returns the effective platform/runtime canvas limit. Malformed environment
+// overrides are ignored consistently by generation and validation paths.
+std::optional<size_t> live_stitch_max_canvas_dimension();
 
 // Shared by the lightweight checker and Hugin publication so crash recovery
 // and the accepted transaction manifests cannot diverge.
@@ -69,6 +76,15 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_metadata_l
 // have confirmed that the effective width changed.
 absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
     const std::filesystem::path& game_dir);
+
+// Acquires the same artifact lock while waiting for an active Hugin producer.
+// Live config transactions use this before taking GameConfigTransactionLock.
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constraint_artifacts(
+    const std::filesystem::path& game_dir);
+
+// Returns the exact identity embedded in stitched-output generations. The
+// caller must hold the stitching artifact lock for the complete call.
+absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const std::filesystem::path& game_dir);
 
 // Attempts the artifact lock without waiting. A missing lock means another
 // generation owns the artifacts, so callers must fail closed without blocking

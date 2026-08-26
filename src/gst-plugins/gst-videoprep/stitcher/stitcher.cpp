@@ -225,14 +225,14 @@ void StitcherPriv::update_live_output_epoch(
     std::optional<double> post_stitch_rotate_degrees,
     std::optional<std::string> authorization_id) {
   std::lock_guard<std::mutex> lock(live_output_epoch_update_mu_);
-  const std::shared_ptr<const LiveOutputEpoch> current =
+  const std::shared_ptr<const stitching::LiveOutputEpoch> current =
       std::atomic_load_explicit(&live_output_epoch_, std::memory_order_acquire);
-  auto updated = std::make_shared<LiveOutputEpoch>(current ? *current : LiveOutputEpoch{});
+  auto updated = std::make_shared<stitching::LiveOutputEpoch>(current ? *current : stitching::LiveOutputEpoch{});
   if (post_stitch_rotate_degrees.has_value())
     updated->post_stitch_rotate_degrees = *post_stitch_rotate_degrees;
   if (authorization_id.has_value())
     updated->authorization_id = std::move(*authorization_id);
-  std::shared_ptr<const LiveOutputEpoch> published = std::move(updated);
+  std::shared_ptr<const stitching::LiveOutputEpoch> published = std::move(updated);
   std::atomic_store_explicit(&live_output_epoch_, std::move(published), std::memory_order_release);
 }
 
@@ -1388,8 +1388,13 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       return false;
     }
     update_live_output_epoch(parsed_rotation, std::nullopt);
-  } else if (prop.key == "stitched-output-authorization-id" || prop.key == "stitched_output_authorization_id") {
-    update_live_output_epoch(std::nullopt, prop.value);
+  } else if (prop.key == "stitched-output-epoch" || prop.key == "stitched_output_epoch") {
+    auto epoch = stitching::parse_live_output_epoch(prop.value);
+    if (!epoch.ok()) {
+      std::cerr << "Invalid stitched-output epoch value: " << epoch.status() << std::endl;
+      return false;
+    }
+    update_live_output_epoch(epoch->post_stitch_rotate_degrees, std::move(epoch->authorization_id));
   }
   return true;
 }
@@ -1958,7 +1963,7 @@ absl::Status StitcherPriv::GenerateOutput(
 
     assert(cuda_stream_);
 
-    const std::shared_ptr<const LiveOutputEpoch> output_epoch =
+    const std::shared_ptr<const stitching::LiveOutputEpoch> output_epoch =
         std::atomic_load_explicit(&live_output_epoch_, std::memory_order_acquire);
     if (!output_epoch)
       return absl::InternalError("Stitched-output epoch state is unavailable");

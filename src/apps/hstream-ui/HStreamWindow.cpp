@@ -65,6 +65,7 @@
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
 #include <QtCore/QUuid>
@@ -3726,8 +3727,10 @@ ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& c
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_authorization_id"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_owner_process"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
   result.invalidated +=
       remove_yaml_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
@@ -14160,16 +14163,25 @@ bool HStreamWindow::publishRotationRuntimeControls(
     if (!authorized_stitch_rotation.has_value()) {
       controls.erase("Stitch_Rotate_Degrees");
     } else {
-      commands.push_back(
-          {"hmstitcher0",
-           "stitched-output-authorization-id",
-           live_rotation_authorization.has_value()
-               ? QString::fromStdString(live_rotation_authorization->authorization_id)
-               : QString()});
-      commands.push_back({"hmstitcher0", "post-stitch-rotate-degrees", QString::number(*authorized_stitch_rotation)});
+      const hm::stitching::LiveOutputEpoch output_epoch{
+          .post_stitch_rotate_degrees = static_cast<double>(*authorized_stitch_rotation),
+          .authorization_id =
+              live_rotation_authorization.has_value() ? live_rotation_authorization->authorization_id : std::string(),
+      };
+      const RuntimePropertyCommand epoch_command{
+          "hmstitcher0",
+          "stitched-output-epoch",
+          QString::fromStdString(hm::stitching::serialize_live_output_epoch(output_epoch))};
       if (live_rotation_authorization.has_value() && !active_run_is_calibration_) {
-        commands.push_back(
-            {"playcropper0", "scoreboard-perspective-polygon", live_rotation_authorization->scoreboard_property_value});
+        const RuntimePropertyCommand scoreboard_command{
+            "playcropper0", "scoreboard-perspective-polygon", live_rotation_authorization->scoreboard_property_value};
+        if (live_rotation_authorization->invalidate_scoreboard)
+          commands.push_back(scoreboard_command);
+        commands.push_back(epoch_command);
+        if (!live_rotation_authorization->invalidate_scoreboard)
+          commands.push_back(scoreboard_command);
+      } else {
+        commands.push_back(epoch_command);
       }
     }
   }

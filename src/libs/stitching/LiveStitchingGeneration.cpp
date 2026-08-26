@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <yaml-cpp/yaml.h>
@@ -53,10 +54,13 @@ absl::Status validate_rotation(std::string_view value) {
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::string> generation_with_rotation(const std::string& generation, double post_stitch_rotate_degrees) {
+struct EmbeddedHuginGeneration {
+  size_t start{0};
+  size_t size{0};
+};
+
+absl::StatusOr<EmbeddedHuginGeneration> embedded_hugin_generation(const std::string& generation) {
   constexpr std::string_view prefix = "hstream-stitched-output-v1\nhugin-bytes:";
-  constexpr std::string_view rotation_prefix = "post-stitch-rotate-degrees:";
-  constexpr std::string_view output_size_prefix = "output-size:";
   if (generation.compare(0, prefix.size(), prefix) != 0)
     return absl::InvalidArgumentError("Invalid stitched-output generation header");
 
@@ -70,8 +74,16 @@ absl::StatusOr<std::string> generation_with_rotation(const std::string& generati
   const size_t hugin_start = length_end + 1;
   if (*hugin_size > generation.size() - hugin_start)
     return absl::InvalidArgumentError("Truncated stitched-output Hugin generation");
+  return EmbeddedHuginGeneration{hugin_start, *hugin_size};
+}
 
-  const size_t rotation_start = hugin_start + *hugin_size;
+absl::StatusOr<std::string> generation_with_rotation(const std::string& generation, double post_stitch_rotate_degrees) {
+  constexpr std::string_view rotation_prefix = "post-stitch-rotate-degrees:";
+  constexpr std::string_view output_size_prefix = "output-size:";
+  EmbeddedHuginGeneration hugin;
+  HM_ASSIGN_OR_RETURN(hugin, embedded_hugin_generation(generation));
+
+  const size_t rotation_start = hugin.start + hugin.size;
   if (generation.compare(rotation_start, rotation_prefix.size(), rotation_prefix) != 0)
     return absl::InvalidArgumentError("Invalid stitched-output rotation field");
   const size_t value_start = rotation_start + rotation_prefix.size();
@@ -138,14 +150,17 @@ void remove_active_scoreboard_polygon(YAML::Node& config) {
 void remove_pending_authorization(YAML::Node& config) {
   config["rink"].remove("stitched_output_pending_generation");
   config["rink"].remove("stitched_output_pending_authorization_id");
+  config["rink"].remove("stitched_output_pending_owner_process");
   config["rink"].remove("stitched_output_pending_previous_generation");
   config["rink"].remove("stitched_output_pending_previous_authorization_id");
+  config["rink"].remove("stitched_output_pending_previous_owner_process");
   config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
 }
 
 void remove_pending_predecessor(YAML::Node& config) {
   config["rink"].remove("stitched_output_pending_previous_generation");
   config["rink"].remove("stitched_output_pending_previous_authorization_id");
+  config["rink"].remove("stitched_output_pending_previous_owner_process");
 }
 
 absl::StatusOr<std::optional<std::string>> optional_scalar(const YAML::Node& node, std::string_view field) {
@@ -195,6 +210,9 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
         "A game directory, finite live stitched-output rotation, and unique authorization ID are required");
   }
   const fs::path root(game_dir);
+  auto hugin_lock = lock_canvas_constraint_artifacts(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
@@ -221,6 +239,18 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
         generation_with_rotation(saved_generation.as<std::string>(), post_stitch_rotate_degrees);
     if (!authorized_generation.ok())
       return authorized_generation.status();
+    EmbeddedHuginGeneration embedded_hugin;
+    HM_ASSIGN_OR_RETURN(embedded_hugin, embedded_hugin_generation(saved_generation.as<std::string>()));
+    auto current_hugin = stitch_artifact_generation_id_locked(root);
+    if (!current_hugin.ok())
+      return current_hugin.status();
+    const std::string& persisted_generation = saved_generation.as<std::string>();
+    if (persisted_generation.compare(embedded_hugin.start, embedded_hugin.size, *current_hugin) != 0 ||
+        current_hugin->size() != embedded_hugin.size) {
+      return absl::AbortedError("Persisted stitched-output generation does not match the current Hugin artifacts");
+    }
+    std::string owner_process;
+    HM_ASSIGN_OR_RETURN(owner_process, current_live_stitched_output_owner_process());
     std::optional<std::string> previous_generation;
     HM_ASSIGN_OR_RETURN(
         previous_generation,
@@ -236,6 +266,33 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
       // creating the first epoch-backed authorization.
       previous_generation.reset();
       previous_authorization_id.reset();
+      remove_pending_authorization(config);
+    }
+    if (previous_generation.has_value()) {
+      bool previous_authorization_is_active = false;
+      HM_ASSIGN_OR_RETURN(previous_authorization_is_active, live_stitched_output_authorization_is_active(config));
+      if (!previous_authorization_is_active) {
+        const YAML::Node completed_scoreboard_polygon =
+            config["rink"]["stitched_output_pending_completed_scoreboard_polygon"];
+        const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+        if ((!active_scoreboard_polygon || !active_scoreboard_polygon.IsDefined()) && completed_scoreboard_polygon &&
+            completed_scoreboard_polygon.IsDefined()) {
+          config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Clone(completed_scoreboard_polygon);
+        }
+        remove_pending_authorization(config);
+        previous_generation.reset();
+        previous_authorization_id.reset();
+      }
+    }
+    std::optional<std::string> previous_owner_process;
+    if (previous_generation.has_value()) {
+      HM_ASSIGN_OR_RETURN(
+          previous_owner_process,
+          optional_scalar(
+              config["rink"]["stitched_output_pending_owner_process"], "Pending stitched-output owner process"));
+      if (!previous_owner_process.has_value() || *previous_owner_process != owner_process) {
+        return absl::AbortedError("Another process owns the pending live stitched-output authorization");
+      }
     }
 
     const bool generation_changed = *authorized_generation != saved_generation.as<std::string>();
@@ -249,6 +306,7 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
 
     config["rink"]["stitched_output_pending_generation"] = *authorized_generation;
     config["rink"]["stitched_output_pending_authorization_id"] = authorization_id;
+    config["rink"]["stitched_output_pending_owner_process"] = owner_process;
     const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
     if (!previous_generation.has_value() && active_scoreboard_polygon && active_scoreboard_polygon.IsDefined()) {
       config["rink"]["stitched_output_pending_completed_scoreboard_polygon"] = YAML::Clone(active_scoreboard_polygon);
@@ -260,9 +318,15 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
       } else {
         config["rink"].remove("stitched_output_pending_previous_authorization_id");
       }
+      if (previous_owner_process.has_value()) {
+        config["rink"]["stitched_output_pending_previous_owner_process"] = *previous_owner_process;
+      } else {
+        config["rink"].remove("stitched_output_pending_previous_owner_process");
+      }
     } else {
       config["rink"].remove("stitched_output_pending_previous_generation");
       config["rink"].remove("stitched_output_pending_previous_authorization_id");
+      config["rink"].remove("stitched_output_pending_previous_owner_process");
     }
     std::string runtime_scoreboard_value = "0,0,0,0,0,0,0,0";
     if (!generation_changed)
@@ -331,19 +395,29 @@ absl::StatusOr<std::optional<LiveStitchedOutputAuthorization>> rollback_live_sti
         optional_scalar(
             config["rink"]["stitched_output_pending_previous_authorization_id"],
             "Previous pending stitched-output authorization ID"));
+    std::optional<std::string> previous_owner_process;
+    HM_ASSIGN_OR_RETURN(
+        previous_owner_process,
+        optional_scalar(
+            config["rink"]["stitched_output_pending_previous_owner_process"],
+            "Previous pending stitched-output owner process"));
     const YAML::Node completed_scoreboard_polygon =
         YAML::Clone(config["rink"]["stitched_output_pending_completed_scoreboard_polygon"]);
     remove_pending_authorization(config);
     std::optional<LiveStitchedOutputAuthorization> restored;
-    if (previous_generation.has_value() && previous_authorization_id.has_value()) {
+    if (previous_generation.has_value() && previous_authorization_id.has_value() &&
+        previous_owner_process.has_value()) {
       config["rink"]["stitched_output_pending_generation"] = *previous_generation;
       config["rink"]["stitched_output_pending_authorization_id"] = *previous_authorization_id;
+      config["rink"]["stitched_output_pending_owner_process"] = *previous_owner_process;
       if (completed_scoreboard_polygon && completed_scoreboard_polygon.IsDefined()) {
         config["rink"]["stitched_output_pending_completed_scoreboard_polygon"] = completed_scoreboard_polygon;
       }
       restored = LiveStitchedOutputAuthorization{*previous_generation, *previous_authorization_id, true, {}};
     } else if (completed_scoreboard_polygon && completed_scoreboard_polygon.IsDefined()) {
-      config["rink"]["scoreboard"]["perspective_polygon"] = completed_scoreboard_polygon;
+      const YAML::Node active_scoreboard_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+      if (!active_scoreboard_polygon || !active_scoreboard_polygon.IsDefined())
+        config["rink"]["scoreboard"]["perspective_polygon"] = completed_scoreboard_polygon;
     }
     const absl::Status published = publish_game_config(root, YAML::Dump(config) + "\n");
     if (!published.ok())

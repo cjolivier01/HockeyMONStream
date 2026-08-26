@@ -134,6 +134,31 @@ bool expect(bool condition, const std::string& message) {
   return true;
 }
 
+absl::StatusOr<std::string> write_live_hugin_generation_fixture(const fs::path& game_dir) {
+  auto artifact_lock = hm::stitching::lock_canvas_constraint_artifacts(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  for (const char* name : {
+           "hm_project.pto",
+           "autooptimiser_out.pto",
+           "mapping_0000.tif",
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+           "seam_file.png",
+       }) {
+    std::ofstream output(game_dir / name, std::ios::binary | std::ios::trunc);
+    output << name << '\n';
+    if (!output)
+      return absl::InternalError("Could not write live-rotation Hugin fixture");
+  }
+  std::error_code ignored;
+  fs::remove(game_dir / hm::stitching::kStitchCanvasProvenanceArtifact, ignored);
+  return hm::stitching::stitch_artifact_generation_id_locked(game_dir);
+}
+
 std::optional<fs::path> find_test_baseline_yaml() {
   auto check = [](const fs::path& path) -> std::optional<fs::path> {
     std::error_code error;
@@ -4112,7 +4137,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(
-          window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=16"),
+          window->logText().contains("stdin:@set-property hmstitcher0 stitched-output-epoch="),
           "Live stitch rotation should be sent to the running pipeline over stdin") ||
       !expect(
           window->logText().contains("camera control Stitch_Rotate_Degrees=74 apply=pending") &&
@@ -4249,6 +4274,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       activate(stop);
       return false;
     }
+    const auto hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
+    if (!hugin_generation.ok()) {
+      std::cerr << "Could not write live-rotation Hugin fixture: " << hugin_generation.status() << '\n';
+      return false;
+    }
     {
       auto generation_fixture_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
       if (!generation_fixture_lock.ok()) {
@@ -4256,10 +4286,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         return false;
       }
       YAML::Node generation_fixture = YAML::LoadFile(config.string());
-      const std::string hugin_generation = "ui-live-rotation-generation\n";
       generation_fixture["rink"]["stitched_output_generation"] =
-          "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin_generation.size()) + "\n" +
-          hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
+          "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin_generation->size()) + "\n" +
+          *hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
       const auto published =
           hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(generation_fixture) + "\n");
       if (!published.ok()) {
@@ -4299,7 +4328,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     if (!expect(
             authorization_was_async &&
-                window->logText().contains("stdin:@set-property hmstitcher0 stitched-output-authorization-id=") &&
+                window->logText().contains("stdin:@set-property hmstitcher0 stitched-output-epoch=") &&
                 window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"),
             "Completed live rotation authorization must not block the UI on the game config transaction")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
@@ -4311,9 +4340,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(5);
     }
+    const int commit_rotation_commands_before =
+        window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
     rotate->setValue(72);
-    for (int i = 0;
-         i < 100 && !window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=18");
+    for (int i = 0; i < 100 &&
+         window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
+             commit_rotation_commands_before;
          ++i) {
       QApplication::processEvents();
       QTest::qWait(5);
@@ -4393,8 +4425,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       fixture_cleanup["rink"].remove("stitched_output_persisted_rotation_degrees");
       fixture_cleanup["rink"].remove("stitched_output_pending_generation");
       fixture_cleanup["rink"].remove("stitched_output_pending_authorization_id");
+      fixture_cleanup["rink"].remove("stitched_output_pending_owner_process");
       fixture_cleanup["rink"].remove("stitched_output_pending_previous_generation");
       fixture_cleanup["rink"].remove("stitched_output_pending_previous_authorization_id");
+      fixture_cleanup["rink"].remove("stitched_output_pending_previous_owner_process");
       fixture_cleanup["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
       const auto published =
           hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(fixture_cleanup) + "\n");
@@ -4479,6 +4513,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
     const int clean_commands_before = window->logText().count("stitching calibration clean command");
     const std::vector<std::vector<int>> rejection_scoreboard_polygon = {{1, 2}, {3, 4}, {5, 6}, {7, 8}};
+    const auto rejection_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
+    if (!rejection_hugin_generation.ok()) {
+      std::cerr << "Could not write live-rotation rejection Hugin fixture: " << rejection_hugin_generation.status()
+                << '\n';
+      return false;
+    }
     {
       auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
       if (!config_lock.ok()) {
@@ -4486,10 +4526,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         return false;
       }
       YAML::Node rejection_fixture = YAML::LoadFile(config.string());
-      const std::string rejection_hugin_generation = "ui-rejection-generation\n";
       rejection_fixture["rink"]["stitched_output_generation"] =
-          "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(rejection_hugin_generation.size()) + "\n" +
-          rejection_hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
+          "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(rejection_hugin_generation->size()) + "\n" +
+          *rejection_hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
       rejection_fixture["rink"]["scoreboard"]["perspective_polygon"] = rejection_scoreboard_polygon;
       const auto published =
           hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(rejection_fixture) + "\n");
@@ -7566,7 +7605,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   use_10_bit_grading->setChecked(false);
   const int rotation_commands_before =
-      window->logText().count("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=");
+      window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
   for (int value = 60; value <= 69; ++value) {
     rotate->setValue(value);
   }
@@ -7575,12 +7614,11 @@ bool test_camera_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(
-          window->logText().count("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=") ==
+          window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
               rotation_commands_before + 1,
           "Rapid stitch rotation changes should coalesce into one live pipeline command") ||
       !expect(
-          window->logText().contains("stdin:@set-property hmstitcher0 post-stitch-rotate-degrees=21") &&
-              window->logText().contains("camera control Stitch_Rotate_Degrees=69 apply=live") &&
+          window->logText().contains("camera control Stitch_Rotate_Degrees=69 apply=live") &&
               !window->logText().contains("camera control Stitch_Rotate_Degrees=60 apply=pending"),
           "Only the final coalesced stitch rotation should become pending and live")) {
     activate(stop);
@@ -7888,6 +7926,12 @@ bool test_camera_controls(HStreamWindow* window) {
                   "camera control Max_Speed_X_x10=490 apply=failed "
                   "reason=acknowledgement-timeout"),
           "A stalled live-control backend should time out both the in-flight and coalesced latest values");
+  const auto timeout_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
+  if (!timeout_hugin_generation.ok()) {
+    qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
+    return false;
+  }
   {
     auto timeout_fixture_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
     if (!timeout_fixture_lock.ok()) {
@@ -7896,10 +7940,9 @@ bool test_camera_controls(HStreamWindow* window) {
       return false;
     }
     YAML::Node timeout_fixture = YAML::LoadFile(config.string());
-    const std::string hugin_generation = "ui-timeout-generation\n";
     timeout_fixture["rink"]["stitched_output_generation"] =
-        "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin_generation.size()) + "\n" + hugin_generation +
-        "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
+        "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(timeout_hugin_generation->size()) + "\n" +
+        *timeout_hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
     const auto published = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(timeout_fixture) + "\n");
     if (!published.ok()) {
       qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
@@ -7908,6 +7951,10 @@ bool test_camera_controls(HStreamWindow* window) {
     }
   }
   const int stalled_rotation_value = rotate->value() == 67 ? 68 : 67;
+  const int stalled_scoreboard_commands_before =
+      window->logText().count("stdin:@set-property playcropper0 scoreboard-perspective-polygon=");
+  const int stalled_epoch_commands_before =
+      window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
   rotate->setValue(stalled_rotation_value);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -7918,6 +7965,17 @@ bool test_camera_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   const YAML::Node after_stalled_rotation = YAML::LoadFile(config.string());
+  const QString stalled_rotation_log = window->logText();
+  const int stalled_scoreboard_command =
+      stalled_rotation_log.lastIndexOf("stdin:@set-property playcropper0 scoreboard-perspective-polygon=");
+  const int stalled_epoch_command =
+      stalled_rotation_log.lastIndexOf("stdin:@set-property hmstitcher0 stitched-output-epoch=");
+  const bool stalled_rotation_safe_property_order =
+      stalled_rotation_log.count("stdin:@set-property playcropper0 scoreboard-perspective-polygon=") >
+          stalled_scoreboard_commands_before &&
+      stalled_rotation_log.count("stdin:@set-property hmstitcher0 stitched-output-epoch=") >
+          stalled_epoch_commands_before &&
+      stalled_scoreboard_command < stalled_epoch_command;
   const bool stalled_rotation_reconciled =
       expect(
           window->pipelineStateText() == "STOPPED" &&
@@ -7928,8 +7986,10 @@ bool test_camera_controls(HStreamWindow* window) {
       expect(
           !HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
               !after_stalled_rotation["rink"]["stitched_output_pending_generation"].IsDefined() &&
-              !after_stalled_rotation["rink"]["stitched_output_pending_authorization_id"].IsDefined(),
-          "Pipeline-stop reconciliation must retire a timed-out live-rotation authorization");
+              !after_stalled_rotation["rink"]["stitched_output_pending_authorization_id"].IsDefined() &&
+              stalled_rotation_safe_property_order,
+          "Pipeline-stop reconciliation must retire a timed-out live-rotation authorization without exposing stale "
+          "scoreboard geometry");
   bool timeout_fixture_cleaned = false;
   {
     auto timeout_fixture_cleanup_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
@@ -7939,8 +7999,10 @@ bool test_camera_controls(HStreamWindow* window) {
       timeout_fixture_cleanup["rink"].remove("stitched_output_persisted_rotation_degrees");
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_generation");
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_authorization_id");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_pending_owner_process");
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_previous_generation");
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_previous_authorization_id");
+      timeout_fixture_cleanup["rink"].remove("stitched_output_pending_previous_owner_process");
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
       timeout_fixture_cleaned =
           hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(timeout_fixture_cleanup) + "\n").ok();

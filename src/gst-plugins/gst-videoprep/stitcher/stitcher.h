@@ -7,6 +7,7 @@
 #include "cupano/pano/cudaPano.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 
 #include <atomic>
 #include <memory>
@@ -142,11 +143,6 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     CalibrationSurfaceSnapshot left;
     CalibrationSurfaceSnapshot right;
   };
-  struct LiveOutputEpoch {
-    double post_stitch_rotate_degrees{0.0};
-    std::string authorization_id;
-  };
-
   absl::Status ensure_stitcher();
   absl::Status reload_stitcher();
   absl::Status configure_one_pass_from_surfaces(
@@ -237,7 +233,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::optional<gint> last_stitched_frame_num_;
   bool dropped_runtime_calibration_batches_before_output_{false};
   std::mutex live_output_epoch_update_mu_;
-  std::shared_ptr<const LiveOutputEpoch> live_output_epoch_{std::make_shared<const LiveOutputEpoch>()};
+  std::shared_ptr<const stitching::LiveOutputEpoch> live_output_epoch_{
+      std::make_shared<const stitching::LiveOutputEpoch>()};
   void* rotation_scratch_data_{nullptr};
   size_t rotation_scratch_pitch_{0};
   size_t rotation_scratch_width_{0};

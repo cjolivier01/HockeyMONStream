@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -27,6 +28,26 @@ void write_config(const std::filesystem::path& path, const std::string& generati
   std::ofstream(path) << config << '\n';
 }
 
+absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path& root) {
+  for (const char* name : {
+           "hm_project.pto",
+           "autooptimiser_out.pto",
+           "mapping_0000.tif",
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+           "seam_file.png",
+       }) {
+    std::ofstream(root / name) << name << '\n';
+  }
+  auto lock = hm::stitching::lock_canvas_constraint_artifacts(root);
+  if (!lock.ok())
+    return lock.status();
+  return hm::stitching::stitch_artifact_generation_id_locked(root);
+}
+
 } // namespace
 
 int main() {
@@ -35,7 +56,13 @@ int main() {
   const fs::path root = fs::temp_directory_path() / ("live-stitching-generation-test-" + std::to_string(::getpid()));
   fs::create_directories(root);
 
-  const std::string hugin_generation = "exact\npost-stitch-rotate-degrees:payload\n";
+  const auto current_hugin_generation = create_hugin_generation(root);
+  ok &= expect(current_hugin_generation.ok(), "live generation fixture must publish identifiable Hugin artifacts");
+  if (!current_hugin_generation.ok()) {
+    fs::remove_all(root);
+    return 1;
+  }
+  const std::string hugin_generation = *current_hugin_generation;
   const std::string generation = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin_generation.size()) +
       "\n" + hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
   const std::string rotated_generation =
@@ -124,8 +151,10 @@ int main() {
   config["rink"]["stitched_output_generation"] = rotated_generation;
   config["rink"].remove("stitched_output_pending_generation");
   config["rink"].remove("stitched_output_pending_authorization_id");
+  config["rink"].remove("stitched_output_pending_owner_process");
   config["rink"].remove("stitched_output_pending_previous_generation");
   config["rink"].remove("stitched_output_pending_previous_authorization_id");
+  config["rink"].remove("stitched_output_pending_previous_owner_process");
   config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
   config["rink"]["scoreboard"]["perspective_polygon"] =
       std::vector<std::vector<int>>{{9, 10}, {11, 12}, {13, 14}, {15, 16}};
@@ -222,6 +251,33 @@ int main() {
   const auto non_finite =
       hm::stitching::authorize_live_stitched_output_rotation(root.string(), std::nan(""), "auth-invalid");
   ok &= expect(absl::IsInvalidArgument(non_finite.status()), "non-finite live rotations must be rejected");
+
+  write_config(root / "config.yaml", generation);
+  const auto scoreboard_race =
+      hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0, "auth-scoreboard-race");
+  config = YAML::LoadFile((root / "config.yaml").string());
+  const std::vector<std::vector<int>> newer_scoreboard_polygon = {{20, 21}, {22, 23}, {24, 25}, {26, 27}};
+  config["rink"]["scoreboard"]["perspective_polygon"] = newer_scoreboard_polygon;
+  std::ofstream(root / "config.yaml") << config << '\n';
+  const auto scoreboard_race_rollback = scoreboard_race.ok()
+      ? hm::stitching::rollback_live_stitched_output_rotation(
+            root.string(), scoreboard_race->pending_generation, scoreboard_race->authorization_id)
+      : absl::StatusOr<std::optional<hm::stitching::LiveStitchedOutputAuthorization>>(scoreboard_race.status());
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      scoreboard_race_rollback.ok() &&
+          config["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>() ==
+              newer_scoreboard_polygon,
+      "authorization rollback must preserve newer scoreboard geometry");
+
+  write_config(root / "config.yaml", generation);
+  std::ofstream(root / "hm_project.pto", std::ios::app) << "new generation\n";
+  const auto stale_hugin =
+      hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25, "auth-stale-hugin");
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      absl::IsAborted(stale_hugin.status()) && !config["rink"]["stitched_output_pending_generation"].IsDefined(),
+      "live authorization must reject a persisted generation from replaced Hugin artifacts");
 
   std::error_code ignored;
   fs::remove_all(root, ignored);

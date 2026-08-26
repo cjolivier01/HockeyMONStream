@@ -57,7 +57,6 @@ namespace stitching {
 
 namespace {
 
-constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
@@ -265,8 +264,10 @@ void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "stitched_output_persisted_rotation_degrees"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_generation"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_authorization_id"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_owner_process"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_generation"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_authorization_id"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_owner_process"});
   remove_yaml_key_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"});
 }
 
@@ -296,37 +297,6 @@ struct ScaledCanvas {
   CanvasSize size;
   double scale{1.0};
 };
-
-std::optional<size_t> get_positive_env_size(const char* name) {
-  const char* value = std::getenv(name);
-  if (!value || !*value) {
-    return std::nullopt;
-  }
-  try {
-    const unsigned long long parsed = std::stoull(value);
-    if (parsed > 0) {
-      return static_cast<size_t>(parsed);
-    }
-  } catch (const std::exception&) {
-  }
-  std::cerr << "Warning: ignoring invalid " << name << "=" << value << std::endl;
-  return std::nullopt;
-}
-
-std::optional<size_t> live_stitch_max_canvas_dimension() {
-  const char* allow_oversized = std::getenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
-  if (allow_oversized && std::string(allow_oversized) == "1") {
-    return std::nullopt;
-  }
-  if (auto from_env = get_positive_env_size("HM_MAX_LIVE_STITCH_EGL_DIMENSION"); from_env.has_value()) {
-    return from_env;
-  }
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-  return kDefaultJetsonMaxLiveStitchCanvasDimension;
-#else
-  return std::nullopt;
-#endif
-}
 
 bool canvas_exceeds_max_dimension(const CanvasSize& canvas, size_t max_dimension) {
   return canvas.width > max_dimension || canvas.height > max_dimension;
@@ -2517,6 +2487,12 @@ absl::Status validate_live_output_publication_authority(
   }
   if (pending_generation.has_value() != pending_authorization_id.has_value())
     return absl::InvalidArgumentError("Pending stitched-output authorization is incomplete");
+  bool pending_authorization_is_active = false;
+  HM_ASSIGN_OR_RETURN(pending_authorization_is_active, live_stitched_output_authorization_is_active(config));
+  if (!pending_authorization_is_active) {
+    pending_generation.reset();
+    pending_authorization_id.reset();
+  }
   if (expected_output_generation.empty()) {
     if (!expected_output_authorization_id.empty())
       return absl::InvalidArgumentError("A live output authorization requires a stitched-output generation");
@@ -2749,16 +2725,22 @@ absl::Status save_rink_profile_locked(
       config["rink"].remove("stitched_output_persisted_rotation_degrees");
       config["rink"].remove("stitched_output_pending_generation");
       config["rink"].remove("stitched_output_pending_authorization_id");
+      config["rink"].remove("stitched_output_pending_owner_process");
       config["rink"].remove("stitched_output_pending_previous_generation");
       config["rink"].remove("stitched_output_pending_previous_authorization_id");
+      config["rink"].remove("stitched_output_pending_previous_owner_process");
       config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
     } else {
       config["rink"]["stitched_output_persisted_rotation_degrees"] = *expected_persisted_rotation;
-      if (!expected_output_authorization_id.empty()) {
+      bool pending_authorization_is_active = false;
+      HM_ASSIGN_OR_RETURN(pending_authorization_is_active, live_stitched_output_authorization_is_active(config));
+      if (!expected_output_authorization_id.empty() || !pending_authorization_is_active) {
         config["rink"].remove("stitched_output_pending_generation");
         config["rink"].remove("stitched_output_pending_authorization_id");
+        config["rink"].remove("stitched_output_pending_owner_process");
         config["rink"].remove("stitched_output_pending_previous_generation");
         config["rink"].remove("stitched_output_pending_previous_authorization_id");
+        config["rink"].remove("stitched_output_pending_previous_owner_process");
         config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
       }
     }

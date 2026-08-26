@@ -95,6 +95,8 @@ bool expect_high_bit_property_contract(const std::string& config_dir) {
       stitcher.SetProperty({"shadow-lift-black-point", "yes"}) || !stitcher.SetProperty({"exposure", "0"}) ||
       !stitcher.SetProperty({"exposure", "1.3"}) || stitcher.SetProperty({"exposure", "-0.01"}) ||
       stitcher.SetProperty({"exposure", "1.31"}) || stitcher.SetProperty({"exposure", "inf"}) ||
+      !stitcher.SetProperty({"stitched-output-epoch", "16:authorization-b221"}) ||
+      stitcher.SetProperty({"stitched-output-epoch", "authorization-b2:21"}) ||
       !stitcher.SetProperty({"one-pass-mode", "1"})) {
     std::cerr << "High-bit stitcher property validation failed\n";
     return false;

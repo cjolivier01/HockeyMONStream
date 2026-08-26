@@ -844,6 +844,18 @@ bool expect_changed_applied_live_limit_requires_regeneration(const fs::path& tmp
   return true;
 }
 
+bool expect_malformed_live_limit_is_ignored() {
+  unsetenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "4096junk", /*overwrite=*/1);
+  const auto effective_limit = hm::stitching::live_stitch_max_canvas_dimension();
+  unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+  if (effective_limit.has_value() && *effective_limit == 4096) {
+    std::cerr << "a malformed live canvas limit must not be parsed as a valid numeric prefix" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_superseded_constraints_reuse_artifacts(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "superseded_canvas_constraints";
   fs::remove_all(dir);
@@ -1336,6 +1348,10 @@ int main() {
 
   if (!expect_changed_applied_live_limit_requires_regeneration(tmpdir)) {
     finish(tmpdir, 30);
+  }
+
+  if (!expect_malformed_live_limit_is_ignored()) {
+    finish(tmpdir, 34);
   }
 
   if (!expect_superseded_constraints_reuse_artifacts(tmpdir)) {

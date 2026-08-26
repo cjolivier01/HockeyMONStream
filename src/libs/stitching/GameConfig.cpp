@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <fcntl.h>
@@ -26,6 +28,43 @@ namespace hm::stitching {
 namespace {
 
 namespace fs = std::filesystem;
+
+absl::StatusOr<uint64_t> process_start_time(pid_t process_id) {
+  std::ifstream input("/proc/" + std::to_string(process_id) + "/stat");
+  if (!input)
+    return absl::NotFoundError("Live stitched-output owner process is not running");
+  std::string stat;
+  std::getline(input, stat);
+  const size_t command_end = stat.rfind(')');
+  if (command_end == std::string::npos || command_end + 2 >= stat.size())
+    return absl::InternalError("Unable to parse live stitched-output owner process metadata");
+  std::istringstream fields(stat.substr(command_end + 2));
+  std::string value;
+  for (int field = 3; field <= 22; ++field) {
+    if (!(fields >> value))
+      return absl::InternalError("Unable to parse live stitched-output owner process start time");
+  }
+  uint64_t start_time = 0;
+  const auto parsed = std::from_chars(value.data(), value.data() + value.size(), start_time);
+  if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size())
+    return absl::InternalError("Invalid live stitched-output owner process start time");
+  return start_time;
+}
+
+absl::StatusOr<std::pair<pid_t, uint64_t>> parse_process_identity(std::string_view identity) {
+  const size_t separator = identity.find(':');
+  if (separator == std::string_view::npos || separator == 0 || separator + 1 == identity.size())
+    return absl::InvalidArgumentError("Invalid live stitched-output owner process identity");
+  pid_t process_id = 0;
+  uint64_t start_time = 0;
+  const auto process = std::from_chars(identity.data(), identity.data() + separator, process_id);
+  const auto start = std::from_chars(identity.data() + separator + 1, identity.data() + identity.size(), start_time);
+  if (process.ec != std::errc() || process.ptr != identity.data() + separator || process_id <= 0 ||
+      start.ec != std::errc() || start.ptr != identity.data() + identity.size()) {
+    return absl::InvalidArgumentError("Invalid live stitched-output owner process identity");
+  }
+  return std::pair<pid_t, uint64_t>{process_id, start_time};
+}
 
 bool yaml_equal(const YAML::Node& lhs, const YAML::Node& rhs) {
   if (lhs.IsDefined() != rhs.IsDefined())
@@ -741,6 +780,73 @@ absl::Status validate_stitching_generation_owner_file_locked(
     const std::string& expected_invalidation_id) {
   return validate_stitching_generation_owner_file_locked_impl(
       config_path, expected_invalidation_id, /*allow_completed=*/true);
+}
+
+absl::StatusOr<std::string> current_live_stitched_output_owner_process() {
+  auto start_time = process_start_time(::getpid());
+  if (!start_time.ok())
+    return start_time.status();
+  return std::to_string(::getpid()) + ":" + std::to_string(*start_time);
+}
+
+absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_view identity) {
+  auto parsed = parse_process_identity(identity);
+  if (!parsed.ok())
+    return parsed.status();
+  auto current_start_time = process_start_time(parsed->first);
+  if (absl::IsNotFound(current_start_time.status()))
+    return false;
+  if (!current_start_time.ok())
+    return current_start_time.status();
+  return *current_start_time == parsed->second;
+}
+
+absl::StatusOr<bool> live_stitched_output_authorization_is_active(const YAML::Node& config) {
+  try {
+    if (config && config.IsDefined() && !config.IsNull() && !config.IsMap())
+      return absl::InvalidArgumentError("Game config must be a map");
+    const YAML::Node rink = config && config.IsMap() ? config["rink"] : YAML::Node(YAML::NodeType::Undefined);
+    if (!rink || !rink.IsDefined() || rink.IsNull())
+      return false;
+    if (!rink.IsMap())
+      return absl::InvalidArgumentError("Rink config must be a map");
+    const YAML::Node generation = rink["stitched_output_pending_generation"];
+    const YAML::Node authorization = rink["stitched_output_pending_authorization_id"];
+    const YAML::Node owner = rink["stitched_output_pending_owner_process"];
+    const bool has_generation = generation && generation.IsDefined() && !generation.IsNull();
+    const bool has_authorization = authorization && authorization.IsDefined() && !authorization.IsNull();
+    const bool has_owner = owner && owner.IsDefined() && !owner.IsNull();
+    if (!has_generation && !has_authorization)
+      return false;
+    if (!has_generation || !has_authorization || !generation.IsScalar() || !authorization.IsScalar() ||
+        generation.as<std::string>().empty() || authorization.as<std::string>().empty()) {
+      return absl::InvalidArgumentError("Pending stitched-output authorization is incomplete");
+    }
+    // Pending epochs from versions without process ownership cannot safely
+    // retain authority after a restart.
+    if (!has_owner)
+      return false;
+    if (!owner.IsScalar() || owner.as<std::string>().empty())
+      return absl::InvalidArgumentError("Pending stitched-output owner process must be a nonempty scalar");
+    return live_stitched_output_owner_process_is_active(owner.as<std::string>());
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate live stitched-output authorization: " + std::string(exception.what()));
+  }
+}
+
+absl::Status validate_no_pending_live_stitched_output_authorization_file_locked(const fs::path& config_path) {
+  try {
+    const YAML::Node config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    auto active = live_stitched_output_authorization_is_active(config);
+    if (!active.ok())
+      return active.status();
+    return *active ? absl::AbortedError("Live stitched-output authorization prevents Hugin artifact replacement")
+                   : absl::OkStatus();
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate live stitched-output authorization: " + std::string(exception.what()));
+  }
 }
 
 YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {

@@ -99,7 +99,7 @@ struct GstVideoPrep
   gdouble exposure;
   gboolean last_property_set_ok;
   gboolean post_stitch_rotate_degrees_set;
-  gboolean stitched_output_authorization_id_set;
+  gboolean stitched_output_epoch_set;
   gboolean max_output_width_set;
   gboolean fixed_edge_rotation_angle_set;
   gboolean fixed_edge_rotation_angle_left_set;
@@ -113,7 +113,7 @@ struct GstVideoPrep
   guint property_set_sequence;
   guint plugin_private_config_sequence;
   guint post_stitch_rotate_degrees_sequence;
-  guint stitched_output_authorization_id_sequence;
+  guint stitched_output_epoch_sequence;
   guint max_output_width_sequence;
   guint fixed_edge_rotation_angle_sequence;
   guint fixed_edge_rotation_angle_left_sequence;

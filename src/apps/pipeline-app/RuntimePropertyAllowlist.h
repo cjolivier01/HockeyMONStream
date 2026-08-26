@@ -7,7 +7,7 @@ namespace pipeline {
 
 inline bool is_allowlisted_runtime_property(std::string_view element_name, std::string_view property_name) {
   return (element_name == "hmstitcher0" &&
-          (property_name == "post-stitch-rotate-degrees" || property_name == "stitched-output-authorization-id" ||
+          (property_name == "post-stitch-rotate-degrees" || property_name == "stitched-output-epoch" ||
            property_name == "shadow-lift" || property_name == "shadow-lift-black-point" ||
            property_name == "exposure")) ||
       (element_name == "dsplaytracker0" &&

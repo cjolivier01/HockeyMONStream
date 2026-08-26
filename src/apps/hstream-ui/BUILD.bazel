@@ -72,6 +72,7 @@ cc_library(
         "//src/libs/common:user_config",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
+        "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:live_stitching_generation",
         "@qt//:qt_widgets",
         "@yaml-cpp",

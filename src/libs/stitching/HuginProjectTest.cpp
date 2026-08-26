@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <algorithm>
 #include <array>
@@ -701,6 +702,26 @@ int main() {
       completed_owner_hugin.code() == absl::StatusCode::kAborted && project_after_completed_owner == previous_project,
       "a Hugin producer must not replace completed calibration artifacts for the same invalidation owner");
   options.expected_invalidation_id.clear();
+  const auto pending_live_owner = hm::stitching::current_live_stitched_output_owner_process();
+  ok &= expect(pending_live_owner.ok(), "pending live authorization fixture must identify its owner process");
+  {
+    std::ofstream config(root / "game" / "config.yaml");
+    config << "rink:\n"
+              "  stitched_output_pending_generation: pending-live-generation\n"
+              "  stitched_output_pending_authorization_id: pending-live-authorization\n"
+              "  stitched_output_pending_owner_process: "
+           << (pending_live_owner.ok() ? *pending_live_owner : std::string("invalid")) << '\n';
+  }
+  const auto pending_live_authorization = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  const auto project_after_pending_live_authorization = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      pending_live_authorization.code() == absl::StatusCode::kAborted &&
+          project_after_pending_live_authorization == previous_project,
+      "pending live stitched-output authorization must prevent Hugin artifact replacement");
+  std::ofstream(root / "game" / "config.yaml") << "unrelated: preserved\n";
   std::string generation_before_interrupted_publication;
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");

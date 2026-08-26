@@ -35,7 +35,7 @@ int main() {
           is_allowlisted_runtime_property("hmstitcher0", "shadow-lift") &&
               is_allowlisted_runtime_property("hmstitcher0", "shadow-lift-black-point") &&
               is_allowlisted_runtime_property("hmstitcher0", "exposure") &&
-              is_allowlisted_runtime_property("hmstitcher0", "stitched-output-authorization-id"),
+              is_allowlisted_runtime_property("hmstitcher0", "stitched-output-epoch"),
           "The stitcher must accept live grading controls and output authorization epochs") ||
       !expect(
           !is_allowlisted_runtime_property("hmstitcher0", "high-bit-depth"),

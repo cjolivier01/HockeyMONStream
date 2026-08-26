@@ -560,6 +560,29 @@ int main() {
         absl::IsAborted(delayed_same_generation_publication),
         "a delayed B1 producer must not consume B2 authority for the same stitched-output generation");
 
+    const auto crash_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 10.0, "field-mask-crash-owner");
+    if (crash_authorization.ok()) {
+      auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(root);
+      ok &= expect(config_transaction.ok(), "crash-recovery fixture must lock the game config");
+      if (config_transaction.ok()) {
+        YAML::Node crashed = YAML::LoadFile((root / "config.yaml").string());
+        crashed["rink"]["stitched_output_pending_owner_process"] = "999999999:1";
+        ok &= expect(
+            hm::stitching::publish_game_config(root, YAML::Dump(crashed) + "\n").ok(),
+            "crash-recovery fixture must retire its owner process");
+      }
+    }
+    const absl::Status restarted_publication_authority = hm::stitching::validate_field_mask_publication_authority(
+        root.string(), live_override_generation, /*expected_output_authorization_id=*/{});
+    const auto crash_authorization_cleanup = crash_authorization.ok()
+        ? hm::stitching::rollback_live_stitched_output_rotation(
+              root.string(), crash_authorization->pending_generation, crash_authorization->authorization_id)
+        : absl::StatusOr<std::optional<hm::stitching::LiveStitchedOutputAuthorization>>(crash_authorization.status());
+    ok &= expect(
+        crash_authorization.ok() && restarted_publication_authority.ok() && crash_authorization_cleanup.ok(),
+        "a crashed live controller must not permanently block restarted field-mask publication");
+
     std::string older_live_override_generation;
     if (!live_override_generation.empty() && live_override_canvas_size.ok()) {
       auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root);
