@@ -360,14 +360,11 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
   return TiffPlacement{x, y, static_cast<int>(width), static_cast<int>(height)};
 }
 
-absl::Status inspect_remap_tiff(
+absl::Status validate_remap_tiff_header(
+    TIFF* tiff,
     const fs::path& path,
     const TiffPlacement& placement,
     const std::optional<size_t>& maximum_dimension) {
-  auto opened = open_bounded_tiff(path, kMaximumParserRemapTiffBytes);
-  if (!opened.ok())
-    return opened.status();
-  TIFF* tif = (*opened)->tiff;
   uint32_t width = 0;
   uint32_t height = 0;
   uint16_t samples = 0;
@@ -376,13 +373,12 @@ absl::Status inspect_remap_tiff(
   uint16_t planar = PLANARCONFIG_CONTIG;
   uint16_t orientation = ORIENTATION_TOPLEFT;
   const bool metadata_valid =
-      TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
-  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
-  TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
-  TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
-  TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG, &planar);
-  TIFFGetFieldDefaulted(tif, TIFFTAG_ORIENTATION, &orientation);
-  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
+      TIFFGetField(tiff, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tiff, TIFFTAG_IMAGELENGTH, &height);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_SAMPLESPERPIXEL, &samples);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_BITSPERSAMPLE, &bits);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_SAMPLEFORMAT, &sample_format);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_PLANARCONFIG, &planar);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_ORIENTATION, &orientation);
   if (!metadata_valid || samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT ||
       planar != PLANARCONFIG_CONTIG || orientation != ORIENTATION_TOPLEFT ||
       width != static_cast<uint32_t>(placement.width) || height != static_cast<uint32_t>(placement.height)) {
@@ -815,22 +811,31 @@ absl::Status validate_remaps(
   const std::string prefix = "mapping_" + std::string(index == 0 ? "0000" : "0001");
   const fs::path x_path = directory / (prefix + "_x.tif");
   const fs::path y_path = directory / (prefix + "_y.tif");
-  auto status = inspect_remap_tiff(x_path, placement, maximum_dimension);
+  auto x = open_bounded_tiff(x_path, kMaximumParserRemapTiffBytes);
+  if (!x.ok())
+    return x.status();
+  auto y = open_bounded_tiff(y_path, kMaximumParserRemapTiffBytes);
+  if (!y.ok())
+    return y.status();
+  auto status = validate_remap_tiff_header((*x)->tiff, x_path, placement, maximum_dimension);
   if (!status.ok())
     return status;
-  status = inspect_remap_tiff(y_path, placement, maximum_dimension);
+  status = validate_remap_tiff_header((*y)->tiff, y_path, placement, maximum_dimension);
   if (!status.ok())
     return status;
-  cv::Mat x;
-  cv::Mat y;
-  HM_ASSIGN_OR_RETURN(
-      x, decode_bounded_image(x_path, cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE, kMaximumParserRemapTiffBytes));
-  HM_ASSIGN_OR_RETURN(
-      y, decode_bounded_image(y_path, cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE, kMaximumParserRemapTiffBytes));
-  if (x.empty() || y.empty() || x.type() != CV_16UC1 || y.type() != CV_16UC1 || x.size() != y.size() ||
-      x.cols != placement.width || x.rows != placement.height) {
+  const tmsize_t expected_scanline_size = static_cast<tmsize_t>(placement.width) * sizeof(uint16_t);
+  if (TIFFScanlineSize((*x)->tiff) != expected_scanline_size ||
+      TIFFScanlineSize((*y)->tiff) != expected_scanline_size) {
     return absl::FailedPreconditionError(
-        "Hugin remap TIFFs violate the CV_16U size/type contract for camera " + std::to_string(index));
+        "Hugin remap TIFF scanline layout violates the CV_16U contract for camera " + std::to_string(index));
+  }
+  std::vector<uint16_t> x_values;
+  std::vector<uint16_t> y_values;
+  try {
+    x_values.resize(static_cast<size_t>(placement.width));
+    y_values.resize(static_cast<size_t>(placement.width));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate bounded Hugin remap scanlines");
   }
   size_t valid_count = 0;
   uint16_t minimum_x = std::numeric_limits<uint16_t>::max();
@@ -838,28 +843,34 @@ absl::Status validate_remaps(
   uint16_t maximum_x = 0;
   uint16_t maximum_y = 0;
   constexpr uint16_t unmapped = std::numeric_limits<uint16_t>::max();
-  for (int row = 0; row < x.rows; ++row) {
-    const uint16_t* x_values = x.ptr<uint16_t>(row);
-    const uint16_t* y_values = y.ptr<uint16_t>(row);
-    for (int column = 0; column < x.cols; ++column) {
-      const bool x_unmapped = x_values[column] == unmapped;
-      const bool y_unmapped = y_values[column] == unmapped;
+  for (int row = 0; row < placement.height; ++row) {
+    if (TIFFReadScanline((*x)->tiff, x_values.data(), static_cast<uint32_t>(row), 0) < 0 ||
+        TIFFReadScanline((*y)->tiff, y_values.data(), static_cast<uint32_t>(row), 0) < 0) {
+      return absl::FailedPreconditionError("Unable to decode bounded Hugin remap scanline");
+    }
+    for (int column = 0; column < placement.width; ++column) {
+      const bool x_unmapped = x_values[static_cast<size_t>(column)] == unmapped;
+      const bool y_unmapped = y_values[static_cast<size_t>(column)] == unmapped;
       if (x_unmapped != y_unmapped) {
         return absl::FailedPreconditionError("Hugin remap has inconsistent unmapped coordinates");
       }
       if (x_unmapped)
         continue;
-      if (x_values[column] >= source_size.first || y_values[column] >= source_size.second) {
+      if (x_values[static_cast<size_t>(column)] >= source_size.first ||
+          y_values[static_cast<size_t>(column)] >= source_size.second) {
         return absl::FailedPreconditionError("Hugin remap coordinate lies outside its source image");
       }
       ++valid_count;
-      minimum_x = std::min(minimum_x, x_values[column]);
-      maximum_x = std::max(maximum_x, x_values[column]);
-      minimum_y = std::min(minimum_y, y_values[column]);
-      maximum_y = std::max(maximum_y, y_values[column]);
+      minimum_x = std::min(minimum_x, x_values[static_cast<size_t>(column)]);
+      maximum_x = std::max(maximum_x, x_values[static_cast<size_t>(column)]);
+      minimum_y = std::min(minimum_y, y_values[static_cast<size_t>(column)]);
+      maximum_y = std::max(maximum_y, y_values[static_cast<size_t>(column)]);
     }
   }
-  const size_t minimum_valid = std::max<size_t>(16, x.total() / 1000);
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**x, x_path));
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**y, y_path));
+  const size_t pixel_count = static_cast<size_t>(placement.width) * static_cast<size_t>(placement.height);
+  const size_t minimum_valid = std::max<size_t>(16, pixel_count / 1000);
   const uint16_t minimum_x_span = static_cast<uint16_t>(std::min(16, std::max(0, source_size.first - 1)));
   const uint16_t minimum_y_span = static_cast<uint16_t>(std::min(16, std::max(0, source_size.second - 1)));
   if (valid_count < minimum_valid || maximum_x - minimum_x < minimum_x_span || maximum_y - minimum_y < minimum_y_span) {
@@ -1616,6 +1627,10 @@ absl::Status HuginProject::Configure(
     max_output_width_applied = true;
     return fit_canvas(width, height, factor, rounding_guard);
   };
+  // Nona can round cropped TIFF placement one pixel beyond the PTO canvas.
+  const auto initial_rounding_guard = [](size_t limit) {
+    return limit > 1 ? static_cast<double>(limit - 1) / static_cast<double>(limit) : 1.0;
+  };
   if (options.mapping_backend != MappingBackend::kNona && output_scale.has_value()) {
     return absl::InvalidArgumentError("Native OpenCV mapping backends do not accept Hugin output scaling");
   }
@@ -1629,7 +1644,8 @@ absl::Status HuginProject::Configure(
     source_canvas = *dimensions;
     if (options.mapping_backend == MappingBackend::kNona) {
       if (options.max_output_width.has_value() && dimensions->first > *options.max_output_width) {
-        status = fit_canvas_width(dimensions->first, dimensions->second, 1.0);
+        status =
+            fit_canvas_width(dimensions->first, dimensions->second, initial_rounding_guard(*options.max_output_width));
         if (!status.ok())
           return status;
         optimized = read_file(staging / "autooptimiser_out.pto");
@@ -1642,7 +1658,8 @@ absl::Status HuginProject::Configure(
       if (options.max_canvas_dimension.has_value()) {
         const size_t longest = std::max(dimensions->first, dimensions->second);
         if (longest > *options.max_canvas_dimension) {
-          status = fit_canvas_longest(dimensions->first, dimensions->second, 1.0);
+          status = fit_canvas_longest(
+              dimensions->first, dimensions->second, initial_rounding_guard(*options.max_canvas_dimension));
           if (!status.ok())
             return status;
         }

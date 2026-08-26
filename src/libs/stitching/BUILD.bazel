@@ -189,6 +189,7 @@ cc_test(
   srcs = ["FieldMaskPersistenceTest.cpp"],
   deps = [
     ":stitching",
+    ":transaction_state",
     "@opencv_linux//:opencv",
     "@yaml-cpp",
   ],
@@ -214,6 +215,7 @@ cc_test(
     srcs = ["GameConfigTest.cpp"],
     deps = [
         ":game_config",
+        ":transaction_state",
         "@yaml-cpp",
     ],
 )
@@ -224,6 +226,7 @@ cc_test(
     deps = [
         ":canvas_constraint_check",
         ":live_stitching_generation",
+        "@opencv_linux//:opencv",
         "@yaml-cpp",
         "@com_google_absl//absl/status:status",
     ],

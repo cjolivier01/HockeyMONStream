@@ -4,12 +4,15 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
+#include <opencv2/imgcodecs.hpp>
+#include <tiffio.h>
 #include <unistd.h>
 
 namespace {
@@ -28,20 +31,52 @@ void write_config(const std::filesystem::path& path, const std::string& generati
   std::ofstream(path) << config << '\n';
 }
 
+bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint32_t height, float x_position) {
+  TIFF* tiff = TIFFOpen(path.c_str(), "w");
+  if (!tiff)
+    return false;
+  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 8);
+  TIFFSetField(tiff, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tiff, TIFFTAG_ROWSPERSTRIP, height);
+  TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_XPOSITION, x_position);
+  TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
+  std::vector<uint8_t> row(width, 0);
+  bool ok = true;
+  for (uint32_t y = 0; y < height; ++y)
+    ok = ok && TIFFWriteScanline(tiff, row.data(), y, 0) >= 0;
+  TIFFClose(tiff);
+  return ok;
+}
+
 absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path& root) {
-  for (const char* name : {
-           "hm_project.pto",
-           "autooptimiser_out.pto",
-           "mapping_0000.tif",
-           "mapping_0000_x.tif",
-           "mapping_0000_y.tif",
-           "mapping_0001.tif",
-           "mapping_0001_x.tif",
-           "mapping_0001_y.tif",
-           "seam_file.png",
-       }) {
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
     std::ofstream(root / name) << name << '\n';
   }
+  if (!write_mapping_tiff(root / "mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(root / "mapping_0001.tif", 64, 32, 32.0f)) {
+    return absl::InternalError("Unable to write mapping TIFF fixtures");
+  }
+  const cv::Mat remap(32, 64, CV_16U, cv::Scalar(0));
+  for (const char* name : {
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+       }) {
+    if (!cv::imwrite((root / name).string(), remap))
+      return absl::InternalError("Unable to write remap TIFF fixtures");
+  }
+  cv::Mat seam(32, 96, CV_8U, cv::Scalar(0));
+  seam.colRange(48, seam.cols).setTo(255);
+  if (!cv::imwrite((root / "seam_file.png").string(), seam))
+    return absl::InternalError("Unable to write seam fixture");
   auto lock = hm::stitching::lock_canvas_constraint_artifacts(root);
   if (!lock.ok())
     return lock.status();

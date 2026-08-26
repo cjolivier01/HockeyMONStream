@@ -324,9 +324,12 @@ int main() {
   const fs::path autooptimiser = root / "autooptimiser";
   const fs::path autooptimiser_args = root / "autooptimiser.args";
   const fs::path nona = root / "nona";
+  const fs::path nona_invocations = root / "nona.invocations";
   const fs::path enblend = root / "enblend";
   const fs::path fixtures = root / "fixtures";
+  const fs::path rounding_overflow_fixtures = root / "rounding-overflow-fixtures";
   fs::create_directories(fixtures);
+  fs::create_directories(rounding_overflow_fixtures);
   constexpr float boundary_resolution = 8033.26416015625f;
   ok &= expect(
       write_spatial_tiff_tags(fixtures / "mapping_0000.tif", 40, 32, 3490.974853515625f, boundary_resolution),
@@ -336,6 +339,12 @@ int main() {
       "second fake mapping must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0000", 40, 32), "first fake CV_16U remap must exist");
   ok &= expect(write_remap_pair(fixtures, "mapping_0001", 40, 32), "second fake CV_16U remap must exist");
+  ok &= expect(
+      write_spatial_tiff_tags(rounding_overflow_fixtures / "mapping_0000.tif", 32, 32, 0.0f, 1.0f) &&
+          write_spatial_tiff_tags(rounding_overflow_fixtures / "mapping_0001.tif", 33, 32, 32.0f, 1.0f) &&
+          write_remap_pair(rounding_overflow_fixtures, "mapping_0000", 32, 32) &&
+          write_remap_pair(rounding_overflow_fixtures, "mapping_0001", 33, 32),
+      "rounding overflow fixtures must describe a 65-pixel canvas");
   cv::Mat seam(30, 40, CV_8U, cv::Scalar(0));
   seam.colRange(20, 40).setTo(255);
   ok &= expect(cv::imwrite((fixtures / "seam_file.png").string(), seam), "fake seam must exist");
@@ -423,9 +432,16 @@ int main() {
   ok &= expect(
       write_tool(
           nona,
-          "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
-          "mapping_0001_x.tif mapping_0001_y.tif; do cp '" +
-              fixtures.string() + "/'$file \"$file\"; done\n"),
+          "printf '%s\\n' run >> '" + nona_invocations.string() +
+              "'\n"
+              "fixtures='" +
+              fixtures.string() +
+              "'\n"
+              "if grep -q ' w64 ' autooptimiser_out.pto; then fixtures='" +
+              rounding_overflow_fixtures.string() +
+              "'; fi\n"
+              "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
+              "mapping_0001_x.tif mapping_0001_y.tif; do cp \"$fixtures/$file\" \"$file\"; done\n"),
       "fake nona must be created");
   ok &= expect(
       write_tool(
@@ -509,8 +525,8 @@ int main() {
     const std::string contents((std::istreambuf_iterator<char>(optimized)), std::istreambuf_iterator<char>());
     const auto scaled = hm::stitching::HuginProject::ParseCanvasSize(contents);
     ok &= expect(
-        scaled.ok() && scaled->first == 64 && scaled->second == 32,
-        "autooptimiser -x scaling must cap the Hugin canvas");
+        scaled.ok() && scaled->first == 63 && scaled->second == 32,
+        "autooptimiser -x scaling must leave one pixel of Nona placement headroom");
     ok &= expect(
         contents.find("p f2 ") != std::string::npos,
         "the projection selected by autooptimiser must not be replaced by a pano_modify pass");
@@ -521,11 +537,15 @@ int main() {
         optimizer_args.find("-a -l -s -q -o autooptimiser_out.pto hm_project.pto") != std::string::npos,
         "Hugin orchestration must request automatic alignment and projection selection");
     ok &= expect(
-        optimizer_args.find("-a -l -s -q -x 0.64 -o autooptimiser_out.pto hm_project.pto") != std::string::npos,
-        "oversized Hugin canvases must be retried through autooptimiser -x");
+        optimizer_args.find("-a -l -s -q -x 0.63 -o autooptimiser_out.pto hm_project.pto") != std::string::npos,
+        "oversized Hugin canvases must reserve placement-rounding headroom through autooptimiser -x");
     ok &= expect(
         optimizer_args.find("-n") == std::string::npos,
         "Hugin orchestration must not request script-only optimization");
+    const std::string nona_runs = read_text_file(nona_invocations);
+    ok &= expect(
+        std::count(nona_runs.begin(), nona_runs.end(), '\n') == 1,
+        "initial placement headroom must avoid repeating expensive Nona map generation");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
     cv::Mat expected_seam;
     cv::copyMakeBorder(seam, expected_seam, 1, 1, 1, 1, cv::BORDER_REPLICATE);
@@ -565,12 +585,30 @@ int main() {
     ok &= expect(
         provenance.ok() && provenance->has_value() && (*provenance)->max_output_width == 0 &&
             (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 100 &&
-            (*provenance)->source_canvas_height == 50 && (*provenance)->canvas_width == 42 &&
+            (*provenance)->source_canvas_height == 51 && (*provenance)->canvas_width == 42 &&
             (*provenance)->canvas_height == 32 && !(*provenance)->max_output_width_applied &&
             (*provenance)->max_canvas_dimension_applied,
         "published Hugin provenance must record source/final canvases and applied generation constraints");
     provenance_lock->reset();
   }
+
+  const fs::path width_headroom_game = root / "nona-width-headroom-game";
+  fs::create_directories(width_headroom_game);
+  hm::stitching::HuginProject::Options width_headroom_options = options;
+  width_headroom_options.max_canvas_dimension.reset();
+  width_headroom_options.max_output_width = 64;
+  width_headroom_options.progress = {};
+  const auto width_headroom_configured = hm::stitching::HuginProject::Configure(
+      width_headroom_game,
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      width_headroom_options);
+  ok &= expect(width_headroom_configured.ok(), "Nona width cap must complete with initial placement headroom");
+  const std::string width_headroom_nona_runs = read_text_file(nona_invocations);
+  ok &= expect(
+      std::count(width_headroom_nona_runs.begin(), width_headroom_nona_runs.end(), '\n') == 2,
+      "width-cap placement headroom must avoid repeating expensive Nona map generation");
 
   const fs::path retry_native_fixtures = root / "retry-native-fixtures";
   const fs::path retry_capped_fixtures = root / "retry-capped-fixtures";

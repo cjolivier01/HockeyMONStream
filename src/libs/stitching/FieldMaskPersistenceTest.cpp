@@ -2,6 +2,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <atomic>
 #include <chrono>
@@ -1003,6 +1004,55 @@ int main() {
         "field-mask recovery must reject aggregate oversized rollback sets before staging any restore");
     fs::remove_all(aggregate_backup);
 
+    const fs::path pinned_backup = root / ".hstream-rink-pinned-backup";
+    const fs::path pin_marker = root.parent_path() / ("hstream-rink-pin-marker-" + std::to_string(::getpid()));
+    const fs::path detached_backup =
+        root.parent_path() / ("hstream-rink-detached-backup-" + std::to_string(::getpid()) + ".yaml");
+    fs::remove(pin_marker);
+    fs::remove(detached_backup);
+    fs::create_directories(pinned_backup / "previous");
+    fs::copy_file(root / "config.yaml", pinned_backup / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", pinned_backup / "previous" / "rink_mask_0.png");
+    std::ofstream(pinned_backup / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(pinned_backup / "state") << "PREPARED\n";
+    const std::string pinned_config_contents = root_config_contents();
+    std::ofstream(root / "config.yaml", std::ios::out | std::ios::trunc) << "unrelated:\n  keep: false\n";
+    std::atomic<bool> backup_replaced{false};
+    ::setenv("HM_TEST_RINK_RECOVERY_POST_PIN_MARKER", pin_marker.c_str(), 1);
+    ::setenv("HM_TEST_RINK_RECOVERY_POST_PIN_DELAY_MS", "1000", 1);
+    std::atomic<bool> pin_marker_seen{false};
+    std::string backup_replacement_error;
+    std::thread backup_replacer([&]() {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (!fs::exists(pin_marker) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      pin_marker_seen = fs::exists(pin_marker);
+      std::error_code replacement_error;
+      fs::rename(pinned_backup / "previous" / "config.yaml", detached_backup, replacement_error);
+      if (!replacement_error) {
+        std::ofstream(pinned_backup / "previous" / "config.yaml") << "unrelated:\n  keep: replacement\n";
+        backup_replaced = true;
+      } else
+        backup_replacement_error = replacement_error.message();
+    });
+    const auto pinned_backup_read = hm::stitching::load_field_mask(root.string());
+    backup_replacer.join();
+    ::unsetenv("HM_TEST_RINK_RECOVERY_POST_PIN_DELAY_MS");
+    ::unsetenv("HM_TEST_RINK_RECOVERY_POST_PIN_MARKER");
+    if (!backup_replaced || !pinned_backup_read.ok() || fs::exists(pinned_backup) ||
+        root_config_contents() != pinned_config_contents) {
+      std::cerr << "pinned rink recovery fixture: marker_seen=" << pin_marker_seen << ", replaced=" << backup_replaced
+                << ", replace_error=" << backup_replacement_error << ", read=" << pinned_backup_read.status()
+                << ", journal_exists=" << fs::exists(pinned_backup)
+                << ", config_matches=" << (root_config_contents() == pinned_config_contents) << '\n';
+    }
+    ok &= expect(
+        backup_replaced && pinned_backup_read.ok() && !fs::exists(pinned_backup) &&
+            root_config_contents() == pinned_config_contents,
+        "rink recovery must restore the bounded backup inodes pinned before a pathname replacement");
+    fs::remove(pin_marker);
+    fs::remove(detached_backup);
+
     const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
     const fs::path manifest_target = root / "rink-manifest-symlink-target";
     fs::create_directories(symlinked_manifest / "previous");
@@ -1345,6 +1395,32 @@ int main() {
     const std::string after{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     ok &= expect(after == config_bytes, "invalid rink profiles must preserve the committed config generation");
   }
+  hm::stitching::RinkProfile maximum_profile = one_mask;
+  maximum_profile.masks.assign(hm::stitching::kMaximumRinkTransactionArtifacts - 1, one_mask.masks.front());
+  status = hm::stitching::save_rink_profile(root.string(), maximum_profile);
+  ok &= expect(status.ok(), "rink profile writer must accept masks plus config at the transaction artifact limit");
+  hm::stitching::RinkProfile oversized_profile = maximum_profile;
+  oversized_profile.masks.push_back(one_mask.masks.front());
+  status = hm::stitching::save_rink_profile(root.string(), oversized_profile);
+  ok &= expect(
+      absl::IsResourceExhausted(status),
+      "rink profile writer must reject masks plus config above the transaction artifact limit");
+  status = hm::stitching::save_rink_profile(root.string(), one_mask);
+  ok &= expect(status.ok(), "rink profile boundary fixture must compact the prior mask generation");
+  hm::stitching::RinkProfile maximum_snapshot_profile = one_mask;
+  maximum_snapshot_profile.masks.assign(hm::stitching::kMaximumRinkTransactionArtifacts - 2, one_mask.masks.front());
+  const cv::Mat stitched_boundary_image(one_mask.masks.front().size(), CV_8UC3, cv::Scalar(32, 64, 96));
+  status = hm::stitching::save_rink_profile_with_stitched_image(
+      root.string(), maximum_snapshot_profile, stitched_boundary_image);
+  ok &= expect(
+      status.ok(),
+      "rink profile writer must accept masks, config, and stitched snapshot at the transaction artifact limit");
+  maximum_snapshot_profile.masks.push_back(one_mask.masks.front());
+  status = hm::stitching::save_rink_profile_with_stitched_image(
+      root.string(), maximum_snapshot_profile, stitched_boundary_image);
+  ok &= expect(
+      absl::IsResourceExhausted(status),
+      "rink profile writer must reject masks, config, and stitched snapshot above the artifact limit");
   profile.masks[1] = cv::Mat(10, 10, CV_8U);
   ok &= expect(!hm::stitching::save_rink_profile(root.string(), profile).ok(), "mixed mask dimensions must fail");
   fs::remove_all(root);

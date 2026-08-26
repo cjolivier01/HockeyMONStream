@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -15,6 +17,9 @@ enum class TransactionJournalKind {
   kRink,
   kStitch,
 };
+
+inline constexpr size_t kMaximumRinkTransactionArtifacts = 64;
+inline constexpr uint64_t kMaximumRinkTransactionRollbackBytes = 1024ULL * 1024ULL * 1024ULL;
 
 class PinnedDirectory {
  public:
@@ -39,6 +44,38 @@ class PinnedDirectory {
   int descriptor_{-1};
 };
 
+class PinnedRinkRollbackArtifact {
+ public:
+  PinnedRinkRollbackArtifact() = default;
+  ~PinnedRinkRollbackArtifact();
+  PinnedRinkRollbackArtifact(PinnedRinkRollbackArtifact&& other) noexcept;
+  PinnedRinkRollbackArtifact& operator=(PinnedRinkRollbackArtifact&& other) noexcept;
+  PinnedRinkRollbackArtifact(const PinnedRinkRollbackArtifact&) = delete;
+  PinnedRinkRollbackArtifact& operator=(const PinnedRinkRollbackArtifact&) = delete;
+
+  static absl::StatusOr<PinnedRinkRollbackArtifact> Open(const PinnedDirectory& directory, const std::string& name);
+
+  const std::string& name() const {
+    return name_;
+  }
+  uint64_t size() const {
+    return size_;
+  }
+
+ private:
+  PinnedRinkRollbackArtifact(int descriptor, std::string name, uint64_t size)
+      : descriptor_(descriptor), name_(std::move(name)), size_(size) {}
+
+  friend absl::Status snapshot_rink_artifact_for_rollback(
+      const PinnedRinkRollbackArtifact& source,
+      const std::filesystem::path& destination,
+      bool force_portable_fallback);
+
+  int descriptor_{-1};
+  std::string name_;
+  uint64_t size_{0};
+};
+
 // Removes a pinned directory without traversing symlinks, but only while its
 // parent entry still resolves to the inode that was originally opened.
 absl::Status remove_pinned_directory(
@@ -59,18 +96,19 @@ absl::Status snapshot_regular_file_for_rollback(
     const std::filesystem::path& source,
     const std::filesystem::path& destination,
     bool force_portable_fallback,
-    size_t maximum_bytes,
-    bool durable = true);
+    size_t maximum_bytes);
 
-// Applies the shared size contract for config.yaml, s.png, and rink_mask_*.png
-// before creating an independent rollback snapshot.
+// Copies a previously pinned and bounded backup inode, preserving aggregate
+// validation even if its directory entry is replaced during recovery.
 absl::Status snapshot_rink_artifact_for_rollback(
-    const std::filesystem::path& source,
+    const PinnedRinkRollbackArtifact& source,
     const std::filesystem::path& destination,
     bool force_portable_fallback);
 
-// Returns the validated size of one no-follow rink rollback artifact.
-absl::StatusOr<uint64_t> rink_rollback_artifact_size(const std::filesystem::path& source);
+// Pins and validates one complete rollback set before any snapshot is staged.
+absl::StatusOr<std::vector<PinnedRinkRollbackArtifact>> pin_rink_rollback_artifacts(
+    const PinnedDirectory& directory,
+    const std::vector<std::string>& names);
 
 // Legacy roots are scanned once. New transactions durably publish a pending
 // marker before creating a journal, allowing the steady-state recovery path to

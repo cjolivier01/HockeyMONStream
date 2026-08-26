@@ -3,6 +3,7 @@ INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 exports_files([
     "HStreamLosslessMux.cpp",
     "nvstreammux_lossless.patch",
+    "nvstreammux_lossless_state.patch",
     "nvstreammux_p010_caps.patch",
 ])
 

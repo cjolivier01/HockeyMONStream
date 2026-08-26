@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -15,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -47,9 +49,6 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
   }
   return entries;
 }
-
-constexpr size_t kMaximumRinkTransactionArtifacts = 64;
-constexpr uint64_t kMaximumRinkTransactionRollbackBytes = 1024ULL * 1024ULL * 1024ULL;
 
 struct ProcessIdentity {
   pid_t process_id;
@@ -262,7 +261,7 @@ absl::Status fsync_path(const fs::path& path, bool directory = false) {
   return absl::OkStatus();
 }
 
-absl::Status link_clone_or_copy_rollback_file(const fs::path& source, const fs::path& destination) {
+absl::Status link_clone_or_copy_rollback_file(const PinnedRinkRollbackArtifact& source, const fs::path& destination) {
   const char* force_portable_fallback = std::getenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
   return snapshot_rink_artifact_for_rollback(
       source, destination, force_portable_fallback != nullptr && std::string(force_portable_fallback) == "1");
@@ -408,7 +407,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       auto manifest = read_rink_manifest(transaction);
       if (!manifest.ok())
         return manifest.status();
-      std::vector<fs::path> backups;
+      std::vector<std::string> backup_artifact_names;
       std::set<std::string> backup_names;
       std::optional<PinnedDirectory> previous_directory;
       auto opened_previous = transaction_directory.OpenChild("previous", "rink transaction backup directory");
@@ -421,28 +420,28 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       auto previous_entries = directory_entries(previous, "rink transaction backup", kMaximumRinkTransactionArtifacts);
       if (!previous_entries.ok())
         return previous_entries.status();
-      uint64_t aggregate_backup_bytes = 0;
       for (const auto& old : *previous_entries) {
         const std::string old_name = old.path().filename().string();
-        const bool is_regular = old.symlink_status(error).type() == fs::file_type::regular;
-        if (error)
-          return absl::InternalError("Unable to inspect rink transaction backup entry: " + error.message());
-        if (!is_regular || !is_rink_artifact_name(old_name) || manifest->count(old_name) == 0 ||
+        if (!is_rink_artifact_name(old_name) || manifest->count(old_name) == 0 ||
             !backup_names.insert(old_name).second) {
           return absl::InvalidArgumentError("Invalid or unmanifested rink transaction backup: " + old_name);
         }
-        auto backup_size = rink_rollback_artifact_size(old.path());
-        if (!backup_size.ok())
-          return backup_size.status();
-        if (*backup_size > kMaximumRinkTransactionRollbackBytes - aggregate_backup_bytes)
-          return absl::ResourceExhaustedError("Rink transaction rollback artifacts exceed the aggregate byte limit");
-        aggregate_backup_bytes += *backup_size;
-        backups.push_back(old.path());
+        backup_artifact_names.push_back(old_name);
+      }
+      auto pinned_backups = pin_rink_rollback_artifacts(*previous_directory, backup_artifact_names);
+      if (!pinned_backups.ok())
+        return pinned_backups.status();
+      if (const char* marker = std::getenv("HM_TEST_RINK_RECOVERY_POST_PIN_MARKER"))
+        std::ofstream(marker, std::ios::out | std::ios::trunc) << "pinned\n";
+      if (const char* delay = std::getenv("HM_TEST_RINK_RECOVERY_POST_PIN_DELAY_MS")) {
+        const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+        if (delay_ms > 0)
+          std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
       }
 
       std::vector<std::pair<fs::path, fs::path>> staged_restores;
-      for (const fs::path& old : backups) {
-        const fs::path staged = transaction / (".restore-" + old.filename().string());
+      for (const PinnedRinkRollbackArtifact& old : *pinned_backups) {
+        const fs::path staged = transaction / (".restore-" + old.name());
         fs::remove(staged, error);
         if (error)
           return absl::InternalError("Unable to remove stale rink restore staging file: " + error.message());
@@ -452,7 +451,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         auto status = fsync_path(staged);
         if (!status.ok())
           return status;
-        staged_restores.emplace_back(staged, root_directory.path() / old.filename());
+        staged_restores.emplace_back(staged, root_directory.path() / old.name());
       }
       auto status = fsync_path(transaction, true);
       if (!status.ok())
@@ -666,6 +665,28 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
       return status;
     return 0;
   }
+  if (invalidated_artifacts.size() >= kMaximumRinkTransactionArtifacts)
+    return absl::ResourceExhaustedError("Rink invalidation contains too many transaction artifacts");
+
+  std::vector<fs::path> old_files = invalidated_artifacts;
+  const fs::path current_config = game_dir / "config.yaml";
+  if (fs::exists(current_config, error)) {
+    if (error || !fs::is_regular_file(current_config, error) || error)
+      return absl::FailedPreconditionError("Game config is not a regular file: " + current_config.string());
+    old_files.push_back(current_config);
+  } else if (error) {
+    return absl::InternalError("Unable to inspect game config: " + error.message());
+  }
+  auto opened_root = PinnedDirectory::Open(game_dir, "rink invalidation root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  std::vector<std::string> old_names;
+  old_names.reserve(old_files.size());
+  for (const fs::path& old : old_files)
+    old_names.push_back(old.filename().string());
+  auto pinned_old_files = pin_rink_rollback_artifacts(*opened_root, old_names);
+  if (!pinned_old_files.ok())
+    return pinned_old_files.status();
 
   auto pending_status = mark_transaction_recovery_pending(game_dir, TransactionJournalKind::kRink);
   if (!pending_status.ok())
@@ -703,20 +724,11 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   if (error)
     return absl::InternalError("Unable to create rink invalidation rollback directory: " + error.message());
 
-  std::vector<fs::path> old_files = invalidated_artifacts;
-  const fs::path current_config = game_dir / "config.yaml";
-  if (fs::exists(current_config, error)) {
-    if (error || !fs::is_regular_file(current_config, error) || error)
-      return absl::FailedPreconditionError("Game config is not a regular file: " + current_config.string());
-    old_files.push_back(current_config);
-  } else if (error) {
-    return absl::InternalError("Unable to inspect game config: " + error.message());
-  }
-  for (const fs::path& old : old_files) {
-    auto preserve = link_clone_or_copy_rollback_file(old, previous / old.filename());
+  for (const PinnedRinkRollbackArtifact& old : *pinned_old_files) {
+    auto preserve = link_clone_or_copy_rollback_file(old, previous / old.name());
     if (!preserve.ok())
       return preserve;
-    status = fsync_path(previous / old.filename());
+    status = fsync_path(previous / old.name());
     if (!status.ok())
       return status;
   }

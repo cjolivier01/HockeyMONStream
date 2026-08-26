@@ -649,7 +649,13 @@ absl::Status StitcherPriv::ensure_stitcher() {
     hm::pano::ControlMasks control_masks;
     const std::string load_directory =
         artifacts->load_snapshot ? artifacts->load_snapshot->directory().string() : config_file_;
-    if (!control_masks.load(load_directory, max_output_width_)) {
+    const bool loaded = control_masks.load(load_directory, max_output_width_);
+    if (loaded && artifacts->load_snapshot) {
+      const absl::Status snapshot_status = artifacts->load_snapshot->verify();
+      if (!snapshot_status.ok())
+        return snapshot_status;
+    }
+    if (!loaded) {
       std::string config_file_dir = config_file_;
       artifacts->artifact_lock.reset();
       if (one_pass_mode_) {

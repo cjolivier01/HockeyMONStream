@@ -2319,7 +2319,7 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
       g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
     }
     app_context->eos_received = TRUE;
-    cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
+    stop_uri_playlist_sources_gracefully(&app_context->pipeline.multi_src_bin);
     if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
       return absl::InternalError("Interrupted calibration pipeline could not be stopped");
     }

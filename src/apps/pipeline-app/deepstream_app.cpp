@@ -1833,6 +1833,10 @@ static void release_uri_playlist_generation_state(NvDsSrcParentBin* source_bin) 
       g_mutex_clear(&source->uri_decode_pad_selection_mutex);
       source->uri_decode_pad_selection_mutex_initialized = FALSE;
     }
+    if (source->bin_lock_initialized) {
+      g_mutex_clear(&source->bin_lock);
+      source->bin_lock_initialized = FALSE;
+    }
   }
   if (source_bin->uri_playlist_barrier_initialized) {
     g_cond_clear(&source_bin->uri_playlist_barrier_cond);
@@ -2005,8 +2009,7 @@ gboolean create_pipeline(
   }
   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->multi_src_bin.bin);
 
-  if (appCtx->pipeline_create_attempt_count == 2 &&
-      g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_DURING_CREATE")) {
+  if (appCtx->pipeline_create_attempt_count == 2 && g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_DURING_CREATE")) {
     g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=during-create\n");
     goto done;
   }
@@ -2463,6 +2466,9 @@ void destroy_pipeline(AppCtx* appCtx) {
   }
   g_cond_wait_until(&appCtx->app_cond, &appCtx->app_lock, end_time);
   g_mutex_unlock(&appCtx->app_lock);
+
+  destroy_secondary_gie_bin(&appCtx->pipeline.common_elements.secondary_gie_bin);
+  destroy_secondary_preprocess_bin(&appCtx->pipeline.common_elements.secondary_preprocess_bin);
 
   for (i = 0; i < appCtx->config.num_source_sub_bins; i++) {
     NvDsInstanceBin* bin = &appCtx->pipeline.instance_bins[i];

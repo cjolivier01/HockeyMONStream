@@ -42,7 +42,12 @@ std::string file_identity(const std::filesystem::path& path) {
   return value.str();
 }
 
-bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint32_t height, float x_position) {
+bool write_mapping_tiff(
+    const std::filesystem::path& path,
+    uint32_t width,
+    uint32_t height,
+    float x_position,
+    uint8_t pixel_value = 0) {
   TIFF* tiff = TIFFOpen(path.c_str(), "w");
   if (!tiff)
     return false;
@@ -58,7 +63,7 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
   TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
   TIFFSetField(tiff, TIFFTAG_XPOSITION, x_position);
   TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
-  std::vector<uint8_t> row(width, 0);
+  std::vector<uint8_t> row(width, pixel_value);
   bool ok = true;
   for (uint32_t y = 0; y < height; ++y)
     ok = ok && TIFFWriteScanline(tiff, row.data(), y, 0) >= 0;
@@ -67,22 +72,29 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
 }
 
 bool write_hugin_generation_fixture(const std::filesystem::path& directory) {
-  for (const char* name : {
-           "hm_project.pto",
-           "autooptimiser_out.pto",
-           "mapping_0000_x.tif",
-           "mapping_0000_y.tif",
-           "mapping_0001_x.tif",
-           "mapping_0001_y.tif",
-           "seam_file.png",
-       }) {
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
     std::ofstream output(directory / name, std::ios::binary | std::ios::trunc);
     output << name << '\n';
     if (!output)
       return false;
   }
-  return write_mapping_tiff(directory / "mapping_0000.tif", 64, 32, 0.0f) &&
-      write_mapping_tiff(directory / "mapping_0001.tif", 64, 32, 32.0f);
+  if (!write_mapping_tiff(directory / "mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(directory / "mapping_0001.tif", 64, 32, 32.0f)) {
+    return false;
+  }
+  const cv::Mat remap(32, 64, CV_16U, cv::Scalar(0));
+  for (const char* name : {
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+       }) {
+    if (!cv::imwrite((directory / name).string(), remap))
+      return false;
+  }
+  cv::Mat seam(32, 96, CV_8U, cv::Scalar(0));
+  seam.colRange(48, seam.cols).setTo(255);
+  return cv::imwrite((directory / "seam_file.png").string(), seam);
 }
 
 bool write_all(int fd, const std::string& value) {
@@ -443,13 +455,13 @@ int main() {
   ok &= expect(
       rotated_generation.ok() && absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
       "a selector opened on a different output rotation must not publish stale coordinates");
-  {
-    std::ofstream replacement(directory / "mapping_0000.tif.replacement", std::ios::binary | std::ios::trunc);
-    replacement << "replacement mapping\n";
-  }
-  std::filesystem::rename(directory / "mapping_0000.tif.replacement", directory / "mapping_0000.tif");
+  const std::filesystem::path replacement_mapping = directory / "mapping_0000.tif.replacement";
+  const bool wrote_replacement_mapping = write_mapping_tiff(replacement_mapping, 64, 32, 0.0f, 1);
+  if (wrote_replacement_mapping)
+    std::filesystem::rename(replacement_mapping, directory / "mapping_0000.tif");
   ok &= expect(
-      !stale_generation.empty() && absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
+      wrote_replacement_mapping && !stale_generation.empty() &&
+          absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
       "a selector opened on a replaced stitched canvas must not publish stale coordinates");
   std::filesystem::remove_all(directory);
   return ok ? 0 : 1;

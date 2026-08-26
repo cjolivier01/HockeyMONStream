@@ -119,6 +119,37 @@ absl::Status clear_empty_marker(int root_descriptor, const char* name) {
   return absl::OkStatus();
 }
 
+absl::Status synchronize_protocol_marker(int root_descriptor, const char* name) {
+  struct stat root_metadata{};
+  if (::fstat(root_descriptor, &root_metadata) != 0)
+    return absl::InternalError("Unable to inspect transaction recovery root: " + std::string(std::strerror(errno)));
+  const int descriptor = ::openat(root_descriptor, name, O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::InternalError(
+        "Unable to open transaction recovery protocol marker: " + std::string(std::strerror(errno)));
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat marker_metadata{};
+  if (::fstat(descriptor, &marker_metadata) != 0 || !S_ISREG(marker_metadata.st_mode) || marker_metadata.st_size != 0)
+    return absl::FailedPreconditionError("Invalid transaction recovery protocol marker: " + std::string(name));
+  timespec times[2] = {};
+  times[0].tv_nsec = UTIME_OMIT;
+  times[1] = root_metadata.st_mtim;
+  if (::futimens(descriptor, times) != 0 || ::fsync(descriptor) != 0)
+    return absl::InternalError(
+        "Unable to synchronize transaction recovery protocol marker: " + std::string(std::strerror(errno)));
+  struct stat verified_root{};
+  if (::fstat(root_descriptor, &verified_root) != 0 || root_metadata.st_mtim.tv_sec != verified_root.st_mtim.tv_sec ||
+      root_metadata.st_mtim.tv_nsec != verified_root.st_mtim.tv_nsec) {
+    return absl::AbortedError("Transaction recovery root changed while synchronizing its protocol marker");
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<int> open_recovery_root(const fs::path& root) {
   const int descriptor = ::open(root.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NONBLOCK);
   if (descriptor < 0)
@@ -308,6 +339,50 @@ fs::path PinnedDirectory::path() const {
   return fs::path("/proc/self/fd") / std::to_string(descriptor_);
 }
 
+PinnedRinkRollbackArtifact::~PinnedRinkRollbackArtifact() {
+  if (descriptor_ >= 0)
+    ::close(descriptor_);
+}
+
+PinnedRinkRollbackArtifact::PinnedRinkRollbackArtifact(PinnedRinkRollbackArtifact&& other) noexcept
+    : descriptor_(other.descriptor_), name_(std::move(other.name_)), size_(other.size_) {
+  other.descriptor_ = -1;
+  other.size_ = 0;
+}
+
+PinnedRinkRollbackArtifact& PinnedRinkRollbackArtifact::operator=(PinnedRinkRollbackArtifact&& other) noexcept {
+  if (this == &other)
+    return *this;
+  if (descriptor_ >= 0)
+    ::close(descriptor_);
+  descriptor_ = other.descriptor_;
+  name_ = std::move(other.name_);
+  size_ = other.size_;
+  other.descriptor_ = -1;
+  other.size_ = 0;
+  return *this;
+}
+
+absl::StatusOr<PinnedRinkRollbackArtifact> PinnedRinkRollbackArtifact::Open(
+    const PinnedDirectory& directory,
+    const std::string& name) {
+  if (fs::path(name).filename() != name || name == "." || name == "..")
+    return absl::InvalidArgumentError("Invalid rink rollback artifact name: " + name);
+  const size_t maximum_bytes = maximum_rink_rollback_bytes(name);
+  if (maximum_bytes == 0)
+    return absl::FailedPreconditionError("Unrecognized rink rollback artifact: " + name);
+  const int descriptor = ::openat(directory.descriptor(), name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to pin rink rollback artifact " + name + ": " + std::strerror(errno));
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    ::close(descriptor);
+    return absl::FailedPreconditionError("Rink rollback artifact is invalid or oversized: " + name);
+  }
+  return PinnedRinkRollbackArtifact(descriptor, name, static_cast<uint64_t>(metadata.st_size));
+}
+
 absl::Status remove_pinned_directory(
     const PinnedDirectory& parent,
     const std::string& name,
@@ -362,30 +437,20 @@ absl::StatusOr<std::string> read_bounded_regular_file_no_follow(
   return contents;
 }
 
-absl::Status snapshot_regular_file_for_rollback(
+namespace {
+
+absl::Status snapshot_open_regular_file_for_rollback(
+    int source_fd,
     const fs::path& source,
     const fs::path& destination,
     bool force_portable_fallback,
     size_t maximum_bytes,
-    bool durable) {
+    std::optional<uint64_t> expected_bytes) {
   const fs::path temporary = destination.parent_path() / ("." + destination.filename().string() + ".hstream-partial");
   std::error_code error;
   fs::remove(temporary, error);
   if (error)
     return absl::InternalError("Unable to remove incomplete rollback artifact: " + error.message());
-  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  if (source_fd < 0) {
-    if (errno == ELOOP)
-      return absl::FailedPreconditionError("Rollback source is a symbolic link: " + source.string());
-    return absl::InternalError("Unable to open rollback source " + source.string() + ": " + std::strerror(errno));
-  }
-  struct DescriptorCleanup {
-    int descriptor;
-    ~DescriptorCleanup() {
-      if (descriptor >= 0)
-        ::close(descriptor);
-    }
-  } source_cleanup{source_fd};
   struct DestinationCleanup {
     fs::path path;
     ~DestinationCleanup() {
@@ -395,6 +460,13 @@ absl::Status snapshot_regular_file_for_rollback(
       fs::remove(path, ignored);
     }
   } destination_cleanup{temporary};
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+    }
+  };
   const auto publish = [&]() -> absl::Status {
     std::error_code rename_error;
     fs::rename(temporary, destination, rename_error);
@@ -409,8 +481,10 @@ absl::Status snapshot_regular_file_for_rollback(
     return absl::InternalError(
         "Unable to inspect opened rollback source " + source.string() + ": " + std::strerror(errno));
   }
-  if (!S_ISREG(metadata.st_mode) || metadata.st_size < 0 || static_cast<uint64_t>(metadata.st_size) > maximum_bytes)
+  if (!S_ISREG(metadata.st_mode) || metadata.st_size < 0 || static_cast<uint64_t>(metadata.st_size) > maximum_bytes ||
+      (expected_bytes.has_value() && static_cast<uint64_t>(metadata.st_size) != *expected_bytes)) {
     return absl::FailedPreconditionError("Rollback source is invalid or oversized: " + source.string());
+  }
 
   const int destination_fd =
       ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, metadata.st_mode & 0777);
@@ -478,7 +552,7 @@ absl::Status snapshot_regular_file_for_rollback(
   times[1] = metadata.st_mtim;
   const int mode_result = ::fchmod(destination_fd, metadata.st_mode & 07777);
   const bool mode_restored = mode_result == 0 || errno == EOPNOTSUPP || errno == ENOTSUP || errno == EPERM;
-  if (!mode_restored || ::futimens(destination_fd, times) != 0 || (durable && ::fsync(destination_fd) != 0)) {
+  if (!mode_restored || ::futimens(destination_fd, times) != 0 || ::fsync(destination_fd) != 0) {
     return absl::InternalError("Unable to preserve rollback artifact metadata: " + std::string(std::strerror(errno)));
   }
   destination_descriptor_cleanup.descriptor = -1;
@@ -487,35 +561,58 @@ absl::Status snapshot_regular_file_for_rollback(
   return publish();
 }
 
-absl::Status snapshot_rink_artifact_for_rollback(
+} // namespace
+
+absl::Status snapshot_regular_file_for_rollback(
     const fs::path& source,
     const fs::path& destination,
-    bool force_portable_fallback) {
-  const size_t maximum_bytes = maximum_rink_rollback_bytes(source);
-  if (maximum_bytes == 0)
-    return absl::FailedPreconditionError("Unrecognized rink rollback artifact: " + source.string());
-  return snapshot_regular_file_for_rollback(source, destination, force_portable_fallback, maximum_bytes);
-}
-
-absl::StatusOr<uint64_t> rink_rollback_artifact_size(const fs::path& source) {
-  const size_t maximum_bytes = maximum_rink_rollback_bytes(source);
-  if (maximum_bytes == 0)
-    return absl::FailedPreconditionError("Unrecognized rink rollback artifact: " + source.string());
-  const int descriptor = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  if (descriptor < 0)
-    return absl::FailedPreconditionError("Unable to open rink rollback artifact: " + source.string());
+    bool force_portable_fallback,
+    size_t maximum_bytes) {
+  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (source_fd < 0) {
+    if (errno == ELOOP)
+      return absl::FailedPreconditionError("Rollback source is a symbolic link: " + source.string());
+    return absl::InternalError("Unable to open rollback source " + source.string() + ": " + std::strerror(errno));
+  }
   struct DescriptorCleanup {
     int descriptor;
     ~DescriptorCleanup() {
       ::close(descriptor);
     }
-  } cleanup{descriptor};
-  struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
-      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
-    return absl::FailedPreconditionError("Rink rollback artifact is invalid or oversized: " + source.string());
+  } cleanup{source_fd};
+  return snapshot_open_regular_file_for_rollback(
+      source_fd, source, destination, force_portable_fallback, maximum_bytes, std::nullopt);
+}
+
+absl::Status snapshot_rink_artifact_for_rollback(
+    const PinnedRinkRollbackArtifact& source,
+    const fs::path& destination,
+    bool force_portable_fallback) {
+  const size_t maximum_bytes = maximum_rink_rollback_bytes(source.name_);
+  if (source.descriptor_ < 0 || maximum_bytes == 0)
+    return absl::FailedPreconditionError("Invalid pinned rink rollback artifact: " + source.name_);
+  return snapshot_open_regular_file_for_rollback(
+      source.descriptor_, source.name_, destination, force_portable_fallback, maximum_bytes, source.size_);
+}
+
+absl::StatusOr<std::vector<PinnedRinkRollbackArtifact>> pin_rink_rollback_artifacts(
+    const PinnedDirectory& directory,
+    const std::vector<std::string>& names) {
+  if (names.size() > kMaximumRinkTransactionArtifacts)
+    return absl::ResourceExhaustedError("Rink transaction contains too many rollback artifacts");
+  std::vector<PinnedRinkRollbackArtifact> artifacts;
+  artifacts.reserve(names.size());
+  uint64_t aggregate_bytes = 0;
+  for (const std::string& name : names) {
+    auto artifact = PinnedRinkRollbackArtifact::Open(directory, name);
+    if (!artifact.ok())
+      return artifact.status();
+    if (artifact->size() > kMaximumRinkTransactionRollbackBytes - aggregate_bytes)
+      return absl::ResourceExhaustedError("Rink transaction rollback artifacts exceed the aggregate byte limit");
+    aggregate_bytes += artifact->size();
+    artifacts.push_back(std::move(*artifact));
   }
-  return static_cast<uint64_t>(metadata.st_size);
+  return artifacts;
 }
 
 absl::StatusOr<bool> transaction_recovery_scan_required(const fs::path& root, TransactionJournalKind kind) {
@@ -537,7 +634,17 @@ absl::StatusOr<bool> transaction_recovery_scan_required(const fs::path& root, Tr
   if (!pending.ok())
     return pending.status();
   const char* force = std::getenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN");
-  return (force != nullptr && std::strcmp(force, "1") == 0) || !*protocol || *pending;
+  if ((force != nullptr && std::strcmp(force, "1") == 0) || !*protocol || *pending)
+    return true;
+  struct stat root_metadata{};
+  struct stat protocol_metadata{};
+  if (::fstat(descriptor, &root_metadata) != 0 ||
+      ::fstatat(descriptor, names.protocol, &protocol_metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+    return absl::InternalError(
+        "Unable to compare transaction recovery protocol metadata: " + std::string(std::strerror(errno)));
+  }
+  return root_metadata.st_mtim.tv_sec != protocol_metadata.st_mtim.tv_sec ||
+      root_metadata.st_mtim.tv_nsec != protocol_metadata.st_mtim.tv_nsec;
 }
 
 absl::Status mark_transaction_recovery_pending(const fs::path& root, TransactionJournalKind kind) {
@@ -573,7 +680,10 @@ absl::Status complete_transaction_recovery(const fs::path& root, TransactionJour
   auto status = ensure_empty_marker(descriptor, names.protocol);
   if (!status.ok())
     return status;
-  return clear_empty_marker(descriptor, names.pending);
+  status = clear_empty_marker(descriptor, names.pending);
+  if (!status.ok())
+    return status;
+  return synchronize_protocol_marker(descriptor, names.protocol);
 }
 
 absl::Status publish_transaction_state(const fs::path& transaction, const std::string& contents) {

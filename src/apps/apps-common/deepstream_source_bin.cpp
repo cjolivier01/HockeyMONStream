@@ -3373,6 +3373,7 @@ static gboolean create_rtsp_src_bin(NvDsSourceConfig* config, NvDsSrcBin* bin) {
   }
 
   g_mutex_init(&bin->bin_lock);
+  bin->bin_lock_initialized = TRUE;
   if (config->dewarper_config.enable) {
     if (!create_dewarper_bin(&config->dewarper_config, &bin->dewarper_bin)) {
       g_print("Failed to create dewarper bin \n");
@@ -4337,8 +4338,8 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
     GstElement* hardware_decoder = nullptr;
     if (source->src_elem) {
       g_mutex_lock(&source->uri_decode_pad_selection_mutex);
-      hardware_decoder = static_cast<GstElement*>(
-          g_object_get_data(G_OBJECT(source->src_elem), "hstream-uri-playlist-video-decoder"));
+      hardware_decoder =
+          static_cast<GstElement*>(g_object_get_data(G_OBJECT(source->src_elem), "hstream-uri-playlist-video-decoder"));
       if (hardware_decoder) {
         gst_object_ref(hardware_decoder);
       }
@@ -4360,10 +4361,8 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
       // nvv4l2decoder can retain a partially initialized 8K HEVC output surface after a flushing seek performed once
       // preroll has reached the decoded pad. The first seek positions the demuxer; retire the selected hardware
       // decoder, restart it under its parent, then repeat the seek so the pristine decoder begins at that keyframe.
-      const gboolean stopped =
-          gst_element_set_state(hardware_decoder, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
-      const gboolean inject_restart_failure =
-          g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_DECODER_RESTART_FAIL_ONCE") &&
+      const gboolean stopped = gst_element_set_state(hardware_decoder, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+      const gboolean inject_restart_failure = g_getenv("HM_TEST_URI_PLAYLIST_INITIAL_SEEK_DECODER_RESTART_FAIL_ONCE") &&
           g_atomic_int_compare_and_exchange(&uri_playlist_decoder_restart_failure_injected, FALSE, TRUE);
       const gboolean restarted =
           stopped && !inject_restart_failure && gst_element_sync_state_with_parent(hardware_decoder);

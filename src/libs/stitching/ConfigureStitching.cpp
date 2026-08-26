@@ -88,10 +88,20 @@ constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 2 + 16ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserPlacementTiffBytes = kHardMaximumArtifactPixels * 4 + 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserSeamPngBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
-constexpr size_t kMaximumRinkTransactionArtifacts = 64;
-constexpr uint64_t kMaximumRinkTransactionRollbackBytes = 1024ULL * 1024ULL * 1024ULL;
+constexpr std::string_view kControlMaskSnapshotPrefix = ".hstream-control-mask-snapshot-";
+
+constexpr std::array<const char*, 7> kControlMaskLoadArtifacts = {
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "seam_file.png",
+};
 
 void report_calibration_progress(const std::string& stage, const std::string& status, const std::string& message = {}) {
   std::cout << "HSTREAM_CALIBRATION stage=" << stage << " status=" << status;
@@ -103,7 +113,9 @@ void report_calibration_progress(const std::string& stage, const std::string& st
 absl::Status recover_rink_transactions_locked(const fs::path& root);
 absl::Status fsync_path(const fs::path& path, bool directory = false);
 
-absl::Status link_clone_or_copy_rink_rollback_file(const fs::path& source, const fs::path& destination) {
+absl::Status link_clone_or_copy_rink_rollback_file(
+    const PinnedRinkRollbackArtifact& source,
+    const fs::path& destination) {
   const bool force_portable_fallback = [] {
     const char* value = std::getenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
     return value != nullptr && std::string(value) == "1";
@@ -373,6 +385,156 @@ absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) 
       opened.metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec ||
       opened.metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
     return absl::AbortedError(TO_STRING("TIFF changed while being inspected: " << path.string()));
+  }
+  return absl::OkStatus();
+}
+
+bool same_load_artifact_snapshot(const struct stat& first, const struct stat& second) {
+  return first.st_dev == second.st_dev && first.st_ino == second.st_ino && first.st_mode == second.st_mode &&
+      first.st_size == second.st_size && first.st_mtim.tv_sec == second.st_mtim.tv_sec &&
+      first.st_mtim.tv_nsec == second.st_mtim.tv_nsec && first.st_ctim.tv_sec == second.st_ctim.tv_sec &&
+      first.st_ctim.tv_nsec == second.st_ctim.tv_nsec;
+}
+
+struct PinnedLoadArtifact {
+  PinnedLoadArtifact(std::string name, int descriptor, const struct stat& metadata)
+      : name(std::move(name)), descriptor(descriptor), metadata(metadata) {}
+  ~PinnedLoadArtifact() {
+    if (descriptor >= 0)
+      ::close(descriptor);
+  }
+  PinnedLoadArtifact(PinnedLoadArtifact&& other) noexcept
+      : name(std::move(other.name)), descriptor(other.descriptor), metadata(other.metadata) {
+    other.descriptor = -1;
+  }
+  PinnedLoadArtifact& operator=(PinnedLoadArtifact&& other) noexcept {
+    if (this == &other)
+      return *this;
+    if (descriptor >= 0)
+      ::close(descriptor);
+    name = std::move(other.name);
+    descriptor = other.descriptor;
+    metadata = other.metadata;
+    other.descriptor = -1;
+    return *this;
+  }
+  PinnedLoadArtifact(const PinnedLoadArtifact&) = delete;
+  PinnedLoadArtifact& operator=(const PinnedLoadArtifact&) = delete;
+
+  std::string name;
+  int descriptor{-1};
+  struct stat metadata{};
+};
+
+absl::StatusOr<PinnedLoadArtifact> pin_control_mask_load_artifact(const fs::path& path) {
+  const std::string name = path.filename().string();
+  if (path.extension() == ".tif") {
+    const auto ends_with = [&](std::string_view suffix) {
+      return name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    const bool remap = ends_with("_x.tif") || ends_with("_y.tif");
+    auto opened = open_bounded_tiff(path, remap ? kMaximumParserRemapTiffBytes : kMaximumParserPlacementTiffBytes);
+    if (!opened.ok())
+      return opened.status();
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint16_t samples = 0;
+    uint16_t bits = 0;
+    const bool dimensions_valid = TIFFGetField((*opened)->tiff, TIFFTAG_IMAGEWIDTH, &width) &&
+        TIFFGetField((*opened)->tiff, TIFFTAG_IMAGELENGTH, &height);
+    TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_SAMPLESPERPIXEL, &samples);
+    TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_BITSPERSAMPLE, &bits);
+    if (!dimensions_valid || width == 0 || height == 0 || samples == 0 || bits == 0 ||
+        width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
+        static_cast<uint64_t>(width) > kHardMaximumArtifactPixels / height) {
+      return absl::ResourceExhaustedError("Control-mask TIFF dimensions exceed safety limits: " + path.string());
+    }
+    const uint64_t pixels = static_cast<uint64_t>(width) * height;
+    if (pixels > std::numeric_limits<uint64_t>::max() / samples ||
+        pixels * samples > (std::numeric_limits<uint64_t>::max() - 7) / bits) {
+      return absl::ResourceExhaustedError("Control-mask TIFF payload size overflows: " + path.string());
+    }
+    const uint64_t payload_bytes = (pixels * samples * bits + 7) / 8;
+    if (static_cast<uint64_t>((*opened)->metadata.st_size) > payload_bytes + 16ULL * 1024ULL * 1024ULL) {
+      return absl::ResourceExhaustedError("Control-mask TIFF has an oversized encoded payload: " + path.string());
+    }
+    HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
+    const int descriptor = std::exchange((*opened)->descriptor, -1);
+    return PinnedLoadArtifact(name, descriptor, (*opened)->metadata);
+  }
+
+  if (name != "seam_file.png")
+    return absl::InvalidArgumentError("Unrecognized control-mask load artifact: " + path.string());
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to pin control-mask seam: " + path.string());
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      static_cast<uint64_t>(metadata.st_size) > kMaximumParserSeamPngBytes) {
+    ::close(descriptor);
+    return absl::FailedPreconditionError("Invalid or oversized control-mask seam: " + path.string());
+  }
+  return PinnedLoadArtifact(name, descriptor, metadata);
+}
+
+bool is_control_mask_load_artifact_name(const std::string& name) {
+  return std::find_if(kControlMaskLoadArtifacts.begin(), kControlMaskLoadArtifacts.end(), [&](const char* artifact) {
+           return name == artifact || name == "." + std::string(artifact) + ".hstream-partial";
+         }) != kControlMaskLoadArtifacts.end();
+}
+
+absl::Status verify_pinned_load_artifacts(
+    const fs::path& source_directory,
+    const std::vector<PinnedLoadArtifact>& artifacts) {
+  auto opened_root = PinnedDirectory::Open(source_directory, "control-mask artifact root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  for (const PinnedLoadArtifact& artifact : artifacts) {
+    struct stat descriptor_metadata{};
+    struct stat path_metadata{};
+    if (::fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
+        !same_load_artifact_snapshot(artifact.metadata, descriptor_metadata)) {
+      return absl::AbortedError("Control-mask artifact changed while being loaded: " + artifact.name);
+    }
+    if (::fstatat(opened_root->descriptor(), artifact.name.c_str(), &path_metadata, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !same_load_artifact_snapshot(artifact.metadata, path_metadata)) {
+      return absl::AbortedError("Control-mask artifact path changed after it was pinned: " + artifact.name);
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
+  auto opened_root = PinnedDirectory::Open(game_dir, "control-mask snapshot root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  PinnedDirectory root = std::move(*opened_root);
+  auto entries = directory_entries(root.path(), "control-mask snapshot root");
+  if (!entries.ok())
+    return entries.status();
+  for (const auto& entry : *entries) {
+    const std::string name = entry.path().filename().string();
+    if (name.compare(0, kControlMaskSnapshotPrefix.size(), kControlMaskSnapshotPrefix) != 0)
+      continue;
+    auto opened_snapshot = root.OpenChild(name, "stale control-mask snapshot");
+    if (!opened_snapshot.ok())
+      return opened_snapshot.status();
+    if (!opened_snapshot->has_value())
+      continue;
+    PinnedDirectory snapshot = std::move(**opened_snapshot);
+    auto snapshot_entries = directory_entries(snapshot.path(), "stale control-mask snapshot", 16);
+    if (!snapshot_entries.ok())
+      return snapshot_entries.status();
+    for (const auto& artifact : *snapshot_entries) {
+      std::error_code error;
+      const fs::file_type type = artifact.symlink_status(error).type();
+      const std::string artifact_name = artifact.path().filename().string();
+      if (error || !is_control_mask_load_artifact_name(artifact_name) ||
+          (type != fs::file_type::regular && type != fs::file_type::symlink)) {
+        return absl::FailedPreconditionError("Invalid stale control-mask snapshot entry: " + artifact_name);
+      }
+    }
+    HM_RETURN_IF_ERROR(remove_pinned_directory(root, name, snapshot));
   }
   return absl::OkStatus();
 }
@@ -1416,12 +1578,18 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
 }
 
 struct StitchingArtifactLoadSnapshot::Impl {
-  explicit Impl(fs::path directory) : directory(std::move(directory)) {}
+  Impl(fs::path directory, fs::path source_directory, std::string expected_revision)
+      : directory(std::move(directory)),
+        source_directory(std::move(source_directory)),
+        expected_revision(std::move(expected_revision)) {}
   ~Impl() {
     std::error_code ignored;
     fs::remove_all(directory, ignored);
   }
   fs::path directory;
+  fs::path source_directory;
+  std::string expected_revision;
+  std::vector<PinnedLoadArtifact> artifacts;
 };
 
 StitchingArtifactLoadSnapshot::StitchingArtifactLoadSnapshot(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -1432,6 +1600,16 @@ StitchingArtifactLoadSnapshot& StitchingArtifactLoadSnapshot::operator=(
 
 const fs::path& StitchingArtifactLoadSnapshot::directory() const {
   return impl_->directory;
+}
+
+absl::Status StitchingArtifactLoadSnapshot::verify() const {
+  HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(impl_->source_directory, impl_->artifacts));
+  auto revision = stitch_artifact_revision_locked(impl_->source_directory);
+  if (!revision.ok())
+    return revision.status();
+  if (*revision != impl_->expected_revision)
+    return absl::AbortedError("Control-mask artifact paths changed while their pinned generation was loaded");
+  return absl::OkStatus();
 }
 
 namespace {
@@ -1488,14 +1666,17 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
   HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
   std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
   if (create_load_snapshot) {
+    HM_RETURN_IF_ERROR(remove_stale_control_mask_snapshots(game_dir));
     std::string pattern = (fs::path(game_dir) / ".hstream-control-mask-snapshot-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     char* created = ::mkdtemp(writable.data());
     if (created == nullptr)
       return absl::InternalError("Unable to create a stable control-mask load snapshot");
-    auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(
-        std::make_unique<StitchingArtifactLoadSnapshot::Impl>(fs::path(created)));
+    auto snapshot_impl =
+        std::make_unique<StitchingArtifactLoadSnapshot::Impl>(fs::path(created), game_dir, artifact_revision);
+    StitchingArtifactLoadSnapshot::Impl* snapshot_impl_ptr = snapshot_impl.get();
+    auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(std::move(snapshot_impl));
     if (::chmod(created, 0700) != 0)
       return absl::InternalError("Unable to protect the stable control-mask load snapshot");
     if (const char* delay = std::getenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS")) {
@@ -1503,19 +1684,18 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
       if (delay_ms > 0)
         std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
     }
-    for (const char* name : {
-             "mapping_0000.tif",
-             "mapping_0000_x.tif",
-             "mapping_0000_y.tif",
-             "mapping_0001.tif",
-             "mapping_0001_x.tif",
-             "mapping_0001_y.tif",
-             "seam_file.png",
-         }) {
-      auto status = snapshot_stitch_artifact_for_load(fs::path(game_dir) / name, snapshot->directory() / name);
-      if (!status.ok())
-        return status;
+    for (const char* name : kControlMaskLoadArtifacts) {
+      auto artifact = pin_control_mask_load_artifact(fs::path(game_dir) / name);
+      if (!artifact.ok())
+        return artifact.status();
+      std::error_code link_error;
+      fs::create_symlink(
+          fs::path("/proc/self/fd") / std::to_string(artifact->descriptor), snapshot->directory() / name, link_error);
+      if (link_error)
+        return absl::InternalError("Unable to expose pinned control-mask artifact: " + link_error.message());
+      snapshot_impl_ptr->artifacts.push_back(std::move(*artifact));
     }
+    HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(game_dir, snapshot_impl_ptr->artifacts));
     auto verified_revision = stitch_artifact_revision_locked(game_dir);
     if (!verified_revision.ok())
       return verified_revision.status();
@@ -2130,7 +2310,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       auto manifest = read_rink_manifest(transaction);
       if (!manifest.ok())
         return manifest.status();
-      std::vector<fs::path> backups;
+      std::vector<std::string> backup_artifact_names;
       std::set<std::string> backup_names;
       std::optional<PinnedDirectory> previous_directory;
       auto opened_previous = transaction_directory.OpenChild("previous", "rink transaction backup directory");
@@ -2143,28 +2323,28 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       auto previous_entries = directory_entries(previous, "rink transaction backup", kMaximumRinkTransactionArtifacts);
       if (!previous_entries.ok())
         return previous_entries.status();
-      uint64_t aggregate_backup_bytes = 0;
       for (const auto& old : *previous_entries) {
         const std::string old_name = old.path().filename().string();
-        const bool is_regular = old.symlink_status(error).type() == fs::file_type::regular;
-        if (error)
-          return absl::InternalError("Unable to inspect rink transaction backup entry: " + error.message());
-        if (!is_regular || !is_rink_artifact_name(old_name) || manifest->count(old_name) == 0 ||
+        if (!is_rink_artifact_name(old_name) || manifest->count(old_name) == 0 ||
             !backup_names.insert(old_name).second) {
           return absl::InvalidArgumentError("Invalid or unmanifested rink transaction backup: " + old_name);
         }
-        auto backup_size = rink_rollback_artifact_size(old.path());
-        if (!backup_size.ok())
-          return backup_size.status();
-        if (*backup_size > kMaximumRinkTransactionRollbackBytes - aggregate_backup_bytes)
-          return absl::ResourceExhaustedError("Rink transaction rollback artifacts exceed the aggregate byte limit");
-        aggregate_backup_bytes += *backup_size;
-        backups.push_back(old.path());
+        backup_artifact_names.push_back(old_name);
+      }
+      auto pinned_backups = pin_rink_rollback_artifacts(*previous_directory, backup_artifact_names);
+      if (!pinned_backups.ok())
+        return pinned_backups.status();
+      if (const char* marker = std::getenv("HM_TEST_RINK_RECOVERY_POST_PIN_MARKER"))
+        std::ofstream(marker, std::ios::out | std::ios::trunc) << "pinned\n";
+      if (const char* delay = std::getenv("HM_TEST_RINK_RECOVERY_POST_PIN_DELAY_MS")) {
+        const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+        if (delay_ms > 0)
+          std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
       }
 
       std::vector<std::pair<fs::path, fs::path>> staged_restores;
-      for (const fs::path& old : backups) {
-        const fs::path staged = transaction / (".restore-" + old.filename().string());
+      for (const PinnedRinkRollbackArtifact& old : *pinned_backups) {
+        const fs::path staged = transaction / (".restore-" + old.name());
         fs::remove(staged, error);
         if (error)
           return absl::InternalError("Unable to remove stale rink restore staging file: " + error.message());
@@ -2174,7 +2354,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         auto status = fsync_path(staged);
         if (!status.ok())
           return status;
-        staged_restores.emplace_back(staged, root_directory.path() / old.filename());
+        staged_restores.emplace_back(staged, root_directory.path() / old.name());
       }
       auto status = fsync_path(transaction, true);
       if (!status.ok())
@@ -3166,6 +3346,9 @@ absl::Status save_rink_profile_locked(
     return absl::InvalidArgumentError("Rink profile geometry and scores must be finite and valid");
   }
   const cv::Size expected_size = profile.masks.front().size();
+  const size_t non_mask_artifact_count = stitched_image == nullptr ? 1 : 2;
+  if (profile.masks.size() > kMaximumRinkTransactionArtifacts - non_mask_artifact_count)
+    return absl::ResourceExhaustedError("Rink profile contains too many transaction artifacts");
   for (const cv::Mat& mask : profile.masks) {
     if (mask.empty() || mask.type() != CV_8U || mask.size() != expected_size)
       return absl::InvalidArgumentError("Rink masks must be equally sized, non-empty CV_8U images");
@@ -3189,6 +3372,36 @@ absl::Status save_rink_profile_locked(
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
+
+  std::vector<fs::path> old_files;
+  auto old_entries = directory_entries(root, "old rink masks");
+  if (!old_entries.ok())
+    return old_entries.status();
+  for (const auto& entry : *old_entries) {
+    const std::string name = entry.path().filename().string();
+    if (is_rink_artifact_name(name) && (name != "s.png" || stitched_image != nullptr))
+      old_files.push_back(entry.path());
+  }
+  auto opened_root = PinnedDirectory::Open(root, "rink profile root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  std::vector<std::string> old_names;
+  old_names.reserve(old_files.size());
+  for (const fs::path& old : old_files)
+    old_names.push_back(old.filename().string());
+  auto pinned_old_files = pin_rink_rollback_artifacts(*opened_root, old_names);
+  if (!pinned_old_files.ok())
+    return pinned_old_files.status();
+  std::set<std::string> bounded_published_names;
+  for (const fs::path& old : old_files)
+    bounded_published_names.insert(old.filename().string());
+  for (size_t index = 0; index < profile.masks.size(); ++index)
+    bounded_published_names.insert("rink_mask_" + std::to_string(index) + ".png");
+  if (stitched_image != nullptr)
+    bounded_published_names.insert("s.png");
+  bounded_published_names.insert("config.yaml");
+  if (bounded_published_names.size() > kMaximumRinkTransactionArtifacts)
+    return absl::ResourceExhaustedError("Rink profile transaction contains too many artifacts");
 
   auto pending_status = mark_transaction_recovery_pending(root, TransactionJournalKind::kRink);
   if (!pending_status.ok())
@@ -3361,24 +3574,6 @@ absl::Status save_rink_profile_locked(
   fs::create_directory(previous, error);
   if (error)
     return absl::InternalError("Unable to create rink rollback directory: " + error.message());
-  std::vector<fs::path> old_files;
-  auto old_entries = directory_entries(root, "old rink masks");
-  if (!old_entries.ok())
-    return old_entries.status();
-  for (const auto& entry : *old_entries) {
-    const std::string name = entry.path().filename().string();
-    if (is_rink_artifact_name(name) && (name != "s.png" || stitched_image != nullptr)) {
-      old_files.push_back(entry.path());
-    }
-  }
-  for (const fs::path& old : old_files) {
-    auto preserve = link_clone_or_copy_rink_rollback_file(old, previous / old.filename());
-    if (!preserve.ok())
-      return preserve;
-    sync_status = fsync_path(previous / old.filename());
-    if (!sync_status.ok())
-      return sync_status;
-  }
   std::vector<fs::path> new_files;
   for (size_t index = 0; index < profile.masks.size(); ++index)
     new_files.push_back(staging / ("rink_mask_" + std::to_string(index) + ".png"));
@@ -3390,6 +3585,14 @@ absl::Status save_rink_profile_locked(
     published_names.insert(old.filename().string());
   for (const fs::path& source : new_files)
     published_names.insert(source.filename().string());
+  for (const PinnedRinkRollbackArtifact& old : *pinned_old_files) {
+    auto preserve = link_clone_or_copy_rink_rollback_file(old, previous / old.name());
+    if (!preserve.ok())
+      return preserve;
+    sync_status = fsync_path(previous / old.name());
+    if (!sync_status.ok())
+      return sync_status;
+  }
   std::ostringstream manifest;
   for (const std::string& name : published_names)
     manifest << name << '\n';

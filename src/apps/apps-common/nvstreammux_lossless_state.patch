@@ -1,0 +1,21 @@
+--- gstnvstreammux.cpp
++++ gstnvstreammux.cpp
+@@ -1547,6 +1547,10 @@
+       break;
+     case GST_STATE_CHANGE_PAUSED_TO_READY:
+     {
++        /* The lossless backend waits without a timeout. Wake its source task
++         * before pad deactivation, which may wait for that task to stop. */
++        mux->helper->handle_stop();
++
+         GHashTableIter iter;
+         gpointer value;
+         gint key = 0;
+@@ -1561,7 +1565,6 @@
+           }
+         }
+         g_mutex_unlock (&mux->ctx_lock);
+-        mux->helper->handle_stop();
+         if (mux->pad_task_created)
+         {
+           gst_pad_stop_task (mux->srcpad);

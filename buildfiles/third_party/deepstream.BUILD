@@ -170,6 +170,7 @@ genrule(
     name = "hstream_lossless_nvstreammux_gst_source",
     srcs = [
         "sources/gst-plugins/gst-nvmultistream2/gstnvstreammux.cpp",
+        "@gst_plugin_dev//src/apps/apps-common:nvstreammux_lossless_state.patch",
         "@gst_plugin_dev//src/apps/apps-common:nvstreammux_p010_caps.patch",
     ],
     outs = ["gstnvstreammux_hstream.cpp"],
@@ -177,6 +178,7 @@ genrule(
         "cp $(location sources/gst-plugins/gst-nvmultistream2/gstnvstreammux.cpp) $@",
         "chmod u+w $@",
         "patch $@ $$(pwd)/$(location @gst_plugin_dev//src/apps/apps-common:nvstreammux_p010_caps.patch)",
+        "patch $@ $$(pwd)/$(location @gst_plugin_dev//src/apps/apps-common:nvstreammux_lossless_state.patch)",
     ]),
 )
 

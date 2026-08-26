@@ -793,10 +793,26 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   }
   artifacts->artifact_lock.reset();
 
+  const fs::path stale_snapshot = dir / ".hstream-control-mask-snapshot-stale";
+  fs::create_directory(stale_snapshot);
+  std::ofstream(stale_snapshot / "mapping_0000.tif", std::ios::binary) << "stale";
   auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
-  if (!load.ok() || !load->artifact_lock || !load->load_snapshot ||
-      !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif")) {
+  if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
+      !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif") ||
+      !load->load_snapshot->verify().ok()) {
     std::cerr << "loader validation must retain a private stable artifact snapshot: " << load.status() << std::endl;
+    return false;
+  }
+  const fs::path pinned_mapping = dir / "mapping_0000_x.tif";
+  const fs::path replacement_mapping = dir / "replacement-mapping-after-pin.tif";
+  std::error_code replacement_error;
+  fs::copy_file(pinned_mapping, replacement_mapping, fs::copy_options::overwrite_existing, replacement_error);
+  if (!replacement_error)
+    fs::remove(pinned_mapping, replacement_error);
+  if (!replacement_error)
+    fs::create_symlink(replacement_mapping, pinned_mapping, replacement_error);
+  if (replacement_error || load->load_snapshot->verify().ok()) {
+    std::cerr << "loader validation must reject a control-mask path replaced after descriptor pinning" << std::endl;
     return false;
   }
   const fs::path snapshot_directory = load->load_snapshot->directory();

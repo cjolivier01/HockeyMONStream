@@ -1384,39 +1384,6 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
       source, destination, force_portable_fallback, static_cast<size_t>(maximum_bytes));
 }
 
-absl::Status snapshot_stitch_artifact_for_load(const fs::path& source, const fs::path& destination) {
-  uint64_t maximum_bytes = maximum_stitch_artifact_bytes(source.filename().string());
-  if (maximum_bytes == 0)
-    return absl::FailedPreconditionError("Unrecognized stitch load artifact: " + source.string());
-  const int descriptor = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  if (descriptor < 0)
-    return absl::FailedPreconditionError("Unable to open stitch load artifact: " + source.string());
-  struct DescriptorCleanup {
-    int descriptor;
-    ~DescriptorCleanup() {
-      ::close(descriptor);
-    }
-  } cleanup{descriptor};
-  struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
-      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
-    return absl::FailedPreconditionError("Invalid or oversized stitch load artifact: " + source.string());
-  }
-  if (source.extension() == ".tif") {
-    auto tiff_maximum = maximum_open_tiff_artifact_bytes(descriptor, source);
-    if (!tiff_maximum.ok())
-      return tiff_maximum.status();
-    if (static_cast<uint64_t>(metadata.st_size) > *tiff_maximum)
-      return absl::ResourceExhaustedError("Oversized stitch load artifact: " + source.string());
-  }
-  return snapshot_regular_file_for_rollback(
-      source,
-      destination,
-      /*force_portable_fallback=*/false,
-      static_cast<size_t>(metadata.st_size),
-      /*durable=*/false);
-}
-
 absl::StatusOr<bool> regular_stitch_file_exists_no_follow(const fs::path& path) {
   struct stat metadata{};
   if (::lstat(path.c_str(), &metadata) == 0) {

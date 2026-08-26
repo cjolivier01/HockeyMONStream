@@ -40,6 +40,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <tiffio.h>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -134,24 +135,43 @@ bool expect(bool condition, const std::string& message) {
   return true;
 }
 
+bool write_tiff_fixture(const fs::path& path) {
+  TIFF* tiff = TIFFOpen(path.c_str(), "w");
+  if (tiff == nullptr)
+    return false;
+  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, 1);
+  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, 1);
+  TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 16);
+  TIFFSetField(tiff, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
+  TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+  TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  uint16_t value = 0;
+  const bool written = TIFFWriteScanline(tiff, &value, 0, 0) >= 0;
+  TIFFClose(tiff);
+  return written;
+}
+
 absl::StatusOr<std::string> write_live_hugin_generation_fixture(const fs::path& game_dir) {
   auto artifact_lock = hm::stitching::lock_canvas_constraint_artifacts(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto", "seam_file.png"}) {
+    std::ofstream output(game_dir / name, std::ios::binary | std::ios::trunc);
+    output << name << '\n';
+    if (!output)
+      return absl::InternalError("Could not write live-rotation Hugin fixture");
+  }
   for (const char* name : {
-           "hm_project.pto",
-           "autooptimiser_out.pto",
            "mapping_0000.tif",
            "mapping_0000_x.tif",
            "mapping_0000_y.tif",
            "mapping_0001.tif",
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
-           "seam_file.png",
        }) {
-    std::ofstream output(game_dir / name, std::ios::binary | std::ios::trunc);
-    output << name << '\n';
-    if (!output)
+    if (!write_tiff_fixture(game_dir / name))
       return absl::InternalError("Could not write live-rotation Hugin fixture");
   }
   std::error_code ignored;

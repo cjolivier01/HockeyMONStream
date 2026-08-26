@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <atomic>
 #include <cerrno>
@@ -569,6 +570,33 @@ int main() {
         hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml").ok(),
         "a dead owner process must not permanently fence artifact publication");
   }
+
+  const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
+  fs::remove_all(writer_bounds_root);
+  fs::create_directories(writer_bounds_root);
+  std::ofstream(writer_bounds_root / "config.yaml") << "generation: old\n";
+  for (size_t index = 0; index < hm::stitching::kMaximumRinkTransactionArtifacts; ++index)
+    std::ofstream(writer_bounds_root / ("rink_mask_" + std::to_string(index) + ".png")) << "mask\n";
+  absl::StatusOr<size_t> over_count_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
+  absl::StatusOr<size_t> bounded_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
+  auto writer_bounds_lock = hm::stitching::GameConfigTransactionLock::Acquire(writer_bounds_root);
+  if (writer_bounds_lock.ok()) {
+    over_count_invalidation = hm::stitching::publish_game_config_without_rink_masks(
+        writer_bounds_root, "generation: rejected\n", /*remove_stitched_snapshot=*/false);
+    fs::remove(
+        writer_bounds_root /
+        ("rink_mask_" + std::to_string(hm::stitching::kMaximumRinkTransactionArtifacts - 1) + ".png"));
+    bounded_invalidation = hm::stitching::publish_game_config_without_rink_masks(
+        writer_bounds_root, "generation: accepted\n", /*remove_stitched_snapshot=*/false);
+  }
+  ok &= expect(
+      writer_bounds_lock.ok() && absl::IsResourceExhausted(over_count_invalidation.status()) &&
+          bounded_invalidation.ok() && *bounded_invalidation == hm::stitching::kMaximumRinkTransactionArtifacts - 1 &&
+          YAML::LoadFile((writer_bounds_root / "config.yaml").string())["generation"].as<std::string>() == "accepted",
+      "rink invalidation writer must reject over-limit manifests and accept the exact artifact-count boundary");
+  if (writer_bounds_lock.ok())
+    writer_bounds_lock->reset();
+  fs::remove_all(writer_bounds_root);
 
   fs::remove_all(root);
   return ok ? 0 : 1;

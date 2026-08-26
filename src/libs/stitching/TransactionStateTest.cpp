@@ -21,12 +21,20 @@ bool exercise_marker_protocol(const fs::path& root, hm::stitching::TransactionJo
   auto legacy = hm::stitching::transaction_recovery_scan_required(root, kind);
   auto completed = hm::stitching::complete_transaction_recovery(root, kind);
   auto steady = hm::stitching::transaction_recovery_scan_required(root, kind);
+  const fs::path legacy_transaction = root /
+      (kind == hm::stitching::TransactionJournalKind::kRink ? ".hstream-rink-legacy-after-protocol"
+                                                            : ".hstream-stitch-legacy-after-protocol");
+  fs::create_directory(legacy_transaction);
+  auto legacy_after_protocol = hm::stitching::transaction_recovery_scan_required(root, kind);
+  fs::remove(legacy_transaction);
+  auto legacy_completed = hm::stitching::complete_transaction_recovery(root, kind);
   auto pending = hm::stitching::mark_transaction_recovery_pending(root, kind);
   auto active = hm::stitching::transaction_recovery_scan_required(root, kind);
   auto recovered = hm::stitching::complete_transaction_recovery(root, kind);
   auto final = hm::stitching::transaction_recovery_scan_required(root, kind);
-  return legacy.ok() && *legacy && completed.ok() && steady.ok() && !*steady && pending.ok() && active.ok() &&
-      *active && recovered.ok() && final.ok() && !*final;
+  return legacy.ok() && *legacy && completed.ok() && steady.ok() && !*steady && legacy_after_protocol.ok() &&
+      *legacy_after_protocol && legacy_completed.ok() && pending.ok() && active.ok() && *active && recovered.ok() &&
+      final.ok() && !*final;
 }
 
 } // namespace

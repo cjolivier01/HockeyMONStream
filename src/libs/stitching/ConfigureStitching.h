@@ -56,6 +56,7 @@ class StitchingArtifactLoadSnapshot {
   StitchingArtifactLoadSnapshot& operator=(const StitchingArtifactLoadSnapshot&) = delete;
 
   const std::filesystem::path& directory() const;
+  absl::Status verify() const;
 
   explicit StitchingArtifactLoadSnapshot(std::unique_ptr<Impl> impl);
 

@@ -120,6 +120,7 @@ typedef struct {
   gboolean do_record;
   guint64 pre_event_rec;
   GMutex bin_lock;
+  gboolean bin_lock_initialized;
   guint bin_id;
   gint rtsp_reconnect_interval_sec;
   gint rtsp_reconnect_attempts;

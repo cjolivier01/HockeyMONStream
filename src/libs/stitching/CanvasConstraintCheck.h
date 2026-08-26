@@ -63,9 +63,6 @@ absl::Status fsync_stitch_path(const std::filesystem::path& path, bool directory
 absl::Status clone_or_copy_stitch_rollback_file(
     const std::filesystem::path& source,
     const std::filesystem::path& destination);
-absl::Status snapshot_stitch_artifact_for_load(
-    const std::filesystem::path& source,
-    const std::filesystem::path& destination);
 absl::Status write_stitch_transaction_file(const std::filesystem::path& path, const std::string& contents);
 absl::Status publish_stitch_file_atomically(const std::filesystem::path& path, const std::string& contents);
 
