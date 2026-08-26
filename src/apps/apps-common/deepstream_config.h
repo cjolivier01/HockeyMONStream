@@ -46,7 +46,24 @@
 #define NVDS_ELEM_INFER_AUDIO "nvinferaudio"
 #define NVDS_ELEM_TRACKER "nvtracker"
 
+#ifdef __cplusplus
+extern "C++" {
+namespace hm::deepstream {
+inline constexpr const char kNvVideoConvertElement[] = "nvvideoconvert";
+inline constexpr const char kDsxVideoConvertElement[] = "dsxvideoconvert";
+
+const char* default_video_converter_element_name();
+const char* video_converter_element_name();
+bool is_supported_video_converter_element_name(const char* element_name);
+bool video_converter_element_factory_available(const char* element_name);
+bool set_video_converter_element_name(const char* element_name);
+} // namespace hm::deepstream
+}
+
+#define NVDS_ELEM_VIDEO_CONV hm::deepstream::video_converter_element_name()
+#else
 #define NVDS_ELEM_VIDEO_CONV "nvvideoconvert"
+#endif
 #define NVDS_ELEM_AUDIO_CONV "audioconvert"
 #define NVDS_ELEM_AUDIO_RESAMPLER "audioresample"
 #define NVDS_ELEM_STREAM_MUX "nvstreammux"

@@ -137,6 +137,7 @@ cc_library(
         "deepstream_streammux.cpp",
         "deepstream_tiled_display_bin.cpp",
         "deepstream_tracker_bin.cpp",
+        "deepstream_video_converter.cpp",
     ],
     hdrs = [
         "HmGpuPreview.h",

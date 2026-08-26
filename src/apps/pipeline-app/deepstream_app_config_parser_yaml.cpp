@@ -438,6 +438,12 @@ gboolean parse_hmaudio_yaml(NvDsHmAudioConfig* config, const YAML::Node& yaml_no
 }
 
 gboolean parse_app_yaml(NvDsConfig* config, const YAML::Node& yaml_node) {
+  std::strncpy(
+      config->video_converter,
+      hm::deepstream::default_video_converter_element_name(),
+      sizeof(config->video_converter) - 1);
+  config->video_converter[sizeof(config->video_converter) - 1] = '\0';
+
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, stage);
   SET_LOCATOR(locator, *config, global_gpu_id);
@@ -455,6 +461,7 @@ gboolean parse_app_yaml(NvDsConfig* config, const YAML::Node& yaml_node) {
   SET_LOCATOR(locator, *config, max_batch_size);
   SET_LOCATOR_CHAR_PTR(locator, *config, http_ip);
   SET_LOCATOR_CHAR_PTR(locator, *config, http_port);
+  SET_LOCATOR_CHARS(locator, *config, video_converter);
 
   // Optional output paths.
   SET_LOCATOR_CHAR_PTR(locator, *config, bbox_dir_path);
@@ -463,6 +470,13 @@ gboolean parse_app_yaml(NvDsConfig* config, const YAML::Node& yaml_node) {
   SET_LOCATOR_CHAR_PTR(locator, *config, terminated_track_output_path);
   SET_LOCATOR_CHAR_PTR(locator, *config, shadow_track_output_path);
   set_config_from_yaml(yaml_node, locator);
+  config->video_converter[sizeof(config->video_converter) - 1] = '\0';
+  if (!hm::deepstream::is_supported_video_converter_element_name(config->video_converter)) {
+    std::cerr << "Invalid application.video-converter '" << config->video_converter
+              << "'; expected nvvideoconvert or dsxvideoconvert" << std::endl;
+    return false;
+  }
+  hm::deepstream::set_video_converter_element_name(config->video_converter);
   return true;
 }
 

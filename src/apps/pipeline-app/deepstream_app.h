@@ -172,6 +172,7 @@ struct NvDsConfig {
    * This will be used in case gpu_id prop is not set for a component
    * if gpu_id prop is set for a component, global_gpu_id will be overridden by it */
   gint global_gpu_id;
+  gchar video_converter[64];
 };
 
 typedef struct {

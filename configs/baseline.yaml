@@ -57,6 +57,10 @@ aspen:
 #
 # Runtime defaults consumed by Aspen plugins
 #
+runtime:
+  # Valid values: nvvideoconvert, dsxvideoconvert.
+  video_converter: "nvvideoconvert"
+
 apply_camera:
   crop_play_box: false
   crop_output_image: true

@@ -616,6 +616,23 @@ bool is_render_sink_type(int sink_type) {
   return sink_type == kRenderSinkType || sink_type == static_cast<int>(NV_DS_SINK_RENDER_DRM);
 }
 
+absl::StatusOr<std::string> validated_video_converter_element(const YAML::Node& value, const std::string& path) {
+  if (value.IsNull() || !value.IsScalar()) {
+    return absl::InvalidArgumentError(path + " must be nvvideoconvert or dsxvideoconvert");
+  }
+  const std::string element_name = value.as<std::string>();
+  if (!hm::deepstream::is_supported_video_converter_element_name(element_name.c_str())) {
+    return absl::InvalidArgumentError(path + " must be nvvideoconvert or dsxvideoconvert");
+  }
+  return element_name;
+}
+
+bool is_video_converter_config_option(const std::string& key) {
+  std::string normalized = key;
+  std::replace(normalized.begin(), normalized.end(), '-', '_');
+  return normalized == "runtime.video_converter" || normalized == "pipeline.application.video_converter";
+}
+
 int get_render_sink_type() {
 #if defined(IS_TEGRA)
   return static_cast<int>(NV_DS_SINK_RENDER_3D);
@@ -1822,6 +1839,46 @@ absl::Status Configurator::map_common_config_keys() {
     destination[key] = mapped_value ? 1 : 0;
     return absl::OkStatus();
   };
+
+  const std::optional<YAML::Node> configured_video_converter = get_node(config_, "runtime.video_converter");
+  if (pipeline["application"].IsMap() ||
+      (configured_video_converter.has_value() && configured_video_converter->IsDefined())) {
+    if (!pipeline["application"].IsDefined() || pipeline["application"].IsNull()) {
+      pipeline["application"] = YAML::Node(YAML::NodeType::Map);
+    } else if (!pipeline["application"].IsMap()) {
+      return absl::InvalidArgumentError("pipeline.application must be a map");
+    }
+    YAML::Node app = pipeline["application"];
+    const int dashed_rank = explicit_value_rank("pipeline.application.video-converter");
+    const int underscored_rank = explicit_value_rank("pipeline.application.video_converter");
+    if (app["video_converter"].IsDefined() && (!app["video-converter"].IsDefined() || underscored_rank > dashed_rank)) {
+      app["video-converter"] = YAML::Clone(app["video_converter"]);
+      if (underscored_rank >= 0)
+        explicit_value_ranks_["pipeline.application.video-converter"] = underscored_rank;
+    }
+
+    std::optional<YAML::Node> video_converter;
+    HM_ASSIGN_OR_RETURN(
+        video_converter,
+        canonical_source(
+            "runtime.video_converter", "pipeline.application.video-converter", app["video-converter"], true));
+    if (video_converter.has_value()) {
+      std::string element_name;
+      HM_ASSIGN_OR_RETURN(element_name, validated_video_converter_element(*video_converter, "runtime.video_converter"));
+      app["video-converter"] = element_name;
+      app.remove("video_converter");
+      const int source_rank = explicit_value_rank("runtime.video_converter");
+      if (source_rank >= 1)
+        explicit_value_ranks_["pipeline.application.video-converter"] = source_rank;
+    } else if (app["video-converter"].IsDefined()) {
+      std::string element_name;
+      HM_ASSIGN_OR_RETURN(
+          element_name,
+          validated_video_converter_element(app["video-converter"], "pipeline.application.video-converter"));
+      app["video-converter"] = element_name;
+      app.remove("video_converter");
+    }
+  }
 
   if (pipeline["hmstitcher"].IsMap()) {
     YAML::Node stitcher = pipeline["hmstitcher"];
@@ -4174,6 +4231,9 @@ absl::Status Configurator::complete_configuration(
 }
 
 absl::Status Configurator::apply_config_item(const std::string& key, const std::string& value) {
+  if (is_video_converter_config_option(key)) {
+    return absl::InvalidArgumentError("Video converter selection must be set in YAML config files");
+  }
   YAML::Node overlaid_config = YAML::Node(YAML::NodeType::Map);
   overlaid_config = set_node_value(overlaid_config, key, value);
   // std::cout << overlaid_config << std::endl;

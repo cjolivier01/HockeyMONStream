@@ -315,6 +315,7 @@ play-tracker:
 
   const fs::path mapping_structure_path = root / "mapping-structure.yaml";
   YAML::Node mapping_structure(YAML::NodeType::Map);
+  mapping_structure["application"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["hmstitcher"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["hmplaycropper"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["ds-playtracker"] = YAML::Node(YAML::NodeType::Map);
@@ -337,6 +338,7 @@ play-tracker:
       mapping_defaults_status.ok() && mapping_defaults_second_status.ok() && mapping_defaults_rotation.ok() &&
           *mapping_defaults_rotation == 0.0 && mapped_defaults["hmstitcher"]["enable"].as<int>() == 1 &&
           mapped_defaults["hmstitcher"]["minimize-blend"].as<int>() == 0 &&
+          mapped_defaults["application"]["video-converter"].as<std::string>() == "nvvideoconvert" &&
           !mapped_defaults["hmstitcher"]["properties"]["max-output-width"].IsDefined() &&
           mapped_defaults["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp32" &&
           mapped_defaults["hmplaycropper"]["no-crop"].as<int>() == 0 &&
@@ -381,6 +383,7 @@ play-tracker:
 
   const fs::path structural_custom_path = root / "mapping-structural-custom.yaml";
   YAML::Node structural_custom = YAML::Clone(mapping_structure);
+  structural_custom["application"]["video-converter"] = "dsxvideoconvert";
   structural_custom["hmstitcher"]["enable"] = 0;
   structural_custom["hmstitcher"]["minimize-blend"] = 1;
   structural_custom["hmstitcher"]["stitch-compute-precision"] = "fp16";
@@ -408,6 +411,7 @@ play-tracker:
   const YAML::Node mapped_structural = mapping_structural.config()["pipeline"];
   ok &= expect(
       mapping_structural_status.ok() && mapped_structural["hmstitcher"]["enable"].as<int>() == 0 &&
+          mapped_structural["application"]["video-converter"].as<std::string>() == "dsxvideoconvert" &&
           mapped_structural["hmstitcher"]["minimize-blend"].as<int>() == 1 &&
           mapped_structural["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp16" &&
           mapped_structural["hmstitcher"]["post-stitch-rotate-degrees"].as<double>() == 37.0 &&
@@ -424,9 +428,33 @@ play-tracker:
           mapped_structural["sink0"]["width"].as<int>() == 999,
       "Bundled defaults must fill omissions without replacing custom structural native values");
 
+  const fs::path no_application_structure_path = root / "mapping-no-application-structure.yaml";
+  YAML::Node no_application_structure = YAML::Clone(mapping_structure);
+  no_application_structure.remove("application");
+  std::ofstream(no_application_structure_path) << YAML::Dump(no_application_structure) << '\n';
+  const fs::path runtime_video_converter_game_dir = games / "mapping-runtime-video-converter";
+  fs::create_directories(runtime_video_converter_game_dir);
+  YAML::Node runtime_video_converter_override(YAML::NodeType::Map);
+  runtime_video_converter_override["runtime"]["video_converter"] = "dsxvideoconvert";
+  std::ofstream(runtime_video_converter_game_dir / "config.yaml") << YAML::Dump(runtime_video_converter_override)
+                                                                  << '\n';
+  hm::Configurator mapping_runtime_video_converter(
+      "mapping-runtime-video-converter", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_runtime_video_converter_loaded = mapping_runtime_video_converter.configure().ok() &&
+      mapping_runtime_video_converter.underlay_config("pipeline", no_application_structure_path.string());
+  const absl::Status mapping_runtime_video_converter_status = mapping_runtime_video_converter_loaded
+      ? mapping_runtime_video_converter.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping runtime video-converter fixture did not load");
+  ok &= expect(
+      mapping_runtime_video_converter_status.ok() &&
+          mapping_runtime_video_converter.config()["pipeline"]["application"]["video-converter"].as<std::string>() ==
+              "dsxvideoconvert",
+      "Canonical runtime.video_converter must create application.video-converter when application is absent");
+
   const fs::path canonical_game_dir = games / "mapping-canonical";
   fs::create_directories(canonical_game_dir);
   YAML::Node canonical_overrides(YAML::NodeType::Map);
+  canonical_overrides["runtime"]["video_converter"] = "nvvideoconvert";
   canonical_overrides["stitching"]["enabled"] = false;
   canonical_overrides["stitching"]["minimize_blend"] = true;
   canonical_overrides["stitching"]["max_output_width"] = 4096;
@@ -463,6 +491,7 @@ play-tracker:
   const YAML::Node mapped_canonical = mapping_canonical.config()["pipeline"];
   ok &= expect(
       mapping_canonical_status.ok() && mapped_canonical["hmstitcher"]["enable"].as<int>() == 0 &&
+          mapped_canonical["application"]["video-converter"].as<std::string>() == "nvvideoconvert" &&
           mapped_canonical["hmstitcher"]["minimize-blend"].as<int>() == 1 &&
           mapped_canonical["hmstitcher"]["properties"]["max-output-width"].as<int>() == 4096 &&
           mapped_canonical["hmstitcher"]["stitch-compute-precision"].as<std::string>() == "fp16" &&
@@ -615,6 +644,25 @@ play-tracker:
           mapping_canonical.apply_supported_baseline_mappings().ok() &&
           mapping_canonical.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 1,
       "A higher-ranked direct native value must win, and direct native must win a same-rank canonical tie");
+
+  fs::create_directories(games / "mapping-video-converter-cli");
+  hm::Configurator mapping_video_converter_cli(
+      "mapping-video-converter-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_video_converter_cli_loaded = mapping_video_converter_cli.configure().ok();
+  const absl::Status video_converter_cli_canonical =
+      mapping_video_converter_cli.apply_config_item("runtime.video_converter", "dsxvideoconvert");
+  const absl::Status video_converter_cli_canonical_dashed =
+      mapping_video_converter_cli.apply_config_item("runtime.video-converter", "dsxvideoconvert");
+  const absl::Status video_converter_cli_native =
+      mapping_video_converter_cli.apply_config_item("pipeline.application.video-converter", "dsxvideoconvert");
+  const absl::Status video_converter_cli_native_underscored =
+      mapping_video_converter_cli.apply_config_item("pipeline.application.video_converter", "dsxvideoconvert");
+  ok &= expect(
+      mapping_video_converter_cli_loaded && absl::IsInvalidArgument(video_converter_cli_canonical) &&
+          absl::IsInvalidArgument(video_converter_cli_canonical_dashed) &&
+          absl::IsInvalidArgument(video_converter_cli_native) &&
+          absl::IsInvalidArgument(video_converter_cli_native_underscored),
+      "Video converter selection must not be configurable through CLI-style options");
 
   const fs::path fixed_edge_same_rank_game_dir = games / "mapping-fixed-edge-same-rank";
   fs::create_directories(fixed_edge_same_rank_game_dir);
