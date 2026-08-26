@@ -5,18 +5,22 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <regex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <opencv2/imgcodecs.hpp>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <tiffio.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
@@ -28,14 +32,47 @@ bool expect(bool condition, const char* message) {
   return condition;
 }
 
+std::string file_identity(const std::filesystem::path& path) {
+  struct stat metadata{};
+  if (::stat(path.c_str(), &metadata) != 0)
+    return {};
+  std::ostringstream value;
+  value << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':'
+        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec
+        << ':' << metadata.st_ctim.tv_sec << ':' << metadata.st_ctim.tv_nsec;
+  return value.str();
+}
+
+bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint32_t height, float x_position) {
+  TIFF* tiff = TIFFOpen(path.c_str(), "w");
+  if (!tiff)
+    return false;
+  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 8);
+  TIFFSetField(tiff, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tiff, TIFFTAG_ROWSPERSTRIP, height);
+  TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_XPOSITION, x_position);
+  TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
+  std::vector<uint8_t> row(width, 0);
+  bool ok = true;
+  for (uint32_t y = 0; y < height; ++y)
+    ok = ok && TIFFWriteScanline(tiff, row.data(), y, 0) >= 0;
+  TIFFClose(tiff);
+  return ok;
+}
+
 bool write_hugin_generation_fixture(const std::filesystem::path& directory) {
   for (const char* name : {
            "hm_project.pto",
            "autooptimiser_out.pto",
-           "mapping_0000.tif",
            "mapping_0000_x.tif",
            "mapping_0000_y.tif",
-           "mapping_0001.tif",
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
            "seam_file.png",
@@ -45,7 +82,8 @@ bool write_hugin_generation_fixture(const std::filesystem::path& directory) {
     if (!output)
       return false;
   }
-  return true;
+  return write_mapping_tiff(directory / "mapping_0000.tif", 64, 32, 0.0f) &&
+      write_mapping_tiff(directory / "mapping_0001.tif", 64, 32, 32.0f);
 }
 
 bool write_all(int fd, const std::string& value) {
@@ -258,7 +296,7 @@ int main() {
     ok &= expect(generation.ok(), "scoreboard fixture must identify Hugin artifacts");
     if (generation.ok()) {
       fixture_hugin_generation = *generation;
-      const auto output_generation = hm::stitching::stitched_output_generation_id(*generation, 0.0);
+      const auto output_generation = hm::stitching::stitched_output_generation_id(*generation, 0.0, 96, 32);
       ok &= expect(output_generation.ok(), "scoreboard fixture must identify the stitched output");
       if (output_generation.ok())
         fixture_output_generation = *output_generation;
@@ -315,9 +353,24 @@ int main() {
   const Selector::CanvasGeneration stale_canvas_generation{
       .hugin_generation = stale_generation,
       .stitched_output_generation = fixture_output_generation,
-      .snapshot_fingerprint = {},
+      .snapshot_identity = {},
   };
-  auto rotated_generation = hm::stitching::stitched_output_generation_id(stale_generation, 1.0);
+  const Selector::CanvasGeneration stale_snapshot_generation{
+      .hugin_generation = stale_generation,
+      .stitched_output_generation = fixture_output_generation,
+      .snapshot_identity = file_identity(directory / "s.png"),
+  };
+  cv::Mat replacement_snapshot(24, 32, CV_8UC3, cv::Scalar(0, 0, 0));
+  const std::filesystem::path replacement_snapshot_path = directory / "s-replacement.png";
+  const bool wrote_replacement_snapshot = cv::imwrite(replacement_snapshot_path.string(), replacement_snapshot);
+  std::error_code replacement_error;
+  if (wrote_replacement_snapshot)
+    std::filesystem::rename(replacement_snapshot_path, directory / "s.png", replacement_error);
+  ok &= expect(
+      wrote_replacement_snapshot && !replacement_error && !stale_snapshot_generation.snapshot_identity.empty() &&
+          absl::IsAborted(Selector::Save(directory, disabled, stale_snapshot_generation)),
+      "a selector opened on replaced snapshot bytes must not publish stale coordinates");
+  auto rotated_generation = hm::stitching::stitched_output_generation_id(stale_generation, 1.0, 96, 32);
   if (rotated_generation.ok()) {
     YAML::Node rotated_config = YAML::LoadFile((directory / "config.yaml").string());
     rotated_config["rink"]["stitched_output_generation"] = *rotated_generation;

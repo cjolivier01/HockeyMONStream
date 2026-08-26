@@ -22,6 +22,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+
 #include <map>
 #include <memory>
 #include <optional>
@@ -50,7 +52,7 @@ struct StitchingCanvasConstraintDecision {
 
 struct LockedStitchingCanvasConstraintCheck {
   StitchingCanvasConstraintDecision decision;
-  std::shared_ptr<QProcess> lock_process;
+  std::unique_ptr<hm::stitching::CanvasConstraintArtifactLock> artifact_lock;
 };
 
 // Establishes the desktop identity used by WM_CLASS, desktop-file matching,
@@ -321,7 +323,6 @@ class HStreamWindow : public QMainWindow {
   std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> checkStitchingCanvasConstraint(
       const QString& game_id,
       int max_output_width);
-  QString stitchingCanvasCheckerPath() const;
   bool runStitchingClean(
       const QString& runner,
       const QString& working_dir,
@@ -345,6 +346,7 @@ class HStreamWindow : public QMainWindow {
       bool* invalidate_rink_masks,
       int* invalidated_config_artifacts,
       QString* published_playtracker_sidecar,
+      int selected_max_output_width,
       const std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>& max_width_decision = std::nullopt);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);

@@ -181,6 +181,7 @@ cc_library(
   ],
   visibility = ["//visibility:public"],
   deps = [
+    ":canvas_constraint_check",
     ":feature_matcher",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",

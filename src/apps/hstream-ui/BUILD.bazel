@@ -70,6 +70,7 @@ cc_library(
         "//src/libs/common:baseline_config",
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:user_config",
+        "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:game_config",
         "@qt//:qt_widgets",
         "@yaml-cpp",
@@ -94,10 +95,7 @@ cc_binary(
     name = "hstream-ui",
     srcs = ["main.cpp"],
     copts = COMMON_COPTS,
-    data = [
-        "//src/apps/pipeline-app:hstream-cli",
-        "//src/libs/stitching:stitching-canvas-check",
-    ],
+    data = ["//src/apps/pipeline-app:hstream-cli"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [

@@ -884,7 +884,7 @@ bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
   return true;
 }
 
-absl::Status save_image(surface::Surface surf, const std::string& filename) {
+absl::StatusOr<cv::Mat> download_image(surface::Surface surf) {
   cv::Mat cpu_img;
   if (surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA) {
     CudaMat<uchar4> gpu_image(
@@ -931,6 +931,12 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
   if (cpu_img.empty()) {
     return absl::FailedPreconditionError("Unable to download image from GPU");
   }
+  return cpu_img;
+}
+
+absl::Status save_image(surface::Surface surf, const std::string& filename) {
+  cv::Mat cpu_img;
+  HM_ASSIGN_OR_RETURN(cpu_img, download_image(surf));
   if (!cv::imwrite(filename, cpu_img)) {
     return absl::FailedPreconditionError("Unable to write image to file");
   }
@@ -968,7 +974,42 @@ absl::Status save_stitched_image(const std::string& game_dir, surface::Surface s
   if (ec) {
     return absl::InternalError(TO_STRING("Failed to create game directory \"" << game_dir << "\": " << ec.message()));
   }
-  return save_image(surface, (fs::path(game_dir) / "s.png").string());
+  cv::Mat image;
+  HM_ASSIGN_OR_RETURN(image, download_image(surface));
+  std::vector<uchar> encoded;
+  if (!cv::imencode(".png", image, encoded) || encoded.empty())
+    return absl::FailedPreconditionError("Unable to encode stitched scoreboard image");
+
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    if (fs::is_regular_file(root / "config.yaml"))
+      config = YAML::LoadFile((root / "config.yaml").string());
+    const YAML::Node configured_generation = config["rink"]["stitched_output_generation"];
+    if (!configured_generation || !configured_generation.IsScalar()) {
+      return absl::FailedPreconditionError(
+          "Cannot publish a scoreboard snapshot without a current stitched-output generation");
+    }
+    std::string current_generation;
+    HM_ASSIGN_OR_RETURN(
+        current_generation, current_stitched_output_generation_id_locked(game_dir, config, *hugin_generation));
+    if (configured_generation.as<std::string>() != current_generation) {
+      return absl::AbortedError("Cannot publish a scoreboard snapshot for stale stitched-output geometry");
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate scoreboard snapshot generation: " + std::string(exception.what()));
+  }
+  return publish_named_file(root / "s.png", std::string(reinterpret_cast<const char*>(encoded.data()), encoded.size()));
 }
 
 namespace {
@@ -1988,6 +2029,17 @@ absl::Status validate_stitched_output_generation_hugin(
   return validate_output_generation_hugin(output_generation, expected_hugin_generation);
 }
 
+absl::StatusOr<std::string> current_stitched_output_generation_id_locked(
+    const std::string& game_dir,
+    const YAML::Node& config,
+    const std::string& hugin_generation) {
+  if (game_dir.empty() || hugin_generation.empty())
+    return absl::InvalidArgumentError("A game directory and Hugin generation are required");
+  CanvasSize output_size;
+  HM_ASSIGN_OR_RETURN(output_size, get_mapping_canvas_size(fs::path(game_dir)));
+  return configured_output_generation(config, hugin_generation, output_size);
+}
+
 absl::Status validate_stitched_output_generation(
     const std::string& game_dir,
     const std::string& expected_output_generation,
@@ -2024,6 +2076,9 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();

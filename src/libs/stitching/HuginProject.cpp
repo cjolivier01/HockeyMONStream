@@ -17,7 +17,6 @@
 #include <memory>
 #include <optional>
 #include <regex>
-#include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -35,6 +34,7 @@
 #include "absl/status/status.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HomographyMaps.h"
 
@@ -55,52 +55,6 @@ constexpr size_t kMinimumUsableMatches = 16;
 constexpr double kMaximumOptimizationRmsPixels = 50.0;
 constexpr size_t kHardMaximumCanvasDimension = 32768;
 constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
-constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
-constexpr const char* kCanvasProvenanceArtifact = "stitching_canvas_provenance";
-
-const std::array<const char*, 11> kRequiredArtifacts = {
-    "hm_project.pto",
-    "autooptimiser_out.pto",
-    "mapping_0000.tif",
-    "mapping_0000_x.tif",
-    "mapping_0000_y.tif",
-    "mapping_0001.tif",
-    "mapping_0001_x.tif",
-    "mapping_0001_y.tif",
-    "left.png",
-    "right.png",
-    kCanvasProvenanceArtifact,
-};
-
-// Publications from before canvas provenance was introduced used this
-// manifest. Keep it recoverable across an interrupted upgrade.
-const std::array<const char*, 10> kPreviousRequiredArtifacts = {
-    "hm_project.pto",
-    "autooptimiser_out.pto",
-    "mapping_0000.tif",
-    "mapping_0000_x.tif",
-    "mapping_0000_y.tif",
-    "mapping_0001.tif",
-    "mapping_0001_x.tif",
-    "mapping_0001_y.tif",
-    "left.png",
-    "right.png",
-};
-
-// Releases before synchronized inputs were transactionally published used
-// this manifest. Accept it during recovery so an interrupted upgrade remains
-// recoverable, while new publications include left.png/right.png.
-const std::array<const char*, 8> kLegacyRequiredArtifacts = {
-    "hm_project.pto",
-    "autooptimiser_out.pto",
-    "mapping_0000.tif",
-    "mapping_0000_x.tif",
-    "mapping_0000_y.tif",
-    "mapping_0001.tif",
-    "mapping_0001_x.tif",
-    "mapping_0001_y.tif",
-};
-
 const std::array<const char*, 9> kGenerationArtifacts = {
     "hm_project.pto",
     "autooptimiser_out.pto",
@@ -112,8 +66,6 @@ const std::array<const char*, 9> kGenerationArtifacts = {
     "mapping_0001_y.tif",
     "seam_file.png",
 };
-
-const std::array<const char*, 2> kOptionalArtifacts = {"seam_file.png", "panorama.tif"};
 
 absl::StatusOr<std::string> read_file(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
@@ -257,64 +209,6 @@ absl::Status validate_nonempty_file(const fs::path& path) {
   return absl::OkStatus();
 }
 
-std::vector<std::string> artifact_names() {
-  std::vector<std::string> names(kRequiredArtifacts.begin(), kRequiredArtifacts.end());
-  for (const char* optional : kOptionalArtifacts)
-    names.emplace_back(optional);
-  return names;
-}
-
-std::set<std::string> legacy_artifact_names() {
-  std::set<std::string> names(kLegacyRequiredArtifacts.begin(), kLegacyRequiredArtifacts.end());
-  names.insert(kOptionalArtifacts.begin(), kOptionalArtifacts.end());
-  return names;
-}
-
-std::set<std::string> previous_artifact_names() {
-  std::set<std::string> names(kPreviousRequiredArtifacts.begin(), kPreviousRequiredArtifacts.end());
-  names.insert(kOptionalArtifacts.begin(), kOptionalArtifacts.end());
-  return names;
-}
-
-bool is_artifact_name(const std::string& name) {
-  const auto names = artifact_names();
-  return std::find(names.begin(), names.end(), name) != names.end();
-}
-
-absl::Status fsync_path(const fs::path& path, bool directory = false) {
-  const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
-  const int descriptor = ::open(path.c_str(), flags);
-  if (descriptor < 0)
-    return absl::InternalError("Unable to open Hugin artifact for fsync: " + path.string());
-  const int result = ::fsync(descriptor);
-  const std::string message = result == 0 ? std::string() : std::strerror(errno);
-  ::close(descriptor);
-  if (result != 0)
-    return absl::InternalError("Unable to fsync Hugin artifact " + path.string() + ": " + message);
-  return absl::OkStatus();
-}
-
-absl::Status copy_file_preserving_mtime(const fs::path& source, const fs::path& destination) {
-  std::error_code error;
-  const auto modified = fs::last_write_time(source, error);
-  if (error)
-    return absl::InternalError("Unable to read stitch artifact timestamp: " + error.message());
-  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
-  if (error)
-    return absl::InternalError("Unable to copy stitch artifact: " + error.message());
-  fs::last_write_time(destination, modified, error);
-  if (error)
-    return absl::InternalError("Unable to preserve stitch artifact timestamp: " + error.message());
-  return fsync_path(destination);
-}
-
-absl::Status write_transaction_file(const fs::path& path, const std::string& contents) {
-  auto status = write_file(path, contents);
-  if (!status.ok())
-    return status;
-  return fsync_path(path);
-}
-
 absl::StatusOr<int> lock_stitch_transactions(const fs::path& root) {
   const fs::path path = root / ".hstream-stitch.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
@@ -326,120 +220,6 @@ absl::StatusOr<int> lock_stitch_transactions(const fs::path& root) {
     return absl::InternalError("Unable to lock stitch transaction: " + message);
   }
   return descriptor;
-}
-
-absl::StatusOr<std::string> read_transaction_state(const fs::path& transaction, const std::string& transaction_name) {
-  const fs::path state_path = transaction / "state";
-  std::error_code error;
-  const bool state_exists = fs::exists(state_path, error);
-  if (error)
-    return absl::InternalError("Unable to inspect " + transaction_name + " transaction state: " + error.message());
-  if (!state_exists)
-    return std::string("UNPREPARED");
-  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0)
-    return absl::FailedPreconditionError("Unable to open durable " + transaction_name + " transaction state");
-  struct StateFileCleanup {
-    int descriptor;
-    ~StateFileCleanup() {
-      ::close(descriptor);
-    }
-  } cleanup{descriptor};
-  struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
-      metadata.st_size > 10) {
-    return absl::FailedPreconditionError("Invalid durable " + transaction_name + " transaction state file");
-  }
-  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
-  size_t offset = 0;
-  while (offset < contents.size()) {
-    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
-    if (count < 0 && errno == EINTR)
-      continue;
-    if (count <= 0)
-      return absl::FailedPreconditionError("Unable to read durable " + transaction_name + " transaction state");
-    offset += static_cast<size_t>(count);
-  }
-  if (contents == "PREPARED\n")
-    return std::string("PREPARED");
-  if (contents == "COMMITTED\n")
-    return std::string("COMMITTED");
-  return absl::FailedPreconditionError("Invalid durable " + transaction_name + " transaction state contents");
-}
-
-absl::Status recover_stitch_transactions_locked(const fs::path& root) {
-  std::error_code error;
-  for (const auto& entry : fs::directory_iterator(root, error)) {
-    if (error)
-      return absl::InternalError("Unable to inspect stitch transactions: " + error.message());
-    const std::string directory_name = entry.path().filename().string();
-    if (!entry.is_directory(error) || error || directory_name.rfind(kStitchTransactionPrefix, 0) != 0) {
-      error.clear();
-      continue;
-    }
-    const fs::path transaction = entry.path();
-    auto state = read_transaction_state(transaction, "stitch");
-    if (!state.ok())
-      return state.status();
-    if (*state == "PREPARED") {
-      std::ifstream manifest(transaction / "artifacts");
-      if (!manifest)
-        return absl::FailedPreconditionError("Prepared stitch transaction has no artifact manifest");
-      std::set<std::string> manifested;
-      std::string name;
-      while (manifest >> name) {
-        if (fs::path(name).filename() != name || !is_artifact_name(name) || !manifested.insert(name).second)
-          return absl::InvalidArgumentError("Invalid stitch transaction filename: " + name);
-      }
-      const std::vector<std::string> current_name_list = artifact_names();
-      const std::set<std::string> current_names(current_name_list.begin(), current_name_list.end());
-      if (!manifest.eof() ||
-          (manifested != current_names && manifested != previous_artifact_names() &&
-           manifested != legacy_artifact_names())) {
-        return absl::FailedPreconditionError("Prepared stitch transaction has an incomplete artifact manifest");
-      }
-      const fs::path previous = transaction / "previous";
-      std::vector<fs::path> backups;
-      const bool previous_exists = fs::exists(previous, error);
-      if (error)
-        return absl::InternalError("Unable to inspect stitch transaction backup directory: " + error.message());
-      if (previous_exists) {
-        if (!fs::is_directory(previous, error) || error)
-          return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
-        for (const auto& old : fs::directory_iterator(previous, error)) {
-          if (error)
-            return absl::InternalError("Unable to inspect stitch transaction backup: " + error.message());
-          const std::string old_name = old.path().filename().string();
-          if (!old.is_regular_file(error) || error || !is_artifact_name(old_name))
-            return absl::InvalidArgumentError("Invalid stitch transaction backup: " + old_name);
-          backups.push_back(old.path());
-        }
-      }
-      for (const std::string& artifact : manifested) {
-        name = artifact;
-        fs::remove(root / name, error);
-        if (error)
-          return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
-      }
-      for (const fs::path& old : backups) {
-        const fs::path destination = root / old.filename();
-        auto status = copy_file_preserving_mtime(old, destination);
-        if (!status.ok())
-          return absl::InternalError("Unable to restore interrupted stitch artifact: " + std::string(status.message()));
-      }
-      error.clear();
-      auto status = fsync_path(root, true);
-      if (!status.ok())
-        return status;
-    }
-    // COMMITTED transactions already have a durable new generation. An
-    // UNPREPARED directory has no publication metadata and never changed a
-    // root artifact.
-    fs::remove_all(transaction, error);
-    if (error)
-      return absl::InternalError("Unable to clean stitch transaction: " + error.message());
-  }
-  return fsync_path(root, true);
 }
 
 struct TiffPlacement {
@@ -746,7 +526,7 @@ absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, 
   if (error)
     return absl::InternalError("Unable to atomically publish normalized seam: " + error.message());
   cleanup.path.clear();
-  return fsync_path(parent, true);
+  return fsync_stitch_path(parent, true);
 }
 
 absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width, int canvas_height) {
@@ -1081,7 +861,7 @@ absl::Status validate_staged_artifacts(
     const fs::path& directory,
     const std::optional<size_t>& maximum_dimension,
     const std::optional<size_t>& max_output_width) {
-  for (const char* artifact : kRequiredArtifacts) {
+  for (const std::string& artifact : required_stitch_artifact_names()) {
     auto status = validate_nonempty_file(directory / artifact);
     if (!status.ok())
       return status;
@@ -1154,7 +934,7 @@ absl::Status validate_staged_artifacts(
     if (!status.ok())
       return status;
   }
-  return fsync_path(seam_path);
+  return fsync_stitch_path(seam_path);
 }
 
 absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
@@ -1234,7 +1014,7 @@ absl::Status run_nona(
 }
 
 absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir, bool* prepared) {
-  const std::vector<std::string> names = artifact_names();
+  const std::vector<std::string>& names = stitch_artifact_names();
   const fs::path backups = staging / "previous";
   std::error_code error;
   fs::create_directory(backups, error);
@@ -1245,7 +1025,7 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
       error.clear();
       continue;
     }
-    auto status = copy_file_preserving_mtime(game_dir / name, backups / name);
+    auto status = copy_stitch_file_preserving_mtime(game_dir / name, backups / name);
     if (!status.ok())
       return absl::InternalError(
           "Unable to preserve previous stitch artifact " + name + ": " + std::string(status.message()));
@@ -1254,25 +1034,25 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   std::ostringstream manifest;
   for (const std::string& name : names)
     manifest << name << '\n';
-  auto status = write_transaction_file(staging / "artifacts", manifest.str());
+  auto status = write_stitch_transaction_file(staging / "artifacts", manifest.str());
   if (!status.ok())
     return status;
-  status = fsync_path(backups, true);
+  status = fsync_stitch_path(backups, true);
   if (!status.ok())
     return status;
-  status = fsync_path(staging, true);
+  status = fsync_stitch_path(staging, true);
   if (!status.ok())
     return status;
-  status = write_transaction_file(staging / "state", "PREPARED\n");
+  status = write_stitch_transaction_file(staging / "state", "PREPARED\n");
   if (!status.ok())
     return status;
-  status = fsync_path(staging, true);
+  status = fsync_stitch_path(staging, true);
   if (!status.ok())
     return status;
   // The PREPARED state is only recoverable after the staging directory entry
   // itself is durable in its parent. Do this before changing any flat
   // artifacts in the game directory.
-  status = fsync_path(game_dir, true);
+  status = fsync_stitch_path(game_dir, true);
   if (!status.ok())
     return status;
   *prepared = true;
@@ -1300,26 +1080,26 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
     fs::rename(staging / name, game_dir / name, error);
     if (error)
       return rollback_error("Unable to publish stitch artifact " + name + ": " + error.message());
-    status = fsync_path(game_dir / name);
+    status = fsync_stitch_path(game_dir / name);
     if (!status.ok())
       return rollback_error(std::string(status.message()));
   }
-  status = fsync_path(game_dir, true);
+  status = fsync_stitch_path(game_dir, true);
   if (!status.ok())
     return rollback_error(std::string(status.message()));
-  status = write_transaction_file(staging / "state.committed", "COMMITTED\n");
+  status = write_stitch_transaction_file(staging / "state.committed", "COMMITTED\n");
   if (!status.ok())
     return rollback_error(std::string(status.message()));
   fs::rename(staging / "state.committed", staging / "state", error);
   if (error)
     return rollback_error("Unable to commit stitch transaction: " + error.message());
-  status = fsync_path(staging, true);
+  status = fsync_stitch_path(staging, true);
   if (!status.ok())
     return status;
   fs::remove_all(staging, error);
   if (error)
     return absl::InternalError("Unable to clean committed stitch transaction: " + error.message());
-  status = fsync_path(game_dir, true);
+  status = fsync_stitch_path(game_dir, true);
   if (!status.ok())
     return status;
   return absl::OkStatus();
@@ -1415,13 +1195,13 @@ absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir,
                << ':' << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':'
                << metadata.st_mtim.tv_nsec << '\n';
   }
-  const fs::path provenance_path = game_dir / kCanvasProvenanceArtifact;
+  const fs::path provenance_path = game_dir / kStitchCanvasProvenanceArtifact;
   std::error_code provenance_error;
   if (fs::exists(provenance_path, provenance_error) && !provenance_error) {
     struct stat metadata{};
     if (::stat(provenance_path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
       return absl::NotFoundError("Hugin generation artifact is invalid: " + provenance_path.string());
-    generation << kCanvasProvenanceArtifact << ':' << static_cast<uint64_t>(metadata.st_dev) << ':'
+    generation << kStitchCanvasProvenanceArtifact << ':' << static_cast<uint64_t>(metadata.st_dev) << ':'
                << static_cast<uint64_t>(metadata.st_ino) << ':' << static_cast<uint64_t>(metadata.st_size) << ':'
                << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec << '\n';
   } else if (provenance_error) {
@@ -1433,7 +1213,7 @@ absl::StatusOr<std::string> HuginProject::GenerationId(const fs::path& game_dir,
 absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::ReadCanvasProvenance(
     const fs::path& game_dir,
     const ArtifactLock&) {
-  const fs::path path = game_dir / kCanvasProvenanceArtifact;
+  const fs::path path = game_dir / kStitchCanvasProvenanceArtifact;
   std::error_code error;
   if (!fs::exists(path, error)) {
     if (error)
@@ -1759,8 +1539,9 @@ absl::Status HuginProject::Configure(
       if (!status.ok())
         return status;
       bool mappings_valid = true;
-      for (size_t index = 2; index + 1 < kRequiredArtifacts.size(); ++index) {
-        status = validate_nonempty_file(staging / kRequiredArtifacts[index]);
+      const auto& required_artifacts = required_stitch_artifact_names();
+      for (size_t index = 2; index + 1 < required_artifacts.size(); ++index) {
+        status = validate_nonempty_file(staging / required_artifacts[index]);
         if (!status.ok()) {
           mappings_valid = false;
           break;
@@ -1867,7 +1648,7 @@ absl::Status HuginProject::Configure(
              << "canvas-height=" << published_canvas->second << '\n'
              << "max-output-width-applied=" << (max_output_width_applied ? 1 : 0) << '\n'
              << "max-canvas-dimension-applied=" << (max_canvas_dimension_applied ? 1 : 0) << '\n';
-  status = write_file(staging / kCanvasProvenanceArtifact, provenance.str());
+  status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;
 

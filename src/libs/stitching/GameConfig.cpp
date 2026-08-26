@@ -15,7 +15,9 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -154,6 +156,40 @@ absl::Status fsync_path(const fs::path& path, bool directory = false) {
   ::close(descriptor);
   if (result != 0)
     return absl::InternalError("Unable to fsync artifact " + path.string() + ": " + message);
+  return absl::OkStatus();
+}
+
+absl::Status clone_or_copy_rollback_file(const fs::path& source, const fs::path& destination) {
+  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (source_fd < 0)
+    return absl::InternalError("Unable to open rink artifact for rollback: " + source.string());
+  struct stat metadata{};
+  if (::fstat(source_fd, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
+    ::close(source_fd);
+    return absl::FailedPreconditionError("Rink rollback source is not a regular file: " + source.string());
+  }
+  const int destination_fd =
+      ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, metadata.st_mode & 0777);
+  if (destination_fd < 0) {
+    ::close(source_fd);
+    return absl::InternalError("Unable to create rink rollback artifact: " + destination.string());
+  }
+  const bool cloned = ::ioctl(destination_fd, FICLONE, source_fd) == 0;
+  const int clone_error = errno;
+  ::close(destination_fd);
+  ::close(source_fd);
+  if (cloned)
+    return absl::OkStatus();
+
+  std::error_code error;
+  fs::remove(destination, error);
+  error.clear();
+  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+  if (error) {
+    return absl::InternalError(
+        "Unable to preserve old rink artifact after reflink failed (" + std::string(std::strerror(clone_error)) +
+        "): " + error.message());
+  }
   return absl::OkStatus();
 }
 
@@ -498,9 +534,9 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
     return absl::InternalError("Unable to inspect game config: " + error.message());
   }
   for (const fs::path& old : old_files) {
-    fs::copy_file(old, previous / old.filename(), fs::copy_options::overwrite_existing, error);
-    if (error)
-      return absl::InternalError("Unable to preserve old rink artifact: " + error.message());
+    auto preserve = clone_or_copy_rollback_file(old, previous / old.filename());
+    if (!preserve.ok())
+      return preserve;
     status = fsync_path(previous / old.filename());
     if (!status.ok())
       return status;

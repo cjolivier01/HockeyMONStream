@@ -618,6 +618,7 @@ void remove_control_point_dependent_stitching_cache_keys(YAML::Node& config) {
 }
 
 void remove_rotation_dependent_rink_cache_keys(YAML::Node& config) {
+  remove_yaml_key_path(config, {"rink", "stitched_output_generation"});
   remove_yaml_key_path(config, {"rink", "scoreboard", "perspective_polygon"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});

@@ -11,6 +11,7 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -19,6 +20,7 @@
 
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
 
@@ -33,6 +35,55 @@ constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
+
+const std::vector<std::string> kRequiredArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "left.png",
+    "right.png",
+    kStitchCanvasProvenanceArtifact,
+};
+
+const std::set<std::string> kPreviousArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "left.png",
+    "right.png",
+    "seam_file.png",
+    "panorama.tif",
+};
+
+const std::set<std::string> kLegacyArtifacts = {
+    "hm_project.pto",
+    "autooptimiser_out.pto",
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "seam_file.png",
+    "panorama.tif",
+};
+
+const std::vector<std::string> kArtifacts = [] {
+  std::vector<std::string> names = kRequiredArtifacts;
+  names.emplace_back("seam_file.png");
+  names.emplace_back("panorama.tif");
+  return names;
+}();
 
 struct TiffPlacement {
   float x_px{0.0f};
@@ -276,18 +327,166 @@ bool artifacts_are_compatible(
   return true;
 }
 
-bool has_interrupted_transaction(const fs::path& game_dir) {
+bool is_stitch_artifact_name(const std::string& name) {
+  return std::find(kArtifacts.begin(), kArtifacts.end(), name) != kArtifacts.end();
+}
+
+absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transaction) {
+  const fs::path state_path = transaction / "state";
   std::error_code error;
-  for (const auto& entry : fs::directory_iterator(game_dir, error)) {
-    if (error)
-      return true;
-    if (entry.path().filename().string().rfind(kStitchTransactionPrefix, 0) == 0)
-      return true;
+  const bool exists = fs::exists(state_path, error);
+  if (error)
+    return absl::InternalError("Unable to inspect stitch transaction state: " + error.message());
+  if (!exists)
+    return std::string("UNPREPARED");
+  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open durable stitch transaction state");
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      ::close(descriptor);
+    }
+  } close{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      metadata.st_size > 10) {
+    return absl::FailedPreconditionError("Invalid durable stitch transaction state file");
   }
-  return error.operator bool();
+  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read durable stitch transaction state");
+    offset += static_cast<size_t>(count);
+  }
+  if (contents == "PREPARED\n")
+    return std::string("PREPARED");
+  if (contents == "COMMITTED\n")
+    return std::string("COMMITTED");
+  return absl::FailedPreconditionError("Invalid durable stitch transaction state contents");
 }
 
 } // namespace
+
+const std::vector<std::string>& required_stitch_artifact_names() {
+  return kRequiredArtifacts;
+}
+
+const std::vector<std::string>& stitch_artifact_names() {
+  return kArtifacts;
+}
+
+absl::Status fsync_stitch_path(const fs::path& path, bool directory) {
+  const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
+  const int descriptor = ::open(path.c_str(), flags);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to open Hugin artifact for fsync: " + path.string());
+  const int result = ::fsync(descriptor);
+  const std::string message = result == 0 ? std::string() : std::strerror(errno);
+  ::close(descriptor);
+  if (result != 0)
+    return absl::InternalError("Unable to fsync Hugin artifact " + path.string() + ": " + message);
+  return absl::OkStatus();
+}
+
+absl::Status copy_stitch_file_preserving_mtime(const fs::path& source, const fs::path& destination) {
+  std::error_code error;
+  const auto modified = fs::last_write_time(source, error);
+  if (error)
+    return absl::InternalError("Unable to read stitch artifact timestamp: " + error.message());
+  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+  if (error)
+    return absl::InternalError("Unable to copy stitch artifact: " + error.message());
+  fs::last_write_time(destination, modified, error);
+  if (error)
+    return absl::InternalError("Unable to preserve stitch artifact timestamp: " + error.message());
+  return fsync_stitch_path(destination);
+}
+
+absl::Status write_stitch_transaction_file(const fs::path& path, const std::string& contents) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output)
+    return absl::InternalError("Unable to write Hugin file: " + path.string());
+  output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  output.flush();
+  if (!output)
+    return absl::InternalError("Failed writing Hugin file: " + path.string());
+  output.close();
+  return fsync_stitch_path(path);
+}
+
+absl::Status recover_stitch_transactions_locked(const fs::path& root) {
+  std::error_code error;
+  bool recovered = false;
+  for (const auto& entry : fs::directory_iterator(root, error)) {
+    if (error)
+      return absl::InternalError("Unable to inspect stitch transactions: " + error.message());
+    const std::string directory_name = entry.path().filename().string();
+    if (!entry.is_directory(error) || error || directory_name.rfind(kStitchTransactionPrefix, 0) != 0) {
+      error.clear();
+      continue;
+    }
+    recovered = true;
+    const fs::path transaction = entry.path();
+    auto state = read_stitch_transaction_state(transaction);
+    if (!state.ok())
+      return state.status();
+    if (*state == "PREPARED") {
+      std::ifstream manifest(transaction / "artifacts");
+      if (!manifest)
+        return absl::FailedPreconditionError("Prepared stitch transaction has no artifact manifest");
+      std::set<std::string> manifested;
+      for (std::string name; manifest >> name;) {
+        if (fs::path(name).filename() != name || !is_stitch_artifact_name(name) || !manifested.insert(name).second)
+          return absl::InvalidArgumentError("Invalid stitch transaction filename: " + name);
+      }
+      const std::set<std::string> current(kArtifacts.begin(), kArtifacts.end());
+      if (!manifest.eof() ||
+          (manifested != current && manifested != kPreviousArtifacts && manifested != kLegacyArtifacts)) {
+        return absl::FailedPreconditionError("Prepared stitch transaction has an incomplete artifact manifest");
+      }
+      const fs::path previous = transaction / "previous";
+      std::vector<fs::path> backups;
+      const bool previous_exists = fs::exists(previous, error);
+      if (error)
+        return absl::InternalError("Unable to inspect stitch transaction backup directory: " + error.message());
+      if (previous_exists) {
+        if (!fs::is_directory(previous, error) || error)
+          return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
+        for (const auto& old : fs::directory_iterator(previous, error)) {
+          if (error)
+            return absl::InternalError("Unable to inspect stitch transaction backup: " + error.message());
+          const std::string old_name = old.path().filename().string();
+          if (!old.is_regular_file(error) || error || !is_stitch_artifact_name(old_name))
+            return absl::InvalidArgumentError("Invalid stitch transaction backup: " + old_name);
+          backups.push_back(old.path());
+        }
+      }
+      for (const std::string& name : manifested) {
+        fs::remove(root / name, error);
+        if (error)
+          return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
+      }
+      for (const fs::path& old : backups) {
+        auto status = copy_stitch_file_preserving_mtime(old, root / old.filename());
+        if (!status.ok())
+          return absl::InternalError("Unable to restore interrupted stitch artifact: " + std::string(status.message()));
+      }
+      error.clear();
+      auto status = fsync_stitch_path(root, true);
+      if (!status.ok())
+        return status;
+    }
+    fs::remove_all(transaction, error);
+    if (error)
+      return absl::InternalError("Unable to clean stitch transaction: " + error.message());
+  }
+  return recovered ? fsync_stitch_path(root, true) : absl::OkStatus();
+}
 
 CanvasConstraintArtifactLock::~CanvasConstraintArtifactLock() {
   if (descriptor_ >= 0) {
@@ -318,6 +517,12 @@ absl::StatusOr<LightweightCanvasConstraintCheck> try_lock_canvas_constraint_chec
     }
     return absl::InternalError("Unable to lock stitching artifacts: " + std::string(std::strerror(lock_error)));
   }
+  auto recovery = recover_stitch_transactions_locked(game_dir);
+  if (!recovery.ok()) {
+    ::flock(descriptor, LOCK_UN);
+    ::close(descriptor);
+    return recovery;
+  }
   auto lock = std::unique_ptr<CanvasConstraintArtifactLock>(new CanvasConstraintArtifactLock(descriptor));
   auto compatibility = check_canvas_constraint_locked(game_dir, max_output_width);
   if (!compatibility.ok())
@@ -333,8 +538,6 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
     const fs::path& game_dir,
     size_t max_output_width) {
   const bool has_mappings = any_mapping_artifact_exists(game_dir);
-  if (has_interrupted_transaction(game_dir))
-    return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
   const absl::Status dependency_status = dependency_tree_status(game_dir);
   if (!dependency_status.ok()) {
     if (absl::IsNotFound(dependency_status) || absl::IsFailedPrecondition(dependency_status))

@@ -835,10 +835,19 @@ bool expect_superseded_constraints_reuse_artifacts(const fs::path& tmpdir) {
       !reusable_check->requires_regeneration && reusable_check->artifact_lock;
   if (reusable_check.ok())
     reusable_check->artifact_lock.reset();
+  const fs::path committed_transaction = dir / ".hstream-stitch-committed";
+  const fs::path unprepared_transaction = dir / ".hstream-stitch-unprepared";
+  std::error_code transaction_error;
+  fs::create_directory(committed_transaction, transaction_error);
+  const bool wrote_committed_transaction =
+      !transaction_error && write_text_file(committed_transaction / "state", "COMMITTED\n");
+  transaction_error.clear();
+  fs::create_directory(unprepared_transaction, transaction_error);
   auto lightweight_reusable_check = hm::stitching::try_lock_canvas_constraint_check(dir, 240);
   const bool lightweight_reusable_check_ok = lightweight_reusable_check.ok() &&
       lightweight_reusable_check->artifacts_compatible && !lightweight_reusable_check->requires_regeneration &&
-      lightweight_reusable_check->artifact_lock;
+      lightweight_reusable_check->artifact_lock && wrote_committed_transaction && !transaction_error &&
+      !fs::exists(committed_transaction) && !fs::exists(unprepared_transaction);
   if (lightweight_reusable_check.ok())
     lightweight_reusable_check->artifact_lock.reset();
   if (!write_canvas_provenance(

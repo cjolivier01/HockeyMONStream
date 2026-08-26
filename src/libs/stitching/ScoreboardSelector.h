@@ -22,7 +22,7 @@ class ScoreboardSelector {
   struct CanvasGeneration {
     std::string hugin_generation;
     std::string stitched_output_generation;
-    std::string snapshot_fingerprint;
+    std::string snapshot_identity;
   };
 
   static bool IsDisabled(const Polygon& polygon);

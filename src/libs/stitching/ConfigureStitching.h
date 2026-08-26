@@ -92,6 +92,14 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
     const std::string& game_dir,
     size_t max_output_width = 0);
 
+// Derives the complete current generation from one locked Hugin/config
+// generation and the published map dimensions. The caller must hold Hugin,
+// then GameConfigTransactionLock.
+absl::StatusOr<std::string> current_stitched_output_generation_id_locked(
+    const std::string& game_dir,
+    const YAML::Node& config,
+    const std::string& hugin_generation);
+
 // Validates that a completion event describes the current Hugin artifacts and
 // calibration owner without requiring a downstream rink mask. The rotation in
 // the reported generation is the authoritative live hmstitcher value.

@@ -3,7 +3,10 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 
 namespace hm::stitching {
@@ -32,6 +35,19 @@ struct CanvasConstraintCompatibility {
   bool artifacts_compatible{false};
   bool requires_regeneration{false};
 };
+
+inline constexpr char kStitchCanvasProvenanceArtifact[] = "stitching_canvas_provenance";
+
+// Shared by the lightweight checker and Hugin publication so crash recovery
+// and the accepted transaction manifests cannot diverge.
+const std::vector<std::string>& required_stitch_artifact_names();
+const std::vector<std::string>& stitch_artifact_names();
+absl::Status recover_stitch_transactions_locked(const std::filesystem::path& game_dir);
+absl::Status fsync_stitch_path(const std::filesystem::path& path, bool directory = false);
+absl::Status copy_stitch_file_preserving_mtime(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination);
+absl::Status write_stitch_transaction_file(const std::filesystem::path& path, const std::string& contents);
 
 // Reviews one stable artifact generation. The caller must hold the Hugin
 // artifact lock for the complete call.

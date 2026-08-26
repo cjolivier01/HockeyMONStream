@@ -375,7 +375,6 @@ bool test_matching_development_runtime_selection() {
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       execution_root / "bazel-out/k8-opt/bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
-      execution_root / "bazel-out/k8-opt/bin/src/libs/stitching/stitching-canvas-check",
   };
   std::error_code error;
   fs::create_directories(application.parent_path(), error);
@@ -600,24 +599,6 @@ bool write_fake_runner(const QString& path) {
   file.write("import time\n");
   file.write("for arg in sys.argv[1:]:\n");
   file.write("    print(arg, flush=True)\n");
-  file.write("if '--hold-lock' in sys.argv[1:]:\n");
-  file.write("    result = os.environ.get('HSTREAM_UI_TEST_CANVAS_CHECK', '')\n");
-  file.write("    if result == 'compatible':\n");
-  file.write(
-      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=1 requires-regeneration=0 lock-held=1', "
-      "flush=True)\n");
-  file.write("    elif result == 'missing':\n");
-  file.write(
-      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=0 lock-held=1', "
-      "flush=True)\n");
-  file.write("    elif result == 'regenerate':\n");
-  file.write(
-      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=1 lock-held=1', "
-      "flush=True)\n");
-  file.write("    else:\n");
-  file.write("        sys.exit(9)\n");
-  file.write("    sys.stdin.read()\n");
-  file.write("    sys.exit(0)\n");
   file.write("print('USE_NEW_NVSTREAMMUX=' + os.environ.get('USE_NEW_NVSTREAMMUX', ''), flush=True)\n");
   file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
   file.write("print('HM_NO_SCOREBOARD=' + os.environ.get('HM_NO_SCOREBOARD', ''), flush=True)\n");
@@ -2677,7 +2658,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   stitch_max_output_width->setValue(4096);
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
+  qputenv("HSTREAM_UI_TEST_CANVAS_CHECK", "regenerate");
   activate(start);
+  qunsetenv("HSTREAM_UI_TEST_CANVAS_CHECK");
   const YAML::Node pending_max_width = YAML::LoadFile(stitch_time_transition_config.string());
   const YAML::Node pending_max_width_calibration = pending_max_width["hstream_ui"]["stitching_calibration"];
   const bool legacy_max_width_invalidated =
@@ -2956,8 +2939,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const bool
       fresh_program_tracked =
           expect(
-              window->logText().count("stitching calibration clean command") == fresh_program_clean_commands + 1,
-              "A fresh Program run should establish tracked one-pass stitching calibration (before=" +
+              window->logText().count("stitching calibration clean command") == fresh_program_clean_commands,
+              "A fresh Program run without artifacts should not issue a redundant clean command (before=" +
                   std::to_string(fresh_program_clean_commands) +
                   ", after=" + std::to_string(window->logText().count("stitching calibration clean command")) + ")") &&
       expect(has_fresh_program_status && fresh_program_status.IsScalar() &&
@@ -6630,10 +6613,12 @@ bool test_camera_controls(HStreamWindow* window) {
 
   {
     const fs::path rotation_only_rink_mask = fs::path(window->gameDirectoryText().toStdString()) / "rink_mask_0.png";
+    const fs::path rotation_only_snapshot = fs::path(window->gameDirectoryText().toStdString()) / "s.png";
     YAML::Node rotation_only = YAML::LoadFile(config.string());
     rotation_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
     rotation_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
     rotation_only["rink"]["ice_contours_mask_count"] = 1;
+    rotation_only["rink"]["stitched_output_generation"] = "stale-generation";
     {
       std::ofstream out(config);
       out << rotation_only << "\n";
@@ -6642,6 +6627,10 @@ bool test_camera_controls(HStreamWindow* window) {
       std::ofstream out(rotation_only_rink_mask);
       out << "rotation-only-mask";
     }
+    {
+      std::ofstream out(rotation_only_snapshot);
+      out << "rotation-only-snapshot";
+    }
     activate(create);
     rotate->setValue(rotate->value() - 1);
     activate(save);
@@ -6649,6 +6638,10 @@ bool test_camera_controls(HStreamWindow* window) {
     const YAML::Node rotation_only_calibration = after_rotation_only_save["hstream_ui"]["stitching_calibration"];
     if (!expect(
             !fs::exists(rotation_only_rink_mask), "A rotation-only preset save should remove the stale rink mask") ||
+        !expect(!fs::exists(rotation_only_snapshot), "A rotation-only preset save should remove the stale snapshot") ||
+        !expect(
+            !after_rotation_only_save["rink"]["stitched_output_generation"].IsDefined(),
+            "A rotation-only preset save should clear the stale stitched-output generation") ||
         !expect(
             rotation_only_calibration["status"].as<std::string>("") == "complete",
             "A rotation-only preset save should preserve completed stitch-map status") ||

@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <opencv2/imgcodecs.hpp>
 #include <sys/select.h>
@@ -44,41 +45,68 @@ namespace fs = std::filesystem;
 
 constexpr size_t kMaximumHeaderBytes = 16 * 1024;
 constexpr size_t kMaximumBodyBytes = 4 * 1024;
+constexpr size_t kMaximumSnapshotBytes = 256 * 1024 * 1024;
 constexpr auto kTokenLifetime = std::chrono::minutes(30);
 constexpr auto kDefaultClientLifetime = std::chrono::seconds(10);
 
-std::string snapshot_fingerprint(const std::string& bytes) {
-  uint64_t hash = 1469598103934665603ULL;
-  for (unsigned char byte : bytes) {
-    hash ^= byte;
-    hash *= 1099511628211ULL;
-  }
+std::string snapshot_identity(const struct stat& metadata) {
   std::ostringstream value;
-  value << bytes.size() << ':' << std::hex << std::setfill('0') << std::setw(16) << hash;
+  value << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':'
+        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec
+        << ':' << metadata.st_ctim.tv_sec << ':' << metadata.st_ctim.tv_nsec;
   return value.str();
 }
 
-absl::StatusOr<std::string> snapshot_file_fingerprint(const fs::path& path) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input)
+absl::StatusOr<std::string> snapshot_file_identity(const fs::path& path) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0)
     return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
-  uint64_t hash = 1469598103934665603ULL;
-  uint64_t size = 0;
-  std::array<char, 64 * 1024> buffer{};
-  while (input) {
-    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const std::streamsize count = input.gcount();
-    for (std::streamsize index = 0; index < count; ++index) {
-      hash ^= static_cast<unsigned char>(buffer[static_cast<size_t>(index)]);
-      hash *= 1099511628211ULL;
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      ::close(descriptor);
     }
-    size += static_cast<uint64_t>(count);
+  } close{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0)
+    return absl::FailedPreconditionError("Stitched snapshot is not a readable regular file: " + path.string());
+  return snapshot_identity(metadata);
+}
+
+struct SnapshotFile {
+  std::string bytes;
+  std::string identity;
+};
+
+absl::StatusOr<SnapshotFile> read_snapshot_file(const fs::path& path) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0)
+    return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      ::close(descriptor);
+    }
+  } close{descriptor};
+  struct stat before{};
+  if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
+      static_cast<uint64_t>(before.st_size) > kMaximumSnapshotBytes) {
+    return absl::FailedPreconditionError("Stitched snapshot size or type is invalid: " + path.string());
   }
-  if (!input.eof())
-    return absl::InternalError("Unable to read stitched snapshot: " + path.string());
-  std::ostringstream value;
-  value << size << ':' << std::hex << std::setfill('0') << std::setw(16) << hash;
-  return value.str();
+  std::string bytes(static_cast<size_t>(before.st_size), '\0');
+  size_t offset = 0;
+  while (offset < bytes.size()) {
+    const ssize_t count = ::read(descriptor, bytes.data() + offset, bytes.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Stitched snapshot changed while it was being read");
+    offset += static_cast<size_t>(count);
+  }
+  struct stat after{};
+  if (::fstat(descriptor, &after) != 0 || snapshot_identity(before) != snapshot_identity(after))
+    return absl::AbortedError("Stitched snapshot changed while it was being read");
+  return SnapshotFile{.bytes = std::move(bytes), .identity = snapshot_identity(after)};
 }
 
 absl::StatusOr<std::string> configured_stitched_output_generation(const YAML::Node& config) {
@@ -463,11 +491,20 @@ absl::Status ScoreboardSelector::Save(
         return absl::AbortedError(
             "Stitched output changed while the scoreboard selector was open; reopen it on the current canvas");
       }
-      auto current_snapshot_fingerprint = snapshot_file_fingerprint(game_dir / "s.png");
-      if (!current_snapshot_fingerprint.ok())
-        return current_snapshot_fingerprint.status();
-      if (!expected_generation->snapshot_fingerprint.empty() &&
-          *current_snapshot_fingerprint != expected_generation->snapshot_fingerprint) {
+      std::string current_generation;
+      HM_ASSIGN_OR_RETURN(
+          current_generation,
+          current_stitched_output_generation_id_locked(
+              game_dir.string(), config, expected_generation->hugin_generation));
+      if (*current_output_generation != current_generation) {
+        return absl::AbortedError(
+            "Configured stitched output no longer matches the current rotation or canvas dimensions");
+      }
+      auto current_snapshot_identity = snapshot_file_identity(game_dir / "s.png");
+      if (!current_snapshot_identity.ok())
+        return current_snapshot_identity.status();
+      if (!expected_generation->snapshot_identity.empty() &&
+          *current_snapshot_identity != expected_generation->snapshot_identity) {
         return absl::AbortedError(
             "Stitched snapshot changed while the scoreboard selector was open; reopen it on the current canvas");
       }
@@ -513,18 +550,25 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   if (!output_generation.ok())
     return output_generation.status();
   HM_RETURN_IF_ERROR(validate_stitched_output_generation_hugin(*output_generation, *hugin_generation));
+  std::string current_output_generation;
+  HM_ASSIGN_OR_RETURN(
+      current_output_generation,
+      current_stitched_output_generation_id_locked(game_dir.string(), config, *hugin_generation));
+  if (*output_generation != current_output_generation) {
+    return absl::FailedPreconditionError(
+        "Scoreboard selector requires a stitched-output generation matching the current rotation and canvas size");
+  }
   const fs::path image_path = game_dir / "s.png";
-  const cv::Mat dimensions = cv::imread(image_path.string(), cv::IMREAD_GRAYSCALE);
+  SnapshotFile snapshot;
+  HM_ASSIGN_OR_RETURN(snapshot, read_snapshot_file(image_path));
+  const cv::Mat encoded(1, static_cast<int>(snapshot.bytes.size()), CV_8U, snapshot.bytes.data());
+  const cv::Mat dimensions = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
   if (dimensions.empty())
     return absl::NotFoundError("Scoreboard selector requires " + image_path.string());
-  std::ifstream image_input(image_path, std::ios::binary);
-  const std::string image_bytes((std::istreambuf_iterator<char>(image_input)), std::istreambuf_iterator<char>());
-  if (image_bytes.empty())
-    return absl::FailedPreconditionError("Scoreboard selector image is empty");
   const CanvasGeneration canvas_generation{
       .hugin_generation = *hugin_generation,
       .stitched_output_generation = *output_generation,
-      .snapshot_fingerprint = snapshot_fingerprint(image_bytes),
+      .snapshot_identity = snapshot.identity,
   };
   config_lock->reset();
   hugin_lock->reset();
@@ -642,7 +686,7 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
       continue;
     }
     if (request->method == "GET" && path == "/image") {
-      respond_best_effort(client, 200, "OK", "image/png", image_bytes, client_deadline);
+      respond_best_effort(client, 200, "OK", "image/png", snapshot.bytes, client_deadline);
       continue;
     }
     const auto origin = request->headers.find("origin");

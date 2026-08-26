@@ -6,7 +6,6 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QDirIterator>
-#include <QtCore/QElapsedTimer>
 #include <QtCore/QEvent>
 #include <QtCore/QEventLoop>
 #include <QtCore/QFile>
@@ -3720,6 +3719,7 @@ struct ArtifactInvalidationResult {
 
 ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config) {
   ArtifactInvalidationResult result;
+  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
@@ -3852,7 +3852,6 @@ QString hm::ui_internal::missing_development_runtime_artifact(const QString& baz
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
-      "src/libs/stitching/stitching-canvas-check",
   };
   for (const QString& relative_path : required) {
     const QString artifact = bazel_bin.filePath(relative_path);
@@ -5492,78 +5491,33 @@ QString HStreamWindow::mappingBackend() const {
   return mapping_backend_combo_ ? mapping_backend_combo_->currentData().toString() : default_mapping_backend_;
 }
 
-QString HStreamWindow::stitchingCanvasCheckerPath() const {
-  const QByteArray test_checker = qgetenv("HSTREAM_UI_TEST_CANVAS_CHECKER");
-  if (!test_checker.isEmpty())
-    return QString::fromLocal8Bit(test_checker);
-  if (!qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty())
-    return pipelineRunnerPath();
-  if (!development_bazel_bin_.isEmpty())
-    return QDir(development_bazel_bin_).filePath("src/libs/stitching/stitching-canvas-check");
-  const QString installed_checker = "/opt/hstream/bin/stitching-canvas-check";
-  if (QFileInfo::exists(installed_checker))
-    return installed_checker;
-  const QString bazel_checker = QDir::current().filePath("bazel-bin/src/libs/stitching/stitching-canvas-check");
-  return QFileInfo::exists(bazel_checker) ? bazel_checker : QString("stitching-canvas-check");
-}
-
 std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> HStreamWindow::checkStitchingCanvasConstraint(
     const QString& game_id,
     int max_output_width) {
-  auto release_process = [](QProcess* process) {
-    if (process->state() != QProcess::NotRunning) {
-      process->closeWriteChannel();
-      if (!process->waitForFinished(1000)) {
-        process->kill();
-        process->waitForFinished(1000);
-      }
-    }
-    delete process;
-  };
-  std::shared_ptr<QProcess> check(new QProcess, release_process);
-  check->setProcessChannelMode(QProcess::MergedChannels);
-  check->setProcessEnvironment(QProcessEnvironment::systemEnvironment());
-  check->setWorkingDirectory(pipelineWorkingDirectory());
-  check->start(
-      stitchingCanvasCheckerPath(), {gameDirectory(game_id), QString::number(max_output_width), "--hold-lock"});
-  if (!check->waitForStarted(500)) {
-    appendLog(QString("failed to start stitched-width compatibility check: %1").arg(check->errorString()));
+  if (const QByteArray test_result = qgetenv("HSTREAM_UI_TEST_CANVAS_CHECK"); !test_result.isEmpty()) {
+    const bool compatible = test_result == "compatible";
+    const bool regenerate = test_result == "regenerate";
+    if (!compatible && !regenerate && test_result != "missing")
+      return std::nullopt;
+    return hm::ui_internal::LockedStitchingCanvasConstraintCheck{
+        .decision = hm::ui_internal::decide_stitching_canvas_constraint_change(
+            /*width_changed=*/true, compatible, regenerate),
+    };
+  }
+  auto check = hm::stitching::try_lock_canvas_constraint_check(
+      fs::path(gameDirectory(game_id).toStdString()), static_cast<size_t>(max_output_width));
+  if (!check.ok()) {
+    appendLog(QString("stitched-width compatibility check failed: %1").arg(check.status().ToString().c_str()));
     return std::nullopt;
   }
-  const QRegularExpression marker(
-      R"(HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=([01]) requires-regeneration=([01]) lock-held=([01]))");
-  QByteArray output;
-  QRegularExpressionMatch match;
-  QElapsedTimer timer;
-  timer.start();
-  while (timer.elapsed() < 1000) {
-    output += check->readAll();
-    match = marker.match(QString::fromLocal8Bit(output));
-    if (match.hasMatch())
-      break;
-    if (check->state() == QProcess::NotRunning)
-      break;
-    check->waitForReadyRead(25);
-    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
-  }
-  output += check->readAll();
-  match = marker.match(QString::fromLocal8Bit(output));
-  if (!match.hasMatch()) {
-    appendLog(QString("stitched-width compatibility check failed: %1").arg(QString::fromLocal8Bit(output).trimmed()));
+  if (!check->artifact_lock) {
+    appendLog("stitched-width compatibility check could not lock active stitching artifacts; retry after calibration");
     return std::nullopt;
-  }
-  const bool lock_held = match.captured(3) == "1";
-  if (lock_held && check->state() == QProcess::NotRunning) {
-    appendLog("stitched-width compatibility check released its artifact lock prematurely");
-    return std::nullopt;
-  }
-  if (!lock_held) {
-    check.reset();
   }
   return hm::ui_internal::LockedStitchingCanvasConstraintCheck{
       .decision = hm::ui_internal::decide_stitching_canvas_constraint_change(
-          /*width_changed=*/true, match.captured(1) == "1", match.captured(2) == "1"),
-      .lock_process = std::move(check),
+          /*width_changed=*/true, check->artifacts_compatible, check->requires_regeneration),
+      .artifact_lock = std::move(check->artifact_lock),
   };
 }
 
@@ -5767,10 +5721,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool saved_artifacts_invalidated = false;
   bool clean_all = false;
   bool clean_from_control_points = false;
-  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
-  if (saved_stitch_max_output_width_ != active_stitch_max_output_width_) {
-    width_constraint_check = checkStitchingCanvasConstraint(active_run_game_id_, active_stitch_max_output_width_);
-  }
+  auto width_constraint_check = checkStitchingCanvasConstraint(active_run_game_id_, active_stitch_max_output_width_);
+  if (!width_constraint_check.has_value())
+    return false;
   {
     auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
     if (!config_lock.ok()) {
@@ -11206,10 +11159,11 @@ void HStreamWindow::savePreset() {
     return;
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
-  if (saved_stitch_max_output_width_ != stitchingMaxOutputWidth()) {
-    width_constraint_check = checkStitchingCanvasConstraint(game_id_edit_->text().trimmed(), stitchingMaxOutputWidth());
-  }
+  const int selected_max_output_width = stitchingMaxOutputWidth();
+  auto width_constraint_check =
+      checkStitchingCanvasConstraint(game_id_edit_->text().trimmed(), selected_max_output_width);
+  if (!width_constraint_check.has_value())
+    return;
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
@@ -11236,6 +11190,7 @@ void HStreamWindow::savePreset() {
           &invalidate_rink_masks,
           &invalidated_config_artifacts,
           &published_playtracker_sidecar,
+          selected_max_output_width,
           width_constraint_check.has_value()
               ? std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>(width_constraint_check->decision)
               : std::nullopt)) {
@@ -11268,8 +11223,8 @@ void HStreamWindow::savePreset() {
   if (fail_before_config_publish) {
     publish = absl::InternalError("preset config publication failure requested by test");
   } else if (invalidate_rink_masks) {
-    auto transaction =
-        hm::stitching::publish_game_config_without_rink_masks(config_path.parent_path(), YAML::Dump(config) + "\n");
+    auto transaction = hm::stitching::publish_game_config_without_rink_masks(
+        config_path.parent_path(), YAML::Dump(config) + "\n", /*remove_stitched_snapshot=*/true);
     if (transaction.ok()) {
       invalidated_masks = *transaction;
       publish = absl::OkStatus();
@@ -11849,6 +11804,7 @@ bool HStreamWindow::applySavedControlConfig(
     bool* invalidate_rink_masks,
     int* invalidated_config_artifacts,
     QString* published_playtracker_sidecar,
+    int selected_max_output_width,
     const std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>& max_width_decision) {
   if (invalidate_rink_masks) {
     *invalidate_rink_masks = false;
@@ -11929,7 +11885,6 @@ bool HStreamWindow::applySavedControlConfig(
   QString previous_stitch_frame_time = default_stitch_frame_time_;
   const bool previous_stitch_frame_time_valid =
       read_stitch_frame_time(config, &previous_stitch_frame_time, nullptr, default_stitch_frame_time_);
-  const int selected_max_output_width = stitchingMaxOutputWidth();
   const bool had_conflicting_max_output_width_native_alias = has_conflicting_stitch_max_output_width_native_alias(
       config,
       selected_max_output_width,
