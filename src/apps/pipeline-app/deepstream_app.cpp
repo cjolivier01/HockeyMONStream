@@ -1820,6 +1820,7 @@ gboolean create_pipeline(
     bbox_generated_callback all_bbox_generated_cb,
     perf_callback perf_cb,
     overlay_graphics_callback overlay_graphics_cb) {
+  appCtx->pipeline_cleanup_complete = FALSE;
   gboolean ret = FALSE;
   NvDsPipeline* pipeline = &appCtx->pipeline;
   NvDsConfig* config = &appCtx->config;
@@ -2376,15 +2377,15 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
 }
 
 void destroy_pipeline(AppCtx* appCtx) {
+  if (!appCtx || appCtx->pipeline_cleanup_complete)
+    return;
+
   gint64 end_time;
   NvDsConfig* config = &appCtx->config;
   guint i;
   GstBus* bus = NULL;
 
   end_time = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
-
-  if (!appCtx)
-    return;
 
   if (g_getenv("HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK")) {
     queue_uri_playlist_switch_callback_for_test(&appCtx->pipeline.multi_src_bin, 0, 5000);
@@ -2427,9 +2428,11 @@ void destroy_pipeline(AppCtx* appCtx) {
   }
   if (appCtx->sensorInfoHash) {
     g_hash_table_destroy(appCtx->sensorInfoHash);
+    appCtx->sensorInfoHash = NULL;
   }
   if (appCtx->perf_struct.FPSInfoHash) {
     g_hash_table_destroy(appCtx->perf_struct.FPSInfoHash);
+    appCtx->perf_struct.FPSInfoHash = NULL;
   }
 
   destroy_sink_bin();
@@ -2466,6 +2469,7 @@ void destroy_pipeline(AppCtx* appCtx) {
         stop_cloud_to_device_messaging(appCtx->c2d_ctx[i]);
     }
   }
+  appCtx->pipeline_cleanup_complete = TRUE;
 }
 
 void destroy_pipeline_for_recreate(AppCtx* appCtx) {

@@ -246,6 +246,52 @@ int main() {
   fs::remove_all(symlinked_previous);
   fs::remove_all(previous_target);
 
+  const auto root_config_contents = [&]() {
+    std::ifstream input(root / "config.yaml", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+  const fs::path missing_previous = root / ".hstream-rink-missing-previous";
+  fs::create_directories(missing_previous);
+  std::ofstream(missing_previous / "new-files") << "config.yaml\nrink_mask_0.png\n";
+  std::ofstream(missing_previous / "state") << "PREPARED\n";
+  const std::string config_before_missing_previous = root_config_contents();
+  const auto missing_previous_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsFailedPrecondition(missing_previous_read.status()) && fs::exists(missing_previous) &&
+          root_config_contents() == config_before_missing_previous,
+      "config recovery must reject a prepared journal without backups before mutating committed files");
+  fs::remove_all(missing_previous);
+
+  const fs::path unmanifested_backup = root / ".hstream-rink-unmanifested-backup";
+  fs::create_directories(unmanifested_backup / "previous");
+  fs::copy_file(root / "config.yaml", unmanifested_backup / "previous" / "config.yaml");
+  std::ofstream(unmanifested_backup / "previous" / "s.png") << "unmanifested";
+  std::ofstream(unmanifested_backup / "new-files") << "config.yaml\nrink_mask_0.png\n";
+  std::ofstream(unmanifested_backup / "state") << "PREPARED\n";
+  const std::string config_before_unmanifested_backup = root_config_contents();
+  const auto unmanifested_backup_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsInvalidArgument(unmanifested_backup_read.status()) && fs::exists(unmanifested_backup) &&
+          root_config_contents() == config_before_unmanifested_backup && !fs::exists(root / "s.png"),
+      "config recovery must reject an unmanifested validly named backup before root mutation");
+  fs::remove_all(unmanifested_backup);
+
+  const fs::path oversized_backup = root / ".hstream-rink-oversized-backup";
+  fs::create_directories(oversized_backup / "previous");
+  fs::copy_file(root / "config.yaml", oversized_backup / "previous" / "config.yaml");
+  fs::copy_file(root / "rink_mask_0.png", oversized_backup / "previous" / "rink_mask_0.png");
+  const bool oversized_backup_created =
+      ::truncate((oversized_backup / "previous" / "config.yaml").c_str(), 16LL * 1024LL * 1024LL + 1) == 0;
+  std::ofstream(oversized_backup / "new-files") << "config.yaml\nrink_mask_0.png\n";
+  std::ofstream(oversized_backup / "state") << "PREPARED\n";
+  const std::string config_before_oversized_backup = root_config_contents();
+  const auto oversized_backup_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      oversized_backup_created && absl::IsFailedPrecondition(oversized_backup_read.status()) &&
+          fs::exists(oversized_backup) && root_config_contents() == config_before_oversized_backup,
+      "config recovery must reject an oversized backup before deleting the committed generation");
+  fs::remove_all(oversized_backup);
+
   const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
   const fs::path manifest_target = root / "rink-manifest-symlink-target";
   fs::create_directories(symlinked_manifest / "previous");

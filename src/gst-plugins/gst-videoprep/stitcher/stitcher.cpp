@@ -602,6 +602,10 @@ absl::Status StitcherPriv::ensure_stitcher() {
     return artifacts.status();
   }
   if (!artifacts->artifact_lock) {
+    const absl::Status repair_bounds = hm::stitching::validate_stitch_seam_repair_artifact_bounds(config_file_);
+    if (!repair_bounds.ok() && !absl::IsNotFound(repair_bounds)) {
+      return repair_bounds;
+    }
     bool try_seam_repair = true;
     if (max_output_width_ > 0) {
       const auto native_canvas = hm::stitching::stitching_canvas_size(config_file_);

@@ -319,6 +319,17 @@ int main() {
   ok &= expect(
       absl::IsAborted(Selector::Run(directory)),
       "scoreboard selector must reject a snapshot whose dimensions do not match its output generation");
+  cv::imwrite((directory / "s.png").string(), cv::Mat(32, 96, CV_8UC3, cv::Scalar(255, 255, 255)));
+  {
+    std::fstream image(directory / "s.png", std::ios::in | std::ios::out | std::ios::binary);
+    const std::array<unsigned char, 4> oversized_width = {0, 0, 128, 0};
+    image.seekp(16);
+    image.write(
+        reinterpret_cast<const char*>(oversized_width.data()), static_cast<std::streamsize>(oversized_width.size()));
+  }
+  ok &= expect(
+      absl::IsAborted(Selector::Run(directory)),
+      "scoreboard selector must reject oversized PNG header dimensions before invoking the decoder");
   ok &= expect(exercise_http_selector(directory), "native HTTP selector must enforce its token and save a choice");
   if (std::filesystem::is_regular_file(directory / "config.yaml")) {
     const YAML::Node polygon =

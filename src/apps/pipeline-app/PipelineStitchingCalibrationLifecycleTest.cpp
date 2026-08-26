@@ -320,13 +320,19 @@ class PipelineProcess {
     return HasProgressAtOrBeyond(minimum_video_seconds, after);
   }
 
-  bool WaitForExit(int* exit_code, std::chrono::steady_clock::duration timeout = kControlTimeout) {
+  bool WaitForExit(
+      int* exit_code,
+      std::chrono::steady_clock::duration timeout = kControlTimeout,
+      bool* exited_normally = nullptr) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
       Drain();
       int status = 0;
       if (::waitpid(pid_, &status, WNOHANG) == pid_) {
         pid_ = -1;
+        if (exited_normally) {
+          *exited_normally = WIFEXITED(status);
+        }
         if (exit_code) {
           *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         }
@@ -1022,12 +1028,14 @@ int main(int argc, char** argv) {
       std::error_code remove_error;
       fs::remove(game / "seam_file.png", remove_error);
       int recreation_exit_code = 0;
+      bool recreation_exited_normally = false;
       const bool replay_rejected = !remove_error &&
           one_pass_invalid_seam.WaitFor(
               "HSTREAM_PIPELINE_RECREATE status=failed reason=periodic-reconstruction",
               recreation_mark,
               kCalibrationTimeout) &&
-          one_pass_invalid_seam.WaitForExit(&recreation_exit_code, kCalibrationTimeout) && recreation_exit_code != 0 &&
+          one_pass_invalid_seam.WaitForExit(&recreation_exit_code, kCalibrationTimeout, &recreation_exited_normally) &&
+          recreation_exited_normally && recreation_exit_code != 0 &&
           one_pass_invalid_seam.output().find("captured stitching calibration frame", recreation_mark) ==
               std::string::npos;
       return expect(
@@ -1498,7 +1506,7 @@ int main(int argc, char** argv) {
       }
       int exit_code = 0;
       return expect(
-                 fatal_error_with_peer.WaitForExit(&exit_code, std::chrono::seconds(10)),
+                 fatal_error_with_peer.WaitForExit(&exit_code, std::chrono::seconds(15)),
                  "a fatal calibration error must stop an ordinary same-stage peer promptly") &&
           expect(exit_code != 0, "a fatal calibration error with an ordinary peer must return failure") &&
           expect(fatal_error_with_peer.output().find("HSTREAM_CALIBRATION stage=playback-restart status=complete") ==

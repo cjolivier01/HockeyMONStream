@@ -55,6 +55,9 @@ const std::vector<std::string>& stitch_artifact_names();
 // Verifies the parser-facing generation artifacts through bounded, no-follow,
 // nonblocking descriptors. The caller must hold the artifact lock.
 absl::Status validate_stitch_generation_artifact_bounds_locked(const std::filesystem::path& game_dir);
+// Bounds the parser-facing placement TIFFs and an optional seam before legacy
+// seam repair. The caller must hold the artifact lock.
+absl::Status validate_stitch_seam_repair_artifact_bounds_locked(const std::filesystem::path& game_dir);
 absl::Status recover_stitch_transactions_locked(const std::filesystem::path& game_dir);
 absl::Status fsync_stitch_path(const std::filesystem::path& path, bool directory = false);
 absl::Status clone_or_copy_stitch_rollback_file(

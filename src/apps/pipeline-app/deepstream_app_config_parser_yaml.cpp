@@ -379,6 +379,17 @@ gboolean parse_hmstitcher_yaml(HmStitcherConfig* config, const YAML::Node& yaml_
   if (!parse_videoprep_yaml(config, yaml_node, config_path, /*quiet=*/true)) {
     return false;
   }
+  if (std::any_of(
+          config->plugin_properties.begin(),
+          config->plugin_properties.end(),
+          [](const hm::gst::PluginProperty& property) {
+            std::string canonical_name = property.name;
+            std::replace(canonical_name.begin(), canonical_name.end(), '_', '-');
+            return canonical_name == "plugin-private-config";
+          })) {
+    NVGSTDS_ERR_MSG_V("hmstitcher.properties.plugin-private-config is reserved for app-issued capabilities");
+    return false;
+  }
   hm::utils::ConfigLocator locator;
   SET_LOCATOR(locator, *config, configure_only);
   SET_LOCATOR(locator, *config, one_pass_mode);

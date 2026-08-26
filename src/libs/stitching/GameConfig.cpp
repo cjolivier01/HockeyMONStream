@@ -395,40 +395,59 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       if (!manifest.ok())
         return manifest.status();
       std::vector<fs::path> backups;
+      std::set<std::string> backup_names;
       std::optional<PinnedDirectory> previous_directory;
       auto opened_previous = transaction_directory.OpenChild("previous", "rink transaction backup directory");
       if (!opened_previous.ok())
         return opened_previous.status();
-      if (opened_previous->has_value()) {
-        previous_directory.emplace(std::move(**opened_previous));
-        const fs::path previous = previous_directory->path();
-        auto previous_entries = directory_entries(previous, "rink transaction backup");
-        if (!previous_entries.ok())
-          return previous_entries.status();
-        for (const auto& old : *previous_entries) {
-          const std::string old_name = old.path().filename().string();
-          const bool is_regular = old.symlink_status(error).type() == fs::file_type::regular;
-          if (error)
-            return absl::InternalError("Unable to inspect rink transaction backup entry: " + error.message());
-          if (!is_regular || !is_rink_artifact_name(old_name))
-            return absl::InvalidArgumentError("Invalid rink transaction backup: " + old_name);
-          backups.push_back(old.path());
+      if (!opened_previous->has_value())
+        return absl::FailedPreconditionError("Prepared rink transaction has no backup directory");
+      previous_directory.emplace(std::move(**opened_previous));
+      const fs::path previous = previous_directory->path();
+      auto previous_entries = directory_entries(previous, "rink transaction backup");
+      if (!previous_entries.ok())
+        return previous_entries.status();
+      for (const auto& old : *previous_entries) {
+        const std::string old_name = old.path().filename().string();
+        const bool is_regular = old.symlink_status(error).type() == fs::file_type::regular;
+        if (error)
+          return absl::InternalError("Unable to inspect rink transaction backup entry: " + error.message());
+        if (!is_regular || !is_rink_artifact_name(old_name) || manifest->count(old_name) == 0 ||
+            !backup_names.insert(old_name).second) {
+          return absl::InvalidArgumentError("Invalid or unmanifested rink transaction backup: " + old_name);
         }
+        backups.push_back(old.path());
       }
+
+      std::vector<std::pair<fs::path, fs::path>> staged_restores;
+      for (const fs::path& old : backups) {
+        const fs::path staged = transaction / (".restore-" + old.filename().string());
+        fs::remove(staged, error);
+        if (error)
+          return absl::InternalError("Unable to remove stale rink restore staging file: " + error.message());
+        auto restore = link_clone_or_copy_rollback_file(old, staged);
+        if (!restore.ok())
+          return restore;
+        auto status = fsync_path(staged);
+        if (!status.ok())
+          return status;
+        staged_restores.emplace_back(staged, root_directory.path() / old.filename());
+      }
+      auto status = fsync_path(transaction, true);
+      if (!status.ok())
+        return status;
       for (const std::string& name : *manifest) {
+        if (backup_names.count(name) != 0)
+          continue;
         fs::remove(root_directory.path() / name, error);
         if (error)
           return absl::InternalError("Unable to remove interrupted rink artifact: " + error.message());
       }
       size_t restored = 0;
-      for (const fs::path& old : backups) {
-        const fs::path destination = root_directory.path() / old.filename();
-        auto restore = link_clone_or_copy_rollback_file(old, destination);
-        if (!restore.ok())
-          return absl::InternalError("Unable to restore interrupted rink artifact: " + std::string(restore.message()));
-        auto status = fsync_path(destination);
-        if (!status.ok())
-          return status;
+      for (const auto& [staged, destination] : staged_restores) {
+        fs::rename(staged, destination, error);
+        if (error)
+          return absl::InternalError("Unable to atomically restore interrupted rink artifact: " + error.message());
         ++restored;
         if (const char* fail_after = std::getenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER");
             fail_after != nullptr && restored == static_cast<size_t>(std::strtoull(fail_after, nullptr, 10))) {
@@ -436,7 +455,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         }
       }
       error.clear();
-      auto status = fsync_path(root_directory.path(), true);
+      status = fsync_path(root_directory.path(), true);
       if (!status.ok())
         return status;
       status = mark_rink_transaction_rolled_back(transaction);

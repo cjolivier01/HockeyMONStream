@@ -89,8 +89,8 @@ absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const cha
   const fs::path path = game_dir / name;
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0) {
-    if (!required && errno == ENOENT)
-      return absl::OkStatus();
+    if (errno == ENOENT)
+      return required ? absl::NotFoundError("Missing stitch artifact: " + path.string()) : absl::OkStatus();
     return absl::FailedPreconditionError("Unable to open bounded stitch artifact: " + path.string());
   }
   struct DescriptorCleanup {
@@ -101,10 +101,10 @@ absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const cha
   } cleanup{descriptor};
   struct stat metadata{};
   const uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
-      maximum_bytes == 0 || static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
-    return absl::FailedPreconditionError("Invalid or oversized stitch artifact: " + path.string());
-  }
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 || maximum_bytes == 0)
+    return absl::FailedPreconditionError("Invalid stitch artifact: " + path.string());
+  if (static_cast<uint64_t>(metadata.st_size) > maximum_bytes)
+    return absl::ResourceExhaustedError("Oversized stitch artifact: " + path.string());
   return absl::OkStatus();
 }
 
@@ -1285,6 +1285,15 @@ absl::Status validate_stitch_generation_artifact_bounds_locked(const fs::path& g
   return validate_stitch_artifact_bounds(game_dir, kStitchCanvasProvenanceArtifact, /*required=*/false);
 }
 
+absl::Status validate_stitch_seam_repair_artifact_bounds_locked(const fs::path& game_dir) {
+  for (const char* name : {"mapping_0000.tif", "mapping_0001.tif"}) {
+    const absl::Status status = validate_stitch_artifact_bounds(game_dir, name, /*required=*/true);
+    if (!status.ok())
+      return status;
+  }
+  return validate_stitch_artifact_bounds(game_dir, "seam_file.png", /*required=*/false);
+}
+
 absl::Status fsync_stitch_path(const fs::path& path, bool directory) {
   const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
   const int descriptor = ::open(path.c_str(), flags);
@@ -1818,8 +1827,28 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         if (backups.size() != prior_artifacts.size())
           return absl::FailedPreconditionError("Stitch transaction has incomplete durable rollback artifacts");
 
+        std::map<std::string, fs::path> staged_restores;
+        for (const std::string& name : prior_artifacts) {
+          const auto backup = backups.find(name);
+          if (backup == backups.end())
+            return absl::FailedPreconditionError("Stitch transaction lost a durable rollback artifact: " + name);
+          const fs::path staged = transaction / (".restore-" + name);
+          fs::remove(staged, error);
+          if (error)
+            return absl::InternalError("Unable to remove stale stitch restore staging file: " + error.message());
+          auto restore = clone_or_copy_stitch_rollback_file(backup->second, staged);
+          if (!restore.ok())
+            return restore;
+          auto status = fsync_stitch_path(staged);
+          if (!status.ok())
+            return status;
+          staged_restores.emplace(name, staged);
+        }
+        auto status = fsync_stitch_path(transaction, true);
+        if (!status.ok())
+          return status;
         if (*state != "ROLLING_BACK") {
-          auto status = publish_transaction_state(transaction, "ROLLING_BACK\n");
+          status = publish_transaction_state(transaction, "ROLLING_BACK\n");
           if (!status.ok())
             return status;
         }
@@ -1832,15 +1861,9 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         }
         size_t restored = 0;
         for (const std::string& name : prior_artifacts) {
-          const auto backup = backups.find(name);
-          if (backup == backups.end())
-            continue;
-          fs::remove(root_directory.path() / name, error);
+          fs::rename(staged_restores.at(name), root_directory.path() / name, error);
           if (error)
-            return absl::InternalError("Unable to remove replacement stitch artifact: " + error.message());
-          auto restore = clone_or_copy_stitch_rollback_file(backup->second, root_directory.path() / name);
-          if (!restore.ok())
-            return restore;
+            return absl::InternalError("Unable to atomically restore interrupted stitch artifact: " + error.message());
           ++restored;
           if (const char* fail_after = std::getenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER");
               fail_after != nullptr && restored == static_cast<size_t>(std::strtoull(fail_after, nullptr, 10))) {
@@ -1848,7 +1871,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           }
         }
         error.clear();
-        auto status = fsync_stitch_path(root_directory.path(), true);
+        status = fsync_stitch_path(root_directory.path(), true);
         if (!status.ok())
           return status;
         status = publish_transaction_state(transaction, "RESTORED\n");

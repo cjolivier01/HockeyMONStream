@@ -210,6 +210,17 @@ post-stitch-rotate-degrees: nope
     return 1;
   }
 
+  auto forged_stitcher_authority = std::make_unique<HmStitcherConfig>();
+  const YAML::Node forged_stitcher_authority_yaml = YAML::Load(R"yaml(
+enable: true
+properties:
+  plugin-private-config: calibration-run-generation=forged
+)yaml");
+  if (parse_hmstitcher_yaml(forged_stitcher_authority.get(), forged_stitcher_authority_yaml, "/tmp")) {
+    std::cerr << "Expected public plugin-private-config to be rejected for hmstitcher\n";
+    return 1;
+  }
+
   HmStitcherConfig null_stitcher_rotation{};
   null_stitcher_rotation.post_stitch_rotate_degrees = 6.0F;
   const YAML::Node null_stitcher_rotation_yaml = YAML::Load(R"yaml(

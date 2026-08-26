@@ -6,11 +6,13 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include <gst/gst.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -64,6 +66,30 @@ bool run_precaps(
     return false;
   }
 
+  return true;
+}
+
+bool expect_oversized_seam_repair_artifact_rejected(const fs::path& tmpdir) {
+  const fs::path game_dir = tmpdir / "oversized-seam-repair";
+  fs::create_directories(game_dir);
+  std::ofstream(game_dir / "mapping_0000.tif", std::ios::binary) << "tiff";
+  std::ofstream(game_dir / "mapping_0001.tif", std::ios::binary) << "tiff";
+  if (::truncate((game_dir / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0)
+    return false;
+
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  stitcher.SetProperty({"one-pass-mode", "1"});
+  stitcher.SetProperty({"calibration-run-generation", "1"});
+  hm::DSCustom_CreateParams params{};
+  const std::string config_dir = game_dir.string();
+  params.config_file = const_cast<char*>(config_dir.c_str());
+  params.m_inCaps = gst_caps_from_string("video/x-raw,format=RGBA,width=1280,height=720");
+  const absl::Status status = stitcher.PreCapsInit(&params);
+  gst_caps_unref(params.m_inCaps);
+  if (!absl::IsResourceExhausted(status)) {
+    std::cerr << "Oversized seam-repair TIFF must fail plugin preflight before parser access: " << status << '\n';
+    return false;
+  }
   return true;
 }
 
@@ -537,6 +563,9 @@ int main() {
           0,
           0)) {
     return 35;
+  }
+  if (!expect_oversized_seam_repair_artifact_rejected(tmpdir)) {
+    return 36;
   }
   if (!expect_output_batch_size(/*input_batch_size=*/2, /*configured_batch_size=*/4, /*expected_batch_size=*/1)) {
     return 3;

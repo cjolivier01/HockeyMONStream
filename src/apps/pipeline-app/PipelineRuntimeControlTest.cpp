@@ -195,13 +195,19 @@ class PipelineProcess {
     return HasProgressAtOrBeyond(minimum_video_seconds, after);
   }
 
-  bool WaitForExit(int* exit_code, std::chrono::seconds timeout = std::chrono::seconds(8)) {
+  bool WaitForExit(
+      int* exit_code,
+      std::chrono::seconds timeout = std::chrono::seconds(8),
+      bool* exited_normally = nullptr) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
       Drain();
       int status = 0;
       if (::waitpid(pid_, &status, WNOHANG) == pid_) {
         pid_ = -1;
+        if (exited_normally) {
+          *exited_normally = WIFEXITED(status);
+        }
         if (exit_code) {
           *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         }
@@ -1596,8 +1602,7 @@ int main(int argc, char** argv) {
 
   const auto verify_failed_recreation_generation = [&](PipelineProcess* recreation_process,
                                                        const char* injected_environment,
-                                                       const char* failure_phase,
-                                                       uint64_t request_id) {
+                                                       const char* failure_phase) {
     if (!ok) {
       return;
     }
@@ -1623,32 +1628,32 @@ int main(int argc, char** argv) {
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
             "\"stage\":0,\"generation\":2}",
             recreation_mark),
-        "a failed recreation that changed topology must publish a new inspector generation");
-    const size_t stale_command_mark = recreation_process->Mark();
-    ok &= expect(
-        recreation_process->Send(
-            "@inspect-set-property " + std::to_string(request_id) + " 0 1 0 " + kQueuePath + " " + kSilentProperty +
-            " dHJ1ZQ==\n"),
-        "a property command retained from the destroyed topology must be delivered");
+        "a failed recreation must invalidate the destroyed inspector generation before exiting");
     ok &= expect(
         recreation_process->WaitFor(
-            "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":" +
-                std::to_string(request_id) +
-                ",\"status\":\"error\",\"stage\":0,\"generation\":1,\"message\":\"Stale pipeline inspector "
-                "stage/generation",
-            stale_command_mark),
-        "the old inspector generation must not mutate a destroyed or partial replacement topology");
-    ok &= expect(recreation_process->Interrupt(), "injected-failure recreation SIGINT must be delivered");
+            "HSTREAM_PIPELINE_RECREATE status=failed reason=periodic-reconstruction",
+            recreation_mark,
+            std::chrono::seconds(12)),
+        "a failed periodic recreation must report a terminal reconstruction failure");
     int recreation_exit_code = -1;
+    bool recreation_exited_normally = false;
     ok &= expect(
-        recreation_process->WaitForExit(&recreation_exit_code, std::chrono::seconds(12)),
+        recreation_process->WaitForExit(&recreation_exit_code, std::chrono::seconds(12), &recreation_exited_normally),
         "injected-failure recreation process must stop promptly");
+    ok &= expect(recreation_exited_normally, "injected-failure periodic recreation must exit normally");
+    ok &= expect(recreation_exit_code != 0, "injected-failure periodic recreation must exit nonzero");
+    ok &= expect(
+        recreation_process->output().find("GStreamer-CRITICAL", recreation_mark) == std::string::npos,
+        "failed periodic recreation cleanup must not access destroyed GStreamer objects");
+    ok &= expect(
+        recreation_process->output().find("Could not find 'sink' in 'sink_bin'", recreation_mark) == std::string::npos,
+        "failed periodic recreation cleanup must not inspect stale sink bins");
   };
 
   verify_failed_recreation_generation(
-      &destroyed_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY", "after-destroy", 160);
+      &destroyed_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY", "after-destroy");
   verify_failed_recreation_generation(
-      &partial_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE", "after-create", 161);
+      &partial_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE", "after-create");
 
   if (ok) {
     ok &=

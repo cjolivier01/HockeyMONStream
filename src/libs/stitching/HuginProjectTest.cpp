@@ -1148,6 +1148,28 @@ int main() {
       "historical BACKING_UP recovery must recreate suspect backups before restoring a missing root artifact");
   fs::remove_all(historical_backing_root);
 
+  const fs::path oversized_restore_root = root / "oversized-restore-backup";
+  const fs::path oversized_restore_transaction = oversized_restore_root / ".hstream-stitch-oversized-restore";
+  fs::create_directories(oversized_restore_root);
+  write_legacy_transaction_fixture(oversized_restore_root, oversized_restore_transaction);
+  {
+    std::ofstream prior(oversized_restore_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+  }
+  std::ofstream(oversized_restore_root / "mapping_0000.tif", std::ios::trunc) << "replacement\n";
+  const bool oversized_restore_created =
+      ::truncate(
+          (oversized_restore_transaction / "previous" / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) == 0;
+  std::ofstream(oversized_restore_transaction / "journal_version") << "2\n";
+  std::ofstream(oversized_restore_transaction / "state") << "BACKED_UP\n";
+  const auto oversized_restore_recovery = hm::stitching::HuginProject::Recover(oversized_restore_root);
+  ok &= expect(
+      oversized_restore_created && !oversized_restore_recovery.ok() && fs::exists(oversized_restore_transaction) &&
+          read_text_file(oversized_restore_root / "mapping_0000.tif") == "replacement\n",
+      "stitch recovery must reject an oversized backup before mutating replacement root artifacts");
+  fs::remove_all(oversized_restore_root);
+
   const fs::path symlinked_transaction_root = root / "symlinked-transaction-root";
   const fs::path stitch_transaction_target = root / "stitch-transaction-symlink-target";
   const fs::path symlinked_stitch_transaction = symlinked_transaction_root / ".hstream-stitch-external";

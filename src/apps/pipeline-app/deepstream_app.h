@@ -232,6 +232,7 @@ struct _AppCtx {
   fatal_pipeline_error_callback fatal_pipeline_error_cb{nullptr};
   gboolean defer_bus_watch{false};
   guint pipeline_recreate_source_id{0};
+  gboolean pipeline_cleanup_complete{true};
   NvDsFrameLatencyInfo* latency_info{nullptr};
   GMutex latency_lock{
       0,

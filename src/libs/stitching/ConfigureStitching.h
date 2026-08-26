@@ -86,6 +86,10 @@ absl::StatusOr<LockedStitchingArtifacts> lock_preflight_stitching_artifacts(
     size_t max_output_width = 0,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt);
 
+// Validates only parser byte/type bounds needed by legacy seam repair while
+// holding the artifact lock. Missing placement TIFFs return NotFound.
+absl::Status validate_stitch_seam_repair_artifact_bounds(const std::string& game_dir);
+
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width = 0);
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(

@@ -585,6 +585,23 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
     std::cerr << "oversized legacy TIFF must fail before seam allocation: " << status << std::endl;
     return false;
   }
+
+  const fs::path oversized_file_dir = tmpdir / "oversized_legacy_tiff_file";
+  fs::remove_all(oversized_file_dir);
+  fs::create_directories(oversized_file_dir);
+  if (!write_mapping_tiff(oversized_file_dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(oversized_file_dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f) ||
+      ::truncate((oversized_file_dir / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0) {
+    return false;
+  }
+  setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
+  const auto oversized_file_status = hm::stitching::maybe_create_default_seam_file(oversized_file_dir.string());
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  if (!absl::IsResourceExhausted(oversized_file_status) || fs::exists(oversized_file_dir / "seam_file.png")) {
+    std::cerr << "oversized legacy TIFF file must fail bounded preflight before parser access: "
+              << oversized_file_status << std::endl;
+    return false;
+  }
   return true;
 }
 

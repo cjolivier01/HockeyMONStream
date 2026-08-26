@@ -116,7 +116,12 @@ absl::StatusOr<OpenedSnapshotFile> open_snapshot_file(const fs::path& path) {
 absl::StatusOr<std::string> read_opened_snapshot_file(OpenedSnapshotFile* snapshot) {
   if (snapshot == nullptr || snapshot->descriptor < 0 || snapshot->size == 0)
     return absl::InvalidArgumentError("Stitched snapshot descriptor is not open");
-  std::string bytes(snapshot->size, '\0');
+  std::string bytes;
+  try {
+    bytes.resize(snapshot->size);
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate the bounded stitched snapshot buffer");
+  }
   size_t offset = 0;
   while (offset < bytes.size()) {
     const ssize_t count = ::read(snapshot->descriptor, bytes.data() + offset, bytes.size() - offset);
@@ -130,6 +135,29 @@ absl::StatusOr<std::string> read_opened_snapshot_file(OpenedSnapshotFile* snapsh
   if (::fstat(snapshot->descriptor, &after) != 0 || snapshot->identity != snapshot_identity(after))
     return absl::AbortedError("Stitched snapshot changed while it was being read");
   return bytes;
+}
+
+absl::StatusOr<std::pair<size_t, size_t>> png_snapshot_dimensions(const std::string& bytes) {
+  constexpr std::array<unsigned char, 8> kPngSignature = {137, 80, 78, 71, 13, 10, 26, 10};
+  if (bytes.size() < 24 ||
+      !std::equal(kPngSignature.begin(), kPngSignature.end(), bytes.begin(), [](unsigned char expected, char actual) {
+        return expected == static_cast<unsigned char>(actual);
+      })) {
+    return absl::FailedPreconditionError("Stitched snapshot has an invalid PNG header");
+  }
+  const auto big_endian_u32 = [&](size_t offset) {
+    return (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset])) << 24) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 1])) << 16) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 2])) << 8) |
+        static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 3]));
+  };
+  if (big_endian_u32(8) != 13 || bytes.compare(12, 4, "IHDR") != 0)
+    return absl::FailedPreconditionError("Stitched snapshot PNG is missing its leading IHDR chunk");
+  const uint32_t width = big_endian_u32(16);
+  const uint32_t height = big_endian_u32(20);
+  if (width == 0 || height == 0)
+    return absl::FailedPreconditionError("Stitched snapshot PNG dimensions are invalid");
+  return std::make_pair(static_cast<size_t>(width), static_cast<size_t>(height));
 }
 
 absl::StatusOr<std::string> configured_stitched_output_generation(const YAML::Node& config) {
@@ -593,12 +621,25 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   hugin_lock->reset();
   std::string snapshot_bytes;
   HM_ASSIGN_OR_RETURN(snapshot_bytes, read_opened_snapshot_file(&snapshot));
+  std::pair<size_t, size_t> header_dimensions;
+  HM_ASSIGN_OR_RETURN(header_dimensions, png_snapshot_dimensions(snapshot_bytes));
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+      *output_generation, header_dimensions.first, header_dimensions.second));
   const cv::Mat encoded(1, static_cast<int>(snapshot_bytes.size()), CV_8U, snapshot_bytes.data());
-  const cv::Mat dimensions = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
+  cv::Mat dimensions;
+  try {
+    dimensions = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
+  } catch (const cv::Exception& exception) {
+    return absl::FailedPreconditionError("Unable to decode stitched snapshot: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate the decoded stitched snapshot");
+  }
   if (dimensions.empty())
     return absl::NotFoundError("Scoreboard selector requires " + image_path.string());
-  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
-      *output_generation, static_cast<size_t>(dimensions.cols), static_cast<size_t>(dimensions.rows)));
+  if (static_cast<size_t>(dimensions.cols) != header_dimensions.first ||
+      static_cast<size_t>(dimensions.rows) != header_dimensions.second) {
+    return absl::FailedPreconditionError("Decoded stitched snapshot dimensions do not match its PNG header");
+  }
 
   std::string bind_host = "127.0.0.1";
   if (const char* configured = std::getenv("HM_SCOREBOARD_BIND_HOST"); configured != nullptr && *configured != '\0') {
