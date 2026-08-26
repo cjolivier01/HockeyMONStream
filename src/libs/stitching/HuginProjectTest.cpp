@@ -860,6 +860,24 @@ int main() {
       hm::stitching::HuginProject::Recover(root / "game").ok() && !fs::exists(committed),
       "committed Hugin journal must be cleaned without rollback");
 
+  const fs::path rolled_back = root / "game" / ".hstream-stitch-rolled-back";
+  fs::create_directories(rolled_back / "previous");
+  std::ofstream(rolled_back / "state") << "ROLLED_BACK\n";
+  const auto project_before_rolled_back_cleanup = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      hm::stitching::HuginProject::Recover(root / "game").ok() && !fs::exists(rolled_back),
+      "rolled-back Hugin journal must be cleanup-only");
+  const auto project_after_rolled_back_cleanup = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      project_after_rolled_back_cleanup == project_before_rolled_back_cleanup,
+      "rolled-back Hugin cleanup must not remove the restored generation");
+
   auto reader_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
   ok &= expect(reader_lock.ok(), "Hugin reader must acquire the artifact lock");
   std::atomic<bool> second_reader_entered{false};

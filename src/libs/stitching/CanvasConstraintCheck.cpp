@@ -610,7 +610,7 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
   } close{descriptor};
   struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
-      metadata.st_size > 10) {
+      metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable stitch transaction state file");
   }
   std::string contents(static_cast<size_t>(metadata.st_size), '\0');
@@ -627,6 +627,8 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     return std::string("PREPARED");
   if (contents == "COMMITTED\n")
     return std::string("COMMITTED");
+  if (contents == "ROLLED_BACK\n")
+    return std::string("ROLLED_BACK");
   return absl::FailedPreconditionError("Invalid durable stitch transaction state contents");
 }
 
@@ -671,6 +673,18 @@ absl::Status write_stitch_transaction_file(const fs::path& path, const std::stri
     return absl::InternalError("Failed writing Hugin file: " + path.string());
   output.close();
   return fsync_stitch_path(path);
+}
+
+absl::Status mark_stitch_transaction_rolled_back(const fs::path& transaction) {
+  const fs::path temporary = transaction / "state.rolled_back";
+  auto status = write_stitch_transaction_file(temporary, "ROLLED_BACK\n");
+  if (!status.ok())
+    return status;
+  std::error_code error;
+  fs::rename(temporary, transaction / "state", error);
+  if (error)
+    return absl::InternalError("Unable to commit Hugin rollback state: " + error.message());
+  return fsync_stitch_path(transaction, true);
 }
 
 absl::Status recover_stitch_transactions_locked(const fs::path& root) {
@@ -732,6 +746,9 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       }
       error.clear();
       auto status = fsync_stitch_path(root, true);
+      if (!status.ok())
+        return status;
+      status = mark_stitch_transaction_rolled_back(transaction);
       if (!status.ok())
         return status;
     }

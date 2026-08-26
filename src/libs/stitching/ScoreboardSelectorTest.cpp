@@ -38,8 +38,7 @@ std::string file_identity(const std::filesystem::path& path) {
     return {};
   std::ostringstream value;
   value << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':'
-        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec
-        << ':' << metadata.st_ctim.tv_sec << ':' << metadata.st_ctim.tv_nsec;
+        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec;
   return value.str();
 }
 
@@ -360,6 +359,14 @@ int main() {
       .stitched_output_generation = fixture_output_generation,
       .snapshot_identity = file_identity(directory / "s.png"),
   };
+  const std::filesystem::path rollback_link = directory / "s-rollback-link.png";
+  std::error_code rollback_link_error;
+  std::filesystem::create_hard_link(directory / "s.png", rollback_link, rollback_link_error);
+  if (!rollback_link_error)
+    std::filesystem::remove(rollback_link, rollback_link_error);
+  ok &= expect(
+      !rollback_link_error && Selector::Save(directory, disabled, stale_snapshot_generation).ok(),
+      "snapshot rollback link-count changes must not invalidate an unchanged selector image");
   cv::Mat replacement_snapshot(24, 32, CV_8UC3, cv::Scalar(0, 0, 0));
   const std::filesystem::path replacement_snapshot_path = directory / "s-replacement.png";
   const bool wrote_replacement_snapshot = cv::imwrite(replacement_snapshot_path.string(), replacement_snapshot);

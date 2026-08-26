@@ -386,7 +386,10 @@ int main() {
     ok &= expect(
         ::stat((root / "s.png").c_str(), &snapshot_after_rollback) == 0 &&
             snapshot_after_rollback.st_dev == snapshot_before_rollback.st_dev &&
-            snapshot_after_rollback.st_ino == snapshot_before_rollback.st_ino,
+            snapshot_after_rollback.st_ino == snapshot_before_rollback.st_ino &&
+            snapshot_after_rollback.st_size == snapshot_before_rollback.st_size &&
+            snapshot_after_rollback.st_mtim.tv_sec == snapshot_before_rollback.st_mtim.tv_sec &&
+            snapshot_after_rollback.st_mtim.tv_nsec == snapshot_before_rollback.st_mtim.tv_nsec,
         "rink rollback must preserve the stitched snapshot inode identity");
 
     ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
@@ -606,6 +609,24 @@ int main() {
     ok &= expect(
         hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(committed),
         "committed rink journal must be cleaned without rollback");
+
+    const fs::path rolled_back = root / ".hstream-rink-rolled-back";
+    fs::create_directories(rolled_back / "previous");
+    std::ofstream(rolled_back / "state") << "ROLLED_BACK\n";
+    const std::string config_before_rolled_back_cleanup = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(rolled_back),
+        "rolled-back rink journal must be cleanup-only");
+    const std::string config_after_rolled_back_cleanup = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        config_after_rolled_back_cleanup == config_before_rolled_back_cleanup,
+        "rolled-back rink cleanup must not remove the restored generation");
 
     hm::stitching::RinkProfile replacement_profile = profile;
     replacement_profile.masks[0] = cv::Mat(24, 32, CV_8U, cv::Scalar(255));

@@ -52,8 +52,7 @@ constexpr auto kDefaultClientLifetime = std::chrono::seconds(10);
 std::string snapshot_identity(const struct stat& metadata) {
   std::ostringstream value;
   value << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':'
-        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec
-        << ':' << metadata.st_ctim.tv_sec << ':' << metadata.st_ctim.tv_nsec;
+        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec;
   return value.str();
 }
 

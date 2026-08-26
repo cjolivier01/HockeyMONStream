@@ -208,6 +208,18 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
   return fsync_path(path);
 }
 
+absl::Status mark_rink_transaction_rolled_back(const fs::path& transaction) {
+  const fs::path temporary = transaction / "state.rolled_back";
+  auto status = write_transaction_file(temporary, "ROLLED_BACK\n");
+  if (!status.ok())
+    return status;
+  std::error_code error;
+  fs::rename(temporary, transaction / "state", error);
+  if (error)
+    return absl::InternalError("Unable to commit rink rollback state: " + error.message());
+  return fsync_path(transaction, true);
+}
+
 bool is_rink_artifact_name(const std::string& name) {
   static const std::regex mask_pattern(R"(^rink_mask_(0|[1-9][0-9]*)[.]png$)");
   return name == "config.yaml" || name == "s.png" || std::regex_match(name, mask_pattern);
@@ -252,7 +264,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
   } cleanup{descriptor};
   struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
-      metadata.st_size > 10) {
+      metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
   }
   std::string contents(static_cast<size_t>(metadata.st_size), '\0');
@@ -269,6 +281,8 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
     return std::string("PREPARED");
   if (contents == "COMMITTED\n")
     return std::string("COMMITTED");
+  if (contents == "ROLLED_BACK\n")
+    return std::string("ROLLED_BACK");
   return absl::FailedPreconditionError("Invalid durable rink transaction state contents");
 }
 
@@ -350,6 +364,9 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       }
       error.clear();
       auto status = fsync_path(root, true);
+      if (!status.ok())
+        return status;
+      status = mark_rink_transaction_rolled_back(transaction);
       if (!status.ok())
         return status;
     }
