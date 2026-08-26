@@ -110,6 +110,14 @@ int main() {
   if (!cropper.SetProperty({"runtime-output-max-height", "2160"})) {
     return 1;
   }
+  if (!cropper.SetProperty({"scoreboard-perspective-polygon", "1,2,3,4,5,6,7,8"}) ||
+      cropper.SetProperty({"scoreboard-perspective-polygon", "1,2,3"}) ||
+      cropper.SetProperty({"scoreboard-perspective-polygon", "1,2,3,4,5,6,7,nan"}) ||
+      !cropper.SetProperty({"scoreboard-perspective-polygon", "0,0,0,0,0,0,0,0"})) {
+    std::cerr << "Scoreboard runtime geometry must require four finite points and accept the disabled sentinel"
+              << std::endl;
+    return 1;
+  }
   if (!cropper.SetProperty({"shadow-lift", "75"}) || cropper.SetProperty({"shadow-lift", "-1"}) ||
       cropper.SetProperty({"shadow-lift", "101"}) || cropper.SetProperty({"shadow-lift", "nan"})) {
     std::cerr << "Shadow lift should accept finite percentages from 0 through 100 only" << std::endl;

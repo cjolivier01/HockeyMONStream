@@ -15,8 +15,39 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <vector>
+
+#include <tiffio.h>
 
 namespace fs = std::filesystem;
+
+namespace {
+
+bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_position) {
+  TIFF* tiff = TIFFOpen(path.c_str(), "w");
+  if (!tiff)
+    return false;
+  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 32);
+  TIFFSetField(tiff, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_IEEEFP);
+  TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+  TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_XPOSITION, x_position);
+  TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
+  std::vector<float> row(width, 0.0f);
+  bool ok = true;
+  for (uint32_t y = 0; y < height; ++y)
+    ok = ok && TIFFWriteScanline(tiff, row.data(), y, 0) >= 0;
+  TIFFClose(tiff);
+  return ok;
+}
+
+} // namespace
 
 int main() {
   // If DsFieldMaskProcessFrame ever regresses and unnecessarily calls `create_field_mask`, we want the test to fail
@@ -29,17 +60,21 @@ int main() {
       fs::temp_directory_path() / ("dsfieldmask_load_existing_mask_test_" + std::to_string(::getpid()));
   fs::create_directories(tmpdir);
 
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
+    std::ofstream(tmpdir / name) << "generation-test-artifact\n";
+  }
+  if (!write_mapping_tiff(tmpdir / "mapping_0000.tif", 32, 64, 0.0f) ||
+      !write_mapping_tiff(tmpdir / "mapping_0001.tif", 32, 64, 32.0f)) {
+    std::cerr << "Failed to write mapping placement TIFF fixtures" << std::endl;
+    return 15;
+  }
   for (const char* name : {
-           "hm_project.pto",
-           "autooptimiser_out.pto",
-           "mapping_0000.tif",
            "mapping_0000_x.tif",
            "mapping_0000_y.tif",
-           "mapping_0001.tif",
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
        }) {
-    std::ofstream(tmpdir / name) << "generation-test-artifact\n";
+    cv::imwrite((tmpdir / name).string(), cv::Mat(64, 32, CV_32FC1, cv::Scalar(0.0f)));
   }
 
   cv::Mat seam(64, 64, CV_8UC1, cv::Scalar(0));
@@ -78,6 +113,11 @@ int main() {
   initial_output_generation = *initial_generation;
   rotated_output_generation = *rotated_generation;
   hugin_lock->reset();
+  auto initial_mask = hm::stitching::load_field_mask(tmpdir.string(), initial_output_generation);
+  if (!initial_mask.ok()) {
+    std::cerr << "Failed to load the initial generation fixture directly: " << initial_mask.status() << std::endl;
+    return 14;
+  }
 
   DsFieldMaskInitParams params;
   params.detection_mask_file = mask_path.string();
@@ -93,21 +133,27 @@ int main() {
   NvBufSurfaceParams surface_params{};
   surface.surfaceList = &surface_params;
 
-  NvDsFrameMeta stack_frame_meta{};
-  NvDsFrameMeta* frame_meta = &stack_frame_meta;
-#ifdef HAS_NVDS_CUSTOMUSERMETA
   NvDsBatchMeta* batch_meta = nvds_create_batch_meta(2);
   if (!batch_meta) {
     std::cerr << "Failed to allocate batch metadata" << std::endl;
     DsFieldMaskCtxDeinit(ctx);
     return 7;
   }
-  frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
+  NvDsFrameMeta* frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
+  if (!frame_meta) {
+    std::cerr << "Failed to allocate initial frame metadata" << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+    nvds_destroy_batch_meta(batch_meta);
+    return 13;
+  }
   frame_meta->base_meta.batch_meta = batch_meta;
   nvds_add_frame_meta_to_batch(batch_meta, frame_meta);
-  hm::stitching::StitchedOutputGenerationPayload::create_and_add<hm::stitching::StitchedOutputGenerationPayload>(
-      frame_meta, initial_output_generation);
-#endif
+  if (!hm::stitching::add_stitched_output_generation_meta(frame_meta, initial_output_generation)) {
+    std::cerr << "Failed to attach initial stitched-output generation metadata" << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+    nvds_destroy_batch_meta(batch_meta);
+    return 11;
+  }
   frame_meta->source_frame_width = 64;
   frame_meta->source_frame_height = 64;
   frame_meta->bInferDone = 0;
@@ -117,20 +163,21 @@ int main() {
   if (!status.ok()) {
     std::cerr << "Expected OK status when loading existing mask, got: " << status << std::endl;
     DsFieldMaskCtxDeinit(ctx);
-#ifdef HAS_NVDS_CUSTOMUSERMETA
     nvds_destroy_batch_meta(batch_meta);
-#endif
     return 1;
   }
 
-#ifdef HAS_NVDS_CUSTOMUSERMETA
   NvDsFrameMeta* rotated_frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
   rotated_frame_meta->base_meta.batch_meta = batch_meta;
   rotated_frame_meta->source_frame_width = 64;
   rotated_frame_meta->source_frame_height = 64;
   nvds_add_frame_meta_to_batch(batch_meta, rotated_frame_meta);
-  hm::stitching::StitchedOutputGenerationPayload::create_and_add<hm::stitching::StitchedOutputGenerationPayload>(
-      rotated_frame_meta, rotated_output_generation);
+  if (!hm::stitching::add_stitched_output_generation_meta(rotated_frame_meta, rotated_output_generation)) {
+    std::cerr << "Failed to attach rotated stitched-output generation metadata" << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+    nvds_destroy_batch_meta(batch_meta);
+    return 12;
+  }
   const absl::Status rotated_status =
       DsFieldMaskProcessFrame(nullptr, /*frame_index=*/0, rotated_frame_meta, ctx, /*draw=*/false);
   if (rotated_status.code() != absl::StatusCode::kFailedPrecondition) {
@@ -140,7 +187,6 @@ int main() {
     nvds_destroy_batch_meta(batch_meta);
     return 8;
   }
-#endif
 
   {
     std::ofstream config(tmpdir / "config.yaml");
@@ -157,9 +203,7 @@ int main() {
   if (!stale_ctx) {
     std::cerr << "DsFieldMaskCtxInit returned nullptr for supersession test" << std::endl;
     DsFieldMaskCtxDeinit(ctx);
-#ifdef HAS_NVDS_CUSTOMUSERMETA
     nvds_destroy_batch_meta(batch_meta);
-#endif
     return 9;
   }
   const absl::Status superseded_status =
@@ -173,15 +217,11 @@ int main() {
       superseded_config.find("invalidation_id: newer-fieldmask-run") == std::string::npos) {
     std::cerr << "Superseded field-mask fallback must not publish rink artifacts: " << superseded_status << std::endl;
     DsFieldMaskCtxDeinit(ctx);
-#ifdef HAS_NVDS_CUSTOMUSERMETA
     nvds_destroy_batch_meta(batch_meta);
-#endif
     return 10;
   }
 
   DsFieldMaskCtxDeinit(ctx);
-#ifdef HAS_NVDS_CUSTOMUSERMETA
   nvds_destroy_batch_meta(batch_meta);
-#endif
   return 0;
 }

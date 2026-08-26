@@ -189,6 +189,38 @@ int main() {
                 *native_dimensioned_generation,
         "accepting a native legacy field mask must migrate its generation to the dimensioned alias");
 
+    if (native_dimensioned_generation.ok()) {
+      const auto replace_legacy_mask = [&](bool corrupt_existing_mask) {
+        YAML::Node legacy_config = YAML::LoadFile((root / "config.yaml").string());
+        legacy_config["rink"]["stitched_output_generation"] = initial_output_generation;
+        legacy_config["rink"]["scoreboard"]["perspective_polygon"] =
+            std::vector<std::vector<int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}};
+        {
+          std::ofstream output(root / "config.yaml");
+          output << legacy_config << '\n';
+        }
+        if (corrupt_existing_mask) {
+          std::ofstream(root / "rink_mask_0.png", std::ios::binary | std::ios::trunc) << "corrupt-mask";
+        } else {
+          fs::remove(root / "rink_mask_0.png");
+        }
+        const cv::Mat snapshot(24, 32, CV_8UC3, cv::Scalar(1, 2, 3));
+        const absl::Status replacement = hm::stitching::save_rink_profile_with_stitched_image(
+            root.string(), profile, snapshot, {}, *native_dimensioned_generation);
+        const YAML::Node replaced_config = YAML::LoadFile((root / "config.yaml").string());
+        return replacement.ok() &&
+            replaced_config["rink"]["stitched_output_generation"].as<std::string>() == *native_dimensioned_generation &&
+            replaced_config["rink"]["scoreboard"]["perspective_polygon"].IsSequence() &&
+            !cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).empty();
+      };
+      ok &= expect(
+          replace_legacy_mask(/*corrupt_existing_mask=*/false),
+          "a missing native legacy mask must be replaceable without invalidating same-geometry scoreboard data");
+      ok &= expect(
+          replace_legacy_mask(/*corrupt_existing_mask=*/true),
+          "a corrupt native legacy mask must be replaceable without invalidating same-geometry scoreboard data");
+    }
+
     auto scaled_canvas = hm::stitching::stitching_canvas_size(root.string(), /*max_output_width=*/16);
     ok &= expect(scaled_canvas.ok(), "scaled field-mask test must identify output dimensions");
     auto scaled_generation = scaled_canvas.ok()
@@ -379,6 +411,7 @@ int main() {
         "stale rink inference must not overwrite a newer stitched-output rotation generation");
 
     std::string live_override_generation;
+    std::string newer_live_override_generation;
     auto live_override_canvas_size = hm::stitching::stitching_canvas_size(root.string());
     {
       auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root);
@@ -390,6 +423,10 @@ int main() {
               *hugin_generation, 9.0, live_override_canvas_size->width, live_override_canvas_size->height);
           if (generation.ok())
             live_override_generation = *generation;
+          auto newer_generation = hm::stitching::stitched_output_generation_id(
+              *hugin_generation, 10.0, live_override_canvas_size->width, live_override_canvas_size->height);
+          if (newer_generation.ok())
+            newer_live_override_generation = *newer_generation;
         }
       }
     }
@@ -401,8 +438,33 @@ int main() {
                 "complete" &&
             after_live_override_authorization["rink"]["stitched_output_pending_generation"].as<std::string>() ==
                 live_override_generation &&
-            !after_live_override_authorization["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
-        "live rotation must authorize one exact generation without reopening the completed calibration owner");
+            after_live_override_authorization["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+        "live rotation authorization must defer scoreboard invalidation until the request is committed");
+    const auto newer_live_override_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 10.0);
+    const auto superseded_same_owner_publication = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(),
+        profile,
+        stale_snapshot,
+        "rink-run-a",
+        pre_rotation_generation.ok() ? *pre_rotation_generation : std::string());
+    const YAML::Node after_superseded_same_owner = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        newer_live_override_authorization.ok() && *newer_live_override_authorization &&
+            absl::IsAborted(superseded_same_owner_publication) &&
+            after_superseded_same_owner["rink"]["stitched_output_pending_generation"].as<std::string>() ==
+                newer_live_override_generation &&
+            after_superseded_same_owner["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+        "a newer pending live generation must reject the completed same-owner producer without deleting scoreboard data");
+    const auto current_live_override_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0);
+    const absl::Status current_live_override_commit =
+        hm::stitching::commit_live_stitched_output_rotation(root.string(), 9.0);
+    ok &= expect(
+        current_live_override_authorization.ok() && *current_live_override_authorization &&
+            current_live_override_commit.ok() &&
+            !YAML::LoadFile((root / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+        "the current exact live generation must commit scoreboard invalidation before runtime rotation");
     hm::stitching::RinkProfile mismatched_profile = profile;
     mismatched_profile.masks = {
         cv::Mat(12, 16, CV_8U, cv::Scalar(255)),

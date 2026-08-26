@@ -2625,27 +2625,29 @@ absl::Status save_rink_profile_locked(
       if (current_size.width != (*expected_size)->width || current_size.height != (*expected_size)->height) {
         return absl::AbortedError("Cannot publish a rink profile after the stitched-output canvas size changed");
       }
+      std::string compatible_legacy_generation;
+      HM_ASSIGN_OR_RETURN(
+          compatible_legacy_generation, stitched_output_generation_without_dimensions(expected_output_generation));
       const YAML::Node saved_generation = config["rink"]["stitched_output_generation"];
       const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
       if (pending_generation && pending_generation.IsDefined() && !pending_generation.IsScalar())
         return absl::InvalidArgumentError("Pending stitched-output generation must be a scalar");
+      const bool has_pending_generation = pending_generation && pending_generation.IsDefined();
+      if (has_pending_generation && pending_generation.as<std::string>() != expected_output_generation) {
+        return absl::AbortedError("Stitched-output producer does not match the authorized live generation");
+      }
       if (saved_generation && saved_generation.IsDefined()) {
         if (!saved_generation.IsScalar())
           return absl::InvalidArgumentError("Persisted stitched-output generation must be a scalar");
         const bool generation_matches = saved_generation.as<std::string>() == expected_output_generation;
-        const bool live_generation_authorized = pending_generation && pending_generation.IsScalar() &&
-            pending_generation.as<std::string>() == expected_output_generation;
-        if (!generation_matches && !live_generation_authorized && !stitching_calibration_is_pending(config)) {
+        const bool compatible_legacy_matches = saved_generation.as<std::string>() == compatible_legacy_generation;
+        if (!generation_matches && !compatible_legacy_matches && !has_pending_generation &&
+            !stitching_calibration_is_pending(config)) {
           return absl::AbortedError(
               "Cannot replace a completed stitched-output generation outside a pending calibration epoch");
         }
-        if (!generation_matches)
+        if (!generation_matches && !compatible_legacy_matches)
           remove_active_scoreboard_polygon(config);
-      } else if (
-          pending_generation && pending_generation.IsScalar() &&
-          pending_generation.as<std::string>() != expected_output_generation &&
-          !stitching_calibration_is_pending(config)) {
-        return absl::AbortedError("Stitched-output producer does not match the authorized live generation");
       }
       if (!saved_generation || !saved_generation.IsDefined())
         remove_active_scoreboard_polygon(config);

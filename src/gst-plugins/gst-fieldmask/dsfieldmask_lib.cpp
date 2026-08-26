@@ -267,12 +267,9 @@ absl::Status DsFieldMaskProcessFrame(
   }
 
   std::string output_generation;
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-  if (const auto* payload =
-          hm::UserApplicationPayload::get_payload<hm::stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+  if (const auto* payload = hm::stitching::find_stitched_output_generation_meta(frame_meta)) {
     output_generation = payload->generation();
   }
-#endif
   if (ctx->total_frame_count > 0 && !ctx->loaded_output_generation.empty() && output_generation.empty()) {
     return absl::FailedPreconditionError("Stitched-output generation metadata disappeared after mask loading");
   }

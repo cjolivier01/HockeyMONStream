@@ -224,6 +224,11 @@ int main(int argc, char** argv) {
       shadow_black_point_spec && (shadow_black_point_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
   GParamSpec* exposure_spec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), "exposure");
   const bool exposure_mutable_while_playing = exposure_spec && (exposure_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
+  GParamSpec* scoreboard_polygon_spec =
+      g_object_class_find_property(G_OBJECT_GET_CLASS(element), "scoreboard-perspective-polygon");
+  const bool scoreboard_polygon_mutable_while_playing = scoreboard_polygon_spec &&
+      (scoreboard_polygon_spec->flags & GST_PARAM_MUTABLE_PLAYING) != 0 &&
+      (scoreboard_polygon_spec->flags & G_PARAM_READABLE) != 0;
   const bool invalid_black_point_rejected =
       !hm::gst::apply_plugin_properties(G_OBJECT(element), {{"shadow-lift-black-point", "2"}});
   gboolean black_point_after_invalid = FALSE;
@@ -240,8 +245,9 @@ int main(int argc, char** argv) {
   gst_object_unref(element);
 
   if (!ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 || !black_point_mutable_while_playing ||
-      !exposure_mutable_while_playing || !invalid_black_point_rejected || black_point_after_invalid != TRUE ||
-      !invalid_exposure_rejected || std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
+      !exposure_mutable_while_playing || !scoreboard_polygon_mutable_while_playing || !invalid_black_point_rejected ||
+      black_point_after_invalid != TRUE || !invalid_exposure_rejected ||
+      std::abs(exposure_after_invalid - 1.0) > 1e-6 || !invalid_high_bit_depth_rejected ||
       high_bit_depth_after_invalid != TRUE) {
     std::cerr << "videoprep property roundtrip failed\n";
     return 1;

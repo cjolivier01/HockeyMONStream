@@ -357,16 +357,21 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       return false;
     }
   } else if (key == "scoreboard-perspective-polygon") {
-    scoreboard_perspective_polygion_.clear();
-    scoreboard_.reset();
     std::vector<std::string> points = absl::StrSplit(prop.value, ',');
-    assert(points.size() == 8);
+    if (points.size() != 8)
+      return false;
+    std::vector<cv::Point2f> parsed_polygon;
+    parsed_polygon.reserve(4);
     for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
       const size_t index = i << 1;
-      scoreboard_perspective_polygion_.emplace_back(
-          cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
+      float x = 0.0f;
+      float y = 0.0f;
+      if (!parse_finite_float(points[index], &x) || !parse_finite_float(points[index + 1], &y))
+        return false;
+      parsed_polygon.emplace_back(x, y);
     }
-    assert(scoreboard_perspective_polygion_.size() == 4);
+    scoreboard_perspective_polygion_ = std::move(parsed_polygon);
+    scoreboard_.reset();
     scoreboard_disabled_ = std::all_of(
         scoreboard_perspective_polygion_.begin(), scoreboard_perspective_polygion_.end(), [](const cv::Point2f& p) {
           return p.x == 0.0f && p.y == 0.0f;
@@ -845,17 +850,11 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
   const std::filesystem::path stitched_image = game_dir / "s.png";
   if (!std::filesystem::exists(stitched_image, ec) || ec || std::filesystem::file_size(stitched_image, ec) == 0 || ec) {
     std::string producer_output_generation;
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-    if (const auto* payload =
-            hm::UserApplicationPayload::get_payload<stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+    if (const auto* payload = stitching::find_stitched_output_generation_meta(frame_meta)) {
       producer_output_generation = payload->generation();
     }
-#else
-    auto current_generation = stitching::current_stitched_output_generation_id(game_dir.string());
-    if (!current_generation.ok())
-      return current_generation.status();
-    producer_output_generation = *current_generation;
-#endif
+    if (producer_output_generation.empty())
+      return absl::FailedPreconditionError("Stitched frame has no stitched-output generation metadata");
     HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface, producer_output_generation));
   }
 

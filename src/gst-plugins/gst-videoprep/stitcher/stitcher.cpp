@@ -2108,10 +2108,9 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
 
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-    stitching::StitchedOutputGenerationPayload::create_and_add<stitching::StitchedOutputGenerationPayload>(
-        reuse_frame_meta, output_generation);
-#endif
+    if (!stitching::add_stitched_output_generation_meta(reuse_frame_meta, output_generation)) {
+      return absl::ResourceExhaustedError("Could not attach the stitched-output generation to the output frame");
+    }
 
     if (show_) {
       render("HM Stitcher (LEFT)", incoming_surface_left, cuda_stream_);

@@ -49,23 +49,34 @@ int main() {
       authorize.ok() && *authorize && config["unrelated"].as<std::string>() == "preserved" &&
           config["rink"]["stitched_output_generation"].as<std::string>() == generation &&
           config["rink"]["stitched_output_pending_generation"].as<std::string>() == rotated_generation &&
-          !config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
-      "authorization must preserve generation bytes and invalidate active scoreboard geometry");
+          config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+      "authorization must preserve generation bytes and defer active scoreboard invalidation");
 
   const auto restore = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 0.0);
   config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(
-      restore.ok() && !*restore && !config["rink"]["stitched_output_pending_generation"].IsDefined(),
-      "authorizing the completed generation must remove a superseded pending token");
+      restore.ok() && !*restore && !config["rink"]["stitched_output_pending_generation"].IsDefined() &&
+          config["rink"]["scoreboard"]["perspective_polygon"].IsDefined() &&
+          absl::IsAborted(hm::stitching::commit_live_stitched_output_rotation(root.string(), 9.25)),
+      "a superseded rotation commit must fail without deleting completed-generation scoreboard geometry");
+
+  const auto reauthorize = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25);
+  const auto commit = hm::stitching::commit_live_stitched_output_rotation(root.string(), 9.25);
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      reauthorize.ok() && *reauthorize && commit.ok() &&
+          !config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+      "the current exact pending generation must commit active scoreboard invalidation");
 
   write_config(root / "config.yaml", generation);
   config = YAML::LoadFile((root / "config.yaml").string());
   config["rink"]["scoreboard"]["perspective_polygon"] = std::vector<std::vector<int>>{{0, 0}, {0, 0}, {0, 0}, {0, 0}};
   std::ofstream(root / "config.yaml") << config << '\n';
   const auto disabled_scoreboard = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0);
+  const auto disabled_scoreboard_commit = hm::stitching::commit_live_stitched_output_rotation(root.string(), 4.0);
   config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(
-      disabled_scoreboard.ok() && *disabled_scoreboard &&
+      disabled_scoreboard.ok() && *disabled_scoreboard && disabled_scoreboard_commit.ok() &&
           config["rink"]["scoreboard"]["perspective_polygon"].IsSequence() &&
           config["rink"]["scoreboard"]["perspective_polygon"].size() == 4,
       "live rotation must preserve the scoreboard-disabled sentinel");

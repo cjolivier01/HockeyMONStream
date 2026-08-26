@@ -173,7 +173,6 @@ absl::StatusOr<bool> authorize_live_stitched_output_rotation(
       config["rink"].remove("stitched_output_pending_generation");
     } else {
       config["rink"]["stitched_output_pending_generation"] = *authorized_generation;
-      remove_active_scoreboard_polygon(config);
     }
     const absl::Status published = publish_game_config(root, YAML::Dump(config) + "\n");
     if (!published.ok())
@@ -182,6 +181,49 @@ absl::StatusOr<bool> authorize_live_stitched_output_rotation(
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(
         "Unable to authorize live stitched-output rotation: " + std::string(exception.what()));
+  }
+}
+
+absl::Status commit_live_stitched_output_rotation(const std::string& game_dir, double post_stitch_rotate_degrees) {
+  if (game_dir.empty() || !std::isfinite(post_stitch_rotate_degrees))
+    return absl::InvalidArgumentError("A game directory and finite live stitched-output rotation are required");
+  const fs::path root(game_dir);
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+
+  const fs::path config_path = root / "config.yaml";
+  std::error_code error;
+  const bool has_config = fs::is_regular_file(config_path, error);
+  if (error)
+    return absl::InternalError("Unable to inspect game config: " + error.message());
+  if (!has_config)
+    return absl::FailedPreconditionError("Cannot commit live stitched-output rotation without a game config");
+
+  try {
+    YAML::Node config = YAML::LoadFile(config_path.string());
+    if (!config || !config.IsMap())
+      return absl::InvalidArgumentError("Game config must be a map");
+    const YAML::Node saved_generation = config["rink"]["stitched_output_generation"];
+    if (!saved_generation || !saved_generation.IsDefined() || !saved_generation.IsScalar()) {
+      return absl::FailedPreconditionError(
+          "Cannot commit live stitched-output rotation without a completed generation");
+    }
+    auto expected_generation = generation_with_rotation(saved_generation.as<std::string>(), post_stitch_rotate_degrees);
+    if (!expected_generation.ok())
+      return expected_generation.status();
+    if (*expected_generation == saved_generation.as<std::string>())
+      return absl::FailedPreconditionError("Completed stitched-output generation does not require a live commit");
+    const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
+    if (!pending_generation || !pending_generation.IsDefined() || !pending_generation.IsScalar() ||
+        pending_generation.as<std::string>() != *expected_generation) {
+      return absl::AbortedError("Pending stitched-output generation no longer matches the live rotation request");
+    }
+    remove_active_scoreboard_polygon(config);
+    return publish_game_config(root, YAML::Dump(config) + "\n");
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to commit live stitched-output rotation: " + std::string(exception.what()));
   }
 }
 

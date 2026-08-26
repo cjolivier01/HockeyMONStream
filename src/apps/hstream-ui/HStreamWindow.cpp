@@ -14146,6 +14146,17 @@ void HStreamWindow::completeLiveRotationAuthorization(
                   .arg(error));
     controls.erase("Stitch_Rotate_Degrees");
   }
+  if (authorized && generation_changed) {
+    const absl::Status commit =
+        hm::stitching::commit_live_stitched_output_rotation(gameDirectory(game_id).toStdString(), rotation);
+    if (!commit.ok()) {
+      appendLog(QString("camera control Stitch_Rotate_Degrees=%1 apply=failed reason=output generation commit: %2")
+                    .arg(controls.at("Stitch_Rotate_Degrees"))
+                    .arg(QString::fromStdString(commit.ToString())));
+      controls.erase("Stitch_Rotate_Degrees");
+      authorized = false;
+    }
+  }
   if (!publishRotationRuntimeControls(
           std::move(controls), authorized ? std::optional<int>(rotation) : std::nullopt, generation_changed)) {
     flushScheduledRuntimeControls();
