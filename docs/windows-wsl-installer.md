@@ -15,9 +15,10 @@ time it:
 3. downloads a dated Canonical Ubuntu 24.04 AMD64 WSL root filesystem and
    verifies it against the SHA-256 digest embedded in the bootstrapper;
 4. imports a dedicated per-user distribution named `HStream`;
-5. synchronizes the current user's and machine's valid Windows trusted roots
-   into that distribution, so corporate TLS inspection works without disabling
-   certificate verification;
+5. before the first APT network operation, synchronizes the current user's and
+   machine's valid Windows trusted roots into that distribution, excluding any
+   certificates explicitly present in either Windows Disallowed store, so
+   corporate TLS inspection works without disabling certificate verification;
 6. downloads the versioned Ubuntu 24.04 HStream package and verifies it against
    the `SHA256SUMS` from the same GitHub Release;
 7. installs the user-selected local `deepstream-9.1` package and HStream with
@@ -33,11 +34,11 @@ trusted input: Debian maintainer scripts run as root inside WSL and can access
 the invoking user's mounted Windows files. Obtain it from NVIDIA and verify it
 before selecting it.
 Public GitHub releases download anonymously. When the release repository is
-private, the installer reuses an existing GitHub CLI login when available. If
-authentication is still needed, it opens GitHub's device-login page and shows
-and copies the one-time code. The installer uses a pinned, checksum-verified
-GitHub CLI for this flow and deletes its temporary authentication state after
-provisioning.
+private, the installer reuses an existing GitHub CLI login only after verifying
+that it can access the requested release. If authentication is still needed, it
+opens GitHub's device-login page and shows and copies the one-time code. The
+installer uses a pinned, checksum-verified GitHub CLI for this flow and deletes
+its temporary authentication state after provisioning.
 
 ## Build on Ubuntu
 

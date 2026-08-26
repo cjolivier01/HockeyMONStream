@@ -294,11 +294,21 @@ function Get-WslPath([string]$WindowsPath) {
 
 function Sync-WindowsRootCertificates {
     $now = Get-Date
+    $disallowedThumbprints = @{}
+    foreach ($store in @("Cert:\CurrentUser\Disallowed", "Cert:\LocalMachine\Disallowed")) {
+        foreach ($certificate in Get-ChildItem -Path $store -ErrorAction SilentlyContinue) {
+            $thumbprint = ([string]$certificate.Thumbprint).ToUpperInvariant()
+            if ($thumbprint -match '^[0-9A-F]{40}$') {
+                $disallowedThumbprints[$thumbprint] = $true
+            }
+        }
+    }
     $certificates = @{}
     foreach ($store in @("Cert:\CurrentUser\Root", "Cert:\LocalMachine\Root")) {
         foreach ($certificate in Get-ChildItem -Path $store -ErrorAction SilentlyContinue) {
             $thumbprint = ([string]$certificate.Thumbprint).ToUpperInvariant()
             if ($thumbprint -match '^[0-9A-F]{40}$' -and
+                -not $disallowedThumbprints.ContainsKey($thumbprint) -and
                 $certificate.NotBefore -le $now -and $certificate.NotAfter -gt $now) {
                 $certificates[$thumbprint] = $certificate
             }
@@ -392,7 +402,42 @@ function Invoke-GitHubCli {
     }
 }
 
+function Test-GitHubCliReleaseAccess {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryName,
+        [Parameter(Mandatory = $true)][string]$ReleaseTag
+    )
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "SilentlyContinue"
+        & $script:GitHubCliPath release view $ReleaseTag --repo $RepositoryName --json tagName *> $null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Start-GitHubDeviceLogin {
+    $script:GitHubCliConfigDirectory = Join-Path `
+        ([IO.Path]::GetTempPath()) ("HStream-GitHubAuth-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $script:GitHubCliConfigDirectory | Out-Null
+    Write-Stage "GitHub requires a sign-in for this release; opening the device login in your browser"
+    # NSIS does not give the child process an interactive terminal, so gh
+    # prints its device URL instead of opening it even when --web is present.
+    # Open the fixed GitHub device page here; gh copies and displays the
+    # one-time code below, then waits for the browser authorization to finish.
+    Start-Process $GitHubDeviceLoginUri | Out-Null
+    Invoke-GitHubCli -UseTemporaryConfig -ArgumentList @(
+        "auth", "login", "--hostname", "github.com", "--git-protocol", "https",
+        "--web", "--clipboard", "--scopes", "repo", "--insecure-storage"
+    )
+}
+
 function Initialize-GitHubCli {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryName,
+        [Parameter(Mandatory = $true)][string]$ReleaseTag
+    )
     if ($script:GitHubCliPath) {
         return
     }
@@ -421,24 +466,15 @@ function Initialize-GitHubCli {
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
     }
-    if ($authStatus -eq 0) {
+    if ($authStatus -eq 0 -and
+        (Test-GitHubCliReleaseAccess -RepositoryName $RepositoryName -ReleaseTag $ReleaseTag)) {
         Write-Stage "Using the existing GitHub CLI login"
         return
     }
-
-    $script:GitHubCliConfigDirectory = Join-Path `
-        ([IO.Path]::GetTempPath()) ("HStream-GitHubAuth-" + [Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $script:GitHubCliConfigDirectory | Out-Null
-    Write-Stage "GitHub requires a sign-in for this release; opening the device login in your browser"
-    # NSIS does not give the child process an interactive terminal, so gh
-    # prints its device URL instead of opening it even when --web is present.
-    # Open the fixed GitHub device page here; gh copies and displays the
-    # one-time code below, then waits for the browser authorization to finish.
-    Start-Process $GitHubDeviceLoginUri | Out-Null
-    Invoke-GitHubCli -UseTemporaryConfig -ArgumentList @(
-        "auth", "login", "--hostname", "github.com", "--git-protocol", "https",
-        "--web", "--clipboard", "--scopes", "repo", "--insecure-storage"
-    )
+    if ($authStatus -eq 0) {
+        Write-Stage "The existing GitHub CLI login cannot access $RepositoryName $ReleaseTag"
+    }
+    Start-GitHubDeviceLogin
 }
 
 function Remove-GitHubCliStaging {
@@ -456,7 +492,7 @@ function Save-GitHubReleaseAssetWithCli {
         [Parameter(Mandatory = $true)][string]$AssetName,
         [Parameter(Mandatory = $true)][string]$Destination
     )
-    Initialize-GitHubCli
+    Initialize-GitHubCli -RepositoryName $RepositoryName -ReleaseTag $ReleaseTag
     $arguments = @(
         "release", "download", $ReleaseTag, "--repo", $RepositoryName,
         "--pattern", $AssetName, "--output", $Destination, "--clobber"
@@ -717,8 +753,11 @@ dpkg -i /tmp/hstream-wsl-libcuda.deb >/dev/null
 rm -rf "${provider}" /tmp/hstream-wsl-libcuda.deb
 '@
     Write-Stage "Preparing Ubuntu and validating Windows-provided CUDA"
-    Invoke-WslBashScript -Name $DistroName -Script $bootstrap
+    # Canonical's pinned WSL rootfs includes ca-certificates. Import Windows
+    # trust before the first APT network operation so inspected corporate TLS
+    # works even on a brand-new distribution.
     Sync-WindowsRootCertificates
+    Invoke-WslBashScript -Name $DistroName -Script $bootstrap
 }
 
 function Install-HStream {

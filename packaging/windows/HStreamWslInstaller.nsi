@@ -45,6 +45,7 @@ Var Dialog
 Var ElevatedPowerShellExe
 Var ExitCode
 Var PowerShellExe
+Var RemoveLegacyShortcuts
 
 !insertmacro MUI_PAGE_WELCOME
 Page custom DeepStreamPage DeepStreamPageLeave
@@ -67,6 +68,13 @@ Function .onInit
   ; ShellExecute's 64-bit UAC broker cannot resolve the Sysnative alias that
   ; the 32-bit installer uses for direct child processes.
   StrCpy $ElevatedPowerShellExe "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+  ReadRegStr $0 HKCU "${PRODUCT_UNINST_KEY}" "ShortcutFolder"
+  ${If} $0 == ""
+    ReadRegStr $0 HKCU "${PRODUCT_UNINST_KEY}" "UninstallString"
+    ${If} $0 != ""
+      StrCpy $RemoveLegacyShortcuts "1"
+    ${EndIf}
+  ${EndIf}
   ${GetParameters} $0
   ${GetOptions} $0 "/DEEPSTREAM_DEB=" $DeepStreamDeb
 FunctionEnd
@@ -76,6 +84,10 @@ Function un.onInit
   StrCpy $PowerShellExe "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   IfFileExists "$PowerShellExe" +2 0
     StrCpy $PowerShellExe "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+  ReadRegStr $0 HKCU "${PRODUCT_UNINST_KEY}" "ShortcutFolder"
+  ${If} $0 == ""
+    StrCpy $RemoveLegacyShortcuts "1"
+  ${EndIf}
 FunctionEnd
 
 Function DeepStreamPage
@@ -153,6 +165,13 @@ Section "HStream WSL environment" SEC_MAIN
     MessageBox MB_ICONSTOP|MB_OK "HStream provisioning failed with exit code $ExitCode. Review the installation details above and %LOCALAPPDATA%\HStream\installer.log."
     Abort
   ${Else}
+    ${If} $RemoveLegacyShortcuts == "1"
+      ; Delete only the links owned by older installers. WSLg owns this folder.
+      Delete "$SMPROGRAMS\HStream\HStream UI.lnk"
+      Delete "$SMPROGRAMS\HStream\HStream Shell.lnk"
+      Delete "$SMPROGRAMS\HStream\Games.lnk"
+      Delete "$SMPROGRAMS\HStream\Output.lnk"
+    ${EndIf}
     CreateDirectory "$SMPROGRAMS\${START_MENU_FOLDER}"
     CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\HStream UI.lnk" "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\hstream-wsl.ps1" -Action Launch -DistroName "HStream"' "$INSTDIR\hstream.ico"
     CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\HStream Shell.lnk" "$WINDIR\System32\wsl.exe" '-d HStream --cd /home/hstream' "$INSTDIR\hstream.ico"
@@ -167,6 +186,7 @@ Section "HStream WSL environment" SEC_MAIN
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "ShortcutFolder" "${START_MENU_FOLDER}"
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoRepair" 1
 SectionEnd
@@ -182,6 +202,12 @@ Section "Uninstall"
   ${EndIf}
 
 PreserveDistro:
+  ${If} $RemoveLegacyShortcuts == "1"
+    Delete "$SMPROGRAMS\HStream\HStream UI.lnk"
+    Delete "$SMPROGRAMS\HStream\HStream Shell.lnk"
+    Delete "$SMPROGRAMS\HStream\Games.lnk"
+    Delete "$SMPROGRAMS\HStream\Output.lnk"
+  ${EndIf}
   Delete "$SMPROGRAMS\${START_MENU_FOLDER}\HStream UI.lnk"
   Delete "$SMPROGRAMS\${START_MENU_FOLDER}\HStream Shell.lnk"
   Delete "$SMPROGRAMS\${START_MENU_FOLDER}\Games.lnk"

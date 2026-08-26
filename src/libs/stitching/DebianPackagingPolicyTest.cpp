@@ -128,6 +128,10 @@ int main(int argc, char** argv) {
           contains(windows_nsis, "DisableX64FSRedirection") && contains(windows_nsis, "EnableX64FSRedirection") &&
           contains(windows_nsis, "START_MENU_FOLDER \"HStream Tools\"") &&
           contains(windows_nsis, "$SMPROGRAMS\\${START_MENU_FOLDER}\\HStream UI.lnk") &&
+          contains(windows_nsis, "RemoveLegacyShortcuts") &&
+          contains(windows_nsis, "Delete \"$SMPROGRAMS\\HStream\\HStream UI.lnk\"") &&
+          contains(windows_nsis, "\"ShortcutFolder\" \"${START_MENU_FOLDER}\"") &&
+          !contains(windows_nsis, "RMDir \"$SMPROGRAMS\\HStream\"") &&
           contains(windows_nsis, "elevation-launch-failed") && contains(windows_nsis, "POWERSHELL_SHA256") &&
           contains(windows_nsis, "ReadAllBytes") && contains(windows_nsis, "SHA256") &&
           contains(windows_nsis, "ScriptBlock]::Create") && contains(windows_nsis, "EnsureWslMachine") &&
@@ -145,6 +149,10 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "--clipboard") &&
           contains(windows_powershell, "--insecure-storage") && contains(windows_powershell, "GH_CONFIG_DIR") &&
           contains(windows_powershell, "GH_PROMPT_DISABLED") &&
+          contains(windows_powershell, "function Test-GitHubCliReleaseAccess") &&
+          contains(windows_powershell, "release view $ReleaseTag --repo $RepositoryName --json tagName") &&
+          contains(windows_powershell, "function Start-GitHubDeviceLogin") &&
+          contains(windows_powershell, "cannot access $RepositoryName $ReleaseTag") &&
           contains(windows_powershell, "$ErrorActionPreference = \"Continue\"") &&
           contains(windows_powershell, "$ErrorActionPreference = \"SilentlyContinue\"") &&
           contains(windows_powershell, "Remove-GitHubCliStaging") &&
@@ -179,8 +187,13 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "function Sync-WindowsRootCertificates") &&
           contains(windows_powershell, "Cert:\\CurrentUser\\Root") &&
           contains(windows_powershell, "Cert:\\LocalMachine\\Root") &&
+          contains(windows_powershell, "Cert:\\CurrentUser\\Disallowed") &&
+          contains(windows_powershell, "Cert:\\LocalMachine\\Disallowed") &&
+          contains(windows_powershell, "$disallowedThumbprints.ContainsKey($thumbprint)") &&
           contains(windows_powershell, "/usr/local/share/ca-certificates/hstream-windows") &&
           contains(windows_powershell, "update-ca-certificates") &&
+          contains(windows_powershell,
+                   "Sync-WindowsRootCertificates\n    Invoke-WslBashScript -Name $DistroName -Script $bootstrap") &&
           contains(windows_powershell, "PROCESSOR_ARCHITEW6432") &&
           contains(windows_powershell, "Test-HStreamDistroOwnership") &&
           contains(windows_powershell, "hstream-wsl-bootstrapper-schema-1") &&
