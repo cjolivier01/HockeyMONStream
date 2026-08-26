@@ -35,6 +35,11 @@ struct ProcessIdentity {
   std::string boot_id;
 };
 
+struct ProcessMetadata {
+  uint64_t start_time;
+  char state;
+};
+
 absl::StatusOr<std::string> current_boot_id() {
   std::ifstream input("/proc/sys/kernel/random/boot_id");
   std::string boot_id;
@@ -45,7 +50,7 @@ absl::StatusOr<std::string> current_boot_id() {
   return boot_id;
 }
 
-absl::StatusOr<uint64_t> process_start_time(pid_t process_id) {
+absl::StatusOr<ProcessMetadata> process_metadata(pid_t process_id) {
   std::ifstream input("/proc/" + std::to_string(process_id) + "/stat");
   if (!input)
     return absl::NotFoundError("Live stitched-output owner process is not running");
@@ -56,15 +61,21 @@ absl::StatusOr<uint64_t> process_start_time(pid_t process_id) {
     return absl::InternalError("Unable to parse live stitched-output owner process metadata");
   std::istringstream fields(stat.substr(command_end + 2));
   std::string value;
+  char state = 0;
   for (int field = 3; field <= 22; ++field) {
     if (!(fields >> value))
       return absl::InternalError("Unable to parse live stitched-output owner process start time");
+    if (field == 3) {
+      if (value.size() != 1)
+        return absl::InternalError("Invalid live stitched-output owner process state");
+      state = value.front();
+    }
   }
   uint64_t start_time = 0;
   const auto parsed = std::from_chars(value.data(), value.data() + value.size(), start_time);
   if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size())
     return absl::InternalError("Invalid live stitched-output owner process start time");
-  return start_time;
+  return ProcessMetadata{start_time, state};
 }
 
 absl::StatusOr<ProcessIdentity> parse_process_identity(std::string_view identity) {
@@ -813,13 +824,13 @@ absl::Status validate_stitching_generation_owner_file_locked(
 }
 
 absl::StatusOr<std::string> current_live_stitched_output_owner_process() {
-  auto start_time = process_start_time(::getpid());
-  if (!start_time.ok())
-    return start_time.status();
+  auto metadata = process_metadata(::getpid());
+  if (!metadata.ok())
+    return metadata.status();
   auto boot_id = current_boot_id();
   if (!boot_id.ok())
     return boot_id.status();
-  return std::to_string(::getpid()) + ":" + std::to_string(*start_time) + ":" + *boot_id;
+  return std::to_string(::getpid()) + ":" + std::to_string(metadata->start_time) + ":" + *boot_id;
 }
 
 absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_view identity) {
@@ -835,12 +846,14 @@ absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_vi
     return boot_id.status();
   if (*boot_id != parsed->boot_id)
     return false;
-  auto current_start_time = process_start_time(parsed->process_id);
-  if (absl::IsNotFound(current_start_time.status()))
+  auto metadata = process_metadata(parsed->process_id);
+  if (absl::IsNotFound(metadata.status()))
     return false;
-  if (!current_start_time.ok())
-    return current_start_time.status();
-  return *current_start_time == parsed->start_time;
+  if (!metadata.ok())
+    return metadata.status();
+  if (metadata->state == 'Z' || metadata->state == 'X' || metadata->state == 'x')
+    return false;
+  return metadata->start_time == parsed->start_time;
 }
 
 absl::StatusOr<bool> live_stitched_output_authorization_is_active(const YAML::Node& config) {

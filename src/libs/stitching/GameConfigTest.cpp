@@ -237,6 +237,38 @@ int main() {
           !hm::stitching::live_stitched_output_owner_process_is_active(wrong_boot_owner).value_or(true),
           "an owner identity from another Linux boot must not retain publication authority");
     }
+    int owner_pipe[2] = {-1, -1};
+    const bool owner_pipe_created = ::pipe(owner_pipe) == 0;
+    const pid_t zombie_owner = owner_pipe_created ? ::fork() : -1;
+    if (zombie_owner == 0) {
+      ::close(owner_pipe[0]);
+      const auto identity = hm::stitching::current_live_stitched_output_owner_process();
+      if (identity.ok())
+        static_cast<void>(::write(owner_pipe[1], identity->data(), identity->size()));
+      _exit(identity.ok() ? 0 : 1);
+    }
+    std::string zombie_identity;
+    if (zombie_owner > 0) {
+      ::close(owner_pipe[1]);
+      char buffer[256];
+      ssize_t read_size = 0;
+      while ((read_size = ::read(owner_pipe[0], buffer, sizeof(buffer))) > 0)
+        zombie_identity.append(buffer, static_cast<size_t>(read_size));
+      ::close(owner_pipe[0]);
+    } else if (owner_pipe_created) {
+      ::close(owner_pipe[0]);
+      ::close(owner_pipe[1]);
+    }
+    const auto zombie_active = zombie_identity.empty()
+        ? absl::StatusOr<bool>(absl::InternalError("Zombie owner fixture did not report an identity"))
+        : hm::stitching::live_stitched_output_owner_process_is_active(zombie_identity);
+    int zombie_status = 0;
+    if (zombie_owner > 0)
+      ::waitpid(zombie_owner, &zombie_status, 0);
+    ok &= expect(
+        zombie_owner > 0 && zombie_active.ok() && !*zombie_active && WIFEXITED(zombie_status) &&
+            WEXITSTATUS(zombie_status) == 0,
+        "an exited but unreaped owner process must not retain publication authority");
     ok &= expect(
         hm::stitching::publish_game_config(
             root,
