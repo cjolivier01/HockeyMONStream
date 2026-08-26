@@ -168,6 +168,7 @@ class HStreamWindow : public QMainWindow {
   void updateArchiveOutputPathLabel();
   void beginArchiveJobLog(const QString& configured_output_path, const QString& run_id);
   void resolveArchiveJobLogPath(const QString& resolved_output_path);
+  bool reopenArchiveJobLog(const QString& path, QString* error);
   void finishArchiveJobLog();
   void startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video);
   void readArchiveFinalizationProgress();

@@ -72,6 +72,9 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#ifdef Q_OS_LINUX
+#include <sys/syscall.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -1034,18 +1037,89 @@ QString available_final_archive_path(const QString& game_dir, const QString& gam
   return {};
 }
 
-QString available_failed_archive_path(const QString& source_path) {
+QString failed_archive_candidate(const QString& source_path, int suffix) {
   const QFileInfo source(source_path);
   const QString extension = source.suffix().isEmpty() ? QString() : "." + source.suffix();
   const QString base = source.completeBaseName() + "-finalization-failed";
-  for (int suffix = 0; suffix < 1000; ++suffix) {
-    const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
-    const QString candidate = QDir(source.absolutePath()).filePath(filename);
-    if (!QFileInfo::exists(candidate) && !QFileInfo::exists(candidate + ".log"))
-      return candidate;
-  }
-  return {};
+  const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
+  return QDir(source.absolutePath()).filePath(filename);
 }
+
+bool path_entry_exists(const QString& path, QString* error = nullptr) {
+#ifdef Q_OS_UNIX
+  struct stat entry_stat{};
+  const QByteArray encoded_path = QFile::encodeName(path);
+  if (::lstat(encoded_path.constData(), &entry_stat) == 0)
+    return true;
+  const int saved_errno = errno;
+  if (saved_errno != ENOENT && error)
+    *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+  return false;
+#else
+  Q_UNUSED(error);
+  return QFileInfo(path).exists() || QFileInfo(path).isSymLink();
+#endif
+}
+
+#ifdef Q_OS_UNIX
+bool same_file_identity(const struct stat& left, const struct stat& right) {
+  return left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+}
+
+bool remove_path_if_same_file(const QString& path, const QString& identity_path, QString* error) {
+  struct stat path_stat{};
+  struct stat identity_stat{};
+  const QByteArray encoded_path = QFile::encodeName(path);
+  const QByteArray encoded_identity = QFile::encodeName(identity_path);
+  if (::lstat(encoded_path.constData(), &path_stat) != 0 ||
+      ::lstat(encoded_identity.constData(), &identity_stat) != 0 || !same_file_identity(path_stat, identity_stat)) {
+    if (error)
+      *error = QString("refusing to remove a replaced path: %1").arg(path);
+    return false;
+  }
+  if (::unlink(encoded_path.constData()) == 0 || errno == ENOENT)
+    return true;
+  if (error)
+    *error = QString::fromLocal8Bit(std::strerror(errno));
+  return false;
+}
+
+bool rename_path_no_replace(const QString& source, const QString& destination, int* saved_errno) {
+  const QByteArray encoded_source = QFile::encodeName(source);
+  const QByteArray encoded_destination = QFile::encodeName(destination);
+#ifdef Q_OS_LINUX
+  constexpr unsigned int kRenameNoReplace = 1;
+  if (::syscall(
+          SYS_renameat2,
+          AT_FDCWD,
+          encoded_source.constData(),
+          AT_FDCWD,
+          encoded_destination.constData(),
+          kRenameNoReplace) == 0) {
+    return true;
+  }
+  const int rename_errno = errno;
+  if (rename_errno != ENOSYS && rename_errno != EINVAL) {
+    if (saved_errno)
+      *saved_errno = rename_errno;
+    return false;
+  }
+#endif
+  if (::link(encoded_source.constData(), encoded_destination.constData()) != 0) {
+    if (saved_errno)
+      *saved_errno = errno;
+    return false;
+  }
+  if (::unlink(encoded_source.constData()) == 0)
+    return true;
+  const int unlink_errno = errno;
+  QString cleanup_error;
+  remove_path_if_same_file(destination, source, &cleanup_error);
+  if (saved_errno)
+    *saved_errno = unlink_errno;
+  return false;
+}
+#endif
 
 qint64 media_clock_us(const QString& value) {
   const QStringList fields = value.trimmed().split(':');
@@ -5794,40 +5868,8 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   }
   const bool renamed = !provisional_path.isEmpty() && QFile::rename(provisional_path, resolved_log_path);
   archive_job_log_path_ = renamed ? resolved_log_path : provisional_path;
-  archive_job_log_.setFileName(archive_job_log_path_);
   QString reopen_error;
-  bool reopened = false;
-  if (!archive_job_log_path_.isEmpty()) {
-#ifdef Q_OS_UNIX
-    const QByteArray encoded_path = QFile::encodeName(archive_job_log_path_);
-    const int fd = ::open(encoded_path.constData(), O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-    if (fd < 0) {
-      reopen_error = QString::fromLocal8Bit(std::strerror(errno));
-    } else {
-      struct stat log_stat{};
-      const int stat_result = ::fstat(fd, &log_stat);
-      if (stat_result != 0 || !S_ISREG(log_stat.st_mode)) {
-        reopen_error = stat_result != 0 ? QString::fromLocal8Bit(std::strerror(errno))
-                                        : QString("resolved log path is not a regular file");
-        ::close(fd);
-      } else if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
-        reopen_error = QString::fromLocal8Bit(std::strerror(errno));
-        ::close(fd);
-      } else if (!archive_job_log_.open(
-                     fd, QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text, QFileDevice::AutoCloseHandle)) {
-        reopen_error = archive_job_log_.errorString();
-        ::close(fd);
-      } else {
-        reopened = true;
-      }
-    }
-#else
-    reopened = archive_job_log_.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
-    if (!reopened)
-      reopen_error = archive_job_log_.errorString();
-#endif
-  }
-  if (!reopened) {
+  if (!reopenArchiveJobLog(archive_job_log_path_, &reopen_error)) {
     archive_job_log_enabled_ = false;
     archive_job_log_path_.clear();
     appendLog(QString("archive job log could not continue after output path resolution: %1")
@@ -5840,6 +5882,53 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
     appendLog(QString("archive job log remains at %1 because it could not be renamed to %2")
                   .arg(archive_job_log_path_, resolved_log_path));
   }
+}
+
+bool HStreamWindow::reopenArchiveJobLog(const QString& path, QString* error) {
+  if (path.isEmpty()) {
+    if (error)
+      *error = "log path is empty";
+    return false;
+  }
+  archive_job_log_.setFileName(path);
+#ifdef Q_OS_UNIX
+  const QByteArray encoded_path = QFile::encodeName(path);
+  const int fd = ::open(encoded_path.constData(), O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return false;
+  }
+  struct stat log_stat{};
+  const int stat_result = ::fstat(fd, &log_stat);
+  if (stat_result != 0 || !S_ISREG(log_stat.st_mode)) {
+    if (error) {
+      *error = stat_result != 0 ? QString::fromLocal8Bit(std::strerror(errno))
+                                : QString("resolved log path is not a regular file");
+    }
+    ::close(fd);
+    return false;
+  }
+  if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    ::close(fd);
+    return false;
+  }
+  if (!archive_job_log_.open(
+          fd, QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text, QFileDevice::AutoCloseHandle)) {
+    if (error)
+      *error = archive_job_log_.errorString();
+    ::close(fd);
+    return false;
+  }
+  return true;
+#else
+  const bool reopened = archive_job_log_.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+  if (!reopened && error)
+    *error = archive_job_log_.errorString();
+  return reopened;
+#endif
 }
 
 void HStreamWindow::finishArchiveJobLog() {
@@ -6323,10 +6412,161 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   }
   QString failure_detail = message;
   if (QFileInfo::exists(archive_finalize_source_path_)) {
-    const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
-    if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
+    const QString original_archive_path = archive_finalize_source_path_;
+    const QString original_log_path = archive_job_log_path_;
+    bool has_job_log = false;
+#ifdef Q_OS_UNIX
+    struct stat original_log_stat{};
+    if (!original_log_path.isEmpty()) {
+      const QByteArray encoded_log = QFile::encodeName(original_log_path);
+      has_job_log = ::lstat(encoded_log.constData(), &original_log_stat) == 0 && S_ISREG(original_log_stat.st_mode);
+    }
+#else
+    has_job_log = !original_log_path.isEmpty() && QFileInfo(original_log_path).isFile();
+#endif
+    if (archive_job_log_.isOpen())
+      archive_job_log_.flush();
+
+    QString failed_archive_path;
+    QString recovery_move_error;
+    for (int suffix = 0; suffix < 1000; ++suffix) {
+      const QString candidate = failed_archive_candidate(original_archive_path, suffix);
+      const QString candidate_log = candidate + ".log";
+      bool candidate_log_linked = false;
+      if (has_job_log) {
+#ifdef Q_OS_UNIX
+        const QByteArray encoded_original_log = QFile::encodeName(original_log_path);
+        const QByteArray encoded_candidate_log = QFile::encodeName(candidate_log);
+        if (::link(encoded_original_log.constData(), encoded_candidate_log.constData()) != 0) {
+          const int saved_errno = errno;
+          if (saved_errno == EEXIST)
+            continue;
+          recovery_move_error = QString("could not reserve recovery log path %1: %2")
+                                    .arg(candidate_log, QString::fromLocal8Bit(std::strerror(saved_errno)));
+          break;
+        }
+        struct stat linked_log_stat{};
+        if (::lstat(encoded_candidate_log.constData(), &linked_log_stat) != 0 ||
+            !same_file_identity(linked_log_stat, original_log_stat)) {
+          QString cleanup_error;
+          remove_path_if_same_file(candidate_log, original_log_path, &cleanup_error);
+          recovery_move_error = QString("recovery log path was replaced while being reserved: %1").arg(candidate_log);
+          break;
+        }
+        candidate_log_linked = true;
+#else
+        if (!QFile::copy(original_log_path, candidate_log)) {
+          if (path_entry_exists(candidate_log))
+            continue;
+          recovery_move_error = QString("could not reserve recovery log path %1").arg(candidate_log);
+          break;
+        }
+        candidate_log_linked = true;
+#endif
+      } else {
+        QString inspection_error;
+        if (path_entry_exists(candidate_log, &inspection_error))
+          continue;
+        if (!inspection_error.isEmpty()) {
+          recovery_move_error =
+              QString("could not inspect recovery log path %1: %2").arg(candidate_log, inspection_error);
+          break;
+        }
+      }
+
+      if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION") && suffix == 1) {
+        QFile collision(candidate);
+        if (collision.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+          collision.write("injected recovery video collision");
+          collision.close();
+        }
+      }
+
+      int move_errno = 0;
+      bool video_moved = false;
+#ifdef Q_OS_UNIX
+      video_moved = rename_path_no_replace(original_archive_path, candidate, &move_errno);
+#else
+      video_moved = QFile::rename(original_archive_path, candidate);
+      if (!video_moved)
+        move_errno = path_entry_exists(candidate) ? EEXIST : EIO;
+#endif
+      if (!video_moved) {
+        QString cleanup_error;
+        bool log_cleanup_succeeded = true;
+        if (candidate_log_linked) {
+#ifdef Q_OS_UNIX
+          log_cleanup_succeeded = remove_path_if_same_file(candidate_log, original_log_path, &cleanup_error);
+#else
+          log_cleanup_succeeded = QFile::remove(candidate_log);
+#endif
+        }
+        if (!log_cleanup_succeeded) {
+          recovery_move_error = QString("could not move recovery video and could not safely clean %1: %2")
+                                    .arg(candidate_log, cleanup_error);
+          break;
+        }
+        if (move_errno == EEXIST)
+          continue;
+        recovery_move_error = QString("could not move recovery video to %1: %2")
+                                  .arg(candidate, QString::fromLocal8Bit(std::strerror(move_errno)));
+        break;
+      }
+
+#ifdef Q_OS_UNIX
+      if (candidate_log_linked) {
+        struct stat candidate_log_stat{};
+        const QByteArray encoded_candidate_log = QFile::encodeName(candidate_log);
+        if (::lstat(encoded_candidate_log.constData(), &candidate_log_stat) != 0 ||
+            !same_file_identity(candidate_log_stat, original_log_stat)) {
+          int rollback_errno = 0;
+          if (rename_path_no_replace(candidate, original_archive_path, &rollback_errno)) {
+            QString cleanup_error;
+            remove_path_if_same_file(candidate_log, original_log_path, &cleanup_error);
+            continue;
+          }
+          failed_archive_path = candidate;
+          recovery_move_error = QString("recovery log path %1 was replaced and video rollback failed: %2")
+                                    .arg(candidate_log, QString::fromLocal8Bit(std::strerror(rollback_errno)));
+          failure_detail += "\n\n" + recovery_move_error;
+          break;
+        }
+      }
+#endif
+
+      failed_archive_path = candidate;
+      if (candidate_log_linked) {
+        if (archive_job_log_.isOpen()) {
+          archive_job_log_.flush();
+          archive_job_log_.close();
+        }
+        archive_job_log_path_ = candidate_log;
+        QString reopen_error;
+        const bool reopened = reopenArchiveJobLog(candidate_log, &reopen_error);
+        QString old_log_cleanup_error;
+#ifdef Q_OS_UNIX
+        const bool old_log_removed = remove_path_if_same_file(original_log_path, candidate_log, &old_log_cleanup_error);
+#else
+        const bool old_log_removed = QFile::remove(original_log_path);
+#endif
+        if (!old_log_removed) {
+          failure_detail += QString("\n\nThe recovery log is paired at %1, but its old link could not be removed: %2")
+                                .arg(candidate_log, old_log_cleanup_error);
+        }
+        if (!reopened) {
+          archive_job_log_enabled_ = false;
+          archive_job_log_path_.clear();
+          appendLog(QString("archive job log was retained at %1, but file logging could not continue: %2")
+                        .arg(candidate_log, reopen_error));
+        } else {
+          appendLog(QString("archive job log moved with recovery archive: %1").arg(candidate_log));
+        }
+      }
+      break;
+    }
+
+    if (!failed_archive_path.isEmpty()) {
       archive_finalize_source_path_ = failed_archive_path;
-      resolveArchiveJobLogPath(archive_finalize_source_path_);
       releaseArchiveFinalizerOwnership(true);
       archive_finalize_pending_failure_detail_ = failure_detail;
       QString durability_error;
@@ -6341,9 +6581,10 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
                             .arg(durability_error);
     } else {
       archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
-      failure_detail +=
-          "\n\nThe retained work file could not be moved away from the next run's output path. Do not start another "
-          "archive run until this file has been copied to safety.";
+      failure_detail += QString(
+                            "\n\nThe retained work file could not be moved away from the next run's output path.%1 "
+                            "Do not start another archive run until this file has been copied to safety.")
+                            .arg(recovery_move_error.isEmpty() ? QString() : " " + recovery_move_error);
     }
   } else {
     releaseArchiveFinalizerOwnership(true);

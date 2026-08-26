@@ -1664,6 +1664,7 @@ play-tracker:
   fs::create_directories(log_collision_dir);
   const fs::path log_collision_archive = log_collision_dir / "collision.mkv";
   const fs::path log_collision_stale = log_collision_dir / "collision.hstream-run-99999999-dead.mkv";
+  const fs::path occupied_video = log_collision_dir / "collision-finalization-failed.mkv";
   const fs::path occupied_log = log_collision_dir / "collision-finalization-failed.mkv.log";
   const fs::path expected_collision_recovery = log_collision_dir / "collision-finalization-failed-1.mkv";
   std::ofstream(log_collision_stale, std::ios::binary) << "legacy work without a log";
@@ -1672,13 +1673,52 @@ play-tracker:
   std::ifstream occupied_log_stream(occupied_log, std::ios::binary);
   const std::string occupied_log_content{
       std::istreambuf_iterator<char>(occupied_log_stream), std::istreambuf_iterator<char>()};
+  std::ifstream collision_recovery_stream(expected_collision_recovery, std::ios::binary);
+  const std::string collision_recovery_content{
+      std::istreambuf_iterator<char>(collision_recovery_stream), std::istreambuf_iterator<char>()};
   ok &= expect(
       collision_recoveries.ok() && collision_recoveries->size() == 1 &&
-          collision_recoveries->front() == expected_collision_recovery &&
-          fs::is_regular_file(expected_collision_recovery) &&
+          collision_recoveries->front() == expected_collision_recovery && !fs::exists(log_collision_stale) &&
+          !fs::exists(occupied_video) && collision_recovery_content == "legacy work without a log" &&
           !fs::exists(expected_collision_recovery.string() + ".log") &&
           occupied_log_content == "unrelated existing log",
       "Recovery of a video without a log must skip basenames occupied by unrelated log sidecars");
+
+  const auto interrupted_recovery_is_reconciled =
+      [&](const std::string& name, bool has_log, bool destination_log_exists, bool destination_video_exists) {
+        const fs::path interrupted_dir = root / ("archive-interrupted-" + name);
+        fs::create_directories(interrupted_dir);
+        const fs::path configured = interrupted_dir / (name + ".mkv");
+        const fs::path source = interrupted_dir / (name + ".hstream-run-99999999-dead.mkv");
+        const fs::path source_log = source.string() + ".log";
+        const fs::path destination = interrupted_dir / (name + "-finalization-failed.mkv");
+        const fs::path destination_log = destination.string() + ".log";
+        std::ofstream(source, std::ios::binary) << name << " video";
+        if (has_log)
+          std::ofstream(source_log, std::ios::binary) << name << " log";
+        if (destination_log_exists)
+          fs::create_hard_link(has_log ? source_log : source, destination_log);
+        if (destination_video_exists)
+          fs::create_hard_link(source, destination);
+
+        const auto recoveries = hm::configurator_internal::recover_stale_archive_work_files(configured);
+        std::ifstream recovered_video_stream(destination, std::ios::binary);
+        const std::string recovered_video{
+            std::istreambuf_iterator<char>(recovered_video_stream), std::istreambuf_iterator<char>()};
+        std::ifstream recovered_log_stream(destination_log, std::ios::binary);
+        const std::string recovered_log{
+            std::istreambuf_iterator<char>(recovered_log_stream), std::istreambuf_iterator<char>()};
+        return recoveries.ok() && recoveries->size() == 1 && recoveries->front() == destination &&
+            recovered_video == name + " video" && !fs::exists(source) && !fs::exists(source_log) &&
+            (has_log ? recovered_log == name + " log" : !fs::exists(destination_log));
+      };
+  ok &= expect(
+      interrupted_recovery_is_reconciled("sidecar-log-linked", true, true, false) &&
+          interrupted_recovery_is_reconciled("sidecar-pair-linked", true, true, true) &&
+          interrupted_recovery_is_reconciled("no-log-marker-linked", false, true, false) &&
+          interrupted_recovery_is_reconciled("no-log-pair-linked", false, true, true) &&
+          interrupted_recovery_is_reconciled("no-log-video-linked", false, false, true),
+      "Restart recovery must reconcile every interrupted hard-link publication boundary without splitting artifacts");
 
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /
