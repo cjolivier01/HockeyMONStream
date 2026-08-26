@@ -171,6 +171,38 @@ void append_big_endian_u32(std::vector<unsigned char>* output, uint32_t value) {
   output->push_back(static_cast<unsigned char>(value));
 }
 
+void set_big_endian_u32(std::vector<unsigned char>* output, size_t offset, uint32_t value) {
+  (*output)[offset] = static_cast<unsigned char>(value >> 24);
+  (*output)[offset + 1] = static_cast<unsigned char>(value >> 16);
+  (*output)[offset + 2] = static_cast<unsigned char>(value >> 8);
+  (*output)[offset + 3] = static_cast<unsigned char>(value);
+}
+
+bool corrupt_png_idat_with_valid_crc(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  auto read_big_endian_u32 = [&](size_t offset) {
+    return (static_cast<uint32_t>(png[offset]) << 24) | (static_cast<uint32_t>(png[offset + 1]) << 16) |
+        (static_cast<uint32_t>(png[offset + 2]) << 8) | static_cast<uint32_t>(png[offset + 3]);
+  };
+  for (size_t offset = 8; offset + 12 <= png.size();) {
+    const uint32_t length = read_big_endian_u32(offset);
+    if (length > png.size() - offset - 12)
+      return false;
+    const size_t type_offset = offset + 4;
+    const size_t data_offset = offset + 8;
+    if (std::string(png.begin() + type_offset, png.begin() + type_offset + 4) == "IDAT" && length > 0) {
+      std::fill(png.begin() + data_offset, png.begin() + data_offset + length, 0);
+      set_big_endian_u32(&png, data_offset + length, png_crc32(png.data() + type_offset, length + 4));
+      std::ofstream output(path, std::ios::binary | std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+      return output.good();
+    }
+    offset += static_cast<size_t>(length) + 12;
+  }
+  return false;
+}
+
 bool add_png_pixel_offset(const fs::path& path, int32_t x, int32_t y) {
   std::ifstream input(path, std::ios::binary);
   std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
@@ -366,6 +398,7 @@ game:
 stitching:
   control_points: [[1, 2], [3, 4]]
 rink:
+  stitched_output_generation: stale-generation
   scoreboard:
     perspective_polygon: [[0, 0], [1, 1]]
 )")) {
@@ -409,6 +442,7 @@ bool expect_control_point_clean_preserves_upstream_dependencies(const fs::path& 
 stitching:
   control_points: [[1, 2], [3, 4]]
 rink:
+  stitched_output_generation: stale-control-point-generation
   scoreboard:
     perspective_polygon: [[0, 0], [1, 1]]
 hstream_ui:
@@ -1047,6 +1081,25 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_corrupt_idat_is_rejected_without_crashing(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "corrupt_idat_canvas_check";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !corrupt_png_idat_with_valid_crc(dir / "seam_file.png"))
+    return false;
+
+  auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/0);
+  const bool rejected = lightweight.ok() && !lightweight->artifacts_compatible && lightweight->requires_regeneration &&
+      lightweight->artifact_lock;
+  if (lightweight.ok())
+    lightweight->artifact_lock.reset();
+  if (!rejected) {
+    std::cerr << "corrupt PNG IDAT must fail the lightweight canvas check without crashing: " << lightweight.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_missing_placement_tiff_is_not_configured(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "missing_placement_configured";
   fs::remove_all(dir);
@@ -1310,6 +1363,10 @@ int main() {
 
   if (!expect_uniform_seam_is_not_configured(tmpdir)) {
     finish(tmpdir, 17);
+  }
+
+  if (!expect_corrupt_idat_is_rejected_without_crashing(tmpdir)) {
+    finish(tmpdir, 35);
   }
 
   if (!expect_missing_placement_tiff_is_not_configured(tmpdir)) {

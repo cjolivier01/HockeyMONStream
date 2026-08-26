@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 #include <QtTest/qtest_widgets.h>
@@ -6177,7 +6178,14 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(save->isEnabled(), "Changing an unrelated stitching control should enable Save Preset")) {
     return false;
   }
+  auto active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+  if (!expect(
+          active_calibration_lock.ok() && *active_calibration_lock,
+          "Unchanged-width preset save must have a contended calibration fixture")) {
+    return false;
+  }
   activate(save);
+  active_calibration_lock->reset();
   const YAML::Node after_conflicting_width_save = YAML::LoadFile(config.string());
   const YAML::Node after_conflicting_width_calibration =
       after_conflicting_width_save["hstream_ui"]["stitching_calibration"];
@@ -6189,7 +6197,7 @@ bool test_camera_controls(HStreamWindow* window) {
                   nullptr) &&
               after_conflicting_width_calibration["status"].as<std::string>() == "complete" &&
               !after_conflicting_width_calibration["stale_from"].IsDefined(),
-          "Saving a config with conflicting lower-precedence width aliases must normalize them without invalidation")) {
+          "Unchanged-width preset save must ignore calibration lock contention and normalize aliases")) {
     return false;
   }
   bring_up_shadows->setValue(35);

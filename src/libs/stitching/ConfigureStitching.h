@@ -150,7 +150,8 @@ absl::Status save_rink_profile_with_stitched_image(
     const std::string& game_dir,
     const RinkProfile& profile,
     const cv::Mat& stitched_image,
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::string& expected_output_generation = {});
 
 // Publishes a scoreboard snapshot only when the generation that produced the
 // pixels still matches the current stitched output.

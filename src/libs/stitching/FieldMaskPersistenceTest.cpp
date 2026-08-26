@@ -318,6 +318,77 @@ int main() {
                 "rink-run-b",
         "superseded rink inference must not overwrite the committed stitched calibration snapshot");
 
+    YAML::Node rotation_owner = YAML::LoadFile((root / "config.yaml").string());
+    YAML::Node rotation_calibration = rotation_owner["hstream_ui"]["stitching_calibration"];
+    rotation_calibration["status"] = "complete";
+    rotation_calibration["invalidation_id"] = "rink-run-a";
+    rotation_calibration.remove("stale_from");
+    rotation_calibration.remove("artifacts_invalidated");
+    rotation_owner["stitching"]["post_stitch_rotate_degrees"] = 0.0;
+    {
+      std::ofstream output(root / "config.yaml");
+      output << rotation_owner << '\n';
+    }
+    const auto pre_rotation_generation =
+        hm::stitching::configured_stitched_output_generation_id(root.string(), /*max_output_width=*/0);
+    ok &= expect(pre_rotation_generation.ok(), "stale-rotation fixture must have a current output generation");
+    absl::Status stale_rotation_status = absl::UnknownError("stale rotation publication did not run");
+    ::setenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS", "300", 1);
+    std::thread stale_rotation_publisher([&] {
+      stale_rotation_status = hm::stitching::save_rink_profile_with_stitched_image(
+          root.string(),
+          profile,
+          stale_snapshot,
+          "rink-run-a",
+          pre_rotation_generation.ok() ? *pre_rotation_generation : std::string());
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(75));
+    {
+      auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(root);
+      ok &= expect(config_transaction.ok(), "rotation writer must acquire the config transaction lock");
+      if (config_transaction.ok()) {
+        YAML::Node rotated = YAML::LoadFile((root / "config.yaml").string());
+        rotated["stitching"]["post_stitch_rotate_degrees"] = 7.5;
+        ok &= expect(
+            hm::stitching::publish_game_config(root, YAML::Dump(rotated) + "\n").ok(),
+            "rotation writer must publish before stale rink inference");
+      }
+    }
+    stale_rotation_publisher.join();
+    ::unsetenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS");
+    const cv::Mat after_stale_rotation = cv::imread((root / "s.png").string(), cv::IMREAD_COLOR);
+    const YAML::Node after_stale_rotation_config = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        absl::IsAborted(stale_rotation_status) && !after_stale_rotation.empty() &&
+            cv::norm(after_stale_rotation, committed_snapshot, cv::NORM_INF) == 0 &&
+            after_stale_rotation_config["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5,
+        "stale rink inference must not overwrite a newer stitched-output rotation generation");
+    ok &= expect(
+        hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a").ok(),
+        "current rotation generation must remain publishable after rejecting stale inference");
+
+    struct stat snapshot_before_rollback{};
+    ok &= expect(
+        ::stat((root / "s.png").c_str(), &snapshot_before_rollback) == 0,
+        "rink rollback identity fixture must have a committed snapshot");
+    ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
+    const auto interrupted_snapshot_publication =
+        hm::stitching::save_rink_profile_with_stitched_image(root.string(), profile, stale_snapshot);
+    ::unsetenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC");
+    ok &= expect(
+        !interrupted_snapshot_publication.ok(),
+        "injected stitched-snapshot interruption must retain a recoverable rink journal");
+    auto recovered_snapshot_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    ok &= expect(recovered_snapshot_lock.ok(), "rink snapshot rollback must recover on the next config owner");
+    if (recovered_snapshot_lock.ok())
+      recovered_snapshot_lock->reset();
+    struct stat snapshot_after_rollback{};
+    ok &= expect(
+        ::stat((root / "s.png").c_str(), &snapshot_after_rollback) == 0 &&
+            snapshot_after_rollback.st_dev == snapshot_before_rollback.st_dev &&
+            snapshot_after_rollback.st_ino == snapshot_before_rollback.st_ino,
+        "rink rollback must preserve the stitched snapshot inode identity");
+
     ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
     const auto interrupted_before_publication = hm::stitching::save_rink_profile(root.string(), profile);
     ::unsetenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC");

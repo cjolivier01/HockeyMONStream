@@ -71,6 +71,13 @@ void report_calibration_progress(const std::string& stage, const std::string& st
 absl::Status recover_rink_transactions_locked(const fs::path& root);
 absl::Status fsync_path(const fs::path& path, bool directory = false);
 
+absl::Status link_rink_rollback_file(const fs::path& source, const fs::path& destination) {
+  if (::link(source.c_str(), destination.c_str()) != 0) {
+    return absl::InternalError("Unable to hard-link rink artifact for rollback: " + std::string(std::strerror(errno)));
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
   std::error_code ec;
   const bool removed = fs::remove(path, ec);
@@ -253,6 +260,7 @@ void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_generation"});
 }
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -1868,9 +1876,9 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       size_t restored = 0;
       for (const fs::path& old : backups) {
         const fs::path destination = root / old.filename();
-        fs::copy_file(old, destination, fs::copy_options::overwrite_existing, error);
-        if (error)
-          return absl::InternalError("Unable to restore interrupted rink artifact: " + error.message());
+        auto restore = link_rink_rollback_file(old, destination);
+        if (!restore.ok())
+          return restore;
         auto status = fsync_path(destination);
         if (!status.ok())
           return status;
@@ -2416,7 +2424,24 @@ absl::Status save_rink_profile_locked(
     std::string current_output_generation;
     if (!expected_output_generation.empty()) {
       HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
-      current_output_generation = expected_output_generation;
+      auto configured_generation = current_stitched_output_generation_id_locked(game_dir, config, hugin_generation);
+      if (!configured_generation.ok())
+        return configured_generation.status();
+      std::string comparable_generation = *configured_generation;
+      auto expected_size = stitched_output_size_from_generation(expected_output_generation);
+      if (!expected_size.ok())
+        return expected_size.status();
+      if (!expected_size->has_value()) {
+        auto legacy_generation = stitched_output_generation_without_dimensions(*configured_generation);
+        if (!legacy_generation.ok())
+          return legacy_generation.status();
+        comparable_generation = *legacy_generation;
+      }
+      if (expected_output_generation != comparable_generation) {
+        return absl::AbortedError(
+            "Cannot publish a rink profile for a superseded stitched-output rotation or canvas size");
+      }
+      current_output_generation = *configured_generation;
     } else {
       auto configured_generation = configured_output_generation(config, hugin_generation);
       if (!configured_generation.ok())
@@ -2471,9 +2496,9 @@ absl::Status save_rink_profile_locked(
     }
   }
   for (const fs::path& old : old_files) {
-    fs::copy_file(old, previous / old.filename(), fs::copy_options::overwrite_existing, error);
-    if (error)
-      return absl::InternalError("Unable to preserve old rink artifact: " + error.message());
+    auto preserve = link_rink_rollback_file(old, previous / old.filename());
+    if (!preserve.ok())
+      return preserve;
     sync_status = fsync_path(previous / old.filename());
     if (!sync_status.ok())
       return sync_status;
@@ -2583,7 +2608,8 @@ absl::Status save_rink_profile_with_stitched_image(
     const std::string& game_dir,
     const RinkProfile& profile,
     const cv::Mat& stitched_image,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::string& expected_output_generation) {
   if (game_dir.empty())
     return absl::InvalidArgumentError("A game directory is required");
   const fs::path root(game_dir);
@@ -2602,7 +2628,8 @@ absl::Status save_rink_profile_with_stitched_image(
     if (delay_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
-  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id, &stitched_image);
+  return save_rink_profile_locked(
+      game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id, &stitched_image);
 }
 
 absl::Status create_field_mask(

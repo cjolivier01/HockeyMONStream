@@ -132,6 +132,7 @@ cc_test(
         ":hstream_window",
         ":scoreboard_selection_dialog",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
+        "//src/libs/stitching:canvas_constraint_check",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
         "@yaml-cpp",

@@ -686,6 +686,17 @@ int main() {
       "superseded Hugin publication must preserve both the prior artifacts and the newer invalidation");
   options.expected_invalidation_id.clear();
   options.progress = {};
+  std::string generation_before_interrupted_publication;
+  {
+    auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    ok &= expect(generation_lock.ok(), "Hugin generation fixture must lock before interrupted publication");
+    if (generation_lock.ok()) {
+      auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **generation_lock);
+      ok &= expect(generation.ok(), "Hugin generation fixture must be identifiable before interrupted publication");
+      if (generation.ok())
+        generation_before_interrupted_publication = *generation;
+    }
+  }
   ::setenv("HM_TEST_STITCH_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
   const auto interrupted_before_publication = hm::stitching::HuginProject::Configure(root / "game", matches, options);
   ::unsetenv("HM_TEST_STITCH_INTERRUPT_AFTER_PREPARE_SYNC");
@@ -712,6 +723,16 @@ int main() {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
   ok &= expect(project_after_recovery == previous_project, "prepared-only Hugin recovery must preserve the generation");
+  {
+    auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    ok &= expect(generation_lock.ok(), "recovered Hugin generation must remain lockable");
+    if (generation_lock.ok()) {
+      auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **generation_lock);
+      ok &= expect(
+          generation.ok() && *generation == generation_before_interrupted_publication,
+          "Hugin rollback must preserve the inode-based generation identity");
+    }
+  }
   ok &= expect(
       write_remap_pair(fixtures, "mapping_0000", 40, 32, true) &&
           write_remap_pair(fixtures, "mapping_0001", 40, 32, true),

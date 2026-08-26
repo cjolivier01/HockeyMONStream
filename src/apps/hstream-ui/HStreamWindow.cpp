@@ -11186,40 +11186,68 @@ void HStreamWindow::savePreset() {
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
-  auto width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
-  if (!width_constraint_check.has_value())
-    return;
+  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
     return;
   }
   YAML::Node config;
-  if (fs::exists(config_path)) {
+  const auto load_locked_config = [&]() {
+    config = YAML::Node();
+    if (fs::exists(config_path)) {
+      try {
+        config = YAML::LoadFile(config_path.string());
+      } catch (const std::exception& exc) {
+        appendLog(QString("could not save preset: %1").arg(exc.what()));
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto saved_max_output_width = [&]() {
+    int previous = std::numeric_limits<int>::min();
     try {
-      config = YAML::LoadFile(config_path.string());
-    } catch (const std::exception& exc) {
-      appendLog(QString("could not save preset: %1").arg(exc.what()));
+      previous = read_stitch_max_output_width_from_config(
+          config,
+          default_stitch_max_output_width_,
+          stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+    } catch (const std::exception& ex) {
+      qWarning() << "Ignoring malformed existing stitch max output width while preparing preset save:" << ex.what();
+    }
+    return previous;
+  };
+  if (!load_locked_config())
+    return;
+  bool max_output_width_changed = saved_max_output_width() != selected_max_output_width;
+  if (max_output_width_changed) {
+    // Respect artifact -> config lock ordering only for an actual width
+    // transition. Ordinary preset saves never contend with calibration.
+    config_lock->reset();
+    width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
+    if (!width_constraint_check.has_value())
       return;
+    config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+    if (!config_lock.ok()) {
+      appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
+      return;
+    }
+    if (!load_locked_config())
+      return;
+    max_output_width_changed = saved_max_output_width() != selected_max_output_width;
+    if (max_output_width_changed) {
+      if (!evaluateStitchingCanvasConstraint(
+              game_id_edit_->text().trimmed(),
+              selected_max_output_width,
+              /*width_changed=*/true,
+              &*width_constraint_check)) {
+        return;
+      }
+    } else {
+      width_constraint_check.reset();
     }
   }
   const QString game_dir = QString::fromStdString(config_path.parent_path().string());
-  int previous_max_output_width = std::numeric_limits<int>::min();
-  try {
-    previous_max_output_width = read_stitch_max_output_width_from_config(
-        config,
-        default_stitch_max_output_width_,
-        stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
-  } catch (const std::exception& ex) {
-    qWarning() << "Ignoring malformed existing stitch max output width while preparing preset save:" << ex.what();
-  }
-  if (!evaluateStitchingCanvasConstraint(
-          game_id_edit_->text().trimmed(),
-          selected_max_output_width,
-          previous_max_output_width != selected_max_output_width,
-          &*width_constraint_check)) {
-    return;
-  }
   const QString previous_active_sidecar =
       resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
 

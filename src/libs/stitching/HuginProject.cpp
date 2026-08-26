@@ -1025,7 +1025,7 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
       error.clear();
       continue;
     }
-    auto status = copy_stitch_file_preserving_mtime(game_dir / name, backups / name);
+    auto status = link_stitch_file_preserving_identity(game_dir / name, backups / name);
     if (!status.ok())
       return absl::InternalError(
           "Unable to preserve previous stitch artifact " + name + ": " + std::string(status.message()));

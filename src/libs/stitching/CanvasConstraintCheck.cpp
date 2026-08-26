@@ -386,8 +386,9 @@ absl::Status validate_nonuniform_png(const fs::path& path, const PngLayout& expe
     return absl::NotFoundError("Could not open PNG seam: " + path.string());
   png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
   png_infop info = png == nullptr ? nullptr : png_create_info_struct(png);
-  png_bytep row = nullptr;
-  if (png == nullptr || info == nullptr) {
+  png_bytep row = static_cast<png_bytep>(std::malloc(static_cast<size_t>(expected_layout.width)));
+  if (png == nullptr || info == nullptr || row == nullptr) {
+    std::free(row);
     if (png != nullptr)
       png_destroy_read_struct(&png, nullptr, nullptr);
     std::fclose(input);
@@ -429,9 +430,6 @@ absl::Status validate_nonuniform_png(const fs::path& path, const PngLayout& expe
   if (png_get_channels(png, info) != 1 || png_get_bit_depth(png, info) != 8 || png_get_rowbytes(png, info) != width) {
     png_error(png, "PNG seam does not decode to 8-bit grayscale");
   }
-  row = static_cast<png_bytep>(std::malloc(static_cast<size_t>(width)));
-  if (row == nullptr)
-    png_error(png, "Unable to allocate PNG seam row");
   unsigned minimum = 255;
   unsigned maximum = 0;
   for (png_uint_32 y = 0; y < height; ++y) {
@@ -655,17 +653,11 @@ absl::Status fsync_stitch_path(const fs::path& path, bool directory) {
   return absl::OkStatus();
 }
 
-absl::Status copy_stitch_file_preserving_mtime(const fs::path& source, const fs::path& destination) {
-  std::error_code error;
-  const auto modified = fs::last_write_time(source, error);
-  if (error)
-    return absl::InternalError("Unable to read stitch artifact timestamp: " + error.message());
-  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
-  if (error)
-    return absl::InternalError("Unable to copy stitch artifact: " + error.message());
-  fs::last_write_time(destination, modified, error);
-  if (error)
-    return absl::InternalError("Unable to preserve stitch artifact timestamp: " + error.message());
+absl::Status link_stitch_file_preserving_identity(const fs::path& source, const fs::path& destination) {
+  if (::link(source.c_str(), destination.c_str()) != 0) {
+    return absl::InternalError(
+        "Unable to hard-link stitch artifact for rollback: " + std::string(std::strerror(errno)));
+  }
   return fsync_stitch_path(destination);
 }
 
@@ -734,7 +726,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
       }
       for (const fs::path& old : backups) {
-        auto status = copy_stitch_file_preserving_mtime(old, root / old.filename());
+        auto status = link_stitch_file_preserving_identity(old, root / old.filename());
         if (!status.ok())
           return absl::InternalError("Unable to restore interrupted stitch artifact: " + std::string(status.message()));
       }
@@ -825,14 +817,6 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
     }
     return canvas.status();
   }
-  const absl::Status artifact_contract = validate_canvas_artifact_contract(game_dir, *canvas);
-  if (!artifact_contract.ok()) {
-    if (absl::IsNotFound(artifact_contract) || absl::IsFailedPrecondition(artifact_contract) ||
-        absl::IsInvalidArgument(artifact_contract) || absl::IsResourceExhausted(artifact_contract)) {
-      return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
-    }
-    return artifact_contract;
-  }
   auto provenance = read_canvas_provenance(game_dir);
   if (!provenance.ok()) {
     if (absl::IsNotFound(provenance.status()) || absl::IsFailedPrecondition(provenance.status()) ||
@@ -843,9 +827,23 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
   }
   const bool compatible =
       artifacts_are_compatible(*provenance, *canvas, max_output_width, live_canvas_limit().value_or(0));
+  if (!compatible) {
+    return CanvasConstraintCompatibility{
+        .artifacts_compatible = false,
+        .requires_regeneration = true,
+    };
+  }
+  const absl::Status artifact_contract = validate_canvas_artifact_contract(game_dir, *canvas);
+  if (!artifact_contract.ok()) {
+    if (absl::IsNotFound(artifact_contract) || absl::IsFailedPrecondition(artifact_contract) ||
+        absl::IsInvalidArgument(artifact_contract) || absl::IsResourceExhausted(artifact_contract)) {
+      return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
+    }
+    return artifact_contract;
+  }
   return CanvasConstraintCompatibility{
-      .artifacts_compatible = compatible,
-      .requires_regeneration = !compatible,
+      .artifacts_compatible = true,
+      .requires_regeneration = false,
   };
 }
 
