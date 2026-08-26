@@ -1246,10 +1246,16 @@ absl::Status clean_stitching_artifacts_from_control_points(
   return clean_stitching_artifacts_impl(game_dir, /*preserve_synchronized_inputs=*/true, expected_invalidation_id);
 }
 
+enum class SeamValidationMode {
+  kLayoutOnly,
+  kContent,
+  kNormalize,
+};
+
 static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     const std::string& game_dir,
     size_t max_output_width,
-    bool normalize_seam,
+    SeamValidationMode seam_validation,
     const HuginProject::ArtifactLock& artifact_lock,
     CanvasSize* validated_canvas = nullptr) {
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
@@ -1297,19 +1303,35 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     return false;
   }
   HM_RETURN_IF_ERROR(remap_status);
-  const absl::Status seam_status = normalize_seam ? HuginProject::ValidateAndNormalizeSeam(
-                                                        fs::path(game_dir) / "seam_file.png",
-                                                        static_cast<int>(canvas_size.width),
-                                                        static_cast<int>(canvas_size.height),
-                                                        static_cast<int>(canvas_size.width),
-                                                        static_cast<int>(canvas_size.height),
-                                                        1.0)
-                                                  : HuginProject::ValidateSeamForConfiguredArtifacts(
-                                                        fs::path(game_dir) / "seam_file.png",
-                                                        static_cast<int>(canvas_size.width),
-                                                        static_cast<int>(canvas_size.height),
-                                                        static_cast<int>(canvas_size.width),
-                                                        static_cast<int>(canvas_size.height));
+  const fs::path seam_path = fs::path(game_dir) / "seam_file.png";
+  absl::Status seam_status;
+  switch (seam_validation) {
+    case SeamValidationMode::kLayoutOnly:
+      seam_status = HuginProject::ValidateSeamLayout(
+          seam_path,
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height));
+      break;
+    case SeamValidationMode::kContent:
+      seam_status = HuginProject::ValidateSeamForConfiguredArtifacts(
+          seam_path,
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height));
+      break;
+    case SeamValidationMode::kNormalize:
+      seam_status = HuginProject::ValidateAndNormalizeSeam(
+          seam_path,
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          1.0);
+      break;
+  }
   if (absl::IsFailedPrecondition(seam_status)) {
     std::cout << "Stitching artifacts exist but seam_file.png does not match the requested canvas: " << seam_status
               << std::endl;
@@ -1328,7 +1350,7 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  return validate_stitching_artifacts_locked(game_dir, max_output_width, /*normalize_seam=*/false, **artifact_lock);
+  return validate_stitching_artifacts_locked(game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
 }
 
 namespace {
@@ -1367,7 +1389,11 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
   HM_ASSIGN_OR_RETURN(
       configured,
       validate_stitching_artifacts_locked(
-          game_dir, max_output_width, /*normalize_seam=*/true, **artifact_lock, &canvas_size));
+          game_dir,
+          max_output_width,
+          validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
+          **artifact_lock,
+          &canvas_size));
   if (!configured)
     return LockedStitchingArtifacts{};
   std::string generation_id;

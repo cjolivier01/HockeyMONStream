@@ -727,6 +727,15 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
     return false;
   }
 
+  auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  const cv::Mat after_preflight = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!preflight.ok() || !preflight->artifact_lock || after_preflight.size() != seam.size()) {
+    std::cerr << "artifact preflight must validate cropped seam layout without normalizing its payload: "
+              << preflight.status() << std::endl;
+    return false;
+  }
+  preflight->artifact_lock.reset();
+
   auto artifacts = hm::stitching::lock_validated_stitching_artifacts(dir.string());
   const cv::Mat normalized = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   if (!artifacts.ok() || !artifacts->artifact_lock || artifacts->canvas_size.width != 160 ||
@@ -789,8 +798,12 @@ bool expect_preflight_snapshot_is_reused_only_for_same_generation(const fs::path
   }
   fs::rename(replacement, dir / "seam_file.png");
   auto replaced = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
-  if (!same_generation_reused || !unreliable_snapshot_rejected || !stale_inputs_rejected || !replaced.ok() ||
-      replaced->artifact_lock) {
+  const bool replacement_revalidated = replaced.ok() && replaced->artifact_lock &&
+      replaced->generation_id != snapshot.generation_id && replaced->artifact_revision != snapshot.artifact_revision &&
+      !replaced->content_validated;
+  if (replaced.ok())
+    replaced->artifact_lock.reset();
+  if (!same_generation_reused || !unreliable_snapshot_rejected || !stale_inputs_rejected || !replacement_revalidated) {
     std::cerr << "validated snapshots must be reused only while the exact artifact generation and dependencies are "
                  "unchanged: "
               << replaced.status() << std::endl;
@@ -1142,6 +1155,14 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
   }
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+  auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  const bool preflight_accepts_layout = preflight.ok() && preflight->artifact_lock;
+  if (preflight.ok())
+    preflight->artifact_lock.reset();
+  auto authoritative = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  const bool authoritative_rejects_content = !authoritative.ok() || !authoritative->artifact_lock;
+  if (authoritative.ok())
+    authoritative->artifact_lock.reset();
   auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/0);
   const bool lightweight_rejects = lightweight.ok() && !lightweight->artifacts_compatible &&
       lightweight->requires_regeneration && lightweight->artifact_lock;
@@ -1156,7 +1177,8 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
       metadata.ok() && metadata->artifacts_compatible && !metadata->requires_regeneration;
   if (metadata_lock.ok())
     metadata_lock->reset();
-  if (!configured.ok() || *configured || !lightweight_rejects || !metadata_accepts_layout) {
+  if (!configured.ok() || *configured || !preflight_accepts_layout || !authoritative_rejects_content ||
+      !lightweight_rejects || !metadata_accepts_layout) {
     std::cerr << "uniform same-size seam must be deferred by metadata preflight and rejected by authoritative checks: "
               << configured.status() << " / " << metadata.status() << std::endl;
     return false;
@@ -1170,14 +1192,23 @@ bool expect_corrupt_idat_is_rejected_without_crashing(const fs::path& tmpdir) {
   if (!write_valid_stitching_artifacts(dir) || !corrupt_png_idat_with_valid_crc(dir / "seam_file.png"))
     return false;
 
+  auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  const bool preflight_accepts_layout = preflight.ok() && preflight->artifact_lock;
+  if (preflight.ok())
+    preflight->artifact_lock.reset();
+  auto authoritative = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  const bool authoritative_rejects_content = !authoritative.ok() || !authoritative->artifact_lock;
+  if (authoritative.ok())
+    authoritative->artifact_lock.reset();
   auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/0);
   const bool rejected = lightweight.ok() && !lightweight->artifacts_compatible && lightweight->requires_regeneration &&
       lightweight->artifact_lock;
   if (lightweight.ok())
     lightweight->artifact_lock.reset();
-  if (!rejected) {
-    std::cerr << "corrupt PNG IDAT must fail the lightweight canvas check without crashing: " << lightweight.status()
-              << std::endl;
+  if (!preflight_accepts_layout || !authoritative_rejects_content || !rejected) {
+    std::cerr
+        << "corrupt PNG IDAT must be deferred by preflight and rejected by authoritative checks without crashing: "
+        << lightweight.status() << std::endl;
     return false;
   }
   return true;
