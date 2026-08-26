@@ -29,7 +29,8 @@ namespace fs = std::filesystem;
 
 absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
     const fs::path& directory,
-    const std::string& description) {
+    const std::string& description,
+    size_t maximum_entries = 4096) {
   std::error_code error;
   fs::directory_iterator iterator(directory, error);
   if (error)
@@ -37,6 +38,8 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
   std::vector<fs::directory_entry> entries;
   const fs::directory_iterator end;
   while (iterator != end) {
+    if (entries.size() >= maximum_entries)
+      return absl::ResourceExhaustedError("Too many entries while inspecting " + description);
     entries.push_back(*iterator);
     iterator.increment(error);
     if (error)
@@ -44,6 +47,9 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
   }
   return entries;
 }
+
+constexpr size_t kMaximumRinkTransactionArtifacts = 64;
+constexpr uint64_t kMaximumRinkTransactionRollbackBytes = 1024ULL * 1024ULL * 1024ULL;
 
 struct ProcessIdentity {
   pid_t process_id;
@@ -360,6 +366,8 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
   while (input >> name) {
     if (fs::path(name).filename() != name || !is_rink_artifact_name(name) || !names.insert(name).second)
       return absl::InvalidArgumentError("Invalid rink transaction filename: " + name);
+    if (names.size() > kMaximumRinkTransactionArtifacts)
+      return absl::ResourceExhaustedError("Rink transaction manifest contains too many artifacts");
   }
   if (!input.eof() || !names.count("config.yaml") || names.size() < 2)
     return absl::FailedPreconditionError("Prepared rink transaction manifest is incomplete");
@@ -367,6 +375,11 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root) {
+  auto scan_required = transaction_recovery_scan_required(root, TransactionJournalKind::kRink);
+  if (!scan_required.ok())
+    return scan_required.status();
+  if (!*scan_required)
+    return absl::OkStatus();
   std::error_code error;
   auto opened_root = PinnedDirectory::Open(root, "rink transaction root");
   if (!opened_root.ok())
@@ -378,7 +391,8 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
   bool recovered = false;
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(".hstream-rink-", 0) != 0)
+    if (directory_name.rfind(".hstream-rink-", 0) != 0 || directory_name == ".hstream-rink-journal-v1" ||
+        directory_name == ".hstream-rink-recovery-pending")
       continue;
     auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
     if (!opened_transaction.ok())
@@ -404,9 +418,10 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         return absl::FailedPreconditionError("Prepared rink transaction has no backup directory");
       previous_directory.emplace(std::move(**opened_previous));
       const fs::path previous = previous_directory->path();
-      auto previous_entries = directory_entries(previous, "rink transaction backup");
+      auto previous_entries = directory_entries(previous, "rink transaction backup", kMaximumRinkTransactionArtifacts);
       if (!previous_entries.ok())
         return previous_entries.status();
+      uint64_t aggregate_backup_bytes = 0;
       for (const auto& old : *previous_entries) {
         const std::string old_name = old.path().filename().string();
         const bool is_regular = old.symlink_status(error).type() == fs::file_type::regular;
@@ -416,6 +431,12 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
             !backup_names.insert(old_name).second) {
           return absl::InvalidArgumentError("Invalid or unmanifested rink transaction backup: " + old_name);
         }
+        auto backup_size = rink_rollback_artifact_size(old.path());
+        if (!backup_size.ok())
+          return backup_size.status();
+        if (*backup_size > kMaximumRinkTransactionRollbackBytes - aggregate_backup_bytes)
+          return absl::ResourceExhaustedError("Rink transaction rollback artifacts exceed the aggregate byte limit");
+        aggregate_backup_bytes += *backup_size;
         backups.push_back(old.path());
       }
 
@@ -467,7 +488,12 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       return cleanup;
     recovered = true;
   }
-  return recovered ? fsync_path(root_directory.path(), true) : absl::OkStatus();
+  if (recovered) {
+    auto status = fsync_path(root_directory.path(), true);
+    if (!status.ok())
+      return status;
+  }
+  return complete_transaction_recovery(root, TransactionJournalKind::kRink);
 }
 
 absl::Status fsync_directory(const fs::path& path) {
@@ -641,6 +667,9 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
     return 0;
   }
 
+  auto pending_status = mark_transaction_recovery_pending(game_dir, TransactionJournalKind::kRink);
+  if (!pending_status.ok())
+    return pending_status;
   std::string pattern = (game_dir / ".hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -755,6 +784,9 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   if (error)
     return absl::InternalError("Unable to clean committed rink invalidation: " + error.message());
   status = fsync_path(game_dir, true);
+  if (!status.ok())
+    return status;
+  status = complete_transaction_recovery(game_dir, TransactionJournalKind::kRink);
   if (!status.ok())
     return status;
   return removed;

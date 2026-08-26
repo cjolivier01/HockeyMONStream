@@ -597,7 +597,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
 
   // Validate artifacts and normalize the seam in one pass before hm-cupano
   // loading so stale native-over-cap maps are regenerated instead of resized here.
-  auto artifacts = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
+  auto artifacts = hm::stitching::lock_stitching_artifacts_for_load(config_file_, max_output_width_);
   if (!artifacts.ok()) {
     return artifacts.status();
   }
@@ -619,7 +619,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
     if (try_seam_repair) {
       const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
       if (seam_status.ok()) {
-        artifacts = hm::stitching::lock_validated_stitching_artifacts(config_file_, max_output_width_);
+        artifacts = hm::stitching::lock_stitching_artifacts_for_load(config_file_, max_output_width_);
         if (!artifacts.ok()) {
           return artifacts.status();
         }
@@ -647,7 +647,9 @@ absl::Status StitcherPriv::ensure_stitcher() {
   absl::MutexLock lk(&stitcher_mu_);
   if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
-    if (!control_masks.load(config_file_, max_output_width_)) {
+    const std::string load_directory =
+        artifacts->load_snapshot ? artifacts->load_snapshot->directory().string() : config_file_;
+    if (!control_masks.load(load_directory, max_output_width_)) {
       std::string config_file_dir = config_file_;
       artifacts->artifact_lock.reset();
       if (one_pass_mode_) {

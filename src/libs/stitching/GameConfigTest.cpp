@@ -37,6 +37,7 @@ int update_key(const fs::path& root, const std::string& key) {
 } // namespace
 
 int main() {
+  ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
   const fs::path root = fs::temp_directory_path() / ("game-config-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
@@ -291,6 +292,23 @@ int main() {
           fs::exists(oversized_backup) && root_config_contents() == config_before_oversized_backup,
       "config recovery must reject an oversized backup before deleting the committed generation");
   fs::remove_all(oversized_backup);
+
+  const fs::path over_count = root / ".hstream-rink-over-count";
+  fs::create_directories(over_count / "previous");
+  {
+    std::ofstream manifest(over_count / "new-files");
+    manifest << "config.yaml\n";
+    for (size_t index = 0; index < 65; ++index)
+      manifest << "rink_mask_" << index << ".png\n";
+  }
+  std::ofstream(over_count / "state") << "PREPARED\n";
+  const std::string config_before_over_count = root_config_contents();
+  const auto over_count_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsResourceExhausted(over_count_read.status()) && fs::exists(over_count) &&
+          root_config_contents() == config_before_over_count,
+      "config recovery must reject over-count rink journals before staging any restore");
+  fs::remove_all(over_count);
 
   const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
   const fs::path manifest_target = root / "rink-manifest-symlink-target";

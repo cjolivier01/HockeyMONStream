@@ -59,6 +59,7 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
 } // namespace
 
 int main() {
+  ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / ("field-mask-persistence-test-" + std::to_string(::getpid()));
@@ -979,6 +980,28 @@ int main() {
             fs::exists(oversized_backup) && root_config_contents() == config_before_oversized_backup,
         "field-mask recovery must reject an oversized backup before deleting the committed generation");
     fs::remove_all(oversized_backup);
+
+    const fs::path aggregate_backup = root / ".hstream-rink-aggregate-backup";
+    fs::create_directories(aggregate_backup / "previous");
+    std::ofstream(aggregate_backup / "previous" / "config.yaml") << "old: true\n";
+    for (const char* name : {"s.png", "rink_mask_0.png", "rink_mask_1.png", "rink_mask_2.png", "rink_mask_3.png"})
+      std::ofstream(aggregate_backup / "previous" / name, std::ios::binary);
+    const bool aggregate_backup_created =
+        ::truncate((aggregate_backup / "previous" / "s.png").c_str(), 512LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_0.png").c_str(), 128LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_1.png").c_str(), 128LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_2.png").c_str(), 128LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_3.png").c_str(), 128LL * 1024LL * 1024LL) == 0;
+    std::ofstream(aggregate_backup / "new-files")
+        << "config.yaml\ns.png\nrink_mask_0.png\nrink_mask_1.png\nrink_mask_2.png\nrink_mask_3.png\n";
+    std::ofstream(aggregate_backup / "state") << "PREPARED\n";
+    const std::string config_before_aggregate_backup = root_config_contents();
+    const auto aggregate_backup_read = hm::stitching::load_field_mask(root.string());
+    ok &= expect(
+        aggregate_backup_created && absl::IsResourceExhausted(aggregate_backup_read.status()) &&
+            fs::exists(aggregate_backup) && root_config_contents() == config_before_aggregate_backup,
+        "field-mask recovery must reject aggregate oversized rollback sets before staging any restore");
+    fs::remove_all(aggregate_backup);
 
     const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
     const fs::path manifest_target = root / "rink-manifest-symlink-target";

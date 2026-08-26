@@ -8,6 +8,7 @@
 #include "src/libs/common/Status.h"
 /* clang-format on */
 
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -45,8 +46,30 @@ struct ValidatedStitchingArtifacts {
   std::optional<size_t> max_canvas_dimension;
 };
 
+class StitchingArtifactLoadSnapshot {
+ public:
+  struct Impl;
+  ~StitchingArtifactLoadSnapshot();
+  StitchingArtifactLoadSnapshot(StitchingArtifactLoadSnapshot&& other) noexcept;
+  StitchingArtifactLoadSnapshot& operator=(StitchingArtifactLoadSnapshot&& other) noexcept;
+  StitchingArtifactLoadSnapshot(const StitchingArtifactLoadSnapshot&) = delete;
+  StitchingArtifactLoadSnapshot& operator=(const StitchingArtifactLoadSnapshot&) = delete;
+
+  const std::filesystem::path& directory() const;
+
+  explicit StitchingArtifactLoadSnapshot(std::unique_ptr<Impl> impl);
+
+ private:
+  std::unique_ptr<Impl> impl_;
+
+  friend absl::StatusOr<struct LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+      const std::string& game_dir,
+      size_t max_output_width);
+};
+
 struct LockedStitchingArtifacts {
   std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
+  std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
   StitchingCanvasSize canvas_size;
   std::string generation_id;
   std::string artifact_revision;
@@ -71,10 +94,16 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
 // Content-validates one artifact generation, normalizes its seam, and retains
-// the publication lock so the caller can load the same generation atomically.
-// This authoritative load boundary never accepts a cached metadata snapshot.
+// the publication lock. This authoritative validation never accepts a cached
+// metadata snapshot.
 // A null artifact_lock denotes a valid game directory without configured artifacts.
 absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+// Performs authoritative validation and creates a private stable snapshot for
+// a loader that cannot consume the already-pinned artifact descriptors.
+absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_for_load(
     const std::string& game_dir,
     size_t max_output_width = 0);
 

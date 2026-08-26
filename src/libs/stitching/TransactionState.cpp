@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <dirent.h>
@@ -27,6 +29,103 @@ namespace fs = std::filesystem;
 constexpr size_t kMaximumRinkConfigRollbackBytes = 16ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumRinkMaskRollbackBytes = 128ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumStitchedSnapshotRollbackBytes = 512ULL * 1024ULL * 1024ULL;
+
+struct RecoveryMarkerNames {
+  const char* protocol;
+  const char* pending;
+};
+
+RecoveryMarkerNames recovery_marker_names(TransactionJournalKind kind) {
+  switch (kind) {
+    case TransactionJournalKind::kRink:
+      return {".hstream-rink-journal-v1", ".hstream-rink-recovery-pending"};
+    case TransactionJournalKind::kStitch:
+      return {".hstream-stitch-journal-v1", ".hstream-stitch-recovery-pending"};
+  }
+  return {nullptr, nullptr};
+}
+
+absl::StatusOr<bool> regular_empty_marker_exists(int root_descriptor, const char* name) {
+  struct stat metadata{};
+  if (::fstatat(root_descriptor, name, &metadata, AT_SYMLINK_NOFOLLOW) == 0) {
+    if (!S_ISREG(metadata.st_mode) || metadata.st_size != 0)
+      return absl::FailedPreconditionError("Invalid transaction recovery marker: " + std::string(name));
+    return true;
+  }
+  if (errno == ENOENT)
+    return false;
+  return absl::InternalError(
+      "Unable to inspect transaction recovery marker " + std::string(name) + ": " + std::strerror(errno));
+}
+
+absl::Status ensure_empty_marker(int root_descriptor, const char* name) {
+  auto exists = regular_empty_marker_exists(root_descriptor, name);
+  if (!exists.ok())
+    return exists.status();
+  if (*exists)
+    return absl::OkStatus();
+
+  static std::atomic<uint64_t> temporary_sequence{0};
+  const std::string temporary = "." + std::string(name) + ".tmp-" + std::to_string(::getpid()) + "-" +
+      std::to_string(temporary_sequence.fetch_add(1, std::memory_order_relaxed));
+  const int descriptor =
+      ::openat(root_descriptor, temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to create transaction recovery marker: " + std::string(std::strerror(errno)));
+  struct TemporaryCleanup {
+    int root_descriptor;
+    int descriptor;
+    std::string name;
+    ~TemporaryCleanup() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+      if (!name.empty())
+        ::unlinkat(root_descriptor, name.c_str(), 0);
+    }
+  } cleanup{root_descriptor, descriptor, temporary};
+  if (::fsync(descriptor) != 0)
+    return absl::InternalError("Unable to sync transaction recovery marker: " + std::string(std::strerror(errno)));
+  if (::close(descriptor) != 0) {
+    cleanup.descriptor = -1;
+    return absl::InternalError("Unable to close transaction recovery marker: " + std::string(std::strerror(errno)));
+  }
+  cleanup.descriptor = -1;
+  if (::linkat(root_descriptor, temporary.c_str(), root_descriptor, name, 0) != 0) {
+    if (errno != EEXIST)
+      return absl::InternalError("Unable to publish transaction recovery marker: " + std::string(std::strerror(errno)));
+    auto raced = regular_empty_marker_exists(root_descriptor, name);
+    if (!raced.ok() || !*raced)
+      return raced.ok() ? absl::FailedPreconditionError("Invalid transaction recovery marker") : raced.status();
+  }
+  if (::unlinkat(root_descriptor, temporary.c_str(), 0) != 0)
+    return absl::InternalError("Unable to remove temporary recovery marker: " + std::string(std::strerror(errno)));
+  cleanup.name.clear();
+  if (::fsync(root_descriptor) != 0)
+    return absl::InternalError("Unable to sync transaction recovery marker: " + std::string(std::strerror(errno)));
+  return absl::OkStatus();
+}
+
+absl::Status clear_empty_marker(int root_descriptor, const char* name) {
+  auto exists = regular_empty_marker_exists(root_descriptor, name);
+  if (!exists.ok())
+    return exists.status();
+  if (!*exists)
+    return absl::OkStatus();
+  if (::unlinkat(root_descriptor, name, 0) != 0)
+    return absl::InternalError("Unable to clear transaction recovery marker: " + std::string(std::strerror(errno)));
+  if (::fsync(root_descriptor) != 0)
+    return absl::InternalError(
+        "Unable to sync cleared transaction recovery marker: " + std::string(std::strerror(errno)));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<int> open_recovery_root(const fs::path& root) {
+  const int descriptor = ::open(root.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError(
+        "Unable to open transaction recovery root: " + std::string(std::strerror(errno)));
+  return descriptor;
+}
 
 bool is_rink_mask_rollback_name(const std::string& name) {
   constexpr std::string_view prefix = "rink_mask_";
@@ -267,7 +366,8 @@ absl::Status snapshot_regular_file_for_rollback(
     const fs::path& source,
     const fs::path& destination,
     bool force_portable_fallback,
-    size_t maximum_bytes) {
+    size_t maximum_bytes,
+    bool durable) {
   const fs::path temporary = destination.parent_path() / ("." + destination.filename().string() + ".hstream-partial");
   std::error_code error;
   fs::remove(temporary, error);
@@ -378,7 +478,7 @@ absl::Status snapshot_regular_file_for_rollback(
   times[1] = metadata.st_mtim;
   const int mode_result = ::fchmod(destination_fd, metadata.st_mode & 07777);
   const bool mode_restored = mode_result == 0 || errno == EOPNOTSUPP || errno == ENOTSUP || errno == EPERM;
-  if (!mode_restored || ::futimens(destination_fd, times) != 0 || ::fsync(destination_fd) != 0) {
+  if (!mode_restored || ::futimens(destination_fd, times) != 0 || (durable && ::fsync(destination_fd) != 0)) {
     return absl::InternalError("Unable to preserve rollback artifact metadata: " + std::string(std::strerror(errno)));
   }
   destination_descriptor_cleanup.descriptor = -1;
@@ -395,6 +495,85 @@ absl::Status snapshot_rink_artifact_for_rollback(
   if (maximum_bytes == 0)
     return absl::FailedPreconditionError("Unrecognized rink rollback artifact: " + source.string());
   return snapshot_regular_file_for_rollback(source, destination, force_portable_fallback, maximum_bytes);
+}
+
+absl::StatusOr<uint64_t> rink_rollback_artifact_size(const fs::path& source) {
+  const size_t maximum_bytes = maximum_rink_rollback_bytes(source);
+  if (maximum_bytes == 0)
+    return absl::FailedPreconditionError("Unrecognized rink rollback artifact: " + source.string());
+  const int descriptor = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open rink rollback artifact: " + source.string());
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError("Rink rollback artifact is invalid or oversized: " + source.string());
+  }
+  return static_cast<uint64_t>(metadata.st_size);
+}
+
+absl::StatusOr<bool> transaction_recovery_scan_required(const fs::path& root, TransactionJournalKind kind) {
+  auto opened = open_recovery_root(root);
+  if (!opened.ok())
+    return opened.status();
+  const int descriptor = *opened;
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  const RecoveryMarkerNames names = recovery_marker_names(kind);
+  auto protocol = regular_empty_marker_exists(descriptor, names.protocol);
+  if (!protocol.ok())
+    return protocol.status();
+  auto pending = regular_empty_marker_exists(descriptor, names.pending);
+  if (!pending.ok())
+    return pending.status();
+  const char* force = std::getenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN");
+  return (force != nullptr && std::strcmp(force, "1") == 0) || !*protocol || *pending;
+}
+
+absl::Status mark_transaction_recovery_pending(const fs::path& root, TransactionJournalKind kind) {
+  auto opened = open_recovery_root(root);
+  if (!opened.ok())
+    return opened.status();
+  const int descriptor = *opened;
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  const RecoveryMarkerNames names = recovery_marker_names(kind);
+  auto status = ensure_empty_marker(descriptor, names.protocol);
+  if (!status.ok())
+    return status;
+  return ensure_empty_marker(descriptor, names.pending);
+}
+
+absl::Status complete_transaction_recovery(const fs::path& root, TransactionJournalKind kind) {
+  auto opened = open_recovery_root(root);
+  if (!opened.ok())
+    return opened.status();
+  const int descriptor = *opened;
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  const RecoveryMarkerNames names = recovery_marker_names(kind);
+  auto status = ensure_empty_marker(descriptor, names.protocol);
+  if (!status.ok())
+    return status;
+  return clear_empty_marker(descriptor, names.pending);
 }
 
 absl::Status publish_transaction_state(const fs::path& transaction, const std::string& contents) {

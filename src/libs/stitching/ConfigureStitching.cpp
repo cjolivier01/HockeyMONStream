@@ -64,7 +64,8 @@ namespace {
 
 absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
     const fs::path& directory,
-    const std::string& description) {
+    const std::string& description,
+    size_t maximum_entries = 4096) {
   std::error_code error;
   fs::directory_iterator iterator(directory, error);
   if (error)
@@ -72,6 +73,8 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
   std::vector<fs::directory_entry> entries;
   const fs::directory_iterator end;
   while (iterator != end) {
+    if (entries.size() >= maximum_entries)
+      return absl::ResourceExhaustedError("Too many entries while inspecting " + description);
     entries.push_back(*iterator);
     iterator.increment(error);
     if (error)
@@ -83,8 +86,12 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
 constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 2 + 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserPlacementTiffBytes = kHardMaximumArtifactPixels * 4 + 16ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr size_t kMaximumRinkTransactionArtifacts = 64;
+constexpr uint64_t kMaximumRinkTransactionRollbackBytes = 1024ULL * 1024ULL * 1024ULL;
 
 void report_calibration_progress(const std::string& stage, const std::string& status, const std::string& message = {}) {
   std::cout << "HSTREAM_CALIBRATION stage=" << stage << " status=" << status;
@@ -324,6 +331,52 @@ struct ScaledCanvas {
   double scale{1.0};
 };
 
+struct OpenedTiff {
+  ~OpenedTiff() {
+    if (tiff != nullptr)
+      TIFFClose(tiff);
+    if (descriptor >= 0)
+      ::close(descriptor);
+  }
+  int descriptor{-1};
+  TIFF* tiff{nullptr};
+  struct stat metadata{};
+};
+
+absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
+  auto opened = std::make_unique<OpenedTiff>();
+  opened->descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (opened->descriptor < 0)
+    return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
+  if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
+      opened->metadata.st_size <= 0 || static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError(TO_STRING("Invalid or oversized TIFF: " << path.string()));
+  }
+  const int tiff_descriptor = ::dup(opened->descriptor);
+  if (tiff_descriptor < 0)
+    return absl::InternalError(TO_STRING("Could not duplicate TIFF descriptor: " << path.string()));
+  const std::string name = path.filename().string();
+  opened->tiff = TIFFFdOpen(tiff_descriptor, name.c_str(), "r");
+  if (opened->tiff == nullptr) {
+    ::close(tiff_descriptor);
+    return absl::InvalidArgumentError(TO_STRING("Could not parse TIFF: " << path.string()));
+  }
+  return opened;
+}
+
+absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
+  struct stat verified{};
+  if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
+      opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
+      opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
+      opened.metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
+      opened.metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec ||
+      opened.metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
+    return absl::AbortedError(TO_STRING("TIFF changed while being inspected: " << path.string()));
+  }
+  return absl::OkStatus();
+}
+
 bool canvas_exceeds_max_dimension(const CanvasSize& canvas, size_t max_dimension) {
   return canvas.width > max_dimension || canvas.height > max_dimension;
 }
@@ -344,10 +397,10 @@ absl::StatusOr<size_t> parse_exact_size_t(const std::string& value, const char* 
 }
 
 absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
-  TIFF* tif = TIFFOpen(path.c_str(), "r");
-  if (!tif) {
-    return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
-  }
+  auto opened = open_bounded_tiff(path, kMaximumParserPlacementTiffBytes);
+  if (!opened.ok())
+    return opened.status();
+  TIFF* tif = (*opened)->tiff;
 
   uint32_t width = 0;
   uint32_t height = 0;
@@ -361,7 +414,7 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   const bool have_res = TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres) && TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres);
   const bool have_position = TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos) && TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
 
-  TIFFClose(tif);
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
 
   if (!have_dims || !width || !height) {
     return absl::InvalidArgumentError(TO_STRING("Missing TIFF dimensions: " << path.string()));
@@ -483,10 +536,10 @@ absl::StatusOr<CanvasSize> get_effective_mapping_canvas_size(const fs::path& gam
 }
 
 absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
-  TIFF* tif = TIFFOpen(path.c_str(), "r");
-  if (!tif) {
-    return absl::NotFoundError(TO_STRING("Could not open remap TIFF: " << path.string()));
-  }
+  auto opened = open_bounded_tiff(path, kMaximumParserRemapTiffBytes);
+  if (!opened.ok())
+    return opened.status();
+  TIFF* tif = (*opened)->tiff;
   uint32_t width = 0;
   uint32_t height = 0;
   uint16_t samples = 0;
@@ -497,7 +550,7 @@ absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
   TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
   TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
   TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
-  TIFFClose(tif);
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
   if (!have_dims || !width || !height || width > kHardMaximumArtifactDimension ||
       height > kHardMaximumArtifactDimension || static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels ||
       samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT) {
@@ -1362,13 +1415,33 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   return validate_stitching_artifacts_locked(game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
 }
 
+struct StitchingArtifactLoadSnapshot::Impl {
+  explicit Impl(fs::path directory) : directory(std::move(directory)) {}
+  ~Impl() {
+    std::error_code ignored;
+    fs::remove_all(directory, ignored);
+  }
+  fs::path directory;
+};
+
+StitchingArtifactLoadSnapshot::StitchingArtifactLoadSnapshot(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+StitchingArtifactLoadSnapshot::~StitchingArtifactLoadSnapshot() = default;
+StitchingArtifactLoadSnapshot::StitchingArtifactLoadSnapshot(StitchingArtifactLoadSnapshot&& other) noexcept = default;
+StitchingArtifactLoadSnapshot& StitchingArtifactLoadSnapshot::operator=(
+    StitchingArtifactLoadSnapshot&& other) noexcept = default;
+
+const fs::path& StitchingArtifactLoadSnapshot::directory() const {
+  return impl_->directory;
+}
+
 namespace {
 
 absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     const std::string& game_dir,
     size_t max_output_width,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated,
-    bool validate_generation_content) {
+    bool validate_generation_content,
+    bool create_load_snapshot) {
   std::error_code directory_error;
   if (!fs::is_directory(game_dir, directory_error) || directory_error)
     return LockedStitchingArtifacts{};
@@ -1413,8 +1486,46 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
   }
   std::string artifact_revision;
   HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
+  std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
+  if (create_load_snapshot) {
+    std::string pattern = (fs::path(game_dir) / ".hstream-control-mask-snapshot-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    char* created = ::mkdtemp(writable.data());
+    if (created == nullptr)
+      return absl::InternalError("Unable to create a stable control-mask load snapshot");
+    auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(
+        std::make_unique<StitchingArtifactLoadSnapshot::Impl>(fs::path(created)));
+    if (::chmod(created, 0700) != 0)
+      return absl::InternalError("Unable to protect the stable control-mask load snapshot");
+    if (const char* delay = std::getenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS")) {
+      const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+      if (delay_ms > 0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+    }
+    for (const char* name : {
+             "mapping_0000.tif",
+             "mapping_0000_x.tif",
+             "mapping_0000_y.tif",
+             "mapping_0001.tif",
+             "mapping_0001_x.tif",
+             "mapping_0001_y.tif",
+             "seam_file.png",
+         }) {
+      auto status = snapshot_stitch_artifact_for_load(fs::path(game_dir) / name, snapshot->directory() / name);
+      if (!status.ok())
+        return status;
+    }
+    auto verified_revision = stitch_artifact_revision_locked(game_dir);
+    if (!verified_revision.ok())
+      return verified_revision.status();
+    if (*verified_revision != artifact_revision)
+      return absl::AbortedError("Stitch artifacts changed while creating their stable load snapshot");
+    load_snapshot = std::move(snapshot);
+  }
   return LockedStitchingArtifacts{
       .artifact_lock = std::move(*artifact_lock),
+      .load_snapshot = std::move(load_snapshot),
       .canvas_size = {.width = canvas_size.width, .height = canvas_size.height},
       .generation_id = std::move(generation_id),
       .artifact_revision = std::move(artifact_revision),
@@ -1427,7 +1538,23 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
 absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
     const std::string& game_dir,
     size_t max_output_width) {
-  return lock_stitching_artifacts_impl(game_dir, max_output_width, std::nullopt, /*validate_generation_content=*/true);
+  return lock_stitching_artifacts_impl(
+      game_dir,
+      max_output_width,
+      std::nullopt,
+      /*validate_generation_content=*/true,
+      /*create_load_snapshot=*/false);
+}
+
+absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_for_load(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  return lock_stitching_artifacts_impl(
+      game_dir,
+      max_output_width,
+      std::nullopt,
+      /*validate_generation_content=*/true,
+      /*create_load_snapshot=*/true);
 }
 
 absl::StatusOr<LockedStitchingArtifacts> lock_preflight_stitching_artifacts(
@@ -1435,7 +1562,11 @@ absl::StatusOr<LockedStitchingArtifacts> lock_preflight_stitching_artifacts(
     size_t max_output_width,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
   return lock_stitching_artifacts_impl(
-      game_dir, max_output_width, previously_validated, /*validate_generation_content=*/false);
+      game_dir,
+      max_output_width,
+      previously_validated,
+      /*validate_generation_content=*/false,
+      /*create_load_snapshot=*/false);
 }
 
 absl::Status validate_stitch_seam_repair_artifact_bounds(const std::string& game_dir) {
@@ -1958,6 +2089,8 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
   while (input >> name) {
     if (fs::path(name).filename() != name || !is_rink_artifact_name(name) || !names.insert(name).second)
       return absl::InvalidArgumentError("Invalid rink transaction filename: " + name);
+    if (names.size() > kMaximumRinkTransactionArtifacts)
+      return absl::ResourceExhaustedError("Rink transaction manifest contains too many artifacts");
   }
   if (!input.eof() || !names.count("config.yaml") || names.size() < 2)
     return absl::FailedPreconditionError("Prepared rink transaction manifest is incomplete");
@@ -1965,6 +2098,11 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root) {
+  auto scan_required = transaction_recovery_scan_required(root, TransactionJournalKind::kRink);
+  if (!scan_required.ok())
+    return scan_required.status();
+  if (!*scan_required)
+    return absl::OkStatus();
   std::error_code error;
   auto opened_root = PinnedDirectory::Open(root, "rink transaction root");
   if (!opened_root.ok())
@@ -1975,7 +2113,8 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(kRinkTransactionPrefix, 0) != 0)
+    if (directory_name.rfind(kRinkTransactionPrefix, 0) != 0 || directory_name == ".hstream-rink-journal-v1" ||
+        directory_name == ".hstream-rink-recovery-pending")
       continue;
     auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
     if (!opened_transaction.ok())
@@ -2001,9 +2140,10 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         return absl::FailedPreconditionError("Prepared rink transaction has no backup directory");
       previous_directory.emplace(std::move(**opened_previous));
       const fs::path previous = previous_directory->path();
-      auto previous_entries = directory_entries(previous, "rink transaction backup");
+      auto previous_entries = directory_entries(previous, "rink transaction backup", kMaximumRinkTransactionArtifacts);
       if (!previous_entries.ok())
         return previous_entries.status();
+      uint64_t aggregate_backup_bytes = 0;
       for (const auto& old : *previous_entries) {
         const std::string old_name = old.path().filename().string();
         const bool is_regular = old.symlink_status(error).type() == fs::file_type::regular;
@@ -2013,6 +2153,12 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
             !backup_names.insert(old_name).second) {
           return absl::InvalidArgumentError("Invalid or unmanifested rink transaction backup: " + old_name);
         }
+        auto backup_size = rink_rollback_artifact_size(old.path());
+        if (!backup_size.ok())
+          return backup_size.status();
+        if (*backup_size > kMaximumRinkTransactionRollbackBytes - aggregate_backup_bytes)
+          return absl::ResourceExhaustedError("Rink transaction rollback artifacts exceed the aggregate byte limit");
+        aggregate_backup_bytes += *backup_size;
         backups.push_back(old.path());
       }
 
@@ -2066,7 +2212,10 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     if (!cleanup.ok())
       return cleanup;
   }
-  return fsync_path(root_directory.path(), true);
+  auto status = fsync_path(root_directory.path(), true);
+  if (!status.ok())
+    return status;
+  return complete_transaction_recovery(root, TransactionJournalKind::kRink);
 }
 
 } // namespace
@@ -3041,6 +3190,9 @@ absl::Status save_rink_profile_locked(
   if (!config_transaction.ok())
     return config_transaction.status();
 
+  auto pending_status = mark_transaction_recovery_pending(root, TransactionJournalKind::kRink);
+  if (!pending_status.ok())
+    return pending_status;
   std::string pattern = (root / ".hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -3300,6 +3452,9 @@ absl::Status save_rink_profile_locked(
   if (error)
     return absl::InternalError("Unable to clean committed rink transaction: " + error.message());
   sync_status = fsync_path(root, true);
+  if (!sync_status.ok())
+    return sync_status;
+  sync_status = complete_transaction_recovery(root, TransactionJournalKind::kRink);
   if (!sync_status.ok())
     return sync_status;
   return absl::OkStatus();

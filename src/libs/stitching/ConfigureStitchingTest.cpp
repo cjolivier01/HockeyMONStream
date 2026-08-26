@@ -787,8 +787,22 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   auto artifacts = hm::stitching::lock_validated_stitching_artifacts(dir.string());
   const cv::Mat normalized = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   if (!artifacts.ok() || !artifacts->artifact_lock || artifacts->canvas_size.width != 160 ||
-      artifacts->canvas_size.height != 32 || normalized.size() != cv::Size(160, 32)) {
+      artifacts->canvas_size.height != 32 || artifacts->load_snapshot || normalized.size() != cv::Size(160, 32)) {
     std::cerr << "runtime artifact validation must normalize a valid cropped seam: " << artifacts.status() << std::endl;
+    return false;
+  }
+  artifacts->artifact_lock.reset();
+
+  auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+  if (!load.ok() || !load->artifact_lock || !load->load_snapshot ||
+      !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif")) {
+    std::cerr << "loader validation must retain a private stable artifact snapshot: " << load.status() << std::endl;
+    return false;
+  }
+  const fs::path snapshot_directory = load->load_snapshot->directory();
+  load->load_snapshot.reset();
+  if (fs::exists(snapshot_directory)) {
+    std::cerr << "stable artifact snapshot must be removed when its loader releases it" << std::endl;
     return false;
   }
   return true;
@@ -1418,6 +1432,54 @@ bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "validated_load_snapshot_replacement";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  const fs::path mapping = dir / "mapping_0000_x.tif";
+  const fs::path replacement = dir / "replacement-mapping.tif";
+  std::error_code error;
+  fs::copy_file(mapping, replacement, fs::copy_options::overwrite_existing, error);
+  if (error)
+    return false;
+
+  absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
+  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS", "500", 1);
+  std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
+  bool snapshot_started = false;
+  for (int attempt = 0; attempt < 100 && !snapshot_started; ++attempt) {
+    for (const auto& entry : fs::directory_iterator(dir)) {
+      if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-control-mask-snapshot-", 0) == 0) {
+        snapshot_started = true;
+        break;
+      }
+    }
+    if (!snapshot_started)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (snapshot_started) {
+    fs::remove(mapping, error);
+    if (!error)
+      fs::create_symlink(replacement, mapping, error);
+  }
+  loader.join();
+  ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS");
+
+  bool snapshot_left_behind = false;
+  for (const auto& entry : fs::directory_iterator(dir)) {
+    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-control-mask-snapshot-", 0) == 0)
+      snapshot_left_behind = true;
+  }
+  if (!snapshot_started || error || result.ok() || !fs::is_symlink(fs::symlink_status(mapping)) ||
+      snapshot_left_behind) {
+    std::cerr << "validated control-mask loading must reject path replacement without leaking its private snapshot: "
+              << result.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -1426,6 +1488,7 @@ void finish(const fs::path& tmpdir, int code) {
 } // namespace
 
 int main() {
+  ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   const fs::path tmpdir =
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
@@ -1576,6 +1639,10 @@ int main() {
 
   if (!expect_stale_snapshot_publisher_is_rejected(tmpdir)) {
     finish(tmpdir, 34);
+  }
+
+  if (!expect_validated_load_snapshot_rejects_path_replacement(tmpdir)) {
+    finish(tmpdir, 42);
   }
 
   finish(tmpdir, 0);

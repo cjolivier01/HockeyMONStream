@@ -56,6 +56,9 @@ constexpr size_t kMinimumUsableMatches = 16;
 constexpr double kMaximumOptimizationRmsPixels = 50.0;
 constexpr size_t kHardMaximumCanvasDimension = 32768;
 constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumCanvasPixels * 2 + 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserPlacementTiffBytes = kHardMaximumCanvasPixels * 4 + 16ULL * 1024ULL * 1024ULL;
+constexpr size_t kMaximumParserPngBytes = 512ULL * 1024ULL * 1024ULL;
 absl::StatusOr<std::string> read_file(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
@@ -92,7 +95,60 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
       return absl::InternalError("Failed reading Hugin file: " + path.string());
     offset += static_cast<size_t>(count);
   }
+  struct stat verified{};
+  if (::fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev || metadata.st_ino != verified.st_ino ||
+      metadata.st_mode != verified.st_mode || metadata.st_size != verified.st_size ||
+      metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec || metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
+      metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec || metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
+    return absl::AbortedError("Hugin file changed while being read: " + path.string());
+  }
   return contents;
+}
+
+struct OpenedTiff {
+  ~OpenedTiff() {
+    if (tiff != nullptr)
+      TIFFClose(tiff);
+    if (descriptor >= 0)
+      ::close(descriptor);
+  }
+  int descriptor{-1};
+  TIFF* tiff{nullptr};
+  struct stat metadata{};
+};
+
+absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
+  auto opened = std::make_unique<OpenedTiff>();
+  opened->descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (opened->descriptor < 0)
+    return absl::NotFoundError("Unable to open Hugin TIFF: " + path.string());
+  if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
+      opened->metadata.st_size <= 0 || static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError("Invalid or oversized Hugin TIFF: " + path.string());
+  }
+  const int tiff_descriptor = ::dup(opened->descriptor);
+  if (tiff_descriptor < 0)
+    return absl::InternalError("Unable to duplicate Hugin TIFF descriptor: " + path.string());
+  const std::string name = path.filename().string();
+  opened->tiff = TIFFFdOpen(tiff_descriptor, name.c_str(), "r");
+  if (opened->tiff == nullptr) {
+    ::close(tiff_descriptor);
+    return absl::InvalidArgumentError("Unable to decode Hugin TIFF: " + path.string());
+  }
+  return opened;
+}
+
+absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
+  struct stat verified{};
+  if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
+      opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
+      opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
+      opened.metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
+      opened.metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec ||
+      opened.metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
+    return absl::AbortedError("Hugin TIFF changed while being inspected: " + path.string());
+  }
+  return absl::OkStatus();
 }
 
 absl::Status write_file(const fs::path& path, const std::string& contents) {
@@ -264,9 +320,10 @@ absl::Status validate_decoded_dimensions(
 absl::StatusOr<TiffPlacement> read_tiff_placement(
     const fs::path& path,
     const std::optional<size_t>& maximum_dimension) {
-  TIFF* tif = TIFFOpen(path.c_str(), "r");
-  if (tif == nullptr)
-    return absl::InvalidArgumentError("Unable to decode Hugin TIFF: " + path.string());
+  auto opened = open_bounded_tiff(path, kMaximumParserPlacementTiffBytes);
+  if (!opened.ok())
+    return opened.status();
+  TIFF* tif = (*opened)->tiff;
   uint32_t width = 0;
   uint32_t height = 0;
   float x_resolution = 0.0f;
@@ -287,7 +344,7 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
     if (pixels_valid && height > 1)
       pixels_valid = TIFFReadScanline(tif, scanline.data(), height - 1, 0) >= 0;
   }
-  TIFFClose(tif);
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
   if (!dimensions_status.ok())
     return dimensions_status;
   if (!metadata_valid || !placement_valid || !pixels_valid || width == 0 || height == 0 ||
@@ -307,9 +364,10 @@ absl::Status inspect_remap_tiff(
     const fs::path& path,
     const TiffPlacement& placement,
     const std::optional<size_t>& maximum_dimension) {
-  TIFF* tif = TIFFOpen(path.c_str(), "r");
-  if (tif == nullptr)
-    return absl::InvalidArgumentError("Unable to inspect Hugin remap TIFF: " + path.string());
+  auto opened = open_bounded_tiff(path, kMaximumParserRemapTiffBytes);
+  if (!opened.ok())
+    return opened.status();
+  TIFF* tif = (*opened)->tiff;
   uint32_t width = 0;
   uint32_t height = 0;
   uint16_t samples = 0;
@@ -324,13 +382,29 @@ absl::Status inspect_remap_tiff(
   TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
   TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG, &planar);
   TIFFGetFieldDefaulted(tif, TIFFTAG_ORIENTATION, &orientation);
-  TIFFClose(tif);
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
   if (!metadata_valid || samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT ||
       planar != PLANARCONFIG_CONTIG || orientation != ORIENTATION_TOPLEFT ||
       width != static_cast<uint32_t>(placement.width) || height != static_cast<uint32_t>(placement.height)) {
     return absl::FailedPreconditionError("Hugin remap TIFF header violates the CV_16U contract: " + path.string());
   }
   return validate_decoded_dimensions(width, height, maximum_dimension, "Hugin remap TIFF " + path.string());
+}
+
+absl::StatusOr<cv::Mat> decode_bounded_image(const fs::path& path, int flags, size_t maximum_bytes) {
+  auto encoded = read_bounded_hugin_file(path, maximum_bytes);
+  if (!encoded.ok())
+    return encoded.status();
+  cv::Mat decoded;
+  try {
+    const cv::Mat bytes(1, static_cast<int>(encoded->size()), CV_8UC1, encoded->data());
+    decoded = cv::imdecode(bytes, flags);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to safely decode bounded image: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate bounded image decoder state");
+  }
+  return decoded;
 }
 
 struct PngLayout {
@@ -356,7 +430,13 @@ uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t 
 }
 
 absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
-  std::ifstream input(path, std::ios::binary);
+  auto encoded = read_bounded_hugin_file(path, kMaximumParserPngBytes);
+  if (!encoded.ok()) {
+    if (absl::IsNotFound(encoded.status()))
+      return absl::FailedPreconditionError("Invalid PNG header: " + path.string());
+    return encoded.status();
+  }
+  std::istringstream input(*encoded, std::ios::in | std::ios::binary);
   const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
   std::array<unsigned char, 8> file_signature{};
   input.read(reinterpret_cast<char*>(file_signature.data()), static_cast<std::streamsize>(file_signature.size()));
@@ -454,13 +534,7 @@ absl::StatusOr<std::pair<int, int>> read_png_dimensions(const fs::path& path) {
 
 absl::StatusOr<cv::Mat> decode_nonuniform_seam(const fs::path& path, const PngLayout& layout) {
   cv::Mat seam;
-  try {
-    seam = cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
-  } catch (const cv::Exception& exception) {
-    return absl::ResourceExhaustedError("Unable to safely decode seam: " + std::string(exception.what()));
-  } catch (const std::bad_alloc&) {
-    return absl::ResourceExhaustedError("Unable to allocate decoded seam");
-  }
+  HM_ASSIGN_OR_RETURN(seam, decode_bounded_image(path, cv::IMREAD_GRAYSCALE, kMaximumParserPngBytes));
   if (seam.empty() || seam.type() != CV_8UC1 || seam.cols != layout.width || seam.rows != layout.height)
     return absl::FailedPreconditionError("PNG seam is not a decodable 8-bit grayscale image: " + path.string());
   double minimum = 0.0;
@@ -749,14 +823,10 @@ absl::Status validate_remaps(
     return status;
   cv::Mat x;
   cv::Mat y;
-  try {
-    x = cv::imread(x_path.string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
-    y = cv::imread(y_path.string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
-  } catch (const cv::Exception& exception) {
-    return absl::ResourceExhaustedError("Unable to safely decode Hugin remaps: " + std::string(exception.what()));
-  } catch (const std::bad_alloc&) {
-    return absl::ResourceExhaustedError("Unable to allocate decoded Hugin remaps");
-  }
+  HM_ASSIGN_OR_RETURN(
+      x, decode_bounded_image(x_path, cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE, kMaximumParserRemapTiffBytes));
+  HM_ASSIGN_OR_RETURN(
+      y, decode_bounded_image(y_path, cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE, kMaximumParserRemapTiffBytes));
   if (x.empty() || y.empty() || x.type() != CV_16UC1 || y.type() != CV_16UC1 || x.size() != y.size() ||
       x.cols != placement.width || x.rows != placement.height) {
     return absl::FailedPreconditionError(
@@ -955,6 +1025,9 @@ absl::Status validate_staged_artifacts(
 }
 
 absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
+  auto pending = mark_transaction_recovery_pending(game_dir, TransactionJournalKind::kStitch);
+  if (!pending.ok())
+    return pending;
   std::string pattern = (game_dir / ".hstream-stitch-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -1170,6 +1243,9 @@ absl::Status publish_artifacts(
   if (error)
     return absl::InternalError("Unable to clean committed stitch transaction: " + error.message());
   status = fsync_stitch_path(game_dir, true);
+  if (!status.ok())
+    return status;
+  status = complete_transaction_recovery(game_dir, TransactionJournalKind::kStitch);
   if (!status.ok())
     return status;
   return absl::OkStatus();

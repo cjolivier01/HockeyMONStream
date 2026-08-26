@@ -260,6 +260,7 @@ bool move_png_pixel_offset_after_first_image_data(const std::filesystem::path& p
 } // namespace
 
 int main() {
+  ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
   std::vector<hm::stitching::FeatureMatch> matches;
   for (int i = 0; i < 16; ++i) {
@@ -1386,6 +1387,30 @@ int main() {
     oversized_generation_lock->reset();
   fs::remove_all(oversized_generation_root);
 
+  const fs::path padded_generation_root = root / "padded-generation-artifact";
+  std::error_code padded_copy_error;
+  fs::copy(
+      root / "game",
+      padded_generation_root,
+      fs::copy_options::recursive | fs::copy_options::copy_symlinks,
+      padded_copy_error);
+  const bool padded_mapping_written =
+      !padded_copy_error && ::truncate((padded_generation_root / "mapping_0000_x.tif").c_str(), 32LL << 20) == 0;
+  auto padded_generation_lock = hm::stitching::HuginProject::RecoverAndLock(padded_generation_root);
+  const auto padded_bounds = padded_generation_lock.ok()
+      ? hm::stitching::validate_stitch_generation_artifact_bounds_locked(padded_generation_root)
+      : padded_generation_lock.status();
+  const auto padded_generation = padded_generation_lock.ok()
+      ? hm::stitching::HuginProject::GenerationId(padded_generation_root, **padded_generation_lock)
+      : absl::StatusOr<std::string>(padded_generation_lock.status());
+  ok &= expect(
+      padded_mapping_written && absl::IsResourceExhausted(padded_bounds) &&
+          absl::IsFailedPrecondition(padded_generation.status()),
+      "dimension-derived TIFF ceilings must reject valid headers with large trailing padding before hashing");
+  if (padded_generation_lock.ok())
+    padded_generation_lock->reset();
+  fs::remove_all(padded_generation_root);
+
   const fs::path growing_rollback_root = root / "growing-rollback-source";
   fs::create_directories(growing_rollback_root);
   const fs::path growing_source = growing_rollback_root / "source.bin";
@@ -1681,7 +1706,7 @@ int main() {
   ok &= expect(second_reader_entered && second_reader_ok, "waiting Hugin reader must proceed after lock release");
   bool staging_left_behind = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
       staging_left_behind = true;
   }
   ok &= expect(!staging_left_behind, "private Hugin staging directory must be cleaned");

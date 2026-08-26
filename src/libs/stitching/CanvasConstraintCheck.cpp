@@ -45,7 +45,8 @@ constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumTiffArtifactBytes = 1024ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kTiffMetadataAllowanceBytes = 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumTiffArtifactBytes = kHardMaximumArtifactPixels * 4 + kTiffMetadataAllowanceBytes;
 constexpr uint64_t kMaximumPngArtifactBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
 constexpr unsigned long kFuseSuperMagic = 0x65735546UL;
@@ -85,6 +86,40 @@ uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
   return 0;
 }
 
+absl::StatusOr<uint64_t> maximum_open_tiff_artifact_bytes(int descriptor, const fs::path& path) {
+  const int tiff_descriptor = ::dup(descriptor);
+  if (tiff_descriptor < 0)
+    return absl::InternalError("Unable to duplicate TIFF artifact descriptor: " + path.string());
+  const std::string tiff_name = path.filename().string();
+  TIFF* tiff = TIFFFdOpen(tiff_descriptor, tiff_name.c_str(), "r");
+  if (tiff == nullptr) {
+    ::close(tiff_descriptor);
+    return absl::FailedPreconditionError("Unable to parse TIFF artifact header: " + path.string());
+  }
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint16_t samples = 0;
+  uint16_t bits = 0;
+  const bool dimensions_valid =
+      TIFFGetField(tiff, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tiff, TIFFTAG_IMAGELENGTH, &height);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_SAMPLESPERPIXEL, &samples);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_BITSPERSAMPLE, &bits);
+  TIFFClose(tiff);
+  if (!dimensions_valid || width == 0 || height == 0 || samples == 0 || bits == 0 ||
+      width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
+      static_cast<uint64_t>(width) > kHardMaximumArtifactPixels / height) {
+    return absl::ResourceExhaustedError("TIFF artifact dimensions exceed safety limits: " + path.string());
+  }
+  const uint64_t pixels = static_cast<uint64_t>(width) * height;
+  if (pixels > std::numeric_limits<uint64_t>::max() / samples ||
+      pixels * samples > (std::numeric_limits<uint64_t>::max() - 7) / bits) {
+    return absl::ResourceExhaustedError("TIFF artifact payload size overflows: " + path.string());
+  }
+  const uint64_t payload_bits = pixels * samples * bits;
+  const uint64_t payload_bytes = (payload_bits + 7) / 8;
+  return std::min(kMaximumTiffArtifactBytes, payload_bytes + kTiffMetadataAllowanceBytes);
+}
+
 absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const char* name, bool required) {
   const fs::path path = game_dir / name;
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
@@ -100,9 +135,25 @@ absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const cha
     }
   } cleanup{descriptor};
   struct stat metadata{};
-  const uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
+  uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 || maximum_bytes == 0)
     return absl::FailedPreconditionError("Invalid stitch artifact: " + path.string());
+  if (static_cast<uint64_t>(metadata.st_size) > maximum_bytes)
+    return absl::ResourceExhaustedError("Oversized stitch artifact: " + path.string());
+  if (path.extension() == ".tif") {
+    auto tiff_maximum = maximum_open_tiff_artifact_bytes(descriptor, path);
+    if (!tiff_maximum.ok())
+      return tiff_maximum.status();
+    maximum_bytes = *tiff_maximum;
+    struct stat verified{};
+    if (::fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev ||
+        metadata.st_ino != verified.st_ino || metadata.st_mode != verified.st_mode ||
+        metadata.st_size != verified.st_size || metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
+        metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec || metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec ||
+        metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
+      return absl::AbortedError("TIFF artifact changed while its bounds were inspected: " + path.string());
+    }
+  }
   if (static_cast<uint64_t>(metadata.st_size) > maximum_bytes)
     return absl::ResourceExhaustedError("Oversized stitch artifact: " + path.string());
   return absl::OkStatus();
@@ -739,7 +790,8 @@ bool is_stitch_partial_artifact_name(const std::string& name) {
 
 absl::StatusOr<std::vector<fs::directory_entry>> stitch_directory_entries(
     const fs::path& directory,
-    const std::string& description) {
+    const std::string& description,
+    size_t maximum_entries = 4096) {
   std::error_code error;
   fs::directory_iterator iterator(directory, error);
   if (error)
@@ -747,6 +799,8 @@ absl::StatusOr<std::vector<fs::directory_entry>> stitch_directory_entries(
   std::vector<fs::directory_entry> entries;
   const fs::directory_iterator end;
   while (iterator != end) {
+    if (entries.size() >= maximum_entries)
+      return absl::ResourceExhaustedError("Too many entries while inspecting " + description);
     entries.push_back(*iterator);
     iterator.increment(error);
     if (error)
@@ -1075,8 +1129,19 @@ absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
     struct stat before{};
     if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0)
       return absl::FailedPreconditionError("Invalid Hugin artifact while fingerprinting: " + path.string());
-    const uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
+    uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
     if (maximum_bytes == 0 || static_cast<uint64_t>(before.st_size) > maximum_bytes) {
+      return absl::FailedPreconditionError("Oversized Hugin artifact while fingerprinting: " + path.string());
+    }
+    if (fs::path(name).extension() == ".tif") {
+      auto tiff_maximum = maximum_open_tiff_artifact_bytes(descriptor, path);
+      if (!tiff_maximum.ok())
+        return absl::FailedPreconditionError(
+            "Invalid bounded TIFF artifact while fingerprinting: " + path.string() + ": " +
+            std::string(tiff_maximum.status().message()));
+      maximum_bytes = *tiff_maximum;
+    }
+    if (static_cast<uint64_t>(before.st_size) > maximum_bytes) {
       return absl::FailedPreconditionError("Oversized Hugin artifact while fingerprinting: " + path.string());
     }
     const char present = '1';
@@ -1317,6 +1382,39 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
     return absl::FailedPreconditionError("Unrecognized stitch rollback artifact: " + source.string());
   return snapshot_regular_file_for_rollback(
       source, destination, force_portable_fallback, static_cast<size_t>(maximum_bytes));
+}
+
+absl::Status snapshot_stitch_artifact_for_load(const fs::path& source, const fs::path& destination) {
+  uint64_t maximum_bytes = maximum_stitch_artifact_bytes(source.filename().string());
+  if (maximum_bytes == 0)
+    return absl::FailedPreconditionError("Unrecognized stitch load artifact: " + source.string());
+  const int descriptor = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open stitch load artifact: " + source.string());
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError("Invalid or oversized stitch load artifact: " + source.string());
+  }
+  if (source.extension() == ".tif") {
+    auto tiff_maximum = maximum_open_tiff_artifact_bytes(descriptor, source);
+    if (!tiff_maximum.ok())
+      return tiff_maximum.status();
+    if (static_cast<uint64_t>(metadata.st_size) > *tiff_maximum)
+      return absl::ResourceExhaustedError("Oversized stitch load artifact: " + source.string());
+  }
+  return snapshot_regular_file_for_rollback(
+      source,
+      destination,
+      /*force_portable_fallback=*/false,
+      static_cast<size_t>(metadata.st_size),
+      /*durable=*/false);
 }
 
 absl::StatusOr<bool> regular_stitch_file_exists_no_follow(const fs::path& path) {
@@ -1621,6 +1719,11 @@ absl::Status mark_stitch_transaction_rolled_back(const fs::path& transaction) {
 }
 
 absl::Status recover_stitch_transactions_locked(const fs::path& root) {
+  auto scan_required = transaction_recovery_scan_required(root, TransactionJournalKind::kStitch);
+  if (!scan_required.ok())
+    return scan_required.status();
+  if (!*scan_required)
+    return absl::OkStatus();
   std::error_code error;
   bool recovered = false;
   auto opened_root = PinnedDirectory::Open(root, "stitch transaction root");
@@ -1632,7 +1735,8 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(kStitchTransactionPrefix, 0) != 0)
+    if (directory_name.rfind(kStitchTransactionPrefix, 0) != 0 || directory_name == ".hstream-stitch-journal-v1" ||
+        directory_name == ".hstream-stitch-recovery-pending")
       continue;
     auto opened_transaction = root_directory.OpenChild(directory_name, "stitch transaction directory");
     if (!opened_transaction.ok())
@@ -1704,7 +1808,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
       PinnedDirectory previous_directory = std::move(**opened_previous);
       const fs::path previous = previous_directory.path();
-      auto previous_entries = stitch_directory_entries(previous, "stitch transaction backup");
+      auto previous_entries = stitch_directory_entries(previous, "stitch transaction backup", kArtifacts.size() * 2);
       if (!previous_entries.ok())
         return previous_entries.status();
       for (const auto& old : *previous_entries) {
@@ -1899,7 +2003,12 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     if (!cleanup.ok())
       return cleanup;
   }
-  return recovered ? fsync_stitch_path(root_directory.path(), true) : absl::OkStatus();
+  if (recovered) {
+    auto status = fsync_stitch_path(root_directory.path(), true);
+    if (!status.ok())
+      return status;
+  }
+  return complete_transaction_recovery(root, TransactionJournalKind::kStitch);
 }
 
 CanvasConstraintArtifactLock::~CanvasConstraintArtifactLock() {

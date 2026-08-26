@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -9,6 +10,11 @@
 #include "absl/status/statusor.h"
 
 namespace hm::stitching {
+
+enum class TransactionJournalKind {
+  kRink,
+  kStitch,
+};
 
 class PinnedDirectory {
  public:
@@ -53,7 +59,8 @@ absl::Status snapshot_regular_file_for_rollback(
     const std::filesystem::path& source,
     const std::filesystem::path& destination,
     bool force_portable_fallback,
-    size_t maximum_bytes);
+    size_t maximum_bytes,
+    bool durable = true);
 
 // Applies the shared size contract for config.yaml, s.png, and rink_mask_*.png
 // before creating an independent rollback snapshot.
@@ -61,6 +68,16 @@ absl::Status snapshot_rink_artifact_for_rollback(
     const std::filesystem::path& source,
     const std::filesystem::path& destination,
     bool force_portable_fallback);
+
+// Returns the validated size of one no-follow rink rollback artifact.
+absl::StatusOr<uint64_t> rink_rollback_artifact_size(const std::filesystem::path& source);
+
+// Legacy roots are scanned once. New transactions durably publish a pending
+// marker before creating a journal, allowing the steady-state recovery path to
+// avoid enumerating the game directory.
+absl::StatusOr<bool> transaction_recovery_scan_required(const std::filesystem::path& root, TransactionJournalKind kind);
+absl::Status mark_transaction_recovery_pending(const std::filesystem::path& root, TransactionJournalKind kind);
+absl::Status complete_transaction_recovery(const std::filesystem::path& root, TransactionJournalKind kind);
 
 // Publishes a complete journal state through an fsynced temporary file and an
 // atomic rename, then makes the renamed directory entry durable.
