@@ -5012,8 +5012,18 @@ absl::Status Configurator::setup_stitcher_and_masks(
       HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
       stitching::LockedStitchingArtifacts artifacts;
       HM_ASSIGN_OR_RETURN(artifacts, lock_current_stitching_artifacts(game_dir, static_cast<size_t>(max_output_width)));
-      const bool is_configured = artifacts.artifact_lock != nullptr;
+      bool is_configured = artifacts.artifact_lock != nullptr;
       artifacts.artifact_lock.reset();
+      if (configure_only && is_configured && !force) {
+        stitching::LockedStitchingArtifacts validated_artifacts;
+        HM_ASSIGN_OR_RETURN(
+            validated_artifacts,
+            stitching::lock_validated_stitching_artifacts(game_dir.string(), static_cast<size_t>(max_output_width)));
+        is_configured = validated_artifacts.artifact_lock != nullptr;
+        validated_artifacts.artifact_lock.reset();
+        if (!is_configured)
+          validated_stitching_artifacts_.reset();
+      }
       const bool calibrate_field_mask = StitcherCalibratesFieldMask(pipeline);
       double post_stitch_rotate_degrees = 0.0;
       HM_ASSIGN_OR_RETURN(post_stitch_rotate_degrees, configurator_internal::effective_stitch_output_rotation(config_));

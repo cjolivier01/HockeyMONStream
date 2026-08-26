@@ -262,6 +262,15 @@ class PipelineProcess {
     return pid_ > 0 && ::kill(pid_, SIGINT) == 0;
   }
 
+  bool Terminate() {
+    if (pid_ <= 0 || ::kill(pid_, SIGKILL) != 0) {
+      return false;
+    }
+    const pid_t terminated = ::waitpid(pid_, nullptr, 0);
+    pid_ = -1;
+    return terminated > 0;
+  }
+
   size_t Mark() {
     Drain();
     return output_text_.size();
@@ -444,6 +453,58 @@ bool write_ordinary_uri_pipeline_config(const fs::path& path) {
   } catch (const YAML::Exception&) {
     return false;
   }
+}
+
+bool write_configure_only_pipeline_config(const fs::path& path) {
+  if (!write_pipeline_config(path)) {
+    return false;
+  }
+  try {
+    YAML::Node config = YAML::LoadFile(path.string());
+    config["application"]["stage"] = -1;
+    config["hmstitcher"]["configure-only"] = 1;
+    config["hmstitcher"]["one-pass-mode"] = 0;
+    std::ofstream output(path);
+    output << YAML::Dump(config) << '\n';
+    return output.good();
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+bool replace_seam_with_uniform_image(const fs::path& seam_path) {
+  const fs::path replacement = seam_path.parent_path() / ".uniform-seam.png";
+  const fs::path backup = seam_path.parent_path() / ".configure-only-valid-seam.png";
+  std::error_code error;
+  fs::copy_file(seam_path, backup, fs::copy_options::overwrite_existing, error);
+  if (error) {
+    return false;
+  }
+  if (!run_command(
+          {"ffmpeg",
+           "-hide_banner",
+           "-loglevel",
+           "error",
+           "-y",
+           "-i",
+           seam_path.string(),
+           "-vf",
+           "format=gray,lutyuv=y=255",
+           "-frames:v",
+           "1",
+           replacement.string()},
+          {})) {
+    return false;
+  }
+  fs::rename(replacement, seam_path, error);
+  return !error;
+}
+
+bool restore_configure_only_seam(const fs::path& seam_path) {
+  const fs::path backup = seam_path.parent_path() / ".configure-only-valid-seam.png";
+  std::error_code error;
+  fs::rename(backup, seam_path, error);
+  return !error;
 }
 
 bool write_nonstitch_peer_pipeline_config(
@@ -632,6 +693,7 @@ int main(int argc, char** argv) {
   const fs::path game_root = root / "games";
   const fs::path game = game_root / "proto";
   const fs::path pipeline_config = root / "pipeline.yaml";
+  const fs::path configure_only_pipeline_config = root / "configure-only-pipeline.yaml";
   const fs::path ordinary_uri_pipeline_config = root / "ordinary-uri-pipeline.yaml";
   const fs::path nonstitch_peer_pipeline_config = root / "nonstitch-peer-pipeline.yaml";
   const fs::path short_nonstitch_peer_pipeline_config = root / "short-nonstitch-peer-pipeline.yaml";
@@ -640,6 +702,9 @@ int main(int argc, char** argv) {
   fs::create_directories(game / "cam1");
   fs::create_directories(game / "cam2");
   ok &= expect(write_pipeline_config(pipeline_config), "pipeline config must be written");
+  ok &= expect(
+      write_configure_only_pipeline_config(configure_only_pipeline_config),
+      "configure-only pipeline config must be written");
   ok &= expect(
       write_ordinary_uri_pipeline_config(ordinary_uri_pipeline_config), "ordinary URI pipeline config must be written");
   ok &= expect(
@@ -873,6 +938,41 @@ int main(int argc, char** argv) {
       }
       return stop_successfully(
           &initial, "post-calibration playback must remain controllable after bypassing the calibration time limit");
+    }();
+  }
+
+  PipelineProcess configure_only_invalid_seam;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              replace_seam_with_uniform_image(game / "seam_file.png"),
+              "configured seam must be replaceable with a same-size uniform image") ||
+          !expect(
+              configure_only_invalid_seam.Start(
+                  argv[1],
+                  configure_only_pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  {},
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false),
+              "configure-only pipeline with invalid seam must start") ||
+          !expect(
+              configure_only_invalid_seam.WaitFor("Pipeline running"),
+              "configure-only must run calibration after content validation rejects the existing seam")) {
+        return false;
+      }
+      return expect(
+                 configure_only_invalid_seam.Terminate(),
+                 "configure-only regression process must terminate after reaching calibration") &&
+          expect(restore_configure_only_seam(game / "seam_file.png"),
+                 "configure-only regression must restore the valid seam fixture");
     }();
   }
 
@@ -1606,6 +1706,7 @@ int main(int argc, char** argv) {
 
   if (!ok) {
     initial.DumpOutput("initial calibration");
+    configure_only_invalid_seam.DumpOutput("configure-only invalid-seam validation");
     partial_eos.DumpOutput("partial-EOS calibration");
     missing_completion.DumpOutput("missing-completion calibration");
     zero_missing_completion.DumpOutput("zero-time missing-completion calibration");

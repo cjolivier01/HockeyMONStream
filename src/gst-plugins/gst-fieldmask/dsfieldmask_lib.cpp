@@ -274,9 +274,11 @@ absl::Status DsFieldMaskProcessFrame(
 
   std::string output_generation;
   std::string output_authorization_id;
+  std::string loaded_hugin_generation;
   if (const auto* payload = hm::stitching::find_stitched_output_generation_meta(frame_meta)) {
     output_generation = payload->generation();
     output_authorization_id = payload->authorization_id();
+    loaded_hugin_generation = payload->hugin_generation();
   }
   if (ctx->total_frame_count > 0 && !ctx->loaded_output_generation.empty() && output_generation.empty()) {
     return absl::FailedPreconditionError("Stitched-output generation metadata disappeared after mask loading");
@@ -303,6 +305,13 @@ absl::Status DsFieldMaskProcessFrame(
   }
   if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
+    const auto load_current_mask = [&]() {
+      if (!output_generation.empty() && !loaded_hugin_generation.empty()) {
+        return hm::stitching::load_field_mask_for_loaded_generation(
+            mask_path.parent_path().string(), output_generation, loaded_hugin_generation);
+      }
+      return hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+    };
     if (ctx->superseded_output_generation.has_value()) {
       if (!ctx->superseded_authority_monitor)
         return absl::InternalError("Publication authority monitor is unavailable");
@@ -314,7 +323,7 @@ absl::Status DsFieldMaskProcessFrame(
       ctx->superseded_output_authorization_id.clear();
       ctx->superseded_authority_monitor.reset();
     }
-    auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+    auto loaded_mask = load_current_mask();
     if (is_obsolete_detection_mask || !loaded_mask.ok()) {
       if (!surface) {
         return absl::FailedPreconditionError("Cannot create field mask without an input surface");
@@ -344,7 +353,7 @@ absl::Status DsFieldMaskProcessFrame(
         return absl::OkStatus();
       }
       HM_RETURN_IF_ERROR(created);
-      loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+      loaded_mask = load_current_mask();
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);

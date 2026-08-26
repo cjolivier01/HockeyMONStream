@@ -201,6 +201,12 @@ absl::StatusOr<cv::Mat> load_field_mask(
     const std::string& expected_output_generation = {},
     const std::string& expected_invalidation_id = {});
 
+absl::StatusOr<cv::Mat> load_field_mask_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id = {});
+
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,

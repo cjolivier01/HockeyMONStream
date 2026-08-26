@@ -2185,6 +2185,9 @@ absl::Status StitcherPriv::GenerateOutput(
                     "output-generation",
                     G_TYPE_STRING,
                     output_generation.c_str(),
+                    "hugin-generation",
+                    G_TYPE_STRING,
+                    hugin_generation.c_str(),
                     "calibration-scope",
                     G_TYPE_STRING,
                     completion_scope.c_str(),
@@ -2204,7 +2207,11 @@ absl::Status StitcherPriv::GenerateOutput(
     }
 
     if (!stitching::add_stitched_output_generation_meta(
-            reuse_frame_meta, output_generation, output_authorization_id, output_scoreboard_property_value)) {
+            reuse_frame_meta,
+            output_generation,
+            output_authorization_id,
+            output_scoreboard_property_value,
+            hugin_generation)) {
       return absl::ResourceExhaustedError("Could not attach the stitched-output generation to the output frame");
     }
 

@@ -2610,6 +2610,21 @@ absl::StatusOr<cv::Mat> load_field_mask(
       game_dir, expected_output_generation, expected_invalidation_id, std::nullopt, std::nullopt);
 }
 
+absl::StatusOr<cv::Mat> load_field_mask_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask_impl(
+      game_dir,
+      expected_output_generation,
+      expected_invalidation_id,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      loaded_hugin_generation);
+}
+
 bool is_field_mask_configured(
     const std::string& game_dir,
     const std::string& expected_output_generation,
@@ -2622,14 +2637,8 @@ bool is_field_mask_configured_for_loaded_generation(
     const std::string& expected_output_generation,
     const std::string& loaded_hugin_generation,
     const std::string& expected_invalidation_id) {
-  return load_field_mask_impl(
-             game_dir,
-             expected_output_generation,
-             expected_invalidation_id,
-             std::nullopt,
-             std::nullopt,
-             std::nullopt,
-             loaded_hugin_generation)
+  return load_field_mask_for_loaded_generation(
+             game_dir, expected_output_generation, loaded_hugin_generation, expected_invalidation_id)
       .ok();
 }
 

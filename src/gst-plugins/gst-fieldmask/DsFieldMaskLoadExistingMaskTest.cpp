@@ -148,7 +148,8 @@ int main() {
   }
   frame_meta->base_meta.batch_meta = batch_meta;
   nvds_add_frame_meta_to_batch(batch_meta, frame_meta);
-  if (!hm::stitching::add_stitched_output_generation_meta(frame_meta, initial_output_generation)) {
+  if (!hm::stitching::add_stitched_output_generation_meta(
+          frame_meta, initial_output_generation, {}, {}, *hugin_generation)) {
     std::cerr << "Failed to attach initial stitched-output generation metadata" << std::endl;
     DsFieldMaskCtxDeinit(ctx);
     nvds_destroy_batch_meta(batch_meta);
@@ -172,7 +173,8 @@ int main() {
   rotated_frame_meta->source_frame_width = 64;
   rotated_frame_meta->source_frame_height = 64;
   nvds_add_frame_meta_to_batch(batch_meta, rotated_frame_meta);
-  if (!hm::stitching::add_stitched_output_generation_meta(rotated_frame_meta, rotated_output_generation)) {
+  if (!hm::stitching::add_stitched_output_generation_meta(
+          rotated_frame_meta, rotated_output_generation, {}, {}, *hugin_generation)) {
     std::cerr << "Failed to attach rotated stitched-output generation metadata" << std::endl;
     DsFieldMaskCtxDeinit(ctx);
     nvds_destroy_batch_meta(batch_meta);

@@ -183,6 +183,9 @@ int main() {
             hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation) &&
             hm::stitching::is_field_mask_configured_for_loaded_generation(
                 root.string(), *native_dimensioned_generation, initial_hugin_generation_id) &&
+            hm::stitching::load_field_mask_for_loaded_generation(
+                root.string(), *native_dimensioned_generation, initial_hugin_generation_id)
+                .ok() &&
             !hm::stitching::is_field_mask_configured_for_loaded_generation(
                 root.string(), *native_dimensioned_generation, "stale-hugin-generation"),
         "startup and dimensioned runtime checks must both accept a size-validated legacy native field mask");

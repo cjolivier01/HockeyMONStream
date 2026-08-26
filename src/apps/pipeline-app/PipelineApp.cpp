@@ -6318,6 +6318,7 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     return TRUE;
   }
   const char* output_generation = gst_structure_get_string(structure, "output-generation");
+  const char* loaded_hugin_generation = gst_structure_get_string(structure, "hugin-generation");
   const char* calibration_scope = gst_structure_get_string(structure, "calibration-scope");
   std::string stitcher_config_path;
   try {
@@ -6337,7 +6338,9 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
            ? hm::stitching::validate_stitched_output_generation(
                  stitcher_config_path, output_generation, active_invalidation_id)
                  .ok()
-           : hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation, active_invalidation_id));
+           : loaded_hugin_generation && *loaded_hugin_generation &&
+               hm::stitching::is_field_mask_configured_for_loaded_generation(
+                   stitcher_config_path, output_generation, loaded_hugin_generation, active_invalidation_id));
   if (!generation_current || !calibration_scope || expected_scope != calibration_scope) {
     g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
     return TRUE;
