@@ -79,6 +79,14 @@ class PreparedStitchGenerationPublication {
   friend absl::Status rebind_published_stitch_generation_artifact(
       const PreparedStitchGenerationPublication& prepared,
       const std::filesystem::path& game_dir);
+  friend absl::Status validate_prepared_stitch_generation_artifact(
+      const PreparedStitchGenerationPublication& prepared,
+      const std::filesystem::path& staging,
+      const std::string& name);
+  friend absl::Status record_published_stitch_generation_artifact(
+      PreparedStitchGenerationPublication& prepared,
+      const std::filesystem::path& game_dir,
+      const std::string& name);
 };
 
 absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_publication(
@@ -87,6 +95,14 @@ absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_pu
 absl::Status rebind_published_stitch_generation_artifact(
     const PreparedStitchGenerationPublication& prepared,
     const std::filesystem::path& game_dir);
+absl::Status validate_prepared_stitch_generation_artifact(
+    const PreparedStitchGenerationPublication& prepared,
+    const std::filesystem::path& staging,
+    const std::string& name);
+absl::Status record_published_stitch_generation_artifact(
+    PreparedStitchGenerationPublication& prepared,
+    const std::filesystem::path& game_dir,
+    const std::string& name);
 absl::Status rebind_stitch_generation_artifact(
     const std::filesystem::path& transaction,
     const std::filesystem::path& game_dir);
@@ -119,10 +135,19 @@ absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constr
 // caller must hold the stitching artifact lock for the complete call.
 absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const std::filesystem::path& game_dir);
 
+// Resolves a version-3 identity from its sidecar and bindings without hashing
+// mapping payloads. This is advisory preflight only; loaders must call
+// stitch_artifact_generation_id_locked while holding the artifact lock.
+absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const std::filesystem::path& game_dir);
+
 // Returns a cheap revision of the generation sidecar and current artifact
 // bindings. This does not replace content validation; it only lets one startup
 // reuse a generation that it has already validated under the artifact lock.
 absl::StatusOr<std::string> stitch_artifact_revision_locked(const std::filesystem::path& game_dir);
+
+// Reports whether inode/timestamp bindings are reliable enough for advisory
+// metadata snapshot reuse. Content validation does not depend on this result.
+bool stitch_artifact_metadata_is_reliable(const std::filesystem::path& game_dir);
 
 // Attempts the artifact lock without waiting. A missing lock means another
 // generation owns the artifacts, so callers must fail closed without blocking

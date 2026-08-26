@@ -1331,17 +1331,21 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   return validate_stitching_artifacts_locked(game_dir, max_output_width, /*normalize_seam=*/false, **artifact_lock);
 }
 
-absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+namespace {
+
+absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     const std::string& game_dir,
     size_t max_output_width,
-    const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated,
+    bool validate_generation_content) {
   std::error_code directory_error;
   if (!fs::is_directory(game_dir, directory_error) || directory_error)
     return LockedStitchingArtifacts{};
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  if (previously_validated.has_value() && !previously_validated->generation_id.empty() &&
+  if (!validate_generation_content && stitch_artifact_metadata_is_reliable(game_dir) &&
+      previously_validated.has_value() && !previously_validated->generation_id.empty() &&
       !previously_validated->artifact_revision.empty() && previously_validated->max_output_width == max_output_width &&
       previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
     auto artifact_revision = stitch_artifact_revision_locked(game_dir);
@@ -1352,6 +1356,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
           .canvas_size = previously_validated->canvas_size,
           .generation_id = previously_validated->generation_id,
           .artifact_revision = std::move(*artifact_revision),
+          .content_validated = previously_validated->content_validated,
       };
     }
     if (!artifact_revision.ok() && !absl::IsNotFound(artifact_revision.status()))
@@ -1366,7 +1371,11 @@ absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
   if (!configured)
     return LockedStitchingArtifacts{};
   std::string generation_id;
-  HM_ASSIGN_OR_RETURN(generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
+  if (validate_generation_content) {
+    HM_ASSIGN_OR_RETURN(generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
+  } else {
+    HM_ASSIGN_OR_RETURN(generation_id, stitch_artifact_preflight_generation_id_locked(game_dir));
+  }
   std::string artifact_revision;
   HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
   return LockedStitchingArtifacts{
@@ -1374,7 +1383,24 @@ absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
       .canvas_size = {.width = canvas_size.width, .height = canvas_size.height},
       .generation_id = std::move(generation_id),
       .artifact_revision = std::move(artifact_revision),
+      .content_validated = validate_generation_content,
   };
+}
+
+} // namespace
+
+absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  return lock_stitching_artifacts_impl(game_dir, max_output_width, std::nullopt, /*validate_generation_content=*/true);
+}
+
+absl::StatusOr<LockedStitchingArtifacts> lock_preflight_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
+  return lock_stitching_artifacts_impl(
+      game_dir, max_output_width, previously_validated, /*validate_generation_content=*/false);
 }
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
@@ -2362,7 +2388,8 @@ absl::Status visit_current_field_mask_impl(
     return config_transaction.status();
   std::string hugin_generation;
   bool reused_generation = false;
-  if (max_output_width.has_value() && previously_validated.has_value() &&
+  bool generation_content_validated = false;
+  if (max_output_width.has_value() && stitch_artifact_metadata_is_reliable(root) && previously_validated.has_value() &&
       !previously_validated->generation_id.empty() && !previously_validated->artifact_revision.empty() &&
       previously_validated->max_output_width == *max_output_width &&
       previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
@@ -2373,10 +2400,17 @@ absl::Status visit_current_field_mask_impl(
         test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
       hugin_generation = previously_validated->generation_id;
       reused_generation = true;
+      generation_content_validated = previously_validated->content_validated;
     }
   }
-  if (!reused_generation)
-    HM_ASSIGN_OR_RETURN(hugin_generation, HuginProject::GenerationId(root, **hugin_lock));
+  if (!reused_generation) {
+    if (max_output_width.has_value() && !stitch_artifact_metadata_is_reliable(root)) {
+      HM_ASSIGN_OR_RETURN(hugin_generation, stitch_artifact_preflight_generation_id_locked(root));
+    } else {
+      HM_ASSIGN_OR_RETURN(hugin_generation, HuginProject::GenerationId(root, **hugin_lock));
+      generation_content_validated = true;
+    }
+  }
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();
@@ -2453,7 +2487,7 @@ absl::Status visit_current_field_mask_impl(
   const absl::Status consumed = consumer(mask_path.string(), expected_canvas_size);
   if (!consumed.ok())
     return consumed;
-  if (migrate_legacy_generation) {
+  if (migrate_legacy_generation && generation_content_validated) {
     (*config)["rink"]["stitched_output_generation"] = current_output_generation;
     return publish_game_config(root, YAML::Dump(*config) + "\n");
   }

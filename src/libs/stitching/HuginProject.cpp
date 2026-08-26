@@ -1033,7 +1033,7 @@ absl::Status run_nona(
 absl::Status publish_artifacts(
     const fs::path& staging,
     const fs::path& game_dir,
-    const PreparedStitchGenerationPublication& prepared_publication,
+    PreparedStitchGenerationPublication& prepared_publication,
     bool* prepared) {
   const std::vector<std::string>& names = stitch_artifact_names();
   const fs::path backups = staging / "previous";
@@ -1138,9 +1138,15 @@ absl::Status publish_artifacts(
       error.clear();
       continue;
     }
+    status = validate_prepared_stitch_generation_artifact(prepared_publication, staging, name);
+    if (!status.ok())
+      return rollback_error(std::string(status.message()));
     fs::rename(staging / name, game_dir / name, error);
     if (error)
       return rollback_error("Unable to publish stitch artifact " + name + ": " + error.message());
+    status = record_published_stitch_generation_artifact(prepared_publication, game_dir, name);
+    if (!status.ok())
+      return rollback_error(std::string(status.message()));
     status = fsync_stitch_path(game_dir / name);
     if (!status.ok())
       return rollback_error(std::string(status.message()));

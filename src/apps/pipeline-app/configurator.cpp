@@ -5911,7 +5911,7 @@ absl::StatusOr<stitching::LockedStitchingArtifacts> Configurator::lock_current_s
     previously_validated = validated_stitching_artifacts_;
   }
   auto artifacts =
-      stitching::lock_validated_stitching_artifacts(game_dir.string(), max_output_width, previously_validated);
+      stitching::lock_preflight_stitching_artifacts(game_dir.string(), max_output_width, previously_validated);
   if (!artifacts.ok()) {
     validated_stitching_artifacts_.reset();
     return artifacts.status();
@@ -5921,6 +5921,7 @@ absl::StatusOr<stitching::LockedStitchingArtifacts> Configurator::lock_current_s
         .canvas_size = artifacts->canvas_size,
         .generation_id = artifacts->generation_id,
         .artifact_revision = artifacts->artifact_revision,
+        .content_validated = artifacts->content_validated,
         .max_output_width = max_output_width,
         .max_canvas_dimension = stitching::live_stitch_max_canvas_dimension(),
     };

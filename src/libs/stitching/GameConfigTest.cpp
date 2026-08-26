@@ -375,9 +375,14 @@ int main() {
         rolled_back["generation"].as<std::string>() == "old" && fs::is_regular_file(root / "rink_mask_0.png") &&
             fs::is_regular_file(root / "rink_mask_1.png") && fs::is_regular_file(root / "s.png") &&
             ::stat((root / "s.png").c_str(), &restored_snapshot_metadata) == 0 &&
-            restored_snapshot_metadata.st_ino == original_snapshot_metadata.st_ino &&
-            restored_snapshot_metadata.st_dev == original_snapshot_metadata.st_dev,
-        "failed rink invalidation must restore the complete prior config/canvas generation without copying snapshots");
+            restored_snapshot_metadata.st_ino != original_snapshot_metadata.st_ino &&
+            restored_snapshot_metadata.st_dev == original_snapshot_metadata.st_dev &&
+            [&]() {
+              std::ifstream input(root / "s.png", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  "old-stitched-snapshot";
+            }(),
+        "failed rink invalidation must restore an independent copy of the complete prior config/canvas generation");
     const auto published = hm::stitching::publish_game_config_without_rink_masks(
         root, "generation: new\n", /*remove_stitched_snapshot=*/true);
     ok &= expect(

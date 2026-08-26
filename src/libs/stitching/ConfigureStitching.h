@@ -40,6 +40,7 @@ struct ValidatedStitchingArtifacts {
   StitchingCanvasSize canvas_size;
   std::string generation_id;
   std::string artifact_revision;
+  bool content_validated{false};
   size_t max_output_width{0};
   std::optional<size_t> max_canvas_dimension;
 };
@@ -49,6 +50,7 @@ struct LockedStitchingArtifacts {
   StitchingCanvasSize canvas_size;
   std::string generation_id;
   std::string artifact_revision;
+  bool content_validated{false};
 };
 
 struct LockedCanvasRegenerationCheck {
@@ -68,12 +70,18 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
-// Validates one artifact generation, normalizes its seam, and retains the
-// publication lock so the caller can load the same generation atomically.
-// A snapshot from an earlier successful call skips payload validation only
-// when both the locked generation and its validation constraints still match.
+// Content-validates one artifact generation, normalizes its seam, and retains
+// the publication lock so the caller can load the same generation atomically.
+// This authoritative load boundary never accepts a cached metadata snapshot.
 // A null artifact_lock denotes a valid game directory without configured artifacts.
 absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+// Performs metadata/header preflight for Configurator sizing and field-mask
+// planning. The plugin must still call lock_validated_stitching_artifacts
+// immediately before loading the mapping payloads.
+absl::StatusOr<LockedStitchingArtifacts> lock_preflight_stitching_artifacts(
     const std::string& game_dir,
     size_t max_output_width = 0,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt);

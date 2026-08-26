@@ -283,25 +283,6 @@ absl::Status snapshot_regular_file_for_rollback(
   if (!S_ISREG(metadata.st_mode))
     return absl::FailedPreconditionError("Rollback source is not a regular file: " + source.string());
 
-  int link_error = EOPNOTSUPP;
-  if (!force_portable_fallback) {
-    if (::link(source.c_str(), temporary.c_str()) == 0) {
-      struct stat linked_metadata{};
-      if (::lstat(temporary.c_str(), &linked_metadata) == 0 && S_ISREG(linked_metadata.st_mode) &&
-          linked_metadata.st_dev == metadata.st_dev && linked_metadata.st_ino == metadata.st_ino) {
-        if (::fsync(source_fd) != 0)
-          return absl::InternalError("Unable to sync linked rollback artifact: " + std::string(std::strerror(errno)));
-        return publish();
-      }
-      link_error = ESTALE;
-      fs::remove(temporary, error);
-      if (error)
-        return absl::InternalError("Unable to remove invalid linked rollback artifact: " + error.message());
-    } else {
-      link_error = errno;
-    }
-  }
-
   const int destination_fd =
       ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, metadata.st_mode & 0777);
   if (destination_fd < 0) {
@@ -324,8 +305,7 @@ absl::Status snapshot_regular_file_for_rollback(
         continue;
       if (count < 0) {
         return absl::InternalError(
-            "Unable to read rollback source after hard link (" + std::string(std::strerror(link_error)) +
-            ") and reflink (" + std::string(std::strerror(clone_error)) +
+            "Unable to read rollback source after reflink (" + std::string(std::strerror(clone_error)) +
             ") failed: " + std::string(std::strerror(errno)));
       }
       if (count == 0)
@@ -337,13 +317,23 @@ absl::Status snapshot_regular_file_for_rollback(
           continue;
         if (result <= 0) {
           return absl::InternalError(
-              "Unable to write rollback artifact after hard link (" + std::string(std::strerror(link_error)) +
-              ") and reflink (" + std::string(std::strerror(clone_error)) +
+              "Unable to write rollback artifact after reflink (" + std::string(std::strerror(clone_error)) +
               ") failed: " + std::string(std::strerror(errno)));
         }
         written += static_cast<size_t>(result);
       }
     }
+  }
+
+  struct stat source_after{};
+  struct stat destination_metadata{};
+  if (::fstat(source_fd, &source_after) != 0 || ::fstat(destination_fd, &destination_metadata) != 0 ||
+      source_after.st_dev != metadata.st_dev || source_after.st_ino != metadata.st_ino ||
+      source_after.st_size != metadata.st_size || source_after.st_mtim.tv_sec != metadata.st_mtim.tv_sec ||
+      source_after.st_mtim.tv_nsec != metadata.st_mtim.tv_nsec ||
+      source_after.st_ctim.tv_sec != metadata.st_ctim.tv_sec ||
+      source_after.st_ctim.tv_nsec != metadata.st_ctim.tv_nsec || destination_metadata.st_size != metadata.st_size) {
+    return absl::AbortedError("Rollback source changed while creating an independent snapshot");
   }
 
   timespec times[2] = {};

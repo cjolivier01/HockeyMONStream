@@ -737,21 +737,14 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   return true;
 }
 
-bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path& tmpdir) {
+bool expect_preflight_snapshot_is_reused_only_for_same_generation(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "validated_snapshot_generation";
   fs::remove_all(dir);
   if (!write_valid_stitching_artifacts(dir)) {
     return false;
   }
 
-  setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
-  struct ResetUnreliableMetadata {
-    ~ResetUnreliableMetadata() {
-      unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
-    }
-  } reset_unreliable_metadata;
-
-  auto first = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  auto first = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
   if (!first.ok() || !first->artifact_lock) {
     std::cerr << "validated snapshot fixture must pass initial validation: " << first.status() << std::endl;
     return false;
@@ -760,20 +753,32 @@ bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path
       .canvas_size = first->canvas_size,
       .generation_id = first->generation_id,
       .artifact_revision = first->artifact_revision,
+      .content_validated = first->content_validated,
       .max_output_width = 0,
       .max_canvas_dimension = hm::stitching::live_stitch_max_canvas_dimension(),
   };
   first->artifact_lock.reset();
 
-  auto reused = hm::stitching::lock_validated_stitching_artifacts(dir.string(), 0, snapshot);
+  auto reused = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
   const bool same_generation_reused = reused.ok() && reused->artifact_lock &&
       reused->generation_id == snapshot.generation_id && reused->canvas_size.width == snapshot.canvas_size.width &&
       reused->canvas_size.height == snapshot.canvas_size.height;
   if (reused.ok())
     reused->artifact_lock.reset();
 
+  hm::stitching::ValidatedStitchingArtifacts unreliable_snapshot = snapshot;
+  ++unreliable_snapshot.canvas_size.width;
+  setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  auto unreliable = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, unreliable_snapshot);
+  unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  const bool unreliable_snapshot_rejected = unreliable.ok() && unreliable->artifact_lock &&
+      unreliable->canvas_size.width == first->canvas_size.width &&
+      unreliable->canvas_size.height == first->canvas_size.height;
+  if (unreliable.ok())
+    unreliable->artifact_lock.reset();
+
   set_write_time(dir / "left.png", 4);
-  auto stale_inputs = hm::stitching::lock_validated_stitching_artifacts(dir.string(), 0, snapshot);
+  auto stale_inputs = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
   const bool stale_inputs_rejected = stale_inputs.ok() && !stale_inputs->artifact_lock;
   set_write_time(dir / "left.png", 0);
 
@@ -783,8 +788,9 @@ bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path
     return false;
   }
   fs::rename(replacement, dir / "seam_file.png");
-  auto replaced = hm::stitching::lock_validated_stitching_artifacts(dir.string(), 0, snapshot);
-  if (!same_generation_reused || !stale_inputs_rejected || !replaced.ok() || replaced->artifact_lock) {
+  auto replaced = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
+  if (!same_generation_reused || !unreliable_snapshot_rejected || !stale_inputs_rejected || !replaced.ok() ||
+      replaced->artifact_lock) {
     std::cerr << "validated snapshots must be reused only while the exact artifact generation and dependencies are "
                  "unchanged: "
               << replaced.status() << std::endl;
@@ -1409,7 +1415,7 @@ int main() {
     finish(tmpdir, 25);
   }
 
-  if (!expect_validated_snapshot_is_reused_only_for_same_generation(tmpdir)) {
+  if (!expect_preflight_snapshot_is_reused_only_for_same_generation(tmpdir)) {
     finish(tmpdir, 36);
   }
 

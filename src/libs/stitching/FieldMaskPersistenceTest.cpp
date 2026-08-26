@@ -629,11 +629,11 @@ int main() {
     ok &= expect(
         ::stat((root / "s.png").c_str(), &snapshot_after_rollback) == 0 &&
             snapshot_after_rollback.st_dev == snapshot_before_rollback.st_dev &&
-            snapshot_after_rollback.st_ino == snapshot_before_rollback.st_ino &&
+            snapshot_after_rollback.st_ino != snapshot_before_rollback.st_ino &&
             snapshot_after_rollback.st_size == snapshot_before_rollback.st_size &&
             snapshot_after_rollback.st_mtim.tv_sec == snapshot_before_rollback.st_mtim.tv_sec &&
             snapshot_after_rollback.st_mtim.tv_nsec == snapshot_before_rollback.st_mtim.tv_nsec,
-        "rink rollback must preserve the stitched snapshot inode identity");
+        "rink rollback must restore an independent stitched snapshot with the same content metadata");
 
     ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
     const auto interrupted_before_publication = hm::stitching::save_rink_profile(root.string(), profile);
