@@ -101,7 +101,7 @@ absl::Status link_clone_or_copy_rink_rollback_file(const fs::path& source, const
     const char* value = std::getenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
     return value != nullptr && std::string(value) == "1";
   }();
-  return snapshot_regular_file_for_rollback(source, destination, force_portable_fallback);
+  return snapshot_rink_artifact_for_rollback(source, destination, force_portable_fallback);
 }
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {

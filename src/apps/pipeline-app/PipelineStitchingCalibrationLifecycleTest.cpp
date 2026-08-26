@@ -1021,16 +1021,18 @@ int main(int argc, char** argv) {
       const size_t recreation_mark = one_pass_invalid_seam.Mark();
       std::error_code remove_error;
       fs::remove(game / "seam_file.png", remove_error);
+      int recreation_exit_code = 0;
       const bool replay_rejected = !remove_error &&
           one_pass_invalid_seam.WaitFor(
-              "Stitching control masks are missing or need regeneration", recreation_mark, kCalibrationTimeout) &&
+              "HSTREAM_PIPELINE_RECREATE status=failed reason=periodic-reconstruction",
+              recreation_mark,
+              kCalibrationTimeout) &&
+          one_pass_invalid_seam.WaitForExit(&recreation_exit_code, kCalibrationTimeout) && recreation_exit_code != 0 &&
           one_pass_invalid_seam.output().find("captured stitching calibration frame", recreation_mark) ==
               std::string::npos;
       return expect(
                  replay_rejected,
                  "post-calibration recreation must reject artifact loss without replaying calibration authority") &&
-          expect(one_pass_invalid_seam.Terminate(),
-                 "post-calibration artifact-loss regression process must terminate after rejecting recreation") &&
           expect(restore_configure_only_seam(game / "seam_file.png"),
                  "one-pass invalid-seam regression must restore the valid seam fixture");
     }();

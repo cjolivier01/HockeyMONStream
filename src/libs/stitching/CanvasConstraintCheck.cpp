@@ -2057,6 +2057,14 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     return dependency_status;
   }
+  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
+  if (!artifact_bounds.ok()) {
+    if (absl::IsNotFound(artifact_bounds) || absl::IsFailedPrecondition(artifact_bounds) ||
+        absl::IsInvalidArgument(artifact_bounds) || absl::IsResourceExhausted(artifact_bounds)) {
+      return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
+    }
+    return artifact_bounds;
+  }
   auto canvas = mapping_canvas_size(game_dir);
   if (!canvas.ok()) {
     if (absl::IsNotFound(canvas.status()) || absl::IsFailedPrecondition(canvas.status()) ||

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <dirent.h>
@@ -22,6 +23,33 @@ namespace hm::stitching {
 namespace {
 
 namespace fs = std::filesystem;
+
+constexpr size_t kMaximumRinkConfigRollbackBytes = 16ULL * 1024ULL * 1024ULL;
+constexpr size_t kMaximumRinkMaskRollbackBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr size_t kMaximumStitchedSnapshotRollbackBytes = 512ULL * 1024ULL * 1024ULL;
+
+bool is_rink_mask_rollback_name(const std::string& name) {
+  constexpr std::string_view prefix = "rink_mask_";
+  constexpr std::string_view suffix = ".png";
+  if (name.size() <= prefix.size() + suffix.size() || name.compare(0, prefix.size(), prefix) != 0 ||
+      name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+    return false;
+  }
+  const std::string_view index(name.data() + prefix.size(), name.size() - prefix.size() - suffix.size());
+  return (index.size() == 1 || index.front() != '0') &&
+      std::all_of(index.begin(), index.end(), [](unsigned char value) { return std::isdigit(value); });
+}
+
+size_t maximum_rink_rollback_bytes(const fs::path& source) {
+  const std::string name = source.filename().string();
+  if (name == "config.yaml")
+    return kMaximumRinkConfigRollbackBytes;
+  if (name == "s.png")
+    return kMaximumStitchedSnapshotRollbackBytes;
+  if (is_rink_mask_rollback_name(name))
+    return kMaximumRinkMaskRollbackBytes;
+  return 0;
+}
 
 absl::Status fsync_directory(const fs::path& directory) {
   const std::string filename = directory.filename().string();
@@ -291,6 +319,11 @@ absl::Status snapshot_regular_file_for_rollback(
         "Unable to create rollback artifact " + temporary.string() + ": " + std::strerror(errno));
   }
   DescriptorCleanup destination_descriptor_cleanup{destination_fd};
+  if (const char* delay = std::getenv("HM_TEST_ROLLBACK_PRE_COPY_DELAY_MS")) {
+    const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+    if (delay_ms > 0)
+      ::usleep(std::min<uint64_t>(delay_ms, 10'000) * 1000);
+  }
   const bool cloned = !force_portable_fallback && ::ioctl(destination_fd, FICLONE, source_fd) == 0;
   const int clone_error = force_portable_fallback ? EOPNOTSUPP : errno;
   if (!cloned) {
@@ -300,8 +333,10 @@ absl::Status snapshot_regular_file_for_rollback(
           "Unable to reset rollback files for portable copy: " + std::string(std::strerror(errno)));
     }
     std::array<unsigned char, 64 * 1024> buffer{};
-    while (true) {
-      const ssize_t count = ::read(source_fd, buffer.data(), buffer.size());
+    uint64_t remaining = static_cast<uint64_t>(metadata.st_size);
+    while (remaining > 0) {
+      const size_t requested = static_cast<size_t>(std::min<uint64_t>(buffer.size(), remaining));
+      const ssize_t count = ::read(source_fd, buffer.data(), requested);
       if (count < 0 && errno == EINTR)
         continue;
       if (count < 0) {
@@ -310,7 +345,7 @@ absl::Status snapshot_regular_file_for_rollback(
             ") failed: " + std::string(std::strerror(errno)));
       }
       if (count == 0)
-        break;
+        return absl::AbortedError("Rollback source was truncated while creating an independent snapshot");
       size_t written = 0;
       while (written < static_cast<size_t>(count)) {
         const ssize_t result = ::write(destination_fd, buffer.data() + written, static_cast<size_t>(count) - written);
@@ -323,6 +358,7 @@ absl::Status snapshot_regular_file_for_rollback(
         }
         written += static_cast<size_t>(result);
       }
+      remaining -= static_cast<uint64_t>(count);
     }
   }
 
@@ -349,6 +385,16 @@ absl::Status snapshot_regular_file_for_rollback(
   if (::close(destination_fd) != 0)
     return absl::InternalError("Unable to close rollback artifact: " + std::string(std::strerror(errno)));
   return publish();
+}
+
+absl::Status snapshot_rink_artifact_for_rollback(
+    const fs::path& source,
+    const fs::path& destination,
+    bool force_portable_fallback) {
+  const size_t maximum_bytes = maximum_rink_rollback_bytes(source);
+  if (maximum_bytes == 0)
+    return absl::FailedPreconditionError("Unrecognized rink rollback artifact: " + source.string());
+  return snapshot_regular_file_for_rollback(source, destination, force_portable_fallback, maximum_bytes);
 }
 
 absl::Status publish_transaction_state(const fs::path& transaction, const std::string& contents) {

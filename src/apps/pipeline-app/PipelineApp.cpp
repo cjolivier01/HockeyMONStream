@@ -7166,6 +7166,15 @@ gboolean PipelineApplication::recreate_pipeline_thread_func_static(gpointer arg)
   const gboolean keep = instance_ && app_ctx ? instance_->recreate_pipeline_thread_func(app_ctx) : FALSE;
   if (!keep && app_ctx) {
     app_ctx->pipeline_recreate_source_id = 0;
+    if (instance_) {
+      g_printerr("HSTREAM_PIPELINE_RECREATE status=failed reason=periodic-reconstruction\n");
+      std::fflush(stderr);
+      app_ctx->return_value = -1;
+      app_ctx->quit = TRUE;
+      instance_->quit_ = TRUE;
+      if (instance_->main_loop_)
+        g_main_loop_quit(instance_->main_loop_);
+    }
   }
   return keep;
 }

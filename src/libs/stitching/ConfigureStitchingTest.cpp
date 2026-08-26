@@ -588,6 +588,37 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
   return true;
 }
 
+bool expect_canvas_constraint_checks_reject_oversized_artifacts(const fs::path& tmpdir) {
+  const auto rejects = [](const fs::path& dir) {
+    auto lock = hm::stitching::lock_canvas_constraint_artifacts(dir);
+    if (!lock.ok())
+      return false;
+    const auto metadata = hm::stitching::check_canvas_constraint_metadata_locked(dir, /*max_output_width=*/0);
+    const auto full = hm::stitching::check_canvas_constraint_locked(dir, /*max_output_width=*/0);
+    return metadata.ok() && !metadata->artifacts_compatible && metadata->requires_regeneration && full.ok() &&
+        !full->artifacts_compatible && full->requires_regeneration;
+  };
+
+  const fs::path oversized_tiff = tmpdir / "oversized_canvas_check_tiff";
+  fs::remove_all(oversized_tiff);
+  if (!write_valid_stitching_artifacts(oversized_tiff) ||
+      ::truncate((oversized_tiff / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0 ||
+      !rejects(oversized_tiff)) {
+    std::cerr << "canvas compatibility checks must reject oversized TIFFs before parser access" << std::endl;
+    return false;
+  }
+
+  const fs::path oversized_seam = tmpdir / "oversized_canvas_check_seam";
+  fs::remove_all(oversized_seam);
+  if (!write_valid_stitching_artifacts(oversized_seam) ||
+      ::truncate((oversized_seam / "seam_file.png").c_str(), 512LL * 1024LL * 1024LL + 1) != 0 ||
+      !rejects(oversized_seam)) {
+    std::cerr << "canvas compatibility checks must reject oversized seams before parser access" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_hard_seam_generation_requires_opt_in(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "hard_seam_opt_in";
   fs::remove_all(dir);
@@ -1424,6 +1455,10 @@ int main() {
 
   if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
     finish(tmpdir, 10);
+  }
+
+  if (!expect_canvas_constraint_checks_reject_oversized_artifacts(tmpdir)) {
+    finish(tmpdir, 41);
   }
 
   if (!expect_hard_seam_generation_requires_opt_in(tmpdir)) {

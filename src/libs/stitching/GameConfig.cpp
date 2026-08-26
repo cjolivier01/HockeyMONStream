@@ -258,7 +258,7 @@ absl::Status fsync_path(const fs::path& path, bool directory = false) {
 
 absl::Status link_clone_or_copy_rollback_file(const fs::path& source, const fs::path& destination) {
   const char* force_portable_fallback = std::getenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
-  return snapshot_regular_file_for_rollback(
+  return snapshot_rink_artifact_for_rollback(
       source, destination, force_portable_fallback != nullptr && std::string(force_portable_fallback) == "1");
 }
 
@@ -375,6 +375,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
   auto root_entries = directory_entries(root_directory.path(), "rink transactions");
   if (!root_entries.ok())
     return root_entries.status();
+  bool recovered = false;
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
     if (directory_name.rfind(".hstream-rink-", 0) != 0)
@@ -445,8 +446,9 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
     if (!cleanup.ok())
       return cleanup;
+    recovered = true;
   }
-  return fsync_path(root_directory.path(), true);
+  return recovered ? fsync_path(root_directory.path(), true) : absl::OkStatus();
 }
 
 absl::Status fsync_directory(const fs::path& path) {

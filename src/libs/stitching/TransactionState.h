@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <filesystem>
-#include <limits>
 #include <optional>
 #include <string>
 
@@ -53,8 +52,15 @@ absl::StatusOr<std::string> read_bounded_regular_file_no_follow(
 absl::Status snapshot_regular_file_for_rollback(
     const std::filesystem::path& source,
     const std::filesystem::path& destination,
-    bool force_portable_fallback = false,
-    size_t maximum_bytes = std::numeric_limits<size_t>::max());
+    bool force_portable_fallback,
+    size_t maximum_bytes);
+
+// Applies the shared size contract for config.yaml, s.png, and rink_mask_*.png
+// before creating an independent rollback snapshot.
+absl::Status snapshot_rink_artifact_for_rollback(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination,
+    bool force_portable_fallback);
 
 // Publishes a complete journal state through an fsynced temporary file and an
 // atomic rename, then makes the renamed directory entry durable.

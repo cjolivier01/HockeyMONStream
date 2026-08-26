@@ -332,6 +332,22 @@ int main() {
   std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";
   std::ofstream(root / "rink_mask_1.png") << "old-mask-one";
   std::ofstream(root / "s.png") << "old-stitched-snapshot";
+  absl::StatusOr<size_t> oversized_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
+  const bool oversized_mask_created = ::truncate((root / "rink_mask_0.png").c_str(), 128LL * 1024LL * 1024LL + 1) == 0;
+  {
+    auto oversized_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    if (oversized_lock.ok()) {
+      ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
+      oversized_invalidation = hm::stitching::publish_game_config_without_rink_masks(
+          root, "generation: oversized-must-not-publish\n", /*remove_stitched_snapshot=*/false);
+      ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
+    }
+  }
+  ok &= expect(
+      oversized_mask_created && absl::IsFailedPrecondition(oversized_invalidation.status()) &&
+          YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "old",
+      "rink rollback publication must reject oversized masks before portable copying");
+  std::ofstream(root / "rink_mask_0.png", std::ios::trunc) << "old-mask-zero";
   const fs::path invalidation_symlink_target = root / "snapshot-symlink-target.png";
   std::error_code invalidation_symlink_error;
   fs::rename(root / "s.png", invalidation_symlink_target, invalidation_symlink_error);

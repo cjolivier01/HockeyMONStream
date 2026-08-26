@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
 #include <array>
@@ -1362,6 +1363,26 @@ int main() {
   if (oversized_generation_lock.ok())
     oversized_generation_lock->reset();
   fs::remove_all(oversized_generation_root);
+
+  const fs::path growing_rollback_root = root / "growing-rollback-source";
+  fs::create_directories(growing_rollback_root);
+  const fs::path growing_source = growing_rollback_root / "source.bin";
+  const fs::path growing_destination = growing_rollback_root / "rollback.bin";
+  std::ofstream(growing_source, std::ios::binary | std::ios::trunc) << std::string(64 * 1024, 'a');
+  absl::Status growing_rollback_status;
+  ::setenv("HM_TEST_ROLLBACK_PRE_COPY_DELAY_MS", "100", 1);
+  std::thread growing_rollback([&]() {
+    growing_rollback_status = hm::stitching::snapshot_regular_file_for_rollback(
+        growing_source, growing_destination, /*force_portable_fallback=*/true, 1024 * 1024);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  const bool rollback_source_grew = ::truncate(growing_source.c_str(), 2LL * 1024LL * 1024LL) == 0;
+  growing_rollback.join();
+  ::unsetenv("HM_TEST_ROLLBACK_PRE_COPY_DELAY_MS");
+  ok &= expect(
+      rollback_source_grew && absl::IsAborted(growing_rollback_status) && !fs::exists(growing_destination),
+      "portable rollback snapshots must reject concurrent growth without publishing the copied prefix");
+  fs::remove_all(growing_rollback_root);
 
   const std::string portable_metadata = generation_stat_identity(root / "game", true);
   const std::string adopted_v1_generation = "adopted-v1-generation\n";
