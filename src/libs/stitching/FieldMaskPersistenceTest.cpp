@@ -178,7 +178,8 @@ int main() {
         hm::stitching::stitched_output_generation_id(initial_hugin_generation_id, 0.0, 32, 24);
     ok &= expect(
         native_dimensioned_generation.ok() &&
-            hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/0) &&
+            hm::stitching::is_field_mask_configured_for_stitching_config(
+                root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/0.0) &&
             hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation),
         "startup and dimensioned runtime checks must both accept a size-validated legacy native field mask");
 
@@ -190,7 +191,8 @@ int main() {
         : absl::InvalidArgumentError("scaled canvas unavailable");
     ok &= expect(scaled_generation.ok(), "scaled field-mask test must identify output dimensions");
     ok &= expect(
-        !hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/16),
+        !hm::stitching::is_field_mask_configured_for_stitching_config(
+            root.string(), /*max_output_width=*/16, /*post_stitch_rotate_degrees=*/0.0),
         "capped field-mask preflight must not accept legacy native-sized masks");
     if (scaled_generation.ok()) {
       YAML::Node scaled_config = YAML::LoadFile((root / "config.yaml").string());
@@ -205,7 +207,8 @@ int main() {
               static_cast<int>(scaled_canvas->height), static_cast<int>(scaled_canvas->width), CV_8U, cv::Scalar(255)));
       ok &= expect(
           hm::stitching::is_field_mask_configured(root.string(), *scaled_generation) &&
-              hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/16) &&
+              hm::stitching::is_field_mask_configured_for_stitching_config(
+                  root.string(), /*max_output_width=*/16, /*post_stitch_rotate_degrees=*/0.0) &&
               !hm::stitching::is_field_mask_configured(root.string(), initial_output_generation),
           "dimensioned runtime generation must validate field masks against the scaled live canvas");
       cv::imwrite((root / "rink_mask_0.png").string(), first);
@@ -380,6 +383,7 @@ int main() {
     auto runtime_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
     ok &= expect(runtime_hugin_lock.ok(), "runtime-override test must lock Hugin artifacts");
     std::string runtime_override_generation;
+    std::string runtime_zero_rotation_generation;
     if (runtime_hugin_lock.ok()) {
       auto runtime_hugin_generation = hm::stitching::HuginProject::GenerationId(root, **runtime_hugin_lock);
       ok &= expect(runtime_hugin_generation.ok(), "runtime-override test must identify Hugin artifacts");
@@ -388,6 +392,10 @@ int main() {
         ok &= expect(generation.ok(), "runtime-override test must identify the exact rotated output");
         if (generation.ok())
           runtime_override_generation = *generation;
+        auto zero_rotation_generation = hm::stitching::stitched_output_generation_id(*runtime_hugin_generation, 0.0);
+        ok &= expect(zero_rotation_generation.ok(), "runtime-override test must identify the unrotated output");
+        if (zero_rotation_generation.ok())
+          runtime_zero_rotation_generation = *zero_rotation_generation;
       }
       runtime_hugin_lock->reset();
     }
@@ -402,9 +410,31 @@ int main() {
         !runtime_override_generation.empty() &&
             hm::stitching::is_field_mask_configured(root.string(), runtime_override_generation),
         "runtime output generation must be authoritative when its Hugin component is current");
+    const std::string runtime_dimensioned_generation =
+        runtime_override_generation.empty() ? std::string() : runtime_override_generation + "output-size:32x24\n";
+    ok &= expect(
+        !runtime_dimensioned_generation.empty() &&
+            hm::stitching::is_field_mask_configured(root.string(), runtime_dimensioned_generation),
+        "a native-size runtime generation must accept only the dimensionless alias with the same rotation");
+    ok &= expect(
+        hm::stitching::is_field_mask_configured_for_stitching_config(
+            root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/5.123456789012345) &&
+            !hm::stitching::is_field_mask_configured_for_stitching_config(
+                root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/0.0),
+        "startup preflight must use the effective inherited or CLI rotation instead of private game YAML");
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()),
         "persisted rotation must not accidentally validate a different runtime output generation");
+    YAML::Node stale_runtime_rotation = YAML::LoadFile((root / "config.yaml").string());
+    stale_runtime_rotation["rink"]["stitched_output_generation"] = runtime_zero_rotation_generation;
+    {
+      std::ofstream output(root / "config.yaml");
+      output << stale_runtime_rotation << '\n';
+    }
+    ok &= expect(
+        !runtime_dimensioned_generation.empty() && !runtime_zero_rotation_generation.empty() &&
+            !hm::stitching::is_field_mask_configured(root.string(), runtime_dimensioned_generation),
+        "a native-size legacy alias must not replace the authoritative runtime rotation");
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string(), initial_output_generation),
         "runtime generation validation must reject a stale Hugin component independently of rotation");

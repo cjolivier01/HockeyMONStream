@@ -466,6 +466,25 @@ bool test_matching_development_runtime_selection() {
              "A Bazel-built UI must retain its source workspace when the sibling CLI is missing");
 }
 
+bool test_stitching_canvas_constraint_decisions() {
+  const auto unchanged = hm::ui_internal::decide_stitching_canvas_constraint_change(
+      /*width_changed=*/false, /*artifacts_compatible=*/std::nullopt, /*requires_regeneration=*/std::nullopt);
+  const auto reusable = hm::ui_internal::decide_stitching_canvas_constraint_change(
+      /*width_changed=*/true, /*artifacts_compatible=*/true, /*requires_regeneration=*/false);
+  const auto missing = hm::ui_internal::decide_stitching_canvas_constraint_change(
+      /*width_changed=*/true, /*artifacts_compatible=*/false, /*requires_regeneration=*/false);
+  const auto stale = hm::ui_internal::decide_stitching_canvas_constraint_change(
+      /*width_changed=*/true, /*artifacts_compatible=*/false, /*requires_regeneration=*/true);
+  const auto failed_check = hm::ui_internal::decide_stitching_canvas_constraint_change(
+      /*width_changed=*/true, /*artifacts_compatible=*/std::nullopt, /*requires_regeneration=*/std::nullopt);
+  return expect(
+      !unchanged.calibration_required && !unchanged.cleanup_required && !reusable.calibration_required &&
+          !reusable.cleanup_required && missing.calibration_required && !missing.cleanup_required &&
+          stale.calibration_required && stale.cleanup_required && failed_check.calibration_required &&
+          failed_check.cleanup_required,
+      "UI width edits must reuse compatible maps, avoid cleaning absent maps, and fail closed on stale or unknown maps");
+}
+
 bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   if (!parent.IsMap()) {
     return false;
@@ -580,6 +599,20 @@ bool write_fake_runner(const QString& path) {
   file.write("import time\n");
   file.write("for arg in sys.argv[1:]:\n");
   file.write("    print(arg, flush=True)\n");
+  file.write("if any(arg.startswith('--check-stitching-canvas-width=') for arg in sys.argv[1:]):\n");
+  file.write("    result = os.environ.get('HSTREAM_UI_TEST_CANVAS_CHECK', '')\n");
+  file.write("    if result == 'compatible':\n");
+  file.write(
+      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=1 requires-regeneration=0', flush=True)\n");
+  file.write("    elif result == 'missing':\n");
+  file.write(
+      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=0', flush=True)\n");
+  file.write("    elif result == 'regenerate':\n");
+  file.write(
+      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=1', flush=True)\n");
+  file.write("    else:\n");
+  file.write("        sys.exit(9)\n");
+  file.write("    sys.exit(0)\n");
   file.write("print('USE_NEW_NVSTREAMMUX=' + os.environ.get('USE_NEW_NVSTREAMMUX', ''), flush=True)\n");
   file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
   file.write("print('HM_NO_SCOREBOARD=' + os.environ.get('HM_NO_SCOREBOARD', ''), flush=True)\n");
@@ -6164,9 +6197,9 @@ bool test_camera_controls(HStreamWindow* window) {
                   after_conflicting_width_save,
                   {"pipeline", "hmstitcher", "properties", "max-output-width"},
                   nullptr) &&
-              after_conflicting_width_calibration["status"].as<std::string>() == "pending" &&
-              after_conflicting_width_calibration["stale_from"].as<std::string>() == "canvas",
-          "Saving a config with conflicting native max-width aliases must invalidate calibration before removing them")) {
+              after_conflicting_width_calibration["status"].as<std::string>() == "complete" &&
+              !after_conflicting_width_calibration["stale_from"].IsDefined(),
+          "Saving a config with conflicting lower-precedence width aliases must normalize them without invalidation")) {
     return false;
   }
   bring_up_shadows->setValue(35);
@@ -6174,7 +6207,9 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(save->isEnabled(), "Changing max stitched width back to Auto should enable Save Preset")) {
     return false;
   }
+  qputenv("HSTREAM_UI_TEST_CANVAS_CHECK", "compatible");
   activate(save);
+  qunsetenv("HSTREAM_UI_TEST_CANVAS_CHECK");
   const YAML::Node after_max_width_auto = YAML::LoadFile(config.string());
   const YAML::Node after_max_width_auto_calibration = after_max_width_auto["hstream_ui"]["stitching_calibration"];
   if (!expect(
@@ -6185,11 +6220,11 @@ bool test_camera_controls(HStreamWindow* window) {
                   after_max_width_auto,
                   {"pipeline", "hmstitcher", "private-properties", "stitch_max_output_width"},
                   nullptr) &&
-              after_max_width_auto_calibration["status"].as<std::string>() == "pending" &&
-              after_max_width_auto_calibration["stale_from"].as<std::string>() == "canvas" &&
-              after_max_width_auto_calibration["rink_mask_status"].as<std::string>() == "pending" &&
-              !after_max_width_auto_calibration["artifacts_invalidated"].as<bool>(),
-          "Saving 4096 -> Auto must mark capped canvas artifacts stale")) {
+              after_max_width_auto_calibration["status"].as<std::string>() == "complete" &&
+              !after_max_width_auto_calibration["stale_from"].IsDefined() &&
+              after_max_width_auto_calibration["rink_mask_status"].as<std::string>() == "complete" &&
+              !after_max_width_auto_calibration["artifacts_invalidated"].IsDefined(),
+          "Saving a nonbinding 4096 -> Auto change must preserve compatible canvas artifacts")) {
     return false;
   }
   {
@@ -6208,7 +6243,9 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   stitch_max_output_width->setValue(0);
+  qputenv("HSTREAM_UI_TEST_CANVAS_CHECK", "compatible");
   activate(save);
+  qunsetenv("HSTREAM_UI_TEST_CANVAS_CHECK");
   const YAML::Node after_native_width_auto = YAML::LoadFile(config.string());
   const YAML::Node after_native_width_auto_calibration = after_native_width_auto["hstream_ui"]["stitching_calibration"];
   if (!expect(
@@ -6219,9 +6256,9 @@ bool test_camera_controls(HStreamWindow* window) {
                   after_native_width_auto,
                   {"pipeline", "hmstitcher", "private-properties", "stitch_max_output_width"},
                   nullptr) &&
-              after_native_width_auto_calibration["status"].as<std::string>() == "pending" &&
-              after_native_width_auto_calibration["stale_from"].as<std::string>() == "canvas",
-          "Saving a legacy native-only cap to Auto must migrate aliases and mark canvas artifacts stale")) {
+              after_native_width_auto_calibration["status"].as<std::string>() == "complete" &&
+              !after_native_width_auto_calibration["stale_from"].IsDefined(),
+          "Saving a compatible legacy native-only cap to Auto must migrate aliases without invalidating maps")) {
     return false;
   }
   {
@@ -8978,7 +9015,7 @@ bool test_early_finalization_failure_retains_log_guard(HStreamWindow* window, co
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
   if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
-      !test_diagnostic_capture_attempt_paths()) {
+      !test_stitching_canvas_constraint_decisions() || !test_diagnostic_capture_attempt_paths()) {
     return 1;
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");

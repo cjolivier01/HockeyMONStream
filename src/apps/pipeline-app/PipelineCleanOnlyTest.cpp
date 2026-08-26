@@ -1,3 +1,4 @@
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -58,12 +59,48 @@ int main(int argc, char** argv) {
     int status = 0;
     return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
   };
+  auto run_canvas_check = [&](const char* game_id, const char* width, const std::string& expected_marker) {
+    int output_pipe[2]{};
+    if (::pipe(output_pipe) != 0)
+      return false;
+    const pid_t child = ::fork();
+    if (child == 0) {
+      ::close(output_pipe[0]);
+      ::dup2(output_pipe[1], STDOUT_FILENO);
+      ::dup2(output_pipe[1], STDERR_FILENO);
+      ::close(output_pipe[1]);
+      ::setenv("HOME", (root / "home").c_str(), 1);
+      ::setenv("HM_GAME_DIR", (root / "games").c_str(), 1);
+      const std::string flag = "--check-stitching-canvas-width=" + std::string(width);
+      std::vector<char*> child_argv = {
+          argv[1],
+          const_cast<char*>("-g"),
+          const_cast<char*>(game_id),
+          const_cast<char*>(flag.c_str()),
+          nullptr,
+      };
+      ::execv(argv[1], child_argv.data());
+      _exit(127);
+    }
+    ::close(output_pipe[1]);
+    std::string output;
+    std::array<char, 1024> buffer{};
+    ssize_t count = 0;
+    while ((count = ::read(output_pipe[0], buffer.data(), buffer.size())) > 0)
+      output.append(buffer.data(), static_cast<size_t>(count));
+    ::close(output_pipe[0]);
+    int status = 0;
+    return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+        output.find(expected_marker) != std::string::npos;
+  };
 
   const fs::path full_game = root / "games" / "clean-only-test";
   fs::create_directories(root / "home");
   fs::create_directories(root / "config-root");
   fs::copy_file(argv[3], root / "config-root" / "baseline.yaml");
   fs::create_directories(full_game);
+  const bool empty_canvas_check_ok = run_canvas_check(
+      "clean-only-test", "0", "HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=0");
   std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
   const bool full_clean_ok =
       run_clean("clean-only-test", {"--clean"}, nullptr) && !fs::exists(full_game / "seam_file.png");
@@ -163,10 +200,10 @@ int main(int argc, char** argv) {
 
   const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hstream" / "models");
   fs::remove_all(root);
-  if (!full_clean_ok || !partial_clean_ok || !synchronization_preserved || !combined_clean_ok ||
-      !mismatched_runtime_token_rejected || !incomplete_context_skipped || !incomplete_subconfig_skipped ||
-      !configure_only_clean_ok || !one_pass_clean_ok || !malformed_camera_ignored || !missing_tracker_ignored ||
-      !no_asset_download) {
+  if (!empty_canvas_check_ok || !full_clean_ok || !partial_clean_ok || !synchronization_preserved ||
+      !combined_clean_ok || !mismatched_runtime_token_rejected || !incomplete_context_skipped ||
+      !incomplete_subconfig_skipped || !configure_only_clean_ok || !one_pass_clean_ok || !malformed_camera_ignored ||
+      !missing_tracker_ignored || !no_asset_download) {
     std::cerr << "FAIL: clean-only modes must respect dependency boundaries without downloading pretrained models\n";
     return 1;
   }

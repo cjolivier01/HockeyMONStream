@@ -42,6 +42,11 @@ class ScoreboardSelectionDialog;
 
 namespace hm::ui_internal {
 
+struct StitchingCanvasConstraintDecision {
+  bool calibration_required{false};
+  bool cleanup_required{false};
+};
+
 // Establishes the desktop identity used by WM_CLASS, desktop-file matching,
 // taskbar grouping, and human-readable application labels. Call before the
 // first native window is created.
@@ -66,6 +71,10 @@ bool remove_owned_path_for_test(
     quint64 expected_inode,
     QString* error = nullptr);
 bool reconcile_cleanup_directory_for_test(const QString& directory_path, QString* error = nullptr);
+StitchingCanvasConstraintDecision decide_stitching_canvas_constraint_change(
+    bool width_changed,
+    const std::optional<bool>& artifacts_compatible,
+    const std::optional<bool>& requires_regeneration);
 
 } // namespace hm::ui_internal
 
@@ -303,6 +312,11 @@ class HStreamWindow : public QMainWindow {
       const QString& working_dir,
       const QProcessEnvironment& env,
       bool* calibration_required);
+  std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> checkStitchingCanvasConstraint(
+      const QString& runner,
+      const QString& working_dir,
+      const QProcessEnvironment& env,
+      int max_output_width);
   bool runStitchingClean(
       const QString& runner,
       const QString& working_dir,
@@ -325,7 +339,8 @@ class HStreamWindow : public QMainWindow {
       YAML::Node& config,
       bool* invalidate_rink_masks,
       int* invalidated_config_artifacts,
-      QString* published_playtracker_sidecar);
+      QString* published_playtracker_sidecar,
+      const std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>& max_width_decision = std::nullopt);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
   bool publishRuntimeControlBatch(

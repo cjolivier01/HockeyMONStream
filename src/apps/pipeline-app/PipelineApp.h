@@ -291,6 +291,7 @@ class PipelineApplication {
   gboolean clean_stitching_artifacts_{FALSE};
   gboolean clean_stitching_from_control_points_{FALSE};
   gchar* clean_stitching_expected_invalidation_id_{nullptr};
+  gint check_stitching_canvas_width_{-1};
   gboolean progress_ui_enabled_{FALSE};
   gboolean progress_ui_graph_{TRUE};
   gboolean progress_ui_no_graph_{FALSE};

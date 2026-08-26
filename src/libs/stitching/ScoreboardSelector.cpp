@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
 #include <regex>
@@ -376,7 +378,24 @@ absl::StatusOr<ScoreboardSelector::Polygon> ScoreboardSelector::ValidateAndOrder
   return ordered;
 }
 
-absl::Status ScoreboardSelector::Save(const fs::path& game_dir, const Polygon& polygon) {
+absl::Status ScoreboardSelector::Save(
+    const fs::path& game_dir,
+    const Polygon& polygon,
+    const std::string& expected_hugin_generation) {
+  std::unique_ptr<HuginProject::ArtifactLock> hugin_lock;
+  if (!expected_hugin_generation.empty()) {
+    auto lock = HuginProject::RecoverAndLock(game_dir);
+    if (!lock.ok())
+      return lock.status();
+    auto current_generation = HuginProject::GenerationId(game_dir, **lock);
+    if (!current_generation.ok())
+      return current_generation.status();
+    if (*current_generation != expected_hugin_generation) {
+      return absl::AbortedError(
+          "Stitching artifacts changed while the scoreboard selector was open; reopen it on the current canvas");
+    }
+    hugin_lock = std::move(*lock);
+  }
   auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
@@ -405,6 +424,12 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   if (const char* disabled = std::getenv("HM_NO_SCOREBOARD"); disabled != nullptr && std::string(disabled) == "1") {
     return Save(game_dir, {});
   }
+  auto hugin_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto hugin_generation = HuginProject::GenerationId(game_dir, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
   const fs::path image_path = game_dir / "s.png";
   const cv::Mat dimensions = cv::imread(image_path.string(), cv::IMREAD_GRAYSCALE);
   if (dimensions.empty())
@@ -413,6 +438,7 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   const std::string image_bytes((std::istreambuf_iterator<char>(image_input)), std::istreambuf_iterator<char>());
   if (image_bytes.empty())
     return absl::FailedPreconditionError("Scoreboard selector image is empty");
+  hugin_lock->reset();
 
   std::string bind_host = "127.0.0.1";
   if (const char* configured = std::getenv("HM_SCOREBOARD_BIND_HOST"); configured != nullptr && *configured != '\0') {
@@ -572,7 +598,7 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
           client, 404, "Not Found", "text/plain; charset=utf-8", "Unknown selector endpoint\n", client_deadline);
       continue;
     }
-    auto saved = Save(game_dir, polygon);
+    auto saved = Save(game_dir, polygon, *hugin_generation);
     if (!saved.ok()) {
       respond_best_effort(
           client,

@@ -1,9 +1,11 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <array>
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <regex>
 #include <sstream>
@@ -23,6 +25,26 @@ bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
   return condition;
+}
+
+bool write_hugin_generation_fixture(const std::filesystem::path& directory) {
+  for (const char* name : {
+           "hm_project.pto",
+           "autooptimiser_out.pto",
+           "mapping_0000.tif",
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+           "seam_file.png",
+       }) {
+    std::ofstream output(directory / name, std::ios::binary | std::ios::trunc);
+    output << name << '\n';
+    if (!output)
+      return false;
+  }
+  return true;
 }
 
 bool write_all(int fd, const std::string& value) {
@@ -225,6 +247,7 @@ int main() {
       std::filesystem::temp_directory_path() / ("scoreboard-selector-test-" + std::to_string(::getpid()));
   std::filesystem::remove_all(directory);
   std::filesystem::create_directories(directory);
+  ok &= expect(write_hugin_generation_fixture(directory), "scoreboard generation fixture must be created");
   auto status = Selector::Save(directory, disabled);
   ok &= expect(status.ok(), "disabled sentinel must save");
   if (status.ok()) {
@@ -248,6 +271,24 @@ int main() {
   ok &= expect(
       exercise_http_selector(directory, true),
       "remote scoreboard mode must accept its explicit public authority and matching origin");
+  auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(directory);
+  ok &= expect(hugin_lock.ok(), "scoreboard generation race test must lock Hugin artifacts");
+  std::string stale_generation;
+  if (hugin_lock.ok()) {
+    const auto generation = hm::stitching::HuginProject::GenerationId(directory, **hugin_lock);
+    ok &= expect(generation.ok(), "scoreboard generation race test must identify Hugin artifacts");
+    if (generation.ok())
+      stale_generation = *generation;
+    hugin_lock->reset();
+  }
+  {
+    std::ofstream replacement(directory / "mapping_0000.tif.replacement", std::ios::binary | std::ios::trunc);
+    replacement << "replacement mapping\n";
+  }
+  std::filesystem::rename(directory / "mapping_0000.tif.replacement", directory / "mapping_0000.tif");
+  ok &= expect(
+      !stale_generation.empty() && absl::IsAborted(Selector::Save(directory, disabled, stale_generation)),
+      "a selector opened on a replaced stitched canvas must not publish stale coordinates");
   ::setenv("HM_SCOREBOARD_BIND_HOST", "0.0.0.0", 1);
   ::setenv("HM_SCOREBOARD_ALLOW_REMOTE", "1", 1);
   ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");

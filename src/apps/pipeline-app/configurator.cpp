@@ -5004,8 +5004,13 @@ absl::Status Configurator::setup_stitcher_and_masks(
       bool is_configured;
       HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir, max_output_width));
       const bool calibrate_field_mask = StitcherCalibratesFieldMask(pipeline);
-      const bool field_mask_configured = calibrate_field_mask && is_configured &&
-          stitching::is_field_mask_configured_for_stitching_config(game_dir.string(), max_output_width);
+      double post_stitch_rotate_degrees = 0.0;
+      HM_ASSIGN_OR_RETURN(post_stitch_rotate_degrees, configurator_internal::effective_stitch_output_rotation(config_));
+      bool field_mask_configured = false;
+      if (calibrate_field_mask && is_configured) {
+        field_mask_configured = stitching::is_field_mask_configured_for_stitching_config(
+            game_dir.string(), max_output_width, post_stitch_rotate_degrees);
+      }
       const char* calibration_pending = g_getenv("HSTREAM_CALIBRATION_PENDING");
       const bool calibration_completion_requested =
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
@@ -5869,8 +5874,10 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
   remove_rotation_dependent_rink_cache_keys(private_config_);
   if (private_config_.IsDefined()) {
     // regeneration_check retains the reviewed Hugin generation until the
-    // config transaction has durably removed its canvas-relative geometry.
-    HM_RETURN_IF_ERROR(save_private_config(private_config_, active_stitching_invalidation_id_));
+    // config transaction has durably removed its canvas-relative geometry and
+    // stitched snapshot.
+    HM_RETURN_IF_ERROR(
+        save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_rink_masks=*/true));
   }
   return absl::OkStatus();
 }

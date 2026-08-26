@@ -3860,6 +3860,18 @@ QString hm::ui_internal::missing_development_runtime_artifact(const QString& baz
   return {};
 }
 
+hm::ui_internal::StitchingCanvasConstraintDecision hm::ui_internal::decide_stitching_canvas_constraint_change(
+    bool width_changed,
+    const std::optional<bool>& artifacts_compatible,
+    const std::optional<bool>& requires_regeneration) {
+  if (!width_changed || artifacts_compatible.value_or(false))
+    return {};
+  return {
+      .calibration_required = true,
+      .cleanup_required = requires_regeneration.value_or(true),
+  };
+}
+
 QString hm::ui_internal::development_runtime_root_for_application(const QString& application_path) {
   const QString bazel_bin_path = matching_development_bazel_bin(application_path);
   if (bazel_bin_path.isEmpty())
@@ -5478,6 +5490,45 @@ QString HStreamWindow::mappingBackend() const {
   return mapping_backend_combo_ ? mapping_backend_combo_->currentData().toString() : default_mapping_backend_;
 }
 
+std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> HStreamWindow::checkStitchingCanvasConstraint(
+    const QString& runner,
+    const QString& working_dir,
+    const QProcessEnvironment& env,
+    int max_output_width) {
+  const QString game_id = !active_run_game_id_.isEmpty()
+      ? active_run_game_id_
+      : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
+  QProcess check;
+  check.setProcessChannelMode(QProcess::MergedChannels);
+  check.setProcessEnvironment(env);
+  check.setWorkingDirectory(working_dir);
+  check.start(runner, {"-g", game_id, QString("--check-stitching-canvas-width=%1").arg(max_output_width)});
+  if (!check.waitForStarted(5000)) {
+    appendLog(QString("failed to start stitched-width compatibility check: %1").arg(check.errorString()));
+    return std::nullopt;
+  }
+  if (!check.waitForFinished(30000)) {
+    check.kill();
+    check.waitForFinished(5000);
+    appendLog("stitched-width compatibility check timed out");
+    return std::nullopt;
+  }
+  const QString output = QString::fromLocal8Bit(check.readAll());
+  if (check.exitStatus() != QProcess::NormalExit || check.exitCode() != 0) {
+    appendLog(QString("stitched-width compatibility check failed: %1").arg(output.trimmed()));
+    return std::nullopt;
+  }
+  const QRegularExpression marker(
+      R"(HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=([01]) requires-regeneration=([01]))");
+  const QRegularExpressionMatch match = marker.match(output);
+  if (!match.hasMatch()) {
+    appendLog("stitched-width compatibility check returned no parseable result");
+    return std::nullopt;
+  }
+  return hm::ui_internal::decide_stitching_canvas_constraint_change(
+      /*width_changed=*/true, match.captured(1) == "1", match.captured(2) == "1");
+}
+
 bool HStreamWindow::runStitchingClean(
     const QString& runner,
     const QString& working_dir,
@@ -5678,6 +5729,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool saved_artifacts_invalidated = false;
   bool clean_all = false;
   bool clean_from_control_points = false;
+  std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> width_constraint_check;
+  if (saved_stitch_max_output_width_ != active_stitch_max_output_width_) {
+    width_constraint_check = checkStitchingCanvasConstraint(runner, working_dir, env, active_stitch_max_output_width_);
+  }
   {
     auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
     if (!config_lock.ok()) {
@@ -5751,6 +5806,13 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
             config,
             active_stitch_max_output_width_,
             stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+    const auto canvas_constraint = max_output_width_changed
+        ? width_constraint_check.value_or(
+              hm::ui_internal::decide_stitching_canvas_constraint_change(
+                  /*width_changed=*/true,
+                  /*artifacts_compatible=*/std::nullopt,
+                  /*requires_regeneration=*/std::nullopt))
+        : hm::ui_internal::StitchingCanvasConstraintDecision{};
     const bool control_point_matcher_changed = saved_control_point_matcher != active_control_point_matcher_;
     const bool mapping_backend_changed = saved_mapping_backend != active_mapping_backend_;
     const bool stitch_frame_time_changed =
@@ -5772,8 +5834,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
     write_stitch_max_output_width_override(config, active_stitch_max_output_width_, default_stitch_max_output_width_);
     const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed ||
-        frame_count_changed || control_point_matcher_changed || mapping_backend_changed || max_output_width_changed ||
-        saved_status != "complete";
+        frame_count_changed || control_point_matcher_changed || mapping_backend_changed ||
+        canvas_constraint.calibration_required || saved_status != "complete";
     if (!needs_calibration) {
       active_calibration_start_stage_.clear();
       // Reserve one generation owner before the process starts. Program can
@@ -5795,8 +5857,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
 
     QString stale_from = saved_stale_from;
     if (!calibration_stage_index(stale_from).has_value()) {
-      stale_from = (mapping_backend_changed || max_output_width_changed) && !control_point_matcher_changed &&
-              !control_points_changed && !frame_count_changed
+      stale_from = (mapping_backend_changed || canvas_constraint.calibration_required) &&
+              !control_point_matcher_changed && !control_points_changed && !frame_count_changed
           ? QString("canvas")
           : QString("input");
     }
@@ -5809,7 +5871,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       stale_from = "features";
     }
     const size_t canvas_index = *calibration_stage_index("canvas");
-    if ((mapping_backend_changed || max_output_width_changed) && !control_point_matcher_changed &&
+    if ((mapping_backend_changed || canvas_constraint.calibration_required) && !control_point_matcher_changed &&
         !control_points_changed && !frame_count_changed && canvas_index < *calibration_stage_index(stale_from)) {
       stale_from = "canvas";
     }
@@ -5822,7 +5884,12 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     clean_all = active_force_reconfigure_ || stitch_frame_time_changed ||
         (stale_from != "features" &&
          (!saved_artifacts_invalidated || control_points_changed || control_point_matcher_changed ||
-          mapping_backend_changed || max_output_width_changed));
+          mapping_backend_changed || canvas_constraint.cleanup_required));
+    const bool width_only_change_from_complete_state = saved_status == "complete" && max_output_width_changed &&
+        !active_force_reconfigure_ && !stitch_frame_time_changed && !frame_count_changed && !control_points_changed &&
+        !control_point_matcher_changed && !mapping_backend_changed;
+    if (width_only_change_from_complete_state && !canvas_constraint.cleanup_required)
+      clean_all = false;
 
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
@@ -5841,7 +5908,6 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       return false;
     }
   }
-
   if (active_force_reconfigure_)
     appendLog("stitching calibration restart requested; rebuilding the complete dependency graph");
   if (saved_stitch_frame_time != active_stitch_frame_time_ || !saved_stitch_frame_time_valid) {
@@ -11106,6 +11172,14 @@ void HStreamWindow::savePreset() {
     return;
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> width_constraint_check;
+  if (saved_stitch_max_output_width_ != stitchingMaxOutputWidth()) {
+    width_constraint_check = checkStitchingCanvasConstraint(
+        pipelineRunnerPath(),
+        pipelineWorkingDirectory(),
+        QProcessEnvironment::systemEnvironment(),
+        stitchingMaxOutputWidth());
+  }
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
@@ -11128,7 +11202,11 @@ void HStreamWindow::savePreset() {
   int invalidated_config_artifacts = 0;
   QString published_playtracker_sidecar;
   if (!applySavedControlConfig(
-          config, &invalidate_rink_masks, &invalidated_config_artifacts, &published_playtracker_sidecar)) {
+          config,
+          &invalidate_rink_masks,
+          &invalidated_config_artifacts,
+          &published_playtracker_sidecar,
+          width_constraint_check)) {
     if (!published_playtracker_sidecar.isEmpty()) {
       QFile::remove(published_playtracker_sidecar);
     }
@@ -11737,7 +11815,8 @@ bool HStreamWindow::applySavedControlConfig(
     YAML::Node& config,
     bool* invalidate_rink_masks,
     int* invalidated_config_artifacts,
-    QString* published_playtracker_sidecar) {
+    QString* published_playtracker_sidecar,
+    const std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>& max_width_decision) {
   if (invalidate_rink_masks) {
     *invalidate_rink_masks = false;
   }
@@ -11886,8 +11965,14 @@ bool HStreamWindow::applySavedControlConfig(
       saved_stitching_control_points_ != 0 && saved_stitching_control_points_ != selected_control_points;
   const bool frame_count_changed =
       saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
-  const bool max_output_width_changed =
-      previous_max_output_width != selected_max_output_width || had_conflicting_max_output_width_native_alias;
+  const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
+  const auto canvas_constraint = max_output_width_changed
+      ? max_width_decision.value_or(
+            hm::ui_internal::decide_stitching_canvas_constraint_change(
+                /*width_changed=*/true,
+                /*artifacts_compatible=*/std::nullopt,
+                /*requires_regeneration=*/std::nullopt))
+      : hm::ui_internal::StitchingCanvasConstraintDecision{};
   const QString selected_control_point_matcher = controlPointMatcher();
   const QString selected_mapping_backend = mappingBackend();
   const QString previous_control_point_matcher =
@@ -11908,7 +11993,7 @@ bool HStreamWindow::applySavedControlConfig(
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
   if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
-      mapping_backend_changed || max_output_width_changed) {
+      mapping_backend_changed || canvas_constraint.calibration_required) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["control_points"] = selected_control_points;
     calibration["frame_count"] = selected_frame_count;
@@ -11917,9 +12002,13 @@ bool HStreamWindow::applySavedControlConfig(
     calibration["stale_from"] = stitch_frame_time_changed || frame_count_changed
         ? "input"
         : ((control_points_changed || control_point_matcher_changed) ? "features" : "canvas");
-    calibration["artifacts_invalidated"] = false;
+    const bool only_width_changed = canvas_constraint.calibration_required && !stitch_frame_time_changed &&
+        !control_points_changed && !frame_count_changed && !control_point_matcher_changed && !mapping_backend_changed;
+    calibration["artifacts_invalidated"] = only_width_changed && !canvas_constraint.cleanup_required;
     calibration["invalidation_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     appendLog("stitching calibration settings changed; stitching calibration marked stale");
+  } else if (max_output_width_changed || had_conflicting_max_output_width_native_alias) {
+    appendLog("maximum stitched width changed without changing the effective canvas; reusing existing maps");
   }
 
   auto slider_value = [this](const QString& id) -> int { return cameraControlValue(id); };

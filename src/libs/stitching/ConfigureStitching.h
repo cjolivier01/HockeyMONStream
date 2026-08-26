@@ -42,6 +42,7 @@ struct LockedStitchingArtifacts {
 
 struct LockedCanvasRegenerationCheck {
   std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
+  bool artifacts_compatible{false};
   bool requires_regeneration{false};
 };
 
@@ -106,7 +107,8 @@ bool is_field_mask_configured(
 
 bool is_field_mask_configured_for_stitching_config(
     const std::string& game_dir,
-    size_t max_output_width = 0,
+    size_t max_output_width,
+    double post_stitch_rotate_degrees,
     const std::string& expected_invalidation_id = {});
 
 // Validates and decodes rink_mask_0.png while holding the Hugin and
