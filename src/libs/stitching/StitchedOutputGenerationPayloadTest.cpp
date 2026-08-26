@@ -21,14 +21,18 @@ int main() {
   frame->base_meta.batch_meta = batch;
   const std::string generation = "hugin\npost-stitch-rotate-degrees:12.5\n";
   const std::string authorization_id = "authorization-b2";
-  const bool added = hm::stitching::add_stitched_output_generation_meta(frame, generation, authorization_id);
-  const bool duplicate_added = hm::stitching::add_stitched_output_generation_meta(frame, generation, authorization_id);
+  const std::string scoreboard_property_value = "1,2,3,4,5,6,7,8";
+  const bool added = hm::stitching::add_stitched_output_generation_meta(
+      frame, generation, authorization_id, scoreboard_property_value);
+  const bool duplicate_added = hm::stitching::add_stitched_output_generation_meta(
+      frame, generation, authorization_id, scoreboard_property_value);
   const bool mismatched_duplicate_rejected =
       !hm::stitching::add_stitched_output_generation_meta(frame, generation, "authorization-b1");
   const auto* attached = hm::stitching::find_stitched_output_generation_meta(frame);
   if (!added || !duplicate_added || !mismatched_duplicate_rejected || !attached ||
       attached->generation() != generation || attached->authorization_id() != authorization_id ||
-      !frame->frame_user_meta_list || frame->frame_user_meta_list->next) {
+      attached->scoreboard_property_value() != scoreboard_property_value || !frame->frame_user_meta_list ||
+      frame->frame_user_meta_list->next) {
     std::cerr << "FAIL: stitched-output generation metadata did not round-trip\n";
     nvds_destroy_batch_meta(batch);
     return 1;
@@ -38,7 +42,8 @@ int main() {
   gpointer copied_data = user_meta->base_meta.copy_func(user_meta, nullptr);
   const auto* copied_generation = static_cast<const hm::stitching::StitchedOutputGenerationPayload*>(copied_data);
   const bool copy_ok = copied_generation && copied_generation->generation() == generation &&
-      copied_generation->authorization_id() == authorization_id;
+      copied_generation->authorization_id() == authorization_id &&
+      copied_generation->scoreboard_property_value() == scoreboard_property_value;
   NvDsUserMeta copied_user_meta{};
   copied_user_meta.user_meta_data = copied_data;
   user_meta->base_meta.release_func(&copied_user_meta, nullptr);

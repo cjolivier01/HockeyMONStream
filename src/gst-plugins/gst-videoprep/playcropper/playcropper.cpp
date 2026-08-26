@@ -357,31 +357,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       return false;
     }
   } else if (key == "scoreboard-perspective-polygon") {
-    std::vector<std::string> points = absl::StrSplit(prop.value, ',');
-    if (points.size() != 8)
+    if (!SetScoreboardPerspectiveValue(prop.value))
       return false;
-    std::vector<cv::Point2f> parsed_polygon;
-    parsed_polygon.reserve(4);
-    for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
-      const size_t index = i << 1;
-      float x = 0.0f;
-      float y = 0.0f;
-      if (!parse_finite_float(points[index], &x) || !parse_finite_float(points[index + 1], &y))
-        return false;
-      parsed_polygon.emplace_back(x, y);
-    }
-    scoreboard_perspective_polygion_ = std::move(parsed_polygon);
-    scoreboard_.reset();
-    scoreboard_disabled_ = std::all_of(
-        scoreboard_perspective_polygion_.begin(), scoreboard_perspective_polygion_.end(), [](const cv::Point2f& p) {
-          return p.x == 0.0f && p.y == 0.0f;
-        });
-    if (scoreboard_disabled_)
-      scoreboard_perspective_polygion_.clear();
-    scoreboard_configure_attempted_ = scoreboard_disabled_;
-    std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by configured sentinel"
-                                       : "Loaded scoreboard perspective polygon")
-              << std::endl;
   } else if (key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
   } else if (key == "scoreboard-projected-width") {
@@ -449,6 +426,52 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     no_crop_ = !!std::atoi(prop.value.c_str());
   }
   return true;
+}
+
+bool PlayCropperPriv::SetScoreboardPerspectiveValue(std::string_view value) {
+  std::vector<std::string> points = absl::StrSplit(value, ',');
+  if (points.size() != 8)
+    return false;
+  std::vector<cv::Point2f> parsed_polygon;
+  parsed_polygon.reserve(4);
+  for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
+    const size_t index = i << 1;
+    float x = 0.0f;
+    float y = 0.0f;
+    if (!parse_finite_float(points[index], &x) || !parse_finite_float(points[index + 1], &y))
+      return false;
+    parsed_polygon.emplace_back(x, y);
+  }
+  scoreboard_perspective_polygion_ = std::move(parsed_polygon);
+  scoreboard_.reset();
+  scoreboard_disabled_ = std::all_of(
+      scoreboard_perspective_polygion_.begin(), scoreboard_perspective_polygion_.end(), [](const cv::Point2f& point) {
+        return point.x == 0.0f && point.y == 0.0f;
+      });
+  if (scoreboard_disabled_)
+    scoreboard_perspective_polygion_.clear();
+  scoreboard_configure_attempted_ = scoreboard_disabled_;
+  std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by configured sentinel"
+                                     : "Loaded scoreboard perspective polygon")
+            << std::endl;
+  return true;
+}
+
+absl::Status PlayCropperPriv::ApplyScoreboardOutputEpoch(const NvDsFrameMeta* frame_meta) {
+  const auto* epoch = stitching::find_stitched_output_generation_meta(frame_meta);
+  if (!epoch || epoch->scoreboard_property_value().empty())
+    return absl::OkStatus();
+  if (scoreboard_output_generation_ == epoch->generation() &&
+      scoreboard_output_authorization_id_ == epoch->authorization_id() &&
+      scoreboard_output_property_value_ == epoch->scoreboard_property_value()) {
+    return absl::OkStatus();
+  }
+  if (!SetScoreboardPerspectiveValue(epoch->scoreboard_property_value()))
+    return absl::InvalidArgumentError("Invalid scoreboard geometry in stitched-output frame epoch");
+  scoreboard_output_generation_ = epoch->generation();
+  scoreboard_output_authorization_id_ = epoch->authorization_id();
+  scoreboard_output_property_value_ = epoch->scoreboard_property_value();
+  return absl::OkStatus();
 }
 
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
@@ -575,6 +598,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
+    HM_RETURN_IF_ERROR(ApplyScoreboardOutputEpoch(frame_meta));
 
     // Get input and output surfaces
 #ifdef __aarch64__

@@ -7604,6 +7604,8 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   use_10_bit_grading->setChecked(false);
+  const int rotation_scoreboard_commands_before =
+      window->logText().count("stdin:@set-property playcropper0 scoreboard-perspective-polygon=");
   const int rotation_commands_before =
       window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
   for (int value = 60; value <= 69; ++value) {
@@ -7619,8 +7621,45 @@ bool test_camera_controls(HStreamWindow* window) {
           "Rapid stitch rotation changes should coalesce into one live pipeline command") ||
       !expect(
           window->logText().contains("camera control Stitch_Rotate_Degrees=69 apply=live") &&
-              !window->logText().contains("camera control Stitch_Rotate_Degrees=60 apply=pending"),
-          "Only the final coalesced stitch rotation should become pending and live")) {
+              !window->logText().contains("camera control Stitch_Rotate_Degrees=60 apply=pending") &&
+              window->logText().count("stdin:@set-property playcropper0 scoreboard-perspective-polygon=") ==
+                  rotation_scoreboard_commands_before,
+          "Only the final coalesced stitch rotation should publish frame-bound scoreboard geometry")) {
+    activate(stop);
+    return false;
+  }
+  const int dragged_rotation_commands_before =
+      window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
+  rotate->setSliderDown(true);
+  rotate->setValue(70);
+  QApplication::processEvents();
+  QTest::qWait(150);
+  rotate->setValue(71);
+  QApplication::processEvents();
+  QTest::qWait(150);
+  if (!expect(
+          window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
+              dragged_rotation_commands_before,
+          "A held stitch rotation drag should not publish expensive intermediate output epochs")) {
+    rotate->setSliderDown(false);
+    activate(stop);
+    return false;
+  }
+  rotate->setValue(72);
+  rotate->setSliderDown(false);
+  for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=72 apply=live"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
+              dragged_rotation_commands_before + 1,
+          "Releasing stitch rotation should publish exactly one final output epoch") ||
+      !expect(
+          window->logText().contains("camera control Stitch_Rotate_Degrees=72 apply=live") &&
+              !window->logText().contains("camera control Stitch_Rotate_Degrees=70 apply=pending") &&
+              !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=pending"),
+          "Only the released stitch rotation value should become pending and live")) {
     activate(stop);
     return false;
   }
@@ -7951,8 +7990,6 @@ bool test_camera_controls(HStreamWindow* window) {
     }
   }
   const int stalled_rotation_value = rotate->value() == 67 ? 68 : 67;
-  const int stalled_scoreboard_commands_before =
-      window->logText().count("stdin:@set-property playcropper0 scoreboard-perspective-polygon=");
   const int stalled_epoch_commands_before =
       window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
   rotate->setValue(stalled_rotation_value);
@@ -7966,16 +8003,9 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   const YAML::Node after_stalled_rotation = YAML::LoadFile(config.string());
   const QString stalled_rotation_log = window->logText();
-  const int stalled_scoreboard_command =
-      stalled_rotation_log.lastIndexOf("stdin:@set-property playcropper0 scoreboard-perspective-polygon=");
-  const int stalled_epoch_command =
-      stalled_rotation_log.lastIndexOf("stdin:@set-property hmstitcher0 stitched-output-epoch=");
-  const bool stalled_rotation_safe_property_order =
-      stalled_rotation_log.count("stdin:@set-property playcropper0 scoreboard-perspective-polygon=") >
-          stalled_scoreboard_commands_before &&
+  const bool stalled_rotation_published_one_epoch =
       stalled_rotation_log.count("stdin:@set-property hmstitcher0 stitched-output-epoch=") >
-          stalled_epoch_commands_before &&
-      stalled_scoreboard_command < stalled_epoch_command;
+      stalled_epoch_commands_before;
   const bool stalled_rotation_reconciled =
       expect(
           window->pipelineStateText() == "STOPPED" &&
@@ -7987,9 +8017,9 @@ bool test_camera_controls(HStreamWindow* window) {
           !HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
               !after_stalled_rotation["rink"]["stitched_output_pending_generation"].IsDefined() &&
               !after_stalled_rotation["rink"]["stitched_output_pending_authorization_id"].IsDefined() &&
-              stalled_rotation_safe_property_order,
+              stalled_rotation_published_one_epoch,
           "Pipeline-stop reconciliation must retire a timed-out live-rotation authorization without exposing stale "
-          "scoreboard geometry");
+          "frame epoch state");
   bool timeout_fixture_cleaned = false;
   {
     auto timeout_fixture_cleanup_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());

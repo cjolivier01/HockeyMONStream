@@ -204,6 +204,29 @@ int main() {
       "shutdown after runtime acceptance must restore the completed scoreboard polygon");
 
   write_config(root / "config.yaml", generation);
+  const auto crash_authorization =
+      hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0, "auth-crash-recovery");
+  const auto crash_commit = crash_authorization.ok()
+      ? hm::stitching::commit_live_stitched_output_rotation(
+            root.string(), crash_authorization->pending_generation, crash_authorization->authorization_id)
+      : crash_authorization.status();
+  const auto live_reconciliation = hm::stitching::reconcile_inactive_live_stitched_output_authorization(root.string());
+  config = YAML::LoadFile((root / "config.yaml").string());
+  config["rink"]["stitched_output_pending_owner_process"] = "999999999:1:dead-linux-boot";
+  std::ofstream(root / "config.yaml") << config << '\n';
+  const auto crash_reconciliation = hm::stitching::reconcile_inactive_live_stitched_output_authorization(root.string());
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      crash_authorization.ok() && crash_commit.ok() && live_reconciliation.ok() && !*live_reconciliation &&
+          crash_reconciliation.ok() && *crash_reconciliation &&
+          !config["rink"]["stitched_output_pending_generation"].IsDefined() &&
+          !config["rink"]["stitched_output_pending_authorization_id"].IsDefined() &&
+          !config["rink"]["stitched_output_pending_completed_scoreboard_polygon"].IsDefined() &&
+          config["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>() ==
+              std::vector<std::vector<int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}},
+      "startup reconciliation must restore completed scoreboard geometry after its live owner crashes");
+
+  write_config(root / "config.yaml", generation);
   const auto older = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25, "auth-older");
   const auto newer = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0, "auth-newer");
   const auto cancel_older = older.ok()

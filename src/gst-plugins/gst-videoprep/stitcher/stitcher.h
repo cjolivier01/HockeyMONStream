@@ -181,7 +181,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   void release_high_bit_field_mask_canvas();
   void update_live_output_epoch(
       std::optional<double> post_stitch_rotate_degrees,
-      std::optional<std::string> authorization_id);
+      std::optional<std::string> authorization_id,
+      std::optional<std::string> scoreboard_property_value);
 
   absl::Mutex stitcher_mu_;
   std::unique_ptr<STITCHER_FP32> stitcher_fp32_ ABSL_GUARDED_BY(stitcher_mu_);

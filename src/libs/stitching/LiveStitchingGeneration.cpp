@@ -201,6 +201,52 @@ absl::StatusOr<std::string> scoreboard_property_value(const YAML::Node& config) 
 
 } // namespace
 
+absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const std::string& game_dir) {
+  if (game_dir.empty())
+    return false;
+  const fs::path root(game_dir);
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  const fs::path config_path = root / "config.yaml";
+  std::error_code error;
+  const bool has_config = fs::is_regular_file(config_path, error);
+  if (error == std::errc::no_such_file_or_directory)
+    return false;
+  if (error)
+    return absl::InternalError("Unable to inspect game config: " + error.message());
+  if (!has_config)
+    return false;
+
+  try {
+    YAML::Node config = YAML::LoadFile(config_path.string());
+    if (!config || !config.IsMap())
+      return absl::InvalidArgumentError("Game config must be a map");
+    const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
+    const YAML::Node pending_authorization = config["rink"]["stitched_output_pending_authorization_id"];
+    if ((!pending_generation || !pending_generation.IsDefined()) &&
+        (!pending_authorization || !pending_authorization.IsDefined())) {
+      return false;
+    }
+    bool active = false;
+    HM_ASSIGN_OR_RETURN(active, live_stitched_output_authorization_is_active(config));
+    if (active)
+      return false;
+
+    const YAML::Node saved_polygon =
+        YAML::Clone(config["rink"]["stitched_output_pending_completed_scoreboard_polygon"]);
+    const YAML::Node active_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+    if ((!active_polygon || !active_polygon.IsDefined()) && saved_polygon && saved_polygon.IsDefined())
+      config["rink"]["scoreboard"]["perspective_polygon"] = saved_polygon;
+    remove_pending_authorization(config);
+    HM_RETURN_IF_ERROR(publish_game_config(root, YAML::Dump(config) + "\n"));
+    return true;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to reconcile inactive live stitched-output authorization: " + std::string(exception.what()));
+  }
+}
+
 absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_rotation(
     const std::string& game_dir,
     double post_stitch_rotate_degrees,

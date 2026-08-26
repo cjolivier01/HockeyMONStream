@@ -223,7 +223,8 @@ StitcherPriv::~StitcherPriv() {
 
 void StitcherPriv::update_live_output_epoch(
     std::optional<double> post_stitch_rotate_degrees,
-    std::optional<std::string> authorization_id) {
+    std::optional<std::string> authorization_id,
+    std::optional<std::string> scoreboard_property_value) {
   std::lock_guard<std::mutex> lock(live_output_epoch_update_mu_);
   const std::shared_ptr<const stitching::LiveOutputEpoch> current =
       std::atomic_load_explicit(&live_output_epoch_, std::memory_order_acquire);
@@ -232,6 +233,8 @@ void StitcherPriv::update_live_output_epoch(
     updated->post_stitch_rotate_degrees = *post_stitch_rotate_degrees;
   if (authorization_id.has_value())
     updated->authorization_id = std::move(*authorization_id);
+  if (scoreboard_property_value.has_value())
+    updated->scoreboard_property_value = std::move(*scoreboard_property_value);
   std::shared_ptr<const stitching::LiveOutputEpoch> published = std::move(updated);
   std::atomic_store_explicit(&live_output_epoch_, std::move(published), std::memory_order_release);
 }
@@ -257,7 +260,7 @@ void StitcherPriv::Shutdown() {
   release_high_bit_field_mask_canvas();
   calibration_invalidation_id_.clear();
   calibration_run_generation_.clear();
-  update_live_output_epoch(std::nullopt, std::string());
+  update_live_output_epoch(std::nullopt, std::string(), std::string());
   release_rotation_scratch();
 }
 
@@ -1387,14 +1390,17 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       std::cerr << "Invalid post-stitch rotation value: " << prop.value << std::endl;
       return false;
     }
-    update_live_output_epoch(parsed_rotation, std::nullopt);
+    update_live_output_epoch(parsed_rotation, std::nullopt, std::nullopt);
   } else if (prop.key == "stitched-output-epoch" || prop.key == "stitched_output_epoch") {
     auto epoch = stitching::parse_live_output_epoch(prop.value);
     if (!epoch.ok()) {
       std::cerr << "Invalid stitched-output epoch value: " << epoch.status() << std::endl;
       return false;
     }
-    update_live_output_epoch(epoch->post_stitch_rotate_degrees, std::move(epoch->authorization_id));
+    update_live_output_epoch(
+        epoch->post_stitch_rotate_degrees,
+        std::move(epoch->authorization_id),
+        std::move(epoch->scoreboard_property_value));
   }
   return true;
 }
@@ -1969,6 +1975,7 @@ absl::Status StitcherPriv::GenerateOutput(
       return absl::InternalError("Stitched-output epoch state is unavailable");
     const double applied_post_stitch_rotation = output_epoch->post_stitch_rotate_degrees;
     const std::string& output_authorization_id = output_epoch->authorization_id;
+    const std::string& output_scoreboard_property_value = output_epoch->scoreboard_property_value;
     if (stitcher_rgb10_fp16_) {
       HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
       if (!high_bit_canvas_ || high_bit_canvas_->width() != canvas->width() ||
@@ -2186,7 +2193,8 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
 
-    if (!stitching::add_stitched_output_generation_meta(reuse_frame_meta, output_generation, output_authorization_id)) {
+    if (!stitching::add_stitched_output_generation_meta(
+            reuse_frame_meta, output_generation, output_authorization_id, output_scoreboard_property_value)) {
       return absl::ResourceExhaustedError("Could not attach the stitched-output generation to the output frame");
     }
 

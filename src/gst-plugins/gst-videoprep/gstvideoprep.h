@@ -86,6 +86,7 @@ struct GstVideoPrep
   gchar* plugin_private_config;
   gchar* scoreboard_perspective_polygon;
   gchar* stitched_output_authorization_id;
+  gchar* stitched_output_scoreboard_polygon;
   gdouble post_stitch_rotate_degrees;
   guint max_output_width;
   gdouble fixed_edge_rotation_angle;

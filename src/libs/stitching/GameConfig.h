@@ -99,8 +99,8 @@ absl::Status validate_stitching_generation_owner_file_locked(
 absl::Status validate_no_pending_live_stitched_output_authorization_file_locked(
     const std::filesystem::path& config_path);
 
-// Process-start identities prevent a crashed live controller from retaining
-// publication authority and also fence PID reuse.
+// Process-start and Linux boot identities prevent a crashed live controller
+// from retaining publication authority and fence PID reuse across reboots.
 absl::StatusOr<std::string> current_live_stitched_output_owner_process();
 absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_view identity);
 absl::StatusOr<bool> live_stitched_output_authorization_is_active(const YAML::Node& config);

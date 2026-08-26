@@ -10,8 +10,13 @@ namespace hm::stitching {
 
 class StitchedOutputGenerationPayload {
  public:
-  explicit StitchedOutputGenerationPayload(std::string generation, std::string authorization_id = {})
-      : generation_(std::move(generation)), authorization_id_(std::move(authorization_id)) {}
+  explicit StitchedOutputGenerationPayload(
+      std::string generation,
+      std::string authorization_id = {},
+      std::string scoreboard_property_value = {})
+      : generation_(std::move(generation)),
+        authorization_id_(std::move(authorization_id)),
+        scoreboard_property_value_(std::move(scoreboard_property_value)) {}
 
   const std::string& generation() const {
     return generation_;
@@ -21,9 +26,14 @@ class StitchedOutputGenerationPayload {
     return authorization_id_;
   }
 
+  const std::string& scoreboard_property_value() const {
+    return scoreboard_property_value_;
+  }
+
  private:
   std::string generation_;
   std::string authorization_id_;
+  std::string scoreboard_property_value_;
 };
 
 inline NvDsMetaType stitched_output_generation_meta_type() {
@@ -65,14 +75,16 @@ inline const StitchedOutputGenerationPayload* find_stitched_output_generation_me
 inline bool add_stitched_output_generation_meta(
     NvDsFrameMeta* frame_meta,
     std::string generation,
-    std::string authorization_id = {}) noexcept {
+    std::string authorization_id = {},
+    std::string scoreboard_property_value = {}) noexcept {
   try {
     if (!frame_meta || !frame_meta->base_meta.batch_meta || generation.empty())
       return false;
     if (const auto* existing = find_stitched_output_generation_meta(frame_meta))
-      return existing->generation() == generation && existing->authorization_id() == authorization_id;
-    auto payload =
-        std::make_unique<StitchedOutputGenerationPayload>(std::move(generation), std::move(authorization_id));
+      return existing->generation() == generation && existing->authorization_id() == authorization_id &&
+          existing->scoreboard_property_value() == scoreboard_property_value;
+    auto payload = std::make_unique<StitchedOutputGenerationPayload>(
+        std::move(generation), std::move(authorization_id), std::move(scoreboard_property_value));
     NvDsUserMeta* user_meta = nvds_acquire_user_meta_from_pool(frame_meta->base_meta.batch_meta);
     if (!user_meta)
       return false;

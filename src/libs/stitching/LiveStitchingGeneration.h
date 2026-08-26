@@ -19,6 +19,11 @@ struct LiveStitchedOutputAuthorization {
   }
 };
 
+// Retires an authorization whose owning process is no longer active. The
+// completed generation's saved scoreboard geometry is restored before the
+// pending chain is removed. Returns true when config was reconciled.
+absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const std::string& game_dir);
+
 // Authorizes one exact live rotation generation. The authorization preserves
 // the completed generation's Hugin identity and dimensions and records the
 // pending generation without invalidating completed-generation geometry. A

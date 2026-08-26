@@ -222,6 +222,21 @@ int main() {
         "Hugin publication validation must reject an incomplete live authorization");
     const auto live_owner = hm::stitching::current_live_stitched_output_owner_process();
     ok &= expect(live_owner.ok(), "live authorization fixture must identify its owner process");
+    const size_t boot_separator = live_owner.ok() ? live_owner->rfind(':') : std::string::npos;
+    ok &= expect(
+        boot_separator != std::string::npos && boot_separator != live_owner->find(':') &&
+            hm::stitching::live_stitched_output_owner_process_is_active(*live_owner).value_or(false),
+        "the current process identity must include and match the Linux boot identity");
+    if (boot_separator != std::string::npos) {
+      const std::string legacy_owner = live_owner->substr(0, boot_separator);
+      const std::string wrong_boot_owner = legacy_owner + ":different-linux-boot";
+      ok &= expect(
+          !hm::stitching::live_stitched_output_owner_process_is_active(legacy_owner).value_or(true),
+          "a legacy owner identity without a boot ID must not retain publication authority");
+      ok &= expect(
+          !hm::stitching::live_stitched_output_owner_process_is_active(wrong_boot_owner).value_or(true),
+          "an owner identity from another Linux boot must not retain publication authority");
+    }
     ok &= expect(
         hm::stitching::publish_game_config(
             root,

@@ -14114,6 +14114,10 @@ void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value)
   scheduled_rotation_controls_[id] = value;
   scheduled_rotation_controls_ready_ = false;
   const quint64 generation = ++scheduled_rotation_control_generation_;
+  const auto slider = camera_sliders_.find(id);
+  if (id == "Stitch_Rotate_Degrees" && slider != camera_sliders_.end() && slider->second->isSliderDown()) {
+    return;
+  }
   QTimer::singleShot(120, this, [this, generation]() {
     if (generation != scheduled_rotation_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
@@ -14167,22 +14171,15 @@ bool HStreamWindow::publishRotationRuntimeControls(
           .post_stitch_rotate_degrees = static_cast<double>(*authorized_stitch_rotation),
           .authorization_id =
               live_rotation_authorization.has_value() ? live_rotation_authorization->authorization_id : std::string(),
+          .scoreboard_property_value = live_rotation_authorization.has_value()
+              ? live_rotation_authorization->scoreboard_property_value.toStdString()
+              : std::string(),
       };
       const RuntimePropertyCommand epoch_command{
           "hmstitcher0",
           "stitched-output-epoch",
           QString::fromStdString(hm::stitching::serialize_live_output_epoch(output_epoch))};
-      if (live_rotation_authorization.has_value() && !active_run_is_calibration_) {
-        const RuntimePropertyCommand scoreboard_command{
-            "playcropper0", "scoreboard-perspective-polygon", live_rotation_authorization->scoreboard_property_value};
-        if (live_rotation_authorization->invalidate_scoreboard)
-          commands.push_back(scoreboard_command);
-        commands.push_back(epoch_command);
-        if (!live_rotation_authorization->invalidate_scoreboard)
-          commands.push_back(scoreboard_command);
-      } else {
-        commands.push_back(epoch_command);
-      }
+      commands.push_back(epoch_command);
     }
   }
   const bool has_fixed_edge_change = controls.count("Link_Fixed_Edge_Rotation_Left_Right") ||
@@ -14415,6 +14412,11 @@ void HStreamWindow::flushScheduledRuntimeControls() {
     return;
   }
   if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {
+    const auto stitch_rotation_slider = camera_sliders_.find("Stitch_Rotate_Degrees");
+    if (scheduled_rotation_controls_.count("Stitch_Rotate_Degrees") &&
+        stitch_rotation_slider != camera_sliders_.end() && stitch_rotation_slider->second->isSliderDown()) {
+      return;
+    }
     std::map<QString, int> controls = std::move(scheduled_rotation_controls_);
     scheduled_rotation_controls_.clear();
     scheduled_rotation_controls_ready_ = false;
@@ -14536,6 +14538,18 @@ QSlider* HStreamWindow::addSlider(
     }
     updatePresetDirtyState();
   });
+  if (id == "Stitch_Rotate_Degrees") {
+    connect(slider, &QSlider::sliderReleased, this, [this, id, slider]() {
+      const auto scheduled = scheduled_rotation_controls_.find(id);
+      if (scheduled == scheduled_rotation_controls_.end()) {
+        return;
+      }
+      scheduled->second = slider->value();
+      ++scheduled_rotation_control_generation_;
+      scheduled_rotation_controls_ready_ = true;
+      flushScheduledRuntimeControls();
+    });
+  }
   row->addWidget(name, 0, 0);
   row->addWidget(value_label, 0, 1);
   row->addWidget(slider, 1, 0, 1, 2);

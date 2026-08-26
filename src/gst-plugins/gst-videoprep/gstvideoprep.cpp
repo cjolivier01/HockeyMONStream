@@ -1360,6 +1360,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->plugin_type = NULL; // strdup("videoprep");
   videoprep->scoreboard_perspective_polygon = NULL;
   videoprep->stitched_output_authorization_id = NULL;
+  videoprep->stitched_output_scoreboard_polygon = NULL;
   videoprep->post_stitch_rotate_degrees = 0.0;
   videoprep->max_output_width = 0;
   videoprep->fixed_edge_rotation_angle = 10.0;
@@ -1447,6 +1448,8 @@ static void gst_videoprep_finalize(GObject* object) {
     g_free(videoprep->scoreboard_perspective_polygon);
   if (videoprep->stitched_output_authorization_id)
     g_free(videoprep->stitched_output_authorization_id);
+  if (videoprep->stitched_output_scoreboard_polygon)
+    g_free(videoprep->stitched_output_scoreboard_polygon);
 }
 
 static void gst_videoprep_init(GstVideoPrep* videoprep) {
@@ -1542,11 +1545,16 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       gchar* previous =
           videoprep->stitched_output_authorization_id ? g_strdup(videoprep->stitched_output_authorization_id) : nullptr;
+      gchar* previous_scoreboard = videoprep->stitched_output_scoreboard_polygon
+          ? g_strdup(videoprep->stitched_output_scoreboard_polygon)
+          : nullptr;
       const gdouble previous_rotation = videoprep->post_stitch_rotate_degrees;
       const gboolean previous_set = videoprep->stitched_output_epoch_set;
       const guint previous_sequence = videoprep->stitched_output_epoch_sequence;
       g_free(videoprep->stitched_output_authorization_id);
       videoprep->stitched_output_authorization_id = g_strdup(epoch->authorization_id.c_str());
+      g_free(videoprep->stitched_output_scoreboard_polygon);
+      videoprep->stitched_output_scoreboard_polygon = g_strdup(epoch->scoreboard_property_value.c_str());
       videoprep->post_stitch_rotate_degrees = epoch->post_stitch_rotate_degrees;
       videoprep->stitched_output_epoch_set = TRUE;
       videoprep->stitched_output_epoch_sequence = ++videoprep->property_set_sequence;
@@ -1554,11 +1562,15 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
         g_free(videoprep->stitched_output_authorization_id);
         videoprep->stitched_output_authorization_id = previous;
         previous = nullptr;
+        g_free(videoprep->stitched_output_scoreboard_polygon);
+        videoprep->stitched_output_scoreboard_polygon = previous_scoreboard;
+        previous_scoreboard = nullptr;
         videoprep->post_stitch_rotate_degrees = previous_rotation;
         videoprep->stitched_output_epoch_set = previous_set;
         videoprep->stitched_output_epoch_sequence = previous_sequence;
       }
       g_free(previous);
+      g_free(previous_scoreboard);
       break;
     }
     case PROP_SCOREBOARD_PERSPECTIVE_POLYGON: {
@@ -1792,8 +1804,10 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              "stitched-output-epoch",
              hm::stitching::serialize_live_output_epoch(
                  {.post_stitch_rotate_degrees = videoprep->post_stitch_rotate_degrees,
-                  .authorization_id = videoprep->stitched_output_authorization_id
-                      ? videoprep->stitched_output_authorization_id
+                  .authorization_id =
+                      videoprep->stitched_output_authorization_id ? videoprep->stitched_output_authorization_id : "",
+                  .scoreboard_property_value = videoprep->stitched_output_scoreboard_polygon
+                      ? videoprep->stitched_output_scoreboard_polygon
                       : ""}))) &&
         ok;
   }
@@ -1893,7 +1907,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
           hm::stitching::serialize_live_output_epoch(
               {.post_stitch_rotate_degrees = videoprep->post_stitch_rotate_degrees,
                .authorization_id =
-                   videoprep->stitched_output_authorization_id ? videoprep->stitched_output_authorization_id : ""})
+                   videoprep->stitched_output_authorization_id ? videoprep->stitched_output_authorization_id : "",
+               .scoreboard_property_value =
+                   videoprep->stitched_output_scoreboard_polygon ? videoprep->stitched_output_scoreboard_polygon : ""})
               .c_str());
       break;
     case PROP_SCOREBOARD_PERSPECTIVE_POLYGON:

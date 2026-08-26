@@ -61,6 +61,7 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 
 namespace fs = std::filesystem;
@@ -6743,9 +6744,15 @@ std::filesystem::path Configurator::get_private_config_file_name(const std::stri
 
 absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
-  const fs::path private_config_file = resolved_game_dir() / "config.yaml";
+  const fs::path game_dir = resolved_game_dir();
+  const fs::path private_config_file = game_dir / "config.yaml";
   if (private_config_file.parent_path().empty() || !fs::is_directory(private_config_file.parent_path())) {
     return std::nullopt;
+  }
+  auto live_output_reconciliation = stitching::reconcile_inactive_live_stitched_output_authorization(game_dir.string());
+  if (!live_output_reconciliation.ok()) {
+    std::cerr << live_output_reconciliation.status() << '\n';
+    return live_output_reconciliation.status();
   }
   return stitching::load_game_config_file(private_config_file);
 }

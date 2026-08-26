@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace hm {
@@ -98,6 +99,8 @@ class PlayCropperPriv : public CustomAlgorithmBase {
       surface::Surface stitched_surface,
       const NvDsFrameMeta* frame_meta);
   absl::Status LoadScoreboardPerspectiveFromConfig();
+  bool SetScoreboardPerspectiveValue(std::string_view value);
+  absl::Status ApplyScoreboardOutputEpoch(const NvDsFrameMeta* frame_meta);
   void TransformObjectMetaForOutput(
       NvDsFrameMeta* frame_meta,
       float scale_w,
@@ -131,6 +134,9 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   bool scoreboard_disabled_{false};
   bool scoreboard_configure_attempted_{false};
+  std::string scoreboard_output_generation_;
+  std::string scoreboard_output_authorization_id_;
+  std::string scoreboard_output_property_value_;
   bool preview_transform_failure_reported_{false};
   std::string config_file_;
   size_t scoreboard_warp_interval_{3};

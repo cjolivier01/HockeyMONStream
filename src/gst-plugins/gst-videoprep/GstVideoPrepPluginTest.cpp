@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
               {"output-height", "1080"},
               {"plugin-type", "playcropper"},
               {"plugin-private-config", "show=1;runtime-output-max-width=3840"},
-              {"stitched-output-epoch", "16:authorization-b218.25"},
+              {"stitched-output-epoch", "16:authorization-b215:0,0,0,0,0,0,0,018.25"},
               {"fixed-edge-rotation-angle", "12.5"},
               {"max-output-width", "4096"},
               {"fixed-edge-rotation-angle-left", "25.0"},
@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
   const bool ok = silent == TRUE && source_id == 3 && output_width == 1920 && plugin_type &&
       std::string(plugin_type) == "playcropper" && private_config &&
       std::string(private_config) == "show=1;runtime-output-max-width=3840" && stitched_output_epoch &&
-      stitched_output_epoch_value == "16:authorization-b218.25" &&
+      stitched_output_epoch_value == "16:authorization-b215:0,0,0,0,0,0,0,018.25" &&
       std::abs(post_stitch_rotate_degrees - 18.25) < 1e-6 && max_output_width == 4096 &&
       std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 && std::abs(fixed_edge_rotation_angle_left - 25.0) < 1e-6 &&
       std::abs(fixed_edge_rotation_angle_right - 75.0) < 1e-6 && std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 &&
@@ -263,7 +263,7 @@ int main(int argc, char** argv) {
       &epoch_after_invalid,
       NULL);
   const bool invalid_epoch_rejected = invalid_epoch_applied && invalid_epoch_accepted == FALSE && epoch_after_invalid &&
-      std::string(epoch_after_invalid) == "16:authorization-b218.25";
+      std::string(epoch_after_invalid) == "16:authorization-b215:0,0,0,0,0,0,0,018.25";
   g_free(plugin_type);
   g_free(private_config);
   g_free(stitched_output_epoch);

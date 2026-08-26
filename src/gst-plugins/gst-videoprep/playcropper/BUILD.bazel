@@ -33,6 +33,7 @@ cc_test(
     deps = [
         ":playcropper",
         "//src/libs/common:preview_overlay_meta",
+        "//src/libs/stitching",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@local_cuda//:nppc",

@@ -29,6 +29,22 @@ namespace {
 
 namespace fs = std::filesystem;
 
+struct ProcessIdentity {
+  pid_t process_id;
+  uint64_t start_time;
+  std::string boot_id;
+};
+
+absl::StatusOr<std::string> current_boot_id() {
+  std::ifstream input("/proc/sys/kernel/random/boot_id");
+  std::string boot_id;
+  if (!input || !std::getline(input, boot_id) || boot_id.empty() ||
+      boot_id.find_first_of(": \t\r\n") != std::string::npos) {
+    return absl::InternalError("Unable to read the current Linux boot identity");
+  }
+  return boot_id;
+}
+
 absl::StatusOr<uint64_t> process_start_time(pid_t process_id) {
   std::ifstream input("/proc/" + std::to_string(process_id) + "/stat");
   if (!input)
@@ -51,19 +67,33 @@ absl::StatusOr<uint64_t> process_start_time(pid_t process_id) {
   return start_time;
 }
 
-absl::StatusOr<std::pair<pid_t, uint64_t>> parse_process_identity(std::string_view identity) {
-  const size_t separator = identity.find(':');
-  if (separator == std::string_view::npos || separator == 0 || separator + 1 == identity.size())
-    return absl::InvalidArgumentError("Invalid live stitched-output owner process identity");
-  pid_t process_id = 0;
-  uint64_t start_time = 0;
-  const auto process = std::from_chars(identity.data(), identity.data() + separator, process_id);
-  const auto start = std::from_chars(identity.data() + separator + 1, identity.data() + identity.size(), start_time);
-  if (process.ec != std::errc() || process.ptr != identity.data() + separator || process_id <= 0 ||
-      start.ec != std::errc() || start.ptr != identity.data() + identity.size()) {
+absl::StatusOr<ProcessIdentity> parse_process_identity(std::string_view identity) {
+  const size_t process_separator = identity.find(':');
+  if (process_separator == std::string_view::npos || process_separator == 0 ||
+      process_separator + 1 == identity.size()) {
     return absl::InvalidArgumentError("Invalid live stitched-output owner process identity");
   }
-  return std::pair<pid_t, uint64_t>{process_id, start_time};
+  const size_t boot_separator = identity.find(':', process_separator + 1);
+  const size_t start_end = boot_separator == std::string_view::npos ? identity.size() : boot_separator;
+  if (start_end == process_separator + 1 ||
+      (boot_separator != std::string_view::npos &&
+       (boot_separator + 1 == identity.size() || identity.find(':', boot_separator + 1) != std::string_view::npos))) {
+    return absl::InvalidArgumentError("Invalid live stitched-output owner process identity");
+  }
+  pid_t process_id = 0;
+  uint64_t start_time = 0;
+  const auto process = std::from_chars(identity.data(), identity.data() + process_separator, process_id);
+  const auto start = std::from_chars(identity.data() + process_separator + 1, identity.data() + start_end, start_time);
+  if (process.ec != std::errc() || process.ptr != identity.data() + process_separator || process_id <= 0 ||
+      start.ec != std::errc() || start.ptr != identity.data() + start_end) {
+    return absl::InvalidArgumentError("Invalid live stitched-output owner process identity");
+  }
+  const std::string boot_id =
+      boot_separator == std::string_view::npos ? std::string() : std::string(identity.substr(boot_separator + 1));
+  if (!boot_id.empty() && boot_id.find_first_of(" \t\r\n") != std::string::npos) {
+    return absl::InvalidArgumentError("Invalid live stitched-output owner process identity");
+  }
+  return ProcessIdentity{process_id, start_time, boot_id};
 }
 
 bool yaml_equal(const YAML::Node& lhs, const YAML::Node& rhs) {
@@ -786,19 +816,31 @@ absl::StatusOr<std::string> current_live_stitched_output_owner_process() {
   auto start_time = process_start_time(::getpid());
   if (!start_time.ok())
     return start_time.status();
-  return std::to_string(::getpid()) + ":" + std::to_string(*start_time);
+  auto boot_id = current_boot_id();
+  if (!boot_id.ok())
+    return boot_id.status();
+  return std::to_string(::getpid()) + ":" + std::to_string(*start_time) + ":" + *boot_id;
 }
 
 absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_view identity) {
   auto parsed = parse_process_identity(identity);
   if (!parsed.ok())
     return parsed.status();
-  auto current_start_time = process_start_time(parsed->first);
+  // A legacy pid:start identity cannot distinguish a restarted system and
+  // therefore cannot retain publication authority.
+  if (parsed->boot_id.empty())
+    return false;
+  auto boot_id = current_boot_id();
+  if (!boot_id.ok())
+    return boot_id.status();
+  if (*boot_id != parsed->boot_id)
+    return false;
+  auto current_start_time = process_start_time(parsed->process_id);
   if (absl::IsNotFound(current_start_time.status()))
     return false;
   if (!current_start_time.ok())
     return current_start_time.status();
-  return *current_start_time == parsed->second;
+  return *current_start_time == parsed->start_time;
 }
 
 absl::StatusOr<bool> live_stitched_output_authorization_is_active(const YAML::Node& config) {
