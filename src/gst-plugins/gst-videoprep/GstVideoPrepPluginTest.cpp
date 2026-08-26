@@ -103,6 +103,24 @@ bool expect_reverse_fixate_preserves_input_dimensions() {
   return ok;
 }
 
+bool expect_stitch_rotation_requires_atomic_epoch_at_runtime() {
+  GstElement* element = gst_element_factory_make("hmstitcher", nullptr);
+  if (!element) {
+    std::cerr << "Could not create hmstitcher for rotation mutability test\n";
+    return false;
+  }
+  GObjectClass* object_class = G_OBJECT_GET_CLASS(element);
+  GParamSpec* raw_rotation = g_object_class_find_property(object_class, "post-stitch-rotate-degrees");
+  GParamSpec* output_epoch = g_object_class_find_property(object_class, "stitched-output-epoch");
+  const bool ok = raw_rotation && output_epoch && (raw_rotation->flags & GST_PARAM_MUTABLE_PLAYING) == 0 &&
+      (output_epoch->flags & GST_PARAM_MUTABLE_PLAYING) != 0;
+  gst_object_unref(element);
+  if (!ok) {
+    std::cerr << "Raw stitch rotation must be restart-only while stitched-output epochs remain runtime mutable\n";
+  }
+  return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -118,6 +136,9 @@ int main(int argc, char** argv) {
     }
   }
   if (!expect_reverse_fixate_preserves_input_dimensions()) {
+    return 1;
+  }
+  if (!expect_stitch_rotation_requires_atomic_epoch_at_runtime()) {
     return 1;
   }
 

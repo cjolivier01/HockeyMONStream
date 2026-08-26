@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
 #include <array>
@@ -669,6 +670,8 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     return std::string("BACKING_UP");
   if (contents == "BACKED_UP\n")
     return std::string("BACKED_UP");
+  if (contents == "ROLLING_BACK\n")
+    return std::string("ROLLING_BACK");
   if (contents == "COMMITTED\n")
     return std::string("COMMITTED");
   if (contents == "ROLLED_BACK\n")
@@ -739,7 +742,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     auto state = read_stitch_transaction_state(transaction);
     if (!state.ok())
       return state.status();
-    if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP") {
+    if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
       std::ifstream manifest(transaction / "artifacts");
       if (!manifest)
         return absl::FailedPreconditionError("Prepared stitch transaction has no artifact manifest");
@@ -794,25 +797,39 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       }
 
       if (!has_prior_manifest) {
-        // Journals from the old hard-link protocol did not record the prior
-        // set separately and could publish while still PREPARED.
-        for (const std::string& name : manifested) {
-          fs::remove(root / name, error);
-          if (error)
-            return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
-        }
+        // Convert old hard-link journals before consuming any backup. Root
+        // entries may already have been restored by an interrupted legacy
+        // rollback, so retain them as possible prior artifacts; authoritative
+        // artifact validation will reject any mixed generation afterward.
         for (const auto& [name, old] : backups) {
-          fs::rename(old, root / name, error);
-          if (error) {
-            return absl::InternalError("Unable to restore interrupted stitch artifact: " + error.message());
-          }
+          (void)old;
+          prior_artifacts.insert(name);
         }
+        for (const std::string& name : manifested) {
+          const bool root_exists = fs::exists(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to inspect legacy stitch artifact: " + error.message());
+          if (root_exists)
+            prior_artifacts.insert(name);
+        }
+        std::ostringstream prior_manifest;
+        for (const std::string& name : prior_artifacts)
+          prior_manifest << name << '\n';
+        auto status = write_stitch_transaction_file(prior_manifest_path, prior_manifest.str());
+        if (!status.ok())
+          return status;
       } else if (*state == "PREPARED") {
         if (!backups.empty()) {
           return absl::FailedPreconditionError("Prepared stitch transaction unexpectedly contains backups");
         }
-      } else {
+        auto status = mark_stitch_transaction_rolled_back(transaction);
+        if (!status.ok())
+          return status;
+      }
+
+      if (!has_prior_manifest || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
         for (const auto& [name, old] : backups) {
+          (void)old;
           if (prior_artifacts.count(name) == 0) {
             return absl::FailedPreconditionError("Stitch transaction contains an unmanifested backup: " + name);
           }
@@ -836,29 +853,56 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
                   "Backup-in-progress stitch transaction lost prior artifact: " + name);
             }
           }
-        } else {
-          for (const std::string& name : manifested) {
-            fs::remove(root / name, error);
-            if (error)
-              return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
+        } else if (*state == "ROLLING_BACK") {
+          for (const std::string& name : prior_artifacts) {
+            if (backups.count(name) != 0)
+              continue;
+            if (!fs::is_regular_file(root / name, error) || error) {
+              return absl::FailedPreconditionError("Rolling-back stitch transaction lost prior artifact: " + name);
+            }
           }
         }
-        for (const auto& [name, old] : backups) {
-          fs::rename(old, root / name, error);
+
+        if (*state != "ROLLING_BACK") {
+          auto status = publish_transaction_state(transaction, "ROLLING_BACK\n");
+          if (!status.ok())
+            return status;
+        }
+        for (const std::string& name : manifested) {
+          if (prior_artifacts.count(name) != 0)
+            continue;
+          fs::remove(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
+        }
+        size_t restored = 0;
+        for (const std::string& name : prior_artifacts) {
+          const auto backup = backups.find(name);
+          if (backup == backups.end())
+            continue;
+          fs::remove(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to remove replacement stitch artifact: " + error.message());
+          fs::rename(backup->second, root / name, error);
           if (error)
             return absl::InternalError("Unable to restore interrupted stitch artifact: " + error.message());
+          ++restored;
+          if (const char* fail_after = std::getenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER");
+              fail_after != nullptr && restored == static_cast<size_t>(std::strtoull(fail_after, nullptr, 10))) {
+            return absl::InternalError("Injected stitch rollback interruption");
+          }
         }
+        error.clear();
+        auto status = fsync_stitch_path(previous, true);
+        if (!status.ok())
+          return status;
+        status = fsync_stitch_path(root, true);
+        if (!status.ok())
+          return status;
+        status = mark_stitch_transaction_rolled_back(transaction);
+        if (!status.ok())
+          return status;
       }
-      error.clear();
-      auto status = fsync_stitch_path(previous, true);
-      if (!status.ok())
-        return status;
-      status = fsync_stitch_path(root, true);
-      if (!status.ok())
-        return status;
-      status = mark_stitch_transaction_rolled_back(transaction);
-      if (!status.ok())
-        return status;
     }
     fs::remove_all(transaction, error);
     if (error)

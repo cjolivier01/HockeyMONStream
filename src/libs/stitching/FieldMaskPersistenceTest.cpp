@@ -665,6 +665,12 @@ int main() {
         hm::stitching::save_rink_profile(root.string(), profile).ok() &&
             hm::stitching::is_field_mask_configured(root.string()),
         "regenerating the profile must bind it to the replacement seam generation");
+    ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
+    const auto portable_publication = hm::stitching::save_rink_profile(root.string(), profile);
+    ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
+    ok &= expect(
+        portable_publication.ok() && hm::stitching::is_field_mask_configured(root.string()),
+        "rink profile publication must fall back to copies when hard links and reflinks are unavailable");
 
     const fs::path replacement_mapping = root / "mapping_0000_x.replacement.tif";
     cv::imwrite(replacement_mapping.string(), cv::Mat(24, 32, CV_32F, cv::Scalar(1.0f)));

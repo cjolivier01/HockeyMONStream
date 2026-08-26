@@ -43,8 +43,10 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <opencv2/opencv.hpp>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
@@ -71,9 +73,43 @@ void report_calibration_progress(const std::string& stage, const std::string& st
 absl::Status recover_rink_transactions_locked(const fs::path& root);
 absl::Status fsync_path(const fs::path& path, bool directory = false);
 
-absl::Status link_rink_rollback_file(const fs::path& source, const fs::path& destination) {
-  if (::link(source.c_str(), destination.c_str()) != 0) {
-    return absl::InternalError("Unable to hard-link rink artifact for rollback: " + std::string(std::strerror(errno)));
+absl::Status link_clone_or_copy_rink_rollback_file(const fs::path& source, const fs::path& destination) {
+  const bool force_portable_fallback = [] {
+    const char* value = std::getenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  if (!force_portable_fallback && ::link(source.c_str(), destination.c_str()) == 0)
+    return absl::OkStatus();
+  const int link_error = force_portable_fallback ? EOPNOTSUPP : errno;
+  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (source_fd < 0)
+    return absl::InternalError("Unable to open rink artifact for rollback: " + source.string());
+  struct stat metadata{};
+  if (::fstat(source_fd, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
+    ::close(source_fd);
+    return absl::FailedPreconditionError("Rink rollback source is not a regular file: " + source.string());
+  }
+  const int destination_fd =
+      ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, metadata.st_mode & 0777);
+  if (destination_fd < 0) {
+    ::close(source_fd);
+    return absl::InternalError("Unable to create rink rollback artifact: " + destination.string());
+  }
+  const bool cloned = !force_portable_fallback && ::ioctl(destination_fd, FICLONE, source_fd) == 0;
+  const int clone_error = force_portable_fallback ? EOPNOTSUPP : errno;
+  ::close(destination_fd);
+  ::close(source_fd);
+  if (cloned)
+    return absl::OkStatus();
+
+  std::error_code error;
+  fs::remove(destination, error);
+  error.clear();
+  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+  if (error) {
+    return absl::InternalError(
+        "Unable to preserve old rink artifact after hard link (" + std::string(std::strerror(link_error)) +
+        ") and reflink (" + std::string(std::strerror(clone_error)) + ") failed: " + error.message());
   }
   return absl::OkStatus();
 }
@@ -1883,7 +1919,7 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       size_t restored = 0;
       for (const fs::path& old : backups) {
         const fs::path destination = root / old.filename();
-        auto restore = link_rink_rollback_file(old, destination);
+        auto restore = link_clone_or_copy_rink_rollback_file(old, destination);
         if (!restore.ok())
           return restore;
         auto status = fsync_path(destination);
@@ -2800,7 +2836,7 @@ absl::Status save_rink_profile_locked(
     }
   }
   for (const fs::path& old : old_files) {
-    auto preserve = link_rink_rollback_file(old, previous / old.filename());
+    auto preserve = link_clone_or_copy_rink_rollback_file(old, previous / old.filename());
     if (!preserve.ok())
       return preserve;
     sync_status = fsync_path(previous / old.filename());

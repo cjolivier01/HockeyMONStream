@@ -796,9 +796,13 @@ int main() {
   ok &= expect(
       !fs::exists(root / "game" / "hm_project.pto") && !fs::exists(root / "game" / "autooptimiser_out.pto"),
       "backed-up interruption must happen before publishing replacement artifacts");
+  ::setenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER", "1", 1);
+  const auto interrupted_rollback = hm::stitching::HuginProject::Recover(root / "game");
+  ::unsetenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER");
+  ok &= expect(!interrupted_rollback.ok(), "interrupted Hugin rollback must retain a resumable journal");
   ok &= expect(
       hm::stitching::HuginProject::Recover(root / "game").ok(),
-      "durably backed-up Hugin publication must recover on the next owner");
+      "durably backed-up Hugin publication must recover after an interrupted rollback");
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
     ok &= expect(generation_lock.ok(), "fully backed-up Hugin generation must remain lockable");

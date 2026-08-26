@@ -1151,7 +1151,7 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
           -360.0,
           360.0,
           0.0,
-          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property(
       gobject_class,

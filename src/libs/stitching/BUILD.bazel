@@ -144,6 +144,7 @@ cc_library(
   ],
   visibility = ["//visibility:public"],
   deps = [
+    ":transaction_state",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ],
