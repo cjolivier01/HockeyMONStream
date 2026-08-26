@@ -518,6 +518,58 @@ play-tracker:
           mapped_canonical["sink0"]["width"].as<int>() == 1280 && mapped_canonical["sink0"]["height"].as<int>() == 720,
       "Explicit canonical game values must replace lower-ranked structural native values for every supported mapping");
 
+  const fs::path stale_runtime_polygon_dir = games / "mapping-stale-runtime-polygon";
+  fs::create_directories(stale_runtime_polygon_dir);
+  YAML::Node stale_runtime_polygon(YAML::NodeType::Map);
+  stale_runtime_polygon["stitching"]["enabled"] = true;
+  stale_runtime_polygon["stitching"]["post_stitch_rotate_degrees"] = 15.0;
+  stale_runtime_polygon["stitching"]["generated_field_mask_post_stitch_rotate_degrees"] = 0.0;
+  for (const auto& point : std::vector<std::pair<int, int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}}) {
+    YAML::Node coordinates(YAML::NodeType::Sequence);
+    coordinates.push_back(point.first);
+    coordinates.push_back(point.second);
+    stale_runtime_polygon["rink"]["scoreboard"]["perspective_polygon"].push_back(coordinates);
+  }
+  std::ofstream(stale_runtime_polygon_dir / "config.yaml") << YAML::Dump(stale_runtime_polygon) << '\n';
+  const fs::path stale_runtime_structure_path = root / "mapping-stale-runtime-structure.yaml";
+  YAML::Node stale_runtime_structure = YAML::Clone(structural_custom);
+  stale_runtime_structure["application"]["complete-configuration"] = 1;
+  std::ofstream(stale_runtime_structure_path) << YAML::Dump(stale_runtime_structure) << '\n';
+  hm::Configurator stale_runtime_polygon_configurator(
+      "mapping-stale-runtime-polygon", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool stale_runtime_polygon_loaded = stale_runtime_polygon_configurator.configure().ok() &&
+      stale_runtime_polygon_configurator.underlay_config("pipeline", stale_runtime_structure_path.string());
+  const absl::Status stale_runtime_polygon_status = stale_runtime_polygon_loaded
+      ? stale_runtime_polygon_configurator.complete_configuration(
+            /*force=*/false,
+            /*clean_stitching_artifacts=*/false,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            bundled_baseline.ok() ? bundled_baseline->root : fs::path())
+      : absl::InternalError("stale runtime scoreboard fixture did not load");
+  const YAML::Node stale_runtime_after = fs::is_regular_file(stale_runtime_polygon_dir / "config.yaml")
+      ? YAML::LoadFile((stale_runtime_polygon_dir / "config.yaml").string())
+      : YAML::Node();
+  const auto stale_runtime_rotation_marker =
+      hm::get_node(stale_runtime_after, "stitching.generated_field_mask_post_stitch_rotate_degrees");
+  const auto stale_runtime_native_polygon = hm::get_node(
+      stale_runtime_polygon_configurator.config(), "pipeline.hmplaycropper.scoreboard-perspective-polygon");
+  const auto stale_runtime_persisted_polygon = hm::get_node(stale_runtime_after, "rink.scoreboard.perspective_polygon");
+  const bool stale_runtime_polygon_cleared = stale_runtime_polygon_loaded &&
+      !stale_runtime_native_polygon.has_value() && !stale_runtime_persisted_polygon.has_value() &&
+      stale_runtime_rotation_marker.has_value() && stale_runtime_rotation_marker->IsScalar() &&
+      stale_runtime_rotation_marker->as<double>() == 15.0;
+  if (!stale_runtime_polygon_cleared) {
+    std::cerr << "stale runtime polygon configuration status: " << stale_runtime_polygon_status << '\n'
+              << "runtime config: " << YAML::Dump(stale_runtime_polygon_configurator.config()) << '\n'
+              << "private config: " << YAML::Dump(stale_runtime_after) << '\n';
+  }
+  ok &= expect(
+      stale_runtime_polygon_cleared,
+      "Rotation invalidation must clear a canonical polygon already materialized into the active native pipeline");
+
   const fs::path canonical_null_game_dir = games / "mapping-canonical-null";
   fs::create_directories(canonical_null_game_dir);
   YAML::Node native_width(YAML::NodeType::Map);

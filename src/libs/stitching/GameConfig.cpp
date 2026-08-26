@@ -159,7 +159,10 @@ absl::Status fsync_path(const fs::path& path, bool directory = false) {
   return absl::OkStatus();
 }
 
-absl::Status clone_or_copy_rollback_file(const fs::path& source, const fs::path& destination) {
+absl::Status link_clone_or_copy_rollback_file(const fs::path& source, const fs::path& destination) {
+  if (::link(source.c_str(), destination.c_str()) == 0)
+    return absl::OkStatus();
+  const int link_error = errno;
   const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (source_fd < 0)
     return absl::InternalError("Unable to open rink artifact for rollback: " + source.string());
@@ -187,8 +190,8 @@ absl::Status clone_or_copy_rollback_file(const fs::path& source, const fs::path&
   fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
   if (error) {
     return absl::InternalError(
-        "Unable to preserve old rink artifact after reflink failed (" + std::string(std::strerror(clone_error)) +
-        "): " + error.message());
+        "Unable to preserve old rink artifact after hard link (" + std::string(std::strerror(link_error)) +
+        ") and reflink (" + std::string(std::strerror(clone_error)) + ") failed: " + error.message());
   }
   return absl::OkStatus();
 }
@@ -333,9 +336,9 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       size_t restored = 0;
       for (const fs::path& old : backups) {
         const fs::path destination = root / old.filename();
-        fs::copy_file(old, destination, fs::copy_options::overwrite_existing, error);
-        if (error)
-          return absl::InternalError("Unable to restore interrupted rink artifact: " + error.message());
+        auto restore = link_clone_or_copy_rollback_file(old, destination);
+        if (!restore.ok())
+          return absl::InternalError("Unable to restore interrupted rink artifact: " + std::string(restore.message()));
         auto status = fsync_path(destination);
         if (!status.ok())
           return status;
@@ -534,7 +537,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
     return absl::InternalError("Unable to inspect game config: " + error.message());
   }
   for (const fs::path& old : old_files) {
-    auto preserve = clone_or_copy_rollback_file(old, previous / old.filename());
+    auto preserve = link_clone_or_copy_rollback_file(old, previous / old.filename());
     if (!preserve.ok())
       return preserve;
     status = fsync_path(previous / old.filename());

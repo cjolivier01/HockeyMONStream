@@ -1034,9 +1034,14 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
   }
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
-  if (!configured.ok() || *configured) {
-    std::cerr << "uniform same-size seam must make stitching artifacts unconfigured: " << configured.status()
-              << std::endl;
+  auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/0);
+  const bool lightweight_rejects = lightweight.ok() && !lightweight->artifacts_compatible &&
+      lightweight->requires_regeneration && lightweight->artifact_lock;
+  if (lightweight.ok())
+    lightweight->artifact_lock.reset();
+  if (!configured.ok() || *configured || !lightweight_rejects) {
+    std::cerr << "uniform same-size seam must invalidate runtime and lightweight stitching checks: "
+              << configured.status() << std::endl;
     return false;
   }
   return true;
@@ -1069,9 +1074,14 @@ bool expect_mismatched_remap_headers_are_not_configured(const fs::path& tmpdir) 
   }
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/160);
-  if (!configured.ok() || *configured) {
-    std::cerr << "mismatched remap X/Y headers must make stitching artifacts unconfigured: " << configured.status()
-              << std::endl;
+  auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/160);
+  const bool lightweight_rejects = lightweight.ok() && !lightweight->artifacts_compatible &&
+      lightweight->requires_regeneration && lightweight->artifact_lock;
+  if (lightweight.ok())
+    lightweight->artifact_lock.reset();
+  if (!configured.ok() || *configured || !lightweight_rejects) {
+    std::cerr << "mismatched remap X/Y headers must invalidate runtime and lightweight stitching checks: "
+              << configured.status() << std::endl;
     return false;
   }
   return true;
@@ -1088,6 +1098,87 @@ bool expect_placement_remap_size_mismatch_is_not_configured(const fs::path& tmpd
   if (!configured.ok() || *configured) {
     std::cerr << "placement/remap size mismatch must make stitching artifacts unconfigured: " << configured.status()
               << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "stale_snapshot_publisher";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+
+  auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!hugin_lock.ok())
+    return false;
+  auto first_hugin_generation = hm::stitching::HuginProject::GenerationId(dir, **hugin_lock);
+  if (!first_hugin_generation.ok())
+    return false;
+  auto first_output_generation = hm::stitching::stitched_output_generation_id(*first_hugin_generation, 0.0, 160, 32);
+  if (!first_output_generation.ok())
+    return false;
+  YAML::Node first_config(YAML::NodeType::Map);
+  first_config["rink"]["stitched_output_generation"] = *first_output_generation;
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(first_config) + "\n"))
+    return false;
+
+  cv::Mat stale_snapshot(32, 160, CV_8UC3, cv::Scalar(0, 0, 255));
+  absl::Status publisher_status;
+  std::thread stale_publisher([&] {
+    publisher_status = hm::stitching::save_stitched_image(dir.string(), stale_snapshot, *first_output_generation);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  {
+    std::ofstream changed(dir / "autooptimiser_out.pto", std::ios::app);
+    changed << "# replacement generation\n";
+  }
+  auto second_hugin_generation = hm::stitching::HuginProject::GenerationId(dir, **hugin_lock);
+  if (!second_hugin_generation.ok()) {
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  auto second_output_generation = hm::stitching::stitched_output_generation_id(*second_hugin_generation, 0.0, 160, 32);
+  if (!second_output_generation.ok()) {
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(dir);
+  if (!config_lock.ok()) {
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  YAML::Node second_config(YAML::NodeType::Map);
+  second_config["rink"]["stitched_output_generation"] = *second_output_generation;
+  if (!hm::stitching::publish_game_config(dir, YAML::Dump(second_config) + "\n").ok()) {
+    config_lock->reset();
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  cv::Mat current_snapshot(32, 160, CV_8UC3, cv::Scalar(0, 255, 0));
+  const fs::path current_temporary = dir / "s-current.png";
+  std::error_code rename_error;
+  if (!cv::imwrite(current_temporary.string(), current_snapshot)) {
+    config_lock->reset();
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  fs::rename(current_temporary, dir / "s.png", rename_error);
+  config_lock->reset();
+  hugin_lock->reset();
+  stale_publisher.join();
+
+  const cv::Mat published = cv::imread((dir / "s.png").string(), cv::IMREAD_COLOR);
+  if (!absl::IsAborted(publisher_status) || rename_error || published.empty() ||
+      published.at<cv::Vec3b>(0, 0) != cv::Vec3b(0, 255, 0)) {
+    std::cerr << "a stale frame publisher must not overwrite the current stitched-output generation: "
+              << publisher_status << std::endl;
     return false;
   }
   return true;
@@ -1231,6 +1322,10 @@ int main() {
 
   if (!expect_placement_remap_size_mismatch_is_not_configured(tmpdir)) {
     finish(tmpdir, 23);
+  }
+
+  if (!expect_stale_snapshot_publisher_is_rejected(tmpdir)) {
+    finish(tmpdir, 34);
   }
 
   finish(tmpdir, 0);

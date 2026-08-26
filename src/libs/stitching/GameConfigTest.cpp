@@ -174,6 +174,10 @@ int main() {
   std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";
   std::ofstream(root / "rink_mask_1.png") << "old-mask-one";
   std::ofstream(root / "s.png") << "old-stitched-snapshot";
+  struct stat original_snapshot_metadata{};
+  ok &= expect(
+      ::stat((root / "s.png").c_str(), &original_snapshot_metadata) == 0,
+      "rink invalidation snapshot fixture must have a stable inode");
   auto invalidation_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(invalidation_lock.ok(), "rink invalidation test must acquire the config transaction");
   if (invalidation_lock.ok()) {
@@ -183,10 +187,14 @@ int main() {
     ::unsetenv("HM_TEST_RINK_INVALIDATION_FAIL_AFTER_REMOVE");
     ok &= expect(!failed.ok(), "injected rink invalidation failure must abort publication");
     const YAML::Node rolled_back = YAML::LoadFile((root / "config.yaml").string());
+    struct stat restored_snapshot_metadata{};
     ok &= expect(
         rolled_back["generation"].as<std::string>() == "old" && fs::is_regular_file(root / "rink_mask_0.png") &&
-            fs::is_regular_file(root / "rink_mask_1.png") && fs::is_regular_file(root / "s.png"),
-        "failed rink invalidation must restore the complete prior config/canvas generation");
+            fs::is_regular_file(root / "rink_mask_1.png") && fs::is_regular_file(root / "s.png") &&
+            ::stat((root / "s.png").c_str(), &restored_snapshot_metadata) == 0 &&
+            restored_snapshot_metadata.st_ino == original_snapshot_metadata.st_ino &&
+            restored_snapshot_metadata.st_dev == original_snapshot_metadata.st_dev,
+        "failed rink invalidation must restore the complete prior config/canvas generation without copying snapshots");
     const auto published = hm::stitching::publish_game_config_without_rink_masks(
         root, "generation: new\n", /*remove_stitched_snapshot=*/true);
     ok &= expect(

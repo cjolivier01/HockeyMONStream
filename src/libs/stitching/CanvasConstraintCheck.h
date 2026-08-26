@@ -21,6 +21,8 @@ class CanvasConstraintArtifactLock {
   friend absl::StatusOr<struct LightweightCanvasConstraintCheck> try_lock_canvas_constraint_check(
       const std::filesystem::path& game_dir,
       size_t max_output_width);
+  friend absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
+      const std::filesystem::path& game_dir);
   explicit CanvasConstraintArtifactLock(int descriptor) : descriptor_(descriptor) {}
   int descriptor_{-1};
 };
@@ -54,6 +56,12 @@ absl::Status write_stitch_transaction_file(const std::filesystem::path& path, co
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
     const std::filesystem::path& game_dir,
     size_t max_output_width);
+
+// Attempts the artifact lock and performs transaction recovery without
+// inspecting mapping payloads. This lets callers defer TIFF/PNG I/O until they
+// have confirmed that the effective width changed.
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
+    const std::filesystem::path& game_dir);
 
 // Attempts the artifact lock without waiting. A missing lock means another
 // generation owns the artifacts, so callers must fail closed without blocking

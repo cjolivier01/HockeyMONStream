@@ -5,6 +5,8 @@
 #include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -19,6 +21,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <png.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <tiffio.h>
@@ -95,6 +98,14 @@ struct TiffPlacement {
 struct CanvasSize {
   size_t width{0};
   size_t height{0};
+};
+
+struct PngLayout {
+  int width{0};
+  int height{0};
+  int offset_x{0};
+  int offset_y{0};
+  bool has_offset{false};
 };
 
 struct CanvasProvenance {
@@ -237,6 +248,257 @@ absl::StatusOr<CanvasSize> mapping_canvas_size(const fs::path& game_dir) {
     return absl::FailedPreconditionError("Mapping TIFFs produce an invalid canvas");
   }
   return CanvasSize{.width = static_cast<size_t>(width), .height = static_cast<size_t>(height)};
+}
+
+absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
+  TIFF* tiff = TIFFOpen(path.c_str(), "r");
+  if (!tiff)
+    return absl::NotFoundError("Could not open remap TIFF: " + path.string());
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint16_t samples = 0;
+  uint16_t bits = 0;
+  uint16_t sample_format = SAMPLEFORMAT_UINT;
+  uint16_t planar = PLANARCONFIG_CONTIG;
+  uint16_t orientation = ORIENTATION_TOPLEFT;
+  const bool have_dimensions =
+      TIFFGetField(tiff, TIFFTAG_IMAGEWIDTH, &width) && TIFFGetField(tiff, TIFFTAG_IMAGELENGTH, &height);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_SAMPLESPERPIXEL, &samples);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_BITSPERSAMPLE, &bits);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_SAMPLEFORMAT, &sample_format);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_PLANARCONFIG, &planar);
+  TIFFGetFieldDefaulted(tiff, TIFFTAG_ORIENTATION, &orientation);
+  TIFFClose(tiff);
+  if (!have_dimensions || width == 0 || height == 0 || width > kHardMaximumArtifactDimension ||
+      height > kHardMaximumArtifactDimension || static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels ||
+      samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT || planar != PLANARCONFIG_CONTIG ||
+      orientation != ORIENTATION_TOPLEFT) {
+    return absl::FailedPreconditionError("Invalid remap TIFF metadata: " + path.string());
+  }
+  return CanvasSize{.width = width, .height = height};
+}
+
+uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t size) {
+  uint32_t crc = 0xffffffffU;
+  auto update = [&](const unsigned char* bytes, size_t count) {
+    for (size_t index = 0; index < count; ++index) {
+      crc ^= bytes[index];
+      for (int bit = 0; bit < 8; ++bit)
+        crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+  };
+  update(type, 4);
+  update(data, size);
+  return crc ^ 0xffffffffU;
+}
+
+absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
+  std::array<unsigned char, 8> file_signature{};
+  input.read(reinterpret_cast<char*>(file_signature.data()), static_cast<std::streamsize>(file_signature.size()));
+  if (!input || file_signature != signature)
+    return absl::FailedPreconditionError("Invalid PNG header: " + path.string());
+  auto big_endian_u32 = [](const unsigned char* bytes) {
+    return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
+        (static_cast<uint32_t>(bytes[2]) << 8) | static_cast<uint32_t>(bytes[3]);
+  };
+
+  PngLayout layout;
+  bool have_header = false;
+  bool have_offset = false;
+  bool have_image_data = false;
+  bool have_end = false;
+  bool first_chunk = true;
+  while (input) {
+    std::array<unsigned char, 8> chunk_header{};
+    input.read(reinterpret_cast<char*>(chunk_header.data()), static_cast<std::streamsize>(chunk_header.size()));
+    if (!input)
+      break;
+    const uint32_t length = big_endian_u32(chunk_header.data());
+    const std::string type(reinterpret_cast<const char*>(chunk_header.data() + 4), 4);
+    if (first_chunk && type != "IHDR")
+      return absl::FailedPreconditionError("PNG IHDR is not the first chunk: " + path.string());
+    first_chunk = false;
+    std::optional<uint32_t> expected_crc;
+    if (type == "IHDR") {
+      if (have_header || length != 13)
+        return absl::FailedPreconditionError("Invalid PNG IHDR chunk: " + path.string());
+      std::array<unsigned char, 13> data{};
+      input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+      if (!input)
+        return absl::FailedPreconditionError("Truncated PNG IHDR chunk: " + path.string());
+      const uint32_t width = big_endian_u32(data.data());
+      const uint32_t height = big_endian_u32(data.data() + 4);
+      if (width == 0 || height == 0 || width > kHardMaximumArtifactDimension ||
+          height > kHardMaximumArtifactDimension ||
+          static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels) {
+        return absl::FailedPreconditionError("Invalid PNG dimensions: " + path.string());
+      }
+      layout.width = static_cast<int>(width);
+      layout.height = static_cast<int>(height);
+      have_header = true;
+      expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
+    } else if (type == "oFFs") {
+      if (!have_header || have_offset || have_image_data || length != 9)
+        return absl::FailedPreconditionError("Invalid PNG oFFs chunk: " + path.string());
+      std::array<unsigned char, 9> data{};
+      input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+      if (!input || data[8] != 0)
+        return absl::FailedPreconditionError("PNG seam offset is not expressed in pixels: " + path.string());
+      auto signed_coordinate = [&](const unsigned char* bytes) {
+        const uint32_t value = big_endian_u32(bytes);
+        return value <= static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+            ? static_cast<int64_t>(value)
+            : static_cast<int64_t>(value) - (int64_t{1} << 32);
+      };
+      layout.offset_x = static_cast<int>(signed_coordinate(data.data()));
+      layout.offset_y = static_cast<int>(signed_coordinate(data.data() + 4));
+      layout.has_offset = true;
+      have_offset = true;
+      expected_crc = png_crc32(chunk_header.data() + 4, data.data(), data.size());
+    } else {
+      input.seekg(static_cast<std::streamoff>(length), std::ios::cur);
+      if (!input)
+        return absl::FailedPreconditionError("Truncated PNG chunk: " + path.string());
+    }
+    std::array<unsigned char, 4> crc{};
+    input.read(reinterpret_cast<char*>(crc.data()), static_cast<std::streamsize>(crc.size()));
+    if (!input)
+      return absl::FailedPreconditionError("Truncated PNG chunk CRC: " + path.string());
+    if (expected_crc.has_value() && big_endian_u32(crc.data()) != *expected_crc)
+      return absl::FailedPreconditionError("PNG " + type + " chunk has an invalid CRC: " + path.string());
+    if (type == "IDAT")
+      have_image_data = true;
+    if (type == "IEND") {
+      have_end = true;
+      break;
+    }
+  }
+  if (!have_header || !have_end)
+    return absl::FailedPreconditionError("PNG seam is missing required chunks: " + path.string());
+  return layout;
+}
+
+absl::Status validate_nonuniform_png(const fs::path& path, const PngLayout& expected_layout) {
+  FILE* input = std::fopen(path.c_str(), "rb");
+  if (input == nullptr)
+    return absl::NotFoundError("Could not open PNG seam: " + path.string());
+  png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+  png_infop info = png == nullptr ? nullptr : png_create_info_struct(png);
+  png_bytep row = nullptr;
+  if (png == nullptr || info == nullptr) {
+    if (png != nullptr)
+      png_destroy_read_struct(&png, nullptr, nullptr);
+    std::fclose(input);
+    return absl::ResourceExhaustedError("Unable to allocate PNG seam decoder state");
+  }
+  if (setjmp(png_jmpbuf(png))) {
+    std::free(row);
+    png_destroy_read_struct(&png, &info, nullptr);
+    std::fclose(input);
+    return absl::FailedPreconditionError("PNG seam is not decodable: " + path.string());
+  }
+  png_init_io(png, input);
+  png_read_info(png, info);
+  const png_uint_32 width = png_get_image_width(png, info);
+  const png_uint_32 height = png_get_image_height(png, info);
+  const int color_type = png_get_color_type(png, info);
+  const int bit_depth = png_get_bit_depth(png, info);
+  if (width != static_cast<png_uint_32>(expected_layout.width) ||
+      height != static_cast<png_uint_32>(expected_layout.height)) {
+    png_error(png, "PNG layout changed during decode");
+  }
+  if (png_get_interlace_type(png, info) != PNG_INTERLACE_NONE)
+    png_error(png, "Interlaced PNG seams are unsupported");
+  if (bit_depth == 16)
+    png_set_strip_16(png);
+  if (color_type == PNG_COLOR_TYPE_PALETTE)
+    png_set_palette_to_rgb(png);
+  if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
+    png_set_expand_gray_1_2_4_to_8(png);
+  if (png_get_valid(png, info, PNG_INFO_tRNS))
+    png_set_tRNS_to_alpha(png);
+  if (color_type == PNG_COLOR_TYPE_RGB || color_type == PNG_COLOR_TYPE_RGB_ALPHA ||
+      color_type == PNG_COLOR_TYPE_PALETTE) {
+    png_set_rgb_to_gray_fixed(png, PNG_ERROR_ACTION_NONE, -1, -1);
+  }
+  if ((color_type & PNG_COLOR_MASK_ALPHA) != 0 || png_get_valid(png, info, PNG_INFO_tRNS))
+    png_set_strip_alpha(png);
+  png_read_update_info(png, info);
+  if (png_get_channels(png, info) != 1 || png_get_bit_depth(png, info) != 8 || png_get_rowbytes(png, info) != width) {
+    png_error(png, "PNG seam does not decode to 8-bit grayscale");
+  }
+  row = static_cast<png_bytep>(std::malloc(static_cast<size_t>(width)));
+  if (row == nullptr)
+    png_error(png, "Unable to allocate PNG seam row");
+  unsigned minimum = 255;
+  unsigned maximum = 0;
+  for (png_uint_32 y = 0; y < height; ++y) {
+    png_read_row(png, row, nullptr);
+    for (png_uint_32 x = 0; x < width; ++x) {
+      minimum = std::min(minimum, static_cast<unsigned>(row[x]));
+      maximum = std::max(maximum, static_cast<unsigned>(row[x]));
+    }
+  }
+  png_read_end(png, nullptr);
+  std::free(row);
+  png_destroy_read_struct(&png, &info, nullptr);
+  std::fclose(input);
+  if (maximum <= minimum)
+    return absl::FailedPreconditionError("PNG seam is uniform: " + path.string());
+  return absl::OkStatus();
+}
+
+absl::Status validate_canvas_artifact_contract(const fs::path& game_dir, const CanvasSize& canvas) {
+  auto left = read_tiff_placement(game_dir / "mapping_0000.tif");
+  auto right = read_tiff_placement(game_dir / "mapping_0001.tif");
+  if (!left.ok())
+    return left.status();
+  if (!right.ok())
+    return right.status();
+  CanvasSize left_x;
+  CanvasSize left_y;
+  CanvasSize right_x;
+  CanvasSize right_y;
+  auto assign = [&](CanvasSize* output, const char* name) -> absl::Status {
+    auto header = read_remap_tiff_header(game_dir / name);
+    if (!header.ok())
+      return header.status();
+    *output = *header;
+    return absl::OkStatus();
+  };
+  auto status = assign(&left_x, "mapping_0000_x.tif");
+  if (!status.ok())
+    return status;
+  status = assign(&left_y, "mapping_0000_y.tif");
+  if (!status.ok())
+    return status;
+  status = assign(&right_x, "mapping_0001_x.tif");
+  if (!status.ok())
+    return status;
+  status = assign(&right_y, "mapping_0001_y.tif");
+  if (!status.ok())
+    return status;
+  if (left_x.width != left_y.width || left_x.height != left_y.height || right_x.width != right_y.width ||
+      right_x.height != right_y.height || left_x.width != left->width || left_x.height != left->height ||
+      right_x.width != right->width || right_x.height != right->height) {
+    return absl::FailedPreconditionError("Stitching placement and remap TIFF dimensions do not match");
+  }
+
+  const fs::path seam_path = game_dir / "seam_file.png";
+  auto layout = read_png_layout(seam_path);
+  if (!layout.ok())
+    return layout.status();
+  const int64_t right_edge = static_cast<int64_t>(layout->offset_x) + layout->width;
+  const int64_t bottom_edge = static_cast<int64_t>(layout->offset_y) + layout->height;
+  const bool full_canvas = layout->offset_x == 0 && layout->offset_y == 0 &&
+      layout->width == static_cast<int>(canvas.width) && layout->height == static_cast<int>(canvas.height);
+  if ((!layout->has_offset && !full_canvas) || layout->offset_x < 0 || layout->offset_y < 0 ||
+      right_edge > static_cast<int64_t>(canvas.width) || bottom_edge > static_cast<int64_t>(canvas.height)) {
+    return absl::FailedPreconditionError("PNG seam layout does not match the stitched mapping canvas");
+  }
+  return validate_nonuniform_png(seam_path, *layout);
 }
 
 absl::StatusOr<size_t> parse_provenance_value(const std::string& line, const char* key) {
@@ -498,6 +760,28 @@ CanvasConstraintArtifactLock::~CanvasConstraintArtifactLock() {
 absl::StatusOr<LightweightCanvasConstraintCheck> try_lock_canvas_constraint_check(
     const fs::path& game_dir,
     size_t max_output_width) {
+  auto lock = try_lock_canvas_constraint_artifacts(game_dir);
+  if (!lock.ok())
+    return lock.status();
+  if (!*lock) {
+    return LightweightCanvasConstraintCheck{
+        .artifact_lock = nullptr,
+        .artifacts_compatible = false,
+        .requires_regeneration = true,
+    };
+  }
+  auto compatibility = check_canvas_constraint_locked(game_dir, max_output_width);
+  if (!compatibility.ok())
+    return compatibility.status();
+  return LightweightCanvasConstraintCheck{
+      .artifact_lock = std::move(*lock),
+      .artifacts_compatible = compatibility->artifacts_compatible,
+      .requires_regeneration = compatibility->requires_regeneration,
+  };
+}
+
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
+    const fs::path& game_dir) {
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Canvas compatibility check requires an existing game directory");
@@ -509,11 +793,7 @@ absl::StatusOr<LightweightCanvasConstraintCheck> try_lock_canvas_constraint_chec
     const int lock_error = errno;
     ::close(descriptor);
     if (lock_error == EWOULDBLOCK || lock_error == EAGAIN) {
-      return LightweightCanvasConstraintCheck{
-          .artifact_lock = nullptr,
-          .artifacts_compatible = false,
-          .requires_regeneration = true,
-      };
+      return std::unique_ptr<CanvasConstraintArtifactLock>();
     }
     return absl::InternalError("Unable to lock stitching artifacts: " + std::string(std::strerror(lock_error)));
   }
@@ -524,14 +804,7 @@ absl::StatusOr<LightweightCanvasConstraintCheck> try_lock_canvas_constraint_chec
     return recovery;
   }
   auto lock = std::unique_ptr<CanvasConstraintArtifactLock>(new CanvasConstraintArtifactLock(descriptor));
-  auto compatibility = check_canvas_constraint_locked(game_dir, max_output_width);
-  if (!compatibility.ok())
-    return compatibility.status();
-  return LightweightCanvasConstraintCheck{
-      .artifact_lock = std::move(lock),
-      .artifacts_compatible = compatibility->artifacts_compatible,
-      .requires_regeneration = compatibility->requires_regeneration,
-  };
+  return lock;
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
@@ -551,6 +824,14 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     }
     return canvas.status();
+  }
+  const absl::Status artifact_contract = validate_canvas_artifact_contract(game_dir, *canvas);
+  if (!artifact_contract.ok()) {
+    if (absl::IsNotFound(artifact_contract) || absl::IsFailedPrecondition(artifact_contract) ||
+        absl::IsInvalidArgument(artifact_contract) || absl::IsResourceExhausted(artifact_contract)) {
+      return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
+    }
+    return artifact_contract;
   }
   auto provenance = read_canvas_provenance(game_dir);
   if (!provenance.ok()) {

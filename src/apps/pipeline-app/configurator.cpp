@@ -5847,6 +5847,7 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
 
   remove_rotation_dependent_rink_cache_keys(config_);
   remove_rotation_dependent_rink_cache_keys(private_config_);
+  clear_materialized_scoreboard_perspective();
   private_config_["stitching"]["generated_field_mask_post_stitch_rotate_degrees"] = desired_rotation;
   auto save_status =
       save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_canvas_artifacts=*/true);
@@ -5873,6 +5874,7 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
             << std::endl;
   remove_rotation_dependent_rink_cache_keys(config_);
   remove_rotation_dependent_rink_cache_keys(private_config_);
+  clear_materialized_scoreboard_perspective();
   if (private_config_.IsDefined()) {
     // regeneration_check retains the reviewed Hugin generation until the
     // config transaction has durably removed its canvas-relative geometry and
@@ -5883,7 +5885,17 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
   return absl::OkStatus();
 }
 
+void Configurator::clear_materialized_scoreboard_perspective() {
+  if (!scoreboard_perspective_materialized_from_rink_)
+    return;
+  YAML::Node playcropper = config_["pipeline"]["hmplaycropper"];
+  if (playcropper.IsMap())
+    playcropper.remove("scoreboard-perspective-polygon");
+  scoreboard_perspective_materialized_from_rink_ = false;
+}
+
 absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
+  scoreboard_perspective_materialized_from_rink_ = false;
   if (!pipeline["hmplaycropper"].IsDefined()) {
     return absl::OkStatus();
   }
@@ -5950,6 +5962,7 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
         ss << std::to_string(points[i].at(0)) << ',' << points[i].at(1);
       }
       pipeline["hmplaycropper"]["scoreboard-perspective-polygon"] = ss.str();
+      scoreboard_perspective_materialized_from_rink_ = true;
     } else if (source_rank >= 1) {
       pipeline["hmplaycropper"].remove("scoreboard-perspective-polygon");
     }
@@ -7211,6 +7224,7 @@ absl::Status Configurator::complete_configuration(
     const fs::path& pipeline_config_dir) {
   active_stitching_invalidation_id_.clear();
   stitching_calibration_required_ = false;
+  scoreboard_perspective_materialized_from_rink_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
   const bool clean_from_control_points_only = clean_stitching_from_control_points && !clean_stitching_artifacts;
   const bool complete_configuration_enabled =

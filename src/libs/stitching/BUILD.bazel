@@ -97,7 +97,10 @@ cc_library(
   srcs = ["CanvasConstraintCheck.cpp"],
   hdrs = ["CanvasConstraintCheck.h"],
   include_prefix = INCLUDE_PREFIX,
-  linkopts = ["-ltiff"],
+  linkopts = [
+    "-lpng",
+    "-ltiff",
+  ],
   visibility = ["//visibility:public"],
   deps = [
     "@com_google_absl//absl/status:status",

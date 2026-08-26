@@ -69,6 +69,7 @@ void report_calibration_progress(const std::string& stage, const std::string& st
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root);
+absl::Status fsync_path(const fs::path& path, bool directory = false);
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
   std::error_code ec;
@@ -965,22 +966,68 @@ absl::StatusOr<cv::Mat> load_feature_image(const fs::path& image_file) {
 
 } // namespace
 
-absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface) {
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    surface::Surface surface,
+    const std::string& producer_output_generation) {
+  cv::Mat image;
+  HM_ASSIGN_OR_RETURN(image, download_image(surface));
+  return save_stitched_image(game_dir, image, producer_output_generation);
+}
+
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    const cv::Mat& image,
+    const std::string& producer_output_generation) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Cannot save stitched scoreboard image without a game directory");
+  }
+  if (image.empty())
+    return absl::InvalidArgumentError("Cannot save an empty stitched scoreboard image");
+  if (producer_output_generation.empty()) {
+    return absl::FailedPreconditionError(
+        "Cannot publish a scoreboard snapshot without the stitched-output generation that produced it");
   }
   std::error_code ec;
   fs::create_directories(game_dir, ec);
   if (ec) {
     return absl::InternalError(TO_STRING("Failed to create game directory \"" << game_dir << "\": " << ec.message()));
   }
-  cv::Mat image;
-  HM_ASSIGN_OR_RETURN(image, download_image(surface));
-  std::vector<uchar> encoded;
-  if (!cv::imencode(".png", image, encoded) || encoded.empty())
-    return absl::FailedPreconditionError("Unable to encode stitched scoreboard image");
 
   const fs::path root(game_dir);
+  std::string pattern = (root / ".s.png-XXXXXX.png").string();
+  std::vector<char> writable_pattern(pattern.begin(), pattern.end());
+  writable_pattern.push_back('\0');
+  const int temporary_descriptor = ::mkstemps(writable_pattern.data(), 4);
+  if (temporary_descriptor < 0) {
+    return absl::InternalError(
+        "Unable to create temporary stitched scoreboard image: " + std::string(std::strerror(errno)));
+  }
+  const fs::path temporary(writable_pattern.data());
+  struct TemporaryCleanup {
+    fs::path path;
+    ~TemporaryCleanup() {
+      if (path.empty())
+        return;
+      std::error_code ignored;
+      fs::remove(path, ignored);
+    }
+  } cleanup{temporary};
+  if (::close(temporary_descriptor) != 0) {
+    return absl::InternalError(
+        "Unable to close temporary stitched scoreboard image: " + std::string(std::strerror(errno)));
+  }
+  try {
+    if (!cv::imwrite(temporary.string(), image))
+      return absl::FailedPreconditionError("Unable to encode stitched scoreboard image");
+  } catch (const cv::Exception& exception) {
+    return absl::FailedPreconditionError(
+        "Unable to encode stitched scoreboard image: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate stitched scoreboard image encoder state");
+  }
+  HM_RETURN_IF_ERROR(fsync_path(temporary));
+
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
     return hugin_lock.status();
@@ -1005,11 +1052,19 @@ absl::Status save_stitched_image(const std::string& game_dir, surface::Surface s
     if (configured_generation.as<std::string>() != current_generation) {
       return absl::AbortedError("Cannot publish a scoreboard snapshot for stale stitched-output geometry");
     }
+    if (producer_output_generation != current_generation) {
+      return absl::AbortedError(
+          "Cannot publish a scoreboard snapshot from a frame produced by a superseded stitched-output generation");
+    }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(
         "Unable to validate scoreboard snapshot generation: " + std::string(exception.what()));
   }
-  return publish_named_file(root / "s.png", std::string(reinterpret_cast<const char*>(encoded.data()), encoded.size()));
+  fs::rename(temporary, root / "s.png", ec);
+  if (ec)
+    return absl::InternalError("Unable to atomically publish stitched scoreboard image: " + ec.message());
+  cleanup.path.clear();
+  return fsync_path(root, true);
 }
 
 namespace {
@@ -1680,7 +1735,7 @@ namespace {
 
 constexpr const char* kRinkTransactionPrefix = ".hstream-rink-";
 
-absl::Status fsync_path(const fs::path& path, bool directory = false) {
+absl::Status fsync_path(const fs::path& path, bool directory) {
   const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
   const int descriptor = ::open(path.c_str(), flags);
   if (descriptor < 0)

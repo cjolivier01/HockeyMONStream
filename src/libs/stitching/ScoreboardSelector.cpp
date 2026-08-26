@@ -73,30 +73,54 @@ absl::StatusOr<std::string> snapshot_file_identity(const fs::path& path) {
   return snapshot_identity(metadata);
 }
 
-struct SnapshotFile {
-  std::string bytes;
+struct OpenedSnapshotFile {
+  int descriptor{-1};
+  size_t size{0};
   std::string identity;
+
+  OpenedSnapshotFile() = default;
+  OpenedSnapshotFile(int descriptor, size_t size, std::string identity)
+      : descriptor(descriptor), size(size), identity(std::move(identity)) {}
+  ~OpenedSnapshotFile() {
+    if (descriptor >= 0)
+      ::close(descriptor);
+  }
+  OpenedSnapshotFile(const OpenedSnapshotFile&) = delete;
+  OpenedSnapshotFile& operator=(const OpenedSnapshotFile&) = delete;
+  OpenedSnapshotFile(OpenedSnapshotFile&& other) noexcept
+      : descriptor(std::exchange(other.descriptor, -1)), size(other.size), identity(std::move(other.identity)) {}
+  OpenedSnapshotFile& operator=(OpenedSnapshotFile&& other) noexcept {
+    if (this == &other)
+      return *this;
+    if (descriptor >= 0)
+      ::close(descriptor);
+    descriptor = std::exchange(other.descriptor, -1);
+    size = other.size;
+    identity = std::move(other.identity);
+    return *this;
+  }
 };
 
-absl::StatusOr<SnapshotFile> read_snapshot_file(const fs::path& path) {
+absl::StatusOr<OpenedSnapshotFile> open_snapshot_file(const fs::path& path) {
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (descriptor < 0)
     return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
-  struct CloseDescriptor {
-    int descriptor;
-    ~CloseDescriptor() {
-      ::close(descriptor);
-    }
-  } close{descriptor};
-  struct stat before{};
-  if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
-      static_cast<uint64_t>(before.st_size) > kMaximumSnapshotBytes) {
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      static_cast<uint64_t>(metadata.st_size) > kMaximumSnapshotBytes) {
+    ::close(descriptor);
     return absl::FailedPreconditionError("Stitched snapshot size or type is invalid: " + path.string());
   }
-  std::string bytes(static_cast<size_t>(before.st_size), '\0');
+  return OpenedSnapshotFile(descriptor, static_cast<size_t>(metadata.st_size), snapshot_identity(metadata));
+}
+
+absl::StatusOr<std::string> read_opened_snapshot_file(OpenedSnapshotFile* snapshot) {
+  if (snapshot == nullptr || snapshot->descriptor < 0 || snapshot->size == 0)
+    return absl::InvalidArgumentError("Stitched snapshot descriptor is not open");
+  std::string bytes(snapshot->size, '\0');
   size_t offset = 0;
   while (offset < bytes.size()) {
-    const ssize_t count = ::read(descriptor, bytes.data() + offset, bytes.size() - offset);
+    const ssize_t count = ::read(snapshot->descriptor, bytes.data() + offset, bytes.size() - offset);
     if (count < 0 && errno == EINTR)
       continue;
     if (count <= 0)
@@ -104,9 +128,9 @@ absl::StatusOr<SnapshotFile> read_snapshot_file(const fs::path& path) {
     offset += static_cast<size_t>(count);
   }
   struct stat after{};
-  if (::fstat(descriptor, &after) != 0 || snapshot_identity(before) != snapshot_identity(after))
+  if (::fstat(snapshot->descriptor, &after) != 0 || snapshot->identity != snapshot_identity(after))
     return absl::AbortedError("Stitched snapshot changed while it was being read");
-  return SnapshotFile{.bytes = std::move(bytes), .identity = snapshot_identity(after)};
+  return bytes;
 }
 
 absl::StatusOr<std::string> configured_stitched_output_generation(const YAML::Node& config) {
@@ -559,12 +583,8 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
         "Scoreboard selector requires a stitched-output generation matching the current rotation and canvas size");
   }
   const fs::path image_path = game_dir / "s.png";
-  SnapshotFile snapshot;
-  HM_ASSIGN_OR_RETURN(snapshot, read_snapshot_file(image_path));
-  const cv::Mat encoded(1, static_cast<int>(snapshot.bytes.size()), CV_8U, snapshot.bytes.data());
-  const cv::Mat dimensions = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
-  if (dimensions.empty())
-    return absl::NotFoundError("Scoreboard selector requires " + image_path.string());
+  OpenedSnapshotFile snapshot;
+  HM_ASSIGN_OR_RETURN(snapshot, open_snapshot_file(image_path));
   const CanvasGeneration canvas_generation{
       .hugin_generation = *hugin_generation,
       .stitched_output_generation = *output_generation,
@@ -572,6 +592,12 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   };
   config_lock->reset();
   hugin_lock->reset();
+  std::string snapshot_bytes;
+  HM_ASSIGN_OR_RETURN(snapshot_bytes, read_opened_snapshot_file(&snapshot));
+  const cv::Mat encoded(1, static_cast<int>(snapshot_bytes.size()), CV_8U, snapshot_bytes.data());
+  const cv::Mat dimensions = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
+  if (dimensions.empty())
+    return absl::NotFoundError("Scoreboard selector requires " + image_path.string());
 
   std::string bind_host = "127.0.0.1";
   if (const char* configured = std::getenv("HM_SCOREBOARD_BIND_HOST"); configured != nullptr && *configured != '\0') {
@@ -686,7 +712,7 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
       continue;
     }
     if (request->method == "GET" && path == "/image") {
-      respond_best_effort(client, 200, "OK", "image/png", snapshot.bytes, client_deadline);
+      respond_best_effort(client, 200, "OK", "image/png", snapshot_bytes, client_deadline);
       continue;
     }
     const auto origin = request->headers.find("origin");

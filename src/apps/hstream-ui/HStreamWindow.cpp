@@ -5491,34 +5491,56 @@ QString HStreamWindow::mappingBackend() const {
   return mapping_backend_combo_ ? mapping_backend_combo_->currentData().toString() : default_mapping_backend_;
 }
 
-std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> HStreamWindow::checkStitchingCanvasConstraint(
-    const QString& game_id,
-    int max_output_width) {
-  if (const QByteArray test_result = qgetenv("HSTREAM_UI_TEST_CANVAS_CHECK"); !test_result.isEmpty()) {
-    const bool compatible = test_result == "compatible";
-    const bool regenerate = test_result == "regenerate";
-    if (!compatible && !regenerate && test_result != "missing")
-      return std::nullopt;
-    return hm::ui_internal::LockedStitchingCanvasConstraintCheck{
-        .decision = hm::ui_internal::decide_stitching_canvas_constraint_change(
-            /*width_changed=*/true, compatible, regenerate),
-    };
-  }
-  auto check = hm::stitching::try_lock_canvas_constraint_check(
-      fs::path(gameDirectory(game_id).toStdString()), static_cast<size_t>(max_output_width));
-  if (!check.ok()) {
-    appendLog(QString("stitched-width compatibility check failed: %1").arg(check.status().ToString().c_str()));
+std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> HStreamWindow::lockStitchingCanvasConstraint(
+    const QString& game_id) {
+  if (!qgetenv("HSTREAM_UI_TEST_CANVAS_CHECK").isEmpty())
+    return hm::ui_internal::LockedStitchingCanvasConstraintCheck{};
+  auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(fs::path(gameDirectory(game_id).toStdString()));
+  if (!lock.ok()) {
+    appendLog(QString("stitched-width artifact lock failed: %1").arg(lock.status().ToString().c_str()));
     return std::nullopt;
   }
-  if (!check->artifact_lock) {
+  if (!*lock) {
     appendLog("stitched-width compatibility check could not lock active stitching artifacts; retry after calibration");
     return std::nullopt;
   }
   return hm::ui_internal::LockedStitchingCanvasConstraintCheck{
-      .decision = hm::ui_internal::decide_stitching_canvas_constraint_change(
-          /*width_changed=*/true, check->artifacts_compatible, check->requires_regeneration),
-      .artifact_lock = std::move(check->artifact_lock),
+      .artifact_lock = std::move(*lock),
   };
+}
+
+bool HStreamWindow::evaluateStitchingCanvasConstraint(
+    const QString& game_id,
+    int max_output_width,
+    bool width_changed,
+    hm::ui_internal::LockedStitchingCanvasConstraintCheck* check) {
+  if (!check)
+    return false;
+  check->decision = {};
+  if (!width_changed)
+    return true;
+  if (const QByteArray test_result = qgetenv("HSTREAM_UI_TEST_CANVAS_CHECK"); !test_result.isEmpty()) {
+    const bool compatible = test_result == "compatible";
+    const bool regenerate = test_result == "regenerate";
+    if (!compatible && !regenerate && test_result != "missing")
+      return false;
+    check->decision = hm::ui_internal::decide_stitching_canvas_constraint_change(
+        /*width_changed=*/true, compatible, regenerate);
+    return true;
+  }
+  if (!check->artifact_lock) {
+    appendLog("stitched-width compatibility check lost its artifact lock");
+    return false;
+  }
+  auto compatibility = hm::stitching::check_canvas_constraint_locked(
+      fs::path(gameDirectory(game_id).toStdString()), static_cast<size_t>(max_output_width));
+  if (!compatibility.ok()) {
+    appendLog(QString("stitched-width compatibility check failed: %1").arg(compatibility.status().ToString().c_str()));
+    return false;
+  }
+  check->decision = hm::ui_internal::decide_stitching_canvas_constraint_change(
+      /*width_changed=*/true, compatibility->artifacts_compatible, compatibility->requires_regeneration);
+  return true;
 }
 
 bool HStreamWindow::runStitchingClean(
@@ -5721,7 +5743,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool saved_artifacts_invalidated = false;
   bool clean_all = false;
   bool clean_from_control_points = false;
-  auto width_constraint_check = checkStitchingCanvasConstraint(active_run_game_id_, active_stitch_max_output_width_);
+  auto width_constraint_check = lockStitchingCanvasConstraint(active_run_game_id_);
   if (!width_constraint_check.has_value())
     return false;
   {
@@ -5792,6 +5814,10 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     const bool control_points_changed = !saved_found || saved_control_points != control_points;
     const bool frame_count_changed = !saved_frame_count_found || saved_frame_count != frame_count;
     const bool max_output_width_changed = saved_max_output_width != active_stitch_max_output_width_;
+    if (!evaluateStitchingCanvasConstraint(
+            active_run_game_id_, active_stitch_max_output_width_, max_output_width_changed, &*width_constraint_check)) {
+      return false;
+    }
     const auto canvas_constraint = max_output_width_changed
         ? (width_constraint_check.has_value() ? width_constraint_check->decision
                                               : hm::ui_internal::decide_stitching_canvas_constraint_change(
@@ -11160,8 +11186,7 @@ void HStreamWindow::savePreset() {
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
-  auto width_constraint_check =
-      checkStitchingCanvasConstraint(game_id_edit_->text().trimmed(), selected_max_output_width);
+  auto width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
   if (!width_constraint_check.has_value())
     return;
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
@@ -11179,6 +11204,22 @@ void HStreamWindow::savePreset() {
     }
   }
   const QString game_dir = QString::fromStdString(config_path.parent_path().string());
+  int previous_max_output_width = std::numeric_limits<int>::min();
+  try {
+    previous_max_output_width = read_stitch_max_output_width_from_config(
+        config,
+        default_stitch_max_output_width_,
+        stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+  } catch (const std::exception& ex) {
+    qWarning() << "Ignoring malformed existing stitch max output width while preparing preset save:" << ex.what();
+  }
+  if (!evaluateStitchingCanvasConstraint(
+          game_id_edit_->text().trimmed(),
+          selected_max_output_width,
+          previous_max_output_width != selected_max_output_width,
+          &*width_constraint_check)) {
+    return;
+  }
   const QString previous_active_sidecar =
       resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
 

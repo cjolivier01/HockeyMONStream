@@ -168,6 +168,7 @@ class Configurator {
       const std::filesystem::path& pipeline_config_dir);
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
+  void clear_materialized_scoreboard_perspective();
   absl::Status apply_scoreboard_perspective(YAML::Node& pipeline);
   absl::Status gather_stitching_videos(
       const std::filesystem::path& game_dir,
@@ -230,6 +231,7 @@ class Configurator {
   YAML::Node persisted_private_config_;
   std::string active_stitching_invalidation_id_;
   bool stitching_calibration_required_{false};
+  bool scoreboard_perspective_materialized_from_rink_{false};
   bool loaded_generated_stitching_backend_choices_{false};
   bool restored_generated_stitching_backend_choices_{false};
   mutable std::map<std::string, int> archive_lock_fds_;

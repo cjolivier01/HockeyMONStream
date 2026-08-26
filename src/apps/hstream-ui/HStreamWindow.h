@@ -320,9 +320,13 @@ class HStreamWindow : public QMainWindow {
       const QString& working_dir,
       const QProcessEnvironment& env,
       bool* calibration_required);
-  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> checkStitchingCanvasConstraint(
+  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> lockStitchingCanvasConstraint(
+      const QString& game_id);
+  bool evaluateStitchingCanvasConstraint(
       const QString& game_id,
-      int max_output_width);
+      int max_output_width,
+      bool width_changed,
+      hm::ui_internal::LockedStitchingCanvasConstraintCheck* check);
   bool runStitchingClean(
       const QString& runner,
       const QString& working_dir,

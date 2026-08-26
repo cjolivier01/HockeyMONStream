@@ -152,7 +152,19 @@ absl::Status save_rink_profile_with_stitched_image(
     const cv::Mat& stitched_image,
     const std::string& expected_invalidation_id = {});
 
-absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface);
+// Publishes a scoreboard snapshot only when the generation that produced the
+// pixels still matches the current stitched output.
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    surface::Surface surface,
+    const std::string& producer_output_generation);
+
+// CPU-image overload used by the GPU download path and focused publication
+// tests. Encoding completes before generation locks are acquired.
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    const cv::Mat& image,
+    const std::string& producer_output_generation);
 
 // Revalidates a pending UI invalidation under the game-config lock and
 // returns whether its artifact cleanup has already been applied.

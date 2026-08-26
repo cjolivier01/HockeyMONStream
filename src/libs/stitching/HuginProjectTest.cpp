@@ -480,6 +480,78 @@ int main() {
     provenance_lock->reset();
   }
 
+  const fs::path retry_native_fixtures = root / "retry-native-fixtures";
+  const fs::path retry_capped_fixtures = root / "retry-capped-fixtures";
+  fs::create_directories(retry_native_fixtures);
+  fs::create_directories(retry_capped_fixtures);
+  ok &= expect(
+      write_spatial_tiff_tags(retry_native_fixtures / "mapping_0000.tif", 50, 32, 0.0f, 1.0f) &&
+          write_spatial_tiff_tags(retry_native_fixtures / "mapping_0001.tif", 51, 32, 50.0f, 1.0f) &&
+          write_remap_pair(retry_native_fixtures, "mapping_0000", 50, 32) &&
+          write_remap_pair(retry_native_fixtures, "mapping_0001", 51, 32) &&
+          write_spatial_tiff_tags(retry_capped_fixtures / "mapping_0000.tif", 50, 32, 0.0f, 1.0f) &&
+          write_spatial_tiff_tags(retry_capped_fixtures / "mapping_0001.tif", 50, 32, 50.0f, 1.0f) &&
+          write_remap_pair(retry_capped_fixtures, "mapping_0000", 50, 32) &&
+          write_remap_pair(retry_capped_fixtures, "mapping_0001", 50, 32),
+      "Nona retry fixtures must describe 101-pixel native and 100-pixel capped canvases");
+  cv::Mat retry_seam(32, 100, CV_8U, cv::Scalar(0));
+  retry_seam.colRange(50, retry_seam.cols).setTo(255);
+  ok &= expect(
+      cv::imwrite((retry_capped_fixtures / "seam_file.png").string(), retry_seam) &&
+          cv::imwrite(
+              (retry_capped_fixtures / "panorama.tif").string(), cv::Mat(32, 100, CV_8UC3, cv::Scalar(1, 2, 3))),
+      "Nona retry preview fixtures must match the capped canvas");
+  ok &= expect(
+      write_tool(
+          nona,
+          "fixtures='" + retry_capped_fixtures.string() +
+              "'\n"
+              "if grep -q ' w100 ' autooptimiser_out.pto; then fixtures='" +
+              retry_native_fixtures.string() +
+              "'; fi\n"
+              "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
+              "mapping_0001_x.tif mapping_0001_y.tif; do cp \"$fixtures/$file\" \"$file\"; done\n") &&
+          write_tool(
+              enblend,
+              "cp '" + retry_capped_fixtures.string() +
+                  "/seam_file.png' seam_file.png\n"
+                  "cp '" +
+                  retry_capped_fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "Nona retry tools must switch from measured native output to capped output");
+  const fs::path retry_game = root / "nona-retry-game";
+  fs::create_directories(retry_game);
+  hm::stitching::HuginProject::Options retry_options = options;
+  retry_options.max_canvas_dimension.reset();
+  retry_options.max_output_width = 100;
+  retry_options.progress = {};
+  const auto retry_configured = hm::stitching::HuginProject::Configure(
+      retry_game, root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, retry_options);
+  ok &= expect(retry_configured.ok(), "Nona placement-only width overflow must succeed after a constrained retry");
+  auto retry_lock = hm::stitching::HuginProject::RecoverAndLock(retry_game);
+  ok &= expect(retry_lock.ok(), "Nona retry provenance must be readable");
+  if (retry_lock.ok()) {
+    const auto retry_provenance = hm::stitching::HuginProject::ReadCanvasProvenance(retry_game, **retry_lock);
+    ok &= expect(
+        retry_provenance.ok() && retry_provenance->has_value() && (*retry_provenance)->source_canvas_width == 101 &&
+            (*retry_provenance)->source_canvas_height == 50 && (*retry_provenance)->canvas_width == 100 &&
+            (*retry_provenance)->canvas_height == 32 && (*retry_provenance)->max_output_width_applied,
+        "Nona retry provenance must record the measured unconstrained remap canvas, not only the PTO canvas");
+    retry_lock->reset();
+  }
+  ok &= expect(
+      write_tool(
+          nona,
+          "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
+          "mapping_0001_x.tif mapping_0001_y.tif; do cp '" +
+              fixtures.string() + "/'$file \"$file\"; done\n") &&
+          write_tool(
+              enblend,
+              "cp '" + fixtures.string() +
+                  "/seam_file.png' seam_file.png\n"
+                  "cp '" +
+                  fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "working fake Nona and enblend tools must be restored after retry provenance validation");
+
   const fs::path fallback_game = root / "fallback-game";
   fs::create_directories(fallback_game);
   ok &= expect(write_tool(enblend, "exit 44\n"), "failing fake enblend must be created");

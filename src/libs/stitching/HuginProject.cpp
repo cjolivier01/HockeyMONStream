@@ -1563,6 +1563,21 @@ absl::Status HuginProject::Configure(
       auto remap_canvas = measure_staged_remap_canvas(staging, std::nullopt);
       if (!remap_canvas.ok())
         return remap_canvas.status();
+      // Nona's cropped TIFF placement canvas can round above the PTO canvas.
+      // Record the equivalent unconstrained extent before applying a retry so
+      // later compatibility checks distinguish caps that produce different
+      // measured remap scales.
+      const long double applied_scale = output_scale.value_or(1.0);
+      if (!std::isfinite(static_cast<double>(applied_scale)) || applied_scale <= 0.0L)
+        return absl::FailedPreconditionError("Invalid cumulative Hugin output scale");
+      const auto unconstrained_extent = [&](int measured) {
+        const long double unscaled = static_cast<long double>(measured) / applied_scale;
+        return static_cast<size_t>(std::ceil(unscaled - 1e-12L));
+      };
+      if (attempt == 0) {
+        source_canvas.first = std::max(source_canvas.first, unconstrained_extent(remap_canvas->first));
+        source_canvas.second = std::max(source_canvas.second, unconstrained_extent(remap_canvas->second));
+      }
       const bool width_ok = !options.max_output_width.has_value() ||
           static_cast<size_t>(remap_canvas->first) <= *options.max_output_width;
       const bool dimension_ok = !options.max_canvas_dimension.has_value() ||

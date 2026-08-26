@@ -35,6 +35,7 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 #include "nvdsmeta.h"
 #include "yaml-cpp/yaml.h"
 
@@ -707,7 +708,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Scoreboard
     if (show_scoreboard_) {
       completion_fence.MarkSubmitted();
-      HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, cuda_stream_));
+      HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, frame_meta, cuda_stream_));
     }
     if (show_ && !batch_nr) {
       // Render it inside the loop, but we'll display it after our cudaSynchronize
@@ -806,7 +807,9 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
   }
 }
 
-absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(surface::Surface stitched_surface) {
+absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
+    surface::Surface stitched_surface,
+    const NvDsFrameMeta* frame_meta) {
   if (scoreboard_disabled_ || !scoreboard_perspective_polygion_.empty()) {
     return absl::OkStatus();
   }
@@ -839,7 +842,14 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(surface::Sur
 
   const std::filesystem::path stitched_image = game_dir / "s.png";
   if (!std::filesystem::exists(stitched_image, ec) || ec || std::filesystem::file_size(stitched_image, ec) == 0 || ec) {
-    HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface));
+    std::string producer_output_generation;
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+    if (const auto* payload =
+            hm::UserApplicationPayload::get_payload<stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+      producer_output_generation = payload->generation();
+    }
+#endif
+    HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface, producer_output_generation));
   }
 
   HM_RETURN_IF_ERROR(stitching::configure_scoreboard(game_dir.string()));
@@ -917,9 +927,10 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
 absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface in_surface,
     surface::Surface out_surface,
+    const NvDsFrameMeta* frame_meta,
     cudaStream_t stream) {
   if (scoreboard_perspective_polygion_.empty()) {
-    HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(in_surface));
+    HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(in_surface, frame_meta));
   }
   if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
     const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) -> absl::StatusOr<int> {

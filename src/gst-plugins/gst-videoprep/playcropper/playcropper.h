@@ -89,8 +89,14 @@ class PlayCropperPriv : public CustomAlgorithmBase {
 
  protected:
   absl::Status RenderDisplayMeta(surface::Surface surface, const NvDsFrameMeta* frame_meta, cudaStream_t stream);
-  absl::Status RenderScoreboard(surface::Surface in_surface, surface::Surface out_surface, cudaStream_t stream);
-  absl::Status EnsureScoreboardPerspectiveConfigured(surface::Surface stitched_surface);
+  absl::Status RenderScoreboard(
+      surface::Surface in_surface,
+      surface::Surface out_surface,
+      const NvDsFrameMeta* frame_meta,
+      cudaStream_t stream);
+  absl::Status EnsureScoreboardPerspectiveConfigured(
+      surface::Surface stitched_surface,
+      const NvDsFrameMeta* frame_meta);
   absl::Status LoadScoreboardPerspectiveFromConfig();
   void TransformObjectMetaForOutput(
       NvDsFrameMeta* frame_meta,
