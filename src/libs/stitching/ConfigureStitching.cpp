@@ -531,6 +531,22 @@ struct CanvasProvenanceCompatibility {
   std::string reason;
 };
 
+long double constrained_canvas_scale(
+    const HuginProject::CanvasProvenance& provenance,
+    size_t max_output_width,
+    size_t max_canvas_dimension) {
+  long double scale = 1.0L;
+  if (max_output_width > 0 && provenance.source_canvas_width > max_output_width) {
+    scale = std::min(
+        scale, static_cast<long double>(max_output_width) / static_cast<long double>(provenance.source_canvas_width));
+  }
+  const size_t source_longest = std::max(provenance.source_canvas_width, provenance.source_canvas_height);
+  if (max_canvas_dimension > 0 && source_longest > max_canvas_dimension) {
+    scale = std::min(scale, static_cast<long double>(max_canvas_dimension) / static_cast<long double>(source_longest));
+  }
+  return scale;
+}
+
 CanvasProvenanceCompatibility check_canvas_provenance_compatibility(
     const std::optional<HuginProject::CanvasProvenance>& provenance,
     const CanvasSize& published_canvas,
@@ -542,23 +558,24 @@ CanvasProvenanceCompatibility check_canvas_provenance_compatibility(
   if (provenance->canvas_width != published_canvas.width || provenance->canvas_height != published_canvas.height) {
     return {false, "published canvas dimensions do not match canvas provenance"};
   }
-  if (provenance->max_output_width_applied) {
-    if (provenance->max_output_width != max_output_width) {
-      return {false, "the applied maximum output width changed"};
-    }
-  } else if (max_output_width > 0 && published_canvas.width > max_output_width) {
+  if (max_output_width > 0 && published_canvas.width > max_output_width) {
     return {false, "the published canvas exceeds the current maximum output width"};
   }
 
   const size_t current_max_canvas_dimension = max_canvas_dimension.value_or(0);
-  if (provenance->max_canvas_dimension_applied) {
-    if (provenance->max_canvas_dimension != current_max_canvas_dimension) {
-      return {false, "the applied live canvas limit changed"};
-    }
-  } else if (
-      current_max_canvas_dimension > 0 &&
+  if (current_max_canvas_dimension > 0 &&
       canvas_exceeds_max_dimension(published_canvas, current_max_canvas_dimension)) {
     return {false, "the published canvas exceeds the current live canvas limit"};
+  }
+  if (provenance->max_output_width_applied || provenance->max_canvas_dimension_applied) {
+    const long double generated_scale =
+        constrained_canvas_scale(*provenance, provenance->max_output_width, provenance->max_canvas_dimension);
+    const long double current_scale =
+        constrained_canvas_scale(*provenance, max_output_width, current_max_canvas_dimension);
+    constexpr long double kScaleTolerance = 1e-15L;
+    if (std::abs(generated_scale - current_scale) > kScaleTolerance) {
+      return {false, "the combined effective canvas scale changed"};
+    }
   }
   return {true, {}};
 }

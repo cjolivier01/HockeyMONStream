@@ -809,6 +809,51 @@ bool expect_changed_applied_live_limit_requires_regeneration(const fs::path& tmp
   return true;
 }
 
+bool expect_superseded_constraints_reuse_artifacts(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "superseded_canvas_constraints";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) ||
+      !write_canvas_provenance(
+          dir,
+          /*max_output_width=*/300,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/320,
+          /*source_height=*/64,
+          /*max_canvas_dimension=*/160,
+          /*max_output_width_applied=*/true,
+          /*max_canvas_dimension_applied=*/true)) {
+    return false;
+  }
+  unsetenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "160", /*overwrite=*/1);
+  const auto configured_with_smaller_superseded_cap = hm::stitching::is_stitching_configured(dir.string(), 240);
+  const auto configured_with_auto_cap = hm::stitching::is_stitching_configured(dir.string(), 0);
+  if (!write_canvas_provenance(
+          dir,
+          /*max_output_width=*/160,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/320,
+          /*source_height=*/64,
+          /*max_canvas_dimension=*/160,
+          /*max_output_width_applied=*/true,
+          /*max_canvas_dimension_applied=*/true)) {
+    unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+    return false;
+  }
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "320", /*overwrite=*/1);
+  const auto configured_with_relaxed_tied_limit = hm::stitching::is_stitching_configured(dir.string(), 160);
+  unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+  if (!configured_with_smaller_superseded_cap.ok() || !*configured_with_smaller_superseded_cap ||
+      !configured_with_auto_cap.ok() || !*configured_with_auto_cap || !configured_with_relaxed_tied_limit.ok() ||
+      !*configured_with_relaxed_tied_limit) {
+    std::cerr << "constraints superseded by an unchanged effective scale must reuse the published maps" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_stale_mapping_dependencies_invalidate_canvas_cache(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "stale_mapping_canvas_cache";
   fs::remove_all(dir);
@@ -1117,6 +1162,10 @@ int main() {
 
   if (!expect_changed_applied_live_limit_requires_regeneration(tmpdir)) {
     finish(tmpdir, 30);
+  }
+
+  if (!expect_superseded_constraints_reuse_artifacts(tmpdir)) {
+    finish(tmpdir, 33);
   }
 
   if (!expect_stale_mapping_dependencies_invalidate_canvas_cache(tmpdir)) {
