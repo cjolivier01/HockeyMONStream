@@ -58,6 +58,9 @@ absl::Status write_stitch_transaction_file(const std::filesystem::path& path, co
 absl::Status prepare_stitch_generation_publication(
     const std::filesystem::path& staging,
     const std::filesystem::path& game_dir);
+absl::Status rebind_stitch_generation_artifact(
+    const std::filesystem::path& transaction,
+    const std::filesystem::path& game_dir);
 
 // Reviews one stable artifact generation. The caller must hold the Hugin
 // artifact lock for the complete call.

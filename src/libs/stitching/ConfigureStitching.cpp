@@ -59,6 +59,24 @@ namespace stitching {
 
 namespace {
 
+absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
+    const fs::path& directory,
+    const std::string& description) {
+  std::error_code error;
+  fs::directory_iterator iterator(directory, error);
+  if (error)
+    return absl::InternalError("Unable to inspect " + description + ": " + error.message());
+  std::vector<fs::directory_entry> entries;
+  const fs::directory_iterator end;
+  while (iterator != end) {
+    entries.push_back(*iterator);
+    iterator.increment(error);
+    if (error)
+      return absl::InternalError("Unable to inspect " + description + ": " + error.message());
+  }
+  return entries;
+}
+
 constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
@@ -1879,14 +1897,16 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
 
 absl::Status recover_rink_transactions_locked(const fs::path& root) {
   std::error_code error;
-  for (const auto& entry : fs::directory_iterator(root, error)) {
-    if (error)
-      return absl::InternalError("Unable to inspect rink transactions: " + error.message());
+  auto root_entries = directory_entries(root, "rink transactions");
+  if (!root_entries.ok())
+    return root_entries.status();
+  for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (!entry.is_directory(error) || error || directory_name.rfind(kRinkTransactionPrefix, 0) != 0) {
-      error.clear();
+    const bool is_directory = entry.is_directory(error);
+    if (error)
+      return absl::InternalError("Unable to inspect rink transaction entry: " + error.message());
+    if (!is_directory || directory_name.rfind(kRinkTransactionPrefix, 0) != 0)
       continue;
-    }
     const fs::path transaction = entry.path();
     auto state = read_rink_transaction_state(transaction);
     if (!state.ok())
@@ -1903,11 +1923,15 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       if (previous_exists) {
         if (!fs::is_directory(previous, error) || error)
           return absl::FailedPreconditionError("Rink transaction backup is not a directory");
-        for (const auto& old : fs::directory_iterator(previous, error)) {
-          if (error)
-            return absl::InternalError("Unable to inspect rink transaction backup: " + error.message());
+        auto previous_entries = directory_entries(previous, "rink transaction backup");
+        if (!previous_entries.ok())
+          return previous_entries.status();
+        for (const auto& old : *previous_entries) {
           const std::string old_name = old.path().filename().string();
-          if (!old.is_regular_file(error) || error || !is_rink_artifact_name(old_name))
+          const bool is_regular = old.is_regular_file(error);
+          if (error)
+            return absl::InternalError("Unable to inspect rink transaction backup entry: " + error.message());
+          if (!is_regular || !is_rink_artifact_name(old_name))
             return absl::InvalidArgumentError("Invalid rink transaction backup: " + old_name);
           backups.push_back(old.path());
         }
@@ -2828,9 +2852,10 @@ absl::Status save_rink_profile_locked(
   if (error)
     return absl::InternalError("Unable to create rink rollback directory: " + error.message());
   std::vector<fs::path> old_files;
-  for (const auto& entry : fs::directory_iterator(root, error)) {
-    if (error)
-      return absl::InternalError("Unable to inspect old rink masks: " + error.message());
+  auto old_entries = directory_entries(root, "old rink masks");
+  if (!old_entries.ok())
+    return old_entries.status();
+  for (const auto& entry : *old_entries) {
     const std::string name = entry.path().filename().string();
     if (is_rink_artifact_name(name) && (name != "s.png" || stitched_image != nullptr)) {
       old_files.push_back(entry.path());

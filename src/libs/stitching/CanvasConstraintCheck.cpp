@@ -644,7 +644,30 @@ bool is_stitch_artifact_name(const std::string& name) {
   return std::find(kArtifacts.begin(), kArtifacts.end(), name) != kArtifacts.end();
 }
 
-absl::StatusOr<std::string> stitch_artifact_metadata_id(const fs::path& game_dir, bool include_inode) {
+absl::StatusOr<std::vector<fs::directory_entry>> stitch_directory_entries(
+    const fs::path& directory,
+    const std::string& description) {
+  std::error_code error;
+  fs::directory_iterator iterator(directory, error);
+  if (error)
+    return absl::InternalError("Unable to inspect " + description + ": " + error.message());
+  std::vector<fs::directory_entry> entries;
+  const fs::directory_iterator end;
+  while (iterator != end) {
+    entries.push_back(*iterator);
+    iterator.increment(error);
+    if (error)
+      return absl::InternalError("Unable to inspect " + description + ": " + error.message());
+  }
+  return entries;
+}
+
+enum class StitchStatIdentityFormat {
+  kLegacy,
+  kBinding,
+};
+
+absl::StatusOr<std::string> stitch_artifact_stat_id(const fs::path& game_dir, StitchStatIdentityFormat format) {
   std::ostringstream generation;
   const auto append = [&](const char* name, bool required) -> absl::Status {
     struct stat metadata{};
@@ -657,11 +680,12 @@ absl::StatusOr<std::string> stitch_artifact_metadata_id(const fs::path& game_dir
     if (!S_ISREG(metadata.st_mode))
       return absl::NotFoundError("Hugin generation artifact is invalid: " + path.string());
     generation << name << ':';
-    if (include_inode) {
-      generation << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':';
-    }
+    generation << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':';
     generation << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':'
-               << metadata.st_mtim.tv_nsec << '\n';
+               << metadata.st_mtim.tv_nsec;
+    if (format == StitchStatIdentityFormat::kBinding)
+      generation << ':' << metadata.st_ctim.tv_sec << ':' << metadata.st_ctim.tv_nsec;
+    generation << '\n';
     return absl::OkStatus();
   };
   for (const char* name : kGenerationArtifacts) {
@@ -674,6 +698,11 @@ absl::StatusOr<std::string> stitch_artifact_metadata_id(const fs::path& game_dir
     return status;
   return generation.str();
 }
+
+struct ParsedStitchGenerationIdentity {
+  std::string logical_id;
+  std::string bindings;
+};
 
 absl::StatusOr<std::string> read_stitch_generation_artifact(const fs::path& path) {
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -718,53 +747,58 @@ absl::StatusOr<size_t> parse_generation_identity_size(const std::string& line, c
   return value;
 }
 
-absl::StatusOr<std::string> logical_stitch_generation_id(
-    const std::string& identity,
-    const std::string& current_metadata) {
-  constexpr char kHeader[] = "version=1\n";
+absl::StatusOr<ParsedStitchGenerationIdentity> parse_stitch_generation_identity(const std::string& identity) {
+  constexpr char kHeader[] = "version=2\n";
   if (identity.rfind(kHeader, 0) != 0)
     return absl::FailedPreconditionError("Invalid Hugin generation identity version");
   const size_t second_end = identity.find('\n', sizeof(kHeader) - 1);
   if (second_end == std::string::npos)
     return absl::FailedPreconditionError("Truncated Hugin generation identity");
-  const std::string second = identity.substr(sizeof(kHeader) - 1, second_end - (sizeof(kHeader) - 1));
-  if (second.rfind("token=", 0) == 0) {
-    const std::string token = second.substr(std::strlen("token="));
-    if (token.size() != 64 || second_end + 1 != identity.size() ||
-        !std::all_of(token.begin(), token.end(), [](unsigned char value) {
-          return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
-        })) {
-      return absl::FailedPreconditionError("Invalid Hugin generation token");
-    }
-  } else {
-    auto legacy_size = parse_generation_identity_size(second, "legacy-size=");
-    if (!legacy_size.ok())
-      return legacy_size.status();
-    const size_t third_end = identity.find('\n', second_end + 1);
-    if (third_end == std::string::npos)
-      return absl::FailedPreconditionError("Truncated Hugin legacy generation identity");
-    auto metadata_size =
-        parse_generation_identity_size(identity.substr(second_end + 1, third_end - second_end - 1), "metadata-size=");
-    if (!metadata_size.ok())
-      return metadata_size.status();
-    const size_t payload_offset = third_end + 1;
-    if (*legacy_size > identity.size() - payload_offset ||
-        *metadata_size != identity.size() - payload_offset - *legacy_size) {
-      return absl::FailedPreconditionError("Invalid Hugin legacy generation identity payload");
-    }
-    const std::string legacy = identity.substr(payload_offset, *legacy_size);
-    const std::string recorded_metadata = identity.substr(payload_offset + *legacy_size, *metadata_size);
-    if (recorded_metadata == current_metadata)
-      return legacy;
+  auto logical_size = parse_generation_identity_size(
+      identity.substr(sizeof(kHeader) - 1, second_end - (sizeof(kHeader) - 1)), "logical-size=");
+  if (!logical_size.ok())
+    return logical_size.status();
+  const size_t third_end = identity.find('\n', second_end + 1);
+  if (third_end == std::string::npos)
+    return absl::FailedPreconditionError("Truncated Hugin generation identity bindings");
+  auto bindings_size =
+      parse_generation_identity_size(identity.substr(second_end + 1, third_end - second_end - 1), "bindings-size=");
+  if (!bindings_size.ok())
+    return bindings_size.status();
+  const size_t payload_offset = third_end + 1;
+  if (*logical_size > identity.size() - payload_offset ||
+      *bindings_size != identity.size() - payload_offset - *logical_size) {
+    return absl::FailedPreconditionError("Invalid Hugin generation identity payload");
   }
+  return ParsedStitchGenerationIdentity{
+      .logical_id = identity.substr(payload_offset, *logical_size),
+      .bindings = identity.substr(payload_offset + *logical_size, *bindings_size),
+  };
+}
+
+std::string serialize_stitch_generation_identity(const std::string& logical_id, const std::string& bindings) {
+  std::ostringstream identity;
+  identity << "version=2\nlogical-size=" << logical_id.size() << "\nbindings-size=" << bindings.size() << '\n'
+           << logical_id << bindings;
+  return identity.str();
+}
+
+absl::StatusOr<std::string> logical_stitch_generation_id(
+    const std::string& identity,
+    const std::string& current_bindings) {
+  auto parsed = parse_stitch_generation_identity(identity);
+  if (!parsed.ok())
+    return parsed.status();
+  if (parsed->bindings == current_bindings)
+    return parsed->logical_id;
   std::ostringstream generation;
-  generation << "hstream-stitch-generation-v1\nidentity-bytes=" << identity.size() << '\n'
-             << identity << "metadata-bytes=" << current_metadata.size() << '\n'
-             << current_metadata;
+  generation << "hstream-stitch-generation-mismatch-v1\nlogical-bytes=" << parsed->logical_id.size() << '\n'
+             << parsed->logical_id << "bindings-bytes=" << current_bindings.size() << '\n'
+             << current_bindings;
   return generation.str();
 }
 
-absl::StatusOr<std::string> random_stitch_generation_identity() {
+absl::StatusOr<std::string> random_stitch_logical_generation_id() {
   std::array<unsigned char, 32> bytes{};
   try {
     std::random_device source;
@@ -774,17 +808,10 @@ absl::StatusOr<std::string> random_stitch_generation_identity() {
     return absl::InternalError("Unable to create Hugin generation token: " + std::string(exception.what()));
   }
   std::ostringstream identity;
-  identity << "version=1\ntoken=" << std::hex << std::setfill('0');
+  identity << "hstream-stitch-generation-v2\ntoken=" << std::hex << std::setfill('0');
   for (unsigned char byte : bytes)
     identity << std::setw(2) << static_cast<unsigned>(byte);
   identity << '\n';
-  return identity.str();
-}
-
-std::string adopted_stitch_generation_identity(const std::string& legacy, const std::string& metadata) {
-  std::ostringstream identity;
-  identity << "version=1\nlegacy-size=" << legacy.size() << "\nmetadata-size=" << metadata.size() << '\n'
-           << legacy << metadata;
   return identity.str();
 }
 
@@ -830,11 +857,44 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     return std::string("LEGACY_MIGRATE");
   if (contents == "ROLLING_BACK\n")
     return std::string("ROLLING_BACK");
+  if (contents == "RESTORED\n")
+    return std::string("RESTORED");
   if (contents == "COMMITTED\n")
     return std::string("COMMITTED");
   if (contents == "ROLLED_BACK\n")
     return std::string("ROLLED_BACK");
   return absl::FailedPreconditionError("Invalid durable stitch transaction state contents");
+}
+
+absl::StatusOr<bool> has_current_stitch_transaction_protocol(const fs::path& transaction) {
+  const fs::path path = transaction / "journal_version";
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return false;
+    return absl::FailedPreconditionError("Unable to open stitch transaction journal version");
+  }
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size != 2) {
+    ::close(descriptor);
+    return absl::FailedPreconditionError("Invalid stitch transaction journal version file");
+  }
+  char contents[2] = {};
+  size_t offset = 0;
+  while (offset < sizeof(contents)) {
+    const ssize_t count = ::read(descriptor, contents + offset, sizeof(contents) - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0) {
+      ::close(descriptor);
+      return absl::FailedPreconditionError("Unable to read stitch transaction journal version");
+    }
+    offset += static_cast<size_t>(count);
+  }
+  ::close(descriptor);
+  if (contents[0] != '2' || contents[1] != '\n')
+    return absl::FailedPreconditionError("Invalid stitch transaction journal version contents");
+  return true;
 }
 
 } // namespace
@@ -947,13 +1007,13 @@ absl::Status prepare_stitch_generation_publication(const fs::path& staging, cons
     if (!fs::is_regular_file(committed_identity, error) || error)
       return absl::FailedPreconditionError("Existing Hugin generation identity is not a regular file");
   } else {
-    auto legacy = stitch_artifact_metadata_id(game_dir, true);
+    auto legacy = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacy);
     if (legacy.ok()) {
-      auto metadata = stitch_artifact_metadata_id(game_dir, false);
-      if (!metadata.ok())
-        return metadata.status();
+      auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+      if (!bindings.ok())
+        return bindings.status();
       const fs::path adoption = staging / ".previous-stitching-generation-id";
-      auto status = write_stitch_transaction_file(adoption, adopted_stitch_generation_identity(*legacy, *metadata));
+      auto status = write_stitch_transaction_file(adoption, serialize_stitch_generation_identity(*legacy, *bindings));
       if (!status.ok())
         return status;
       fs::rename(adoption, committed_identity, error);
@@ -966,10 +1026,42 @@ absl::Status prepare_stitch_generation_publication(const fs::path& staging, cons
       return legacy.status();
     }
   }
-  auto identity = random_stitch_generation_identity();
+  auto logical_id = random_stitch_logical_generation_id();
+  if (!logical_id.ok())
+    return logical_id.status();
+  auto bindings = stitch_artifact_stat_id(staging, StitchStatIdentityFormat::kBinding);
+  if (!bindings.ok())
+    return bindings.status();
+  return write_stitch_transaction_file(
+      staging / kStitchGenerationArtifact, serialize_stitch_generation_identity(*logical_id, *bindings));
+}
+
+absl::Status rebind_stitch_generation_artifact(const fs::path& transaction, const fs::path& game_dir) {
+  const fs::path identity_path = game_dir / kStitchGenerationArtifact;
+  std::error_code error;
+  const bool exists = fs::exists(identity_path, error);
+  if (error)
+    return absl::InternalError("Unable to inspect restored Hugin generation identity: " + error.message());
+  if (!exists)
+    return absl::OkStatus();
+  auto identity = read_stitch_generation_artifact(identity_path);
   if (!identity.ok())
     return identity.status();
-  return write_stitch_transaction_file(staging / kStitchGenerationArtifact, *identity);
+  auto parsed = parse_stitch_generation_identity(*identity);
+  if (!parsed.ok())
+    return parsed.status();
+  auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+  if (!bindings.ok())
+    return bindings.status();
+  const fs::path temporary = transaction / "generation.rebinding";
+  auto status =
+      write_stitch_transaction_file(temporary, serialize_stitch_generation_identity(parsed->logical_id, *bindings));
+  if (!status.ok())
+    return status;
+  fs::rename(temporary, identity_path, error);
+  if (error)
+    return absl::InternalError("Unable to publish rebound Hugin generation identity: " + error.message());
+  return fsync_stitch_path(game_dir, true);
 }
 
 absl::Status mark_stitch_transaction_rolled_back(const fs::path& transaction) {
@@ -987,19 +1079,40 @@ absl::Status mark_stitch_transaction_rolled_back(const fs::path& transaction) {
 absl::Status recover_stitch_transactions_locked(const fs::path& root) {
   std::error_code error;
   bool recovered = false;
-  for (const auto& entry : fs::directory_iterator(root, error)) {
-    if (error)
-      return absl::InternalError("Unable to inspect stitch transactions: " + error.message());
+  auto root_entries = stitch_directory_entries(root, "stitch transactions");
+  if (!root_entries.ok())
+    return root_entries.status();
+  for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (!entry.is_directory(error) || error || directory_name.rfind(kStitchTransactionPrefix, 0) != 0) {
-      error.clear();
+    const bool is_directory = entry.is_directory(error);
+    if (error)
+      return absl::InternalError("Unable to inspect stitch transaction entry: " + error.message());
+    if (!is_directory || directory_name.rfind(kStitchTransactionPrefix, 0) != 0)
       continue;
-    }
     recovered = true;
     const fs::path transaction = entry.path();
     auto state = read_stitch_transaction_state(transaction);
     if (!state.ok())
       return state.status();
+    if (*state == "RESTORED") {
+      auto current_protocol = has_current_stitch_transaction_protocol(transaction);
+      if (!current_protocol.ok())
+        return current_protocol.status();
+      if (!*current_protocol)
+        return absl::FailedPreconditionError("Unversioned stitch transaction cannot claim restored artifacts");
+      fs::remove_all(transaction / "previous", error);
+      if (error)
+        return absl::InternalError("Unable to retire restored stitch backups: " + error.message());
+      auto status = fsync_stitch_path(transaction, true);
+      if (!status.ok())
+        return status;
+      status = rebind_stitch_generation_artifact(transaction, root);
+      if (!status.ok())
+        return status;
+      status = mark_stitch_transaction_rolled_back(transaction);
+      if (!status.ok())
+        return status;
+    }
     if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "LEGACY_MIGRATE" ||
         *state == "ROLLING_BACK") {
       std::ifstream manifest(transaction / "artifacts");
@@ -1024,12 +1137,15 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         return absl::InternalError("Unable to inspect stitch transaction backup directory: " + error.message());
       if (!previous_exists || !fs::is_directory(previous, error) || error)
         return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
-      for (const auto& old : fs::directory_iterator(previous, error)) {
-        if (error)
-          return absl::InternalError("Unable to inspect stitch transaction backup: " + error.message());
+      auto previous_entries = stitch_directory_entries(previous, "stitch transaction backup");
+      if (!previous_entries.ok())
+        return previous_entries.status();
+      for (const auto& old : *previous_entries) {
         const std::string old_name = old.path().filename().string();
-        if (!old.is_regular_file(error) || error || !is_stitch_artifact_name(old_name) ||
-            !backups.emplace(old_name, old.path()).second) {
+        const bool is_regular = old.is_regular_file(error);
+        if (error)
+          return absl::InternalError("Unable to inspect stitch transaction backup entry: " + error.message());
+        if (!is_regular || !is_stitch_artifact_name(old_name) || !backups.emplace(old_name, old.path()).second) {
           return absl::InvalidArgumentError("Invalid stitch transaction backup: " + old_name);
         }
       }
@@ -1062,44 +1178,51 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         }
       }
 
-      const bool legacy_migration =
-          *state == "LEGACY_MIGRATE" || (*state == "PREPARED" && (!has_prior_manifest || !backups.empty()));
-      if (!legacy_migration && !prior_manifest_valid) {
-        if (!has_prior_manifest)
-          return absl::FailedPreconditionError("Active stitch transaction has no prior-artifact manifest");
-        return prior_manifest_status;
-      }
-      if (legacy_migration) {
-        // Original journals identify the old generation through backups. A
-        // later migration wrote previous_artifacts while remaining PREPARED
-        // and could consume backups during rollback, so a valid manifest is
-        // authoritative for any old file already restored to the root.
+      auto current_protocol = has_current_stitch_transaction_protocol(transaction);
+      if (!current_protocol.ok())
+        return current_protocol.status();
+      bool legacy_migration = false;
+      if (*state == "PREPARED" && *current_protocol) {
         if (!prior_manifest_valid)
-          prior_artifacts.clear();
+          return has_prior_manifest
+              ? prior_manifest_status
+              : absl::FailedPreconditionError("Prepared stitch transaction has no prior-artifact manifest");
+        if (!backups.empty())
+          return absl::FailedPreconditionError("Prepared stitch transaction unexpectedly contains backups");
+        auto status = mark_stitch_transaction_rolled_back(transaction);
+        if (!status.ok())
+          return status;
+      } else if (*state == "PREPARED" || *state == "LEGACY_MIGRATE") {
+        legacy_migration = true;
+        // Historical PREPARED manifests may contain partially published root
+        // entries. Only private backups prove membership in the old generation.
+        if (prior_manifest_valid) {
+          for (const std::string& name : prior_artifacts) {
+            if (backups.count(name) == 0) {
+              return absl::FailedPreconditionError(
+                  "Ambiguous legacy stitch transaction has a root-only prior artifact: " + name);
+            }
+          }
+        }
+        for (const std::string& name : manifested) {
+          const bool root_exists = fs::exists(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to inspect legacy root artifact: " + error.message());
+          if (root_exists && backups.count(name) == 0) {
+            return absl::FailedPreconditionError(
+                "Ambiguous legacy stitch transaction has an unbacked root artifact: " + name);
+          }
+        }
+        prior_artifacts.clear();
         for (const auto& [name, old] : backups) {
           (void)old;
           prior_artifacts.insert(name);
         }
-        for (const std::string& name : prior_artifacts) {
-          if (backups.count(name) != 0)
-            continue;
-          if (*state != "PREPARED" || !prior_manifest_valid || !fs::is_regular_file(root / name, error) || error) {
-            return absl::FailedPreconditionError(
-                "Prepared legacy stitch transaction lost prior artifact backup: " + name);
-          }
-          auto preserve = clone_or_copy_stitch_rollback_file(root / name, previous / name);
-          if (!preserve.ok())
-            return preserve;
-          backups.emplace(name, previous / name);
-        }
-        auto status = fsync_stitch_path(previous, true);
-        if (!status.ok())
-          return status;
         std::ostringstream prior_manifest;
         for (const std::string& name : prior_artifacts)
           prior_manifest << name << '\n';
         const fs::path temporary_prior_manifest = transaction / "previous_artifacts.migrating";
-        status = write_stitch_transaction_file(temporary_prior_manifest, prior_manifest.str());
+        auto status = write_stitch_transaction_file(temporary_prior_manifest, prior_manifest.str());
         if (!status.ok())
           return status;
         fs::rename(temporary_prior_manifest, prior_manifest_path, error);
@@ -1117,10 +1240,10 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
             interrupt != nullptr && std::string(interrupt) == "1") {
           return absl::InternalError("Injected stitch interruption after legacy migration manifest");
         }
-      } else if (*state == "PREPARED") {
-        auto status = mark_stitch_transaction_rolled_back(transaction);
-        if (!status.ok())
-          return status;
+      } else if (!prior_manifest_valid) {
+        if (!has_prior_manifest)
+          return absl::FailedPreconditionError("Active stitch transaction has no prior-artifact manifest");
+        return prior_manifest_status;
       }
 
       if (legacy_migration || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
@@ -1179,6 +1302,28 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         }
         error.clear();
         auto status = fsync_stitch_path(root, true);
+        if (!status.ok())
+          return status;
+        status = write_stitch_transaction_file(transaction / "journal_version", "2\n");
+        if (!status.ok())
+          return status;
+        status = fsync_stitch_path(transaction, true);
+        if (!status.ok())
+          return status;
+        status = publish_transaction_state(transaction, "RESTORED\n");
+        if (!status.ok())
+          return status;
+        if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_AFTER_RESTORED_SYNC");
+            interrupt != nullptr && std::string(interrupt) == "1") {
+          return absl::InternalError("Injected stitch interruption after restored state");
+        }
+        fs::remove_all(previous, error);
+        if (error)
+          return absl::InternalError("Unable to retire restored stitch backups: " + error.message());
+        status = fsync_stitch_path(transaction, true);
+        if (!status.ok())
+          return status;
+        status = rebind_stitch_generation_artifact(transaction, root);
         if (!status.ok())
           return status;
         status = mark_stitch_transaction_rolled_back(transaction);
@@ -1248,13 +1393,13 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (!identity.ok()) {
     if (absl::IsNotFound(identity.status()))
-      return stitch_artifact_metadata_id(game_dir, true);
+      return stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacy);
     return identity.status();
   }
-  auto metadata = stitch_artifact_metadata_id(game_dir, false);
-  if (!metadata.ok())
-    return metadata.status();
-  return logical_stitch_generation_id(*identity, *metadata);
+  auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+  if (!bindings.ok())
+    return bindings.status();
+  return logical_stitch_generation_id(*identity, *bindings);
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_impl(

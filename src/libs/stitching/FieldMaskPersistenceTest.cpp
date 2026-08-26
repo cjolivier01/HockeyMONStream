@@ -799,6 +799,29 @@ int main() {
         "rink recovery must restore the prior mask generation");
     ok &= expect(!fs::exists(interrupted), "recovered rink transaction must be cleaned");
 
+    const fs::path unreadable = root / ".hstream-rink-unreadable";
+    fs::create_directories(unreadable / "previous");
+    fs::copy_file(root / "config.yaml", unreadable / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", unreadable / "previous" / "rink_mask_0.png");
+    std::ofstream(unreadable / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(unreadable / "state") << "PREPARED\n";
+    const std::string config_before_unreadable_recovery = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    fs::permissions(unreadable / "previous", fs::perms::owner_exec, fs::perm_options::replace);
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(unreadable) &&
+            fs::is_regular_file(root / "config.yaml") &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_unreadable_recovery;
+            }(),
+        "failed rink backup enumeration must preserve the journal and committed profile");
+    fs::permissions(unreadable / "previous", fs::perms::owner_all, fs::perm_options::replace);
+    fs::remove_all(unreadable);
+
     const fs::path malformed = root / ".hstream-rink-malformed";
     fs::create_directories(malformed);
     std::ofstream(malformed / "state") << "PREPARE\n";

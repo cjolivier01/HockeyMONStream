@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <thread>
 
@@ -169,6 +170,29 @@ int main() {
       recovered["recovered"]["old"].as<bool>() && recovered["after_recovery"].as<bool>() && !recovered["interrupted"],
       "rink recovery must precede and preserve the subsequent config mutation");
   ok &= expect(!fs::exists(interrupted), "recovered rink journal must be removed");
+
+  const fs::path unreadable = root / ".hstream-rink-unreadable";
+  fs::create_directories(unreadable / "previous");
+  fs::copy_file(root / "config.yaml", unreadable / "previous" / "config.yaml");
+  fs::copy_file(root / "rink_mask_0.png", unreadable / "previous" / "rink_mask_0.png");
+  std::ofstream(unreadable / "new-files") << "config.yaml\nrink_mask_0.png\n";
+  std::ofstream(unreadable / "state") << "PREPARED\n";
+  const std::string config_before_unreadable_recovery = [&]() {
+    std::ifstream input(root / "config.yaml", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  fs::permissions(unreadable / "previous", fs::perms::owner_exec, fs::perm_options::replace);
+  const auto unreadable_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      !unreadable_read.ok() && fs::exists(unreadable) && fs::is_regular_file(root / "config.yaml") &&
+          [&]() {
+            std::ifstream input(root / "config.yaml", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                config_before_unreadable_recovery;
+          }(),
+      "failed config backup enumeration must preserve the journal and committed config");
+  fs::permissions(unreadable / "previous", fs::perms::owner_all, fs::perm_options::replace);
+  fs::remove_all(unreadable);
 
   std::ofstream(root / "config.yaml") << "generation: old\n";
   std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";

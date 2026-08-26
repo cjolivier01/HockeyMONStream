@@ -1030,6 +1030,9 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   status = write_stitch_transaction_file(staging / "previous_artifacts", prior_manifest.str());
   if (!status.ok())
     return status;
+  status = write_stitch_transaction_file(staging / "journal_version", "2\n");
+  if (!status.ok())
+    return status;
   status = fsync_stitch_path(backups, true);
   if (!status.ok())
     return status;
@@ -1104,6 +1107,9 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
       return rollback_error(std::string(status.message()));
   }
   status = fsync_stitch_path(game_dir, true);
+  if (!status.ok())
+    return rollback_error(std::string(status.message()));
+  status = rebind_stitch_generation_artifact(staging, game_dir);
   if (!status.ok())
     return rollback_error(std::string(status.message()));
   status = write_stitch_transaction_file(staging / "state.committed", "COMMITTED\n");
