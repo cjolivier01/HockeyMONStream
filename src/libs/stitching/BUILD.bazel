@@ -33,6 +33,20 @@ cc_library(
 )
 
 cc_library(
+  name = "live_stitching_generation",
+  srcs = ["LiveStitchingGeneration.cpp"],
+  hdrs = ["LiveStitchingGeneration.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":game_config",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
   name = "orientation_internal",
   hdrs = ["OrientationInternal.h"],
   include_prefix = INCLUDE_PREFIX,
@@ -54,6 +68,7 @@ cc_library(
     "CalibrationModels.h",
     "ConfigureStitching.h",
     "FieldMaskArtifact.h",
+    "LiveStitchingGeneration.h",
     "Orientation.h",
     "ScoreboardSelector.h",
     "StitchedOutputGenerationPayload.h",
@@ -75,6 +90,7 @@ cc_library(
     ":correlation",
     ":feature_matcher",
     ":hugin_project",
+    ":live_stitching_generation",
     ":rink_segmentation",
     ":transaction_state",
     "//src/libs/common:utils",
@@ -168,6 +184,16 @@ cc_test(
     deps = [
         ":game_config",
         "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "live_stitching_generation_test",
+    srcs = ["LiveStitchingGenerationTest.cpp"],
+    deps = [
+        ":live_stitching_generation",
+        "@yaml-cpp",
+        "@com_google_absl//absl/status:status",
     ],
 )
 

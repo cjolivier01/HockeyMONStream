@@ -263,6 +263,7 @@ void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
   remove_yaml_key_path(config, {"rink", "stitched_output_generation"});
   remove_yaml_key_path(config, {"rink", "stitched_output_persisted_rotation_degrees"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_generation"});
 }
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -998,6 +999,8 @@ absl::Status save_stitched_image(
     return absl::FailedPreconditionError(
         "Cannot publish a scoreboard snapshot without the stitched-output generation that produced it");
   }
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+      producer_output_generation, static_cast<size_t>(image.cols), static_cast<size_t>(image.rows)));
   std::error_code ec;
   fs::create_directories(game_dir, ec);
   if (ec) {
@@ -2148,6 +2151,22 @@ absl::Status validate_stitched_output_generation_hugin(
   return validate_output_generation_hugin(output_generation, expected_hugin_generation);
 }
 
+absl::Status validate_stitched_output_generation_dimensions(
+    const std::string& output_generation,
+    size_t width,
+    size_t height) {
+  if (output_generation.empty() || width == 0 || height == 0)
+    return absl::InvalidArgumentError("A stitched-output generation and positive image dimensions are required");
+  std::optional<CanvasSize> expected_size;
+  HM_ASSIGN_OR_RETURN(expected_size, stitched_output_size_from_generation(output_generation));
+  if (!expected_size.has_value())
+    return absl::FailedPreconditionError("Stitched-output generation is missing output dimensions");
+  if (expected_size->width != width || expected_size->height != height) {
+    return absl::AbortedError("Image dimensions do not match the stitched-output generation");
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::string> current_stitched_output_generation_id_locked(
     const std::string& game_dir,
     const YAML::Node& config,
@@ -2542,14 +2561,24 @@ absl::Status save_rink_profile_locked(
         return absl::AbortedError("Cannot publish a rink profile after the stitched-output canvas size changed");
       }
       const YAML::Node saved_generation = config["rink"]["stitched_output_generation"];
+      const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
+      if (pending_generation && pending_generation.IsDefined() && !pending_generation.IsScalar())
+        return absl::InvalidArgumentError("Pending stitched-output generation must be a scalar");
       if (saved_generation && saved_generation.IsDefined()) {
         if (!saved_generation.IsScalar())
           return absl::InvalidArgumentError("Persisted stitched-output generation must be a scalar");
-        if (saved_generation.as<std::string>() != expected_output_generation &&
-            !stitching_calibration_is_pending(config)) {
+        const bool generation_matches = saved_generation.as<std::string>() == expected_output_generation;
+        const bool live_generation_authorized = pending_generation && pending_generation.IsScalar() &&
+            pending_generation.as<std::string>() == expected_output_generation;
+        if (!generation_matches && !live_generation_authorized && !stitching_calibration_is_pending(config)) {
           return absl::AbortedError(
               "Cannot replace a completed stitched-output generation outside a pending calibration epoch");
         }
+      } else if (
+          pending_generation && pending_generation.IsScalar() &&
+          pending_generation.as<std::string>() != expected_output_generation &&
+          !stitching_calibration_is_pending(config)) {
+        return absl::AbortedError("Stitched-output producer does not match the authorized live generation");
       }
       // Runtime rotation may be an in-memory CLI/property override and is
       // therefore authoritative even when it intentionally differs from the
@@ -2571,8 +2600,14 @@ absl::Status save_rink_profile_locked(
     config["rink"]["stitched_output_generation"] = current_output_generation;
     if (expected_output_generation.empty()) {
       config["rink"].remove("stitched_output_persisted_rotation_degrees");
+      config["rink"].remove("stitched_output_pending_generation");
     } else {
       config["rink"]["stitched_output_persisted_rotation_degrees"] = *expected_persisted_rotation;
+      const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
+      if (pending_generation && pending_generation.IsScalar() &&
+          pending_generation.as<std::string>() == expected_output_generation) {
+        config["rink"].remove("stitched_output_pending_generation");
+      }
     }
     if (!expected_invalidation_id.empty()) {
       YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];

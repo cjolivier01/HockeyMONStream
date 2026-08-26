@@ -2,6 +2,7 @@
 
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
 /* clang-format off */
 #include "src/libs/common/Status.h"
@@ -113,6 +114,11 @@ absl::Status validate_stitched_output_generation(
 absl::Status validate_stitched_output_generation_hugin(
     const std::string& output_generation,
     const std::string& expected_hugin_generation);
+
+absl::Status validate_stitched_output_generation_dimensions(
+    const std::string& output_generation,
+    size_t width,
+    size_t height);
 
 bool is_field_mask_configured(
     const std::string& game_dir,

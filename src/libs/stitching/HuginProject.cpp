@@ -1675,7 +1675,7 @@ absl::Status HuginProject::Configure(
     if (!config_transaction.ok())
       return config_transaction.status();
     auto validation =
-        validate_stitching_generation_owner_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
+        validate_pending_stitching_invalidation_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
     if (!validation.ok())
       return validation;
     status = publish_artifacts(staging, game_dir, &cleanup.prepared);

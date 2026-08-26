@@ -597,6 +597,8 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   const cv::Mat dimensions = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
   if (dimensions.empty())
     return absl::NotFoundError("Scoreboard selector requires " + image_path.string());
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+      *output_generation, static_cast<size_t>(dimensions.cols), static_cast<size_t>(dimensions.rows)));
 
   std::string bind_host = "127.0.0.1";
   if (const char* configured = std::getenv("HM_SCOREBOARD_BIND_HOST"); configured != nullptr && *configured != '\0') {

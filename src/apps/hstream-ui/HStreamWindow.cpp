@@ -64,6 +64,7 @@
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
 #include <QtCore/QUuid>
 
@@ -3721,6 +3722,7 @@ ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& c
   ArtifactInvalidationResult result;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
@@ -14044,15 +14046,23 @@ void HStreamWindow::flushScheduledRuntimeControls() {
     return;
   }
   if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {
-    const std::map<QString, int> controls = std::move(scheduled_rotation_controls_);
+    std::map<QString, int> controls = std::move(scheduled_rotation_controls_);
     scheduled_rotation_controls_.clear();
     scheduled_rotation_controls_ready_ = false;
     std::vector<RuntimePropertyCommand> commands;
     if (controls.count("Stitch_Rotate_Degrees")) {
-      commands.push_back(
-          {"hmstitcher0",
-           "post-stitch-rotate-degrees",
-           QString::number(90 - cameraControlValue("Stitch_Rotate_Degrees"))});
+      const int rotation = 90 - cameraControlValue("Stitch_Rotate_Degrees");
+      const auto authorization = hm::stitching::authorize_live_stitched_output_rotation(
+          gameDirectory(active_run_game_id_).toStdString(), rotation);
+      if (authorization.ok()) {
+        commands.push_back({"hmstitcher0", "post-stitch-rotate-degrees", QString::number(rotation)});
+      } else {
+        appendLog(
+            QString("camera control Stitch_Rotate_Degrees=%1 apply=failed reason=output generation authorization: %2")
+                .arg(cameraControlValue("Stitch_Rotate_Degrees"))
+                .arg(authorization.ToString().c_str()));
+        controls.erase("Stitch_Rotate_Degrees");
+      }
     }
     const bool has_fixed_edge_change = controls.count("Link_Fixed_Edge_Rotation_Left_Right") ||
         controls.count("Left_Fixed_Edge_Rotation_Angle_x10") || controls.count("Right_Fixed_Edge_Rotation_Angle_x10");
@@ -14072,8 +14082,10 @@ void HStreamWindow::flushScheduledRuntimeControls() {
         add_both_stages("fixed-edge-rotation-angle-right", right_angle);
       }
     }
-    publishRuntimeControlBatch(controls, commands);
-    return;
+    if (!controls.empty()) {
+      publishRuntimeControlBatch(controls, commands);
+      return;
+    }
   }
   if (scheduled_playcropper_controls_ready_ && !scheduled_playcropper_controls_.empty()) {
     const std::map<QString, int> controls = std::move(scheduled_playcropper_controls_);

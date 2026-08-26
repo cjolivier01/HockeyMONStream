@@ -147,7 +147,7 @@ std::string http_request(
 
 bool exercise_http_selector(const std::filesystem::path& directory, bool remote = false) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
-  cv::Mat image(24, 32, CV_8UC3, cv::Scalar(255, 255, 255));
+  cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
     return false;
   int output_pipe[2]{};
@@ -315,6 +315,10 @@ int main() {
   }
   fixture_config["rink"].remove("scoreboard");
   std::ofstream(directory / "config.yaml") << fixture_config << '\n';
+  cv::imwrite((directory / "s.png").string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(255, 255, 255)));
+  ok &= expect(
+      absl::IsAborted(Selector::Run(directory)),
+      "scoreboard selector must reject a snapshot whose dimensions do not match its output generation");
   ok &= expect(exercise_http_selector(directory), "native HTTP selector must enforce its token and save a choice");
   if (std::filesystem::is_regular_file(directory / "config.yaml")) {
     const YAML::Node polygon =
@@ -349,7 +353,16 @@ int main() {
     live_rotation_config["rink"].remove("scoreboard");
     std::ofstream(directory / "config.yaml") << live_rotation_config << '\n';
   }
-  const cv::Mat live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
+  const cv::Mat mismatched_live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
+  ok &= expect(
+      live_rotation_generation.ok() &&
+          absl::IsAborted(
+              hm::stitching::save_stitched_image(
+                  directory.string(),
+                  mismatched_live_rotation_snapshot,
+                  live_rotation_generation.ok() ? *live_rotation_generation : "")),
+      "snapshot publication must reject image dimensions that disagree with the producer generation");
+  const cv::Mat live_rotation_snapshot(32, 96, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(
       live_rotation_generation.ok() &&
           hm::stitching::save_stitched_image(
@@ -400,7 +413,7 @@ int main() {
   ok &= expect(
       !rollback_link_error && Selector::Save(directory, disabled, stale_snapshot_generation).ok(),
       "snapshot rollback link-count changes must not invalidate an unchanged selector image");
-  cv::Mat replacement_snapshot(24, 32, CV_8UC3, cv::Scalar(0, 0, 0));
+  cv::Mat replacement_snapshot(32, 96, CV_8UC3, cv::Scalar(0, 0, 0));
   const std::filesystem::path replacement_snapshot_path = directory / "s-replacement.png";
   const bool wrote_replacement_snapshot = cv::imwrite(replacement_snapshot_path.string(), replacement_snapshot);
   std::error_code replacement_error;

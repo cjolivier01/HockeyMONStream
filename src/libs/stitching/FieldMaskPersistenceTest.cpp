@@ -332,6 +332,12 @@ int main() {
     const auto pre_rotation_generation =
         hm::stitching::configured_stitched_output_generation_id(root.string(), /*max_output_width=*/0);
     ok &= expect(pre_rotation_generation.ok(), "stale-rotation fixture must have a current output generation");
+    if (pre_rotation_generation.ok()) {
+      YAML::Node completed_rotation = YAML::LoadFile((root / "config.yaml").string());
+      completed_rotation["rink"]["stitched_output_generation"] = *pre_rotation_generation;
+      completed_rotation["rink"]["stitched_output_persisted_rotation_degrees"] = 0.0;
+      std::ofstream(root / "config.yaml") << completed_rotation << '\n';
+    }
     absl::Status stale_rotation_status = absl::UnknownError("stale rotation publication did not run");
     ::setenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS", "300", 1);
     std::thread stale_rotation_publisher([&] {
@@ -379,25 +385,25 @@ int main() {
         }
       }
     }
-    {
-      YAML::Node pending_live_override = YAML::LoadFile((root / "config.yaml").string());
-      YAML::Node pending_calibration = pending_live_override["hstream_ui"]["stitching_calibration"];
-      pending_calibration["status"] = "pending";
-      pending_calibration["rink_mask_status"] = "pending";
-      pending_calibration["invalidation_id"] = "rink-run-live";
-      pending_live_override["rink"].remove("stitched_output_generation");
-      pending_live_override["rink"].remove("stitched_output_persisted_rotation_degrees");
-      std::ofstream(root / "config.yaml") << pending_live_override << '\n';
-    }
+    const auto live_override_authorization = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0);
+    const YAML::Node after_live_override_authorization = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        live_override_authorization.ok() &&
+            after_live_override_authorization["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() ==
+                "complete" &&
+            after_live_override_authorization["rink"]["stitched_output_pending_generation"].as<std::string>() ==
+                live_override_generation,
+        "live rotation must authorize one exact generation without reopening the completed calibration owner");
     const auto live_override_status = hm::stitching::save_rink_profile_with_stitched_image(
-        root.string(), profile, stale_snapshot, "rink-run-live", live_override_generation);
+        root.string(), profile, stale_snapshot, "rink-run-a", live_override_generation);
     const YAML::Node after_live_override = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         !live_override_generation.empty() && live_override_status.ok() &&
             after_live_override["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5 &&
             after_live_override["rink"]["stitched_output_generation"].as<std::string>() == live_override_generation &&
             after_live_override["rink"]["stitched_output_persisted_rotation_degrees"].as<double>() == 7.5 &&
-            hm::stitching::is_field_mask_configured(root.string(), live_override_generation, "rink-run-live"),
+            !after_live_override["rink"]["stitched_output_pending_generation"].IsDefined() &&
+            hm::stitching::is_field_mask_configured(root.string(), live_override_generation, "rink-run-a"),
         "live runtime rotation override must publish without rewriting the persisted rotation");
 
     std::string older_live_override_generation;
@@ -414,7 +420,7 @@ int main() {
       }
     }
     const auto late_older_publication = hm::stitching::save_rink_profile_with_stitched_image(
-        root.string(), profile, committed_snapshot, "rink-run-live", older_live_override_generation);
+        root.string(), profile, committed_snapshot, "rink-run-a", older_live_override_generation);
     const YAML::Node after_late_older_publication = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         !older_live_override_generation.empty() && absl::IsAborted(late_older_publication) &&
@@ -423,7 +429,7 @@ int main() {
         "a late older runtime rotation must not overwrite a completed newer generation");
     ok &= expect(
         hm::stitching::save_rink_profile_with_stitched_image(
-            root.string(), profile, stale_snapshot, "rink-run-live", live_override_generation)
+            root.string(), profile, stale_snapshot, "rink-run-a", live_override_generation)
             .ok(),
         "completed publication must remain idempotent for the same producer generation");
 

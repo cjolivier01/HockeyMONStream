@@ -684,8 +684,23 @@ int main() {
       project_after_superseded_hugin == previous_project &&
           config_after_superseded_hugin.find("invalidation_id: hugin-run-b") != std::string::npos,
       "superseded Hugin publication must preserve both the prior artifacts and the newer invalidation");
-  options.expected_invalidation_id.clear();
+  {
+    std::ofstream config(root / "game" / "config.yaml");
+    config << "hstream_ui:\n"
+              "  stitching_calibration:\n"
+              "    status: complete\n"
+              "    invalidation_id: hugin-run-a\n";
+  }
   options.progress = {};
+  const auto completed_owner_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  const auto project_after_completed_owner = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      completed_owner_hugin.code() == absl::StatusCode::kAborted && project_after_completed_owner == previous_project,
+      "a Hugin producer must not replace completed calibration artifacts for the same invalidation owner");
+  options.expected_invalidation_id.clear();
   std::string generation_before_interrupted_publication;
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
