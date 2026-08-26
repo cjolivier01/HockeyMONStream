@@ -24,12 +24,16 @@ struct FrameDesc {
 bool run_precaps(
     const std::string& config_dir,
     bool one_pass_mode,
+    bool calibration_classified,
     bool expect_ok,
     size_t expected_width,
     size_t expected_height) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   if (one_pass_mode) {
     stitcher.SetProperty({"one-pass-mode", "1"});
+  }
+  if (calibration_classified) {
+    stitcher.SetProperty({"calibration-run-generation", "1"});
   }
 
   hm::DSCustom_CreateParams params{};
@@ -44,7 +48,8 @@ bool run_precaps(
   }
 
   if (expect_ok != status.ok()) {
-    std::cerr << "Unexpected PreCapsInit status for one_pass_mode=" << one_pass_mode << ": " << status << std::endl;
+    std::cerr << "Unexpected PreCapsInit status for one_pass_mode=" << one_pass_mode
+              << ", calibration_classified=" << calibration_classified << ": " << status << std::endl;
     return false;
   }
 
@@ -97,7 +102,7 @@ bool expect_high_bit_property_contract(const std::string& config_dir) {
       stitcher.SetProperty({"exposure", "1.31"}) || stitcher.SetProperty({"exposure", "inf"}) ||
       !stitcher.SetProperty({"stitched-output-epoch", "16:authorization-b221"}) ||
       stitcher.SetProperty({"stitched-output-epoch", "authorization-b2:21"}) ||
-      !stitcher.SetProperty({"one-pass-mode", "1"})) {
+      !stitcher.SetProperty({"one-pass-mode", "1"}) || !stitcher.SetProperty({"calibration-run-generation", "1"})) {
     std::cerr << "High-bit stitcher property validation failed\n";
     return false;
   }
@@ -506,11 +511,32 @@ int main() {
   fs::create_directories(tmpdir);
 
   const std::string config_dir = tmpdir.string();
-  if (!run_precaps(config_dir, /*one_pass_mode=*/false, /*expect_ok=*/false, 0, 0)) {
+  if (!run_precaps(
+          config_dir,
+          /*one_pass_mode=*/false,
+          /*calibration_classified=*/false,
+          /*expect_ok=*/false,
+          0,
+          0)) {
     return 1;
   }
-  if (!run_precaps(config_dir, /*one_pass_mode=*/true, /*expect_ok=*/true, 0, 0)) {
+  if (!run_precaps(
+          config_dir,
+          /*one_pass_mode=*/true,
+          /*calibration_classified=*/false,
+          /*expect_ok=*/false,
+          0,
+          0)) {
     return 2;
+  }
+  if (!run_precaps(
+          config_dir,
+          /*one_pass_mode=*/true,
+          /*calibration_classified=*/true,
+          /*expect_ok=*/true,
+          0,
+          0)) {
+    return 35;
   }
   if (!expect_output_batch_size(/*input_batch_size=*/2, /*configured_batch_size=*/4, /*expected_batch_size=*/1)) {
     return 3;

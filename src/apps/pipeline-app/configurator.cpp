@@ -5014,7 +5014,7 @@ absl::Status Configurator::setup_stitcher_and_masks(
       HM_ASSIGN_OR_RETURN(artifacts, lock_current_stitching_artifacts(game_dir, static_cast<size_t>(max_output_width)));
       bool is_configured = artifacts.artifact_lock != nullptr;
       artifacts.artifact_lock.reset();
-      if (configure_only && is_configured && !force) {
+      if ((configure_only || one_pass_mode) && is_configured && !force) {
         stitching::LockedStitchingArtifacts validated_artifacts;
         HM_ASSIGN_OR_RETURN(
             validated_artifacts,

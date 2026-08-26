@@ -11,7 +11,9 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include <opencv2/imgcodecs.hpp>
 #include <sys/stat.h>
@@ -176,6 +178,16 @@ int main() {
 
     auto native_dimensioned_generation =
         hm::stitching::stitched_output_generation_id(initial_hugin_generation_id, 0.0, 32, 24);
+    const auto loaded_legacy_mask = native_dimensioned_generation.ok()
+        ? hm::stitching::load_field_mask_for_loaded_generation(
+              root.string(), *native_dimensioned_generation, initial_hugin_generation_id)
+        : absl::StatusOr<cv::Mat>(native_dimensioned_generation.status());
+    const YAML::Node config_after_loaded_legacy = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        loaded_legacy_mask.ok() &&
+            config_after_loaded_legacy["rink"]["stitched_output_generation"].as<std::string>() ==
+                initial_output_generation,
+        "a frame-loaded Hugin generation must not migrate durable field-mask metadata");
     ok &= expect(
         native_dimensioned_generation.ok() &&
             hm::stitching::is_field_mask_configured_for_stitching_config(
@@ -183,9 +195,6 @@ int main() {
             hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation) &&
             hm::stitching::is_field_mask_configured_for_loaded_generation(
                 root.string(), *native_dimensioned_generation, initial_hugin_generation_id) &&
-            hm::stitching::load_field_mask_for_loaded_generation(
-                root.string(), *native_dimensioned_generation, initial_hugin_generation_id)
-                .ok() &&
             !hm::stitching::is_field_mask_configured_for_loaded_generation(
                 root.string(), *native_dimensioned_generation, "stale-hugin-generation"),
         "startup and dimensioned runtime checks must both accept a size-validated legacy native field mask");
@@ -195,6 +204,51 @@ int main() {
             migrated_native_config["rink"]["stitched_output_generation"].as<std::string>() ==
                 *native_dimensioned_generation,
         "accepting a native legacy field mask must migrate its generation to the dimensioned alias");
+
+    if (native_dimensioned_generation.ok()) {
+      const fs::path mask_path = root / "rink_mask_0.png";
+      std::ifstream input(mask_path, std::ios::binary);
+      const std::vector<unsigned char> valid_mask(
+          (std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+      std::vector<unsigned char> oversized_mask = valid_mask;
+      if (oversized_mask.size() >= 24) {
+        oversized_mask[16] = 0x7f;
+        oversized_mask[17] = 0xff;
+        oversized_mask[18] = 0xff;
+        oversized_mask[19] = 0xff;
+        std::ofstream output(mask_path, std::ios::binary | std::ios::trunc);
+        output.write(
+            reinterpret_cast<const char*>(oversized_mask.data()), static_cast<std::streamsize>(oversized_mask.size()));
+      }
+      const auto oversized_load = hm::stitching::load_field_mask(root.string(), *native_dimensioned_generation);
+      ok &= expect(
+          valid_mask.size() >= 24 && absl::IsFailedPrecondition(oversized_load.status()) &&
+              oversized_load.status().message().find("PNG dimensions") != std::string_view::npos,
+          "field-mask loading must reject oversized PNG dimensions before decode");
+      std::ofstream output(mask_path, std::ios::binary | std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(valid_mask.data()), static_cast<std::streamsize>(valid_mask.size()));
+      output.close();
+
+      const fs::path symlink_target = root / "rink-mask-load-symlink-target.png";
+      std::error_code symlink_error;
+      fs::rename(mask_path, symlink_target, symlink_error);
+      const bool mask_moved = !symlink_error;
+      if (mask_moved)
+        fs::create_symlink(symlink_target, mask_path, symlink_error);
+      const bool symlink_created = !symlink_error;
+      const auto symlinked_load = hm::stitching::load_field_mask(root.string(), *native_dimensioned_generation);
+      ok &= expect(
+          symlink_created && absl::IsFailedPrecondition(symlinked_load.status()),
+          "field-mask loading must not follow a symbolic link");
+      std::error_code restore_error;
+      if (mask_moved) {
+        if (symlink_created)
+          fs::remove(mask_path, restore_error);
+        if (!restore_error)
+          fs::rename(symlink_target, mask_path, restore_error);
+      }
+      ok &= expect(mask_moved && !restore_error, "field-mask symlink fixture must restore the regular mask");
+    }
 
     if (native_dimensioned_generation.ok()) {
       const auto replace_legacy_mask = [&](bool corrupt_existing_mask) {

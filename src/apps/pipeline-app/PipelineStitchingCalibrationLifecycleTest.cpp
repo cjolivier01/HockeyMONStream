@@ -669,6 +669,9 @@ bool runtime_caps_succeeded(PipelineProcess* process, const char* message) {
 }
 
 bool restart_completed_after_running(PipelineProcess* process, size_t after, size_t required_running_events = 1) {
+  if (!process->WaitFor("HSTREAM_CALIBRATION stage=playback-restart status=complete", after, kCalibrationTimeout)) {
+    return false;
+  }
   const std::string& output = process->output();
   const size_t completion = output.find("HSTREAM_CALIBRATION stage=playback-restart status=complete", after);
   return completion != std::string::npos &&
@@ -973,6 +976,47 @@ int main(int argc, char** argv) {
                  "configure-only regression process must terminate after reaching calibration") &&
           expect(restore_configure_only_seam(game / "seam_file.png"),
                  "configure-only regression must restore the valid seam fixture");
+    }();
+  }
+
+  PipelineProcess one_pass_invalid_seam;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              replace_seam_with_uniform_image(game / "seam_file.png"),
+              "one-pass seam must be replaceable with a same-size uniform image") ||
+          !expect(
+              one_pass_invalid_seam.Start(
+                  argv[1],
+                  pipeline_config,
+                  game_root,
+                  plugin_directory,
+                  {},
+                  128,
+                  false,
+                  /*stitch_frame_time=*/{},
+                  /*time_limit_seconds=*/0,
+                  /*stitch_rotate_degrees=*/{},
+                  /*supply_runtime_invalidation=*/false,
+                  /*rink_inference_delay_ms=*/0,
+                  /*supply_control_points_environment=*/false),
+              "one-pass pipeline with invalid seam must start") ||
+          !expect(
+              one_pass_invalid_seam.WaitFor(
+                  "HSTREAM_CALIBRATION stage=calibration status=complete", 0, kCalibrationTimeout),
+              "one-pass invalid-seam recovery must enter the tracked calibration lifecycle") ||
+          !expect(
+              one_pass_invalid_seam.WaitFor(
+                  "playback restarted after stitch-frame calibration", 0, kCalibrationTimeout),
+              "one-pass invalid-seam recovery must restart playback after calibration") ||
+          !expect(
+              restart_completed_after_running(&one_pass_invalid_seam, 0),
+              "one-pass invalid-seam playback must reach PLAYING before restart completes")) {
+        return false;
+      }
+      return stop_successfully(&one_pass_invalid_seam, "one-pass invalid-seam playback must accept Stop/SIGINT") &&
+          expect(restore_configure_only_seam(game / "seam_file.png"),
+                 "one-pass invalid-seam regression must restore the valid seam fixture");
     }();
   }
 
@@ -1707,6 +1751,7 @@ int main(int argc, char** argv) {
   if (!ok) {
     initial.DumpOutput("initial calibration");
     configure_only_invalid_seam.DumpOutput("configure-only invalid-seam validation");
+    one_pass_invalid_seam.DumpOutput("one-pass invalid-seam validation");
     partial_eos.DumpOutput("partial-EOS calibration");
     missing_completion.DumpOutput("missing-completion calibration");
     zero_missing_completion.DumpOutput("zero-time missing-completion calibration");

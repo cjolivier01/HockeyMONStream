@@ -630,10 +630,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
         g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
         logged_missing_masks_ = true;
       }
-      if (one_pass_mode_) {
+      if (one_pass_mode_ && !calibration_run_generation_.empty()) {
         return absl::OkStatus();
       } else {
-        config_file_.clear();
+        if (!one_pass_mode_)
+          config_file_.clear();
         return absl::NotFoundError("Stitching control masks are missing or need regeneration");
       }
     }
@@ -652,7 +653,8 @@ absl::Status StitcherPriv::ensure_stitcher() {
           g_print("hmstitcher: validated control masks could not be loaded from %s\n", config_file_dir.c_str());
           logged_missing_masks_ = true;
         }
-        if (should_defer_validated_artifact_load_failure(one_pass_mode_, retry_failed))
+        if (!calibration_run_generation_.empty() &&
+            should_defer_validated_artifact_load_failure(one_pass_mode_, retry_failed))
           return absl::OkStatus();
         return absl::FailedPreconditionError(
             TO_STRING("Validated control masks could not be loaded after retry from " << config_file_dir));
@@ -737,7 +739,7 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   calibration_invalidation_id_ = calibration_invalidation_id ? calibration_invalidation_id : "";
   absl::Status status = ensure_stitcher();
   if (!status.ok()) {
-    if (one_pass_mode_ && absl::IsNotFound(status)) {
+    if (one_pass_mode_ && !calibration_run_generation_.empty() && absl::IsNotFound(status)) {
       if (!logged_missing_masks_) {
         g_print(
             "hmstitcher: control masks not found in %s; enabling one-pass configure on first batch\n",
@@ -2089,7 +2091,7 @@ absl::Status StitcherPriv::GenerateOutput(
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
           configured_during_run_,
           mask_configured,
-          /*report_latched=*/false,
+          /*report_latched=*/!calibration_run_generation_.empty(),
           process_calibration_completion_latch.delivered(completion_scope));
       if (progress.create_mask) {
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");

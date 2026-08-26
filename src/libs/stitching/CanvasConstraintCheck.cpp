@@ -44,6 +44,9 @@ namespace fs = std::filesystem;
 constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumTiffArtifactBytes = 1024ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumPngArtifactBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
 constexpr unsigned long kFuseSuperMagic = 0x65735546UL;
 constexpr unsigned long kMsDosSuperMagic = 0x4d44UL;
@@ -64,6 +67,21 @@ const std::array<const char*, 9> kGenerationArtifacts = {
     "mapping_0001_y.tif",
     "seam_file.png",
 };
+
+uint64_t maximum_generation_artifact_bytes(std::string_view name) {
+  const auto ends_with = [name](std::string_view suffix) {
+    return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
+  };
+  if (ends_with(".pto"))
+    return kMaximumPtoArtifactBytes;
+  if (ends_with(".tif"))
+    return kMaximumTiffArtifactBytes;
+  if (ends_with(".png"))
+    return kMaximumPngArtifactBytes;
+  if (name == kStitchCanvasProvenanceArtifact)
+    return 4096;
+  return 0;
+}
 
 const std::vector<std::string> kRequiredArtifacts = {
     "hm_project.pto",
@@ -1030,8 +1048,12 @@ absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
       }
     } close{descriptor};
     struct stat before{};
-    if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size < 0)
+    if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0)
       return absl::FailedPreconditionError("Invalid Hugin artifact while fingerprinting: " + path.string());
+    const uint64_t maximum_bytes = maximum_generation_artifact_bytes(name);
+    if (maximum_bytes == 0 || static_cast<uint64_t>(before.st_size) > maximum_bytes) {
+      return absl::FailedPreconditionError("Oversized Hugin artifact while fingerprinting: " + path.string());
+    }
     const char present = '1';
     const std::string size = std::to_string(static_cast<uint64_t>(before.st_size));
     if (EVP_DigestUpdate(context, name, std::strlen(name) + 1) != 1 ||

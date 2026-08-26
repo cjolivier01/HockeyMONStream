@@ -1335,6 +1335,29 @@ int main() {
   std::ofstream(provenance_path, std::ios::binary | std::ios::trunc) << valid_provenance;
   fs::last_write_time(provenance_path, valid_provenance_time);
 
+  const fs::path oversized_generation_root = root / "oversized-generation-artifact";
+  std::error_code oversized_copy_error;
+  fs::copy(
+      root / "game",
+      oversized_generation_root,
+      fs::copy_options::recursive | fs::copy_options::copy_symlinks,
+      oversized_copy_error);
+  const int oversized_mapping =
+      ::open((oversized_generation_root / "mapping_0000_x.tif").c_str(), O_WRONLY | O_CLOEXEC);
+  const bool oversized_mapping_written = oversized_mapping >= 0 && ::ftruncate(oversized_mapping, 2LL << 30) == 0;
+  if (oversized_mapping >= 0)
+    ::close(oversized_mapping);
+  auto oversized_generation_lock = hm::stitching::HuginProject::RecoverAndLock(oversized_generation_root);
+  const auto oversized_generation = oversized_generation_lock.ok()
+      ? hm::stitching::HuginProject::GenerationId(oversized_generation_root, **oversized_generation_lock)
+      : absl::StatusOr<std::string>(oversized_generation_lock.status());
+  ok &= expect(
+      !oversized_copy_error && oversized_mapping_written && absl::IsFailedPrecondition(oversized_generation.status()),
+      "generation fingerprinting must reject oversized sparse TIFFs before reading their payload");
+  if (oversized_generation_lock.ok())
+    oversized_generation_lock->reset();
+  fs::remove_all(oversized_generation_root);
+
   const std::string portable_metadata = generation_stat_identity(root / "game", true);
   const std::string adopted_v1_generation = "adopted-v1-generation\n";
   std::ofstream(root / "game" / "stitching_generation_id", std::ios::binary | std::ios::trunc)
