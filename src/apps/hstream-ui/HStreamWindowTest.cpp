@@ -811,7 +811,8 @@ bool write_fake_runner(const QString& path) {
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
       "delayed_seek_generation, timeout_next_seek, backend_seek_position, reject_next_preview_overlays, "
-      "delay_next_preview_overlays, delayed_preview_overlay_responses, runtime_control_delay_seconds\n");
+      "delay_next_preview_overlays, delayed_preview_overlay_responses, runtime_control_delay_seconds, "
+      "reject_next_runtime_control\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-exit'):\n");
   file.write("        print('test process exit requested', flush=True)\n");
@@ -835,6 +836,10 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-delay-runtime-control '):\n");
   file.write("        runtime_control_delay_seconds = float(line.rstrip('\\n').split(' ')[1]) / 1000.0\n");
   file.write("        print('test runtime control delay armed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-reject-runtime-control'):\n");
+  file.write("        reject_next_runtime_control = True\n");
+  file.write("        print('test runtime control rejection armed', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-drop-progress-resets'):\n");
   file.write("        drop_progress_resets = True\n");
@@ -1006,7 +1011,10 @@ bool write_fake_runner(const QString& path) {
   file.write("        return\n");
   file.write("    if line.startswith('@set-properties '):\n");
   file.write("        updates = line.rstrip('\\n').split(' ', 1)[1].split(';')\n");
-  file.write("        reject = os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1'\n");
+  file.write(
+      "        reject = reject_next_runtime_control or "
+      "os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1'\n");
+  file.write("        reject_next_runtime_control = False\n");
   file.write("        stall = os.environ.get('HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL') == '1'\n");
   file.write("        if reject and updates:\n");
   file.write(
@@ -1035,6 +1043,7 @@ bool write_fake_runner(const QString& path) {
   file.write("timeout_next_seek = False\n");
   file.write("backend_seek_position = 42000000000\n");
   file.write("reject_next_preview_overlays = False\n");
+  file.write("reject_next_runtime_control = False\n");
   file.write("delay_next_preview_overlays = False\n");
   file.write("delayed_preview_overlay_responses = []\n");
   file.write("runtime_control_delay_seconds = 0.0\n");
@@ -6307,13 +6316,15 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* restart = require_child<QPushButton>(window, "restartStageButton");
+  auto* pipeline_process = window->findChild<QProcess*>();
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !zoom_in_aggressiveness ||
       !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !exposure ||
       !lift_shadow_black_point || !use_10_bit_grading || !reset || !save || !create || !game_id || !start || !stop ||
-      !mode || !stitch_frame_time || !stitch_max_output_width) {
+      !restart || !pipeline_process || !mode || !stitch_frame_time || !stitch_max_output_width) {
     return false;
   }
 
@@ -7697,6 +7708,55 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
+
+  pipeline_process->write("@test-reject-runtime-control\n");
+  for (int i = 0; i < 50 && !window->logText().contains("test runtime control rejection armed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const int rejected_batch_log_start = window->logText().size();
+  fixed_edge_right->setValue(640);
+  rotate->setValue(73);
+  for (int i = 0; i < 100 && !window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=failed"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const QString rejected_batch_log = window->logText().mid(rejected_batch_log_start);
+  const int rejected_tracker_index =
+      rejected_batch_log.indexOf("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=64.0");
+  const int rejected_cropper_index =
+      rejected_batch_log.indexOf("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=64.0");
+  const int rejected_epoch_index = rejected_batch_log.indexOf("stdin:@set-property hmstitcher0 stitched-output-epoch=");
+  if (!expect(
+          rejected_tracker_index >= 0 && rejected_cropper_index > rejected_tracker_index &&
+              rejected_epoch_index > rejected_cropper_index &&
+              rejected_batch_log.contains(
+                  "runtime command failed: plugin rejected hmstitcher0.stitched-output-epoch=") &&
+              !rejected_batch_log.contains("camera control Stitch_Rotate_Degrees=73 apply=live"),
+          "A fallible mixed runtime batch must publish its frame epoch last so a rejected epoch never becomes live")) {
+    std::cerr << rejected_batch_log.toStdString() << '\n';
+    activate(stop);
+    return false;
+  }
+
+  const int pipeline_commands_before_deferred_restart = window->logText().count("pipeline command ");
+  activate(restart);
+  for (int i = 0; i < 200 &&
+       (window->pipelineStateText() != "PLAYING" ||
+        window->logText().count("pipeline command ") == pipeline_commands_before_deferred_restart);
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->pipelineStateText() == "PLAYING" &&
+              window->logText().count("pipeline command ") > pipeline_commands_before_deferred_restart &&
+              window->logText().contains("stage restart continuing after pipeline cleanup"),
+          "Restart Stage must resume after asynchronous live-rotation authorization rollback")) {
+    activate(stop);
+    return false;
+  }
+
   max_speed_x->setValue(460);
   for (int i = 0; i < 50 && !window->logText().contains("camera control Max_Speed_X_x10=460 apply=live"); ++i) {
     QApplication::processEvents();

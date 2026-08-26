@@ -737,6 +737,48 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "validated_snapshot_generation";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+
+  auto first = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  if (!first.ok() || !first->artifact_lock) {
+    std::cerr << "validated snapshot fixture must pass initial validation: " << first.status() << std::endl;
+    return false;
+  }
+  const hm::stitching::ValidatedStitchingArtifacts snapshot{
+      .canvas_size = first->canvas_size,
+      .generation_id = first->generation_id,
+      .max_output_width = 0,
+      .max_canvas_dimension = hm::stitching::live_stitch_max_canvas_dimension(),
+  };
+  first->artifact_lock.reset();
+
+  auto reused = hm::stitching::lock_validated_stitching_artifacts(dir.string(), 0, snapshot);
+  const bool same_generation_reused = reused.ok() && reused->artifact_lock &&
+      reused->generation_id == snapshot.generation_id && reused->canvas_size.width == snapshot.canvas_size.width &&
+      reused->canvas_size.height == snapshot.canvas_size.height;
+  if (reused.ok())
+    reused->artifact_lock.reset();
+
+  cv::Mat seam(32, 160, CV_8U, cv::Scalar(255));
+  const fs::path replacement = dir / "replacement_seam.png";
+  if (!cv::imwrite(replacement.string(), seam)) {
+    return false;
+  }
+  fs::rename(replacement, dir / "seam_file.png");
+  auto replaced = hm::stitching::lock_validated_stitching_artifacts(dir.string(), 0, snapshot);
+  if (!same_generation_reused || !replaced.ok() || replaced->artifact_lock) {
+    std::cerr << "validated snapshots must be reused only while the exact artifact generation is unchanged: "
+              << replaced.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_canvas_provenance_invalidates_cap_changes(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "canvas_provenance_cap_changes";
   fs::remove_all(dir);
@@ -798,7 +840,7 @@ bool expect_nonbinding_cap_changes_reuse_artifacts(const fs::path& tmpdir) {
   return true;
 }
 
-bool expect_missing_provenance_requires_migration(const fs::path& tmpdir) {
+bool expect_dimension_compliant_legacy_artifacts_do_not_require_migration(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "missing_canvas_provenance";
   fs::remove_all(dir);
   if (!write_valid_stitching_artifacts(dir)) {
@@ -807,8 +849,12 @@ bool expect_missing_provenance_requires_migration(const fs::path& tmpdir) {
   fs::remove(dir / "stitching_canvas_provenance");
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), 0);
   const auto regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 0);
-  if (!configured.ok() || *configured || !regeneration.ok() || !*regeneration) {
-    std::cerr << "provenance-less artifacts must receive a one-time migration regeneration" << std::endl;
+  const auto capped_configured = hm::stitching::is_stitching_configured(dir.string(), 80);
+  const auto capped_regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 80);
+  if (!configured.ok() || !*configured || !regeneration.ok() || *regeneration || !capped_configured.ok() ||
+      *capped_configured || !capped_regeneration.ok() || !*capped_regeneration) {
+    std::cerr << "dimension-compliant legacy artifacts must be reusable but still obey active canvas limits"
+              << std::endl;
     return false;
   }
   return true;
@@ -1334,6 +1380,10 @@ int main() {
     finish(tmpdir, 25);
   }
 
+  if (!expect_validated_snapshot_is_reused_only_for_same_generation(tmpdir)) {
+    finish(tmpdir, 36);
+  }
+
   if (!expect_canvas_provenance_invalidates_cap_changes(tmpdir)) {
     finish(tmpdir, 26);
   }
@@ -1342,7 +1392,7 @@ int main() {
     finish(tmpdir, 28);
   }
 
-  if (!expect_missing_provenance_requires_migration(tmpdir)) {
+  if (!expect_dimension_compliant_legacy_artifacts_do_not_require_migration(tmpdir)) {
     finish(tmpdir, 29);
   }
 

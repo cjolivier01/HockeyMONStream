@@ -7187,6 +7187,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     finishArchiveJobLog(!retain_archive_log_guard_for_recovery);
   }
   updateRunControls();
+  maybeStartDeferredRestart();
 }
 
 void HStreamWindow::clearPreviewFrames() {
@@ -9536,6 +9537,7 @@ void HStreamWindow::completeArchiveFinalization() {
   finishArchiveJobLog();
   QTimer::singleShot(500, archive_finalize_dialog_, &QDialog::accept);
   updateRunControls();
+  maybeStartDeferredRestart();
 }
 
 void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail) {
@@ -9562,6 +9564,7 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
                 .arg(failure_detail, archive_finalize_source_path_));
   finishArchiveJobLogAfterFinalizationFailure();
   updateRunControls();
+  maybeStartDeferredRestart();
 }
 
 void HStreamWindow::failArchiveFinalization(const QString& message) {
@@ -11206,13 +11209,31 @@ void HStreamWindow::updateRunControls() {
 void HStreamWindow::restartStage() {
   appendLog("stage restart requested");
   calibration_restart_requested_ = isCalibrationRun();
+  deferred_restart_requested_ = true;
+  deferred_restart_pipeline_generation_ = pipeline_run_generation_;
+  deferred_restart_game_id_ = active_run_game_id_.isEmpty() ? game_id_edit_->text() : active_run_game_id_;
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
     stopPipeline();
   }
-  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
-    appendLog("restart skipped because pipeline is still stopping");
+  maybeStartDeferredRestart();
+}
+
+void HStreamWindow::maybeStartDeferredRestart() {
+  if (!deferred_restart_requested_ || live_rotation_authorization_pending_ ||
+      (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) ||
+      (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning)) {
     return;
   }
+  const bool request_is_current = deferred_restart_pipeline_generation_ == pipeline_run_generation_ && game_id_edit_ &&
+      game_id_edit_->text() == deferred_restart_game_id_;
+  deferred_restart_requested_ = false;
+  deferred_restart_game_id_.clear();
+  if (!request_is_current) {
+    calibration_restart_requested_ = false;
+    appendLog("stage restart cancelled because the pipeline generation or game changed");
+    return;
+  }
+  appendLog("stage restart continuing after pipeline cleanup");
   startPipeline();
 }
 
@@ -14163,6 +14184,7 @@ bool HStreamWindow::publishRotationRuntimeControls(
     const std::optional<int>& authorized_stitch_rotation,
     const std::optional<LiveRotationAuthorization>& live_rotation_authorization) {
   std::vector<RuntimePropertyCommand> commands;
+  std::optional<RuntimePropertyCommand> epoch_command;
   if (controls.count("Stitch_Rotate_Degrees")) {
     if (!authorized_stitch_rotation.has_value()) {
       controls.erase("Stitch_Rotate_Degrees");
@@ -14175,11 +14197,10 @@ bool HStreamWindow::publishRotationRuntimeControls(
               ? live_rotation_authorization->scoreboard_property_value.toStdString()
               : std::string(),
       };
-      const RuntimePropertyCommand epoch_command{
+      epoch_command = RuntimePropertyCommand{
           "hmstitcher0",
           "stitched-output-epoch",
           QString::fromStdString(hm::stitching::serialize_live_output_epoch(output_epoch))};
-      commands.push_back(epoch_command);
     }
   }
   const bool has_fixed_edge_change = controls.count("Link_Fixed_Edge_Rotation_Left_Right") ||
@@ -14200,6 +14221,8 @@ bool HStreamWindow::publishRotationRuntimeControls(
       add_both_stages("fixed-edge-rotation-angle-right", right_angle);
     }
   }
+  if (epoch_command.has_value())
+    commands.push_back(std::move(*epoch_command));
   return !controls.empty() && publishRuntimeControlBatch(controls, commands, live_rotation_authorization);
 }
 
@@ -14228,7 +14251,11 @@ void HStreamWindow::startNextLiveRotationConfigTask() {
       flushScheduledRuntimeControls();
       if (close_waiting_for_live_rotation_authorization_) {
         close_waiting_for_live_rotation_authorization_ = false;
+        deferred_restart_requested_ = false;
+        calibration_restart_requested_ = false;
         QTimer::singleShot(0, this, &QWidget::close);
+      } else {
+        maybeStartDeferredRestart();
       }
     }
   });

@@ -15,6 +15,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 struct NvDsConfig;
 struct NvDsPipeline;
@@ -168,6 +169,9 @@ class Configurator {
       const std::filesystem::path& pipeline_config_dir);
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
+  absl::StatusOr<stitching::LockedStitchingArtifacts> lock_current_stitching_artifacts(
+      const std::filesystem::path& game_dir,
+      size_t max_output_width);
   void clear_materialized_scoreboard_perspective();
   absl::Status apply_scoreboard_perspective(YAML::Node& pipeline);
   absl::Status gather_stitching_videos(
@@ -229,6 +233,7 @@ class Configurator {
   std::optional<std::filesystem::path> resolved_game_dir_;
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
+  std::optional<stitching::ValidatedStitchingArtifacts> validated_stitching_artifacts_;
   std::string active_stitching_invalidation_id_;
   std::string stitching_calibration_start_stage_;
   bool stitching_calibration_required_{false};

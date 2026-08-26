@@ -265,6 +265,7 @@ class HStreamWindow : public QMainWindow {
   void togglePreviewFocus(int tab_index);
   void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
+  void maybeStartDeferredRestart();
   void savePreset();
   void resetCameraControls();
   void captureSavedControlState();
@@ -645,6 +646,9 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> scheduled_playcropper_controls_;
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
+  bool deferred_restart_requested_{false};
+  quint64 deferred_restart_pipeline_generation_{0};
+  QString deferred_restart_game_id_;
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
   QThread* live_rotation_authorization_worker_{nullptr};
   std::deque<LiveRotationConfigTask> live_rotation_config_tasks_;

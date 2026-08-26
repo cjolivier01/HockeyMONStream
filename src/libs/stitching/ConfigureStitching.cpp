@@ -539,20 +539,21 @@ CanvasProvenanceCompatibility check_canvas_provenance_compatibility(
     const CanvasSize& published_canvas,
     size_t max_output_width,
     const std::optional<size_t>& max_canvas_dimension) {
-  if (!provenance.has_value()) {
-    return {false, "canvas provenance is missing; legacy capped artifacts cannot be identified safely"};
-  }
-  if (provenance->canvas_width != published_canvas.width || provenance->canvas_height != published_canvas.height) {
-    return {false, "published canvas dimensions do not match canvas provenance"};
-  }
   if (max_output_width > 0 && published_canvas.width > max_output_width) {
     return {false, "the published canvas exceeds the current maximum output width"};
   }
-
   const size_t current_max_canvas_dimension = max_canvas_dimension.value_or(0);
   if (current_max_canvas_dimension > 0 &&
       canvas_exceeds_max_dimension(published_canvas, current_max_canvas_dimension)) {
     return {false, "the published canvas exceeds the current live canvas limit"};
+  }
+  // Artifacts created before canvas provenance existed were necessarily
+  // uncapped. Their decoded dimensions and payloads remain authoritative.
+  if (!provenance.has_value()) {
+    return {true, {}};
+  }
+  if (provenance->canvas_width != published_canvas.width || provenance->canvas_height != published_canvas.height) {
+    return {false, "published canvas dimensions do not match canvas provenance"};
   }
   if (provenance->max_output_width_applied || provenance->max_canvas_dimension_applied) {
     const long double generated_scale =
@@ -1278,13 +1279,28 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
 
 absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
     const std::string& game_dir,
-    size_t max_output_width) {
+    size_t max_output_width,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
   std::error_code directory_error;
   if (!fs::is_directory(game_dir, directory_error) || directory_error)
     return LockedStitchingArtifacts{};
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
+  if (previously_validated.has_value() && !previously_validated->generation_id.empty() &&
+      previously_validated->max_output_width == max_output_width &&
+      previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
+    auto generation_id = HuginProject::GenerationId(game_dir, **artifact_lock);
+    if (generation_id.ok() && *generation_id == previously_validated->generation_id) {
+      return LockedStitchingArtifacts{
+          .artifact_lock = std::move(*artifact_lock),
+          .canvas_size = previously_validated->canvas_size,
+          .generation_id = std::move(*generation_id),
+      };
+    }
+    if (!generation_id.ok() && !absl::IsNotFound(generation_id.status()))
+      return generation_id.status();
+  }
   bool configured = false;
   CanvasSize canvas_size;
   HM_ASSIGN_OR_RETURN(

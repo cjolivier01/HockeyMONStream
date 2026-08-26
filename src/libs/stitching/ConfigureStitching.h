@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include "absl/status/status.h"
@@ -33,6 +34,13 @@ struct Synchronization {
 struct StitchingCanvasSize {
   size_t width{0};
   size_t height{0};
+};
+
+struct ValidatedStitchingArtifacts {
+  StitchingCanvasSize canvas_size;
+  std::string generation_id;
+  size_t max_output_width{0};
+  std::optional<size_t> max_canvas_dimension;
 };
 
 struct LockedStitchingArtifacts {
@@ -60,10 +68,13 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
 
 // Validates one artifact generation, normalizes its seam, and retains the
 // publication lock so the caller can load the same generation atomically.
+// A snapshot from an earlier successful call skips payload validation only
+// when both the locked generation and its validation constraints still match.
 // A null artifact_lock denotes a valid game directory without configured artifacts.
 absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
     const std::string& game_dir,
-    size_t max_output_width = 0);
+    size_t max_output_width = 0,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt);
 
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width = 0);
 

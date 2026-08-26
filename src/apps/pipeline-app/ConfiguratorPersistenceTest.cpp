@@ -1083,8 +1083,10 @@ play-tracker:
           (*layered_config)["pipeline"]["user-only"].as<std::string>() == "yes" &&
           (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes" &&
           (*layered_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
-          !hm::get_node(layered.game_private_config(), "stitching.stitch_frame_time").has_value(),
-      "Config precedence must be baseline, then user overlay, then game-private YAML");
+          !hm::get_node(layered.game_private_config(), "stitching.stitch_frame_time").has_value() &&
+          !fs::exists(layered_game / ".hstream-stitch.lock"),
+      "Config precedence must be baseline, then user overlay, then game-private YAML without artifact recovery for "
+      "an ordinary config");
   ::unsetenv("HM_GAME_DIR");
   ok &= expect(
       hm::Configurator::get_game_dir("layered") == games / "layered",

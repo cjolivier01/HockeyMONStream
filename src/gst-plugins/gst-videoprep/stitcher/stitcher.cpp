@@ -2140,14 +2140,14 @@ absl::Status StitcherPriv::GenerateOutput(
               std::cout << "Field-mask publication superseded: " << mask_status << "\n" << std::flush;
               field_mask_publication_superseded_ = true;
               field_mask_superseded_retry_frames_remaining_ = kSupersededFieldMaskRetryFrames;
-              return absl::OkStatus();
+            } else {
+              std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
+              if (absl::IsCancelled(mask_status)) {
+                return mask_status;
+              }
+              calibration_completion_reported_ = true;
+              return report_calibration_failure(mask_status);
             }
-            std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
-            if (absl::IsCancelled(mask_status)) {
-              return mask_status;
-            }
-            calibration_completion_reported_ = true;
-            return report_calibration_failure(mask_status);
           } else {
             field_mask_publication_superseded_ = false;
             mask_configured = true;

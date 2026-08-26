@@ -895,15 +895,21 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
     return canvas.status();
   }
   auto provenance = read_canvas_provenance(game_dir);
-  if (!provenance.ok()) {
-    if (absl::IsNotFound(provenance.status()) || absl::IsFailedPrecondition(provenance.status()) ||
-        absl::IsInvalidArgument(provenance.status())) {
+  bool compatible = false;
+  if (provenance.ok()) {
+    compatible = artifacts_are_compatible(
+        *provenance, *canvas, max_output_width, live_stitch_max_canvas_dimension().value_or(0));
+  } else if (absl::IsNotFound(provenance.status())) {
+    const size_t max_canvas_dimension = live_stitch_max_canvas_dimension().value_or(0);
+    compatible = (max_output_width == 0 || canvas->width <= max_output_width) &&
+        (max_canvas_dimension == 0 ||
+         (canvas->width <= max_canvas_dimension && canvas->height <= max_canvas_dimension));
+  } else {
+    if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status())) {
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     }
     return provenance.status();
   }
-  const bool compatible =
-      artifacts_are_compatible(*provenance, *canvas, max_output_width, live_stitch_max_canvas_dimension().value_or(0));
   if (!compatible) {
     return CanvasConstraintCompatibility{
         .artifacts_compatible = false,

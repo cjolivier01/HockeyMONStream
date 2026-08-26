@@ -58,6 +58,7 @@
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -5009,8 +5010,10 @@ absl::Status Configurator::setup_stitcher_and_masks(
     if (enabled && (configure_only || one_pass_mode)) {
       int max_output_width = 0;
       HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
-      bool is_configured;
-      HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(game_dir, max_output_width));
+      stitching::LockedStitchingArtifacts artifacts;
+      HM_ASSIGN_OR_RETURN(artifacts, lock_current_stitching_artifacts(game_dir, static_cast<size_t>(max_output_width)));
+      const bool is_configured = artifacts.artifact_lock != nullptr;
+      artifacts.artifact_lock.reset();
       const bool calibrate_field_mask = StitcherCalibratesFieldMask(pipeline);
       double post_stitch_rotate_degrees = 0.0;
       HM_ASSIGN_OR_RETURN(post_stitch_rotate_degrees, configurator_internal::effective_stitch_output_rotation(config_));
@@ -5871,6 +5874,12 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
 absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs::path& game_dir) {
   int max_output_width = 0;
   HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(config_["pipeline"]));
+  stitching::LockedStitchingArtifacts artifacts;
+  HM_ASSIGN_OR_RETURN(artifacts, lock_current_stitching_artifacts(game_dir, static_cast<size_t>(max_output_width)));
+  if (artifacts.artifact_lock) {
+    return absl::OkStatus();
+  }
+
   stitching::LockedCanvasRegenerationCheck regeneration_check;
   HM_ASSIGN_OR_RETURN(
       regeneration_check, stitching::lock_canvas_regeneration_check(game_dir.string(), max_output_width));
@@ -5892,6 +5901,32 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
         save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_canvas_artifacts=*/true));
   }
   return absl::OkStatus();
+}
+
+absl::StatusOr<stitching::LockedStitchingArtifacts> Configurator::lock_current_stitching_artifacts(
+    const fs::path& game_dir,
+    size_t max_output_width) {
+  std::optional<stitching::ValidatedStitchingArtifacts> previously_validated;
+  if (validated_stitching_artifacts_.has_value()) {
+    previously_validated = validated_stitching_artifacts_;
+  }
+  auto artifacts =
+      stitching::lock_validated_stitching_artifacts(game_dir.string(), max_output_width, previously_validated);
+  if (!artifacts.ok()) {
+    validated_stitching_artifacts_.reset();
+    return artifacts.status();
+  }
+  if (artifacts->artifact_lock) {
+    validated_stitching_artifacts_ = stitching::ValidatedStitchingArtifacts{
+        .canvas_size = artifacts->canvas_size,
+        .generation_id = artifacts->generation_id,
+        .max_output_width = max_output_width,
+        .max_canvas_dimension = stitching::live_stitch_max_canvas_dimension(),
+    };
+  } else {
+    validated_stitching_artifacts_.reset();
+  }
+  return artifacts;
 }
 
 void Configurator::clear_materialized_scoreboard_perspective() {
@@ -6195,7 +6230,7 @@ absl::Status Configurator::set_output_dimensions(
     int max_output_width = 0;
     HM_ASSIGN_OR_RETURN(max_output_width, effective_hmstitcher_max_output_width(pipeline));
     std::optional<std::tuple<int, int>> canvas_size_result;
-    auto artifacts = stitching::lock_validated_stitching_artifacts(game_dir.string(), max_output_width);
+    auto artifacts = lock_current_stitching_artifacts(game_dir, static_cast<size_t>(max_output_width));
     if (!artifacts.ok()) {
       return artifacts.status();
     }
@@ -6749,6 +6784,28 @@ absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
   if (private_config_file.parent_path().empty() || !fs::is_directory(private_config_file.parent_path())) {
     return std::nullopt;
   }
+  auto private_config = stitching::load_game_config_file(private_config_file);
+  if (!private_config.ok())
+    return private_config.status();
+  if (!private_config->has_value())
+    return *private_config;
+
+  bool requires_live_output_reconciliation = true;
+  const YAML::Node& loaded = **private_config;
+  if (loaded && loaded.IsMap()) {
+    const YAML::Node rink = loaded["rink"];
+    if (!rink || !rink.IsDefined()) {
+      requires_live_output_reconciliation = false;
+    } else if (rink.IsMap()) {
+      const YAML::Node pending_generation = rink["stitched_output_pending_generation"];
+      const YAML::Node pending_authorization = rink["stitched_output_pending_authorization_id"];
+      requires_live_output_reconciliation = (pending_generation && pending_generation.IsDefined()) ||
+          (pending_authorization && pending_authorization.IsDefined());
+    }
+  }
+  if (!requires_live_output_reconciliation)
+    return *private_config;
+
   auto live_output_reconciliation = stitching::reconcile_inactive_live_stitched_output_authorization(game_dir.string());
   if (!live_output_reconciliation.ok()) {
     std::cerr << live_output_reconciliation.status() << '\n';
@@ -7239,6 +7296,7 @@ absl::Status Configurator::complete_configuration(
     const fs::path& pipeline_config_dir) {
   active_stitching_invalidation_id_.clear();
   stitching_calibration_start_stage_.clear();
+  validated_stitching_artifacts_.reset();
   stitching_calibration_required_ = false;
   scoreboard_perspective_materialized_from_rink_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
