@@ -121,9 +121,14 @@ int main(int argc, char** argv) {
           contains(windows_nsis, "RequestExecutionLevel user") &&
           !contains(windows_nsis, "RequestExecutionLevel admin") &&
           contains(windows_nsis, "Select NVIDIA DeepStream") && contains(windows_nsis, "MB_DEFBUTTON2") &&
-          contains(windows_nsis, "permanently deletes") && contains(windows_nsis, "NSD_CreatePassword") &&
-          contains(windows_nsis, "SetEnvironmentVariableW") && !contains(windows_nsis, "-GitHubToken") &&
-          contains(windows_nsis, "ExecShellWait \"runas\"") && contains(windows_nsis, "POWERSHELL_SHA256") &&
+          contains(windows_nsis, "permanently deletes") && !contains(windows_nsis, "NSD_CreatePassword") &&
+          !contains(windows_nsis, "GitHubTokenPage") && !contains(windows_nsis, "HSTREAM_GITHUB_TOKEN") &&
+          !contains(windows_nsis, "-GitHubToken") && !contains(windows_nsis, "9.1.0-1+resolute2") &&
+          contains(windows_nsis, "ExecShellWait \"runas\" \"$ElevatedPowerShellExe\"") &&
+          contains(windows_nsis, "DisableX64FSRedirection") && contains(windows_nsis, "EnableX64FSRedirection") &&
+          contains(windows_nsis, "START_MENU_FOLDER \"HStream Tools\"") &&
+          contains(windows_nsis, "$SMPROGRAMS\\${START_MENU_FOLDER}\\HStream UI.lnk") &&
+          contains(windows_nsis, "elevation-launch-failed") && contains(windows_nsis, "POWERSHELL_SHA256") &&
           contains(windows_nsis, "ReadAllBytes") && contains(windows_nsis, "SHA256") &&
           contains(windows_nsis, "ScriptBlock]::Create") && contains(windows_nsis, "EnsureWslMachine") &&
           contains(windows_nsis, "HStream was not removed") && contains(windows_nsis, "Abort"),
@@ -134,10 +139,22 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "UbuntuRootfsSha256") &&
           contains(windows_powershell, "releases/download/$VersionTag") &&
           contains(windows_powershell, "api.github.com/repos/$RepositoryName/releases/assets") &&
-          contains(windows_powershell, "HSTREAM_GITHUB_TOKEN") &&
+          contains(windows_powershell, "auth\", \"login") && contains(windows_powershell, "--web") &&
+          contains(windows_powershell, "https://github.com/login/device") &&
+          contains(windows_powershell, "Start-Process $GitHubDeviceLoginUri") &&
+          contains(windows_powershell, "--clipboard") &&
+          contains(windows_powershell, "--insecure-storage") && contains(windows_powershell, "GH_CONFIG_DIR") &&
+          contains(windows_powershell, "GH_PROMPT_DISABLED") &&
+          contains(windows_powershell, "$ErrorActionPreference = \"Continue\"") &&
+          contains(windows_powershell, "$ErrorActionPreference = \"SilentlyContinue\"") &&
+          contains(windows_powershell, "Remove-GitHubCliStaging") &&
+          contains(windows_powershell, "gh_2.98.0_windows_amd64.zip") &&
+          contains(windows_powershell, "\"bin\\gh.exe\"") &&
+          contains(windows_powershell, "C28C7B3B584967A05B74D9EAF7481BFF24DDC34930BF2D6E442C148236561EB1") &&
           contains(windows_powershell, "wsl.2.7.11.0.x64.msi") &&
           contains(windows_powershell, "A611DDACEE689D2FB1FB5319E58AF7F3998864D86CDCE632EADD8E61614A0F9D") &&
-          contains(windows_powershell, "MinimumWslVersion") && contains(windows_powershell, "Get-WslRuntimeVersion") &&
+          contains(windows_powershell, "$MinimumWslVersion = [Version]\"2.0.0.0\"") &&
+          contains(windows_powershell, "Get-WslRuntimeVersion") &&
           contains(windows_powershell, "WslPrerequisiteExitCode") && contains(windows_powershell, "EnsureWslMachine") &&
           !contains(windows_powershell, "-EncodedCommand") && !contains(windows_powershell, "-Verb RunAs") &&
           contains(windows_powershell, "[Environment]::SystemDirectory") &&
@@ -152,6 +169,18 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "\"/qn\"") && !contains(windows_powershell, "wsl.exe --install") &&
           contains(windows_powershell, "^ID=ubuntu$") && contains(windows_powershell, "^VERSION_ID=.*24[.]04.*$") &&
           contains(windows_powershell, "/lib64/ld-linux-x86-64.so.2") &&
+          contains(windows_powershell, "function Invoke-WslBashScript") &&
+          contains(windows_powershell, "# hstream-wsl-stdin-terminator") &&
+          contains(windows_powershell, "$scriptWithTerminator |") &&
+          contains(windows_powershell, "-- bash -s") &&
+          contains(windows_powershell, "function Get-WslPackageState") &&
+          contains(windows_powershell, "dpkg-query --status $Package") &&
+          contains(windows_powershell, "$WindowsPath.Replace([char]92, [char]47)") &&
+          contains(windows_powershell, "function Sync-WindowsRootCertificates") &&
+          contains(windows_powershell, "Cert:\\CurrentUser\\Root") &&
+          contains(windows_powershell, "Cert:\\LocalMachine\\Root") &&
+          contains(windows_powershell, "/usr/local/share/ca-certificates/hstream-windows") &&
+          contains(windows_powershell, "update-ca-certificates") &&
           contains(windows_powershell, "PROCESSOR_ARCHITEW6432") &&
           contains(windows_powershell, "Test-HStreamDistroOwnership") &&
           contains(windows_powershell, "hstream-wsl-bootstrapper-schema-1") &&
@@ -168,8 +197,10 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "^WSL-[0-9a-f]{32}$") &&
           contains(windows_powershell, "Removing the incomplete HStream WSL import") &&
           contains(windows_powershell, "--import\", $DistroName") &&
-          contains(windows_powershell, "install ok installed $expectedHStreamVersion") &&
-          contains(windows_powershell, "install ok installed 9.1.0-1+resolute2") &&
+          contains(windows_powershell, "$hstreamState.Version -ne $expectedHStreamVersion") &&
+          contains(windows_powershell, "$hstreamState.Status -ne \"install ok installed\"") &&
+          contains(windows_powershell, "install ok installed") &&
+          !contains(windows_powershell, "9.1.0-1+resolute2") &&
           contains(windows_powershell, "/usr/lib/wsl/lib/libcuda.so.1") &&
           contains(windows_powershell, "Package: hstream-wsl-libcuda") &&
           !contains(windows_powershell, "nvidia-driver") && !contains(windows_powershell, "cuda-drivers"),
