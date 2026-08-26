@@ -275,15 +275,7 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
 }
 
 absl::Status mark_rink_transaction_rolled_back(const fs::path& transaction) {
-  const fs::path temporary = transaction / "state.rolled_back";
-  auto status = write_transaction_file(temporary, "ROLLED_BACK\n");
-  if (!status.ok())
-    return status;
-  std::error_code error;
-  fs::rename(temporary, transaction / "state", error);
-  if (error)
-    return absl::InternalError("Unable to commit rink rollback state: " + error.message());
-  return fsync_path(transaction, true);
+  return publish_transaction_state(transaction, "ROLLED_BACK\n");
 }
 
 bool is_rink_artifact_name(const std::string& name) {
@@ -296,14 +288,17 @@ bool is_rink_mask_name(const std::string& name) {
   return std::regex_match(name, mask_pattern);
 }
 
-absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root) {
+absl::StatusOr<std::unique_ptr<ScopedRinkLock>> lock_rink_transactions(const fs::path& root, bool wait) {
   const fs::path path = root / ".hstream-rink.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open rink transaction lock: " + std::string(std::strerror(errno)));
-  if (::flock(descriptor, LOCK_EX) != 0) {
-    const std::string message = std::strerror(errno);
+  if (::flock(descriptor, LOCK_EX | (wait ? 0 : LOCK_NB)) != 0) {
+    const int lock_errno = errno;
+    const std::string message = std::strerror(lock_errno);
     ::close(descriptor);
+    if (!wait && (lock_errno == EWOULDBLOCK || lock_errno == EAGAIN))
+      return absl::UnavailableError("Rink transaction is being updated");
     return absl::InternalError("Unable to lock rink transaction: " + message);
   }
   auto lock = std::make_unique<ScopedRinkLock>();
@@ -489,7 +484,24 @@ absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransaction
   auto config = GameConfigLock::Acquire(game_dir);
   if (!config.ok())
     return config.status();
-  auto rink = lock_rink_transactions(game_dir);
+  auto rink = lock_rink_transactions(game_dir, /*wait=*/true);
+  if (!rink.ok())
+    return rink.status();
+  auto recovery = recover_rink_transactions_locked(game_dir);
+  if (!recovery.ok())
+    return recovery;
+  auto state = std::make_unique<State>();
+  state->config = std::move(*config);
+  state->rink = std::move(*rink);
+  return std::unique_ptr<GameConfigTransactionLock>(new GameConfigTransactionLock(std::move(state)));
+}
+
+absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransactionLock::TryAcquire(
+    const fs::path& game_dir) {
+  auto config = GameConfigLock::TryAcquire(game_dir);
+  if (!config.ok())
+    return config.status();
+  auto rink = lock_rink_transactions(game_dir, /*wait=*/false);
   if (!rink.ok())
     return rink.status();
   auto recovery = recover_rink_transactions_locked(game_dir);

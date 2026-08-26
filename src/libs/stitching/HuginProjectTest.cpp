@@ -1018,9 +1018,17 @@ int main() {
       !rollback_transaction.empty() &&
           fs::last_write_time(rollback_transaction / "journal_version") == journal_version_time,
       "rollback recovery must not rewrite an already-durable journal version");
+  const fs::path rollback_state_target = root / "hugin-rollback-state-target";
+  std::ofstream(rollback_state_target) << "preserved\n";
+  if (!rollback_transaction.empty())
+    fs::create_symlink(rollback_state_target, rollback_transaction / "state.rolled_back");
   ok &= expect(
       hm::stitching::HuginProject::Recover(root / "game").ok(),
       "durably backed-up Hugin publication must recover after interrupted restore and cleanup");
+  ok &= expect(
+      read_text_file(rollback_state_target) == "preserved\n",
+      "Hugin rollback state publication must replace a journal symlink without following it");
+  fs::remove(rollback_state_target);
   ::unsetenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
@@ -1036,6 +1044,12 @@ int main() {
       write_remap_pair(fixtures, "mapping_0000", 40, 32, true) &&
           write_remap_pair(fixtures, "mapping_0001", 40, 32, true),
       "degenerate remap fixtures must exist");
+  const fs::path symlinked_game = root / "symlinked-game";
+  fs::create_directory_symlink(root / "game", symlinked_game);
+  ok &= expect(
+      hm::stitching::HuginProject::Recover(symlinked_game).ok(),
+      "Hugin recovery must follow and pin a caller-selected symlinked game directory");
+  fs::remove(symlinked_game);
   const auto degenerate = hm::stitching::HuginProject::Configure(root / "game", matches, options);
   ok &= expect(!degenerate.ok(), "constant Hugin remaps must be rejected before publication");
   ok &= expect(

@@ -45,6 +45,10 @@ int main() {
 
   auto first_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(first_lock.ok(), "first game-config transaction must lock");
+  const auto unavailable_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(root);
+  ok &= expect(
+      first_lock.ok() && absl::IsUnavailable(unavailable_lock.status()),
+      "nonblocking config transactions must report an active publisher");
   std::atomic<bool> reader_finished{false};
   std::atomic<bool> reader_succeeded{false};
   std::thread waiter([&]() {
@@ -58,6 +62,17 @@ int main() {
     first_lock->reset();
   waiter.join();
   ok &= expect(reader_succeeded.load(), "a waiting runtime config read must resume with a complete generation");
+  auto available_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(root);
+  ok &= expect(available_lock.ok(), "nonblocking config transactions must recover and lock when idle");
+  if (available_lock.ok())
+    available_lock->reset();
+  const fs::path symlinked_game_root = root.parent_path() / (root.filename().string() + "-symlink");
+  fs::create_directory_symlink(root, symlinked_game_root);
+  const auto symlinked_game_read = hm::stitching::load_game_config_file(symlinked_game_root / "config.yaml");
+  ok &= expect(
+      symlinked_game_read.ok() && symlinked_game_read->has_value(),
+      "config recovery must follow and pin a caller-selected symlinked game directory");
+  fs::remove(symlinked_game_root);
 
   const pid_t first = ::fork();
   if (first == 0)
@@ -151,6 +166,9 @@ int main() {
   std::ofstream(interrupted / "state") << "PREPARED\n";
   std::ofstream(root / "config.yaml") << "interrupted: true\n";
   std::ofstream(root / "rink_mask_0.png") << "new-mask";
+  const fs::path rollback_state_target = root / "rink-rollback-state-target";
+  std::ofstream(rollback_state_target) << "preserved\n";
+  fs::create_symlink(rollback_state_target, interrupted / "state.rolled_back");
   ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
   auto recovered_read = hm::stitching::load_game_config_file(root / "config.yaml");
   ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
@@ -172,7 +190,14 @@ int main() {
   ok &= expect(
       recovered["recovered"]["old"].as<bool>() && recovered["after_recovery"].as<bool>() && !recovered["interrupted"],
       "rink recovery must precede and preserve the subsequent config mutation");
+  ok &= expect(
+      [&]() {
+        std::ifstream input(rollback_state_target, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) == "preserved\n";
+      }(),
+      "rink rollback state publication must replace a journal symlink without following it");
   ok &= expect(!fs::exists(interrupted), "recovered rink journal must be removed");
+  fs::remove(rollback_state_target);
 
   const fs::path symlinked_transaction = root / ".hstream-rink-symlinked-transaction";
   const fs::path transaction_target = root / "rink-transaction-symlink-target";

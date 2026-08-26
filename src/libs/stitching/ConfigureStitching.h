@@ -39,6 +39,7 @@ struct StitchingCanvasSize {
 struct ValidatedStitchingArtifacts {
   StitchingCanvasSize canvas_size;
   std::string generation_id;
+  std::string artifact_revision;
   size_t max_output_width{0};
   std::optional<size_t> max_canvas_dimension;
 };
@@ -47,6 +48,7 @@ struct LockedStitchingArtifacts {
   std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
   StitchingCanvasSize canvas_size;
   std::string generation_id;
+  std::string artifact_revision;
 };
 
 struct LockedCanvasRegenerationCheck {
@@ -142,7 +144,8 @@ bool is_field_mask_configured_for_stitching_config(
     const std::string& game_dir,
     size_t max_output_width,
     double post_stitch_rotate_degrees,
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt);
 
 // Nonblocking publication preflight used before retrying expensive field-mask
 // inference. A pending live rotation fences every producer except its exact

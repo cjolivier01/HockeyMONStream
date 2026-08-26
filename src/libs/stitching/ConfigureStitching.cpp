@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -1341,19 +1342,20 @@ absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
   if (!artifact_lock.ok())
     return artifact_lock.status();
   if (previously_validated.has_value() && !previously_validated->generation_id.empty() &&
-      previously_validated->max_output_width == max_output_width &&
+      !previously_validated->artifact_revision.empty() && previously_validated->max_output_width == max_output_width &&
       previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
-    auto generation_id = HuginProject::GenerationId(game_dir, **artifact_lock);
-    if (generation_id.ok() && *generation_id == previously_validated->generation_id &&
+    auto artifact_revision = stitch_artifact_revision_locked(game_dir);
+    if (artifact_revision.ok() && *artifact_revision == previously_validated->artifact_revision &&
         test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
       return LockedStitchingArtifacts{
           .artifact_lock = std::move(*artifact_lock),
           .canvas_size = previously_validated->canvas_size,
-          .generation_id = std::move(*generation_id),
+          .generation_id = previously_validated->generation_id,
+          .artifact_revision = std::move(*artifact_revision),
       };
     }
-    if (!generation_id.ok() && !absl::IsNotFound(generation_id.status()))
-      return generation_id.status();
+    if (!artifact_revision.ok() && !absl::IsNotFound(artifact_revision.status()))
+      return artifact_revision.status();
   }
   bool configured = false;
   CanvasSize canvas_size;
@@ -1365,10 +1367,13 @@ absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
     return LockedStitchingArtifacts{};
   std::string generation_id;
   HM_ASSIGN_OR_RETURN(generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
+  std::string artifact_revision;
+  HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
   return LockedStitchingArtifacts{
       .artifact_lock = std::move(*artifact_lock),
       .canvas_size = {.width = canvas_size.width, .height = canvas_size.height},
       .generation_id = std::move(generation_id),
+      .artifact_revision = std::move(artifact_revision),
   };
 }
 
@@ -1818,13 +1823,7 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
 }
 
 absl::Status mark_rink_transaction_rolled_back(const fs::path& transaction) {
-  const fs::path temporary = transaction / "state.rolled_back";
-  HM_RETURN_IF_ERROR(write_transaction_file(temporary, "ROLLED_BACK\n"));
-  std::error_code error;
-  fs::rename(temporary, transaction / "state", error);
-  if (error)
-    return absl::InternalError("Unable to commit rink rollback state: " + error.message());
-  return fsync_path(transaction, true);
+  return publish_transaction_state(transaction, "ROLLED_BACK\n");
 }
 
 bool is_rink_artifact_name(const std::string& name) {
@@ -2346,6 +2345,7 @@ absl::Status visit_current_field_mask_impl(
     const std::string& expected_invalidation_id,
     const std::optional<size_t>& max_output_width,
     const std::optional<double>& post_stitch_rotate_degrees,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated,
     const FieldMaskConsumer& consumer) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
@@ -2360,9 +2360,23 @@ absl::Status visit_current_field_mask_impl(
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
-  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
-  if (!hugin_generation.ok())
-    return hugin_generation.status();
+  std::string hugin_generation;
+  bool reused_generation = false;
+  if (max_output_width.has_value() && previously_validated.has_value() &&
+      !previously_validated->generation_id.empty() && !previously_validated->artifact_revision.empty() &&
+      previously_validated->max_output_width == *max_output_width &&
+      previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
+    auto artifact_revision = stitch_artifact_revision_locked(root);
+    if (!artifact_revision.ok())
+      return artifact_revision.status();
+    if (*artifact_revision == previously_validated->artifact_revision &&
+        test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
+      hugin_generation = previously_validated->generation_id;
+      reused_generation = true;
+    }
+  }
+  if (!reused_generation)
+    HM_ASSIGN_OR_RETURN(hugin_generation, HuginProject::GenerationId(root, **hugin_lock));
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();
@@ -2371,7 +2385,7 @@ absl::Status visit_current_field_mask_impl(
   std::optional<std::string> compatible_legacy_generation;
   std::optional<CanvasSize> expected_canvas_size;
   if (!expected_output_generation.empty()) {
-    HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
+    HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
     current_output_generation = expected_output_generation;
     HM_ASSIGN_OR_RETURN(expected_canvas_size, stitched_output_size_from_generation(expected_output_generation));
     CanvasSize native_size;
@@ -2393,21 +2407,20 @@ absl::Status visit_current_field_mask_impl(
     HM_ASSIGN_OR_RETURN(
         current_output_generation,
         stitched_output_generation_id(
-            *hugin_generation, *post_stitch_rotate_degrees, effective_size.width, effective_size.height));
+            hugin_generation, *post_stitch_rotate_degrees, effective_size.width, effective_size.height));
     expected_canvas_size = effective_size;
     if (effective_size.width == native_size.width && effective_size.height == native_size.height) {
       HM_ASSIGN_OR_RETURN(
-          compatible_legacy_generation, stitched_output_generation_id(*hugin_generation, *post_stitch_rotate_degrees));
+          compatible_legacy_generation, stitched_output_generation_id(hugin_generation, *post_stitch_rotate_degrees));
     }
   } else {
     std::optional<double> persisted_rotation_marker;
     HM_ASSIGN_OR_RETURN(persisted_rotation_marker, stitched_output_persisted_rotation_marker(*config));
     if (persisted_rotation_marker.has_value()) {
       HM_ASSIGN_OR_RETURN(
-          current_output_generation,
-          current_stitched_output_generation_id_locked(game_dir, *config, *hugin_generation));
+          current_output_generation, current_stitched_output_generation_id_locked(game_dir, *config, hugin_generation));
     } else {
-      HM_ASSIGN_OR_RETURN(current_output_generation, configured_output_generation(*config, *hugin_generation));
+      HM_ASSIGN_OR_RETURN(current_output_generation, configured_output_generation(*config, hugin_generation));
     }
     CanvasSize native_size;
     HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
@@ -2452,7 +2465,8 @@ absl::StatusOr<cv::Mat> load_field_mask_impl(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id,
     const std::optional<size_t>& max_output_width,
-    const std::optional<double>& post_stitch_rotate_degrees = std::nullopt) {
+    const std::optional<double>& post_stitch_rotate_degrees = std::nullopt,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt) {
   cv::Mat mask;
   const absl::Status visit_status = visit_current_field_mask_impl(
       game_dir,
@@ -2460,6 +2474,7 @@ absl::StatusOr<cv::Mat> load_field_mask_impl(
       expected_invalidation_id,
       max_output_width,
       post_stitch_rotate_degrees,
+      previously_validated,
       [&](const std::string& mask_path, const std::optional<CanvasSize>& expected_canvas_size) {
         if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
           const long delay_ms = std::strtol(delay, nullptr, 10);
@@ -2511,6 +2526,7 @@ absl::Status visit_current_field_mask(
       expected_invalidation_id,
       std::nullopt,
       std::nullopt,
+      std::nullopt,
       [&](const std::string& mask_path, const std::optional<CanvasSize>&) { return consumer(mask_path); });
 }
 
@@ -2518,7 +2534,8 @@ absl::StatusOr<cv::Mat> load_field_mask(
     const std::string& game_dir,
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id) {
-  return load_field_mask_impl(game_dir, expected_output_generation, expected_invalidation_id, std::nullopt);
+  return load_field_mask_impl(
+      game_dir, expected_output_generation, expected_invalidation_id, std::nullopt, std::nullopt);
 }
 
 bool is_field_mask_configured(
@@ -2532,8 +2549,10 @@ bool is_field_mask_configured_for_stitching_config(
     const std::string& game_dir,
     size_t max_output_width,
     double post_stitch_rotate_degrees,
-    const std::string& expected_invalidation_id) {
-  return load_field_mask_impl(game_dir, {}, expected_invalidation_id, max_output_width, post_stitch_rotate_degrees)
+    const std::string& expected_invalidation_id,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
+  return load_field_mask_impl(
+             game_dir, {}, expected_invalidation_id, max_output_width, post_stitch_rotate_degrees, previously_validated)
       .ok();
 }
 
@@ -2602,12 +2621,16 @@ absl::Status validate_field_mask_publication_authority(
   if (game_dir.empty() || expected_output_generation.empty())
     return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
   const fs::path root(game_dir);
-  auto config_lock = GameConfigLock::TryAcquire(root);
+  auto config_lock = GameConfigTransactionLock::TryAcquire(root);
   if (!config_lock.ok())
     return config_lock.status();
   try {
-    if (!fs::is_regular_file(root / "config.yaml"))
+    std::error_code error;
+    if (!fs::is_regular_file(root / "config.yaml", error)) {
+      if (error)
+        return absl::InternalError("Unable to inspect game config: " + error.message());
       return absl::NotFoundError("Game config is missing");
+    }
     const YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
     return validate_live_output_publication_authority(
         config, expected_output_generation, expected_output_authorization_id);
@@ -2645,21 +2668,31 @@ absl::Status FieldMaskPublicationAuthorityMonitor::Watch(
   }
   try {
     impl_->worker = std::thread([this, game_dir, expected_output_generation, expected_output_authorization_id]() {
-      while (true) {
-        {
-          std::unique_lock<std::mutex> lock(impl_->mutex);
-          if (impl_->wake.wait_for(lock, std::chrono::seconds(1), [this] { return impl_->stop; }))
+      try {
+        while (true) {
+          {
+            std::unique_lock<std::mutex> lock(impl_->mutex);
+            if (impl_->wake.wait_for(lock, std::chrono::seconds(1), [this] { return impl_->stop; }))
+              return;
+          }
+          const absl::Status authority = validate_field_mask_publication_authority(
+              game_dir, expected_output_generation, expected_output_authorization_id);
+          std::lock_guard<std::mutex> lock(impl_->mutex);
+          if (impl_->stop)
             return;
+          if (authority.ok() || (!absl::IsAborted(authority) && !absl::IsUnavailable(authority))) {
+            impl_->status = authority;
+            return;
+          }
         }
-        const absl::Status authority = validate_field_mask_publication_authority(
-            game_dir, expected_output_generation, expected_output_authorization_id);
+      } catch (const std::exception& exception) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (impl_->stop)
-          return;
-        if (authority.ok() || (!absl::IsAborted(authority) && !absl::IsUnavailable(authority))) {
-          impl_->status = authority;
-          return;
-        }
+        if (!impl_->stop)
+          impl_->status = absl::InternalError("Publication authority monitor failed: " + std::string(exception.what()));
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->stop)
+          impl_->status = absl::InternalError("Publication authority monitor failed with an unknown exception");
       }
     });
   } catch (const std::system_error& exception) {

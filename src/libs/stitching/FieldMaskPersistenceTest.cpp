@@ -794,6 +794,9 @@ int main() {
       cv::imwrite((root / "rink_mask_0.png").string(), cv::Mat(2, 2, CV_8U, cv::Scalar(255)));
     }
     ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
+    const fs::path rollback_state_target = root / "field-mask-rollback-state-target";
+    std::ofstream(rollback_state_target) << "preserved\n";
+    fs::create_symlink(rollback_state_target, interrupted / "state.rolled_back");
     ::setenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER", "1", 1);
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()),
@@ -811,8 +814,15 @@ int main() {
     ok &= expect(
         cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(32, 24),
         "rink recovery must restore the prior mask generation");
+    ok &= expect(
+        [&]() {
+          std::ifstream input(rollback_state_target, std::ios::binary);
+          return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) == "preserved\n";
+        }(),
+        "field-mask rollback state publication must replace a journal symlink without following it");
     ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
     ok &= expect(!fs::exists(interrupted), "recovered rink transaction must be cleaned");
+    fs::remove(rollback_state_target);
 
     const fs::path symlinked_transaction = root / ".hstream-rink-symlinked-transaction";
     const fs::path transaction_target = root / "rink-transaction-symlink-target";
@@ -1135,6 +1145,48 @@ int main() {
   ok &= expect(
       monitor_recovered,
       "superseded publication authority must resume through the control-plane monitor after predecessor rollback");
+
+  const absl::Status recovery_epoch_published = monitor_owner.ok()
+      ? publish_monitor_epoch("monitor-generation-a", "monitor-authorization-a")
+      : monitor_owner.status();
+  const fs::path monitor_transaction = root / ".hstream-rink-monitor-recovery";
+  std::error_code monitor_fixture_error;
+  if (recovery_epoch_published.ok()) {
+    fs::create_directories(monitor_transaction / "previous", monitor_fixture_error);
+    if (!monitor_fixture_error)
+      fs::copy_file(root / "config.yaml", monitor_transaction / "previous" / "config.yaml", monitor_fixture_error);
+    if (!monitor_fixture_error) {
+      fs::copy_file(
+          root / "rink_mask_0.png", monitor_transaction / "previous" / "rink_mask_0.png", monitor_fixture_error);
+    }
+    if (!monitor_fixture_error) {
+      std::ofstream(monitor_transaction / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+      std::ofstream(monitor_transaction / "state") << "PREPARED\n";
+      fs::remove(root / "config.yaml", monitor_fixture_error);
+    }
+    if (!monitor_fixture_error)
+      fs::remove(root / "rink_mask_0.png", monitor_fixture_error);
+  }
+  const bool monitor_fixture_ready = recovery_epoch_published.ok() && !monitor_fixture_error;
+  const absl::Status recovery_monitor_started = monitor_fixture_ready
+      ? authority_monitor.Watch(root.string(), "monitor-generation-a", "monitor-authorization-a")
+      : absl::FailedPreconditionError("Unable to prepare authority-monitor recovery fixture");
+  const auto recovery_monitor_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!authority_monitor.status().ok() && std::chrono::steady_clock::now() < recovery_monitor_deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  const absl::Status recovery_monitor_status = authority_monitor.status();
+  const bool monitor_transaction_recovered = recovery_monitor_started.ok() && recovery_monitor_status.ok() &&
+      !fs::exists(monitor_transaction) && fs::is_regular_file(root / "config.yaml") &&
+      fs::is_regular_file(root / "rink_mask_0.png");
+  ok &= expect(
+      monitor_fixture_ready && monitor_transaction_recovered,
+      "authority monitoring must recover a prepared rink transaction before validating config");
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    ok &= expect(
+        lock.ok() && hm::stitching::publish_game_config(root, YAML::Dump(monitor_baseline) + "\n").ok(),
+        "authority-monitor recovery fixture must restore its baseline config");
+  }
 
   hm::stitching::RinkProfile one_mask = profile;
   one_mask.masks.resize(1);

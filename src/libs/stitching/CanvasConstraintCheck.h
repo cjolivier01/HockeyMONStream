@@ -59,8 +59,33 @@ absl::Status clone_or_copy_stitch_rollback_file(
     const std::filesystem::path& destination);
 absl::Status write_stitch_transaction_file(const std::filesystem::path& path, const std::string& contents);
 absl::Status publish_stitch_file_atomically(const std::filesystem::path& path, const std::string& contents);
-absl::Status prepare_stitch_generation_publication(
+
+class PreparedStitchGenerationPublication {
+ public:
+  ~PreparedStitchGenerationPublication();
+  PreparedStitchGenerationPublication(PreparedStitchGenerationPublication&& other) noexcept;
+  PreparedStitchGenerationPublication& operator=(PreparedStitchGenerationPublication&& other) noexcept;
+  PreparedStitchGenerationPublication(const PreparedStitchGenerationPublication&) = delete;
+  PreparedStitchGenerationPublication& operator=(const PreparedStitchGenerationPublication&) = delete;
+
+ private:
+  struct Impl;
+  explicit PreparedStitchGenerationPublication(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
+
+  friend absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_publication(
+      const std::filesystem::path& staging,
+      const std::filesystem::path& game_dir);
+  friend absl::Status rebind_published_stitch_generation_artifact(
+      const PreparedStitchGenerationPublication& prepared,
+      const std::filesystem::path& game_dir);
+};
+
+absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_publication(
     const std::filesystem::path& staging,
+    const std::filesystem::path& game_dir);
+absl::Status rebind_published_stitch_generation_artifact(
+    const PreparedStitchGenerationPublication& prepared,
     const std::filesystem::path& game_dir);
 absl::Status rebind_stitch_generation_artifact(
     const std::filesystem::path& transaction,
@@ -93,6 +118,11 @@ absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constr
 // Returns the exact identity embedded in stitched-output generations. The
 // caller must hold the stitching artifact lock for the complete call.
 absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const std::filesystem::path& game_dir);
+
+// Returns a cheap revision of the generation sidecar and current artifact
+// bindings. This does not replace content validation; it only lets one startup
+// reuse a generation that it has already validated under the artifact lock.
+absl::StatusOr<std::string> stitch_artifact_revision_locked(const std::filesystem::path& game_dir);
 
 // Attempts the artifact lock without waiting. A missing lock means another
 // generation owns the artifacts, so callers must fail closed without blocking

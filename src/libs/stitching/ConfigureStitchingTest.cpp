@@ -744,6 +744,13 @@ bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path
     return false;
   }
 
+  setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  struct ResetUnreliableMetadata {
+    ~ResetUnreliableMetadata() {
+      unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+    }
+  } reset_unreliable_metadata;
+
   auto first = hm::stitching::lock_validated_stitching_artifacts(dir.string());
   if (!first.ok() || !first->artifact_lock) {
     std::cerr << "validated snapshot fixture must pass initial validation: " << first.status() << std::endl;
@@ -752,6 +759,7 @@ bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path
   const hm::stitching::ValidatedStitchingArtifacts snapshot{
       .canvas_size = first->canvas_size,
       .generation_id = first->generation_id,
+      .artifact_revision = first->artifact_revision,
       .max_output_width = 0,
       .max_canvas_dimension = hm::stitching::live_stitch_max_canvas_dimension(),
   };

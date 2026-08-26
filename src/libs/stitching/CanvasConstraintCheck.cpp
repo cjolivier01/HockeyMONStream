@@ -947,7 +947,50 @@ bool stitch_stat_matches(const struct stat& before, const struct stat& after) {
       before.st_ctim.tv_sec == after.st_ctim.tv_sec && before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
 }
 
-absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir) {
+struct PinnedStitchArtifact {
+  std::string name;
+  int descriptor{-1};
+  struct stat metadata{};
+
+  PinnedStitchArtifact(std::string name_value, int descriptor_value, const struct stat& metadata_value)
+      : name(std::move(name_value)), descriptor(descriptor_value), metadata(metadata_value) {}
+  ~PinnedStitchArtifact() {
+    if (descriptor >= 0)
+      ::close(descriptor);
+  }
+  PinnedStitchArtifact(PinnedStitchArtifact&& other) noexcept
+      : name(std::move(other.name)), descriptor(other.descriptor), metadata(other.metadata) {
+    other.descriptor = -1;
+  }
+  PinnedStitchArtifact& operator=(PinnedStitchArtifact&& other) noexcept {
+    if (this == &other)
+      return *this;
+    if (descriptor >= 0)
+      ::close(descriptor);
+    name = std::move(other.name);
+    descriptor = other.descriptor;
+    metadata = other.metadata;
+    other.descriptor = -1;
+    return *this;
+  }
+  PinnedStitchArtifact(const PinnedStitchArtifact&) = delete;
+  PinnedStitchArtifact& operator=(const PinnedStitchArtifact&) = delete;
+};
+
+struct StitchArtifactFingerprint {
+  std::string value;
+  std::vector<PinnedStitchArtifact> artifacts;
+};
+
+bool stitch_file_metadata_matches(const struct stat& before, const struct stat& after) {
+  return before.st_dev == after.st_dev && before.st_ino == after.st_ino && before.st_size == after.st_size &&
+      before.st_mtim.tv_sec == after.st_mtim.tv_sec && before.st_mtim.tv_nsec == after.st_mtim.tv_nsec;
+}
+
+absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
+    const fs::path& game_dir,
+    bool retain_descriptors) {
+  StitchArtifactFingerprint result;
   EVP_MD_CTX* context = EVP_MD_CTX_new();
   if (context == nullptr || EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
     if (context != nullptr)
@@ -971,6 +1014,10 @@ absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir
             EVP_DigestUpdate(context, &missing, sizeof(missing)) != 1) {
           return absl::InternalError("Unable to fingerprint absent optional Hugin artifact");
         }
+        if (retain_descriptors) {
+          struct stat missing{};
+          result.artifacts.emplace_back(name, -1, missing);
+        }
         return absl::OkStatus();
       }
       return absl::NotFoundError("Hugin generation artifact is missing while fingerprinting: " + path.string());
@@ -978,7 +1025,8 @@ absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir
     struct CloseDescriptor {
       int descriptor;
       ~CloseDescriptor() {
-        ::close(descriptor);
+        if (descriptor >= 0)
+          ::close(descriptor);
       }
     } close{descriptor};
     struct stat before{};
@@ -1008,6 +1056,10 @@ absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir
     struct stat after{};
     if (::fstat(descriptor, &after) != 0 || !stitch_stat_matches(before, after))
       return absl::AbortedError("Hugin artifact changed while fingerprinting: " + path.string());
+    if (retain_descriptors) {
+      result.artifacts.emplace_back(name, descriptor, before);
+      close.descriptor = -1;
+    }
     return absl::OkStatus();
   };
 
@@ -1027,7 +1079,15 @@ absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir
   value << std::hex << std::setfill('0');
   for (unsigned index = 0; index < length; ++index)
     value << std::setw(2) << static_cast<unsigned>(digest[index]);
-  return value.str();
+  result.value = value.str();
+  return result;
+}
+
+absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir) {
+  auto fingerprint = stitch_artifact_fingerprint_impl(game_dir, /*retain_descriptors=*/false);
+  if (!fingerprint.ok())
+    return fingerprint.status();
+  return std::move(fingerprint->value);
 }
 
 bool stitch_filesystem_has_unreliable_metadata(const fs::path& game_dir) {
@@ -1145,6 +1205,21 @@ absl::StatusOr<bool> has_current_stitch_transaction_protocol(const fs::path& tra
 }
 
 } // namespace
+
+struct PreparedStitchGenerationPublication::Impl {
+  std::string logical_id;
+  std::string fingerprint;
+  std::vector<PinnedStitchArtifact> artifacts;
+};
+
+PreparedStitchGenerationPublication::PreparedStitchGenerationPublication(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+PreparedStitchGenerationPublication::~PreparedStitchGenerationPublication() = default;
+PreparedStitchGenerationPublication::PreparedStitchGenerationPublication(
+    PreparedStitchGenerationPublication&& other) noexcept = default;
+PreparedStitchGenerationPublication& PreparedStitchGenerationPublication::operator=(
+    PreparedStitchGenerationPublication&& other) noexcept = default;
 
 const std::vector<std::string>& required_stitch_artifact_names() {
   return kRequiredArtifacts;
@@ -1271,7 +1346,9 @@ absl::Status publish_stitch_file_atomically(const fs::path& path, const std::str
   return fsync_stitch_path(path.parent_path(), true);
 }
 
-absl::Status prepare_stitch_generation_publication(const fs::path& staging, const fs::path& game_dir) {
+absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_publication(
+    const fs::path& staging,
+    const fs::path& game_dir) {
   const fs::path committed_identity = game_dir / kStitchGenerationArtifact;
   std::error_code error;
   const bool identity_exists = fs::exists(committed_identity, error);
@@ -1318,11 +1395,56 @@ absl::Status prepare_stitch_generation_publication(const fs::path& staging, cons
   auto bindings = stitch_artifact_stat_id(staging, StitchStatIdentityFormat::kBinding);
   if (!bindings.ok())
     return bindings.status();
-  auto fingerprint = stitch_artifact_fingerprint(staging);
+  auto fingerprint = stitch_artifact_fingerprint_impl(staging, /*retain_descriptors=*/true);
   if (!fingerprint.ok())
     return fingerprint.status();
-  return write_stitch_transaction_file(
-      staging / kStitchGenerationArtifact, serialize_stitch_generation_identity(*logical_id, *bindings, *fingerprint));
+  auto status = write_stitch_transaction_file(
+      staging / kStitchGenerationArtifact,
+      serialize_stitch_generation_identity(*logical_id, *bindings, fingerprint->value));
+  if (!status.ok())
+    return status;
+  auto prepared = std::make_unique<PreparedStitchGenerationPublication::Impl>();
+  prepared->logical_id = std::move(*logical_id);
+  prepared->fingerprint = std::move(fingerprint->value);
+  prepared->artifacts = std::move(fingerprint->artifacts);
+  return PreparedStitchGenerationPublication(std::move(prepared));
+}
+
+absl::Status rebind_published_stitch_generation_artifact(
+    const PreparedStitchGenerationPublication& prepared,
+    const fs::path& game_dir) {
+  if (!prepared.impl_)
+    return absl::InvalidArgumentError("Prepared Hugin publication is empty");
+  for (const PinnedStitchArtifact& artifact : prepared.impl_->artifacts) {
+    const fs::path path = game_dir / artifact.name;
+    if (artifact.descriptor < 0) {
+      struct stat metadata{};
+      if (::lstat(path.c_str(), &metadata) == 0)
+        return absl::AbortedError("Absent optional Hugin artifact appeared during publication: " + path.string());
+      if (errno != ENOENT) {
+        return absl::InternalError(
+            "Unable to inspect optional Hugin artifact after publication: " + std::string(std::strerror(errno)));
+      }
+      continue;
+    }
+    struct stat pinned{};
+    if (::fstat(artifact.descriptor, &pinned) != 0 || !stitch_file_metadata_matches(artifact.metadata, pinned)) {
+      return absl::AbortedError("Hugin artifact changed during publication: " + path.string());
+    }
+    struct stat published{};
+    if (::lstat(path.c_str(), &published) != 0) {
+      return absl::AbortedError("Hugin artifact is missing after publication: " + path.string());
+    }
+    if (!S_ISREG(published.st_mode) || !stitch_file_metadata_matches(artifact.metadata, published)) {
+      return absl::AbortedError("Published Hugin artifact no longer matches its staged file: " + path.string());
+    }
+  }
+  auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+  if (!bindings.ok())
+    return bindings.status();
+  return publish_stitch_file_atomically(
+      game_dir / kStitchGenerationArtifact,
+      serialize_stitch_generation_identity(prepared.impl_->logical_id, *bindings, prepared.impl_->fingerprint));
 }
 
 absl::Status rebind_stitch_generation_artifact(const fs::path& transaction, const fs::path& game_dir) {
@@ -1376,15 +1498,7 @@ absl::Status rebind_stitch_generation_artifact(const fs::path& transaction, cons
 }
 
 absl::Status mark_stitch_transaction_rolled_back(const fs::path& transaction) {
-  const fs::path temporary = transaction / "state.rolled_back";
-  auto status = write_stitch_transaction_file(temporary, "ROLLED_BACK\n");
-  if (!status.ok())
-    return status;
-  std::error_code error;
-  fs::rename(temporary, transaction / "state", error);
-  if (error)
-    return absl::InternalError("Unable to commit Hugin rollback state: " + error.message());
-  return fsync_stitch_path(transaction, true);
+  return publish_transaction_state(transaction, "ROLLED_BACK\n");
 }
 
 absl::Status recover_stitch_transactions_locked(const fs::path& root) {
@@ -1772,6 +1886,24 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
   if (!status.ok())
     return status;
   return logical_id;
+}
+
+absl::StatusOr<std::string> stitch_artifact_revision_locked(const fs::path& game_dir) {
+  std::string identity;
+  auto current_identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
+  if (current_identity.ok()) {
+    identity = std::move(*current_identity);
+  } else if (!absl::IsNotFound(current_identity.status())) {
+    return current_identity.status();
+  }
+  auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+  if (!bindings.ok())
+    return bindings.status();
+  std::ostringstream revision;
+  revision << "hstream-stitch-revision-v1\nidentity-bytes=" << identity.size() << '\n'
+           << identity << "bindings-bytes=" << bindings->size() << '\n'
+           << *bindings;
+  return revision.str();
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_impl(

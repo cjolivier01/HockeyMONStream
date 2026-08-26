@@ -43,6 +43,10 @@ class GameConfigTransactionLock final {
 
   static absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> Acquire(const std::filesystem::path& game_dir);
 
+  // Returns Unavailable instead of waiting when either publication lock is
+  // active. Interrupted rink transactions are recovered before success.
+  static absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> TryAcquire(const std::filesystem::path& game_dir);
+
  private:
   struct State;
   explicit GameConfigTransactionLock(std::unique_ptr<State> state);

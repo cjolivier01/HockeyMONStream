@@ -5020,7 +5020,7 @@ absl::Status Configurator::setup_stitcher_and_masks(
       bool field_mask_configured = false;
       if (calibrate_field_mask && is_configured) {
         field_mask_configured = stitching::is_field_mask_configured_for_stitching_config(
-            game_dir.string(), max_output_width, post_stitch_rotate_degrees);
+            game_dir.string(), max_output_width, post_stitch_rotate_degrees, {}, validated_stitching_artifacts_);
       }
       const char* calibration_pending = g_getenv("HSTREAM_CALIBRATION_PENDING");
       const bool calibration_completion_requested =
@@ -5920,6 +5920,7 @@ absl::StatusOr<stitching::LockedStitchingArtifacts> Configurator::lock_current_s
     validated_stitching_artifacts_ = stitching::ValidatedStitchingArtifacts{
         .canvas_size = artifacts->canvas_size,
         .generation_id = artifacts->generation_id,
+        .artifact_revision = artifacts->artifact_revision,
         .max_output_width = max_output_width,
         .max_canvas_dimension = stitching::live_stitch_max_canvas_dimension(),
     };

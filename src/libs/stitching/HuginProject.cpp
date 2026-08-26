@@ -1030,7 +1030,11 @@ absl::Status run_nona(
       is_cancelled);
 }
 
-absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir, bool* prepared) {
+absl::Status publish_artifacts(
+    const fs::path& staging,
+    const fs::path& game_dir,
+    const PreparedStitchGenerationPublication& prepared_publication,
+    bool* prepared) {
   const std::vector<std::string>& names = stitch_artifact_names();
   const fs::path backups = staging / "previous";
   std::error_code error;
@@ -1144,7 +1148,7 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   status = fsync_stitch_path(game_dir, true);
   if (!status.ok())
     return rollback_error(std::string(status.message()));
-  status = rebind_stitch_generation_artifact(staging, game_dir);
+  status = rebind_published_stitch_generation_artifact(prepared_publication, game_dir);
   if (!status.ok())
     return rollback_error(std::string(status.message()));
   status = write_stitch_transaction_file(staging / "state.committed", "COMMITTED\n");
@@ -1718,10 +1722,10 @@ absl::Status HuginProject::Configure(
     if (!validation.ok())
       return validation;
   }
-  status = prepare_stitch_generation_publication(staging, game_dir);
-  if (!status.ok())
-    return status;
-  status = publish_artifacts(staging, game_dir, &cleanup.prepared);
+  auto prepared_publication = prepare_stitch_generation_publication(staging, game_dir);
+  if (!prepared_publication.ok())
+    return prepared_publication.status();
+  status = publish_artifacts(staging, game_dir, *prepared_publication, &cleanup.prepared);
   if (status.ok() && options.progress)
     options.progress("canvas", "complete", "Stitch maps and panorama preview are ready");
   return status;

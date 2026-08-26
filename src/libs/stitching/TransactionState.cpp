@@ -154,7 +154,9 @@ PinnedDirectory& PinnedDirectory::operator=(PinnedDirectory&& other) noexcept {
 }
 
 absl::StatusOr<PinnedDirectory> PinnedDirectory::Open(const fs::path& path, const std::string& description) {
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+  // The caller-selected game directory may itself be a symlink. Follow that
+  // boundary once and pin the resolved directory; children are opened no-follow.
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NONBLOCK);
   if (descriptor < 0)
     return absl::FailedPreconditionError("Unable to open " + description + ": " + std::strerror(errno));
   return PinnedDirectory(descriptor);
