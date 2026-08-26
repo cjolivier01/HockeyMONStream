@@ -1660,6 +1660,29 @@ play-tracker:
           fs::is_regular_file(stale_recoveries->front()),
       "Restart recovery must leave an already-recovered unique run at its stable recovery path");
 
+  const fs::path provisional_log_dir = root / "archive-provisional-log";
+  fs::create_directories(provisional_log_dir);
+  const fs::path provisional_configured = provisional_log_dir / "provisional.mkv";
+  const std::string provisional_run_id = "88888888-00112233-4455-6677-8899-aabbccddeeff";
+  const fs::path provisional_source =
+      provisional_log_dir / ("provisional.hstream-run-v3-99999999-" + provisional_run_id + ".mkv");
+  const fs::path provisional_log =
+      provisional_log_dir / ("provisional.hstream-run-ui-" + provisional_run_id + ".mkv.log");
+  const fs::path provisional_recovery = provisional_log_dir / "provisional-finalization-failed.mkv";
+  std::ofstream(provisional_source, std::ios::binary) << "video before UI path resolution";
+  std::ofstream(provisional_log, std::ios::binary) << "provisional UI log";
+  const auto provisional_recoveries =
+      hm::configurator_internal::recover_stale_archive_work_files(provisional_configured);
+  std::ifstream provisional_recovered_log(provisional_recovery.string() + ".log", std::ios::binary);
+  const std::string provisional_recovered_log_content{
+      std::istreambuf_iterator<char>(provisional_recovered_log), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      provisional_recoveries.ok() && provisional_recoveries->size() == 1 &&
+          provisional_recoveries->front() == provisional_recovery && !fs::exists(provisional_source) &&
+          !fs::exists(provisional_log) && fs::is_regular_file(provisional_recovery) &&
+          provisional_recovered_log_content == "provisional UI log",
+      "Stale recovery must pair a video with the provisional UI log left by a crash before path resolution");
+
   const fs::path log_collision_dir = root / "archive-log-collision";
   fs::create_directories(log_collision_dir);
   const fs::path log_collision_archive = log_collision_dir / "collision.mkv";
@@ -1719,6 +1742,56 @@ play-tracker:
           interrupted_recovery_is_reconciled("no-log-pair-linked", false, true, true) &&
           interrupted_recovery_is_reconciled("no-log-video-linked", false, false, true),
       "Restart recovery must reconcile every interrupted hard-link publication boundary without splitting artifacts");
+
+  const auto interrupted_collision_is_reconciled =
+      [&](const std::string& name, bool has_log, bool destination_video_is_foreign) {
+        const fs::path interrupted_dir = root / ("archive-interrupted-collision-" + name);
+        fs::create_directories(interrupted_dir);
+        const fs::path configured = interrupted_dir / (name + ".mkv");
+        const fs::path source = interrupted_dir / (name + ".hstream-run-99999999-dead.mkv");
+        const fs::path source_log = source.string() + ".log";
+        const fs::path collided_destination = interrupted_dir / (name + "-finalization-failed.mkv");
+        const fs::path collided_log = collided_destination.string() + ".log";
+        const fs::path expected_destination = interrupted_dir / (name + "-finalization-failed-1.mkv");
+        const fs::path expected_log = expected_destination.string() + ".log";
+        std::ofstream(source, std::ios::binary) << name << " video";
+        if (has_log)
+          std::ofstream(source_log, std::ios::binary) << name << " log";
+        if (destination_video_is_foreign) {
+          std::ofstream(collided_destination, std::ios::binary) << "foreign video";
+          fs::create_hard_link(has_log ? source_log : source, collided_log);
+        } else {
+          fs::create_hard_link(source, collided_destination);
+          std::ofstream(collided_log, std::ios::binary) << "foreign log";
+        }
+
+        const auto recoveries = hm::configurator_internal::recover_stale_archive_work_files(configured);
+        std::ifstream collided_video_stream(collided_destination, std::ios::binary);
+        const std::string collided_video{
+            std::istreambuf_iterator<char>(collided_video_stream), std::istreambuf_iterator<char>()};
+        std::ifstream collided_log_stream(collided_log, std::ios::binary);
+        const std::string collided_log_content{
+            std::istreambuf_iterator<char>(collided_log_stream), std::istreambuf_iterator<char>()};
+        std::ifstream recovered_video_stream(expected_destination, std::ios::binary);
+        const std::string recovered_video{
+            std::istreambuf_iterator<char>(recovered_video_stream), std::istreambuf_iterator<char>()};
+        std::ifstream recovered_log_stream(expected_log, std::ios::binary);
+        const std::string recovered_log{
+            std::istreambuf_iterator<char>(recovered_log_stream), std::istreambuf_iterator<char>()};
+        const bool collided_pair_cleaned = destination_video_is_foreign
+            ? collided_video == "foreign video" && !fs::exists(collided_log)
+            : !fs::exists(collided_destination) && collided_log_content == "foreign log";
+        return recoveries.ok() && recoveries->size() == 1 && recoveries->front() == expected_destination &&
+            collided_pair_cleaned && !fs::exists(source) && !fs::exists(source_log) &&
+            recovered_video == name + " video" &&
+            (has_log ? recovered_log == name + " log" : !fs::exists(expected_log));
+      };
+  ok &= expect(
+      interrupted_collision_is_reconciled("log-with-foreign-video", true, true) &&
+          interrupted_collision_is_reconciled("video-with-foreign-log", true, false) &&
+          interrupted_collision_is_reconciled("marker-with-foreign-video", false, true) &&
+          interrupted_collision_is_reconciled("video-with-foreign-sidecar", false, false),
+      "Restart recovery must remove only its owned half of an interrupted collision before retrying another suffix");
 
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /

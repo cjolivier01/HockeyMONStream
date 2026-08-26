@@ -1492,6 +1492,30 @@ absl::Status create_archive_recovery_link(
   return absl::OkStatus();
 }
 
+std::optional<fs::path> provisional_archive_log_sidecar(
+    const fs::path& output_path,
+    const fs::path& recovery_name_base) {
+  if (output_path.parent_path() != recovery_name_base.parent_path() ||
+      output_path.extension() != recovery_name_base.extension()) {
+    return std::nullopt;
+  }
+  const std::string filename = output_path.filename().string();
+  const std::string prefix = recovery_name_base.stem().string() + ".hstream-run-";
+  const std::string extension = recovery_name_base.extension().string();
+  if (filename.size() <= prefix.size() + extension.size() || !absl::StartsWith(filename, prefix) ||
+      !absl::EndsWith(filename, extension)) {
+    return std::nullopt;
+  }
+  const std::string ownership = filename.substr(prefix.size(), filename.size() - prefix.size() - extension.size());
+  std::smatch ownership_match;
+  static const std::regex versioned_backend_and_ui_owner(
+      R"(^v3-[0-9]+-([0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$)");
+  if (!std::regex_match(ownership, ownership_match, versioned_backend_and_ui_owner))
+    return std::nullopt;
+  return recovery_name_base.parent_path() /
+      (recovery_name_base.stem().string() + ".hstream-run-ui-" + ownership_match[1].str() + extension + ".log");
+}
+
 absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     const fs::path& output_path,
     const fs::path& recovery_name_base) {
@@ -1505,10 +1529,18 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
   if (!S_ISREG(output_stat.st_mode) || output_stat.st_size <= 0)
     return std::optional<fs::path>();
 
-  const fs::path output_log_path = archive_log_sidecar(output_path);
+  fs::path output_log_path = archive_log_sidecar(output_path);
   struct stat output_log_stat{};
-  const bool has_output_log = ::lstat(output_log_path.c_str(), &output_log_stat) == 0;
-  const int output_log_inspection_errno = has_output_log ? 0 : errno;
+  bool has_output_log = ::lstat(output_log_path.c_str(), &output_log_stat) == 0;
+  int output_log_inspection_errno = has_output_log ? 0 : errno;
+  if (!has_output_log && output_log_inspection_errno == ENOENT) {
+    const std::optional<fs::path> provisional_log = provisional_archive_log_sidecar(output_path, recovery_name_base);
+    if (provisional_log.has_value()) {
+      output_log_path = *provisional_log;
+      has_output_log = ::lstat(output_log_path.c_str(), &output_log_stat) == 0;
+      output_log_inspection_errno = has_output_log ? 0 : errno;
+    }
+  }
   if (!has_output_log && output_log_inspection_errno != ENOENT) {
     return absl::InternalError(TO_STRING(
         "Failed to inspect archive log sidecar \"" << output_log_path.string()
@@ -1547,8 +1579,20 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
           recovery_stat->has_value() && same_file_identity(recovery_stat->value(), output_stat);
       const bool recovery_log_is_ours =
           recovery_log_stat->has_value() && same_file_identity(recovery_log_stat->value(), output_log_stat);
-      if ((recovery_stat->has_value() && !recovery_is_ours) ||
-          (recovery_log_stat->has_value() && !recovery_log_is_ours)) {
+      const bool recovery_is_foreign = recovery_stat->has_value() && !recovery_is_ours;
+      const bool recovery_log_is_foreign = recovery_log_stat->has_value() && !recovery_log_is_ours;
+      if (recovery_is_foreign) {
+        if (recovery_log_is_ours) {
+          HM_RETURN_IF_ERROR(
+              remove_archive_entry_if_owned(recovery_log_path, output_log_stat, "partial archive log recovery link"));
+        }
+        continue;
+      }
+      if (recovery_log_is_foreign) {
+        if (recovery_is_ours) {
+          HM_RETURN_IF_ERROR(
+              remove_archive_entry_if_owned(recovery_path, output_stat, "partial archive video recovery link"));
+        }
         continue;
       }
       if (recovery_log_is_ours && !recovery_is_ours) {
@@ -1591,8 +1635,20 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
           recovery_stat->has_value() && same_file_identity(recovery_stat->value(), output_stat);
       const bool recovery_log_is_marker =
           recovery_log_stat->has_value() && same_file_identity(recovery_log_stat->value(), output_stat);
-      if ((recovery_stat->has_value() && !recovery_is_ours) ||
-          (recovery_log_stat->has_value() && !recovery_log_is_marker)) {
+      const bool recovery_is_foreign = recovery_stat->has_value() && !recovery_is_ours;
+      const bool recovery_log_is_foreign = recovery_log_stat->has_value() && !recovery_log_is_marker;
+      if (recovery_is_foreign) {
+        if (recovery_log_is_marker) {
+          HM_RETURN_IF_ERROR(
+              remove_archive_entry_if_owned(recovery_log_path, output_stat, "archive no-log recovery marker"));
+        }
+        continue;
+      }
+      if (recovery_log_is_foreign) {
+        if (recovery_is_ours) {
+          HM_RETURN_IF_ERROR(
+              remove_archive_entry_if_owned(recovery_path, output_stat, "partial archive video recovery link"));
+        }
         continue;
       }
       if (recovery_log_is_marker) {

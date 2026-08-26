@@ -1040,7 +1040,11 @@ QString available_final_archive_path(const QString& game_dir, const QString& gam
 QString failed_archive_candidate(const QString& source_path, int suffix) {
   const QFileInfo source(source_path);
   const QString extension = source.suffix().isEmpty() ? QString() : "." + source.suffix();
-  const QString base = source.completeBaseName() + "-finalization-failed";
+  QString source_base = source.completeBaseName();
+  static const QRegularExpression unique_run_suffix(
+      R"(\.hstream-run-v3-[0-9]+-[0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+  source_base.remove(unique_run_suffix);
+  const QString base = source_base + "-finalization-failed";
   const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
   return QDir(source.absolutePath()).filePath(filename);
 }
@@ -5871,7 +5875,6 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   QString reopen_error;
   if (!reopenArchiveJobLog(archive_job_log_path_, &reopen_error)) {
     archive_job_log_enabled_ = false;
-    archive_job_log_path_.clear();
     appendLog(QString("archive job log could not continue after output path resolution: %1")
                   .arg(reopen_error.isEmpty() ? QString("unknown error") : reopen_error));
     return;
@@ -5888,6 +5891,11 @@ bool HStreamWindow::reopenArchiveJobLog(const QString& path, QString* error) {
   if (path.isEmpty()) {
     if (error)
       *error = "log path is empty";
+    return false;
+  }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL") && path.contains(".hstream-run-v3-")) {
+    if (error)
+      *error = "archive log reopen failure requested by test";
     return false;
   }
   archive_job_log_.setFileName(path);
@@ -6555,10 +6563,10 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         }
         if (!reopened) {
           archive_job_log_enabled_ = false;
-          archive_job_log_path_.clear();
           appendLog(QString("archive job log was retained at %1, but file logging could not continue: %2")
                         .arg(candidate_log, reopen_error));
         } else {
+          archive_job_log_enabled_ = true;
           appendLog(QString("archive job log moved with recovery archive: %1").arg(candidate_log));
         }
       }

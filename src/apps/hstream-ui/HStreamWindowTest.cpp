@@ -4983,15 +4983,18 @@ bool test_output_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   const QString failed_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("failed-finalization-source.mkv");
+      QDir(QDir(output_root.path()).filePath(window->gameIdText()))
+          .filePath(
+              "tracking_output-with-audio.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-"
+              "aabbccddeeff.mkv");
   const QString dangling_log_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("failed-finalization-source-finalization-failed.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed.mkv");
   const QString dangling_log_path = dangling_log_video + ".log";
   const QString injected_collision_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("failed-finalization-source-finalization-failed-1.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-1.mkv");
   const QString injected_collision_log = injected_collision_video + ".log";
   const QString failed_recovery =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("failed-finalization-source-finalization-failed-2.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-2.mkv");
   const QString failed_source_log = failed_source + ".log";
   const QString failed_recovery_log = failed_recovery + ".log";
   const QStringList finalized_before_failure =
@@ -5011,6 +5014,7 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL", "1");
   activate(start);
   for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
     QApplication::processEvents();
@@ -5035,10 +5039,11 @@ bool test_output_controls(HStreamWindow* window) {
           finalize_ok->toolTip().contains("Close the finalization result") &&
           finalize_ok->statusTip() == finalize_ok->toolTip() && !QFileInfo::exists(failed_source) &&
           QFileInfo(failed_recovery).size() > 0 && !QFileInfo::exists(failed_source_log) && failed_log_opened &&
-          failed_log_text.contains("archive finalization failed") &&
+          failed_log_text.contains("archive finalization failed") && !failed_recovery.contains(".hstream-run-") &&
           finalized_after_failure == finalized_before_failure,
-      "A failed remux must show a red dismissible error, preserve a same-name recovery MKV and job log, and publish no MP4");
+      "A failed remux must preserve a same-name recovery MKV and reopened job log outside the stale-run namespace");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL");
   if (finalize_ok)
     activate(finalize_ok);
 
