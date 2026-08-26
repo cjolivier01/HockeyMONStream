@@ -57,6 +57,13 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
     const std::filesystem::path& game_dir,
     size_t max_output_width);
 
+// Performs the same provenance and artifact-layout checks without decoding
+// the seam payload. Intended for interactive preflight only; pipeline startup
+// must use check_canvas_constraint_locked for authoritative validation.
+absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_metadata_locked(
+    const std::filesystem::path& game_dir,
+    size_t max_output_width);
+
 // Attempts the artifact lock and performs transaction recovery without
 // inspecting mapping payloads. This lets callers defer TIFF/PNG I/O until they
 // have confirmed that the effective width changed.

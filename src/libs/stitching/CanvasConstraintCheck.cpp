@@ -448,7 +448,10 @@ absl::Status validate_nonuniform_png(const fs::path& path, const PngLayout& expe
   return absl::OkStatus();
 }
 
-absl::Status validate_canvas_artifact_contract(const fs::path& game_dir, const CanvasSize& canvas) {
+absl::Status validate_canvas_artifact_contract(
+    const fs::path& game_dir,
+    const CanvasSize& canvas,
+    bool validate_seam_payload) {
   auto left = read_tiff_placement(game_dir / "mapping_0000.tif");
   auto right = read_tiff_placement(game_dir / "mapping_0001.tif");
   if (!left.ok())
@@ -496,7 +499,7 @@ absl::Status validate_canvas_artifact_contract(const fs::path& game_dir, const C
       right_edge > static_cast<int64_t>(canvas.width) || bottom_edge > static_cast<int64_t>(canvas.height)) {
     return absl::FailedPreconditionError("PNG seam layout does not match the stitched mapping canvas");
   }
-  return validate_nonuniform_png(seam_path, *layout);
+  return validate_seam_payload ? validate_nonuniform_png(seam_path, *layout) : absl::OkStatus();
 }
 
 absl::StatusOr<size_t> parse_provenance_value(const std::string& line, const char* key) {
@@ -816,9 +819,10 @@ absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_co
   return lock;
 }
 
-absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
+absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_impl(
     const fs::path& game_dir,
-    size_t max_output_width) {
+    size_t max_output_width,
+    bool validate_seam_payload) {
   const bool has_mappings = any_mapping_artifact_exists(game_dir);
   const absl::Status dependency_status = dependency_tree_status(game_dir);
   if (!dependency_status.ok()) {
@@ -850,7 +854,7 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
         .requires_regeneration = true,
     };
   }
-  const absl::Status artifact_contract = validate_canvas_artifact_contract(game_dir, *canvas);
+  const absl::Status artifact_contract = validate_canvas_artifact_contract(game_dir, *canvas, validate_seam_payload);
   if (!artifact_contract.ok()) {
     if (absl::IsNotFound(artifact_contract) || absl::IsFailedPrecondition(artifact_contract) ||
         absl::IsInvalidArgument(artifact_contract) || absl::IsResourceExhausted(artifact_contract)) {
@@ -862,6 +866,18 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
       .artifacts_compatible = true,
       .requires_regeneration = false,
   };
+}
+
+absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
+    const fs::path& game_dir,
+    size_t max_output_width) {
+  return check_canvas_constraint_locked_impl(game_dir, max_output_width, /*validate_seam_payload=*/true);
+}
+
+absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_metadata_locked(
+    const fs::path& game_dir,
+    size_t max_output_width) {
+  return check_canvas_constraint_locked_impl(game_dir, max_output_width, /*validate_seam_payload=*/false);
 }
 
 } // namespace hm::stitching

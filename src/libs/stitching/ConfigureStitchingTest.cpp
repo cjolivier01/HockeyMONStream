@@ -1073,9 +1073,18 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
       lightweight->requires_regeneration && lightweight->artifact_lock;
   if (lightweight.ok())
     lightweight->artifact_lock.reset();
-  if (!configured.ok() || *configured || !lightweight_rejects) {
-    std::cerr << "uniform same-size seam must invalidate runtime and lightweight stitching checks: "
-              << configured.status() << std::endl;
+  auto metadata_lock = hm::stitching::try_lock_canvas_constraint_artifacts(dir);
+  const auto metadata = metadata_lock.ok() && *metadata_lock
+      ? hm::stitching::check_canvas_constraint_metadata_locked(dir, /*max_output_width=*/0)
+      : absl::StatusOr<hm::stitching::CanvasConstraintCompatibility>(
+            metadata_lock.ok() ? absl::UnavailableError("artifact lock unavailable") : metadata_lock.status());
+  const bool metadata_accepts_layout =
+      metadata.ok() && metadata->artifacts_compatible && !metadata->requires_regeneration;
+  if (metadata_lock.ok())
+    metadata_lock->reset();
+  if (!configured.ok() || *configured || !lightweight_rejects || !metadata_accepts_layout) {
+    std::cerr << "uniform same-size seam must be deferred by metadata preflight and rejected by authoritative checks: "
+              << configured.status() << " / " << metadata.status() << std::endl;
     return false;
   }
   return true;

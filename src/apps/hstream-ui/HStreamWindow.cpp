@@ -5537,7 +5537,7 @@ bool HStreamWindow::evaluateStitchingCanvasConstraint(
     appendLog("stitched-width compatibility check lost its artifact lock");
     return false;
   }
-  auto compatibility = hm::stitching::check_canvas_constraint_locked(
+  auto compatibility = hm::stitching::check_canvas_constraint_metadata_locked(
       fs::path(gameDirectory(game_id).toStdString()), static_cast<size_t>(max_output_width));
   if (!compatibility.ok()) {
     appendLog(QString("stitched-width compatibility check failed: %1").arg(compatibility.status().ToString().c_str()));
