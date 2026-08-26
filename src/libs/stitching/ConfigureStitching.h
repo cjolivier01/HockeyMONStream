@@ -133,12 +133,13 @@ bool is_field_mask_configured_for_stitching_config(
     double post_stitch_rotate_degrees,
     const std::string& expected_invalidation_id = {});
 
-// Cheap publication preflight used before retrying expensive field-mask
+// Nonblocking publication preflight used before retrying expensive field-mask
 // inference. A pending live rotation fences every producer except its exact
-// output generation.
+// output generation and unique authorization epoch.
 absl::Status validate_field_mask_publication_authority(
     const std::string& game_dir,
-    const std::string& expected_output_generation);
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id = {});
 
 // Validates and decodes rink_mask_0.png while holding the Hugin and
 // config/rink transaction locks for one complete artifact generation.
@@ -152,7 +153,8 @@ absl::Status create_field_mask(
     surface::Surface surface,
     const std::string& expected_output_generation = {},
     const std::string& expected_invalidation_id = {},
-    const std::function<bool()>& is_cancelled = {});
+    const std::function<bool()>& is_cancelled = {},
+    const std::string& expected_output_authorization_id = {});
 
 absl::Status save_rink_profile(
     const std::string& game_dir,
@@ -160,13 +162,14 @@ absl::Status save_rink_profile(
     const std::string& expected_invalidation_id = {});
 
 // Atomically publishes the stitched calibration snapshot together with the
-// rink profile after revalidating its generation owner.
+// rink profile after revalidating its generation and authorization owner.
 absl::Status save_rink_profile_with_stitched_image(
     const std::string& game_dir,
     const RinkProfile& profile,
     const cv::Mat& stitched_image,
     const std::string& expected_invalidation_id = {},
-    const std::string& expected_output_generation = {});
+    const std::string& expected_output_generation = {},
+    const std::string& expected_output_authorization_id = {});
 
 // Publishes a scoreboard snapshot only when the generation that produced the
 // pixels still matches the current stitched output.

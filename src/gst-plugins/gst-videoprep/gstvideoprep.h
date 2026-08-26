@@ -85,6 +85,7 @@ struct GstVideoPrep
   gchar* plugin_type;
   gchar* plugin_private_config;
   gchar* scoreboard_perspective_polygon;
+  gchar* stitched_output_authorization_id;
   gdouble post_stitch_rotate_degrees;
   guint max_output_width;
   gdouble fixed_edge_rotation_angle;
@@ -98,6 +99,7 @@ struct GstVideoPrep
   gdouble exposure;
   gboolean last_property_set_ok;
   gboolean post_stitch_rotate_degrees_set;
+  gboolean stitched_output_authorization_id_set;
   gboolean max_output_width_set;
   gboolean fixed_edge_rotation_angle_set;
   gboolean fixed_edge_rotation_angle_left_set;
@@ -111,6 +113,7 @@ struct GstVideoPrep
   guint property_set_sequence;
   guint plugin_private_config_sequence;
   guint post_stitch_rotate_degrees_sequence;
+  guint stitched_output_authorization_id_sequence;
   guint max_output_width_sequence;
   guint fixed_edge_rotation_angle_sequence;
   guint fixed_edge_rotation_angle_left_sequence;

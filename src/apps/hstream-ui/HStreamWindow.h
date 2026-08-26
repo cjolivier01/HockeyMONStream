@@ -386,6 +386,9 @@ class HStreamWindow : public QMainWindow {
       const LiveRotationAuthorization& authorization,
       const QString& reason,
       std::function<void(bool, const std::optional<LiveRotationAuthorization>&, const QString&)> complete = {});
+  void adoptRestoredLiveRotationAuthorization(
+      const std::optional<LiveRotationAuthorization>& restored,
+      const QString& reason);
   void rollbackActiveLiveRotationAuthorization(const QString& reason);
   void resolveLiveRotationRuntimeBatch(quint64 batch_id);
   void finishRuntimeControlBatch(quint64 batch_id, bool failed, const QString& reason = {});

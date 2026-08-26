@@ -221,6 +221,21 @@ StitcherPriv::~StitcherPriv() {
   Shutdown();
 }
 
+void StitcherPriv::update_live_output_epoch(
+    std::optional<double> post_stitch_rotate_degrees,
+    std::optional<std::string> authorization_id) {
+  std::lock_guard<std::mutex> lock(live_output_epoch_update_mu_);
+  const std::shared_ptr<const LiveOutputEpoch> current =
+      std::atomic_load_explicit(&live_output_epoch_, std::memory_order_acquire);
+  auto updated = std::make_shared<LiveOutputEpoch>(current ? *current : LiveOutputEpoch{});
+  if (post_stitch_rotate_degrees.has_value())
+    updated->post_stitch_rotate_degrees = *post_stitch_rotate_degrees;
+  if (authorization_id.has_value())
+    updated->authorization_id = std::move(*authorization_id);
+  std::shared_ptr<const LiveOutputEpoch> published = std::move(updated);
+  std::atomic_store_explicit(&live_output_epoch_, std::move(published), std::memory_order_release);
+}
+
 void StitcherPriv::Shutdown() {
   Super::Shutdown();
   {
@@ -242,6 +257,7 @@ void StitcherPriv::Shutdown() {
   release_high_bit_field_mask_canvas();
   calibration_invalidation_id_.clear();
   calibration_run_generation_.clear();
+  update_live_output_epoch(std::nullopt, std::string());
   release_rotation_scratch();
 }
 
@@ -1371,7 +1387,9 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       std::cerr << "Invalid post-stitch rotation value: " << prop.value << std::endl;
       return false;
     }
-    post_stitch_rotate_degrees_.store(parsed_rotation, std::memory_order_relaxed);
+    update_live_output_epoch(parsed_rotation, std::nullopt);
+  } else if (prop.key == "stitched-output-authorization-id" || prop.key == "stitched_output_authorization_id") {
+    update_live_output_epoch(std::nullopt, prop.value);
   }
   return true;
 }
@@ -1940,7 +1958,12 @@ absl::Status StitcherPriv::GenerateOutput(
 
     assert(cuda_stream_);
 
-    const double applied_post_stitch_rotation = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+    const std::shared_ptr<const LiveOutputEpoch> output_epoch =
+        std::atomic_load_explicit(&live_output_epoch_, std::memory_order_acquire);
+    if (!output_epoch)
+      return absl::InternalError("Stitched-output epoch state is unavailable");
+    const double applied_post_stitch_rotation = output_epoch->post_stitch_rotate_degrees;
+    const std::string& output_authorization_id = output_epoch->authorization_id;
     if (stitcher_rgb10_fp16_) {
       HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
       if (!high_bit_canvas_ || high_bit_canvas_->width() != canvas->width() ||
@@ -2015,21 +2038,24 @@ absl::Status StitcherPriv::GenerateOutput(
     const std::string completion_scope = stitching::calibration_completion_scope(
         output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
-    bool attempt_field_mask =
-        should_attempt_one_pass_field_mask(field_mask_attempted_, field_mask_attempted_generation_, output_generation);
-    if (attempt_field_mask && field_mask_attempted_generation_ != output_generation) {
+    bool attempt_field_mask = should_attempt_one_pass_field_mask(
+                                  field_mask_attempted_, field_mask_attempted_generation_, output_generation) ||
+        field_mask_attempted_authorization_id_ != output_authorization_id;
+    if (attempt_field_mask &&
+        (field_mask_attempted_generation_ != output_generation ||
+         field_mask_attempted_authorization_id_ != output_authorization_id)) {
       field_mask_publication_superseded_ = false;
       field_mask_superseded_retry_frames_remaining_ = 0;
     } else if (!attempt_field_mask && field_mask_publication_superseded_) {
       if (field_mask_superseded_retry_frames_remaining_ > 0) {
         --field_mask_superseded_retry_frames_remaining_;
       } else {
-        const absl::Status authority =
-            stitching::validate_field_mask_publication_authority(config_file_, output_generation);
+        const absl::Status authority = stitching::validate_field_mask_publication_authority(
+            config_file_, output_generation, output_authorization_id);
         if (authority.ok()) {
           field_mask_publication_superseded_ = false;
           attempt_field_mask = true;
-        } else if (absl::IsAborted(authority)) {
+        } else if (absl::IsAborted(authority) || absl::IsUnavailable(authority)) {
           field_mask_superseded_retry_frames_remaining_ = kSupersededFieldMaskRetryFrames;
         } else {
           return report_calibration_failure(authority);
@@ -2042,6 +2068,7 @@ absl::Status StitcherPriv::GenerateOutput(
         calibration_completion_ready_ = false;
       field_mask_attempted_ = true;
       field_mask_attempted_generation_ = output_generation;
+      field_mask_attempted_authorization_id_ = output_authorization_id;
       bool mask_configured = !calibrate_field_mask_ ||
           stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
@@ -2086,9 +2113,12 @@ absl::Status StitcherPriv::GenerateOutput(
             field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
           }
           absl::Status mask_status = stitching::create_field_mask(
-              config_file_, field_mask_surface, output_generation, calibration_invalidation_id_, [this] {
-                return calibration_cancelled_.load(std::memory_order_acquire);
-              });
+              config_file_,
+              field_mask_surface,
+              output_generation,
+              calibration_invalidation_id_,
+              [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+              output_authorization_id);
           release_high_bit_field_mask_canvas();
           if (!mask_status.ok()) {
             if (absl::IsAborted(mask_status)) {
@@ -2151,7 +2181,7 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
 
-    if (!stitching::add_stitched_output_generation_meta(reuse_frame_meta, output_generation)) {
+    if (!stitching::add_stitched_output_generation_meta(reuse_frame_meta, output_generation, output_authorization_id)) {
       return absl::ResourceExhaustedError("Could not attach the stitched-output generation to the output frame");
     }
 

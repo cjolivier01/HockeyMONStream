@@ -142,6 +142,10 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     CalibrationSurfaceSnapshot left;
     CalibrationSurfaceSnapshot right;
   };
+  struct LiveOutputEpoch {
+    double post_stitch_rotate_degrees{0.0};
+    std::string authorization_id;
+  };
 
   absl::Status ensure_stitcher();
   absl::Status reload_stitcher();
@@ -179,6 +183,9 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   void release_high_bit_calibration_surfaces();
   void release_captured_calibration_surfaces();
   void release_high_bit_field_mask_canvas();
+  void update_live_output_epoch(
+      std::optional<double> post_stitch_rotate_degrees,
+      std::optional<std::string> authorization_id);
 
   absl::Mutex stitcher_mu_;
   std::unique_ptr<STITCHER_FP32> stitcher_fp32_ ABSL_GUARDED_BY(stitcher_mu_);
@@ -203,6 +210,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
   std::string field_mask_attempted_generation_;
+  std::string field_mask_attempted_authorization_id_;
   bool field_mask_publication_superseded_{false};
   size_t field_mask_superseded_retry_frames_remaining_{0};
   bool calibration_completion_reported_{false};
@@ -228,7 +236,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unordered_map<NvBufSurface*, EosSnapshot> eos_snapshot_by_surface_;
   std::optional<gint> last_stitched_frame_num_;
   bool dropped_runtime_calibration_batches_before_output_{false};
-  std::atomic<double> post_stitch_rotate_degrees_{0.0};
+  std::mutex live_output_epoch_update_mu_;
+  std::shared_ptr<const LiveOutputEpoch> live_output_epoch_{std::make_shared<const LiveOutputEpoch>()};
   void* rotation_scratch_data_{nullptr};
   size_t rotation_scratch_pitch_{0};
   size_t rotation_scratch_width_{0};

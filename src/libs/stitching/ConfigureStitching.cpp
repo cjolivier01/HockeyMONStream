@@ -2486,24 +2486,78 @@ bool is_field_mask_configured_for_stitching_config(
       .ok();
 }
 
+namespace {
+
+absl::Status validate_live_output_publication_authority(
+    const YAML::Node& config,
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id) {
+  std::optional<std::string> pending_generation;
+  std::optional<std::string> pending_authorization_id;
+  if (config && config.IsDefined()) {
+    if (!config.IsMap())
+      return absl::InvalidArgumentError("Game config must be a map");
+    const YAML::Node rink = config["rink"];
+    if (rink && rink.IsDefined()) {
+      if (!rink.IsMap())
+        return absl::InvalidArgumentError("Rink config must be a map");
+      const YAML::Node generation_node = rink["stitched_output_pending_generation"];
+      if (generation_node && generation_node.IsDefined()) {
+        if (!generation_node.IsScalar())
+          return absl::InvalidArgumentError("Pending stitched-output generation must be a scalar");
+        pending_generation = generation_node.as<std::string>();
+      }
+      const YAML::Node authorization_node = rink["stitched_output_pending_authorization_id"];
+      if (authorization_node && authorization_node.IsDefined()) {
+        if (!authorization_node.IsScalar())
+          return absl::InvalidArgumentError("Pending stitched-output authorization ID must be a scalar");
+        pending_authorization_id = authorization_node.as<std::string>();
+      }
+    }
+  }
+  if (pending_generation.has_value() != pending_authorization_id.has_value())
+    return absl::InvalidArgumentError("Pending stitched-output authorization is incomplete");
+  if (expected_output_generation.empty()) {
+    if (!expected_output_authorization_id.empty())
+      return absl::InvalidArgumentError("A live output authorization requires a stitched-output generation");
+    return pending_generation.has_value()
+        ? absl::AbortedError("A live stitched-output authorization owns artifact publication")
+        : absl::OkStatus();
+  }
+  if (expected_output_authorization_id.empty()) {
+    return pending_generation.has_value()
+        ? absl::AbortedError("A live stitched-output authorization owns artifact publication")
+        : absl::OkStatus();
+  }
+  if (!pending_generation.has_value() || *pending_generation != expected_output_generation ||
+      *pending_authorization_id != expected_output_authorization_id) {
+    return absl::AbortedError("A newer live stitched-output authorization owns artifact publication");
+  }
+  return absl::OkStatus();
+}
+
+} // namespace
+
 absl::Status validate_field_mask_publication_authority(
     const std::string& game_dir,
-    const std::string& expected_output_generation) {
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id) {
   if (game_dir.empty() || expected_output_generation.empty())
     return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
   const fs::path root(game_dir);
-  std::optional<YAML::Node> config;
-  HM_ASSIGN_OR_RETURN(config, load_game_config_file(root / "config.yaml"));
-  if (!config.has_value())
-    return absl::NotFoundError("Game config is missing");
-  const YAML::Node pending = (*config)["rink"]["stitched_output_pending_generation"];
-  if (!pending || !pending.IsDefined())
-    return absl::OkStatus();
-  if (!pending.IsScalar())
-    return absl::InvalidArgumentError("Pending stitched-output generation must be a scalar");
-  if (pending.as<std::string>() != expected_output_generation)
-    return absl::AbortedError("A newer live stitched-output generation owns field-mask publication");
-  return absl::OkStatus();
+  auto config_lock = GameConfigLock::TryAcquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
+  try {
+    if (!fs::is_regular_file(root / "config.yaml"))
+      return absl::NotFoundError("Game config is missing");
+    const YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
+    return validate_live_output_publication_authority(
+        config, expected_output_generation, expected_output_authorization_id);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate field-mask publication authority: " + std::string(exception.what()));
+  }
 }
 
 namespace {
@@ -2535,6 +2589,7 @@ absl::Status save_rink_profile_locked(
     const RinkProfile& profile,
     const std::string& hugin_generation,
     const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id,
     const std::string& expected_invalidation_id,
     const std::optional<double>& expected_persisted_rotation,
     const cv::Mat* stitched_image = nullptr) {
@@ -2626,6 +2681,8 @@ absl::Status save_rink_profile_locked(
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(config, expected_invalidation_id));
+    HM_RETURN_IF_ERROR(validate_live_output_publication_authority(
+        config, expected_output_generation, expected_output_authorization_id));
     std::string current_output_generation;
     if (!expected_output_generation.empty()) {
       HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
@@ -2653,13 +2710,8 @@ absl::Status save_rink_profile_locked(
       HM_ASSIGN_OR_RETURN(
           compatible_legacy_generation, stitched_output_generation_without_dimensions(expected_output_generation));
       const YAML::Node saved_generation = config["rink"]["stitched_output_generation"];
-      const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
-      if (pending_generation && pending_generation.IsDefined() && !pending_generation.IsScalar())
-        return absl::InvalidArgumentError("Pending stitched-output generation must be a scalar");
-      const bool has_pending_generation = pending_generation && pending_generation.IsDefined();
-      if (has_pending_generation && pending_generation.as<std::string>() != expected_output_generation) {
-        return absl::AbortedError("Stitched-output producer does not match the authorized live generation");
-      }
+      const bool has_pending_generation = config["rink"]["stitched_output_pending_generation"] &&
+          config["rink"]["stitched_output_pending_generation"].IsDefined();
       if (saved_generation && saved_generation.IsDefined()) {
         if (!saved_generation.IsScalar())
           return absl::InvalidArgumentError("Persisted stitched-output generation must be a scalar");
@@ -2702,9 +2754,7 @@ absl::Status save_rink_profile_locked(
       config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
     } else {
       config["rink"]["stitched_output_persisted_rotation_degrees"] = *expected_persisted_rotation;
-      const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
-      if (pending_generation && pending_generation.IsScalar() &&
-          pending_generation.as<std::string>() == expected_output_generation) {
+      if (!expected_output_authorization_id.empty()) {
         config["rink"].remove("stitched_output_pending_generation");
         config["rink"].remove("stitched_output_pending_authorization_id");
         config["rink"].remove("stitched_output_pending_previous_generation");
@@ -2854,7 +2904,7 @@ absl::Status save_rink_profile(
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
-  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id, std::nullopt);
+  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, {}, expected_invalidation_id, std::nullopt);
 }
 
 absl::Status save_rink_profile_with_stitched_image(
@@ -2862,7 +2912,8 @@ absl::Status save_rink_profile_with_stitched_image(
     const RinkProfile& profile,
     const cv::Mat& stitched_image,
     const std::string& expected_invalidation_id,
-    const std::string& expected_output_generation) {
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id) {
   if (game_dir.empty())
     return absl::InvalidArgumentError("A game directory is required");
   const fs::path root(game_dir);
@@ -2897,6 +2948,7 @@ absl::Status save_rink_profile_with_stitched_image(
       profile,
       *hugin_generation,
       expected_output_generation,
+      expected_output_authorization_id,
       expected_invalidation_id,
       expected_persisted_rotation,
       &stitched_image);
@@ -2907,7 +2959,8 @@ absl::Status create_field_mask(
     surface::Surface surface,
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    const std::string& expected_output_authorization_id) {
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("Rink-mask calibration cancelled before inference");
   const fs::path root(game_dir);
@@ -2933,6 +2986,8 @@ absl::Status create_field_mask(
     if (!config.ok())
       return config.status();
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+    HM_RETURN_IF_ERROR(validate_live_output_publication_authority(
+        *config, expected_output_generation, expected_output_authorization_id));
     if (!expected_output_generation.empty())
       HM_ASSIGN_OR_RETURN(expected_persisted_rotation, configured_post_stitch_rotation(*config));
   }
@@ -2977,6 +3032,7 @@ absl::Status create_field_mask(
       profile,
       *hugin_generation,
       expected_output_generation,
+      expected_output_authorization_id,
       expected_invalidation_id,
       expected_persisted_rotation,
       &stitched);

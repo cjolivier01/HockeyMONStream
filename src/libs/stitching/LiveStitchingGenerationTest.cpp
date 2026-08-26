@@ -155,6 +155,26 @@ int main() {
       "live rotation must preserve the scoreboard-disabled sentinel");
 
   write_config(root / "config.yaml", generation);
+  const auto accepted_before_shutdown =
+      hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0, "auth-shutdown");
+  const auto accepted_before_shutdown_commit = accepted_before_shutdown.ok()
+      ? hm::stitching::commit_live_stitched_output_rotation(
+            root.string(), accepted_before_shutdown->pending_generation, accepted_before_shutdown->authorization_id)
+      : accepted_before_shutdown.status();
+  const auto shutdown_rollback = accepted_before_shutdown.ok()
+      ? hm::stitching::rollback_live_stitched_output_rotation(
+            root.string(), accepted_before_shutdown->pending_generation, accepted_before_shutdown->authorization_id)
+      : absl::StatusOr<std::optional<hm::stitching::LiveStitchedOutputAuthorization>>(
+            accepted_before_shutdown.status());
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      accepted_before_shutdown.ok() && accepted_before_shutdown_commit.ok() && shutdown_rollback.ok() &&
+          !shutdown_rollback->has_value() && !config["rink"]["stitched_output_pending_generation"].IsDefined() &&
+          config["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>() ==
+              std::vector<std::vector<int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}},
+      "shutdown after runtime acceptance must restore the completed scoreboard polygon");
+
+  write_config(root / "config.yaml", generation);
   const auto older = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25, "auth-older");
   const auto newer = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0, "auth-newer");
   const auto cancel_older = older.ok()

@@ -432,6 +432,8 @@ int main() {
     }
     const auto live_override_authorization =
         hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0, "field-mask-live-9-a");
+    const std::string live_override_authorization_id =
+        live_override_authorization.ok() ? live_override_authorization->authorization_id : std::string();
     const YAML::Node after_live_override_authorization = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         live_override_authorization.ok() &&
@@ -443,28 +445,45 @@ int main() {
         "live rotation authorization must defer scoreboard invalidation until the request is committed");
     const auto newer_live_override_authorization =
         hm::stitching::authorize_live_stitched_output_rotation(root.string(), 10.0, "field-mask-live-10");
-    const absl::Status superseded_publication_authority =
-        hm::stitching::validate_field_mask_publication_authority(root.string(), live_override_generation);
-    const absl::Status current_publication_authority =
-        hm::stitching::validate_field_mask_publication_authority(root.string(), newer_live_override_generation);
+    const std::string newer_live_override_authorization_id =
+        newer_live_override_authorization.ok() ? newer_live_override_authorization->authorization_id : std::string();
+    const absl::Status superseded_publication_authority = hm::stitching::validate_field_mask_publication_authority(
+        root.string(), live_override_generation, live_override_authorization_id);
+    const absl::Status current_publication_authority = hm::stitching::validate_field_mask_publication_authority(
+        root.string(), newer_live_override_generation, newer_live_override_authorization_id);
+    auto held_config_lock = hm::stitching::GameConfigLock::Acquire(root);
+    const auto busy_preflight_start = std::chrono::steady_clock::now();
+    const absl::Status busy_preflight = held_config_lock.ok()
+        ? hm::stitching::validate_field_mask_publication_authority(
+              root.string(), newer_live_override_generation, newer_live_override_authorization_id)
+        : held_config_lock.status();
+    const auto busy_preflight_elapsed = std::chrono::steady_clock::now() - busy_preflight_start;
+    if (held_config_lock.ok())
+      held_config_lock->reset();
     const auto superseded_same_owner_publication = hm::stitching::save_rink_profile_with_stitched_image(
         root.string(),
         profile,
         stale_snapshot,
         "rink-run-a",
         pre_rotation_generation.ok() ? *pre_rotation_generation : std::string());
+    const absl::Status unauthenticated_publication =
+        hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a");
     const YAML::Node after_superseded_same_owner = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         newer_live_override_authorization.ok() &&
             newer_live_override_authorization->pending_generation == newer_live_override_generation &&
             absl::IsAborted(superseded_publication_authority) && current_publication_authority.ok() &&
-            absl::IsAborted(superseded_same_owner_publication) &&
+            absl::IsUnavailable(busy_preflight) && busy_preflight_elapsed < std::chrono::milliseconds(500) &&
+            absl::IsAborted(superseded_same_owner_publication) && absl::IsAborted(unauthenticated_publication) &&
             after_superseded_same_owner["rink"]["stitched_output_pending_generation"].as<std::string>() ==
                 newer_live_override_generation &&
             after_superseded_same_owner["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
         "a newer pending live generation must reject the completed same-owner producer without deleting scoreboard data");
     const auto current_live_override_authorization =
         hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0, "field-mask-live-9-b");
+    const std::string current_live_override_authorization_id = current_live_override_authorization.ok()
+        ? current_live_override_authorization->authorization_id
+        : std::string();
     const absl::Status current_live_override_commit = current_live_override_authorization.ok()
         ? hm::stitching::commit_live_stitched_output_rotation(
               root.string(),
@@ -477,15 +496,37 @@ int main() {
             current_live_override_commit.ok() &&
             !YAML::LoadFile((root / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
         "the current exact live generation must commit scoreboard invalidation after runtime acceptance");
+    NvBufSurfaceParams superseded_live_surface_params{};
+    hm::surface::Surface superseded_live_surface(&superseded_live_surface_params);
+    const absl::Status superseded_pre_inference = hm::stitching::create_field_mask(
+        root.string(),
+        superseded_live_surface,
+        live_override_generation,
+        "rink-run-a",
+        {},
+        live_override_authorization_id);
+    ok &= expect(
+        absl::IsAborted(superseded_pre_inference),
+        "field-mask inference must fence a superseded same-generation authorization before GPU readback");
     hm::stitching::RinkProfile mismatched_profile = profile;
     mismatched_profile.masks = {
         cv::Mat(12, 16, CV_8U, cv::Scalar(255)),
         cv::Mat(12, 16, CV_8U, cv::Scalar(255)),
     };
     const auto mismatched_masks = hm::stitching::save_rink_profile_with_stitched_image(
-        root.string(), mismatched_profile, stale_snapshot, "rink-run-a", live_override_generation);
+        root.string(),
+        mismatched_profile,
+        stale_snapshot,
+        "rink-run-a",
+        live_override_generation,
+        current_live_override_authorization_id);
     const auto mismatched_snapshot = hm::stitching::save_rink_profile_with_stitched_image(
-        root.string(), profile, cv::Mat(12, 16, CV_8UC3, cv::Scalar(1, 2, 3)), "rink-run-a", live_override_generation);
+        root.string(),
+        profile,
+        cv::Mat(12, 16, CV_8UC3, cv::Scalar(1, 2, 3)),
+        "rink-run-a",
+        live_override_generation,
+        current_live_override_authorization_id);
     const YAML::Node after_dimension_rejections = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         absl::IsAborted(mismatched_masks) && absl::IsAborted(mismatched_snapshot) &&
@@ -493,7 +534,12 @@ int main() {
                 live_override_generation,
         "rink publication must reject mask and snapshot dimensions that disagree with the producer generation");
     const auto live_override_status = hm::stitching::save_rink_profile_with_stitched_image(
-        root.string(), profile, stale_snapshot, "rink-run-a", live_override_generation);
+        root.string(),
+        profile,
+        stale_snapshot,
+        "rink-run-a",
+        live_override_generation,
+        current_live_override_authorization_id);
     const YAML::Node after_live_override = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         !live_override_generation.empty() && live_override_status.ok() &&
@@ -503,6 +549,16 @@ int main() {
             !after_live_override["rink"]["stitched_output_pending_generation"].IsDefined() &&
             hm::stitching::is_field_mask_configured(root.string(), live_override_generation, "rink-run-a"),
         "live runtime rotation override must publish without rewriting the persisted rotation");
+    const auto delayed_same_generation_publication = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(),
+        profile,
+        committed_snapshot,
+        "rink-run-a",
+        live_override_generation,
+        live_override_authorization_id);
+    ok &= expect(
+        absl::IsAborted(delayed_same_generation_publication),
+        "a delayed B1 producer must not consume B2 authority for the same stitched-output generation");
 
     std::string older_live_override_generation;
     if (!live_override_generation.empty() && live_override_canvas_size.ok()) {

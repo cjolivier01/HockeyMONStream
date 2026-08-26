@@ -25,6 +25,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"plugin-type", G_TYPE_STRING, true},
           {"plugin-private-config", G_TYPE_STRING, true},
           {"post-stitch-rotate-degrees", G_TYPE_DOUBLE, true},
+          {"stitched-output-authorization-id", G_TYPE_STRING, true},
           {"max-output-width", G_TYPE_UINT, true},
           {"fixed-edge-rotation-angle", G_TYPE_DOUBLE, true},
           {"fixed-edge-rotation-angle-left", G_TYPE_DOUBLE, true},
@@ -134,6 +135,7 @@ int main(int argc, char** argv) {
               {"output-height", "1080"},
               {"plugin-type", "playcropper"},
               {"plugin-private-config", "show=1;runtime-output-max-width=3840"},
+              {"stitched-output-authorization-id", "authorization-b2"},
               {"fixed-edge-rotation-angle", "12.5"},
               {"max-output-width", "4096"},
               {"fixed-edge-rotation-angle-left", "25.0"},
@@ -153,6 +155,7 @@ int main(int argc, char** argv) {
   guint output_width = 0;
   gchar* plugin_type = nullptr;
   gchar* private_config = nullptr;
+  gchar* stitched_output_authorization_id = nullptr;
   guint max_output_width = 0;
   gdouble fixed_edge_rotation_angle = 0.0;
   gdouble fixed_edge_rotation_angle_left = 0.0;
@@ -175,6 +178,8 @@ int main(int argc, char** argv) {
       &plugin_type,
       "plugin-private-config",
       &private_config,
+      "stitched-output-authorization-id",
+      &stitched_output_authorization_id,
       "max-output-width",
       &max_output_width,
       "fixed-edge-rotation-angle",
@@ -199,7 +204,8 @@ int main(int argc, char** argv) {
 
   const bool ok = silent == TRUE && source_id == 3 && output_width == 1920 && plugin_type &&
       std::string(plugin_type) == "playcropper" && private_config &&
-      std::string(private_config) == "show=1;runtime-output-max-width=3840" && max_output_width == 4096 &&
+      std::string(private_config) == "show=1;runtime-output-max-width=3840" && stitched_output_authorization_id &&
+      std::string(stitched_output_authorization_id) == "authorization-b2" && max_output_width == 4096 &&
       std::abs(fixed_edge_rotation_angle - 12.5) < 1e-6 && std::abs(fixed_edge_rotation_angle_left - 25.0) < 1e-6 &&
       std::abs(fixed_edge_rotation_angle_right - 75.0) < 1e-6 && std::abs(dynamic_acceleration_scaling - 1.25) < 1e-6 &&
       high_bit_depth == TRUE && std::abs(shadow_lift - 42.5) < 1e-6 && shadow_lift_black_point == TRUE &&
@@ -242,6 +248,7 @@ int main(int argc, char** argv) {
   g_object_get(G_OBJECT(element), "high-bit-depth", &high_bit_depth_after_invalid, NULL);
   g_free(plugin_type);
   g_free(private_config);
+  g_free(stitched_output_authorization_id);
   gst_object_unref(element);
 
   if (!ok || !high_bit_depth_is_restart_only || !sink_accepts_rgb10 || !black_point_mutable_while_playing ||

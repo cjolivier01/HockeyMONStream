@@ -2,6 +2,7 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
@@ -983,6 +984,8 @@ bool write_fake_runner(const QString& path) {
   file.write("        reject = os.environ.get('HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL') == '1'\n");
   file.write("        stall = os.environ.get('HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL') == '1'\n");
   file.write("        if reject and updates:\n");
+  file.write(
+      "            time.sleep(float(os.environ.get('HSTREAM_UI_TEST_RUNTIME_REJECTION_DELAY_MS', '0')) / 1000.0)\n");
   file.write("            element, assignment = updates[-1].split(' ', 1)\n");
   file.write("            property_name, runtime_value = assignment.split('=', 1)\n");
   file.write(
@@ -4295,7 +4298,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QTest::qWait(10);
     }
     if (!expect(
-            authorization_was_async && window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"),
+            authorization_was_async &&
+                window->logText().contains("stdin:@set-property hmstitcher0 stitched-output-authorization-id=") &&
+                window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"),
             "Completed live rotation authorization must not block the UI on the game config transaction")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
@@ -4481,6 +4486,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         return false;
       }
       YAML::Node rejection_fixture = YAML::LoadFile(config.string());
+      const std::string rejection_hugin_generation = "ui-rejection-generation\n";
+      rejection_fixture["rink"]["stitched_output_generation"] =
+          "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(rejection_hugin_generation.size()) + "\n" +
+          rejection_hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
       rejection_fixture["rink"]["scoreboard"]["perspective_polygon"] = rejection_scoreboard_polygon;
       const auto published =
           hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(rejection_fixture) + "\n");
@@ -4525,6 +4534,58 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+
+    qputenv("HSTREAM_UI_TEST_RUNTIME_REJECTION_DELAY_MS", "300");
+    const auto rejection_predecessor = hm::stitching::authorize_live_stitched_output_rotation(
+        config.parent_path().string(), 4.0, "ui-rejection-predecessor");
+    activate(start);
+    for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    rotate->setValue(69);
+    bool rejection_authorization_published = false;
+    for (int i = 0; i < 100 && !rejection_authorization_published; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(5);
+      const YAML::Node pending = YAML::LoadFile(config.string());
+      rejection_authorization_published = pending["rink"]["stitched_output_pending_generation"].IsDefined() &&
+          pending["rink"]["stitched_output_pending_authorization_id"].IsDefined() &&
+          pending["rink"]["stitched_output_pending_authorization_id"].as<std::string>() != "ui-rejection-predecessor";
+    }
+    auto rejection_exit_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    const bool exit_requested_during_rejection = rejection_exit_lock.ok() &&
+        HStreamWindowTestAccess::requestPipelineProcessExit(window) == QByteArray("@test-exit\n").size();
+    for (int i = 0; i < 150 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    if (rejection_exit_lock.ok())
+      rejection_exit_lock->reset();
+    for (int i = 0; i < 200 && HStreamWindowTestAccess::liveRotationAuthorizationPending(window); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const YAML::Node after_rejection_exit = YAML::LoadFile(config.string());
+    const bool rejection_exit_unwound = rejection_predecessor.ok() && *rejection_predecessor &&
+        rejection_authorization_published && exit_requested_during_rejection &&
+        window->pipelineStateText() == "STOPPED" &&
+        !HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
+        !after_rejection_exit["rink"]["stitched_output_pending_generation"].IsDefined() &&
+        !after_rejection_exit["rink"]["stitched_output_pending_authorization_id"].IsDefined() &&
+        after_rejection_exit["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>() ==
+            rejection_scoreboard_polygon;
+    if (!rejection_exit_unwound) {
+      std::cerr << "rejection-exit state: predecessor=" << (rejection_predecessor.ok() && *rejection_predecessor)
+                << " published=" << rejection_authorization_published
+                << " exit-requested=" << exit_requested_during_rejection
+                << " pipeline=" << window->pipelineStateText().toStdString()
+                << " worker-pending=" << HStreamWindowTestAccess::liveRotationAuthorizationPending(window)
+                << "\nconfig:\n"
+                << YAML::Dump(after_rejection_exit) << "\nlog:\n"
+                << window->logText().right(6000).toStdString() << '\n';
+    }
+    qunsetenv("HSTREAM_UI_TEST_RUNTIME_REJECTION_DELAY_MS");
     qunsetenv("HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL");
     if (!expect(
             window->logText().count("stitching calibration clean command") == clean_commands_before,
@@ -4538,6 +4599,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             rejected_rotation_preserved_config,
             "Rejected live rotation must cancel its exact authorization without deleting scoreboard geometry") ||
         !expect(
+            rejection_exit_unwound,
+            "Pipeline exit during rejection rollback must unwind restored predecessor authority") ||
+        !expect(
             window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=save/restart") &&
                 !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=pending") &&
                 !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=failed"),
@@ -4545,7 +4609,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       return false;
     }
 
-    qputenv("HSTREAM_UI_TEST_CLOSE_STDIN", "1");
+    qputenv("HSTREAM_UI_TEST_SHORT_LIVE_ROTATION_WRITE", "1");
     render_video->setChecked(false);
     const int disable_recoveries_before_write_error = window->logText().count("GPU preview disable failed (");
     activate(start);
@@ -4553,13 +4617,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    QTest::qWait(100);
     rotate->setValue(70);
-    for (int i = 0; i < 50 && !window->logText().contains("pipeline remains running"); ++i) {
+    for (int i = 0; i < 100 && window->pipelineStateText() != "STOPPED"; ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    const bool write_error_kept_running = window->pipelineStateText() == "PLAYING";
+    for (int i = 0; i < 200 && HStreamWindowTestAccess::liveRotationAuthorizationPending(window); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const YAML::Node after_failed_rotation_write = YAML::LoadFile(config.string());
+    const bool write_error_stopped_for_reconciliation = window->pipelineStateText() == "STOPPED" &&
+        !HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
+        !after_failed_rotation_write["rink"]["stitched_output_pending_generation"].IsDefined() &&
+        !after_failed_rotation_write["rink"]["stitched_output_pending_authorization_id"].IsDefined();
     const bool rendering_stayed_unchecked = !render_video->isChecked();
     const bool target_stayed_unmapped = preview_target->isHidden();
     const bool backend_reported_disabled =
@@ -4570,12 +4641,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const bool write_error_kept_rendering_disabled = rendering_stayed_unchecked && target_stayed_unmapped &&
         embedded_backend_state_is_valid &&
         disable_recoveries_after_write_error == disable_recoveries_before_write_error;
-    activate(stop);
-    for (int i = 0; i < 50 && window->pipelineStateText() != "STOPPED"; ++i) {
-      QApplication::processEvents();
-      QTest::qWait(10);
-    }
-    qunsetenv("HSTREAM_UI_TEST_CLOSE_STDIN");
+    qunsetenv("HSTREAM_UI_TEST_SHORT_LIVE_ROTATION_WRITE");
     render_video->setChecked(true);
     if (!write_error_kept_rendering_disabled) {
       std::cerr << "write-error render state: checked=" << !rendering_stayed_unchecked
@@ -4583,7 +4649,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
                 << " disable-recoveries=" << disable_recoveries_before_write_error << "->"
                 << disable_recoveries_after_write_error << '\n';
     }
-    if (!expect(write_error_kept_running, "A runtime-control write error should not mark live playback stopped") ||
+    if (window->pipelineStateText() != "STOPPED")
+      activate(stop);
+    if (!expect(
+            write_error_stopped_for_reconciliation,
+            "A failed live-rotation command write must stop playback before authorization rollback") ||
         !expect(
             write_error_kept_rendering_disabled,
             "An unrelated write error after acknowledged render-off must not re-enable or remap GPU preview")) {

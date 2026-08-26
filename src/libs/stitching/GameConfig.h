@@ -22,6 +22,9 @@ class GameConfigLock final {
 
   static absl::StatusOr<std::unique_ptr<GameConfigLock>> Acquire(const std::filesystem::path& game_dir);
 
+  // Returns Unavailable instead of waiting when another config transaction is active.
+  static absl::StatusOr<std::unique_ptr<GameConfigLock>> TryAcquire(const std::filesystem::path& game_dir);
+
  private:
   explicit GameConfigLock(int descriptor) : descriptor_(descriptor) {}
 
@@ -77,9 +80,7 @@ absl::Status validate_pending_stitching_invalidation(
 // Accepts the same generation while it is pending or after it has completed.
 // Long-lived runtime artifact owners use this to regenerate downstream data
 // until a newer invalidation replaces their generation ID.
-absl::Status validate_stitching_generation_owner(
-    const YAML::Node& config,
-    const std::string& expected_invalidation_id);
+absl::Status validate_stitching_generation_owner(const YAML::Node& config, const std::string& expected_invalidation_id);
 
 // Loads and validates config_path without acquiring another lock. The caller
 // must hold GameConfigTransactionLock so validation and its dependent artifact

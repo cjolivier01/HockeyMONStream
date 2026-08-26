@@ -342,6 +342,8 @@ absl::StatusOr<std::optional<LiveStitchedOutputAuthorization>> rollback_live_sti
         config["rink"]["stitched_output_pending_completed_scoreboard_polygon"] = completed_scoreboard_polygon;
       }
       restored = LiveStitchedOutputAuthorization{*previous_generation, *previous_authorization_id, true, {}};
+    } else if (completed_scoreboard_polygon && completed_scoreboard_polygon.IsDefined()) {
+      config["rink"]["scoreboard"]["perspective_polygon"] = completed_scoreboard_polygon;
     }
     const absl::Status published = publish_game_config(root, YAML::Dump(config) + "\n");
     if (!published.ok())

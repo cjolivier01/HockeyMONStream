@@ -441,6 +441,25 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs
   return std::unique_ptr<GameConfigLock>(new GameConfigLock(descriptor));
 }
 
+absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::TryAcquire(const fs::path& game_dir) {
+  std::error_code error;
+  if (!fs::is_directory(game_dir, error) || error)
+    return absl::NotFoundError("Cannot lock config outside an existing game directory: " + game_dir.string());
+  const fs::path path = game_dir / ".hstream-config.lock";
+  const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+  if (descriptor < 0)
+    return absl::InternalError("Unable to open game config lock: " + std::string(std::strerror(errno)));
+  if (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+    const int lock_errno = errno;
+    const std::string message = std::strerror(lock_errno);
+    ::close(descriptor);
+    if (lock_errno == EWOULDBLOCK || lock_errno == EAGAIN)
+      return absl::UnavailableError("Game config is being updated");
+    return absl::InternalError("Unable to lock game config: " + message);
+  }
+  return std::unique_ptr<GameConfigLock>(new GameConfigLock(descriptor));
+}
+
 absl::Status publish_game_config(const fs::path& game_dir, const std::string& contents) {
   return publish_named_file(game_dir / "config.yaml", contents);
 }

@@ -10,14 +10,20 @@ namespace hm::stitching {
 
 class StitchedOutputGenerationPayload {
  public:
-  explicit StitchedOutputGenerationPayload(std::string generation) : generation_(std::move(generation)) {}
+  explicit StitchedOutputGenerationPayload(std::string generation, std::string authorization_id = {})
+      : generation_(std::move(generation)), authorization_id_(std::move(authorization_id)) {}
 
   const std::string& generation() const {
     return generation_;
   }
 
+  const std::string& authorization_id() const {
+    return authorization_id_;
+  }
+
  private:
   std::string generation_;
+  std::string authorization_id_;
 };
 
 inline NvDsMetaType stitched_output_generation_meta_type() {
@@ -56,13 +62,17 @@ inline const StitchedOutputGenerationPayload* find_stitched_output_generation_me
   return nullptr;
 }
 
-inline bool add_stitched_output_generation_meta(NvDsFrameMeta* frame_meta, std::string generation) noexcept {
+inline bool add_stitched_output_generation_meta(
+    NvDsFrameMeta* frame_meta,
+    std::string generation,
+    std::string authorization_id = {}) noexcept {
   try {
     if (!frame_meta || !frame_meta->base_meta.batch_meta || generation.empty())
       return false;
     if (const auto* existing = find_stitched_output_generation_meta(frame_meta))
-      return existing->generation() == generation;
-    auto payload = std::make_unique<StitchedOutputGenerationPayload>(std::move(generation));
+      return existing->generation() == generation && existing->authorization_id() == authorization_id;
+    auto payload =
+        std::make_unique<StitchedOutputGenerationPayload>(std::move(generation), std::move(authorization_id));
     NvDsUserMeta* user_meta = nvds_acquire_user_meta_from_pool(frame_meta->base_meta.batch_meta);
     if (!user_meta)
       return false;

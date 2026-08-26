@@ -146,6 +146,7 @@ enum {
   PROP_INTERPOLATION_METHOD,
   PROP_PLUGIN_PRIVATE_CONFIG,
   PROP_POST_STITCH_ROTATE_DEGREES,
+  PROP_STITCHED_OUTPUT_AUTHORIZATION_ID,
   PROP_SCOREBOARD_PERSPECTIVE_POLYGON,
   PROP_MAX_OUTPUT_WIDTH,
   PROP_FIXED_EDGE_ROTATION_ANGLE,
@@ -1153,6 +1154,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_STITCHED_OUTPUT_AUTHORIZATION_ID,
+      g_param_spec_string(
+          "stitched-output-authorization-id",
+          "Stitched-output authorization ID",
+          "Unique live-rotation publication epoch attached to stitched frames",
+          NULL,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_PLAYING)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_SCOREBOARD_PERSPECTIVE_POLYGON,
       g_param_spec_string(
           "scoreboard-perspective-polygon",
@@ -1347,6 +1358,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   assert(!videoprep->plugin_type);
   videoprep->plugin_type = NULL; // strdup("videoprep");
   videoprep->scoreboard_perspective_polygon = NULL;
+  videoprep->stitched_output_authorization_id = NULL;
   videoprep->post_stitch_rotate_degrees = 0.0;
   videoprep->max_output_width = 0;
   videoprep->fixed_edge_rotation_angle = 10.0;
@@ -1360,6 +1372,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->exposure = 0.0;
   videoprep->last_property_set_ok = TRUE;
   videoprep->post_stitch_rotate_degrees_set = FALSE;
+  videoprep->stitched_output_authorization_id_set = FALSE;
   videoprep->max_output_width_set = FALSE;
   videoprep->fixed_edge_rotation_angle_set = FALSE;
   videoprep->fixed_edge_rotation_angle_left_set = FALSE;
@@ -1373,6 +1386,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->property_set_sequence = 0;
   videoprep->plugin_private_config_sequence = 0;
   videoprep->post_stitch_rotate_degrees_sequence = 0;
+  videoprep->stitched_output_authorization_id_sequence = 0;
   videoprep->max_output_width_sequence = 0;
   videoprep->fixed_edge_rotation_angle_sequence = 0;
   videoprep->fixed_edge_rotation_angle_left_sequence = 0;
@@ -1430,6 +1444,8 @@ static void gst_videoprep_finalize(GObject* object) {
     g_free(videoprep->plugin_type);
   if (videoprep->scoreboard_perspective_polygon)
     g_free(videoprep->scoreboard_perspective_polygon);
+  if (videoprep->stitched_output_authorization_id)
+    g_free(videoprep->stitched_output_authorization_id);
 }
 
 static void gst_videoprep_init(GstVideoPrep* videoprep) {
@@ -1513,6 +1529,26 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
         videoprep->post_stitch_rotate_degrees_set = previous_set;
         videoprep->post_stitch_rotate_degrees_sequence = previous_sequence;
       }
+      break;
+    }
+    case PROP_STITCHED_OUTPUT_AUTHORIZATION_ID: {
+      gchar* previous =
+          videoprep->stitched_output_authorization_id ? g_strdup(videoprep->stitched_output_authorization_id) : nullptr;
+      const gboolean previous_set = videoprep->stitched_output_authorization_id_set;
+      const guint previous_sequence = videoprep->stitched_output_authorization_id_sequence;
+      hm::gst::set_value(videoprep->stitched_output_authorization_id, value);
+      videoprep->stitched_output_authorization_id_set = TRUE;
+      videoprep->stitched_output_authorization_id_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property(
+              "stitched-output-authorization-id",
+              videoprep->stitched_output_authorization_id ? videoprep->stitched_output_authorization_id : "")) {
+        g_free(videoprep->stitched_output_authorization_id);
+        videoprep->stitched_output_authorization_id = previous;
+        previous = nullptr;
+        videoprep->stitched_output_authorization_id_set = previous_set;
+        videoprep->stitched_output_authorization_id_sequence = previous_sequence;
+      }
+      g_free(previous);
       break;
     }
     case PROP_SCOREBOARD_PERSPECTIVE_POLYGON: {
@@ -1739,6 +1775,14 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
              Property("post-stitch-rotate-degrees", std::to_string(videoprep->post_stitch_rotate_degrees))) &&
         ok;
   }
+  if (videoprep->stitched_output_authorization_id_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->stitched_output_authorization_id_sequence, "stitched-output-authorization-id")) {
+    ok = videoprep->priv->SetProperty(Property(
+             "stitched-output-authorization-id",
+             videoprep->stitched_output_authorization_id ? videoprep->stitched_output_authorization_id : "")) &&
+        ok;
+  }
   if (videoprep->scoreboard_perspective_polygon_set && videoprep->scoreboard_perspective_polygon &&
       typed_property_wins_over_private_config(
           videoprep, videoprep->scoreboard_perspective_polygon_sequence, "scoreboard-perspective-polygon")) {
@@ -1828,6 +1872,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       PROPERTY_GET_CASE(PROP_CONFIG_FILE, videoprep->config_file);
     case PROP_POST_STITCH_ROTATE_DEGREES:
       g_value_set_double(value, videoprep->post_stitch_rotate_degrees);
+      break;
+    case PROP_STITCHED_OUTPUT_AUTHORIZATION_ID:
+      g_value_set_string(value, videoprep->stitched_output_authorization_id);
       break;
     case PROP_SCOREBOARD_PERSPECTIVE_POLYGON:
       g_value_set_string(value, videoprep->scoreboard_perspective_polygon);

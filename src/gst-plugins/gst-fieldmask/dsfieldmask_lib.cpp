@@ -37,7 +37,9 @@ struct DsFieldMaskCtx {
   cv::Rect2i field_box;
   bool logged_mask_size_mismatch{false};
   std::string loaded_output_generation;
+  std::string loaded_output_authorization_id;
   std::optional<std::string> superseded_output_generation;
+  std::string superseded_output_authorization_id;
   size_t superseded_retry_frames_remaining{0};
   std::string calibration_invalidation_id;
 };
@@ -271,8 +273,10 @@ absl::Status DsFieldMaskProcessFrame(
   }
 
   std::string output_generation;
+  std::string output_authorization_id;
   if (const auto* payload = hm::stitching::find_stitched_output_generation_meta(frame_meta)) {
     output_generation = payload->generation();
+    output_authorization_id = payload->authorization_id();
   }
   if (ctx->total_frame_count > 0 && !ctx->loaded_output_generation.empty() && output_generation.empty()) {
     return absl::FailedPreconditionError("Stitched-output generation metadata disappeared after mask loading");
@@ -288,9 +292,13 @@ absl::Status DsFieldMaskProcessFrame(
     is_obsolete_detection_mask = true;
   }
 
-  const bool output_generation_changed = output_generation != ctx->loaded_output_generation;
-  if (ctx->superseded_output_generation.has_value() && *ctx->superseded_output_generation != output_generation) {
+  const bool output_generation_changed = output_generation != ctx->loaded_output_generation ||
+      output_authorization_id != ctx->loaded_output_authorization_id;
+  if (ctx->superseded_output_generation.has_value() &&
+      (*ctx->superseded_output_generation != output_generation ||
+       ctx->superseded_output_authorization_id != output_authorization_id)) {
     ctx->superseded_output_generation.reset();
+    ctx->superseded_output_authorization_id.clear();
     ctx->superseded_retry_frames_remaining = 0;
   }
   if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
@@ -300,14 +308,15 @@ absl::Status DsFieldMaskProcessFrame(
         --ctx->superseded_retry_frames_remaining;
         return absl::OkStatus();
       }
-      const absl::Status authority =
-          hm::stitching::validate_field_mask_publication_authority(mask_path.parent_path().string(), output_generation);
-      if (absl::IsAborted(authority)) {
+      const absl::Status authority = hm::stitching::validate_field_mask_publication_authority(
+          mask_path.parent_path().string(), output_generation, output_authorization_id);
+      if (absl::IsAborted(authority) || absl::IsUnavailable(authority)) {
         ctx->superseded_retry_frames_remaining = kSupersededPublicationRetryFrames;
         return absl::OkStatus();
       }
       HM_RETURN_IF_ERROR(authority);
       ctx->superseded_output_generation.reset();
+      ctx->superseded_output_authorization_id.clear();
     }
     auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     if (is_obsolete_detection_mask || !loaded_mask.ok()) {
@@ -323,9 +332,15 @@ absl::Status DsFieldMaskProcessFrame(
       hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
       const absl::Status created = hm::stitching::create_field_mask(
-          mask_path.parent_path().string(), this_surface, output_generation, ctx->calibration_invalidation_id);
+          mask_path.parent_path().string(),
+          this_surface,
+          output_generation,
+          ctx->calibration_invalidation_id,
+          {},
+          output_authorization_id);
       if (absl::IsAborted(created)) {
         ctx->superseded_output_generation = output_generation;
+        ctx->superseded_output_authorization_id = output_authorization_id;
         ctx->superseded_retry_frames_remaining = kSupersededPublicationRetryFrames;
         return absl::OkStatus();
       }
@@ -336,6 +351,7 @@ absl::Status DsFieldMaskProcessFrame(
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
     ctx->loaded_output_generation = output_generation;
+    ctx->loaded_output_authorization_id = output_authorization_id;
   }
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA

@@ -13938,8 +13938,7 @@ void HStreamWindow::resolveLiveRotationRuntimeBatch(quint64 batch_id) {
         "runtime rejection",
         [this, batch_id](
             bool rolled_back, const std::optional<LiveRotationAuthorization>& restored, const QString& error) {
-          if (restored.has_value())
-            active_live_rotation_authorization_ = restored;
+          adoptRestoredLiveRotationAuthorization(restored, "pipeline no longer owns rejected live rotation");
           finishRuntimeControlBatch(
               batch_id, true, rolled_back ? QString("runtime-rejection") : QString("authorization-rollback"));
           if (!rolled_back) {
@@ -14027,7 +14026,16 @@ bool HStreamWindow::publishRuntimeControlBatch(
         {property_command.element, property_command.property, property_command.value, batch_id});
   }
   const QByteArray command = QString("@set-properties %1\n").arg(assignments.join(';')).toLocal8Bit();
-  if (pipeline_process_->write(command) != command.size()) {
+  const QByteArray write_payload =
+      live_rotation_authorization.has_value() && qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SHORT_LIVE_ROTATION_WRITE")
+      ? command.left(command.size() / 2)
+      : command;
+  if (pipeline_process_->write(write_payload) != command.size()) {
+    const bool ambiguous_live_rotation = live_rotation_authorization.has_value();
+    if (ambiguous_live_rotation) {
+      appendLog("live rotation command write was incomplete; stopping pipeline before authorization rollback");
+      stopPipeline();
+    }
     pending_runtime_controls_.erase(
         std::remove_if(
             pending_runtime_controls_.begin(),
@@ -14036,9 +14044,10 @@ bool HStreamWindow::publishRuntimeControlBatch(
         pending_runtime_controls_.end());
     runtime_control_batches_.erase(batch_id);
     for (const auto& [control_id, control_value] : controls) {
-      appendLog(QString("camera control %1=%2 apply=failed reason=pipeline command write")
+      appendLog(QString("camera control %1=%2 apply=failed reason=%3")
                     .arg(control_id)
-                    .arg(control_value));
+                    .arg(control_value)
+                    .arg(ambiguous_live_rotation ? "incomplete pipeline command write" : "pipeline command write"));
     }
     return false;
   }
@@ -14151,6 +14160,12 @@ bool HStreamWindow::publishRotationRuntimeControls(
     if (!authorized_stitch_rotation.has_value()) {
       controls.erase("Stitch_Rotate_Degrees");
     } else {
+      commands.push_back(
+          {"hmstitcher0",
+           "stitched-output-authorization-id",
+           live_rotation_authorization.has_value()
+               ? QString::fromStdString(live_rotation_authorization->authorization_id)
+               : QString()});
       commands.push_back({"hmstitcher0", "post-stitch-rotate-degrees", QString::number(*authorized_stitch_rotation)});
       if (live_rotation_authorization.has_value() && !active_run_is_calibration_) {
         commands.push_back(
@@ -14251,6 +14266,18 @@ void HStreamWindow::rollbackLiveRotationAuthorization(
         if (complete)
           complete(result->ok, restored, result->error);
       });
+}
+
+void HStreamWindow::adoptRestoredLiveRotationAuthorization(
+    const std::optional<LiveRotationAuthorization>& restored,
+    const QString& reason) {
+  if (!restored.has_value())
+    return;
+  const bool pipeline_owns_authorization = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning &&
+      active_run_game_id_ == restored->game_id;
+  active_live_rotation_authorization_ = restored;
+  if (!pipeline_owns_authorization)
+    rollbackActiveLiveRotationAuthorization(reason);
 }
 
 void HStreamWindow::rollbackActiveLiveRotationAuthorization(const QString& reason) {
@@ -14361,8 +14388,8 @@ void HStreamWindow::completeLiveRotationAuthorization(
           *authorization,
           "pipeline command write",
           [this](bool rolled_back, const std::optional<LiveRotationAuthorization>& restored, const QString&) {
-            if (rolled_back && restored.has_value())
-              active_live_rotation_authorization_ = restored;
+            if (rolled_back)
+              adoptRestoredLiveRotationAuthorization(restored, "pipeline no longer owns failed live rotation write");
           });
     }
     flushScheduledRuntimeControls();

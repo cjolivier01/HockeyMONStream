@@ -7,8 +7,9 @@ namespace pipeline {
 
 inline bool is_allowlisted_runtime_property(std::string_view element_name, std::string_view property_name) {
   return (element_name == "hmstitcher0" &&
-          (property_name == "post-stitch-rotate-degrees" || property_name == "shadow-lift" ||
-           property_name == "shadow-lift-black-point" || property_name == "exposure")) ||
+          (property_name == "post-stitch-rotate-degrees" || property_name == "stitched-output-authorization-id" ||
+           property_name == "shadow-lift" || property_name == "shadow-lift-black-point" ||
+           property_name == "exposure")) ||
       (element_name == "dsplaytracker0" &&
        (property_name == "draw" || property_name == "runtime-tuning-config-file" ||
         property_name == "fixed-edge-rotation-angle" || property_name == "fixed-edge-rotation-angle-left" ||
