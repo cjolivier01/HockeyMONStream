@@ -23,8 +23,10 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <png.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
@@ -704,6 +706,71 @@ absl::Status fsync_stitch_path(const fs::path& path, bool directory) {
   return absl::OkStatus();
 }
 
+absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs::path& destination) {
+  const bool force_portable_fallback = [] {
+    const char* value = std::getenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  if (!force_portable_fallback && ::link(source.c_str(), destination.c_str()) == 0)
+    return fsync_stitch_path(destination);
+  const int link_error = force_portable_fallback ? EOPNOTSUPP : errno;
+
+  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (source_fd < 0)
+    return absl::InternalError("Unable to open stitch artifact for rollback: " + source.string());
+  struct stat metadata{};
+  if (::fstat(source_fd, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
+    ::close(source_fd);
+    return absl::FailedPreconditionError("Stitch rollback source is not a regular file: " + source.string());
+  }
+  const int destination_fd =
+      ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, metadata.st_mode & 0777);
+  if (destination_fd < 0) {
+    ::close(source_fd);
+    return absl::InternalError("Unable to create restored stitch artifact: " + destination.string());
+  }
+  const bool cloned = !force_portable_fallback && ::ioctl(destination_fd, FICLONE, source_fd) == 0;
+  const int clone_error = force_portable_fallback ? EOPNOTSUPP : errno;
+  if (cloned) {
+    timespec times[2] = {};
+    times[0].tv_nsec = UTIME_OMIT;
+    times[1] = metadata.st_mtim;
+    const bool metadata_restored = ::fchmod(destination_fd, metadata.st_mode & 07777) == 0 &&
+        ::futimens(destination_fd, times) == 0 && ::fsync(destination_fd) == 0;
+    const int metadata_error = errno;
+    ::close(destination_fd);
+    ::close(source_fd);
+    if (metadata_restored)
+      return absl::OkStatus();
+    std::error_code ignored;
+    fs::remove(destination, ignored);
+    return absl::InternalError(
+        "Unable to preserve cloned stitch artifact metadata: " + std::string(std::strerror(metadata_error)));
+  }
+  ::close(destination_fd);
+  ::close(source_fd);
+
+  std::error_code error;
+  fs::remove(destination, error);
+  error.clear();
+  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+  if (!error) {
+    timespec times[2] = {};
+    times[0].tv_nsec = UTIME_OMIT;
+    times[1] = metadata.st_mtim;
+    if (::chmod(destination.c_str(), metadata.st_mode & 07777) != 0 ||
+        ::utimensat(AT_FDCWD, destination.c_str(), times, 0) != 0) {
+      error = std::error_code(errno, std::generic_category());
+    }
+  }
+  if (error) {
+    return absl::InternalError(
+        "Unable to restore stitch artifact after hard link (" + std::string(std::strerror(link_error)) +
+        ") and reflink (" + std::string(std::strerror(clone_error)) + ") failed: " + error.message());
+  }
+  return fsync_stitch_path(destination);
+}
+
 absl::Status write_stitch_transaction_file(const fs::path& path, const std::string& contents) {
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   if (!output)
@@ -799,7 +866,23 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         }
       }
 
-      const bool legacy_migration = !has_prior_manifest || *state == "LEGACY_MIGRATE";
+      bool interrupted_prepared_legacy_migration = false;
+      if (*state == "PREPARED" && has_prior_manifest) {
+        interrupted_prepared_legacy_migration = !backups.empty();
+        if (!interrupted_prepared_legacy_migration && prior_artifacts.empty()) {
+          for (const std::string& name : manifested) {
+            const bool root_exists = fs::exists(root / name, error);
+            if (error)
+              return absl::InternalError("Unable to inspect legacy root artifact: " + error.message());
+            if (root_exists) {
+              interrupted_prepared_legacy_migration = true;
+              break;
+            }
+          }
+        }
+      }
+      const bool legacy_migration =
+          !has_prior_manifest || *state == "LEGACY_MIGRATE" || interrupted_prepared_legacy_migration;
       if (legacy_migration) {
         // Old hard-link journals identify the prior generation only through
         // their durable backups. Any manifested root-only entry may be a
@@ -893,9 +976,9 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           fs::remove(root / name, error);
           if (error)
             return absl::InternalError("Unable to remove replacement stitch artifact: " + error.message());
-          fs::rename(backup->second, root / name, error);
-          if (error)
-            return absl::InternalError("Unable to restore interrupted stitch artifact: " + error.message());
+          auto restore = clone_or_copy_stitch_rollback_file(backup->second, root / name);
+          if (!restore.ok())
+            return restore;
           ++restored;
           if (const char* fail_after = std::getenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER");
               fail_after != nullptr && restored == static_cast<size_t>(std::strtoull(fail_after, nullptr, 10))) {
@@ -906,6 +989,12 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         auto status = fsync_stitch_path(root, true);
         if (!status.ok())
           return status;
+        for (const auto& [name, backup] : backups) {
+          (void)name;
+          fs::remove(backup, error);
+          if (error)
+            return absl::InternalError("Unable to retire restored stitch backup: " + error.message());
+        }
         status = fsync_stitch_path(previous, true);
         if (!status.ok())
           return status;
