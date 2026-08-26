@@ -1070,9 +1070,10 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
       return rollback_error("Unable to inspect old stitch artifact " + name + ": " + error.message());
     if (!exists)
       continue;
-    fs::rename(game_dir / name, backups / name, error);
-    if (error)
-      return rollback_error("Unable to preserve previous stitch artifact " + name + ": " + error.message());
+    status = clone_or_copy_stitch_rollback_file(game_dir / name, backups / name);
+    if (!status.ok())
+      return rollback_error(
+          "Unable to preserve previous stitch artifact " + name + ": " + std::string(status.message()));
     ++backup_count;
     if (backup_count == 1) {
       if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_DURING_BACKUP");

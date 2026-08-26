@@ -54,6 +54,9 @@ const std::vector<std::string>& required_stitch_artifact_names();
 const std::vector<std::string>& stitch_artifact_names();
 absl::Status recover_stitch_transactions_locked(const std::filesystem::path& game_dir);
 absl::Status fsync_stitch_path(const std::filesystem::path& path, bool directory = false);
+absl::Status clone_or_copy_stitch_rollback_file(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination);
 absl::Status write_stitch_transaction_file(const std::filesystem::path& path, const std::string& contents);
 absl::Status publish_stitch_file_atomically(const std::filesystem::path& path, const std::string& contents);
 absl::Status prepare_stitch_generation_publication(
