@@ -897,6 +897,7 @@ int main() {
   const auto interrupted_legacy_migration = hm::stitching::HuginProject::Recover(root / "game");
   ::unsetenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST");
   ok &= expect(!interrupted_legacy_migration.ok(), "legacy Hugin journal migration must be resumable");
+  std::ofstream(interrupted / "previous_artifacts", std::ios::trunc) << "hm_project.pto\n";
   const auto recovered = hm::stitching::HuginProject::Recover(root / "game");
   ok &= expect(recovered.ok(), "prepared Hugin publication must recover after an interrupted publish");
   ok &= expect(!fs::exists(interrupted), "recovered Hugin transaction must be cleaned");

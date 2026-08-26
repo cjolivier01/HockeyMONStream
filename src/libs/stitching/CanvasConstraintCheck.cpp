@@ -765,7 +765,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       const bool has_prior_manifest = fs::exists(prior_manifest_path, error);
       if (error)
         return absl::InternalError("Unable to inspect stitch transaction prior-artifact manifest: " + error.message());
-      if (has_prior_manifest) {
+      if (has_prior_manifest && *state != "LEGACY_MIGRATE") {
         std::ifstream prior_manifest(prior_manifest_path);
         if (!prior_manifest)
           return absl::FailedPreconditionError("Prepared stitch transaction has no readable prior-artifact manifest");
@@ -814,22 +814,23 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           (void)old;
           migrated_prior_artifacts.insert(name);
         }
-        if (has_prior_manifest) {
-          if (prior_artifacts != migrated_prior_artifacts) {
-            return absl::FailedPreconditionError("Legacy stitch migration prior-artifact manifest changed");
-          }
-        } else {
-          prior_artifacts = std::move(migrated_prior_artifacts);
-          std::ostringstream prior_manifest;
-          for (const std::string& name : prior_artifacts)
-            prior_manifest << name << '\n';
-          auto status = write_stitch_transaction_file(prior_manifest_path, prior_manifest.str());
-          if (!status.ok())
-            return status;
-          if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST");
-              interrupt != nullptr && std::string(interrupt) == "1") {
-            return absl::InternalError("Injected stitch interruption after legacy migration manifest");
-          }
+        prior_artifacts = std::move(migrated_prior_artifacts);
+        std::ostringstream prior_manifest;
+        for (const std::string& name : prior_artifacts)
+          prior_manifest << name << '\n';
+        const fs::path temporary_prior_manifest = transaction / "previous_artifacts.migrating";
+        auto status = write_stitch_transaction_file(temporary_prior_manifest, prior_manifest.str());
+        if (!status.ok())
+          return status;
+        fs::rename(temporary_prior_manifest, prior_manifest_path, error);
+        if (error)
+          return absl::InternalError("Unable to publish legacy prior-artifact manifest: " + error.message());
+        status = fsync_stitch_path(transaction, true);
+        if (!status.ok())
+          return status;
+        if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_AFTER_LEGACY_MANIFEST");
+            interrupt != nullptr && std::string(interrupt) == "1") {
+          return absl::InternalError("Injected stitch interruption after legacy migration manifest");
         }
       } else if (*state == "PREPARED") {
         if (!backups.empty()) {
