@@ -181,6 +181,13 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
   };
 }
 
+bool should_attempt_one_pass_field_mask(
+    bool already_attempted,
+    const std::string& attempted_generation,
+    const std::string& current_generation) {
+  return !already_attempted || attempted_generation != current_generation;
+}
+
 bool should_defer_validated_artifact_load_failure(bool one_pass_mode, bool retry_already_failed) {
   return one_pass_mode && !retry_already_failed;
 }
@@ -2007,8 +2014,13 @@ absl::Status StitcherPriv::GenerateOutput(
     const std::string completion_scope = stitching::calibration_completion_scope(
         output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
-    if (one_pass_mode_ && !field_mask_attempted_) {
+    if (one_pass_mode_ &&
+        should_attempt_one_pass_field_mask(
+            field_mask_attempted_, field_mask_attempted_generation_, output_generation)) {
+      if (field_mask_attempted_)
+        calibration_completion_ready_ = false;
       field_mask_attempted_ = true;
+      field_mask_attempted_generation_ = output_generation;
       bool mask_configured = !calibrate_field_mask_ ||
           stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
@@ -2058,11 +2070,18 @@ absl::Status StitcherPriv::GenerateOutput(
               });
           release_high_bit_field_mask_canvas();
           if (!mask_status.ok()) {
+            if (absl::IsAborted(mask_status)) {
+              // A newer live output generation owns publication. Keep this
+              // generation latched so expensive inference is retried only when
+              // a frame carrying that newer generation arrives.
+              std::cout << "Field-mask publication superseded: " << mask_status << "\n" << std::flush;
+              return absl::OkStatus();
+            }
             std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
-            calibration_completion_reported_ = true;
             if (absl::IsCancelled(mask_status)) {
               return mask_status;
             }
+            calibration_completion_reported_ = true;
             return report_calibration_failure(mask_status);
           } else {
             mask_configured = true;

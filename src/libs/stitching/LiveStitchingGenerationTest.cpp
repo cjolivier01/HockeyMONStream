@@ -46,7 +46,8 @@ int main() {
   const auto authorize = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25);
   YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(
-      authorize.ok() && *authorize && config["unrelated"].as<std::string>() == "preserved" &&
+      authorize.ok() && authorize->pending_generation == rotated_generation &&
+          config["unrelated"].as<std::string>() == "preserved" &&
           config["rink"]["stitched_output_generation"].as<std::string>() == generation &&
           config["rink"]["stitched_output_pending_generation"].as<std::string>() == rotated_generation &&
           config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
@@ -55,31 +56,69 @@ int main() {
   const auto restore = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 0.0);
   config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(
-      restore.ok() && !*restore && !config["rink"]["stitched_output_pending_generation"].IsDefined() &&
+      restore.ok() && restore->pending_generation.empty() &&
+          !config["rink"]["stitched_output_pending_generation"].IsDefined() &&
           config["rink"]["scoreboard"]["perspective_polygon"].IsDefined() &&
-          absl::IsAborted(hm::stitching::commit_live_stitched_output_rotation(root.string(), 9.25)),
+          absl::IsAborted(hm::stitching::commit_live_stitched_output_rotation(root.string(), rotated_generation)),
       "a superseded rotation commit must fail without deleting completed-generation scoreboard geometry");
 
   const auto reauthorize = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25);
-  const auto commit = hm::stitching::commit_live_stitched_output_rotation(root.string(), 9.25);
+  const auto commit = reauthorize.ok()
+      ? hm::stitching::commit_live_stitched_output_rotation(root.string(), reauthorize->pending_generation)
+      : reauthorize.status();
   config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(
-      reauthorize.ok() && *reauthorize && commit.ok() &&
+      reauthorize.ok() && reauthorize->pending_generation == rotated_generation && commit.ok() &&
+          config["rink"]["stitched_output_pending_generation"].as<std::string>() == rotated_generation &&
           !config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
-      "the current exact pending generation must commit active scoreboard invalidation");
+      "the current exact pending generation must invalidate scoreboard geometry while retaining producer authority");
+  config["rink"]["stitched_output_generation"] = rotated_generation;
+  config["rink"].remove("stitched_output_pending_generation");
+  config["rink"]["scoreboard"]["perspective_polygon"] =
+      std::vector<std::vector<int>>{{9, 10}, {11, 12}, {13, 14}, {15, 16}};
+  std::ofstream(root / "config.yaml") << config << '\n';
+  const absl::Status committed_again =
+      hm::stitching::commit_live_stitched_output_rotation(root.string(), rotated_generation);
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      committed_again.ok() && config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+      "an acknowledgement after exact producer publication must not delete newer scoreboard geometry");
 
   write_config(root / "config.yaml", generation);
   config = YAML::LoadFile((root / "config.yaml").string());
   config["rink"]["scoreboard"]["perspective_polygon"] = std::vector<std::vector<int>>{{0, 0}, {0, 0}, {0, 0}, {0, 0}};
   std::ofstream(root / "config.yaml") << config << '\n';
   const auto disabled_scoreboard = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0);
-  const auto disabled_scoreboard_commit = hm::stitching::commit_live_stitched_output_rotation(root.string(), 4.0);
+  const auto disabled_scoreboard_commit = disabled_scoreboard.ok()
+      ? hm::stitching::commit_live_stitched_output_rotation(root.string(), disabled_scoreboard->pending_generation)
+      : disabled_scoreboard.status();
   config = YAML::LoadFile((root / "config.yaml").string());
   ok &= expect(
-      disabled_scoreboard.ok() && *disabled_scoreboard && disabled_scoreboard_commit.ok() &&
+      disabled_scoreboard.ok() && !disabled_scoreboard->pending_generation.empty() && disabled_scoreboard_commit.ok() &&
           config["rink"]["scoreboard"]["perspective_polygon"].IsSequence() &&
           config["rink"]["scoreboard"]["perspective_polygon"].size() == 4,
       "live rotation must preserve the scoreboard-disabled sentinel");
+
+  write_config(root / "config.yaml", generation);
+  const auto older = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.25);
+  const auto newer = hm::stitching::authorize_live_stitched_output_rotation(root.string(), 4.0);
+  const auto cancel_older = older.ok()
+      ? hm::stitching::cancel_live_stitched_output_rotation(root.string(), older->pending_generation)
+      : absl::StatusOr<bool>(older.status());
+  config = YAML::LoadFile((root / "config.yaml").string());
+  const std::string newer_generation = newer.ok() ? newer->pending_generation : std::string{};
+  const bool older_cancel_preserved_newer = cancel_older.ok() && !*cancel_older && !newer_generation.empty() &&
+      config["rink"]["stitched_output_pending_generation"].as<std::string>() == newer_generation &&
+      config["rink"]["scoreboard"]["perspective_polygon"].IsDefined();
+  const auto cancel_newer = newer.ok()
+      ? hm::stitching::cancel_live_stitched_output_rotation(root.string(), newer_generation)
+      : absl::StatusOr<bool>(newer.status());
+  config = YAML::LoadFile((root / "config.yaml").string());
+  ok &= expect(
+      older.ok() && newer.ok() && older_cancel_preserved_newer && cancel_newer.ok() && *cancel_newer &&
+          !config["rink"]["stitched_output_pending_generation"].IsDefined() &&
+          config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+      "exact cancellation must preserve a newer authorization and cancel only its matching token");
 
   const std::string legacy_generation =
       "hstream-stitched-output-v1\nhugin-bytes:1\nh"

@@ -38,6 +38,7 @@ class QEvent;
 class QIcon;
 class QProgressBar;
 class QSplitter;
+class QThread;
 class QTimer;
 class QToolButton;
 class PipelineInspectorWidget;
@@ -122,10 +123,16 @@ class HStreamWindow : public QMainWindow {
     quint64 batch_id;
   };
 
+  struct LiveRotationAuthorization {
+    QString game_id;
+    std::string pending_generation;
+  };
+
   struct RuntimeControlBatch {
     std::map<QString, int> controls;
     size_t pending_commands;
     bool failed;
+    std::optional<LiveRotationAuthorization> live_rotation_authorization;
   };
 
   struct RuntimePropertyCommand {
@@ -356,11 +363,15 @@ class HStreamWindow : public QMainWindow {
   bool sendLiveCameraControl(const QString& id, int value);
   bool publishRuntimeControlBatch(
       const std::map<QString, int>& controls,
-      const std::vector<RuntimePropertyCommand>& commands);
+      const std::vector<RuntimePropertyCommand>& commands,
+      const std::optional<LiveRotationAuthorization>& live_rotation_authorization = std::nullopt);
   bool publishRotationRuntimeControls(
       std::map<QString, int> controls,
       const std::optional<int>& authorized_stitch_rotation,
-      bool invalidate_scoreboard);
+      const std::optional<LiveRotationAuthorization>& live_rotation_authorization);
+  bool cancelLiveRotationAuthorization(const LiveRotationAuthorization& authorization, const QString& reason);
+  void cancelActiveLiveRotationAuthorization(const QString& reason);
+  void finalizeLiveRotationAuthorization(const LiveRotationAuthorization& authorization);
   void startLiveRotationAuthorization(std::map<QString, int> controls, int rotation);
   void completeLiveRotationAuthorization(
       std::map<QString, int> controls,
@@ -369,7 +380,7 @@ class HStreamWindow : public QMainWindow {
       const QString& game_id,
       int rotation,
       bool authorized,
-      bool generation_changed,
+      const std::string& pending_generation,
       const QString& error);
   void flushScheduledRuntimeControls();
   void timeoutRuntimeControlBatch(quint64 batch_id);
@@ -610,6 +621,9 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> scheduled_playcropper_controls_;
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
+  std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
+  QThread* live_rotation_authorization_worker_{nullptr};
+  bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};
   std::optional<std::map<QString, int>> publishing_playtracker_controls_;

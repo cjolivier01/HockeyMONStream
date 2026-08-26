@@ -4371,6 +4371,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
 
     const int clean_commands_before = window->logText().count("stitching calibration clean command");
+    const std::vector<std::vector<int>> rejection_scoreboard_polygon = {{1, 2}, {3, 4}, {5, 6}, {7, 8}};
+    {
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      if (!config_lock.ok()) {
+        std::cerr << "Could not lock live-rotation rejection fixture: " << config_lock.status() << '\n';
+        return false;
+      }
+      YAML::Node rejection_fixture = YAML::LoadFile(config.string());
+      rejection_fixture["rink"]["scoreboard"]["perspective_polygon"] = rejection_scoreboard_polygon;
+      const auto published =
+          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(rejection_fixture) + "\n");
+      if (!published.ok()) {
+        std::cerr << "Could not publish live-rotation rejection fixture: " << published << '\n';
+        return false;
+      }
+    }
     qputenv("HSTREAM_UI_TEST_REJECT_RUNTIME_CONTROL", "1");
     activate(start);
     for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
@@ -4383,6 +4399,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    const YAML::Node after_rejected_rotation = YAML::LoadFile(config.string());
+    const bool rejected_rotation_preserved_config =
+        !after_rejected_rotation["rink"]["stitched_output_pending_generation"].IsDefined() &&
+        after_rejected_rotation["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>() ==
+            rejection_scoreboard_polygon;
     auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
     auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
     if (!fixed_edge_link || !fixed_edge_left) {
@@ -4411,6 +4432,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
                 window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=failed") &&
                 !window->logText().contains("camera control Stitch_Rotate_Degrees=71 apply=live"),
             "Rejected runtime controls should not be reported as live") ||
+        !expect(
+            rejected_rotation_preserved_config,
+            "Rejected live rotation must cancel its exact authorization without deleting scoreboard geometry") ||
         !expect(
             window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=save/restart") &&
                 !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=pending") &&

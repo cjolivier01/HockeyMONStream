@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <optional>
 
 #include <opencv2/core/types.hpp>
 #include <stdio.h>
@@ -36,6 +37,7 @@ struct DsFieldMaskCtx {
   cv::Rect2i field_box;
   bool logged_mask_size_mismatch{false};
   std::string loaded_output_generation;
+  std::optional<std::string> superseded_output_generation;
   std::string calibration_invalidation_id;
 };
 
@@ -285,7 +287,12 @@ absl::Status DsFieldMaskProcessFrame(
   }
 
   const bool output_generation_changed = output_generation != ctx->loaded_output_generation;
+  if (ctx->superseded_output_generation.has_value() && *ctx->superseded_output_generation != output_generation) {
+    ctx->superseded_output_generation.reset();
+  }
   if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
+    if (ctx->superseded_output_generation.has_value())
+      return absl::OkStatus();
     fs::path mask_path = ctx->initParams.detection_mask_file;
     auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     if (is_obsolete_detection_mask || !loaded_mask.ok()) {
@@ -300,9 +307,13 @@ absl::Status DsFieldMaskProcessFrame(
 #else
       hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
-      HM_RETURN_IF_ERROR(
-          hm::stitching::create_field_mask(
-              mask_path.parent_path().string(), this_surface, output_generation, ctx->calibration_invalidation_id));
+      const absl::Status created = hm::stitching::create_field_mask(
+          mask_path.parent_path().string(), this_surface, output_generation, ctx->calibration_invalidation_id);
+      if (absl::IsAborted(created)) {
+        ctx->superseded_output_generation = output_generation;
+        return absl::OkStatus();
+      }
+      HM_RETURN_IF_ERROR(created);
       loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));

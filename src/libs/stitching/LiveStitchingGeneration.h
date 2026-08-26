@@ -7,17 +7,29 @@
 
 namespace hm::stitching {
 
+struct LiveStitchedOutputAuthorization {
+  // Empty when the requested rotation already matches the completed output or
+  // when no completed output exists to fence.
+  std::string pending_generation;
+};
+
 // Authorizes one exact live rotation generation. The authorization preserves
 // the completed generation's Hugin identity and dimensions and records the
 // pending generation without invalidating completed-generation geometry. A
 // later call supersedes an earlier authorization.
-// Returns true when the authorized generation differs from the completed one.
-absl::StatusOr<bool> authorize_live_stitched_output_rotation(
+absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_rotation(
     const std::string& game_dir,
     double post_stitch_rotate_degrees);
 
-// Invalidates geometry for a previously authorized live rotation. The pending
-// generation must still exactly match the requested rotation.
-absl::Status commit_live_stitched_output_rotation(const std::string& game_dir, double post_stitch_rotate_degrees);
+// Removes an abandoned authorization only when the exact pending generation
+// still owns it. Returns false when it was already consumed or superseded.
+absl::StatusOr<bool> cancel_live_stitched_output_rotation(
+    const std::string& game_dir,
+    const std::string& pending_generation);
+
+// Invalidates geometry after the backend accepts a previously authorized live
+// rotation. Publication of the exact generation is also accepted as an
+// idempotent completion because that transaction performs the same invalidation.
+absl::Status commit_live_stitched_output_rotation(const std::string& game_dir, const std::string& pending_generation);
 
 } // namespace hm::stitching

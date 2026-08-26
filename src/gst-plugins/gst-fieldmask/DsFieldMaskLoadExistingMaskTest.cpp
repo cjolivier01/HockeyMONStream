@@ -208,14 +208,18 @@ int main() {
   }
   const absl::Status superseded_status =
       DsFieldMaskProcessFrame(&surface, /*frame_index=*/0, frame_meta, stale_ctx, /*draw=*/false);
+  const absl::Status repeated_superseded_status =
+      DsFieldMaskProcessFrame(nullptr, /*frame_index=*/0, frame_meta, stale_ctx, /*draw=*/false);
   DsFieldMaskCtxDeinit(stale_ctx);
   const auto superseded_config = [&]() {
     std::ifstream input(tmpdir / "config.yaml");
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
-  if (!absl::IsAborted(superseded_status) || fs::exists(mask_path) ||
+  if (!superseded_status.ok() || !repeated_superseded_status.ok() || fs::exists(mask_path) ||
       superseded_config.find("invalidation_id: newer-fieldmask-run") == std::string::npos) {
-    std::cerr << "Superseded field-mask fallback must not publish rink artifacts: " << superseded_status << std::endl;
+    std::cerr << "Superseded field-mask fallback must wait for a newer frame generation without publishing rink "
+                 "artifacts: "
+              << superseded_status << ", repeated: " << repeated_superseded_status << std::endl;
     DsFieldMaskCtxDeinit(ctx);
     nvds_destroy_batch_meta(batch_meta);
     return 10;

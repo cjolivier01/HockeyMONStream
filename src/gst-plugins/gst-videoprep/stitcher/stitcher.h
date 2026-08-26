@@ -76,6 +76,11 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool report_latched = false,
     bool process_completion_latched = false);
 
+bool should_attempt_one_pass_field_mask(
+    bool already_attempted,
+    const std::string& attempted_generation,
+    const std::string& current_generation);
+
 bool should_defer_validated_artifact_load_failure(bool one_pass_mode, bool retry_already_failed);
 
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
@@ -197,6 +202,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool logged_missing_masks_{false};
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
+  std::string field_mask_attempted_generation_;
   bool calibration_completion_reported_{false};
   bool calibration_completion_ready_{false};
   std::atomic_bool calibration_cancelled_{false};

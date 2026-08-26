@@ -236,6 +236,13 @@ bool expect_output_capacity_is_stable_across_batches() {
 }
 
 bool expect_resumed_calibration_progress_contract() {
+  if (!hm::stitcher::should_attempt_one_pass_field_mask(false, {}, "generation-a") ||
+      hm::stitcher::should_attempt_one_pass_field_mask(true, "generation-a", "generation-a") ||
+      !hm::stitcher::should_attempt_one_pass_field_mask(true, "generation-a", "generation-b")) {
+    std::cerr << "Superseded one-pass field-mask inference must retry only after output generation changes"
+              << std::endl;
+    return false;
+  }
   g_unsetenv("HSTREAM_CALIBRATION_PENDING");
   const auto normal_existing = hm::stitcher::one_pass_calibration_progress_plan(
       /*configured_during_run=*/false, /*mask_configured=*/true);

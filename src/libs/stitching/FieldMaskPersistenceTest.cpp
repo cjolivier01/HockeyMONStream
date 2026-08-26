@@ -450,7 +450,8 @@ int main() {
         pre_rotation_generation.ok() ? *pre_rotation_generation : std::string());
     const YAML::Node after_superseded_same_owner = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
-        newer_live_override_authorization.ok() && *newer_live_override_authorization &&
+        newer_live_override_authorization.ok() &&
+            newer_live_override_authorization->pending_generation == newer_live_override_generation &&
             absl::IsAborted(superseded_same_owner_publication) &&
             after_superseded_same_owner["rink"]["stitched_output_pending_generation"].as<std::string>() ==
                 newer_live_override_generation &&
@@ -458,13 +459,16 @@ int main() {
         "a newer pending live generation must reject the completed same-owner producer without deleting scoreboard data");
     const auto current_live_override_authorization =
         hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0);
-    const absl::Status current_live_override_commit =
-        hm::stitching::commit_live_stitched_output_rotation(root.string(), 9.0);
+    const absl::Status current_live_override_commit = current_live_override_authorization.ok()
+        ? hm::stitching::commit_live_stitched_output_rotation(
+              root.string(), current_live_override_authorization->pending_generation)
+        : current_live_override_authorization.status();
     ok &= expect(
-        current_live_override_authorization.ok() && *current_live_override_authorization &&
+        current_live_override_authorization.ok() &&
+            current_live_override_authorization->pending_generation == live_override_generation &&
             current_live_override_commit.ok() &&
             !YAML::LoadFile((root / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
-        "the current exact live generation must commit scoreboard invalidation before runtime rotation");
+        "the current exact live generation must commit scoreboard invalidation after runtime acceptance");
     hm::stitching::RinkProfile mismatched_profile = profile;
     mismatched_profile.masks = {
         cv::Mat(12, 16, CV_8U, cv::Scalar(255)),

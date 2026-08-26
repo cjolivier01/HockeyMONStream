@@ -4191,6 +4191,12 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
       return;
     }
   }
+  if (live_rotation_authorization_worker_) {
+    appendLog("window close deferred while live rotation authorization finishes");
+    close_waiting_for_live_rotation_authorization_ = true;
+    event->ignore();
+    return;
+  }
   if (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) {
     appendLog("window close deferred while the completed archive is being finalized");
     if (archive_finalize_dialog_) {
@@ -7121,6 +7127,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   } else if (calibration_pending_ && stopped_by_user) {
     closeStitchingCalibrationDialog();
   }
+  cancelActiveLiveRotationAuthorization("pipeline finished");
   failPendingRuntimeControls("pipeline-finished");
   if (!last_playtracker_runtime_snapshot_.isEmpty()) {
     QFile::remove(last_playtracker_runtime_snapshot_);
@@ -7257,6 +7264,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   clearPreviewFrames();
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  cancelActiveLiveRotationAuthorization("pipeline error");
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
   calibration_waiting_for_playback_restart_ = false;
@@ -13817,6 +13825,19 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
     if (batch->second.pending_commands != 0) {
       return;
     }
+    if (batch->second.live_rotation_authorization.has_value()) {
+      if (batch->second.failed) {
+        const LiveRotationAuthorization authorization = *batch->second.live_rotation_authorization;
+        if (cancelLiveRotationAuthorization(authorization, "runtime rejection") &&
+            active_live_rotation_authorization_.has_value() &&
+            active_live_rotation_authorization_->game_id == authorization.game_id &&
+            active_live_rotation_authorization_->pending_generation == authorization.pending_generation) {
+          active_live_rotation_authorization_.reset();
+        }
+      } else {
+        finalizeLiveRotationAuthorization(*batch->second.live_rotation_authorization);
+      }
+    }
     const QString result = batch->second.failed ? "failed" : "live";
     for (const auto& [control_id, control_value] : batch->second.controls) {
       appendLog(QString("camera control %1=%2 apply=%3").arg(control_id).arg(control_value).arg(result));
@@ -13913,13 +13934,15 @@ void HStreamWindow::timeoutRuntimeControlBatch(quint64 batch_id) {
 
 bool HStreamWindow::publishRuntimeControlBatch(
     const std::map<QString, int>& controls,
-    const std::vector<RuntimePropertyCommand>& commands) {
+    const std::vector<RuntimePropertyCommand>& commands,
+    const std::optional<LiveRotationAuthorization>& live_rotation_authorization) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || controls.empty() ||
       commands.empty() || !runtime_control_batches_.empty()) {
     return false;
   }
   const quint64 batch_id = ++next_runtime_control_batch_id_;
-  runtime_control_batches_.emplace(batch_id, RuntimeControlBatch{controls, commands.size(), false});
+  runtime_control_batches_.emplace(
+      batch_id, RuntimeControlBatch{controls, commands.size(), false, live_rotation_authorization});
   QStringList assignments;
   for (const RuntimePropertyCommand& property_command : commands) {
     assignments.push_back(
@@ -14046,14 +14069,14 @@ void HStreamWindow::schedulePlaycropperRuntimeControl(const QString& id, int val
 bool HStreamWindow::publishRotationRuntimeControls(
     std::map<QString, int> controls,
     const std::optional<int>& authorized_stitch_rotation,
-    bool invalidate_scoreboard) {
+    const std::optional<LiveRotationAuthorization>& live_rotation_authorization) {
   std::vector<RuntimePropertyCommand> commands;
   if (controls.count("Stitch_Rotate_Degrees")) {
     if (!authorized_stitch_rotation.has_value()) {
       controls.erase("Stitch_Rotate_Degrees");
     } else {
       commands.push_back({"hmstitcher0", "post-stitch-rotate-degrees", QString::number(*authorized_stitch_rotation)});
-      if (invalidate_scoreboard && !active_run_is_calibration_) {
+      if (live_rotation_authorization.has_value() && !active_run_is_calibration_) {
         commands.push_back({"playcropper0", "scoreboard-perspective-polygon", "0,0,0,0,0,0,0,0"});
       }
     }
@@ -14076,13 +14099,43 @@ bool HStreamWindow::publishRotationRuntimeControls(
       add_both_stages("fixed-edge-rotation-angle-right", right_angle);
     }
   }
-  return !controls.empty() && publishRuntimeControlBatch(controls, commands);
+  return !controls.empty() && publishRuntimeControlBatch(controls, commands, live_rotation_authorization);
+}
+
+bool HStreamWindow::cancelLiveRotationAuthorization(
+    const LiveRotationAuthorization& authorization,
+    const QString& reason) {
+  const auto canceled = hm::stitching::cancel_live_stitched_output_rotation(
+      gameDirectory(authorization.game_id).toStdString(), authorization.pending_generation);
+  if (!canceled.ok()) {
+    appendLog(QString("could not cancel abandoned live rotation authorization (%1): %2")
+                  .arg(reason, QString::fromStdString(canceled.status().ToString())));
+    return false;
+  }
+  return true;
+}
+
+void HStreamWindow::cancelActiveLiveRotationAuthorization(const QString& reason) {
+  if (!active_live_rotation_authorization_.has_value())
+    return;
+  const LiveRotationAuthorization authorization = *active_live_rotation_authorization_;
+  if (cancelLiveRotationAuthorization(authorization, reason))
+    active_live_rotation_authorization_.reset();
+}
+
+void HStreamWindow::finalizeLiveRotationAuthorization(const LiveRotationAuthorization& authorization) {
+  const absl::Status committed = hm::stitching::commit_live_stitched_output_rotation(
+      gameDirectory(authorization.game_id).toStdString(), authorization.pending_generation);
+  if (!committed.ok()) {
+    appendLog(QString("live rotation applied but scoreboard invalidation could not be committed: %1")
+                  .arg(QString::fromStdString(committed.ToString())));
+  }
 }
 
 void HStreamWindow::startLiveRotationAuthorization(std::map<QString, int> controls, int rotation) {
   struct Result {
     bool authorized{false};
-    bool generation_changed{false};
+    std::string pending_generation;
     QString error;
   };
   live_rotation_authorization_pending_ = true;
@@ -14095,11 +14148,12 @@ void HStreamWindow::startLiveRotationAuthorization(std::map<QString, int> contro
     const auto authorization = hm::stitching::authorize_live_stitched_output_rotation(game_dir, rotation);
     result->authorized = authorization.ok();
     if (authorization.ok()) {
-      result->generation_changed = *authorization;
+      result->pending_generation = authorization->pending_generation;
     } else {
       result->error = QString::fromStdString(authorization.status().ToString());
     }
   });
+  live_rotation_authorization_worker_ = worker;
   connect(
       worker,
       &QThread::finished,
@@ -14112,7 +14166,7 @@ void HStreamWindow::startLiveRotationAuthorization(std::map<QString, int> contro
             game_id,
             rotation,
             result->authorized,
-            result->generation_changed,
+            result->pending_generation,
             result->error);
       });
   connect(worker, &QThread::finished, worker, &QObject::deleteLater);
@@ -14126,15 +14180,27 @@ void HStreamWindow::completeLiveRotationAuthorization(
     const QString& game_id,
     int rotation,
     bool authorized,
-    bool generation_changed,
+    const std::string& pending_generation,
     const QString& error) {
+  live_rotation_authorization_worker_ = nullptr;
+  if (close_waiting_for_live_rotation_authorization_) {
+    close_waiting_for_live_rotation_authorization_ = false;
+    QTimer::singleShot(0, this, &QWidget::close);
+  }
   live_rotation_authorization_pending_ = false;
+  const std::optional<LiveRotationAuthorization> authorization = authorized && !pending_generation.empty()
+      ? std::optional<LiveRotationAuthorization>(LiveRotationAuthorization{game_id, pending_generation})
+      : std::nullopt;
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
       pipeline_run_generation_ != pipeline_run_generation || active_run_game_id_ != game_id) {
+    if (authorization.has_value())
+      cancelLiveRotationAuthorization(*authorization, "pipeline no longer owns the request");
     flushScheduledRuntimeControls();
     return;
   }
   if (generation != scheduled_rotation_control_generation_) {
+    if (authorization.has_value())
+      cancelLiveRotationAuthorization(*authorization, "request superseded before publication");
     for (auto& [id, value] : controls)
       scheduled_rotation_controls_.try_emplace(id, value);
     flushScheduledRuntimeControls();
@@ -14146,19 +14212,17 @@ void HStreamWindow::completeLiveRotationAuthorization(
                   .arg(error));
     controls.erase("Stitch_Rotate_Degrees");
   }
-  if (authorized && generation_changed) {
-    const absl::Status commit =
-        hm::stitching::commit_live_stitched_output_rotation(gameDirectory(game_id).toStdString(), rotation);
-    if (!commit.ok()) {
-      appendLog(QString("camera control Stitch_Rotate_Degrees=%1 apply=failed reason=output generation commit: %2")
-                    .arg(controls.at("Stitch_Rotate_Degrees"))
-                    .arg(QString::fromStdString(commit.ToString())));
-      controls.erase("Stitch_Rotate_Degrees");
-      authorized = false;
-    }
+  if (authorized) {
+    active_live_rotation_authorization_ = authorization;
   }
   if (!publishRotationRuntimeControls(
-          std::move(controls), authorized ? std::optional<int>(rotation) : std::nullopt, generation_changed)) {
+          std::move(controls), authorized ? std::optional<int>(rotation) : std::nullopt, authorization)) {
+    if (authorization.has_value() && cancelLiveRotationAuthorization(*authorization, "pipeline command write") &&
+        active_live_rotation_authorization_.has_value() &&
+        active_live_rotation_authorization_->game_id == authorization->game_id &&
+        active_live_rotation_authorization_->pending_generation == authorization->pending_generation) {
+      active_live_rotation_authorization_.reset();
+    }
     flushScheduledRuntimeControls();
   }
 }
@@ -14178,7 +14242,7 @@ void HStreamWindow::flushScheduledRuntimeControls() {
       startLiveRotationAuthorization(std::move(controls), rotation);
       return;
     }
-    if (publishRotationRuntimeControls(std::move(controls), std::nullopt, /*invalidate_scoreboard=*/false)) {
+    if (publishRotationRuntimeControls(std::move(controls), std::nullopt, std::nullopt)) {
       return;
     }
   }
