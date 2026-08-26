@@ -828,21 +828,19 @@ int main() {
     const fs::path backup = entry.path() / "previous" / "hm_project.pto";
     if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0 &&
         fs::is_regular_file(backup)) {
+      fs::remove(backup);
+      std::ofstream(backup) << "partial\n";
+      std::ofstream(backup.parent_path() / ".mapping_0000.tif.hstream-partial") << "partial\n";
       durable_partial_backup = true;
       break;
     }
   }
   ok &= expect(
       durable_partial_backup, "backup-in-progress recovery fixture must retain its first durable private backup");
-  ::setenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER", "1", 1);
   const auto partial_backup_recovery = hm::stitching::HuginProject::Recover(root / "game");
-  ::unsetenv("HM_TEST_STITCH_ROLLBACK_INTERRUPT_AFTER");
   ok &= expect(
-      !partial_backup_recovery.ok(),
-      "backup-in-progress recovery must remain resumable after completing backups and crashing during restore");
-  ok &= expect(
-      hm::stitching::HuginProject::Recover(root / "game").ok(),
-      "a second owner must resume rollback after partial backup completion");
+      partial_backup_recovery.ok(),
+      "backup-in-progress recovery must discard partial backups and keep a complete unchanged root generation");
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
     ok &= expect(generation_lock.ok(), "partially backed-up Hugin generation must remain lockable");
@@ -974,6 +972,33 @@ int main() {
   }
   fs::remove_all(ambiguous_root);
 
+  const fs::path historical_backing_root = root / "historical-partial-backing";
+  const fs::path historical_backing_transaction = historical_backing_root / ".hstream-stitch-backing";
+  fs::create_directories(historical_backing_root);
+  write_legacy_transaction_fixture(historical_backing_root, historical_backing_transaction);
+  {
+    std::ofstream prior(historical_backing_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+  }
+  fs::remove(historical_backing_root / "hm_project.pto");
+  fs::remove(historical_backing_transaction / "previous" / "mapping_0000.tif");
+  std::ofstream(historical_backing_transaction / "previous" / "mapping_0000.tif") << "partial\n";
+  std::ofstream(historical_backing_transaction / "previous" / ".mapping_0001.tif.hstream-partial") << "partial\n";
+  std::ofstream(historical_backing_transaction / "journal_version") << "2\n";
+  std::ofstream(historical_backing_transaction / "state") << "BACKING_UP\n";
+  ::setenv("HM_TEST_STITCH_DISABLE_LINK_CLONE", "1", 1);
+  const auto historical_backing_recovery = hm::stitching::HuginProject::Recover(historical_backing_root);
+  ::unsetenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
+  if (!historical_backing_recovery.ok())
+    std::cerr << "historical BACKING_UP recovery: " << historical_backing_recovery << '\n';
+  ok &= expect(
+      historical_backing_recovery.ok() && !fs::exists(historical_backing_transaction) &&
+          read_text_file(historical_backing_root / "hm_project.pto") == "old-hm_project.pto\n" &&
+          read_text_file(historical_backing_root / "mapping_0000.tif") == "old-mapping_0000.tif\n",
+      "historical BACKING_UP recovery must recreate suspect backups before restoring a missing root artifact");
+  fs::remove_all(historical_backing_root);
+
   const fs::path consumed_root = root / "legacy-consumed-rollback";
   const fs::path consumed_transaction = consumed_root / ".hstream-stitch-consumed";
   fs::create_directories(consumed_root);
@@ -1086,6 +1111,25 @@ int main() {
       "an oversized prior-artifact manifest must fail before rollback mutation");
   fs::remove_all(oversized_prior_root);
 
+  const fs::path provenance_path = root / "game" / "stitching_canvas_provenance";
+  const std::string valid_provenance = read_text_file(provenance_path);
+  const auto valid_provenance_time = fs::last_write_time(provenance_path);
+  std::ofstream(provenance_path, std::ios::binary | std::ios::trunc) << std::string(5000, 'x');
+  fs::last_write_time(provenance_path, valid_provenance_time);
+  auto oversized_provenance_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  ok &= expect(oversized_provenance_lock.ok(), "oversized canvas provenance fixture must lock");
+  if (oversized_provenance_lock.ok()) {
+    const auto parsed = hm::stitching::HuginProject::ReadCanvasProvenance(root / "game", **oversized_provenance_lock);
+    const auto compatible = hm::stitching::check_canvas_constraint_locked(root / "game", 0);
+    ok &= expect(
+        !parsed.ok() && compatible.ok() && compatible->requires_regeneration,
+        "oversized canvas provenance must be rejected by both parsers without an unbounded read");
+  }
+  if (oversized_provenance_lock.ok())
+    oversized_provenance_lock->reset();
+  std::ofstream(provenance_path, std::ios::binary | std::ios::trunc) << valid_provenance;
+  fs::last_write_time(provenance_path, valid_provenance_time);
+
   const std::string portable_metadata = generation_stat_identity(root / "game", true);
   const std::string adopted_v1_generation = "adopted-v1-generation\n";
   std::ofstream(root / "game" / "stitching_generation_id", std::ios::binary | std::ios::trunc)
@@ -1196,11 +1240,13 @@ int main() {
       }
       ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
       const auto unreliable_after = hm::stitching::HuginProject::GenerationId(unreliable_root, **unreliable_lock);
+      const auto unreliable_repeat = hm::stitching::HuginProject::GenerationId(unreliable_root, **unreliable_lock);
       ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
       ok &= expect(
           unreliable_before.ok() && unreliable_timestamp_preserved && identity_forgeable && unreliable_after.ok() &&
-              *unreliable_after != *unreliable_before,
-          "unreliable filesystems must sample content even when replacement metadata matches recorded bindings");
+              unreliable_repeat.ok() && *unreliable_after != *unreliable_before &&
+              *unreliable_repeat == *unreliable_after,
+          "unreliable filesystems must use a stable process-scoped generation instead of trusting artifact metadata");
     }
     if (unreliable_lock.ok())
       unreliable_lock->reset();

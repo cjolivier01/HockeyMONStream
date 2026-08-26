@@ -566,10 +566,45 @@ absl::StatusOr<size_t> parse_provenance_value(const std::string& line, const cha
   return value;
 }
 
+absl::StatusOr<std::string> read_bounded_stitch_file(
+    const fs::path& path,
+    size_t maximum_bytes,
+    const char* description) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return absl::NotFoundError(std::string(description) + " is missing");
+    return absl::FailedPreconditionError("Unable to open " + std::string(description));
+  }
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      ::close(descriptor);
+    }
+  } close{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError("Invalid " + std::string(description));
+  }
+  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read " + std::string(description));
+    offset += static_cast<size_t>(count);
+  }
+  return contents;
+}
+
 absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir) {
-  std::ifstream input(game_dir / "stitching_canvas_provenance");
-  if (!input)
-    return absl::NotFoundError("Canvas provenance is missing");
+  auto contents = read_bounded_stitch_file(game_dir / "stitching_canvas_provenance", 4 * 1024, "canvas provenance");
+  if (!contents.ok())
+    return contents.status();
+  std::istringstream input(*contents);
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
@@ -645,6 +680,14 @@ bool artifacts_are_compatible(
 
 bool is_stitch_artifact_name(const std::string& name) {
   return std::find(kArtifacts.begin(), kArtifacts.end(), name) != kArtifacts.end();
+}
+
+bool is_stitch_partial_artifact_name(const std::string& name) {
+  for (const std::string& artifact : kArtifacts) {
+    if (name == "." + artifact + ".hstream-partial")
+      return true;
+  }
+  return false;
 }
 
 absl::StatusOr<std::vector<fs::directory_entry>> stitch_directory_entries(
@@ -1005,7 +1048,7 @@ absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir
   return value.str();
 }
 
-bool stitch_filesystem_requires_fingerprint(const fs::path& game_dir) {
+bool stitch_filesystem_has_unreliable_metadata(const fs::path& game_dir) {
   if (const char* value = std::getenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
       value != nullptr && std::string(value) == "1") {
     return true;
@@ -1027,33 +1070,20 @@ bool stitch_filesystem_requires_fingerprint(const fs::path& game_dir) {
   }
 }
 
+absl::StatusOr<std::string> process_scoped_stitch_generation_id(const std::string& logical_id) {
+  static const absl::StatusOr<std::string> process_token = random_stitch_logical_generation_id();
+  if (!process_token.ok())
+    return process_token.status();
+  std::ostringstream generation;
+  generation << "hstream-stitch-unreliable-filesystem-v1\nlogical-bytes=" << logical_id.size() << '\n'
+             << logical_id << "process-id=" << static_cast<uint64_t>(::getpid())
+             << "\nprocess-token-bytes=" << process_token->size() << '\n'
+             << *process_token;
+  return generation.str();
+}
+
 absl::StatusOr<std::string> read_stitch_manifest(const fs::path& path, const char* description) {
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0)
-    return absl::FailedPreconditionError("Unable to open " + std::string(description));
-  struct CloseDescriptor {
-    int descriptor;
-    ~CloseDescriptor() {
-      ::close(descriptor);
-    }
-  } close{descriptor};
-  struct stat metadata{};
-  constexpr size_t kMaximumManifestBytes = 4 * 1024;
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
-      static_cast<uint64_t>(metadata.st_size) > kMaximumManifestBytes) {
-    return absl::FailedPreconditionError("Invalid " + std::string(description));
-  }
-  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
-  size_t offset = 0;
-  while (offset < contents.size()) {
-    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
-    if (count < 0 && errno == EINTR)
-      continue;
-    if (count <= 0)
-      return absl::FailedPreconditionError("Unable to read " + std::string(description));
-    offset += static_cast<size_t>(count);
-  }
-  return contents;
+  return read_bounded_stitch_file(path, 4 * 1024, description);
 }
 
 absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transaction) {
@@ -1166,8 +1196,33 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
     const char* value = std::getenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
     return value != nullptr && std::string(value) == "1";
   }();
-  if (!force_portable_fallback && ::link(source.c_str(), destination.c_str()) == 0)
-    return fsync_stitch_path(destination);
+  const fs::path temporary = destination.parent_path() / ("." + destination.filename().string() + ".hstream-partial");
+  std::error_code error;
+  fs::remove(temporary, error);
+  if (error)
+    return absl::InternalError("Unable to remove incomplete stitch artifact: " + error.message());
+  struct Cleanup {
+    fs::path path;
+    ~Cleanup() {
+      if (path.empty())
+        return;
+      std::error_code ignored;
+      fs::remove(path, ignored);
+    }
+  } cleanup{temporary};
+  const auto publish = [&]() -> absl::Status {
+    std::error_code rename_error;
+    fs::rename(temporary, destination, rename_error);
+    if (rename_error)
+      return absl::InternalError("Unable to atomically publish stitch artifact: " + rename_error.message());
+    cleanup.path.clear();
+    return absl::OkStatus();
+  };
+
+  if (!force_portable_fallback && ::link(source.c_str(), temporary.c_str()) == 0) {
+    auto status = fsync_stitch_path(temporary);
+    return status.ok() ? publish() : status;
+  }
   const int link_error = force_portable_fallback ? EOPNOTSUPP : errno;
 
   const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -1179,7 +1234,7 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
     return absl::FailedPreconditionError("Stitch rollback source is not a regular file: " + source.string());
   }
   const int destination_fd =
-      ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, metadata.st_mode & 0777);
+      ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, metadata.st_mode & 0777);
   if (destination_fd < 0) {
     ::close(source_fd);
     return absl::InternalError("Unable to create restored stitch artifact: " + destination.string());
@@ -1190,42 +1245,41 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
     timespec times[2] = {};
     times[0].tv_nsec = UTIME_OMIT;
     times[1] = metadata.st_mtim;
-    const bool metadata_restored = ::fchmod(destination_fd, metadata.st_mode & 07777) == 0 &&
-        ::futimens(destination_fd, times) == 0 && ::fsync(destination_fd) == 0;
+    const int mode_result = ::fchmod(destination_fd, metadata.st_mode & 07777);
+    const bool mode_restored = mode_result == 0 || errno == EOPNOTSUPP || errno == ENOTSUP || errno == EPERM;
+    const bool metadata_restored =
+        mode_restored && ::futimens(destination_fd, times) == 0 && ::fsync(destination_fd) == 0;
     const int metadata_error = errno;
     ::close(destination_fd);
     ::close(source_fd);
     if (metadata_restored)
-      return absl::OkStatus();
-    std::error_code ignored;
-    fs::remove(destination, ignored);
+      return publish();
     return absl::InternalError(
         "Unable to preserve cloned stitch artifact metadata: " + std::string(std::strerror(metadata_error)));
   }
   ::close(destination_fd);
   ::close(source_fd);
 
-  std::error_code error;
-  fs::remove(destination, error);
+  fs::remove(temporary, error);
   error.clear();
-  fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+  fs::copy_file(source, temporary, fs::copy_options::overwrite_existing, error);
   if (!error) {
     timespec times[2] = {};
     times[0].tv_nsec = UTIME_OMIT;
     times[1] = metadata.st_mtim;
-    if (::chmod(destination.c_str(), metadata.st_mode & 07777) != 0 ||
-        ::utimensat(AT_FDCWD, destination.c_str(), times, 0) != 0) {
+    const int mode_result = ::chmod(temporary.c_str(), metadata.st_mode & 07777);
+    const bool mode_restored = mode_result == 0 || errno == EOPNOTSUPP || errno == ENOTSUP || errno == EPERM;
+    if (!mode_restored || ::utimensat(AT_FDCWD, temporary.c_str(), times, 0) != 0) {
       error = std::error_code(errno, std::generic_category());
     }
   }
   if (error) {
-    std::error_code ignored;
-    fs::remove(destination, ignored);
     return absl::InternalError(
         "Unable to restore stitch artifact after hard link (" + std::string(std::strerror(link_error)) +
         ") and reflink (" + std::string(std::strerror(clone_error)) + ") failed: " + error.message());
   }
-  return fsync_stitch_path(destination);
+  auto status = fsync_stitch_path(temporary);
+  return status.ok() ? publish() : status;
 }
 
 absl::Status write_stitch_transaction_file(const fs::path& path, const std::string& contents) {
@@ -1398,6 +1452,7 @@ absl::Status rebind_stitch_generation_artifact(const fs::path& transaction, cons
     logical_id = std::move(parsed->logical_id);
     recorded_fingerprint = std::move(parsed->fingerprint);
   }
+  const bool unreliable_filesystem = stitch_filesystem_has_unreliable_metadata(game_dir);
   auto fingerprint = stitch_artifact_fingerprint(game_dir);
   if (!fingerprint.ok())
     return fingerprint.status();
@@ -1406,7 +1461,7 @@ absl::Status rebind_stitch_generation_artifact(const fs::path& transaction, cons
     return verified_bindings.status();
   if (*verified_bindings != *bindings)
     return absl::AbortedError("Hugin artifacts changed while rebinding their generation identity");
-  if (!recorded_fingerprint.empty() && recorded_fingerprint != *fingerprint) {
+  if (unreliable_filesystem || (!recorded_fingerprint.empty() && recorded_fingerprint != *fingerprint)) {
     auto replacement_logical_id = random_stitch_logical_generation_id();
     if (!replacement_logical_id.ok())
       return replacement_logical_id.status();
@@ -1507,6 +1562,12 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         const bool is_regular = old.is_regular_file(error);
         if (error)
           return absl::InternalError("Unable to inspect stitch transaction backup entry: " + error.message());
+        if (is_regular && is_stitch_partial_artifact_name(old_name)) {
+          fs::remove(old.path(), error);
+          if (error)
+            return absl::InternalError("Unable to remove incomplete stitch transaction backup: " + error.message());
+          continue;
+        }
         if (!is_regular || !is_stitch_artifact_name(old_name) || !backups.emplace(old_name, old.path()).second) {
           return absl::InvalidArgumentError("Invalid stitch transaction backup: " + old_name);
         }
@@ -1556,7 +1617,28 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         return prior_manifest_status;
       }
 
-      if (*state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
+      bool backing_up_roots_complete = false;
+      if (*state == "BACKING_UP") {
+        backing_up_roots_complete = true;
+        for (const std::string& name : prior_artifacts) {
+          const bool root_exists = fs::exists(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to inspect backup-in-progress root artifact: " + error.message());
+          const bool root_is_regular = root_exists && fs::is_regular_file(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to inspect backup-in-progress root artifact: " + error.message());
+          if (root_exists && !root_is_regular)
+            return absl::FailedPreconditionError("Backup-in-progress root artifact is invalid: " + name);
+          backing_up_roots_complete &= root_is_regular;
+        }
+        if (backing_up_roots_complete) {
+          auto status = mark_stitch_transaction_rolled_back(transaction);
+          if (!status.ok())
+            return status;
+        }
+      }
+
+      if (!backing_up_roots_complete && (*state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK")) {
         // A crash between the two directory fsyncs for a cross-directory
         // rename may expose both names. Do not reject that recoverable state;
         // the private backup remains authoritative during rollback.
@@ -1571,11 +1653,26 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         }
         if (*state == "BACKING_UP") {
           for (const std::string& name : prior_artifacts) {
-            if (backups.count(name) != 0)
-              continue;
-            if (!fs::is_regular_file(root / name, error) || error) {
+            const bool root_exists = fs::exists(root / name, error);
+            if (error)
+              return absl::InternalError("Unable to inspect backup-in-progress root artifact: " + error.message());
+            const bool root_is_regular = root_exists && fs::is_regular_file(root / name, error);
+            if (error)
+              return absl::InternalError("Unable to inspect backup-in-progress root artifact: " + error.message());
+            if (root_exists && !root_is_regular)
+              return absl::FailedPreconditionError("Backup-in-progress root artifact is invalid: " + name);
+            if (!root_is_regular) {
+              if (backups.count(name) != 0)
+                continue;
               return absl::FailedPreconditionError(
                   "Backup-in-progress stitch transaction lost prior artifact: " + name);
+            }
+            const auto existing_backup = backups.find(name);
+            if (existing_backup != backups.end()) {
+              fs::remove(existing_backup->second, error);
+              if (error)
+                return absl::InternalError("Unable to replace incomplete stitch backup: " + error.message());
+              backups.erase(existing_backup);
             }
             auto preserve = clone_or_copy_stitch_rollback_file(root / name, previous / name);
             if (!preserve.ok())
@@ -1715,6 +1812,7 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
   std::string logical_id;
   std::string recorded_fingerprint;
   bool bindings_match = false;
+  const bool unreliable_filesystem = stitch_filesystem_has_unreliable_metadata(game_dir);
   if (identity->rfind("version=1\n", 0) == 0) {
     auto metadata = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kPortableMetadata);
     if (!metadata.ok())
@@ -1727,8 +1825,10 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
     auto parsed = parse_stitch_generation_identity(*identity);
     if (!parsed.ok())
       return parsed.status();
+    if (parsed->version == 3 && unreliable_filesystem)
+      return process_scoped_stitch_generation_id(parsed->logical_id);
     bindings_match = parsed->bindings == *bindings;
-    if (parsed->version == 3 && bindings_match && !stitch_filesystem_requires_fingerprint(game_dir))
+    if (parsed->version == 3 && bindings_match)
       return parsed->logical_id;
     logical_id = parsed->version == 2 && parsed->bindings != *bindings
         ? legacy_v2_mismatched_stitch_generation_id(parsed->logical_id, *bindings)
@@ -1756,7 +1856,8 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
       game_dir / kStitchGenerationArtifact, serialize_stitch_generation_identity(logical_id, *bindings, *fingerprint));
   if (!status.ok())
     return status;
-  return logical_id;
+  return unreliable_filesystem ? process_scoped_stitch_generation_id(logical_id)
+                               : absl::StatusOr<std::string>(logical_id);
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_impl(

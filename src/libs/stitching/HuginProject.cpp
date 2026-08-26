@@ -67,6 +67,34 @@ absl::StatusOr<std::string> read_file(const fs::path& path) {
   return contents.str();
 }
 
+absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t maximum_bytes) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0)
+    return absl::NotFoundError("Unable to read Hugin file: " + path.string());
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      ::close(descriptor);
+    }
+  } close{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError("Invalid or oversized Hugin file: " + path.string());
+  }
+  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::InternalError("Failed reading Hugin file: " + path.string());
+    offset += static_cast<size_t>(count);
+  }
+  return contents;
+}
+
 absl::Status write_file(const fs::path& path, const std::string& contents) {
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   if (!output)
@@ -1220,7 +1248,7 @@ absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::Read
       return absl::InternalError("Unable to inspect stitching canvas provenance: " + error.message());
     return std::nullopt;
   }
-  auto contents = read_file(path);
+  auto contents = read_bounded_hugin_file(path, 4 * 1024);
   if (!contents.ok())
     return contents.status();
   CanvasProvenance provenance;
