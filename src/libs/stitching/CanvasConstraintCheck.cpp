@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -664,6 +665,10 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
   }
   if (contents == "PREPARED\n")
     return std::string("PREPARED");
+  if (contents == "BACKING_UP\n")
+    return std::string("BACKING_UP");
+  if (contents == "BACKED_UP\n")
+    return std::string("BACKED_UP");
   if (contents == "COMMITTED\n")
     return std::string("COMMITTED");
   if (contents == "ROLLED_BACK\n")
@@ -692,14 +697,6 @@ absl::Status fsync_stitch_path(const fs::path& path, bool directory) {
   if (result != 0)
     return absl::InternalError("Unable to fsync Hugin artifact " + path.string() + ": " + message);
   return absl::OkStatus();
-}
-
-absl::Status link_stitch_file_preserving_identity(const fs::path& source, const fs::path& destination) {
-  if (::link(source.c_str(), destination.c_str()) != 0) {
-    return absl::InternalError(
-        "Unable to hard-link stitch artifact for rollback: " + std::string(std::strerror(errno)));
-  }
-  return fsync_stitch_path(destination);
 }
 
 absl::Status write_stitch_transaction_file(const fs::path& path, const std::string& contents) {
@@ -742,7 +739,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     auto state = read_stitch_transaction_state(transaction);
     if (!state.ok())
       return state.status();
-    if (*state == "PREPARED") {
+    if (*state == "PREPARED" || *state == "BACKING_UP" || *state == "BACKED_UP") {
       std::ifstream manifest(transaction / "artifacts");
       if (!manifest)
         return absl::FailedPreconditionError("Prepared stitch transaction has no artifact manifest");
@@ -756,35 +753,107 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           (manifested != current && manifested != kPreviousArtifacts && manifested != kLegacyArtifacts)) {
         return absl::FailedPreconditionError("Prepared stitch transaction has an incomplete artifact manifest");
       }
+
+      std::set<std::string> prior_artifacts;
+      const fs::path prior_manifest_path = transaction / "previous_artifacts";
+      const bool has_prior_manifest = fs::exists(prior_manifest_path, error);
+      if (error)
+        return absl::InternalError("Unable to inspect stitch transaction prior-artifact manifest: " + error.message());
+      if (has_prior_manifest) {
+        std::ifstream prior_manifest(prior_manifest_path);
+        if (!prior_manifest)
+          return absl::FailedPreconditionError("Prepared stitch transaction has no readable prior-artifact manifest");
+        for (std::string name; prior_manifest >> name;) {
+          if (fs::path(name).filename() != name || manifested.count(name) == 0 ||
+              !prior_artifacts.insert(name).second) {
+            return absl::InvalidArgumentError("Invalid prior stitch transaction filename: " + name);
+          }
+        }
+        if (!prior_manifest.eof()) {
+          return absl::FailedPreconditionError("Prepared stitch transaction has an invalid prior-artifact manifest");
+        }
+      } else if (*state != "PREPARED") {
+        return absl::FailedPreconditionError("Active stitch transaction has no prior-artifact manifest");
+      }
+
       const fs::path previous = transaction / "previous";
-      std::vector<fs::path> backups;
+      std::map<std::string, fs::path> backups;
       const bool previous_exists = fs::exists(previous, error);
       if (error)
         return absl::InternalError("Unable to inspect stitch transaction backup directory: " + error.message());
-      if (previous_exists) {
-        if (!fs::is_directory(previous, error) || error)
-          return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
-        for (const auto& old : fs::directory_iterator(previous, error)) {
-          if (error)
-            return absl::InternalError("Unable to inspect stitch transaction backup: " + error.message());
-          const std::string old_name = old.path().filename().string();
-          if (!old.is_regular_file(error) || error || !is_stitch_artifact_name(old_name))
-            return absl::InvalidArgumentError("Invalid stitch transaction backup: " + old_name);
-          backups.push_back(old.path());
+      if (!previous_exists || !fs::is_directory(previous, error) || error)
+        return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
+      for (const auto& old : fs::directory_iterator(previous, error)) {
+        if (error)
+          return absl::InternalError("Unable to inspect stitch transaction backup: " + error.message());
+        const std::string old_name = old.path().filename().string();
+        if (!old.is_regular_file(error) || error || !is_stitch_artifact_name(old_name) ||
+            !backups.emplace(old_name, old.path()).second) {
+          return absl::InvalidArgumentError("Invalid stitch transaction backup: " + old_name);
         }
       }
-      for (const std::string& name : manifested) {
-        fs::remove(root / name, error);
-        if (error)
-          return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
-      }
-      for (const fs::path& old : backups) {
-        auto status = link_stitch_file_preserving_identity(old, root / old.filename());
-        if (!status.ok())
-          return absl::InternalError("Unable to restore interrupted stitch artifact: " + std::string(status.message()));
+
+      if (!has_prior_manifest) {
+        // Journals from the old hard-link protocol did not record the prior
+        // set separately and could publish while still PREPARED.
+        for (const std::string& name : manifested) {
+          fs::remove(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
+        }
+        for (const auto& [name, old] : backups) {
+          fs::rename(old, root / name, error);
+          if (error) {
+            return absl::InternalError("Unable to restore interrupted stitch artifact: " + error.message());
+          }
+        }
+      } else if (*state == "PREPARED") {
+        if (!backups.empty()) {
+          return absl::FailedPreconditionError("Prepared stitch transaction unexpectedly contains backups");
+        }
+      } else {
+        for (const auto& [name, old] : backups) {
+          if (prior_artifacts.count(name) == 0) {
+            return absl::FailedPreconditionError("Stitch transaction contains an unmanifested backup: " + name);
+          }
+          const bool root_exists = fs::exists(root / name, error);
+          if (error)
+            return absl::InternalError("Unable to inspect interrupted stitch artifact: " + error.message());
+          if (*state == "BACKING_UP" && root_exists) {
+            return absl::FailedPreconditionError(
+                "Backup-in-progress stitch transaction contains duplicate artifact: " + name);
+          }
+        }
+        if (*state == "BACKED_UP" && backups.size() != prior_artifacts.size()) {
+          return absl::FailedPreconditionError("Backed-up stitch transaction has incomplete rollback artifacts");
+        }
+        if (*state == "BACKING_UP") {
+          for (const std::string& name : prior_artifacts) {
+            if (backups.count(name) != 0)
+              continue;
+            if (!fs::is_regular_file(root / name, error) || error) {
+              return absl::FailedPreconditionError(
+                  "Backup-in-progress stitch transaction lost prior artifact: " + name);
+            }
+          }
+        } else {
+          for (const std::string& name : manifested) {
+            fs::remove(root / name, error);
+            if (error)
+              return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
+          }
+        }
+        for (const auto& [name, old] : backups) {
+          fs::rename(old, root / name, error);
+          if (error)
+            return absl::InternalError("Unable to restore interrupted stitch artifact: " + error.message());
+        }
       }
       error.clear();
-      auto status = fsync_stitch_path(root, true);
+      auto status = fsync_stitch_path(previous, true);
+      if (!status.ok())
+        return status;
+      status = fsync_stitch_path(root, true);
       if (!status.ok())
         return status;
       status = mark_stitch_transaction_rolled_back(transaction);
@@ -895,21 +964,15 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
     return canvas.status();
   }
   auto provenance = read_canvas_provenance(game_dir);
-  bool compatible = false;
-  if (provenance.ok()) {
-    compatible = artifacts_are_compatible(
-        *provenance, *canvas, max_output_width, live_stitch_max_canvas_dimension().value_or(0));
-  } else if (absl::IsNotFound(provenance.status())) {
-    const size_t max_canvas_dimension = live_stitch_max_canvas_dimension().value_or(0);
-    compatible = (max_output_width == 0 || canvas->width <= max_output_width) &&
-        (max_canvas_dimension == 0 ||
-         (canvas->width <= max_canvas_dimension && canvas->height <= max_canvas_dimension));
-  } else {
-    if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status())) {
+  if (!provenance.ok()) {
+    if (absl::IsNotFound(provenance.status()) || absl::IsFailedPrecondition(provenance.status()) ||
+        absl::IsInvalidArgument(provenance.status())) {
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     }
     return provenance.status();
   }
+  const bool compatible =
+      artifacts_are_compatible(*provenance, *canvas, max_output_width, live_stitch_max_canvas_dimension().value_or(0));
   if (!compatible) {
     return CanvasConstraintCompatibility{
         .artifacts_compatible = false,

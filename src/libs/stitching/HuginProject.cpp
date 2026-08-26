@@ -1009,21 +1009,25 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   fs::create_directory(backups, error);
   if (error)
     return absl::InternalError("Unable to prepare stitch artifact rollback directory: " + error.message());
-  for (const std::string& name : names) {
-    if (!fs::exists(game_dir / name, error)) {
-      error.clear();
-      continue;
-    }
-    auto status = link_stitch_file_preserving_identity(game_dir / name, backups / name);
-    if (!status.ok())
-      return absl::InternalError(
-          "Unable to preserve previous stitch artifact " + name + ": " + std::string(status.message()));
-  }
-
   std::ostringstream manifest;
+  std::ostringstream prior_manifest;
   for (const std::string& name : names)
     manifest << name << '\n';
   auto status = write_stitch_transaction_file(staging / "artifacts", manifest.str());
+  if (!status.ok())
+    return status;
+  for (const std::string& name : names) {
+    const bool exists = fs::exists(game_dir / name, error);
+    if (error)
+      return absl::InternalError("Unable to inspect previous stitch artifact " + name + ": " + error.message());
+    if (exists) {
+      if (!fs::is_regular_file(game_dir / name, error) || error) {
+        return absl::FailedPreconditionError("Previous stitch artifact is not a regular file: " + name);
+      }
+      prior_manifest << name << '\n';
+    }
+  }
+  status = write_stitch_transaction_file(staging / "previous_artifacts", prior_manifest.str());
   if (!status.ok())
     return status;
   status = fsync_stitch_path(backups, true);
@@ -1053,10 +1057,39 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
       return absl::InternalError(message + "; rollback also failed: " + std::string(rollback_status.message()));
     return absl::InternalError(message);
   };
+  status = publish_transaction_state(staging, "BACKING_UP\n");
+  if (!status.ok())
+    return status;
+  size_t backup_count = 0;
   for (const std::string& name : names) {
-    fs::remove(game_dir / name, error);
+    const bool exists = fs::exists(game_dir / name, error);
     if (error)
-      return rollback_error("Unable to remove old stitch artifact " + name + ": " + error.message());
+      return rollback_error("Unable to inspect old stitch artifact " + name + ": " + error.message());
+    if (!exists)
+      continue;
+    fs::rename(game_dir / name, backups / name, error);
+    if (error)
+      return rollback_error("Unable to preserve previous stitch artifact " + name + ": " + error.message());
+    ++backup_count;
+    if (backup_count == 1) {
+      if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_DURING_BACKUP");
+          interrupt != nullptr && std::string(interrupt) == "1") {
+        return absl::InternalError("Injected stitch interruption during artifact backup");
+      }
+    }
+  }
+  status = fsync_stitch_path(backups, true);
+  if (!status.ok())
+    return rollback_error(std::string(status.message()));
+  status = fsync_stitch_path(game_dir, true);
+  if (!status.ok())
+    return rollback_error(std::string(status.message()));
+  status = publish_transaction_state(staging, "BACKED_UP\n");
+  if (!status.ok())
+    return rollback_error(std::string(status.message()));
+  if (const char* interrupt = std::getenv("HM_TEST_STITCH_INTERRUPT_AFTER_BACKUP_SYNC");
+      interrupt != nullptr && std::string(interrupt) == "1") {
+    return absl::InternalError("Injected stitch interruption after durable backup");
   }
   for (const std::string& name : names) {
     if (!fs::exists(staging / name, error)) {

@@ -38,6 +38,9 @@ int main() {
               is_allowlisted_runtime_property("hmstitcher0", "stitched-output-epoch"),
           "The stitcher must accept live grading controls and output authorization epochs") ||
       !expect(
+          !is_allowlisted_runtime_property("hmstitcher0", "post-stitch-rotate-degrees"),
+          "Raw stitch rotation must not bypass stitched-output epoch authorization") ||
+      !expect(
           !is_allowlisted_runtime_property("hmstitcher0", "high-bit-depth"),
           "High-bit mode must remain restart-only") ||
       !expect(

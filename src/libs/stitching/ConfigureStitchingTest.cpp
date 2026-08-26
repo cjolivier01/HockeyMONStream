@@ -764,6 +764,11 @@ bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path
   if (reused.ok())
     reused->artifact_lock.reset();
 
+  set_write_time(dir / "left.png", 4);
+  auto stale_inputs = hm::stitching::lock_validated_stitching_artifacts(dir.string(), 0, snapshot);
+  const bool stale_inputs_rejected = stale_inputs.ok() && !stale_inputs->artifact_lock;
+  set_write_time(dir / "left.png", 0);
+
   cv::Mat seam(32, 160, CV_8U, cv::Scalar(255));
   const fs::path replacement = dir / "replacement_seam.png";
   if (!cv::imwrite(replacement.string(), seam)) {
@@ -771,8 +776,9 @@ bool expect_validated_snapshot_is_reused_only_for_same_generation(const fs::path
   }
   fs::rename(replacement, dir / "seam_file.png");
   auto replaced = hm::stitching::lock_validated_stitching_artifacts(dir.string(), 0, snapshot);
-  if (!same_generation_reused || !replaced.ok() || replaced->artifact_lock) {
-    std::cerr << "validated snapshots must be reused only while the exact artifact generation is unchanged: "
+  if (!same_generation_reused || !stale_inputs_rejected || !replaced.ok() || replaced->artifact_lock) {
+    std::cerr << "validated snapshots must be reused only while the exact artifact generation and dependencies are "
+                 "unchanged: "
               << replaced.status() << std::endl;
     return false;
   }
@@ -840,7 +846,7 @@ bool expect_nonbinding_cap_changes_reuse_artifacts(const fs::path& tmpdir) {
   return true;
 }
 
-bool expect_dimension_compliant_legacy_artifacts_do_not_require_migration(const fs::path& tmpdir) {
+bool expect_missing_provenance_requires_migration(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "missing_canvas_provenance";
   fs::remove_all(dir);
   if (!write_valid_stitching_artifacts(dir)) {
@@ -849,12 +855,8 @@ bool expect_dimension_compliant_legacy_artifacts_do_not_require_migration(const 
   fs::remove(dir / "stitching_canvas_provenance");
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), 0);
   const auto regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 0);
-  const auto capped_configured = hm::stitching::is_stitching_configured(dir.string(), 80);
-  const auto capped_regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 80);
-  if (!configured.ok() || !*configured || !regeneration.ok() || *regeneration || !capped_configured.ok() ||
-      *capped_configured || !capped_regeneration.ok() || !*capped_regeneration) {
-    std::cerr << "dimension-compliant legacy artifacts must be reusable but still obey active canvas limits"
-              << std::endl;
+  if (!configured.ok() || *configured || !regeneration.ok() || !*regeneration) {
+    std::cerr << "provenance-less artifacts must receive a one-time migration regeneration" << std::endl;
     return false;
   }
   return true;
@@ -1392,7 +1394,7 @@ int main() {
     finish(tmpdir, 28);
   }
 
-  if (!expect_dimension_compliant_legacy_artifacts_do_not_require_migration(tmpdir)) {
+  if (!expect_missing_provenance_requires_migration(tmpdir)) {
     finish(tmpdir, 29);
   }
 

@@ -34,8 +34,10 @@ absl::Status fsync_directory(const fs::path& directory) {
 } // namespace
 
 absl::Status publish_transaction_state(const fs::path& transaction, const std::string& contents) {
-  if (contents != "PREPARED\n" && contents != "COMMITTED\n" && contents != "ROLLED_BACK\n")
+  if (contents != "PREPARED\n" && contents != "BACKING_UP\n" && contents != "BACKED_UP\n" &&
+      contents != "COMMITTED\n" && contents != "ROLLED_BACK\n") {
     return absl::InvalidArgumentError("Invalid transaction state contents");
+  }
 
   std::string pattern = (transaction / ".state-XXXXXX").string();
   std::vector<char> writable_pattern(pattern.begin(), pattern.end());

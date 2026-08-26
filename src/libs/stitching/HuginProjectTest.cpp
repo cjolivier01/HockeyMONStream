@@ -769,6 +769,46 @@ int main() {
           "Hugin rollback must preserve the inode-based generation identity");
     }
   }
+  ::setenv("HM_TEST_STITCH_INTERRUPT_DURING_BACKUP", "1", 1);
+  const auto interrupted_during_backup = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  ::unsetenv("HM_TEST_STITCH_INTERRUPT_DURING_BACKUP");
+  ok &= expect(!interrupted_during_backup.ok(), "injected interruption during artifact backup must stop publication");
+  ok &= expect(
+      !fs::exists(root / "game" / "hm_project.pto") && fs::exists(root / "game" / "autooptimiser_out.pto"),
+      "backup-in-progress interruption must leave a recoverable partial move");
+  ok &= expect(
+      hm::stitching::HuginProject::Recover(root / "game").ok(),
+      "backup-in-progress Hugin publication must recover on the next owner");
+  {
+    auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    ok &= expect(generation_lock.ok(), "partially backed-up Hugin generation must remain lockable");
+    if (generation_lock.ok()) {
+      auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **generation_lock);
+      ok &= expect(
+          generation.ok() && *generation == generation_before_interrupted_publication,
+          "partial backup rollback must preserve the inode-based generation identity");
+    }
+  }
+  ::setenv("HM_TEST_STITCH_INTERRUPT_AFTER_BACKUP_SYNC", "1", 1);
+  const auto interrupted_after_backup = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  ::unsetenv("HM_TEST_STITCH_INTERRUPT_AFTER_BACKUP_SYNC");
+  ok &= expect(!interrupted_after_backup.ok(), "injected interruption after durable backup must stop publication");
+  ok &= expect(
+      !fs::exists(root / "game" / "hm_project.pto") && !fs::exists(root / "game" / "autooptimiser_out.pto"),
+      "backed-up interruption must happen before publishing replacement artifacts");
+  ok &= expect(
+      hm::stitching::HuginProject::Recover(root / "game").ok(),
+      "durably backed-up Hugin publication must recover on the next owner");
+  {
+    auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    ok &= expect(generation_lock.ok(), "fully backed-up Hugin generation must remain lockable");
+    if (generation_lock.ok()) {
+      auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **generation_lock);
+      ok &= expect(
+          generation.ok() && *generation == generation_before_interrupted_publication,
+          "complete backup rollback must preserve the inode-based generation identity");
+    }
+  }
   ok &= expect(
       write_remap_pair(fixtures, "mapping_0000", 40, 32, true) &&
           write_remap_pair(fixtures, "mapping_0001", 40, 32, true),
