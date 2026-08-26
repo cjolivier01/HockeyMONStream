@@ -183,6 +183,7 @@ class HStreamWindow : public QMainWindow {
   void failArchiveFinalization(const QString& message);
   bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
   void releaseArchiveFinalizerOwnership(bool remove_lock_file);
+  void releaseArchiveFinalizeSource(bool remove_guard);
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -463,6 +464,7 @@ class HStreamWindow : public QMainWindow {
   QString active_archive_recovery_path_;
   QFile archive_job_log_;
   QString archive_job_log_path_;
+  QString archive_job_log_guard_path_;
   bool archive_job_log_enabled_{false};
   qint64 active_archive_initial_size_{-1};
   qint64 active_archive_initial_mtime_ms_{-1};
@@ -475,6 +477,7 @@ class HStreamWindow : public QMainWindow {
   QProgressBar* archive_finalize_progress_{nullptr};
   QPushButton* archive_finalize_ok_button_{nullptr};
   QString archive_finalize_source_path_;
+  QString archive_finalize_source_guard_path_;
   QString archive_finalize_game_id_;
   QString archive_finalize_target_path_;
   QString archive_finalize_partial_path_;
@@ -486,6 +489,9 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_owner_lock_path_;
   qint64 archive_finalize_duration_us_{-1};
   int archive_finalize_owner_lock_fd_{-1};
+  int archive_finalize_source_fd_{-1};
+  quint64 archive_finalize_source_device_{0};
+  quint64 archive_finalize_source_inode_{0};
   ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
   bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};

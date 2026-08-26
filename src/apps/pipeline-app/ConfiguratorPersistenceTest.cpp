@@ -1671,6 +1671,8 @@ play-tracker:
   const fs::path provisional_recovery = provisional_log_dir / "provisional-finalization-failed.mkv";
   std::ofstream(provisional_source, std::ios::binary) << "video before UI path resolution";
   std::ofstream(provisional_log, std::ios::binary) << "provisional UI log";
+  fs::create_hard_link(provisional_source, provisional_source.string() + ".hstream-pin");
+  fs::create_hard_link(provisional_log, provisional_log.string() + ".hstream-pin");
   const auto provisional_recoveries =
       hm::configurator_internal::recover_stale_archive_work_files(provisional_configured);
   std::ifstream provisional_recovered_log(provisional_recovery.string() + ".log", std::ios::binary);
@@ -1679,7 +1681,8 @@ play-tracker:
   ok &= expect(
       provisional_recoveries.ok() && provisional_recoveries->size() == 1 &&
           provisional_recoveries->front() == provisional_recovery && !fs::exists(provisional_source) &&
-          !fs::exists(provisional_log) && fs::is_regular_file(provisional_recovery) &&
+          !fs::exists(provisional_log) && !fs::exists(provisional_source.string() + ".hstream-pin") &&
+          !fs::exists(provisional_log.string() + ".hstream-pin") && fs::is_regular_file(provisional_recovery) &&
           provisional_recovered_log_content == "provisional UI log",
       "Stale recovery must pair a video with the provisional UI log left by a crash before path resolution");
 
@@ -1814,6 +1817,51 @@ play-tracker:
           replaced_publication_content == "injected foreign archive recovery" &&
           !fs::exists(replaced_publication_destination_log),
       "A replaced published destination must retain both trusted sources and clean only the owned partial sidecar");
+
+  const fs::path replaced_marker_dir = root / "archive-replaced-marker";
+  fs::create_directories(replaced_marker_dir);
+  const fs::path replaced_marker_source = replaced_marker_dir / "marker.mkv";
+  const fs::path replaced_marker_destination = replaced_marker_dir / "marker-finalization-failed.mkv";
+  const fs::path replaced_marker_sidecar = replaced_marker_destination.string() + ".log";
+  std::ofstream(replaced_marker_source, std::ios::binary) << "trusted video without a log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RECOVERY_MARKER", "1", TRUE);
+  const auto replaced_marker = hm::configurator_internal::preserve_existing_archive_work_file(replaced_marker_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RECOVERY_MARKER");
+  std::ifstream replaced_marker_source_stream(replaced_marker_source, std::ios::binary);
+  const std::string replaced_marker_source_content{
+      std::istreambuf_iterator<char>(replaced_marker_source_stream), std::istreambuf_iterator<char>()};
+  std::ifstream replaced_marker_stream(replaced_marker_sidecar, std::ios::binary);
+  const std::string replaced_marker_content{
+      std::istreambuf_iterator<char>(replaced_marker_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !replaced_marker.ok() && replaced_marker_source_content == "trusted video without a log" &&
+          !fs::exists(replaced_marker_destination) &&
+          replaced_marker_content == "injected foreign archive recovery marker",
+      "No-log recovery must keep its reservation through video publication and retain the source if that marker is replaced");
+
+  const fs::path post_quarantine_dir = root / "archive-post-quarantine-replacement";
+  fs::create_directories(post_quarantine_dir);
+  const fs::path post_quarantine_source = post_quarantine_dir / "post-quarantine.mkv";
+  const fs::path post_quarantine_log = post_quarantine_source.string() + ".log";
+  const fs::path post_quarantine_destination = post_quarantine_dir / "post-quarantine-finalization-failed.mkv";
+  const fs::path post_quarantine_destination_log = post_quarantine_destination.string() + ".log";
+  std::ofstream(post_quarantine_source, std::ios::binary) << "trusted post-quarantine video";
+  std::ofstream(post_quarantine_log, std::ios::binary) << "trusted post-quarantine log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", "1", TRUE);
+  const auto post_quarantine = hm::configurator_internal::preserve_existing_archive_work_file(post_quarantine_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
+  std::ifstream post_quarantine_source_stream(post_quarantine_source, std::ios::binary);
+  const std::string post_quarantine_source_content{
+      std::istreambuf_iterator<char>(post_quarantine_source_stream), std::istreambuf_iterator<char>()};
+  std::ifstream post_quarantine_destination_stream(post_quarantine_destination, std::ios::binary);
+  const std::string post_quarantine_destination_content{
+      std::istreambuf_iterator<char>(post_quarantine_destination_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !post_quarantine.ok() && post_quarantine_source_content == "trusted post-quarantine video" &&
+          fs::is_regular_file(post_quarantine_log) &&
+          post_quarantine_destination_content == "injected foreign archive after quarantine" &&
+          !fs::exists(post_quarantine_destination_log),
+      "Protected cleanup must restore its pinned source and retire its partial sidecar if publication is replaced after quarantine unlink");
 
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /
