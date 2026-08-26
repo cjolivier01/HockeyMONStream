@@ -10,12 +10,22 @@ filegroup(
 )
 
 cc_library(
+  name = "transaction_state",
+  srcs = ["TransactionState.cpp"],
+  hdrs = ["TransactionState.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:private"],
+  deps = ["@com_google_absl//absl/status:status"],
+)
+
+cc_library(
   name = "game_config",
   srcs = ["GameConfig.cpp"],
   hdrs = ["GameConfig.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":transaction_state",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -66,6 +76,7 @@ cc_library(
     ":feature_matcher",
     ":hugin_project",
     ":rink_segmentation",
+    ":transaction_state",
     "//src/libs/common:utils",
     "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",
@@ -203,6 +214,7 @@ cc_library(
     ":feature_matcher",
     ":game_config",
     ":homography_maps",
+    ":transaction_state",
     "//src/libs/common:status",
     "//src/libs/common:utils",
     "@opencv_linux//:opencv",

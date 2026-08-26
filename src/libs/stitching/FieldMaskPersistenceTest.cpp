@@ -379,18 +379,53 @@ int main() {
         }
       }
     }
+    {
+      YAML::Node pending_live_override = YAML::LoadFile((root / "config.yaml").string());
+      YAML::Node pending_calibration = pending_live_override["hstream_ui"]["stitching_calibration"];
+      pending_calibration["status"] = "pending";
+      pending_calibration["rink_mask_status"] = "pending";
+      pending_calibration["invalidation_id"] = "rink-run-live";
+      pending_live_override["rink"].remove("stitched_output_generation");
+      pending_live_override["rink"].remove("stitched_output_persisted_rotation_degrees");
+      std::ofstream(root / "config.yaml") << pending_live_override << '\n';
+    }
     const auto live_override_status = hm::stitching::save_rink_profile_with_stitched_image(
-        root.string(), profile, stale_snapshot, "rink-run-a", live_override_generation);
+        root.string(), profile, stale_snapshot, "rink-run-live", live_override_generation);
     const YAML::Node after_live_override = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         !live_override_generation.empty() && live_override_status.ok() &&
             after_live_override["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5 &&
             after_live_override["rink"]["stitched_output_generation"].as<std::string>() == live_override_generation &&
-            hm::stitching::is_field_mask_configured(root.string(), live_override_generation, "rink-run-a"),
+            after_live_override["rink"]["stitched_output_persisted_rotation_degrees"].as<double>() == 7.5 &&
+            hm::stitching::is_field_mask_configured(root.string(), live_override_generation, "rink-run-live"),
         "live runtime rotation override must publish without rewriting the persisted rotation");
+
+    std::string older_live_override_generation;
+    if (!live_override_generation.empty() && live_override_canvas_size.ok()) {
+      auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+      if (generation_lock.ok()) {
+        auto hugin_generation = hm::stitching::HuginProject::GenerationId(root, **generation_lock);
+        if (hugin_generation.ok()) {
+          auto generation = hm::stitching::stitched_output_generation_id(
+              *hugin_generation, 8.0, live_override_canvas_size->width, live_override_canvas_size->height);
+          if (generation.ok())
+            older_live_override_generation = *generation;
+        }
+      }
+    }
+    const auto late_older_publication = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(), profile, committed_snapshot, "rink-run-live", older_live_override_generation);
+    const YAML::Node after_late_older_publication = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
-        hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a").ok(),
-        "current rotation generation must remain publishable after rejecting stale inference");
+        !older_live_override_generation.empty() && absl::IsAborted(late_older_publication) &&
+            after_late_older_publication["rink"]["stitched_output_generation"].as<std::string>() ==
+                live_override_generation,
+        "a late older runtime rotation must not overwrite a completed newer generation");
+    ok &= expect(
+        hm::stitching::save_rink_profile_with_stitched_image(
+            root.string(), profile, stale_snapshot, "rink-run-live", live_override_generation)
+            .ok(),
+        "completed publication must remain idempotent for the same producer generation");
 
     struct stat snapshot_before_rollback{};
     ok &= expect(

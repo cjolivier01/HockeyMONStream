@@ -339,6 +339,39 @@ int main() {
       "remote scoreboard mode must require an explicit public host before listening");
   ::unsetenv("HM_SCOREBOARD_BIND_HOST");
   ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
+  const auto live_rotation_generation =
+      hm::stitching::stitched_output_generation_id(fixture_hugin_generation, 9.0, 96, 32);
+  if (live_rotation_generation.ok()) {
+    YAML::Node live_rotation_config = YAML::LoadFile((directory / "config.yaml").string());
+    live_rotation_config["stitching"]["post_stitch_rotate_degrees"] = 7.5;
+    live_rotation_config["rink"]["stitched_output_generation"] = *live_rotation_generation;
+    live_rotation_config["rink"]["stitched_output_persisted_rotation_degrees"] = 7.5;
+    live_rotation_config["rink"].remove("scoreboard");
+    std::ofstream(directory / "config.yaml") << live_rotation_config << '\n';
+  }
+  const cv::Mat live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
+  ok &= expect(
+      live_rotation_generation.ok() &&
+          hm::stitching::save_stitched_image(
+              directory.string(),
+              live_rotation_snapshot,
+              live_rotation_generation.ok() ? *live_rotation_generation : "")
+              .ok() &&
+          exercise_http_selector(directory),
+      "snapshot publication and scoreboard selection must accept an authoritative live rotation override");
+  if (live_rotation_generation.ok()) {
+    YAML::Node changed_persisted_rotation = YAML::LoadFile((directory / "config.yaml").string());
+    changed_persisted_rotation["stitching"]["post_stitch_rotate_degrees"] = 8.0;
+    std::ofstream(directory / "config.yaml") << changed_persisted_rotation << '\n';
+  }
+  ok &= expect(
+      live_rotation_generation.ok() && absl::IsAborted(Selector::Run(directory)),
+      "scoreboard selection must reject a persisted rotation changed after producer publication");
+  YAML::Node restored_fixture_config = YAML::LoadFile((directory / "config.yaml").string());
+  restored_fixture_config["stitching"]["post_stitch_rotate_degrees"] = 0.0;
+  restored_fixture_config["rink"]["stitched_output_generation"] = fixture_output_generation;
+  restored_fixture_config["rink"].remove("stitched_output_persisted_rotation_degrees");
+  std::ofstream(directory / "config.yaml") << restored_fixture_config << '\n';
   auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(directory);
   ok &= expect(hugin_lock.ok(), "scoreboard generation race test must lock Hugin artifacts");
   std::string stale_generation;

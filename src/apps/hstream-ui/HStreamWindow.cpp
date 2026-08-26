@@ -3720,6 +3720,7 @@ struct ArtifactInvalidationResult {
 ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config) {
   ArtifactInvalidationResult result;
   result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
+  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
   result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;

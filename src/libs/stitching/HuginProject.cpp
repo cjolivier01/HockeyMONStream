@@ -37,6 +37,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HomographyMaps.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 extern "C" char** environ;
 
@@ -1043,10 +1044,7 @@ absl::Status publish_artifacts(const fs::path& staging, const fs::path& game_dir
   status = fsync_stitch_path(staging, true);
   if (!status.ok())
     return status;
-  status = write_stitch_transaction_file(staging / "state", "PREPARED\n");
-  if (!status.ok())
-    return status;
-  status = fsync_stitch_path(staging, true);
+  status = publish_transaction_state(staging, "PREPARED\n");
   if (!status.ok())
     return status;
   // The PREPARED state is only recoverable after the staging directory entry

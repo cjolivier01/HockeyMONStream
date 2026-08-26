@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -577,10 +578,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   status = fsync_path(staging, true);
   if (!status.ok())
     return status;
-  status = write_transaction_file(staging / "state", "PREPARED\n");
-  if (!status.ok())
-    return status;
-  status = fsync_path(staging, true);
+  status = publish_transaction_state(staging, "PREPARED\n");
   if (!status.ok())
     return status;
   status = fsync_path(game_dir, true);

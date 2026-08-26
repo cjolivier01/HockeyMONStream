@@ -10,6 +10,7 @@
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -261,6 +262,7 @@ void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
   remove_yaml_key_path(config, {"rink", "stitched_output_generation"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_persisted_rotation_degrees"});
 }
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -1980,6 +1982,45 @@ absl::StatusOr<double> configured_post_stitch_rotation(const YAML::Node& config)
   }
 }
 
+absl::StatusOr<std::optional<double>> stitched_output_persisted_rotation_marker(const YAML::Node& config) {
+  try {
+    if (!config || !config.IsMap())
+      return std::nullopt;
+    const std::optional<YAML::Node> rink = map_child(config, "rink");
+    if (!rink.has_value() || !rink->IsMap())
+      return std::nullopt;
+    const std::optional<YAML::Node> marker = map_child(*rink, "stitched_output_persisted_rotation_degrees");
+    if (!marker.has_value() || !marker->IsDefined())
+      return std::nullopt;
+    if (!marker->IsScalar())
+      return absl::InvalidArgumentError("Stitched-output persisted-rotation marker must be a scalar");
+    const double rotation = marker->as<double>();
+    if (!std::isfinite(rotation))
+      return absl::InvalidArgumentError("Stitched-output persisted-rotation marker must be finite");
+    return rotation;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read stitched-output persisted-rotation marker: " + std::string(exception.what()));
+  }
+}
+
+bool stitching_calibration_is_pending(const YAML::Node& config) {
+  try {
+    if (!config || !config.IsMap())
+      return false;
+    const std::optional<YAML::Node> ui = map_child(config, "hstream_ui");
+    if (!ui.has_value() || !ui->IsMap())
+      return false;
+    const std::optional<YAML::Node> calibration = map_child(*ui, "stitching_calibration");
+    if (!calibration.has_value() || !calibration->IsMap())
+      return false;
+    const std::optional<YAML::Node> status = map_child(*calibration, "status");
+    return status.has_value() && status->IsScalar() && status->as<std::string>() == "pending";
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
 absl::StatusOr<std::string> configured_output_generation(
     const YAML::Node& config,
     const std::string& hugin_generation) {
@@ -2115,6 +2156,38 @@ absl::StatusOr<std::string> current_stitched_output_generation_id_locked(
     return absl::InvalidArgumentError("A game directory and Hugin generation are required");
   CanvasSize output_size;
   HM_ASSIGN_OR_RETURN(output_size, get_mapping_canvas_size(fs::path(game_dir)));
+  std::optional<double> persisted_rotation_marker;
+  HM_ASSIGN_OR_RETURN(persisted_rotation_marker, stitched_output_persisted_rotation_marker(config));
+  if (persisted_rotation_marker.has_value()) {
+    double persisted_rotation = 0.0;
+    HM_ASSIGN_OR_RETURN(persisted_rotation, configured_post_stitch_rotation(config));
+    if (persisted_rotation != *persisted_rotation_marker) {
+      return absl::AbortedError(
+          "Persisted stitched-output rotation changed after the current output generation was published");
+    }
+    try {
+      const YAML::Node generation = config["rink"]["stitched_output_generation"];
+      if (!generation || !generation.IsScalar()) {
+        return absl::FailedPreconditionError(
+            "Stitched-output persisted-rotation marker requires an authoritative producer generation");
+      }
+      const std::string authoritative_generation = generation.as<std::string>();
+      HM_RETURN_IF_ERROR(validate_output_generation_hugin(authoritative_generation, hugin_generation));
+      std::optional<CanvasSize> authoritative_size;
+      HM_ASSIGN_OR_RETURN(authoritative_size, stitched_output_size_from_generation(authoritative_generation));
+      if (!authoritative_size.has_value()) {
+        return absl::FailedPreconditionError("Authoritative stitched-output generation is missing output dimensions");
+      }
+      if (authoritative_size->width != output_size.width || authoritative_size->height != output_size.height) {
+        return absl::AbortedError(
+            "Authoritative stitched-output generation does not match the current canvas dimensions");
+      }
+      return authoritative_generation;
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(
+          "Unable to read authoritative stitched-output generation: " + std::string(exception.what()));
+    }
+  }
   return configured_output_generation(config, hugin_generation, output_size);
 }
 
@@ -2234,7 +2307,15 @@ absl::Status visit_current_field_mask_impl(
           compatible_legacy_generation, stitched_output_generation_id(*hugin_generation, *post_stitch_rotate_degrees));
     }
   } else {
-    HM_ASSIGN_OR_RETURN(current_output_generation, configured_output_generation(*config, *hugin_generation));
+    std::optional<double> persisted_rotation_marker;
+    HM_ASSIGN_OR_RETURN(persisted_rotation_marker, stitched_output_persisted_rotation_marker(*config));
+    if (persisted_rotation_marker.has_value()) {
+      HM_ASSIGN_OR_RETURN(
+          current_output_generation,
+          current_stitched_output_generation_id_locked(game_dir, *config, *hugin_generation));
+    } else {
+      HM_ASSIGN_OR_RETURN(current_output_generation, configured_output_generation(*config, *hugin_generation));
+    }
     CanvasSize native_size;
     HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
     expected_canvas_size = native_size;
@@ -2452,11 +2533,22 @@ absl::Status save_rink_profile_locked(
       auto expected_size = stitched_output_size_from_generation(expected_output_generation);
       if (!expected_size.ok())
         return expected_size.status();
-      if (expected_size->has_value()) {
-        CanvasSize current_size;
-        HM_ASSIGN_OR_RETURN(current_size, get_mapping_canvas_size(root));
-        if (current_size.width != (*expected_size)->width || current_size.height != (*expected_size)->height) {
-          return absl::AbortedError("Cannot publish a rink profile after the stitched-output canvas size changed");
+      if (!expected_size->has_value()) {
+        return absl::InvalidArgumentError("Authoritative stitched-output generation must include output dimensions");
+      }
+      CanvasSize current_size;
+      HM_ASSIGN_OR_RETURN(current_size, get_mapping_canvas_size(root));
+      if (current_size.width != (*expected_size)->width || current_size.height != (*expected_size)->height) {
+        return absl::AbortedError("Cannot publish a rink profile after the stitched-output canvas size changed");
+      }
+      const YAML::Node saved_generation = config["rink"]["stitched_output_generation"];
+      if (saved_generation && saved_generation.IsDefined()) {
+        if (!saved_generation.IsScalar())
+          return absl::InvalidArgumentError("Persisted stitched-output generation must be a scalar");
+        if (saved_generation.as<std::string>() != expected_output_generation &&
+            !stitching_calibration_is_pending(config)) {
+          return absl::AbortedError(
+              "Cannot replace a completed stitched-output generation outside a pending calibration epoch");
         }
       }
       // Runtime rotation may be an in-memory CLI/property override and is
@@ -2477,6 +2569,11 @@ absl::Status save_rink_profile_locked(
         profile.combined_bbox.x + profile.combined_bbox.width,
         profile.combined_bbox.y + profile.combined_bbox.height};
     config["rink"]["stitched_output_generation"] = current_output_generation;
+    if (expected_output_generation.empty()) {
+      config["rink"].remove("stitched_output_persisted_rotation_degrees");
+    } else {
+      config["rink"]["stitched_output_persisted_rotation_degrees"] = *expected_persisted_rotation;
+    }
     if (!expected_invalidation_id.empty()) {
       YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
       calibration["status"] = "complete";
@@ -2547,10 +2644,7 @@ absl::Status save_rink_profile_locked(
   sync_status = fsync_path(staging, true);
   if (!sync_status.ok())
     return sync_status;
-  sync_status = write_transaction_file(staging / "state", "PREPARED\n");
-  if (!sync_status.ok())
-    return sync_status;
-  sync_status = fsync_path(staging, true);
+  sync_status = publish_transaction_state(staging, "PREPARED\n");
   if (!sync_status.ok())
     return sync_status;
   // Persist the PREPARED transaction directory entry before deleting or

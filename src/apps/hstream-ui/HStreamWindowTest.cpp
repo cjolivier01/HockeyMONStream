@@ -6627,6 +6627,7 @@ bool test_camera_controls(HStreamWindow* window) {
     rotation_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
     rotation_only["rink"]["ice_contours_mask_count"] = 1;
     rotation_only["rink"]["stitched_output_generation"] = "stale-generation";
+    rotation_only["rink"]["stitched_output_persisted_rotation_degrees"] = 1.0;
     {
       std::ofstream out(config);
       out << rotation_only << "\n";
@@ -6650,6 +6651,9 @@ bool test_camera_controls(HStreamWindow* window) {
         !expect(
             !after_rotation_only_save["rink"]["stitched_output_generation"].IsDefined(),
             "A rotation-only preset save should clear the stale stitched-output generation") ||
+        !expect(
+            !after_rotation_only_save["rink"]["stitched_output_persisted_rotation_degrees"].IsDefined(),
+            "A rotation-only preset save should clear the stale persisted-rotation marker") ||
         !expect(
             rotation_only_calibration["status"].as<std::string>("") == "complete",
             "A rotation-only preset save should preserve completed stitch-map status") ||
