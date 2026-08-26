@@ -1607,6 +1607,7 @@ play-tracker:
       "Two enabled encode sinks must never be allowed to write the same normalized archive output");
 
   const fs::path stale_run = custom_archive_dir / "operator-selected-name.hstream-run-99999999-88888888-dead.mkv";
+  const fs::path stale_run_log = stale_run.string() + ".log";
   const fs::path stale_versioned_run = custom_archive_dir /
       ("operator-selected-name.hstream-run-v2-99999998-" + std::to_string(::getpid()) +
        "-01234567-89ab-cdef-0123-456789abcdef.mkv");
@@ -1624,6 +1625,7 @@ play-tracker:
       ("operator-selected-name.hstream-run-" + std::to_string(::getpid()) +
        "-00112233-4455-6677-8899-aabbccddeeff.mkv");
   std::ofstream(stale_run, std::ios::binary) << "stale unique run data";
+  std::ofstream(stale_run_log, std::ios::binary) << "stale unique run log";
   std::ofstream(stale_versioned_run, std::ios::binary) << "stale versioned run with live UI parent";
   std::ofstream(stale_pre_version_run, std::ios::binary) << "stale pre-version run with live UI parent";
   std::ofstream(dead_versioned_run, std::ios::binary) << "stale versioned run with dead backend and UI";
@@ -1631,16 +1633,27 @@ play-tracker:
   std::ofstream(live_run, std::ios::binary) << "live unique run data";
   std::ofstream(legacy_live_ui_run, std::ios::binary) << "legacy work owned by live UI";
   const auto stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
+  bool stale_log_recovered_with_video = false;
+  if (stale_recoveries.ok()) {
+    for (const fs::path& recovery : *stale_recoveries) {
+      std::ifstream recovered_log(recovery.string() + ".log", std::ios::binary);
+      const std::string recovered_log_content{
+          std::istreambuf_iterator<char>(recovered_log), std::istreambuf_iterator<char>()};
+      stale_log_recovered_with_video =
+          stale_log_recovered_with_video || recovered_log_content == "stale unique run log";
+    }
+  }
   ok &= expect(
-      stale_recoveries.ok() && stale_recoveries->size() == 3 && !fs::exists(stale_run) &&
-          fs::is_regular_file(stale_versioned_run) && fs::is_regular_file(stale_pre_version_run) &&
-          !fs::exists(dead_versioned_run) && !fs::exists(dead_pre_version_run) &&
+      stale_recoveries.ok() && stale_recoveries->size() == 3 && !fs::exists(stale_run) && !fs::exists(stale_run_log) &&
+          stale_log_recovered_with_video && fs::is_regular_file(stale_versioned_run) &&
+          fs::is_regular_file(stale_pre_version_run) && !fs::exists(dead_versioned_run) &&
+          !fs::exists(dead_pre_version_run) &&
           std::all_of(
               stale_recoveries->begin(),
               stale_recoveries->end(),
               [](const fs::path& path) { return fs::is_regular_file(path); }) &&
           fs::is_regular_file(live_run) && fs::is_regular_file(legacy_live_ui_run),
-      "Restart recovery must retain pre-v3 work while either its backend or UI owner is alive");
+      "Restart recovery must pair each stale job log with its recovered video while retaining work whose owner is alive");
   const auto repeated_stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
   ok &= expect(
       repeated_stale_recoveries.ok() && repeated_stale_recoveries->empty() && stale_recoveries.ok() &&

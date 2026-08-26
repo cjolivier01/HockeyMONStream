@@ -1041,7 +1041,7 @@ QString available_failed_archive_path(const QString& source_path) {
   for (int suffix = 0; suffix < 1000; ++suffix) {
     const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
     const QString candidate = QDir(source.absolutePath()).filePath(filename);
-    if (!QFileInfo::exists(candidate))
+    if (!QFileInfo::exists(candidate) && !QFileInfo::exists(candidate + ".log"))
       return candidate;
   }
   return {};
@@ -5768,20 +5768,13 @@ void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, co
   archive_job_log_path_ = output_info.dir().filePath(
       QString("%1.hstream-run-ui-%2%3.log").arg(output_info.completeBaseName(), safe_run_id, extension));
   archive_job_log_.setFileName(archive_job_log_path_);
-  if (!archive_job_log_.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::NewOnly)) {
+  if (!archive_job_log_.open(
+          QIODevice::WriteOnly | QIODevice::Text | QIODevice::NewOnly,
+          QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
     const QString error = archive_job_log_.errorString();
     archive_job_log_enabled_ = false;
     archive_job_log_path_.clear();
     appendLog(QString("archive job log could not be created: %1").arg(error));
-    return;
-  }
-  if (!archive_job_log_.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
-    const QString insecure_path = archive_job_log_path_;
-    archive_job_log_.close();
-    QFile::remove(insecure_path);
-    archive_job_log_enabled_ = false;
-    archive_job_log_path_.clear();
-    appendLog(QString("archive job log could not be secured for owner-only access: %1").arg(insecure_path));
     return;
   }
   appendLog(QString("archive job log: %1").arg(archive_job_log_path_));
@@ -5802,21 +5795,43 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   const bool renamed = !provisional_path.isEmpty() && QFile::rename(provisional_path, resolved_log_path);
   archive_job_log_path_ = renamed ? resolved_log_path : provisional_path;
   archive_job_log_.setFileName(archive_job_log_path_);
-  if (archive_job_log_path_.isEmpty() ||
-      !archive_job_log_.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-    const QString error = archive_job_log_.errorString();
-    archive_job_log_enabled_ = false;
-    archive_job_log_path_.clear();
-    appendLog(QString("archive job log could not continue after output path resolution: %1").arg(error));
-    return;
+  QString reopen_error;
+  bool reopened = false;
+  if (!archive_job_log_path_.isEmpty()) {
+#ifdef Q_OS_UNIX
+    const QByteArray encoded_path = QFile::encodeName(archive_job_log_path_);
+    const int fd = ::open(encoded_path.constData(), O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) {
+      reopen_error = QString::fromLocal8Bit(std::strerror(errno));
+    } else {
+      struct stat log_stat{};
+      const int stat_result = ::fstat(fd, &log_stat);
+      if (stat_result != 0 || !S_ISREG(log_stat.st_mode)) {
+        reopen_error = stat_result != 0 ? QString::fromLocal8Bit(std::strerror(errno))
+                                        : QString("resolved log path is not a regular file");
+        ::close(fd);
+      } else if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+        reopen_error = QString::fromLocal8Bit(std::strerror(errno));
+        ::close(fd);
+      } else if (!archive_job_log_.open(
+                     fd, QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text, QFileDevice::AutoCloseHandle)) {
+        reopen_error = archive_job_log_.errorString();
+        ::close(fd);
+      } else {
+        reopened = true;
+      }
+    }
+#else
+    reopened = archive_job_log_.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+    if (!reopened)
+      reopen_error = archive_job_log_.errorString();
+#endif
   }
-  if (!archive_job_log_.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
-    const QString insecure_path = archive_job_log_path_;
-    archive_job_log_.close();
-    QFile::remove(insecure_path);
+  if (!reopened) {
     archive_job_log_enabled_ = false;
     archive_job_log_path_.clear();
-    appendLog(QString("resolved archive job log could not be secured for owner-only access: %1").arg(insecure_path));
+    appendLog(QString("archive job log could not continue after output path resolution: %1")
+                  .arg(reopen_error.isEmpty() ? QString("unknown error") : reopen_error));
     return;
   }
   if (renamed) {
@@ -6311,6 +6326,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     const QString failed_archive_path = available_failed_archive_path(archive_finalize_source_path_);
     if (!failed_archive_path.isEmpty() && QFile::rename(archive_finalize_source_path_, failed_archive_path)) {
       archive_finalize_source_path_ = failed_archive_path;
+      resolveArchiveJobLogPath(archive_finalize_source_path_);
       releaseArchiveFinalizerOwnership(true);
       archive_finalize_pending_failure_detail_ = failure_detail;
       QString durability_error;

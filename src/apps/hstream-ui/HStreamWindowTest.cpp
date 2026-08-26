@@ -4986,12 +4986,16 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("failed-finalization-source.mkv");
   const QString failed_recovery =
       QDir(QFileInfo(failed_source).absolutePath()).filePath("failed-finalization-source-finalization-failed.mkv");
+  const QString failed_source_log = failed_source + ".log";
+  const QString failed_recovery_log = failed_recovery + ".log";
   const QStringList finalized_before_failure =
       QDir(window->gameDirectoryText())
           .entryList(
               {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
   QFile::remove(failed_source);
   QFile::remove(failed_recovery);
+  QFile::remove(failed_source_log);
+  QFile::remove(failed_recovery_log);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
   activate(start);
@@ -5005,6 +5009,9 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(window->gameDirectoryText())
           .entryList(
               {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  QFile failed_log_file(failed_recovery_log);
+  const bool failed_log_opened = failed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString failed_log_text = failed_log_opened ? QString::fromUtf8(failed_log_file.readAll()) : QString();
   const bool failed_archive_retained = expect(
       window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
           finalize_headline && finalize_headline->text() == "Video finalization failed" &&
@@ -5012,8 +5019,10 @@ bool test_output_controls(HStreamWindow* window) {
           finalize_detail->text().contains(failed_recovery) && finalize_ok && finalize_ok->isVisible() &&
           finalize_ok->toolTip().contains("Close the finalization result") &&
           finalize_ok->statusTip() == finalize_ok->toolTip() && !QFileInfo::exists(failed_source) &&
-          QFileInfo(failed_recovery).size() > 0 && finalized_after_failure == finalized_before_failure,
-      "A failed remux must show a red dismissible error, preserve a uniquely named recovery MKV, and publish no MP4");
+          QFileInfo(failed_recovery).size() > 0 && !QFileInfo::exists(failed_source_log) && failed_log_opened &&
+          failed_log_text.contains("archive finalization failed") &&
+          finalized_after_failure == finalized_before_failure,
+      "A failed remux must show a red dismissible error, preserve a same-name recovery MKV and job log, and publish no MP4");
   if (finalize_ok)
     activate(finalize_ok);
 
