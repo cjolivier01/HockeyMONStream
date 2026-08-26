@@ -205,6 +205,9 @@ absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const
   if (game_dir.empty())
     return false;
   const fs::path root(game_dir);
+  auto hugin_lock = lock_canvas_constraint_artifacts(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
@@ -224,19 +227,42 @@ absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const
       return absl::InvalidArgumentError("Game config must be a map");
     const YAML::Node pending_generation = config["rink"]["stitched_output_pending_generation"];
     const YAML::Node pending_authorization = config["rink"]["stitched_output_pending_authorization_id"];
-    if ((!pending_generation || !pending_generation.IsDefined()) &&
-        (!pending_authorization || !pending_authorization.IsDefined())) {
+    const bool has_pending_generation = pending_generation && pending_generation.IsDefined();
+    const bool has_pending_authorization = pending_authorization && pending_authorization.IsDefined();
+    if (!has_pending_generation && !has_pending_authorization) {
       return false;
     }
+    if (!has_pending_generation || !pending_generation.IsScalar() || pending_generation.as<std::string>().empty())
+      return absl::InvalidArgumentError("Pending stitched-output generation must be a nonempty scalar");
+    if (has_pending_authorization &&
+        (!pending_authorization.IsScalar() || pending_authorization.as<std::string>().empty())) {
+      return absl::InvalidArgumentError("Pending stitched-output authorization ID must be a nonempty scalar");
+    }
     bool active = false;
-    HM_ASSIGN_OR_RETURN(active, live_stitched_output_authorization_is_active(config));
+    if (has_pending_authorization)
+      HM_ASSIGN_OR_RETURN(active, live_stitched_output_authorization_is_active(config));
     if (active)
       return false;
 
     const YAML::Node saved_polygon =
         YAML::Clone(config["rink"]["stitched_output_pending_completed_scoreboard_polygon"]);
     const YAML::Node active_polygon = config["rink"]["scoreboard"]["perspective_polygon"];
-    if ((!active_polygon || !active_polygon.IsDefined()) && saved_polygon && saved_polygon.IsDefined())
+    bool completed_generation_matches_hugin = false;
+    if (saved_polygon && saved_polygon.IsDefined()) {
+      const YAML::Node completed_generation = config["rink"]["stitched_output_generation"];
+      if (completed_generation && completed_generation.IsScalar()) {
+        auto embedded_hugin = embedded_hugin_generation(completed_generation.as<std::string>());
+        auto current_hugin = stitch_artifact_generation_id_locked(root);
+        if (!current_hugin.ok() && !absl::IsNotFound(current_hugin.status()))
+          return current_hugin.status();
+        if (embedded_hugin.ok() && current_hugin.ok()) {
+          const std::string& completed = completed_generation.as<std::string>();
+          completed_generation_matches_hugin = current_hugin->size() == embedded_hugin->size &&
+              completed.compare(embedded_hugin->start, embedded_hugin->size, *current_hugin) == 0;
+        }
+      }
+    }
+    if ((!active_polygon || !active_polygon.IsDefined()) && completed_generation_matches_hugin)
       config["rink"]["scoreboard"]["perspective_polygon"] = saved_polygon;
     remove_pending_authorization(config);
     HM_RETURN_IF_ERROR(publish_game_config(root, YAML::Dump(config) + "\n"));

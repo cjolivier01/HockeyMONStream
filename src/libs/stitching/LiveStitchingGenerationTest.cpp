@@ -302,7 +302,58 @@ int main() {
       absl::IsAborted(stale_hugin.status()) && !config["rink"]["stitched_output_pending_generation"].IsDefined(),
       "live authorization must reject a persisted generation from replaced Hugin artifacts");
 
+  const fs::path recovery_root = root.string() + "-recovery";
+  fs::remove_all(recovery_root);
+  fs::create_directories(recovery_root);
+  const auto recovery_hugin_generation = create_hugin_generation(recovery_root);
+  const std::string recovery_generation = recovery_hugin_generation.ok()
+      ? "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(recovery_hugin_generation->size()) + "\n" +
+          *recovery_hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n"
+      : std::string();
+  if (recovery_hugin_generation.ok()) {
+    write_config(recovery_root / "config.yaml", recovery_generation);
+    YAML::Node legacy_recovery = YAML::LoadFile((recovery_root / "config.yaml").string());
+    legacy_recovery["rink"]["stitched_output_pending_generation"] = "legacy-pending-generation";
+    legacy_recovery["rink"]["stitched_output_pending_completed_scoreboard_polygon"] =
+        YAML::Clone(legacy_recovery["rink"]["scoreboard"]["perspective_polygon"]);
+    legacy_recovery["rink"]["scoreboard"].remove("perspective_polygon");
+    std::ofstream(recovery_root / "config.yaml") << legacy_recovery << '\n';
+    const auto legacy_reconciliation =
+        hm::stitching::reconcile_inactive_live_stitched_output_authorization(recovery_root.string());
+    legacy_recovery = YAML::LoadFile((recovery_root / "config.yaml").string());
+    ok &= expect(
+        legacy_reconciliation.ok() && *legacy_reconciliation &&
+            !legacy_recovery["rink"]["stitched_output_pending_generation"].IsDefined() &&
+            legacy_recovery["rink"]["scoreboard"]["perspective_polygon"].IsSequence(),
+        "startup reconciliation must retire generation-only legacy state and restore proven completed geometry");
+
+    write_config(recovery_root / "config.yaml", recovery_generation);
+    const auto replaced_artifact_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(recovery_root.string(), 4.0, "auth-replaced-artifact");
+    const auto replaced_artifact_commit = replaced_artifact_authorization.ok()
+        ? hm::stitching::commit_live_stitched_output_rotation(
+              recovery_root.string(),
+              replaced_artifact_authorization->pending_generation,
+              replaced_artifact_authorization->authorization_id)
+        : replaced_artifact_authorization.status();
+    YAML::Node replaced_artifact_config = YAML::LoadFile((recovery_root / "config.yaml").string());
+    replaced_artifact_config["rink"]["stitched_output_pending_owner_process"] = "999999999:1:dead-linux-boot";
+    std::ofstream(recovery_root / "config.yaml") << replaced_artifact_config << '\n';
+    std::ofstream(recovery_root / "hm_project.pto", std::ios::app) << "replacement generation\n";
+    const auto replaced_artifact_reconciliation =
+        hm::stitching::reconcile_inactive_live_stitched_output_authorization(recovery_root.string());
+    replaced_artifact_config = YAML::LoadFile((recovery_root / "config.yaml").string());
+    ok &= expect(
+        replaced_artifact_authorization.ok() && replaced_artifact_commit.ok() &&
+            replaced_artifact_reconciliation.ok() && *replaced_artifact_reconciliation &&
+            !replaced_artifact_config["rink"]["stitched_output_pending_generation"].IsDefined() &&
+            !replaced_artifact_config["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+        "startup reconciliation must discard saved geometry when current Hugin artifacts were replaced");
+  }
+  ok &= expect(recovery_hugin_generation.ok(), "recovery fixtures must publish identifiable Hugin artifacts");
+
   std::error_code ignored;
   fs::remove_all(root, ignored);
+  fs::remove_all(recovery_root, ignored);
   return ok ? 0 : 1;
 }

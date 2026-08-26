@@ -23,6 +23,9 @@ class TestPlayCropperPriv : public hm::playcropper::PlayCropperPriv {
   size_t scoreboard_point_count() const {
     return scoreboard_perspective_polygion_.size();
   }
+  cv::Point2f scoreboard_first_point() const {
+    return scoreboard_perspective_polygion_.empty() ? cv::Point2f{} : scoreboard_perspective_polygion_.front();
+  }
 };
 
 int synchronize_calls = 0;
@@ -245,8 +248,16 @@ int main() {
   if (!hm::stitching::add_stitched_output_generation_meta(
           restored_frame_meta, "generation-a", "authorization-a", "1,2,3,4,5,6,7,8") ||
       !cropper.ApplyScoreboardEpoch(restored_frame_meta) || cropper.scoreboard_disabled() ||
-      cropper.scoreboard_point_count() != 4) {
+      cropper.scoreboard_point_count() != 4 || cropper.scoreboard_first_point() != cv::Point2f(1.0f, 2.0f)) {
     std::cerr << "A restored scoreboard epoch must apply only with its stitched frame metadata\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  if (!cropper.SetProperty({"scoreboard-perspective-polygon", "9,10,11,12,13,14,15,16"}) ||
+      cropper.scoreboard_first_point() != cv::Point2f(9.0f, 10.0f) ||
+      !cropper.ApplyScoreboardEpoch(restored_frame_meta) ||
+      cropper.scoreboard_first_point() != cv::Point2f(1.0f, 2.0f)) {
+    std::cerr << "A direct scoreboard update must not suppress the authoritative frame epoch\n";
     nvds_destroy_batch_meta(batch_meta);
     return 1;
   }

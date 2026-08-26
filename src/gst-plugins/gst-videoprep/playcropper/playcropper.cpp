@@ -359,6 +359,9 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
   } else if (key == "scoreboard-perspective-polygon") {
     if (!SetScoreboardPerspectiveValue(prop.value))
       return false;
+    scoreboard_output_generation_.clear();
+    scoreboard_output_authorization_id_.clear();
+    scoreboard_output_property_value_.clear();
   } else if (key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
   } else if (key == "scoreboard-projected-width") {
