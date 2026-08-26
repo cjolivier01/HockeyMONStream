@@ -221,7 +221,6 @@ class HStreamWindow : public QMainWindow {
   void createOrLoadGame();
   void addVideoPath();
   void browseVideoPath();
-  QString videoBrowseStartDirectory() const;
   void removeSelectedVideoSet();
   void refreshVideoSets();
   QString selectedVideoRole() const;

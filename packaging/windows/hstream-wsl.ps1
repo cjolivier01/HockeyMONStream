@@ -303,11 +303,18 @@ function Get-WindowsVideosDirectory {
     return [IO.Path]::GetFullPath($videosDirectory)
 }
 
-function Set-WslPathEnvironmentVariable([string]$Name, [string]$WindowsPath) {
-    [Environment]::SetEnvironmentVariable($Name, $WindowsPath)
-    $entryPattern = "^{0}(?:/.*)?$" -f [Regex]::Escape($Name)
-    $entries = @($env:WSLENV -split ":" | Where-Object { $_ -and $_ -notmatch $entryPattern })
-    $env:WSLENV = (@($entries) + @("$Name/p")) -join ":"
+function Set-HStreamVideoImportDirectory {
+    $windowsVideosDirectory = Get-WindowsVideosDirectory
+    $linuxVideosDirectory = Get-WslPath $windowsVideosDirectory
+    & $WslExecutable --distribution $DistroName --user hstream -- /usr/bin/test -d $linuxVideosDirectory
+    if ($LASTEXITCODE -ne 0) {
+        Write-Stage "Windows Videos folder is not accessible inside WSL; retaining the Linux video-browser default."
+        return
+    }
+    Invoke-Checked -FilePath $WslExecutable -ArgumentList @(
+        "--distribution", $DistroName, "--user", "hstream", "--",
+        "/usr/bin/xdg-user-dirs-update", "--set", "VIDEOS", $linuxVideosDirectory
+    ) | Out-Null
 }
 
 function Sync-WindowsRootCertificates {
@@ -738,7 +745,7 @@ function Initialize-HStreamDistro {
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends binutils ca-certificates curl gnupg sudo xz-utils zstd
+apt-get install -y --no-install-recommends binutils ca-certificates curl gnupg sudo xdg-user-dirs xz-utils zstd
 if ! id -u hstream >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash hstream
 fi
@@ -921,6 +928,7 @@ function Install-HStream {
         "--distribution", $DistroName, "--user", "root", "--",
         "/usr/bin/test", "-x", "/usr/bin/hstream-ui"
     ) | Out-Null
+    Set-HStreamVideoImportDirectory
     Invoke-Checked -FilePath $WslExecutable -ArgumentList @("--terminate", $DistroName) | Out-Null
     Write-Stage "HStream $VersionTag is installed. Use the Start menu shortcut to launch it."
 }
@@ -929,13 +937,9 @@ function Launch-HStream {
     if (-not (Test-WslDistro $DistroName)) {
         throw "The $DistroName WSL distribution is not installed."
     }
-    # The Qt process runs as the dedicated Linux user, so its standard Movies
-    # location is /home/hstream/Videos. Pass the invoking Windows user's actual
-    # Videos known folder separately as the media-import starting directory.
-    # WSLENV performs path translation without fragile command-line quoting and
-    # also follows redirected or OneDrive-backed known folders.
-    $windowsVideosDirectory = Get-WindowsVideosDirectory
-    Set-WslPathEnvironmentVariable "HM_VIDEO_IMPORT_DIR" $windowsVideosDirectory
+    # Keep the dedicated Linux game root independent while making Qt's standard
+    # Movies location follow the invoking Windows user's Videos known folder.
+    Set-HStreamVideoImportDirectory
     Start-Process -FilePath $WslExecutable -ArgumentList @(
         "--distribution", $DistroName, "--", "/usr/bin/hstream-ui"
     ) | Out-Null
