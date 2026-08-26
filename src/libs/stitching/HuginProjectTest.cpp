@@ -776,6 +776,19 @@ int main() {
   ok &= expect(
       !fs::exists(root / "game" / "hm_project.pto") && fs::exists(root / "game" / "autooptimiser_out.pto"),
       "backup-in-progress interruption must leave a recoverable partial move");
+  bool duplicated_backup_entry = false;
+  for (const auto& entry : fs::directory_iterator(root / "game")) {
+    const fs::path backup = entry.path() / "previous" / "hm_project.pto";
+    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0 &&
+        fs::is_regular_file(backup)) {
+      fs::copy_file(backup, root / "game" / "hm_project.pto");
+      duplicated_backup_entry = true;
+      break;
+    }
+  }
+  ok &= expect(
+      duplicated_backup_entry,
+      "backup-in-progress recovery fixture must model a cross-directory rename visible under both names");
   ok &= expect(
       hm::stitching::HuginProject::Recover(root / "game").ok(),
       "backup-in-progress Hugin publication must recover on the next owner");
@@ -870,21 +883,26 @@ int main() {
       fs::last_write_time(root / "game" / name, modified);
       expected_mtimes.push_back(fs::last_write_time(root / "game" / name));
       manifest << name << '\n';
-      fs::copy_file(root / "game" / name, interrupted / "previous" / name);
-      fs::last_write_time(interrupted / "previous" / name, expected_mtimes.back());
+      if (name != "panorama.tif") {
+        fs::copy_file(root / "game" / name, interrupted / "previous" / name);
+        fs::last_write_time(interrupted / "previous" / name, expected_mtimes.back());
+      }
     }
     std::ofstream(interrupted / "state") << "PREPARED\n";
   }
   std::ofstream(root / "game" / "mapping_0000.tif", std::ios::trunc) << 'x';
   fs::remove(root / "game" / "autooptimiser_out.pto");
+  std::ofstream(root / "game" / "panorama.tif", std::ios::trunc) << "partially-published";
   const auto recovered = hm::stitching::HuginProject::Recover(root / "game");
   ok &= expect(recovered.ok(), "prepared Hugin publication must recover after an interrupted publish");
   ok &= expect(!fs::exists(interrupted), "recovered Hugin transaction must be cleaned");
   ok &= expect(
       fs::file_size(root / "game" / "mapping_0000.tif") > 1 &&
-          fs::is_regular_file(root / "game" / "autooptimiser_out.pto"),
-      "Hugin recovery must restore the complete prior generation");
+          fs::is_regular_file(root / "game" / "autooptimiser_out.pto") && !fs::exists(root / "game" / "panorama.tif"),
+      "Hugin recovery must restore the prior generation without root-only replacement artifacts");
   for (size_t index = 0; index < artifact_names.size(); ++index) {
+    if (artifact_names[index] == "panorama.tif")
+      continue;
     ok &= expect(
         fs::last_write_time(root / "game" / artifact_names[index]) == expected_mtimes[index],
         "Hugin recovery must preserve dependency timestamps");

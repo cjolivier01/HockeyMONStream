@@ -797,20 +797,12 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       }
 
       if (!has_prior_manifest) {
-        // Convert old hard-link journals before consuming any backup. Root
-        // entries may already have been restored by an interrupted legacy
-        // rollback, so retain them as possible prior artifacts; authoritative
-        // artifact validation will reject any mixed generation afterward.
+        // Old hard-link journals identify the prior generation only through
+        // their durable backups. Any manifested root-only entry may be a
+        // partially published replacement and must not survive rollback.
         for (const auto& [name, old] : backups) {
           (void)old;
           prior_artifacts.insert(name);
-        }
-        for (const std::string& name : manifested) {
-          const bool root_exists = fs::exists(root / name, error);
-          if (error)
-            return absl::InternalError("Unable to inspect legacy stitch artifact: " + error.message());
-          if (root_exists)
-            prior_artifacts.insert(name);
         }
         std::ostringstream prior_manifest;
         for (const std::string& name : prior_artifacts)
@@ -828,17 +820,13 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       }
 
       if (!has_prior_manifest || *state == "BACKING_UP" || *state == "BACKED_UP" || *state == "ROLLING_BACK") {
+        // A crash between the two directory fsyncs for a cross-directory
+        // rename may expose both names. Do not reject that recoverable state;
+        // the private backup remains authoritative during rollback.
         for (const auto& [name, old] : backups) {
           (void)old;
           if (prior_artifacts.count(name) == 0) {
             return absl::FailedPreconditionError("Stitch transaction contains an unmanifested backup: " + name);
-          }
-          const bool root_exists = fs::exists(root / name, error);
-          if (error)
-            return absl::InternalError("Unable to inspect interrupted stitch artifact: " + error.message());
-          if (*state == "BACKING_UP" && root_exists) {
-            return absl::FailedPreconditionError(
-                "Backup-in-progress stitch transaction contains duplicate artifact: " + name);
           }
         }
         if (*state == "BACKED_UP" && backups.size() != prior_artifacts.size()) {
@@ -893,10 +881,10 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           }
         }
         error.clear();
-        auto status = fsync_stitch_path(previous, true);
+        auto status = fsync_stitch_path(root, true);
         if (!status.ok())
           return status;
-        status = fsync_stitch_path(root, true);
+        status = fsync_stitch_path(previous, true);
         if (!status.ok())
           return status;
         status = mark_stitch_transaction_rolled_back(transaction);
