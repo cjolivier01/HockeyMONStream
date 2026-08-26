@@ -8639,15 +8639,27 @@ void HStreamWindow::addVideoPath() {
 }
 
 void HStreamWindow::browseVideoPath() {
-  const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
   const QString path = QFileDialog::getOpenFileName(
       this,
       "Add Video",
-      start_dir.isEmpty() ? QDir::homePath() : start_dir,
+      videoBrowseStartDirectory(),
       "Videos (*.mp4 *.MP4 *.mkv *.MKV *.mov *.MOV *.avi *.AVI)");
   if (!path.isEmpty() && video_path_edit_) {
     video_path_edit_->setText(path);
   }
+}
+
+QString HStreamWindow::videoBrowseStartDirectory() const {
+  const QString import_root = QString::fromLocal8Bit(qgetenv("HM_VIDEO_IMPORT_DIR")).trimmed();
+  if (!import_root.isEmpty() && QFileInfo(import_root).isDir()) {
+    return QDir::cleanPath(import_root);
+  }
+  const QString game_root = gameRoot();
+  if (QFileInfo(game_root).isDir()) {
+    return QDir::cleanPath(game_root);
+  }
+  const QString movies = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+  return movies.isEmpty() ? QDir::homePath() : movies;
 }
 
 void HStreamWindow::removeSelectedVideoSet() {

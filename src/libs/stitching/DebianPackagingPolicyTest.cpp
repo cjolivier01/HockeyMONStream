@@ -184,6 +184,10 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "function Get-WslPackageState") &&
           contains(windows_powershell, "dpkg-query --status $Package") &&
           contains(windows_powershell, "$WindowsPath.Replace([char]92, [char]47)") &&
+          contains(windows_powershell, "[Environment+SpecialFolder]::MyVideos") &&
+          contains(windows_powershell, "function Set-WslPathEnvironmentVariable") &&
+          contains(windows_powershell, "Set-WslPathEnvironmentVariable \"HM_VIDEO_IMPORT_DIR\"") &&
+          contains(windows_powershell, "@(\"$Name/p\")") &&
           contains(windows_powershell, "function Sync-WindowsRootCertificates") &&
           contains(windows_powershell, "Cert:\\CurrentUser\\Root") &&
           contains(windows_powershell, "Cert:\\LocalMachine\\Root") &&

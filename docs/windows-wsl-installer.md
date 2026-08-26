@@ -27,6 +27,16 @@ time it:
    shell, games, and output folders. This is separate from WSLg's generated
    `HStream` app folder, which WSL periodically reconciles.
 
+The UI shortcut resolves the invoking Windows user's Videos known folder on
+every launch and passes it through WSL's path translation as the video-import
+starting directory. Browse therefore opens in the real Windows Videos folder,
+including redirected or OneDrive-backed locations, instead of the dedicated
+Linux user's `/home/hstream/Videos`. The Existing game list and HStream-owned
+configuration remain under the managed Linux game root by default. This keeps
+Linux locking and symlink behavior while allowing source videos to stay on the
+Windows filesystem. An explicit `HM_GAME_DIR` or `paths.game-root` in
+`~/.hstream/hstream.yaml` can still relocate the managed game root.
+
 The NVIDIA DeepStream package is deliberately not embedded or uploaded by the
 bootstrapper. The installer validates the selected package's name, version, and
 architecture before installation, but the local package is an explicitly

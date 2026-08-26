@@ -96,6 +96,10 @@ struct HStreamWindowTestAccess {
   static QStringList pipelineArguments(HStreamWindow* window) {
     return window->pipelineArguments();
   }
+
+  static QString videoBrowseStartDirectory(HStreamWindow* window) {
+    return window->videoBrowseStartDirectory();
+  }
 };
 
 namespace fs = std::filesystem;
@@ -7625,6 +7629,24 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   HStreamWindow window;
   window.show();
+
+  const QString import_root = QDir(source_root.path()).filePath("Windows Videos");
+  if (!QDir().mkpath(import_root)) {
+    return 1;
+  }
+  qputenv("HM_VIDEO_IMPORT_DIR", import_root.toLocal8Bit());
+  if (!expect(
+          HStreamWindowTestAccess::videoBrowseStartDirectory(&window) == QDir::cleanPath(import_root),
+          "An explicit video import root should determine the Browse starting directory")) {
+    return 1;
+  }
+  qputenv("HM_VIDEO_IMPORT_DIR", QDir(source_root.path()).filePath("missing-import-root").toLocal8Bit());
+  if (!expect(
+          HStreamWindowTestAccess::videoBrowseStartDirectory(&window) == QDir::cleanPath(game_root.path()),
+          "An unavailable video import root should fall back to the managed game root")) {
+    return 1;
+  }
+  qunsetenv("HM_VIDEO_IMPORT_DIR");
 
   if (!test_game_setup(&window, source_root.path())) {
     std::cerr << "test_game_setup failed\n";

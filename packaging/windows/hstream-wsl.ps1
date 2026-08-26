@@ -292,6 +292,24 @@ function Get-WslPath([string]$WindowsPath) {
     return ($output | Select-Object -Last 1).Trim()
 }
 
+function Get-WindowsVideosDirectory {
+    $videosDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyVideos)
+    if ([string]::IsNullOrWhiteSpace($videosDirectory)) {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            throw "Windows did not provide a Videos known folder or a user profile directory."
+        }
+        $videosDirectory = Join-Path $env:USERPROFILE "Videos"
+    }
+    return [IO.Path]::GetFullPath($videosDirectory)
+}
+
+function Set-WslPathEnvironmentVariable([string]$Name, [string]$WindowsPath) {
+    [Environment]::SetEnvironmentVariable($Name, $WindowsPath)
+    $entryPattern = "^{0}(?:/.*)?$" -f [Regex]::Escape($Name)
+    $entries = @($env:WSLENV -split ":" | Where-Object { $_ -and $_ -notmatch $entryPattern })
+    $env:WSLENV = (@($entries) + @("$Name/p")) -join ":"
+}
+
 function Sync-WindowsRootCertificates {
     $now = Get-Date
     $disallowedThumbprints = @{}
@@ -911,6 +929,13 @@ function Launch-HStream {
     if (-not (Test-WslDistro $DistroName)) {
         throw "The $DistroName WSL distribution is not installed."
     }
+    # The Qt process runs as the dedicated Linux user, so its standard Movies
+    # location is /home/hstream/Videos. Pass the invoking Windows user's actual
+    # Videos known folder separately as the media-import starting directory.
+    # WSLENV performs path translation without fragile command-line quoting and
+    # also follows redirected or OneDrive-backed known folders.
+    $windowsVideosDirectory = Get-WindowsVideosDirectory
+    Set-WslPathEnvironmentVariable "HM_VIDEO_IMPORT_DIR" $windowsVideosDirectory
     Start-Process -FilePath $WslExecutable -ArgumentList @(
         "--distribution", $DistroName, "--", "/usr/bin/hstream-ui"
     ) | Out-Null
