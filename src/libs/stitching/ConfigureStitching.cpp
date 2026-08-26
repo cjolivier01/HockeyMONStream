@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -1247,46 +1248,13 @@ absl::StatusOr<LockedCanvasRegenerationCheck> lock_canvas_regeneration_check(
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  const fs::path root(game_dir);
-  const bool has_mapping_artifacts = fs::exists(root / "mapping_0000.tif") || fs::exists(root / "mapping_0001.tif") ||
-      fs::exists(root / "mapping_0000_x.tif") || fs::exists(root / "mapping_0001_x.tif");
-  if (!test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
-    return LockedCanvasRegenerationCheck{
-        .artifact_lock = std::move(*artifact_lock),
-        .artifacts_compatible = false,
-        .requires_regeneration = has_mapping_artifacts,
-    };
-  }
-  auto canvas_size = get_mapping_canvas_size(root);
-  if (!canvas_size.ok()) {
-    if (absl::IsFailedPrecondition(canvas_size.status()) || absl::IsInvalidArgument(canvas_size.status()) ||
-        absl::IsNotFound(canvas_size.status()) || absl::IsResourceExhausted(canvas_size.status())) {
-      return LockedCanvasRegenerationCheck{
-          .artifact_lock = std::move(*artifact_lock),
-          .artifacts_compatible = false,
-          .requires_regeneration = has_mapping_artifacts,
-      };
-    }
-    return canvas_size.status();
-  }
-  auto provenance = HuginProject::ReadCanvasProvenance(game_dir, **artifact_lock);
-  if (!provenance.ok()) {
-    if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
-        absl::IsNotFound(provenance.status())) {
-      return LockedCanvasRegenerationCheck{
-          .artifact_lock = std::move(*artifact_lock),
-          .artifacts_compatible = false,
-          .requires_regeneration = true,
-      };
-    }
-    return provenance.status();
-  }
-  const auto compatibility = check_canvas_provenance_compatibility(
-      *provenance, *canvas_size, max_output_width, live_stitch_max_canvas_dimension());
+  auto compatibility = check_canvas_constraint_locked(game_dir, max_output_width);
+  if (!compatibility.ok())
+    return compatibility.status();
   return LockedCanvasRegenerationCheck{
       .artifact_lock = std::move(*artifact_lock),
-      .artifacts_compatible = compatibility.compatible,
-      .requires_regeneration = !compatibility.compatible,
+      .artifacts_compatible = compatibility->artifacts_compatible,
+      .requires_regeneration = compatibility->requires_regeneration,
   };
 }
 
@@ -2013,6 +1981,12 @@ absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
 }
 
 } // namespace
+
+absl::Status validate_stitched_output_generation_hugin(
+    const std::string& output_generation,
+    const std::string& expected_hugin_generation) {
+  return validate_output_generation_hugin(output_generation, expected_hugin_generation);
+}
 
 absl::Status validate_stitched_output_generation(
     const std::string& game_dir,

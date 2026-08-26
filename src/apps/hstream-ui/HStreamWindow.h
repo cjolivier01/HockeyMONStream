@@ -23,6 +23,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -45,6 +46,11 @@ namespace hm::ui_internal {
 struct StitchingCanvasConstraintDecision {
   bool calibration_required{false};
   bool cleanup_required{false};
+};
+
+struct LockedStitchingCanvasConstraintCheck {
+  StitchingCanvasConstraintDecision decision;
+  std::shared_ptr<QProcess> lock_process;
 };
 
 // Establishes the desktop identity used by WM_CLASS, desktop-file matching,
@@ -312,11 +318,10 @@ class HStreamWindow : public QMainWindow {
       const QString& working_dir,
       const QProcessEnvironment& env,
       bool* calibration_required);
-  std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> checkStitchingCanvasConstraint(
-      const QString& runner,
-      const QString& working_dir,
-      const QProcessEnvironment& env,
+  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> checkStitchingCanvasConstraint(
+      const QString& game_id,
       int max_output_width);
+  QString stitchingCanvasCheckerPath() const;
   bool runStitchingClean(
       const QString& runner,
       const QString& working_dir,

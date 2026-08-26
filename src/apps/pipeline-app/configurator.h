@@ -90,7 +90,7 @@ class Configurator {
   absl::Status save_private_config(
       const YAML::Node& private_config,
       const std::string& expected_invalidation_id = {},
-      bool remove_rink_masks = false);
+      bool remove_canvas_artifacts = false);
   absl::Status persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time);
   absl::Status persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id = {});
   absl::StatusOr<bool> reconcile_stitch_frame_time_override(

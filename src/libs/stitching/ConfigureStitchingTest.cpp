@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
@@ -834,6 +835,12 @@ bool expect_superseded_constraints_reuse_artifacts(const fs::path& tmpdir) {
       !reusable_check->requires_regeneration && reusable_check->artifact_lock;
   if (reusable_check.ok())
     reusable_check->artifact_lock.reset();
+  auto lightweight_reusable_check = hm::stitching::try_lock_canvas_constraint_check(dir, 240);
+  const bool lightweight_reusable_check_ok = lightweight_reusable_check.ok() &&
+      lightweight_reusable_check->artifacts_compatible && !lightweight_reusable_check->requires_regeneration &&
+      lightweight_reusable_check->artifact_lock;
+  if (lightweight_reusable_check.ok())
+    lightweight_reusable_check->artifact_lock.reset();
   if (!write_canvas_provenance(
           dir,
           /*max_output_width=*/160,
@@ -850,9 +857,9 @@ bool expect_superseded_constraints_reuse_artifacts(const fs::path& tmpdir) {
   setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "320", /*overwrite=*/1);
   const auto configured_with_relaxed_tied_limit = hm::stitching::is_stitching_configured(dir.string(), 160);
   unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
-  if (!reusable_check_ok || !configured_with_smaller_superseded_cap.ok() || !*configured_with_smaller_superseded_cap ||
-      !configured_with_auto_cap.ok() || !*configured_with_auto_cap || !configured_with_relaxed_tied_limit.ok() ||
-      !*configured_with_relaxed_tied_limit) {
+  if (!reusable_check_ok || !lightweight_reusable_check_ok || !configured_with_smaller_superseded_cap.ok() ||
+      !*configured_with_smaller_superseded_cap || !configured_with_auto_cap.ok() || !*configured_with_auto_cap ||
+      !configured_with_relaxed_tied_limit.ok() || !*configured_with_relaxed_tied_limit) {
     std::cerr << "constraints superseded by an unchanged effective scale must reuse the published maps" << std::endl;
     return false;
   }

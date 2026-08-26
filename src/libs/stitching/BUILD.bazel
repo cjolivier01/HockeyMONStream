@@ -60,6 +60,7 @@ cc_library(
   visibility = ["//visibility:public"],
   implementation_deps = [":orientation_internal"],
   deps = [
+    ":canvas_constraint_check",
     ":game_config",
     ":correlation",
     ":feature_matcher",
@@ -74,6 +75,33 @@ cc_library(
   ],
   data = [
     "@hm-cupano//scripts:all_scripts",
+  ],
+)
+
+cc_binary(
+  name = "stitching-canvas-check",
+  srcs = ["CanvasConstraintCheckMain.cpp"],
+  visibility = ["//visibility:public"],
+  deps = [":canvas_constraint_check"],
+)
+
+sh_test(
+  name = "canvas_constraint_check_cli_test",
+  srcs = ["CanvasConstraintCheckCliTest.sh"],
+  args = ["$(location :stitching-canvas-check)"],
+  data = [":stitching-canvas-check"],
+)
+
+cc_library(
+  name = "canvas_constraint_check",
+  srcs = ["CanvasConstraintCheck.cpp"],
+  hdrs = ["CanvasConstraintCheck.h"],
+  include_prefix = INCLUDE_PREFIX,
+  linkopts = ["-ltiff"],
+  visibility = ["//visibility:public"],
+  deps = [
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
   ],
 )
 
@@ -362,6 +390,7 @@ cc_test(
     "-ltiff",
   ],
   deps = [
+    ":canvas_constraint_check",
     ":stitching",
     "@opencv_linux//:opencv",
   ],

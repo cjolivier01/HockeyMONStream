@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
@@ -45,6 +46,54 @@ constexpr size_t kMaximumHeaderBytes = 16 * 1024;
 constexpr size_t kMaximumBodyBytes = 4 * 1024;
 constexpr auto kTokenLifetime = std::chrono::minutes(30);
 constexpr auto kDefaultClientLifetime = std::chrono::seconds(10);
+
+std::string snapshot_fingerprint(const std::string& bytes) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (unsigned char byte : bytes) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  std::ostringstream value;
+  value << bytes.size() << ':' << std::hex << std::setfill('0') << std::setw(16) << hash;
+  return value.str();
+}
+
+absl::StatusOr<std::string> snapshot_file_fingerprint(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input)
+    return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
+  uint64_t hash = 1469598103934665603ULL;
+  uint64_t size = 0;
+  std::array<char, 64 * 1024> buffer{};
+  while (input) {
+    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    const std::streamsize count = input.gcount();
+    for (std::streamsize index = 0; index < count; ++index) {
+      hash ^= static_cast<unsigned char>(buffer[static_cast<size_t>(index)]);
+      hash *= 1099511628211ULL;
+    }
+    size += static_cast<uint64_t>(count);
+  }
+  if (!input.eof())
+    return absl::InternalError("Unable to read stitched snapshot: " + path.string());
+  std::ostringstream value;
+  value << size << ':' << std::hex << std::setfill('0') << std::setw(16) << hash;
+  return value.str();
+}
+
+absl::StatusOr<std::string> configured_stitched_output_generation(const YAML::Node& config) {
+  try {
+    const YAML::Node generation = config["rink"]["stitched_output_generation"];
+    if (!generation || !generation.IsScalar()) {
+      return absl::FailedPreconditionError(
+          "Scoreboard selector requires a current stitched-output generation; regenerate the rink profile");
+    }
+    return generation.as<std::string>();
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read scoreboard stitched-output generation: " + std::string(exception.what()));
+  }
+}
 
 std::chrono::milliseconds client_lifetime() {
   const char* configured = std::getenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS");
@@ -381,16 +430,16 @@ absl::StatusOr<ScoreboardSelector::Polygon> ScoreboardSelector::ValidateAndOrder
 absl::Status ScoreboardSelector::Save(
     const fs::path& game_dir,
     const Polygon& polygon,
-    const std::string& expected_hugin_generation) {
+    const std::optional<CanvasGeneration>& expected_generation) {
   std::unique_ptr<HuginProject::ArtifactLock> hugin_lock;
-  if (!expected_hugin_generation.empty()) {
+  if (expected_generation.has_value()) {
     auto lock = HuginProject::RecoverAndLock(game_dir);
     if (!lock.ok())
       return lock.status();
     auto current_generation = HuginProject::GenerationId(game_dir, **lock);
     if (!current_generation.ok())
       return current_generation.status();
-    if (*current_generation != expected_hugin_generation) {
+    if (*current_generation != expected_generation->hugin_generation) {
       return absl::AbortedError(
           "Stitching artifacts changed while the scoreboard selector was open; reopen it on the current canvas");
     }
@@ -404,6 +453,25 @@ absl::Status ScoreboardSelector::Save(
   try {
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
+    if (expected_generation.has_value()) {
+      auto current_output_generation = configured_stitched_output_generation(config);
+      if (!current_output_generation.ok())
+        return current_output_generation.status();
+      HM_RETURN_IF_ERROR(
+          validate_stitched_output_generation_hugin(*current_output_generation, expected_generation->hugin_generation));
+      if (*current_output_generation != expected_generation->stitched_output_generation) {
+        return absl::AbortedError(
+            "Stitched output changed while the scoreboard selector was open; reopen it on the current canvas");
+      }
+      auto current_snapshot_fingerprint = snapshot_file_fingerprint(game_dir / "s.png");
+      if (!current_snapshot_fingerprint.ok())
+        return current_snapshot_fingerprint.status();
+      if (!expected_generation->snapshot_fingerprint.empty() &&
+          *current_snapshot_fingerprint != expected_generation->snapshot_fingerprint) {
+        return absl::AbortedError(
+            "Stitched snapshot changed while the scoreboard selector was open; reopen it on the current canvas");
+      }
+    }
     YAML::Node points(YAML::NodeType::Sequence);
     for (const ScoreboardPoint& point : polygon) {
       YAML::Node pair(YAML::NodeType::Sequence);
@@ -430,6 +498,21 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   auto hugin_generation = HuginProject::GenerationId(game_dir, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    const fs::path config_path = game_dir / "config.yaml";
+    if (fs::is_regular_file(config_path))
+      config = YAML::LoadFile(config_path.string());
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read scoreboard config generation: " + std::string(exception.what()));
+  }
+  auto output_generation = configured_stitched_output_generation(config);
+  if (!output_generation.ok())
+    return output_generation.status();
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_hugin(*output_generation, *hugin_generation));
   const fs::path image_path = game_dir / "s.png";
   const cv::Mat dimensions = cv::imread(image_path.string(), cv::IMREAD_GRAYSCALE);
   if (dimensions.empty())
@@ -438,6 +521,12 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   const std::string image_bytes((std::istreambuf_iterator<char>(image_input)), std::istreambuf_iterator<char>());
   if (image_bytes.empty())
     return absl::FailedPreconditionError("Scoreboard selector image is empty");
+  const CanvasGeneration canvas_generation{
+      .hugin_generation = *hugin_generation,
+      .stitched_output_generation = *output_generation,
+      .snapshot_fingerprint = snapshot_fingerprint(image_bytes),
+  };
+  config_lock->reset();
   hugin_lock->reset();
 
   std::string bind_host = "127.0.0.1";
@@ -598,7 +687,7 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
           client, 404, "Not Found", "text/plain; charset=utf-8", "Unknown selector endpoint\n", client_deadline);
       continue;
     }
-    auto saved = Save(game_dir, polygon, *hugin_generation);
+    auto saved = Save(game_dir, polygon, canvas_generation);
     if (!saved.ok()) {
       respond_best_effort(
           client,

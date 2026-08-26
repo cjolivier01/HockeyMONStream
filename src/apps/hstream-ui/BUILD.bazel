@@ -94,7 +94,10 @@ cc_binary(
     name = "hstream-ui",
     srcs = ["main.cpp"],
     copts = COMMON_COPTS,
-    data = ["//src/apps/pipeline-app:hstream-cli"],
+    data = [
+        "//src/apps/pipeline-app:hstream-cli",
+        "//src/libs/stitching:stitching-canvas-check",
+    ],
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [

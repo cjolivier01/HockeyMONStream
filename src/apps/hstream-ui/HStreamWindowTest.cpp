@@ -375,6 +375,7 @@ bool test_matching_development_runtime_selection() {
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       execution_root / "bazel-out/k8-opt/bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+      execution_root / "bazel-out/k8-opt/bin/src/libs/stitching/stitching-canvas-check",
   };
   std::error_code error;
   fs::create_directories(application.parent_path(), error);
@@ -599,19 +600,23 @@ bool write_fake_runner(const QString& path) {
   file.write("import time\n");
   file.write("for arg in sys.argv[1:]:\n");
   file.write("    print(arg, flush=True)\n");
-  file.write("if any(arg.startswith('--check-stitching-canvas-width=') for arg in sys.argv[1:]):\n");
+  file.write("if '--hold-lock' in sys.argv[1:]:\n");
   file.write("    result = os.environ.get('HSTREAM_UI_TEST_CANVAS_CHECK', '')\n");
   file.write("    if result == 'compatible':\n");
   file.write(
-      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=1 requires-regeneration=0', flush=True)\n");
+      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=1 requires-regeneration=0 lock-held=1', "
+      "flush=True)\n");
   file.write("    elif result == 'missing':\n");
   file.write(
-      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=0', flush=True)\n");
+      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=0 lock-held=1', "
+      "flush=True)\n");
   file.write("    elif result == 'regenerate':\n");
   file.write(
-      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=1', flush=True)\n");
+      "        print('HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=0 requires-regeneration=1 lock-held=1', "
+      "flush=True)\n");
   file.write("    else:\n");
   file.write("        sys.exit(9)\n");
+  file.write("    sys.stdin.read()\n");
   file.write("    sys.exit(0)\n");
   file.write("print('USE_NEW_NVSTREAMMUX=' + os.environ.get('USE_NEW_NVSTREAMMUX', ''), flush=True)\n");
   file.write("print('HM_RENDER_SINK=' + os.environ.get('HM_RENDER_SINK', ''), flush=True)\n");
@@ -2755,21 +2760,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
   }
   stitch_max_output_width->setValue(4096);
+  const int conflicting_alias_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
   activate(start);
   const YAML::Node repaired_conflict_width = YAML::LoadFile(stitch_time_transition_config.string());
   const YAML::Node repaired_conflict_calibration = repaired_conflict_width["hstream_ui"]["stitching_calibration"];
-  const bool conflicting_max_width_invalidated =
+  const bool conflicting_max_width_normalized =
       expect(
           repaired_conflict_width["stitching"]["max_output_width"].as<int>() == 4096 &&
               !lookup_yaml_path(
                   repaired_conflict_width, {"pipeline", "hmstitcher", "properties", "max-output-width"}, nullptr),
           "Play must remove conflicting native max-width aliases while keeping the canonical value") &&
       expect(
-          repaired_conflict_calibration["status"].as<std::string>() == "pending" &&
-              repaired_conflict_calibration["stale_from"].as<std::string>() == "canvas",
-          "Removing a conflicting native max-width alias at Play must invalidate canvas artifacts");
+          repaired_conflict_calibration["status"].as<std::string>() == "complete" &&
+              !repaired_conflict_calibration["stale_from"].IsDefined() &&
+              window->logText().count("stitching calibration clean command") == conflicting_alias_clean_commands,
+          "Play must normalize a lower-precedence max-width alias without invalidating the effective canvas");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -2777,7 +2784,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
-  if (!conflicting_max_width_invalidated)
+  if (!conflicting_max_width_normalized)
     return false;
 
   stitch_max_output_width->setValue(0);

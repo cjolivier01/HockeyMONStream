@@ -432,20 +432,23 @@ absl::Status publish_named_file(const fs::path& path, const std::string& content
   return fsync_directory(parent);
 }
 
-absl::StatusOr<size_t> publish_game_config_without_rink_masks(const fs::path& game_dir, const std::string& contents) {
+absl::StatusOr<size_t> publish_game_config_without_rink_masks(
+    const fs::path& game_dir,
+    const std::string& contents,
+    bool remove_stitched_snapshot) {
   std::error_code error;
-  std::vector<fs::path> masks;
+  std::vector<fs::path> invalidated_artifacts;
   for (const auto& entry : fs::directory_iterator(game_dir, error)) {
     if (error)
       return absl::InternalError("Unable to inspect rink masks: " + error.message());
     const std::string name = entry.path().filename().string();
-    if (is_rink_mask_name(name)) {
+    if (is_rink_mask_name(name) || (remove_stitched_snapshot && name == "s.png")) {
       if (!entry.is_regular_file(error) || error)
-        return absl::FailedPreconditionError("Rink mask is not a regular file: " + entry.path().string());
-      masks.push_back(entry.path());
+        return absl::FailedPreconditionError("Rink artifact is not a regular file: " + entry.path().string());
+      invalidated_artifacts.push_back(entry.path());
     }
   }
-  if (masks.empty()) {
+  if (invalidated_artifacts.empty()) {
     auto status = publish_game_config(game_dir, contents);
     if (!status.ok())
       return status;
@@ -485,7 +488,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(const fs::path& ga
   if (error)
     return absl::InternalError("Unable to create rink invalidation rollback directory: " + error.message());
 
-  std::vector<fs::path> old_files = masks;
+  std::vector<fs::path> old_files = invalidated_artifacts;
   const fs::path current_config = game_dir / "config.yaml";
   if (fs::exists(current_config, error)) {
     if (error || !fs::is_regular_file(current_config, error) || error)
@@ -504,8 +507,8 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(const fs::path& ga
   }
 
   std::set<std::string> published_names{"config.yaml"};
-  for (const fs::path& mask : masks)
-    published_names.insert(mask.filename().string());
+  for (const fs::path& artifact : invalidated_artifacts)
+    published_names.insert(artifact.filename().string());
   std::ostringstream manifest;
   for (const std::string& name : published_names)
     manifest << name << '\n';

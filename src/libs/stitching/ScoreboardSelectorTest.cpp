@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <array>
@@ -248,6 +249,25 @@ int main() {
   std::filesystem::remove_all(directory);
   std::filesystem::create_directories(directory);
   ok &= expect(write_hugin_generation_fixture(directory), "scoreboard generation fixture must be created");
+  auto fixture_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(directory);
+  std::string fixture_hugin_generation;
+  std::string fixture_output_generation;
+  ok &= expect(fixture_hugin_lock.ok(), "scoreboard fixture must lock Hugin artifacts");
+  if (fixture_hugin_lock.ok()) {
+    const auto generation = hm::stitching::HuginProject::GenerationId(directory, **fixture_hugin_lock);
+    ok &= expect(generation.ok(), "scoreboard fixture must identify Hugin artifacts");
+    if (generation.ok()) {
+      fixture_hugin_generation = *generation;
+      const auto output_generation = hm::stitching::stitched_output_generation_id(*generation, 0.0);
+      ok &= expect(output_generation.ok(), "scoreboard fixture must identify the stitched output");
+      if (output_generation.ok())
+        fixture_output_generation = *output_generation;
+    }
+    fixture_hugin_lock->reset();
+  }
+  YAML::Node fixture_config(YAML::NodeType::Map);
+  fixture_config["rink"]["stitched_output_generation"] = fixture_output_generation;
+  std::ofstream(directory / "config.yaml") << fixture_config << '\n';
   auto status = Selector::Save(directory, disabled);
   ok &= expect(status.ok(), "disabled sentinel must save");
   if (status.ok()) {
@@ -256,7 +276,8 @@ int main() {
     ok &= expect(polygon.IsSequence() && polygon.size() == 4, "saved sentinel must contain four points");
     ok &= expect(polygon[3][0].as<int>() == 0 && polygon[3][1].as<int>() == 0, "saved sentinel must stay zero");
   }
-  std::filesystem::remove(directory / "config.yaml");
+  fixture_config["rink"].remove("scoreboard");
+  std::ofstream(directory / "config.yaml") << fixture_config << '\n';
   ok &= expect(exercise_http_selector(directory), "native HTTP selector must enforce its token and save a choice");
   if (std::filesystem::is_regular_file(directory / "config.yaml")) {
     const YAML::Node polygon =
@@ -267,10 +288,20 @@ int main() {
   } else {
     ok &= expect(false, "HTTP selector must publish config.yaml");
   }
-  std::filesystem::remove(directory / "config.yaml");
+  YAML::Node remote_fixture_config = YAML::LoadFile((directory / "config.yaml").string());
+  remote_fixture_config["rink"].remove("scoreboard");
+  std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
   ok &= expect(
       exercise_http_selector(directory, true),
       "remote scoreboard mode must accept its explicit public authority and matching origin");
+  ::setenv("HM_SCOREBOARD_BIND_HOST", "0.0.0.0", 1);
+  ::setenv("HM_SCOREBOARD_ALLOW_REMOTE", "1", 1);
+  ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
+  ok &= expect(
+      absl::IsInvalidArgument(Selector::Run(directory)),
+      "remote scoreboard mode must require an explicit public host before listening");
+  ::unsetenv("HM_SCOREBOARD_BIND_HOST");
+  ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
   auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(directory);
   ok &= expect(hugin_lock.ok(), "scoreboard generation race test must lock Hugin artifacts");
   std::string stale_generation;
@@ -281,22 +312,28 @@ int main() {
       stale_generation = *generation;
     hugin_lock->reset();
   }
+  const Selector::CanvasGeneration stale_canvas_generation{
+      .hugin_generation = stale_generation,
+      .stitched_output_generation = fixture_output_generation,
+      .snapshot_fingerprint = {},
+  };
+  auto rotated_generation = hm::stitching::stitched_output_generation_id(stale_generation, 1.0);
+  if (rotated_generation.ok()) {
+    YAML::Node rotated_config = YAML::LoadFile((directory / "config.yaml").string());
+    rotated_config["rink"]["stitched_output_generation"] = *rotated_generation;
+    std::ofstream(directory / "config.yaml") << rotated_config << '\n';
+  }
+  ok &= expect(
+      rotated_generation.ok() && absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
+      "a selector opened on a different output rotation must not publish stale coordinates");
   {
     std::ofstream replacement(directory / "mapping_0000.tif.replacement", std::ios::binary | std::ios::trunc);
     replacement << "replacement mapping\n";
   }
   std::filesystem::rename(directory / "mapping_0000.tif.replacement", directory / "mapping_0000.tif");
   ok &= expect(
-      !stale_generation.empty() && absl::IsAborted(Selector::Save(directory, disabled, stale_generation)),
+      !stale_generation.empty() && absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
       "a selector opened on a replaced stitched canvas must not publish stale coordinates");
-  ::setenv("HM_SCOREBOARD_BIND_HOST", "0.0.0.0", 1);
-  ::setenv("HM_SCOREBOARD_ALLOW_REMOTE", "1", 1);
-  ::unsetenv("HM_SCOREBOARD_PUBLIC_HOST");
-  ok &= expect(
-      absl::IsInvalidArgument(Selector::Run(directory)),
-      "remote scoreboard mode must require an explicit public host before listening");
-  ::unsetenv("HM_SCOREBOARD_BIND_HOST");
-  ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
   std::filesystem::remove_all(directory);
   return ok ? 0 : 1;
 }

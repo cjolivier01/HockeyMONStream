@@ -139,6 +139,7 @@ fi
 HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
+HSTREAM_CANVAS_CHECKER="${TOPDIR}/bazel-bin/src/libs/stitching/stitching-canvas-check"
 HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so"
@@ -156,6 +157,10 @@ if [[ ! -f "${HSTREAM_ASSETS}" ]]; then
 fi
 if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_UI}" ]]; then
   echo "ERROR: ${HSTREAM_UI} not found. Run 'make hstream-ui' first, or pass --build." >&2
+  exit 1
+fi
+if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_CANVAS_CHECKER}" ]]; then
+  echo "ERROR: ${HSTREAM_CANVAS_CHECKER} not found. Build //src/libs/stitching:stitching-canvas-check first." >&2
   exit 1
 fi
 if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
@@ -347,6 +352,9 @@ if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
+  cp "${HSTREAM_CANVAS_CHECKER}" "${STAGING}${INSTALL_PREFIX}/bin/stitching-canvas-check"
+  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/stitching-canvas-check"
+  package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/stitching-canvas-check")
 fi
 ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 

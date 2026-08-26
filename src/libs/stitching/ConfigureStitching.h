@@ -100,6 +100,12 @@ absl::Status validate_stitched_output_generation(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id = {});
 
+// Validates the Hugin component embedded in a stitched-output generation when
+// the caller already holds the corresponding Hugin artifact lock.
+absl::Status validate_stitched_output_generation_hugin(
+    const std::string& output_generation,
+    const std::string& expected_hugin_generation);
+
 bool is_field_mask_configured(
     const std::string& game_dir,
     const std::string& expected_output_generation = {},

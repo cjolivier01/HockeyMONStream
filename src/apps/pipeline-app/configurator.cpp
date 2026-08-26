@@ -5848,7 +5848,7 @@ absl::Status Configurator::invalidate_rotation_dependent_cache_if_needed(const f
   remove_rotation_dependent_rink_cache_keys(private_config_);
   private_config_["stitching"]["generated_field_mask_post_stitch_rotate_degrees"] = desired_rotation;
   auto save_status =
-      save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_rink_masks=*/true);
+      save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_canvas_artifacts=*/true);
   if (!save_status.ok()) {
     if (!active_stitching_invalidation_id_.empty())
       return save_status;
@@ -5877,7 +5877,7 @@ absl::Status Configurator::invalidate_canvas_dependent_cache_if_needed(const fs:
     // config transaction has durably removed its canvas-relative geometry and
     // stitched snapshot.
     HM_RETURN_IF_ERROR(
-        save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_rink_masks=*/true));
+        save_private_config(private_config_, active_stitching_invalidation_id_, /*remove_canvas_artifacts=*/true));
   }
   return absl::OkStatus();
 }
@@ -6731,7 +6731,7 @@ absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
 absl::Status Configurator::save_private_config(
     const YAML::Node& private_config,
     const std::string& expected_invalidation_id,
-    bool remove_rink_masks) {
+    bool remove_canvas_artifacts) {
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const fs::path game_dir = resolved_game_dir();
   auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
@@ -6751,8 +6751,9 @@ absl::Status Configurator::save_private_config(
   if (!is_empty_yaml_document(merged))
     contents = YAML::Dump(merged) + "\n";
   absl::Status status;
-  if (remove_rink_masks) {
-    auto removed = stitching::publish_game_config_without_rink_masks(game_dir, contents);
+  if (remove_canvas_artifacts) {
+    auto removed =
+        stitching::publish_game_config_without_rink_masks(game_dir, contents, /*remove_stitched_snapshot=*/true);
     status = removed.ok() ? absl::OkStatus() : removed.status();
   } else {
     status = stitching::publish_game_config(game_dir, contents);

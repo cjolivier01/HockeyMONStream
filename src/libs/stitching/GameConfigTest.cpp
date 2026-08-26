@@ -173,24 +173,28 @@ int main() {
   std::ofstream(root / "config.yaml") << "generation: old\n";
   std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";
   std::ofstream(root / "rink_mask_1.png") << "old-mask-one";
+  std::ofstream(root / "s.png") << "old-stitched-snapshot";
   auto invalidation_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(invalidation_lock.ok(), "rink invalidation test must acquire the config transaction");
   if (invalidation_lock.ok()) {
     ::setenv("HM_TEST_RINK_INVALIDATION_FAIL_AFTER_REMOVE", "1", 1);
-    const auto failed = hm::stitching::publish_game_config_without_rink_masks(root, "generation: new\n");
+    const auto failed = hm::stitching::publish_game_config_without_rink_masks(
+        root, "generation: new\n", /*remove_stitched_snapshot=*/true);
     ::unsetenv("HM_TEST_RINK_INVALIDATION_FAIL_AFTER_REMOVE");
     ok &= expect(!failed.ok(), "injected rink invalidation failure must abort publication");
     const YAML::Node rolled_back = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(
         rolled_back["generation"].as<std::string>() == "old" && fs::is_regular_file(root / "rink_mask_0.png") &&
-            fs::is_regular_file(root / "rink_mask_1.png"),
-        "failed rink invalidation must restore the complete prior config/mask generation");
-    const auto published = hm::stitching::publish_game_config_without_rink_masks(root, "generation: new\n");
+            fs::is_regular_file(root / "rink_mask_1.png") && fs::is_regular_file(root / "s.png"),
+        "failed rink invalidation must restore the complete prior config/canvas generation");
+    const auto published = hm::stitching::publish_game_config_without_rink_masks(
+        root, "generation: new\n", /*remove_stitched_snapshot=*/true);
     ok &= expect(
-        published.ok() && *published == 2 &&
+        published.ok() && *published == 3 &&
             YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "new" &&
-            !fs::exists(root / "rink_mask_0.png") && !fs::exists(root / "rink_mask_1.png"),
-        "successful rink invalidation must atomically publish config and remove every mask");
+            !fs::exists(root / "rink_mask_0.png") && !fs::exists(root / "rink_mask_1.png") &&
+            !fs::exists(root / "s.png"),
+        "successful canvas invalidation must atomically publish config and remove every canvas-relative artifact");
     struct stat invalidated_metadata{};
     ok &= expect(
         ::stat((root / "config.yaml").c_str(), &invalidated_metadata) == 0 &&

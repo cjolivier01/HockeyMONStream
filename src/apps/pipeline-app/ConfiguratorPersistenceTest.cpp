@@ -1065,6 +1065,26 @@ play-tracker:
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
 
+  const fs::path canvas_cache_game = games / "canvas-cache-save";
+  fs::create_directories(canvas_cache_game);
+  std::ofstream(canvas_cache_game / "config.yaml") << "generation: old\n";
+  std::ofstream(canvas_cache_game / "rink_mask_0.png") << "old-mask\n";
+  std::ofstream(canvas_cache_game / "s.png") << "old-stitched-snapshot\n";
+  hm::Configurator canvas_cache_configurator(
+      "canvas-cache-save", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto canvas_cache_loaded = canvas_cache_configurator.load_config();
+  YAML::Node canvas_cache_desired(YAML::NodeType::Map);
+  canvas_cache_desired["generation"] = "new";
+  const absl::Status canvas_cache_saved = canvas_cache_loaded.ok()
+      ? canvas_cache_configurator.save_private_config(
+            canvas_cache_desired, /*expected_invalidation_id=*/{}, /*remove_canvas_artifacts=*/true)
+      : canvas_cache_loaded.status();
+  ok &= expect(
+      canvas_cache_saved.ok() && !fs::exists(canvas_cache_game / "rink_mask_0.png") &&
+          !fs::exists(canvas_cache_game / "s.png") &&
+          YAML::LoadFile((canvas_cache_game / "config.yaml").string())["generation"].as<std::string>() == "new",
+      "Configurator canvas invalidation must transactionally remove rink masks and the stitched snapshot");
+
   const fs::path tracker_base_path = root / "custom-playtracker.yaml";
   std::ofstream(tracker_base_path) << R"(play-tracker:
   preserve-custom-root: true

@@ -2807,13 +2807,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &clean_stitching_expected_invalidation_id_,
        "Apply stitching changes only if this invalidation is still current",
        "ID"},
-      {"check-stitching-canvas-width",
-       0,
-       0,
-       G_OPTION_ARG_INT,
-       &check_stitching_canvas_width_,
-       "Report whether current stitching maps are compatible with this maximum output width and exit",
-       "PIXELS"},
       {"start-time", 's', 0, G_OPTION_ARG_STRING, &start_time, "Start time", nullptr},
       {"stitch-frame-time",
        0,
@@ -2848,24 +2841,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   if (!g_option_context_parse(ctx, &normalized_argc, &normalized_argv_data, &error)) {
     NVGSTDS_ERR_MSG_V("%s", error->message);
     return absl::InternalError(error->message);
-  }
-
-  if (check_stitching_canvas_width_ >= 0) {
-    if (clean_stitching_artifacts_ || clean_stitching_from_control_points_) {
-      return absl::InvalidArgumentError("--check-stitching-canvas-width cannot be combined with stitching cleanup");
-    }
-    const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
-    if (game_id.empty())
-      return absl::InvalidArgumentError("--check-stitching-canvas-width requires --game-id");
-    auto check = hm::stitching::lock_canvas_regeneration_check(
-        hm::Configurator::get_game_dir(game_id).string(), static_cast<size_t>(check_stitching_canvas_width_));
-    if (!check.ok())
-      return check.status();
-    g_print(
-        "HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=%d requires-regeneration=%d\n",
-        check->artifacts_compatible ? 1 : 0,
-        check->requires_regeneration ? 1 : 0);
-    return absl::OkStatus();
   }
 
   if (!ui_preview_window_ids_.empty()) {

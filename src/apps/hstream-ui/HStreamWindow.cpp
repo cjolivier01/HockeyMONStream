@@ -6,6 +6,7 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
 #include <QtCore/QDirIterator>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QEvent>
 #include <QtCore/QEventLoop>
 #include <QtCore/QFile>
@@ -3851,6 +3852,7 @@ QString hm::ui_internal::missing_development_runtime_artifact(const QString& baz
       "src/gst-plugins/gst-playtracker/libgstplaytracker.so",
       "src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so",
       "src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so",
+      "src/libs/stitching/stitching-canvas-check",
   };
   for (const QString& relative_path : required) {
     const QString artifact = bazel_bin.filePath(relative_path);
@@ -5490,43 +5492,79 @@ QString HStreamWindow::mappingBackend() const {
   return mapping_backend_combo_ ? mapping_backend_combo_->currentData().toString() : default_mapping_backend_;
 }
 
-std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> HStreamWindow::checkStitchingCanvasConstraint(
-    const QString& runner,
-    const QString& working_dir,
-    const QProcessEnvironment& env,
+QString HStreamWindow::stitchingCanvasCheckerPath() const {
+  const QByteArray test_checker = qgetenv("HSTREAM_UI_TEST_CANVAS_CHECKER");
+  if (!test_checker.isEmpty())
+    return QString::fromLocal8Bit(test_checker);
+  if (!qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty())
+    return pipelineRunnerPath();
+  if (!development_bazel_bin_.isEmpty())
+    return QDir(development_bazel_bin_).filePath("src/libs/stitching/stitching-canvas-check");
+  const QString installed_checker = "/opt/hstream/bin/stitching-canvas-check";
+  if (QFileInfo::exists(installed_checker))
+    return installed_checker;
+  const QString bazel_checker = QDir::current().filePath("bazel-bin/src/libs/stitching/stitching-canvas-check");
+  return QFileInfo::exists(bazel_checker) ? bazel_checker : QString("stitching-canvas-check");
+}
+
+std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> HStreamWindow::checkStitchingCanvasConstraint(
+    const QString& game_id,
     int max_output_width) {
-  const QString game_id = !active_run_game_id_.isEmpty()
-      ? active_run_game_id_
-      : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
-  QProcess check;
-  check.setProcessChannelMode(QProcess::MergedChannels);
-  check.setProcessEnvironment(env);
-  check.setWorkingDirectory(working_dir);
-  check.start(runner, {"-g", game_id, QString("--check-stitching-canvas-width=%1").arg(max_output_width)});
-  if (!check.waitForStarted(5000)) {
-    appendLog(QString("failed to start stitched-width compatibility check: %1").arg(check.errorString()));
-    return std::nullopt;
-  }
-  if (!check.waitForFinished(30000)) {
-    check.kill();
-    check.waitForFinished(5000);
-    appendLog("stitched-width compatibility check timed out");
-    return std::nullopt;
-  }
-  const QString output = QString::fromLocal8Bit(check.readAll());
-  if (check.exitStatus() != QProcess::NormalExit || check.exitCode() != 0) {
-    appendLog(QString("stitched-width compatibility check failed: %1").arg(output.trimmed()));
+  auto release_process = [](QProcess* process) {
+    if (process->state() != QProcess::NotRunning) {
+      process->closeWriteChannel();
+      if (!process->waitForFinished(1000)) {
+        process->kill();
+        process->waitForFinished(1000);
+      }
+    }
+    delete process;
+  };
+  std::shared_ptr<QProcess> check(new QProcess, release_process);
+  check->setProcessChannelMode(QProcess::MergedChannels);
+  check->setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+  check->setWorkingDirectory(pipelineWorkingDirectory());
+  check->start(
+      stitchingCanvasCheckerPath(), {gameDirectory(game_id), QString::number(max_output_width), "--hold-lock"});
+  if (!check->waitForStarted(500)) {
+    appendLog(QString("failed to start stitched-width compatibility check: %1").arg(check->errorString()));
     return std::nullopt;
   }
   const QRegularExpression marker(
-      R"(HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=([01]) requires-regeneration=([01]))");
-  const QRegularExpressionMatch match = marker.match(output);
+      R"(HSTREAM_STITCHING_CANVAS_CHECK artifacts-compatible=([01]) requires-regeneration=([01]) lock-held=([01]))");
+  QByteArray output;
+  QRegularExpressionMatch match;
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < 1000) {
+    output += check->readAll();
+    match = marker.match(QString::fromLocal8Bit(output));
+    if (match.hasMatch())
+      break;
+    if (check->state() == QProcess::NotRunning)
+      break;
+    check->waitForReadyRead(25);
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+  }
+  output += check->readAll();
+  match = marker.match(QString::fromLocal8Bit(output));
   if (!match.hasMatch()) {
-    appendLog("stitched-width compatibility check returned no parseable result");
+    appendLog(QString("stitched-width compatibility check failed: %1").arg(QString::fromLocal8Bit(output).trimmed()));
     return std::nullopt;
   }
-  return hm::ui_internal::decide_stitching_canvas_constraint_change(
-      /*width_changed=*/true, match.captured(1) == "1", match.captured(2) == "1");
+  const bool lock_held = match.captured(3) == "1";
+  if (lock_held && check->state() == QProcess::NotRunning) {
+    appendLog("stitched-width compatibility check released its artifact lock prematurely");
+    return std::nullopt;
+  }
+  if (!lock_held) {
+    check.reset();
+  }
+  return hm::ui_internal::LockedStitchingCanvasConstraintCheck{
+      .decision = hm::ui_internal::decide_stitching_canvas_constraint_change(
+          /*width_changed=*/true, match.captured(1) == "1", match.captured(2) == "1"),
+      .lock_process = std::move(check),
+  };
 }
 
 bool HStreamWindow::runStitchingClean(
@@ -5729,9 +5767,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool saved_artifacts_invalidated = false;
   bool clean_all = false;
   bool clean_from_control_points = false;
-  std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> width_constraint_check;
+  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
   if (saved_stitch_max_output_width_ != active_stitch_max_output_width_) {
-    width_constraint_check = checkStitchingCanvasConstraint(runner, working_dir, env, active_stitch_max_output_width_);
+    width_constraint_check = checkStitchingCanvasConstraint(active_run_game_id_, active_stitch_max_output_width_);
   }
   {
     auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
@@ -5800,18 +5838,13 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
 
     const bool control_points_changed = !saved_found || saved_control_points != control_points;
     const bool frame_count_changed = !saved_frame_count_found || saved_frame_count != frame_count;
-    const bool max_output_width_changed =
-        saved_max_output_width != active_stitch_max_output_width_ ||
-        has_conflicting_stitch_max_output_width_native_alias(
-            config,
-            active_stitch_max_output_width_,
-            stitch_max_output_width_spin_ ? stitch_max_output_width_spin_->maximum() : std::numeric_limits<int>::max());
+    const bool max_output_width_changed = saved_max_output_width != active_stitch_max_output_width_;
     const auto canvas_constraint = max_output_width_changed
-        ? width_constraint_check.value_or(
-              hm::ui_internal::decide_stitching_canvas_constraint_change(
-                  /*width_changed=*/true,
-                  /*artifacts_compatible=*/std::nullopt,
-                  /*requires_regeneration=*/std::nullopt))
+        ? (width_constraint_check.has_value() ? width_constraint_check->decision
+                                              : hm::ui_internal::decide_stitching_canvas_constraint_change(
+                                                    /*width_changed=*/true,
+                                                    /*artifacts_compatible=*/std::nullopt,
+                                                    /*requires_regeneration=*/std::nullopt))
         : hm::ui_internal::StitchingCanvasConstraintDecision{};
     const bool control_point_matcher_changed = saved_control_point_matcher != active_control_point_matcher_;
     const bool mapping_backend_changed = saved_mapping_backend != active_mapping_backend_;
@@ -5908,6 +5941,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       return false;
     }
   }
+  width_constraint_check.reset();
   if (active_force_reconfigure_)
     appendLog("stitching calibration restart requested; rebuilding the complete dependency graph");
   if (saved_stitch_frame_time != active_stitch_frame_time_ || !saved_stitch_frame_time_valid) {
@@ -11172,13 +11206,9 @@ void HStreamWindow::savePreset() {
     return;
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
-  std::optional<hm::ui_internal::StitchingCanvasConstraintDecision> width_constraint_check;
+  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
   if (saved_stitch_max_output_width_ != stitchingMaxOutputWidth()) {
-    width_constraint_check = checkStitchingCanvasConstraint(
-        pipelineRunnerPath(),
-        pipelineWorkingDirectory(),
-        QProcessEnvironment::systemEnvironment(),
-        stitchingMaxOutputWidth());
+    width_constraint_check = checkStitchingCanvasConstraint(game_id_edit_->text().trimmed(), stitchingMaxOutputWidth());
   }
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
@@ -11206,7 +11236,9 @@ void HStreamWindow::savePreset() {
           &invalidate_rink_masks,
           &invalidated_config_artifacts,
           &published_playtracker_sidecar,
-          width_constraint_check)) {
+          width_constraint_check.has_value()
+              ? std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>(width_constraint_check->decision)
+              : std::nullopt)) {
     if (!published_playtracker_sidecar.isEmpty()) {
       QFile::remove(published_playtracker_sidecar);
     }
@@ -11295,6 +11327,7 @@ void HStreamWindow::savePreset() {
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
   }
+  width_constraint_check.reset();
   const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
   const fs::path runtime_dir = config_path.parent_path() / ".hstream-ui";
   std::error_code cleanup_error;
