@@ -27,7 +27,6 @@
 
 #include <fcntl.h>
 #include <linux/fs.h>
-#include <linux/magic.h>
 #include <openssl/evp.h>
 #include <png.h>
 #include <sys/file.h>
@@ -48,6 +47,13 @@ constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
+constexpr unsigned long kFuseSuperMagic = 0x65735546UL;
+constexpr unsigned long kMsDosSuperMagic = 0x4d44UL;
+constexpr unsigned long kExFatSuperMagic = 0x2011bab0UL;
+constexpr unsigned long kNfsSuperMagic = 0x6969UL;
+constexpr unsigned long kSmbSuperMagic = 0x517bUL;
+constexpr unsigned long kCifsSuperMagic = 0xff534d42UL;
+constexpr unsigned long kSmb2SuperMagic = 0xfe534d42UL;
 
 const std::array<const char*, 9> kGenerationArtifacts = {
     "hm_project.pto",
@@ -1057,13 +1063,13 @@ bool stitch_filesystem_has_unreliable_metadata(const fs::path& game_dir) {
   if (::statfs(game_dir.c_str(), &filesystem) != 0)
     return true;
   switch (static_cast<unsigned long>(filesystem.f_type)) {
-    case FUSE_SUPER_MAGIC:
-    case MSDOS_SUPER_MAGIC:
-    case EXFAT_SUPER_MAGIC:
-    case NFS_SUPER_MAGIC:
-    case SMB_SUPER_MAGIC:
-    case CIFS_SUPER_MAGIC:
-    case SMB2_SUPER_MAGIC:
+    case kFuseSuperMagic:
+    case kMsDosSuperMagic:
+    case kExFatSuperMagic:
+    case kNfsSuperMagic:
+    case kSmbSuperMagic:
+    case kCifsSuperMagic:
+    case kSmb2SuperMagic:
       return true;
     default:
       return false;
