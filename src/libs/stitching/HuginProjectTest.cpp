@@ -855,7 +855,7 @@ int main() {
   const bool weak_child_matches = generation_matches_in_child(root / "game", weak_parent_generation);
   ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
   const bool weak_generation_stable = !weak_parent_generation.empty() && weak_parent_generation == weak_parent_repeat &&
-      weak_child_matches && !fs::exists(root / "game" / "stitching_generation_id");
+      weak_child_matches && read_text_file(root / "game" / "stitching_generation_id").rfind("version=3\n", 0) == 0;
   if (!weak_generation_stable) {
     std::cerr << "sidecar-free weak generation fixture: parent-bytes=" << weak_parent_generation.size()
               << " repeat-bytes=" << weak_parent_repeat.size() << " child-matches=" << weak_child_matches
@@ -863,7 +863,7 @@ int main() {
   }
   ok &= expect(
       weak_generation_stable,
-      "sidecar-free generations on weak filesystems must remain content-stable across processes");
+      "sidecar-free generations on weak filesystems must be adopted once and remain content-stable across processes");
 
   const fs::path full_digest_artifact = root / "game" / "hm_project.pto";
   const std::vector<unsigned char> original_full_digest_artifact = read_binary_file(full_digest_artifact);

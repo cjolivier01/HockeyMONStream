@@ -1415,6 +1415,7 @@ absl::Status rebind_published_stitch_generation_artifact(
     const fs::path& game_dir) {
   if (!prepared.impl_)
     return absl::InvalidArgumentError("Prepared Hugin publication is empty");
+  std::ostringstream bindings;
   for (const PinnedStitchArtifact& artifact : prepared.impl_->artifacts) {
     const fs::path path = game_dir / artifact.name;
     if (artifact.descriptor < 0) {
@@ -1438,13 +1439,14 @@ absl::Status rebind_published_stitch_generation_artifact(
     if (!S_ISREG(published.st_mode) || !stitch_stat_matches(artifact.metadata, published)) {
       return absl::AbortedError("Published Hugin artifact no longer matches its staged file: " + path.string());
     }
+    bindings << artifact.name << ':' << static_cast<uint64_t>(pinned.st_dev) << ':'
+             << static_cast<uint64_t>(pinned.st_ino) << ':' << static_cast<uint64_t>(pinned.st_size) << ':'
+             << pinned.st_mtim.tv_sec << ':' << pinned.st_mtim.tv_nsec << ':' << pinned.st_ctim.tv_sec << ':'
+             << pinned.st_ctim.tv_nsec << '\n';
   }
-  auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
-  if (!bindings.ok())
-    return bindings.status();
   return publish_stitch_file_atomically(
       game_dir / kStitchGenerationArtifact,
-      serialize_stitch_generation_identity(prepared.impl_->logical_id, *bindings, prepared.impl_->fingerprint));
+      serialize_stitch_generation_identity(prepared.impl_->logical_id, bindings.str(), prepared.impl_->fingerprint));
 }
 
 absl::Status validate_prepared_stitch_generation_artifact(
@@ -1874,10 +1876,24 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
   if (!identity.ok()) {
     if (absl::IsNotFound(identity.status())) {
       if (unreliable_filesystem) {
+        auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+        if (!bindings.ok())
+          return bindings.status();
         auto fingerprint = stitch_artifact_fingerprint(game_dir);
         if (!fingerprint.ok())
           return fingerprint.status();
-        return content_scoped_stitch_generation_id(*fingerprint);
+        auto verified_bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+        if (!verified_bindings.ok())
+          return verified_bindings.status();
+        if (*verified_bindings != *bindings)
+          return absl::AbortedError("Hugin artifacts changed while adopting their generation identity");
+        const std::string logical_id = content_scoped_stitch_generation_id(*fingerprint);
+        auto status = publish_stitch_file_atomically(
+            game_dir / kStitchGenerationArtifact,
+            serialize_stitch_generation_identity(logical_id, *bindings, *fingerprint));
+        if (!status.ok())
+          return status;
+        return logical_id;
       }
       auto legacy_generation = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacyGeneration);
       if (!legacy_generation.ok())
@@ -1938,8 +1954,11 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
 
 absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const fs::path& game_dir) {
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
-  if (!identity.ok())
+  if (!identity.ok()) {
+    if (absl::IsNotFound(identity.status()))
+      return stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacyGeneration);
     return stitch_artifact_generation_id_locked(game_dir);
+  }
   auto parsed = parse_stitch_generation_identity(*identity);
   if (!parsed.ok() || parsed->version != 3)
     return stitch_artifact_generation_id_locked(game_dir);

@@ -2084,7 +2084,8 @@ absl::Status StitcherPriv::GenerateOutput(
       field_mask_attempted_generation_ = output_generation;
       field_mask_attempted_authorization_id_ = output_authorization_id;
       bool mask_configured = !calibrate_field_mask_ ||
-          stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
+          stitching::is_field_mask_configured_for_loaded_generation(
+              config_file_, output_generation, hugin_generation, calibration_invalidation_id_);
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
           configured_during_run_,
           mask_configured,
@@ -2096,7 +2097,8 @@ absl::Status StitcherPriv::GenerateOutput(
       if (progress.create_mask) {
         std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
         mask_configured = !calibrate_field_mask_ ||
-            stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
+            stitching::is_field_mask_configured_for_loaded_generation(
+                config_file_, output_generation, hugin_generation, calibration_invalidation_id_);
         if (!mask_configured) {
           hm::surface::Surface field_mask_surface = logical_output_surface;
           if (stitcher_rgb10_fp16_) {

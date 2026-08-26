@@ -180,7 +180,11 @@ int main() {
         native_dimensioned_generation.ok() &&
             hm::stitching::is_field_mask_configured_for_stitching_config(
                 root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/0.0) &&
-            hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation),
+            hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation) &&
+            hm::stitching::is_field_mask_configured_for_loaded_generation(
+                root.string(), *native_dimensioned_generation, initial_hugin_generation_id) &&
+            !hm::stitching::is_field_mask_configured_for_loaded_generation(
+                root.string(), *native_dimensioned_generation, "stale-hugin-generation"),
         "startup and dimensioned runtime checks must both accept a size-validated legacy native field mask");
     const YAML::Node migrated_native_config = YAML::LoadFile((root / "config.yaml").string());
     ok &= expect(

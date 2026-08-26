@@ -2372,6 +2372,7 @@ absl::Status visit_current_field_mask_impl(
     const std::optional<size_t>& max_output_width,
     const std::optional<double>& post_stitch_rotate_degrees,
     const std::optional<ValidatedStitchingArtifacts>& previously_validated,
+    const std::optional<std::string>& loaded_hugin_generation,
     const FieldMaskConsumer& consumer) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
@@ -2389,7 +2390,15 @@ absl::Status visit_current_field_mask_impl(
   std::string hugin_generation;
   bool reused_generation = false;
   bool generation_content_validated = false;
-  if (max_output_width.has_value() && stitch_artifact_metadata_is_reliable(root) && previously_validated.has_value() &&
+  if (loaded_hugin_generation.has_value()) {
+    if (expected_output_generation.empty() || loaded_hugin_generation->empty()) {
+      return absl::InvalidArgumentError("A loaded Hugin generation requires a nonempty stitched-output generation");
+    }
+    hugin_generation = *loaded_hugin_generation;
+    reused_generation = true;
+    generation_content_validated = true;
+  } else if (
+      max_output_width.has_value() && stitch_artifact_metadata_is_reliable(root) && previously_validated.has_value() &&
       !previously_validated->generation_id.empty() && !previously_validated->artifact_revision.empty() &&
       previously_validated->max_output_width == *max_output_width &&
       previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
@@ -2500,7 +2509,8 @@ absl::StatusOr<cv::Mat> load_field_mask_impl(
     const std::string& expected_invalidation_id,
     const std::optional<size_t>& max_output_width,
     const std::optional<double>& post_stitch_rotate_degrees = std::nullopt,
-    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt) {
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt,
+    const std::optional<std::string>& loaded_hugin_generation = std::nullopt) {
   cv::Mat mask;
   const absl::Status visit_status = visit_current_field_mask_impl(
       game_dir,
@@ -2509,6 +2519,7 @@ absl::StatusOr<cv::Mat> load_field_mask_impl(
       max_output_width,
       post_stitch_rotate_degrees,
       previously_validated,
+      loaded_hugin_generation,
       [&](const std::string& mask_path, const std::optional<CanvasSize>& expected_canvas_size) {
         if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
           const long delay_ms = std::strtol(delay, nullptr, 10);
@@ -2561,6 +2572,7 @@ absl::Status visit_current_field_mask(
       std::nullopt,
       std::nullopt,
       std::nullopt,
+      std::nullopt,
       [&](const std::string& mask_path, const std::optional<CanvasSize>&) { return consumer(mask_path); });
 }
 
@@ -2577,6 +2589,22 @@ bool is_field_mask_configured(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id) {
   return load_field_mask(game_dir, expected_output_generation, expected_invalidation_id).ok();
+}
+
+bool is_field_mask_configured_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask_impl(
+             game_dir,
+             expected_output_generation,
+             expected_invalidation_id,
+             std::nullopt,
+             std::nullopt,
+             std::nullopt,
+             loaded_hugin_generation)
+      .ok();
 }
 
 bool is_field_mask_configured_for_stitching_config(

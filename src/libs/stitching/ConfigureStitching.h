@@ -148,6 +148,14 @@ bool is_field_mask_configured(
     const std::string& expected_output_generation = {},
     const std::string& expected_invalidation_id = {});
 
+// Validates a field mask against a Hugin generation that the live stitcher has
+// already loaded authoritatively, avoiding a second content hash on first frame.
+bool is_field_mask_configured_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id = {});
+
 bool is_field_mask_configured_for_stitching_config(
     const std::string& game_dir,
     size_t max_output_width,
