@@ -233,10 +233,12 @@ struct _AppCtx {
   gboolean defer_bus_watch{false};
   guint pipeline_recreate_source_id{0};
   gboolean pipeline_cleanup_complete{true};
+  guint pipeline_create_attempt_count{0};
   NvDsFrameLatencyInfo* latency_info{nullptr};
   GMutex latency_lock{
       0,
   };
+  gboolean latency_lock_initialized{false};
   GThread* ota_handler_thread{nullptr};
   guint ota_inotify_fd{0};
   guint ota_watch_desc{0};

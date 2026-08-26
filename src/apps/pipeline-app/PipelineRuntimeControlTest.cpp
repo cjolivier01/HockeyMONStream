@@ -1653,7 +1653,7 @@ int main(int argc, char** argv) {
   verify_failed_recreation_generation(
       &destroyed_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_DESTROY", "after-destroy");
   verify_failed_recreation_generation(
-      &partial_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE", "after-create");
+      &partial_recreation_process, "HM_TEST_PIPELINE_RECREATE_FAIL_DURING_CREATE", "during-create");
 
   if (ok) {
     ok &=

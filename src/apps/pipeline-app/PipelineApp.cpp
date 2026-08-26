@@ -7319,10 +7319,6 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
     return FALSE;
   }
-  if (g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE")) {
-    g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=after-create\n");
-    return FALSE;
-  }
   if (runtime_seek_restart && !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {
     NVGSTDS_ERR_MSG_V("Failed to defer replacement URI-playlist callbacks before preroll");
     return FALSE;
