@@ -93,6 +93,8 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
     const std::string& game_dir,
     size_t max_output_width = 0);
 
+absl::StatusOr<std::string> current_stitched_output_generation_id(const std::string& game_dir);
+
 // Derives the complete current generation from one locked Hugin/config
 // generation and the published map dimensions. The caller must hold Hugin,
 // then GameConfigTransactionLock.

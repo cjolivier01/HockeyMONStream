@@ -114,9 +114,31 @@ absl::StatusOr<std::string> generation_with_rotation(const std::string& generati
   return authorized;
 }
 
+bool scoreboard_polygon_is_disabled(const YAML::Node& polygon) {
+  if (!polygon || !polygon.IsSequence() || polygon.size() != 4)
+    return false;
+  try {
+    for (const YAML::Node& point : polygon) {
+      if (!point.IsSequence() || point.size() != 2 || point[0].as<double>() != 0.0 || point[1].as<double>() != 0.0)
+        return false;
+    }
+    return true;
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+void remove_active_scoreboard_polygon(YAML::Node& config) {
+  const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+  if (polygon && polygon.IsDefined() && !scoreboard_polygon_is_disabled(polygon))
+    config["rink"]["scoreboard"].remove("perspective_polygon");
+}
+
 } // namespace
 
-absl::Status authorize_live_stitched_output_rotation(const std::string& game_dir, double post_stitch_rotate_degrees) {
+absl::StatusOr<bool> authorize_live_stitched_output_rotation(
+    const std::string& game_dir,
+    double post_stitch_rotate_degrees) {
   if (game_dir.empty() || !std::isfinite(post_stitch_rotate_degrees))
     return absl::InvalidArgumentError("A game directory and finite live stitched-output rotation are required");
   const fs::path root(game_dir);
@@ -130,7 +152,7 @@ absl::Status authorize_live_stitched_output_rotation(const std::string& game_dir
   if (error)
     return absl::InternalError("Unable to inspect game config: " + error.message());
   if (!has_config)
-    return absl::OkStatus();
+    return false;
 
   try {
     YAML::Node config = YAML::LoadFile(config_path.string());
@@ -138,7 +160,7 @@ absl::Status authorize_live_stitched_output_rotation(const std::string& game_dir
       return absl::InvalidArgumentError("Game config must be a map");
     const YAML::Node saved_generation = config["rink"]["stitched_output_generation"];
     if (!saved_generation || !saved_generation.IsDefined())
-      return absl::OkStatus();
+      return false;
     if (!saved_generation.IsScalar())
       return absl::InvalidArgumentError("Persisted stitched-output generation must be a scalar");
 
@@ -146,12 +168,17 @@ absl::Status authorize_live_stitched_output_rotation(const std::string& game_dir
         generation_with_rotation(saved_generation.as<std::string>(), post_stitch_rotate_degrees);
     if (!authorized_generation.ok())
       return authorized_generation.status();
-    if (*authorized_generation == saved_generation.as<std::string>()) {
+    const bool generation_changed = *authorized_generation != saved_generation.as<std::string>();
+    if (!generation_changed) {
       config["rink"].remove("stitched_output_pending_generation");
     } else {
       config["rink"]["stitched_output_pending_generation"] = *authorized_generation;
+      remove_active_scoreboard_polygon(config);
     }
-    return publish_game_config(root, YAML::Dump(config) + "\n");
+    const absl::Status published = publish_game_config(root, YAML::Dump(config) + "\n");
+    if (!published.ok())
+      return published;
+    return generation_changed;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(
         "Unable to authorize live stitched-output rotation: " + std::string(exception.what()));

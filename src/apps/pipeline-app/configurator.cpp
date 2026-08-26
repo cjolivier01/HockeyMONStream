@@ -5019,6 +5019,8 @@ absl::Status Configurator::setup_stitcher_and_masks(
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
       stitching_calibration_required_ = OnePassCalibrationRequiredForMode(
           one_pass_mode, is_configured, field_mask_configured, calibrate_field_mask, calibration_completion_requested);
+      if (stitching_calibration_required_)
+        stitching_calibration_start_stage_ = is_configured ? "rink-mask" : "input";
       if (configure_only && is_configured && !force) {
         return absl::CancelledError("Stitching is already configured.");
       }
@@ -7225,6 +7227,7 @@ absl::Status Configurator::complete_configuration(
     double show_render_scale,
     const fs::path& pipeline_config_dir) {
   active_stitching_invalidation_id_.clear();
+  stitching_calibration_start_stage_.clear();
   stitching_calibration_required_ = false;
   scoreboard_perspective_materialized_from_rink_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
@@ -7321,9 +7324,29 @@ absl::Status Configurator::complete_configuration(
       const std::string current_status =
           get_node_value(current, "hstream_ui.stitching_calibration.status", std::string());
       if (current_status != loaded_status) {
-        return absl::AbortedError("Stitching configuration state changed before pipeline launch");
-      }
-      if (current_status == "pending") {
+        const std::string current_stale_from =
+            get_node_value(current, "hstream_ui.stitching_calibration.stale_from", std::string());
+        const bool recognized_runtime_claim_stage = current_stale_from == "input" || current_stale_from == "rink-mask";
+        size_t completed_control_points = 0;
+        HM_ASSIGN_OR_RETURN(completed_control_points, persisted_stitching_control_points(config_));
+        size_t current_control_points = 0;
+        HM_ASSIGN_OR_RETURN(current_control_points, persisted_stitching_control_points(current));
+        size_t completed_frame_count = 0;
+        HM_ASSIGN_OR_RETURN(completed_frame_count, persisted_stitching_calibration_frame_count(config_));
+        size_t current_frame_count = 0;
+        HM_ASSIGN_OR_RETURN(current_frame_count, persisted_stitching_calibration_frame_count(current));
+        bool current_artifacts_invalidated = false;
+        HM_ASSIGN_OR_RETURN(
+            current_artifacts_invalidated,
+            get_yaml_bool_value(current, "hstream_ui.stitching_calibration.artifacts_invalidated", false));
+        const bool matching_runtime_claim = loaded_status == "complete" && current_status == "pending" &&
+            get_node_value(current, "hstream_ui.stitching_calibration.rink_mask_status", std::string()) == "pending" &&
+            recognized_runtime_claim_stage && current_artifacts_invalidated &&
+            completed_control_points == current_control_points && completed_frame_count == current_frame_count;
+        if (!matching_runtime_claim)
+          return absl::AbortedError("Stitching configuration state changed before pipeline launch");
+        stitching_artifacts_precleaned = true;
+      } else if (current_status == "pending") {
         size_t current_control_points = 0;
         HM_ASSIGN_OR_RETURN(current_control_points, persisted_stitching_control_points(current));
         if (!loaded_control_points.has_value() || current_control_points != *loaded_control_points) {
@@ -7431,7 +7454,7 @@ absl::Status Configurator::complete_configuration(
         return config_transaction.status();
       const fs::path private_config_file = game_dir / "config.yaml";
       try {
-        const YAML::Node current = YAML::LoadFile(private_config_file.string());
+        YAML::Node current = YAML::LoadFile(private_config_file.string());
         const std::string current_status =
             get_node_value(current, "hstream_ui.stitching_calibration.status", std::string());
         const std::string current_invalidation_id =
@@ -7440,9 +7463,35 @@ absl::Status Configurator::complete_configuration(
         HM_ASSIGN_OR_RETURN(current_control_points, persisted_stitching_control_points(current));
         size_t current_frame_count = 0;
         HM_ASSIGN_OR_RETURN(current_frame_count, persisted_stitching_calibration_frame_count(current));
-        if (current_status != loaded_status || current_invalidation_id != loaded_invalidation_id ||
-            current_control_points != control_points || current_frame_count != frame_count) {
+        const std::string calibration_start_stage =
+            stitching_calibration_start_stage_.empty() ? "input" : stitching_calibration_start_stage_;
+        bool current_artifacts_invalidated = false;
+        HM_ASSIGN_OR_RETURN(
+            current_artifacts_invalidated,
+            get_yaml_bool_value(current, "hstream_ui.stitching_calibration.artifacts_invalidated", false));
+        const bool matching_pending_claim = current_status == "pending" &&
+            get_node_value(current, "hstream_ui.stitching_calibration.rink_mask_status", std::string()) == "pending" &&
+            get_node_value(current, "hstream_ui.stitching_calibration.stale_from", std::string()) ==
+                calibration_start_stage &&
+            current_artifacts_invalidated;
+        if ((current_status != loaded_status && !matching_pending_claim) ||
+            current_invalidation_id != loaded_invalidation_id || current_control_points != control_points ||
+            current_frame_count != frame_count) {
           return absl::AbortedError("Completed stitching calibration state changed before pipeline launch");
+        }
+        if (!current_invalidation_id.empty()) {
+          YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
+          if (!matching_pending_claim) {
+            calibration["status"] = "pending";
+            calibration["rink_mask_status"] = "pending";
+            calibration["stale_from"] = calibration_start_stage;
+            calibration["artifacts_invalidated"] = true;
+            HM_RETURN_IF_ERROR(stitching::publish_game_config(game_dir, YAML::Dump(current) + "\n"));
+          }
+          config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
+          private_config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
+          persisted_private_config_["hstream_ui"]["stitching_calibration"] = YAML::Clone(calibration);
+          active_stitching_invalidation_id_ = current_invalidation_id;
         }
       } catch (const YAML::Exception& error) {
         return absl::InvalidArgumentError(

@@ -67,6 +67,10 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool liveRotationAuthorizationPending(HStreamWindow* window) {
+    return window->live_rotation_authorization_pending_;
+  }
+
   static void beginPendingPlaybackSeek(HStreamWindow* window, quint64 generation) {
     window->active_run_local_render_only_ = true;
     window->active_run_is_calibration_ = false;
@@ -4236,14 +4240,39 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       activate(stop);
       return false;
     }
+    std::atomic<bool> config_lock_acquired{false};
+    std::atomic<bool> config_lock_failed{false};
+    std::thread config_locker([&]() {
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      if (!config_lock.ok()) {
+        config_lock_failed = true;
+        return;
+      }
+      config_lock_acquired = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(450));
+    });
+    for (int i = 0; i < 100 && !config_lock_acquired && !config_lock_failed; ++i)
+      QTest::qWait(5);
+    QElapsedTimer responsiveness_timer;
+    responsiveness_timer.start();
+    qint64 responsive_callback_ms = -1;
+    QTimer::singleShot(180, window, [&]() { responsive_callback_ms = responsiveness_timer.elapsed(); });
     rotate->setValue(73);
+    for (int i = 0; i < 80 && responsive_callback_ms < 0; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(5);
+    }
+    const bool authorization_was_async = !config_lock_failed && config_lock_acquired &&
+        HStreamWindowTestAccess::liveRotationAuthorizationPending(window) && responsive_callback_ms >= 0 &&
+        responsive_callback_ms < 325;
+    config_locker.join();
     for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"); ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
     if (!expect(
-            window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"),
-            "Stitch controls should remain live after one-pass calibration completes")) {
+            authorization_was_async && window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"),
+            "Completed live rotation authorization must not block the UI on the game config transaction")) {
       qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
       activate(stop);
       return false;

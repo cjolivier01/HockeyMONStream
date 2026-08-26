@@ -43,6 +43,9 @@ int main() {
           is_allowlisted_runtime_property("playcropper0", "fixed-edge-rotation-angle"),
           "Existing playcropper runtime controls must remain allowlisted") ||
       !expect(
+          is_allowlisted_runtime_property("playcropper0", "scoreboard-perspective-polygon"),
+          "Live geometry changes must be able to disable a stale scoreboard polygon") ||
+      !expect(
           !is_allowlisted_runtime_property("playcropper0", "plugin-private-config"),
           "Unreviewed playcropper properties must remain blocked") ||
       !expect(

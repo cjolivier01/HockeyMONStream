@@ -3328,6 +3328,49 @@ play-tracker:
       forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
       "Forced configuration must abort before using or deleting a superseding artifact generation");
 
+  const fs::path runtime_claim_dir = games / "runtime-claim";
+  fs::create_directories(runtime_claim_dir);
+  YAML::Node runtime_claim_config(YAML::NodeType::Map);
+  runtime_claim_config["pipeline"]["application"]["complete-configuration"] = "1";
+  runtime_claim_config["pipeline"]["hmstitcher"]["enable"] = "1";
+  runtime_claim_config["pipeline"]["hmstitcher"]["one-pass-mode"] = "1";
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["frame_count"] = 4;
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "runtime-claim-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(runtime_claim_dir, YAML::Dump(runtime_claim_config) + "\n").ok(),
+      "runtime-discovered calibration fixture must publish");
+  hm::Configurator runtime_claim_configurator(
+      "runtime-claim", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator runtime_claim_peer("runtime-claim", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(
+      runtime_claim_configurator.configure().ok() && runtime_claim_peer.configure().ok(),
+      "runtime-discovered calibration contexts must load the same completed owner");
+  const absl::Status runtime_claim_status = runtime_claim_configurator.complete_configuration(
+      /*force=*/false,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/"runtime-claim-a");
+  (void)runtime_claim_status;
+  const absl::Status runtime_peer_claim_status = runtime_claim_peer.complete_configuration(
+      /*force=*/false,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/"runtime-claim-a");
+  const YAML::Node claimed_runtime_config = YAML::LoadFile((runtime_claim_dir / "config.yaml").string());
+  const YAML::Node claimed_runtime_calibration = claimed_runtime_config["hstream_ui"]["stitching_calibration"];
+  ok &= expect(
+      runtime_claim_configurator.stitching_calibration_required() &&
+          runtime_claim_configurator.active_stitching_invalidation_id() == "runtime-claim-a" &&
+          runtime_peer_claim_status.code() != absl::StatusCode::kAborted &&
+          runtime_claim_peer.active_stitching_invalidation_id() == "runtime-claim-a" &&
+          claimed_runtime_calibration["status"].as<std::string>() == "pending" &&
+          claimed_runtime_calibration["stale_from"].as<std::string>() == "input" &&
+          claimed_runtime_calibration["artifacts_invalidated"].as<bool>() &&
+          claimed_runtime_calibration["invalidation_id"].as<std::string>() == "runtime-claim-a",
+      "runtime-discovered missing mappings must share the reserved owner before Hugin publication can begin");
+
   const fs::path superseded_complete_dir = games / "superseded-complete";
   fs::create_directories(superseded_complete_dir);
   YAML::Node reserved_complete_config(YAML::NodeType::Map);

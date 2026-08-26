@@ -230,6 +230,7 @@ class Configurator {
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
   std::string active_stitching_invalidation_id_;
+  std::string stitching_calibration_start_stage_;
   bool stitching_calibration_required_{false};
   bool scoreboard_perspective_materialized_from_rink_{false};
   bool loaded_generated_stitching_backend_choices_{false};

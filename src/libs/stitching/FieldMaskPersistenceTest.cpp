@@ -182,6 +182,12 @@ int main() {
                 root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/0.0) &&
             hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation),
         "startup and dimensioned runtime checks must both accept a size-validated legacy native field mask");
+    const YAML::Node migrated_native_config = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        native_dimensioned_generation.ok() &&
+            migrated_native_config["rink"]["stitched_output_generation"].as<std::string>() ==
+                *native_dimensioned_generation,
+        "accepting a native legacy field mask must migrate its generation to the dimensioned alias");
 
     auto scaled_canvas = hm::stitching::stitching_canvas_size(root.string(), /*max_output_width=*/16);
     ok &= expect(scaled_canvas.ok(), "scaled field-mask test must identify output dimensions");
@@ -336,6 +342,8 @@ int main() {
       YAML::Node completed_rotation = YAML::LoadFile((root / "config.yaml").string());
       completed_rotation["rink"]["stitched_output_generation"] = *pre_rotation_generation;
       completed_rotation["rink"]["stitched_output_persisted_rotation_degrees"] = 0.0;
+      completed_rotation["rink"]["scoreboard"]["perspective_polygon"] =
+          std::vector<std::vector<int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}};
       std::ofstream(root / "config.yaml") << completed_rotation << '\n';
     }
     absl::Status stale_rotation_status = absl::UnknownError("stale rotation publication did not run");
@@ -392,8 +400,24 @@ int main() {
             after_live_override_authorization["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() ==
                 "complete" &&
             after_live_override_authorization["rink"]["stitched_output_pending_generation"].as<std::string>() ==
-                live_override_generation,
+                live_override_generation &&
+            !after_live_override_authorization["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
         "live rotation must authorize one exact generation without reopening the completed calibration owner");
+    hm::stitching::RinkProfile mismatched_profile = profile;
+    mismatched_profile.masks = {
+        cv::Mat(12, 16, CV_8U, cv::Scalar(255)),
+        cv::Mat(12, 16, CV_8U, cv::Scalar(255)),
+    };
+    const auto mismatched_masks = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(), mismatched_profile, stale_snapshot, "rink-run-a", live_override_generation);
+    const auto mismatched_snapshot = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(), profile, cv::Mat(12, 16, CV_8UC3, cv::Scalar(1, 2, 3)), "rink-run-a", live_override_generation);
+    const YAML::Node after_dimension_rejections = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        absl::IsAborted(mismatched_masks) && absl::IsAborted(mismatched_snapshot) &&
+            after_dimension_rejections["rink"]["stitched_output_pending_generation"].as<std::string>() ==
+                live_override_generation,
+        "rink publication must reject mask and snapshot dimensions that disagree with the producer generation");
     const auto live_override_status = hm::stitching::save_rink_profile_with_stitched_image(
         root.string(), profile, stale_snapshot, "rink-run-a", live_override_generation);
     const YAML::Node after_live_override = YAML::LoadFile((root / "config.yaml").string());

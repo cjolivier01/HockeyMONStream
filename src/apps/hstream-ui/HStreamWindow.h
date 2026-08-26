@@ -357,6 +357,20 @@ class HStreamWindow : public QMainWindow {
   bool publishRuntimeControlBatch(
       const std::map<QString, int>& controls,
       const std::vector<RuntimePropertyCommand>& commands);
+  bool publishRotationRuntimeControls(
+      std::map<QString, int> controls,
+      const std::optional<int>& authorized_stitch_rotation,
+      bool invalidate_scoreboard);
+  void startLiveRotationAuthorization(std::map<QString, int> controls, int rotation);
+  void completeLiveRotationAuthorization(
+      std::map<QString, int> controls,
+      quint64 generation,
+      quint64 pipeline_run_generation,
+      const QString& game_id,
+      int rotation,
+      bool authorized,
+      bool generation_changed,
+      const QString& error);
   void flushScheduledRuntimeControls();
   void timeoutRuntimeControlBatch(quint64 batch_id);
   int runtimeControlAckTimeoutMs() const;
@@ -595,12 +609,14 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> scheduled_playtracker_controls_;
   std::map<QString, int> scheduled_playcropper_controls_;
   bool scheduled_rotation_controls_ready_{false};
+  bool live_rotation_authorization_pending_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};
   std::optional<std::map<QString, int>> publishing_playtracker_controls_;
   bool scheduled_playtracker_force_all_targets_{false};
   bool publishing_playtracker_force_all_targets_{false};
   quint64 next_runtime_control_batch_id_{0};
+  quint64 pipeline_run_generation_{0};
   quint64 scheduled_rotation_control_generation_{0};
   quint64 scheduled_playtracker_control_generation_{0};
   quint64 scheduled_playcropper_control_generation_{0};

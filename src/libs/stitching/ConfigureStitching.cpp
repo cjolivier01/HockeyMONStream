@@ -2261,6 +2261,25 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
   return configured_output_generation(*config, *hugin_generation, output_size);
 }
 
+absl::StatusOr<std::string> current_stitched_output_generation_id(const std::string& game_dir) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  auto config = load_config_or_empty(root / "config.yaml");
+  if (!config.ok())
+    return config.status();
+  return current_stitched_output_generation_id_locked(game_dir, *config, *hugin_generation);
+}
+
 namespace {
 
 using FieldMaskConsumer =
@@ -2339,6 +2358,7 @@ absl::Status visit_current_field_mask_impl(
     HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
     expected_canvas_size = native_size;
   }
+  bool migrate_legacy_generation = false;
   try {
     const YAML::Node saved_generation = (*config)["rink"]["stitched_output_generation"];
     const bool current_matches = saved_generation && saved_generation.IsScalar() &&
@@ -2348,6 +2368,7 @@ absl::Status visit_current_field_mask_impl(
     if (!current_matches && !legacy_matches) {
       return absl::FailedPreconditionError("Field mask does not match the current stitched-output generation");
     }
+    migrate_legacy_generation = legacy_matches;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Invalid field-mask generation metadata: " + std::string(exception.what()));
   }
@@ -2361,7 +2382,14 @@ absl::Status visit_current_field_mask_impl(
     return absl::FailedPreconditionError("Field mask is empty or unreadable: " + mask_path.string());
   }
 
-  return consumer(mask_path.string(), expected_canvas_size);
+  const absl::Status consumed = consumer(mask_path.string(), expected_canvas_size);
+  if (!consumed.ok())
+    return consumed;
+  if (migrate_legacy_generation) {
+    (*config)["rink"]["stitched_output_generation"] = current_output_generation;
+    return publish_game_config(root, YAML::Dump(*config) + "\n");
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<cv::Mat> load_field_mask_impl(
@@ -2454,6 +2482,30 @@ bool is_field_mask_configured_for_stitching_config(
       .ok();
 }
 
+namespace {
+
+bool scoreboard_polygon_is_disabled(const YAML::Node& polygon) {
+  if (!polygon || !polygon.IsSequence() || polygon.size() != 4)
+    return false;
+  try {
+    for (const YAML::Node& point : polygon) {
+      if (!point.IsSequence() || point.size() != 2 || point[0].as<double>() != 0.0 || point[1].as<double>() != 0.0)
+        return false;
+    }
+    return true;
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+void remove_active_scoreboard_polygon(YAML::Node& config) {
+  const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+  if (polygon && polygon.IsDefined() && !scoreboard_polygon_is_disabled(polygon))
+    config["rink"]["scoreboard"].remove("perspective_polygon");
+}
+
+} // namespace
+
 absl::Status save_rink_profile_locked(
     const std::string& game_dir,
     const RinkProfile& profile,
@@ -2473,6 +2525,25 @@ absl::Status save_rink_profile_locked(
         return std::isfinite(score) && score >= 0.0f && score <= 1.0f;
       })) {
     return absl::InvalidArgumentError("Rink profile geometry and scores must be finite and valid");
+  }
+  const cv::Size expected_size = profile.masks.front().size();
+  for (const cv::Mat& mask : profile.masks) {
+    if (mask.empty() || mask.type() != CV_8U || mask.size() != expected_size)
+      return absl::InvalidArgumentError("Rink masks must be equally sized, non-empty CV_8U images");
+  }
+  if (stitched_image != nullptr && stitched_image->empty())
+    return absl::InvalidArgumentError("A non-empty stitched calibration image is required");
+  if (!expected_output_generation.empty()) {
+    HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+        expected_output_generation,
+        static_cast<size_t>(expected_size.width),
+        static_cast<size_t>(expected_size.height)));
+    if (stitched_image != nullptr) {
+      HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+          expected_output_generation,
+          static_cast<size_t>(stitched_image->cols),
+          static_cast<size_t>(stitched_image->rows)));
+    }
   }
   const fs::path root(game_dir);
   std::error_code error;
@@ -2500,12 +2571,8 @@ absl::Status save_rink_profile_locked(
   if (::chmod(staging.c_str(), 0700) != 0)
     return absl::InternalError("Unable to protect rink staging directory");
 
-  const cv::Size expected_size = profile.masks.front().size();
   for (size_t index = 0; index < profile.masks.size(); ++index) {
     const cv::Mat& mask = profile.masks[index];
-    if (mask.empty() || mask.type() != CV_8U || mask.size() != expected_size) {
-      return absl::InvalidArgumentError("Rink masks must be equally sized, non-empty CV_8U images");
-    }
     const fs::path path = staging / ("rink_mask_" + std::to_string(index) + ".png");
     if (!cv::imwrite(path.string(), mask))
       return absl::InternalError("Unable to stage rink mask " + path.string());
@@ -2518,8 +2585,6 @@ absl::Status save_rink_profile_locked(
       return sync_status;
   }
   if (stitched_image != nullptr) {
-    if (stitched_image->empty())
-      return absl::InvalidArgumentError("A non-empty stitched calibration image is required");
     const fs::path path = staging / "s.png";
     if (!cv::imwrite(path.string(), *stitched_image))
       return absl::InternalError("Unable to stage stitched calibration image " + path.string());
@@ -2574,12 +2639,16 @@ absl::Status save_rink_profile_locked(
           return absl::AbortedError(
               "Cannot replace a completed stitched-output generation outside a pending calibration epoch");
         }
+        if (!generation_matches)
+          remove_active_scoreboard_polygon(config);
       } else if (
           pending_generation && pending_generation.IsScalar() &&
           pending_generation.as<std::string>() != expected_output_generation &&
           !stitching_calibration_is_pending(config)) {
         return absl::AbortedError("Stitched-output producer does not match the authorized live generation");
       }
+      if (!saved_generation || !saved_generation.IsDefined())
+        remove_active_scoreboard_polygon(config);
       // Runtime rotation may be an in-memory CLI/property override and is
       // therefore authoritative even when it intentionally differs from the
       // persisted YAML rotation guarded above.

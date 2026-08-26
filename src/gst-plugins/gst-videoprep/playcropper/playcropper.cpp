@@ -358,6 +358,7 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     }
   } else if (key == "scoreboard-perspective-polygon") {
     scoreboard_perspective_polygion_.clear();
+    scoreboard_.reset();
     std::vector<std::string> points = absl::StrSplit(prop.value, ',');
     assert(points.size() == 8);
     for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
@@ -372,6 +373,7 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
         });
     if (scoreboard_disabled_)
       scoreboard_perspective_polygion_.clear();
+    scoreboard_configure_attempted_ = scoreboard_disabled_;
     std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by configured sentinel"
                                        : "Loaded scoreboard perspective polygon")
               << std::endl;
@@ -848,6 +850,11 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
             hm::UserApplicationPayload::get_payload<stitching::StitchedOutputGenerationPayload>(frame_meta)) {
       producer_output_generation = payload->generation();
     }
+#else
+    auto current_generation = stitching::current_stitched_output_generation_id(game_dir.string());
+    if (!current_generation.ok())
+      return current_generation.status();
+    producer_output_generation = *current_generation;
 #endif
     HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface, producer_output_generation));
   }
