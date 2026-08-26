@@ -243,9 +243,9 @@ int main() {
     if (zombie_owner == 0) {
       ::close(owner_pipe[0]);
       const auto identity = hm::stitching::current_live_stitched_output_owner_process();
-      if (identity.ok())
-        static_cast<void>(::write(owner_pipe[1], identity->data(), identity->size()));
-      _exit(identity.ok() ? 0 : 1);
+      const ssize_t written =
+          identity.ok() ? ::write(owner_pipe[1], identity->data(), identity->size()) : static_cast<ssize_t>(-1);
+      _exit(identity.ok() && written == static_cast<ssize_t>(identity->size()) ? 0 : 1);
     }
     std::string zombie_identity;
     if (zombie_owner > 0) {
