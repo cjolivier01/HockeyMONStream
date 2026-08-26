@@ -4993,8 +4993,11 @@ bool test_output_controls(HStreamWindow* window) {
   const QString injected_collision_video =
       QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-1.mkv");
   const QString injected_collision_log = injected_collision_video + ".log";
-  const QString failed_recovery =
+  const QString replaced_log_video =
       QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-2.mkv");
+  const QString replaced_log_path = replaced_log_video + ".log";
+  const QString failed_recovery =
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-3.mkv");
   const QString failed_source_log = failed_source + ".log";
   const QString failed_recovery_log = failed_recovery + ".log";
   const QStringList finalized_before_failure =
@@ -5006,6 +5009,8 @@ bool test_output_controls(HStreamWindow* window) {
   QFile::remove(dangling_log_path);
   QFile::remove(injected_collision_video);
   QFile::remove(injected_collision_log);
+  QFile::remove(replaced_log_video);
+  QFile::remove(replaced_log_path);
   QFile::remove(failed_recovery);
   QFile::remove(failed_source_log);
   QFile::remove(failed_recovery_log);
@@ -5014,6 +5019,7 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL", "1");
   activate(start);
   for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
@@ -5029,9 +5035,13 @@ bool test_output_controls(HStreamWindow* window) {
   QFile failed_log_file(failed_recovery_log);
   const bool failed_log_opened = failed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
   const QString failed_log_text = failed_log_opened ? QString::fromUtf8(failed_log_file.readAll()) : QString();
+  QFile replaced_log_file(replaced_log_path);
+  const bool replaced_log_opened = replaced_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString replaced_log_text = replaced_log_opened ? QString::fromUtf8(replaced_log_file.readAll()) : QString();
   const bool failed_archive_retained = expect(
       dangling_log_created && QFileInfo(dangling_log_path).isSymLink() &&
           QFileInfo(injected_collision_video).size() > 0 && !QFileInfo::exists(injected_collision_log) &&
+          !QFileInfo::exists(replaced_log_video) && replaced_log_text == "injected recovery log replacement" &&
           window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
           finalize_headline && finalize_headline->text() == "Video finalization failed" &&
           finalize_headline->property("finalizationState").toString() == "failed" && finalize_detail &&
@@ -5043,6 +5053,7 @@ bool test_output_controls(HStreamWindow* window) {
           finalized_after_failure == finalized_before_failure,
       "A failed remux must preserve a same-name recovery MKV and reopened job log outside the stale-run namespace");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL");
   if (finalize_ok)
     activate(finalize_ok);

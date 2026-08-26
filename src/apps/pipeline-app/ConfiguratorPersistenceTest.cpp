@@ -1793,6 +1793,28 @@ play-tracker:
           interrupted_collision_is_reconciled("video-with-foreign-sidecar", false, false),
       "Restart recovery must remove only its owned half of an interrupted collision before retrying another suffix");
 
+  const fs::path replaced_publication_dir = root / "archive-replaced-publication";
+  fs::create_directories(replaced_publication_dir);
+  const fs::path replaced_publication_source = replaced_publication_dir / "replaced.mkv";
+  const fs::path replaced_publication_source_log = replaced_publication_source.string() + ".log";
+  const fs::path replaced_publication_destination = replaced_publication_dir / "replaced-finalization-failed.mkv";
+  const fs::path replaced_publication_destination_log = replaced_publication_destination.string() + ".log";
+  std::ofstream(replaced_publication_source, std::ios::binary) << "trusted source video";
+  std::ofstream(replaced_publication_source_log, std::ios::binary) << "trusted source log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RECOVERY", "1", TRUE);
+  const auto replaced_publication =
+      hm::configurator_internal::preserve_existing_archive_work_file(replaced_publication_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RECOVERY");
+  std::ifstream replaced_publication_stream(replaced_publication_destination, std::ios::binary);
+  const std::string replaced_publication_content{
+      std::istreambuf_iterator<char>(replaced_publication_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !replaced_publication.ok() && fs::is_regular_file(replaced_publication_source) &&
+          fs::is_regular_file(replaced_publication_source_log) &&
+          replaced_publication_content == "injected foreign archive recovery" &&
+          !fs::exists(replaced_publication_destination_log),
+      "A replaced published destination must retain both trusted sources and clean only the owned partial sidecar");
+
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /
       ("finalizer-ownership.hstream-run-v3-99999996-" + std::to_string(::getpid()) +

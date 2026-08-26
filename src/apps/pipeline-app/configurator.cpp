@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
@@ -332,21 +333,36 @@ absl::Status sync_parent_directory(const fs::path& path) {
   return absl::OkStatus();
 }
 
-absl::Status sync_archive_and_parent(const fs::path& path) {
-  const int archive_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+absl::Status sync_archive_and_parent(
+    const fs::path& path,
+    const struct stat* expected_stat = nullptr,
+    const char* description = "retained archive") {
+  const int archive_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (archive_fd < 0) {
     return absl::InternalError(TO_STRING(
-        "Failed to open retained archive \"" << path.string() << "\" for durability sync: " << std::strerror(errno)));
+        "Failed to open " << description << " \"" << path.string()
+                          << "\" for durability sync: " << std::strerror(errno)));
+  }
+  struct stat opened_stat{};
+  if (::fstat(archive_fd, &opened_stat) != 0 ||
+      (expected_stat && (opened_stat.st_dev != expected_stat->st_dev || opened_stat.st_ino != expected_stat->st_ino))) {
+    const int saved_errno = errno;
+    ::close(archive_fd);
+    return absl::FailedPreconditionError(
+        expected_stat ? TO_STRING("Refusing to sync replaced " << description << " \"" << path.string() << "\"")
+                      : TO_STRING(
+                            "Failed to inspect " << description << " \"" << path.string()
+                                                 << "\": " << std::strerror(saved_errno)));
   }
   if (::fsync(archive_fd) != 0) {
     const int saved_errno = errno;
     ::close(archive_fd);
     return absl::InternalError(
-        TO_STRING("Failed to sync retained archive \"" << path.string() << "\": " << std::strerror(saved_errno)));
+        TO_STRING("Failed to sync " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)));
   }
   if (::close(archive_fd) != 0) {
-    return absl::InternalError(
-        TO_STRING("Failed to close retained archive \"" << path.string() << "\" after sync: " << std::strerror(errno)));
+    return absl::InternalError(TO_STRING(
+        "Failed to close " << description << " \"" << path.string() << "\" after sync: " << std::strerror(errno)));
   }
   return sync_parent_directory(path);
 }
@@ -1438,10 +1454,22 @@ absl::StatusOr<std::optional<struct stat>> inspect_archive_entry(const fs::path&
       TO_STRING("Failed to inspect " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)));
 }
 
+int rename_archive_entry_no_replace(
+    int source_directory_fd,
+    const char* source_name,
+    int destination_directory_fd,
+    const char* destination_name) {
+  constexpr unsigned int kRenameNoReplace = 1;
+  return static_cast<int>(::syscall(
+      SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name, kRenameNoReplace));
+}
+
 absl::Status remove_archive_entry_if_owned(
     const fs::path& path,
     const struct stat& expected_stat,
-    const char* description) {
+    const char* description,
+    const fs::path* required_published_path = nullptr,
+    const struct stat* required_published_stat = nullptr) {
   auto current_stat = inspect_archive_entry(path, description);
   if (!current_stat.ok())
     return current_stat.status();
@@ -1451,12 +1479,126 @@ absl::Status remove_archive_entry_if_owned(
     return absl::FailedPreconditionError(
         TO_STRING("Refusing to remove replaced " << description << " \"" << path.string() << "\""));
   }
-  if (::unlink(path.c_str()) != 0) {
+
+  const fs::path parent_path = path.parent_path().empty() ? fs::path(".") : path.parent_path();
+  const std::string filename = path.filename().string();
+  const int parent_fd = ::open(parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (parent_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open parent directory for " << description << " \"" << path.string()
+                                               << "\": " << std::strerror(errno)));
+  }
+
+  std::string cleanup_name;
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    gchar* uuid = g_uuid_string_random();
+    cleanup_name = std::string(".hstream-cleanup-") + uuid;
+    g_free(uuid);
+    if (::mkdirat(parent_fd, cleanup_name.c_str(), S_IRWXU) == 0)
+      break;
+    if (errno != EEXIST) {
+      const int saved_errno = errno;
+      ::close(parent_fd);
+      return absl::InternalError(TO_STRING(
+          "Failed to create protected cleanup directory for " << description << " \"" << path.string()
+                                                              << "\": " << std::strerror(saved_errno)));
+    }
+    cleanup_name.clear();
+  }
+  if (cleanup_name.empty()) {
+    ::close(parent_fd);
+    return absl::ResourceExhaustedError(TO_STRING(
+        "Failed to choose protected cleanup directory for " << description << " \"" << path.string() << "\""));
+  }
+
+  const int cleanup_fd = ::openat(parent_fd, cleanup_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (cleanup_fd < 0) {
     const int saved_errno = errno;
+    ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+    ::close(parent_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to open protected cleanup directory for " << description << " \"" << path.string()
+                                                          << "\": " << std::strerror(saved_errno)));
+  }
+
+  if (rename_archive_entry_no_replace(parent_fd, filename.c_str(), cleanup_fd, "entry") != 0) {
+    const int saved_errno = errno;
+    ::close(cleanup_fd);
+    ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+    ::close(parent_fd);
     if (saved_errno == ENOENT)
       return absl::OkStatus();
     return absl::InternalError(TO_STRING(
-        "Failed to remove " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)));
+        "Failed to quarantine " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)));
+  }
+
+  struct stat quarantined_stat{};
+  const int inspect_result = ::fstatat(cleanup_fd, "entry", &quarantined_stat, AT_SYMLINK_NOFOLLOW);
+  if (inspect_result != 0 || !same_file_identity(quarantined_stat, expected_stat)) {
+    const int inspect_errno = inspect_result != 0 ? errno : 0;
+    const int restore_result = rename_archive_entry_no_replace(cleanup_fd, "entry", parent_fd, filename.c_str());
+    const int restore_errno = errno;
+    ::close(cleanup_fd);
+    if (restore_result == 0)
+      ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+    ::close(parent_fd);
+    if (restore_result != 0) {
+      return absl::FailedPreconditionError(TO_STRING(
+          "Quarantined a replaced " << description << " from \"" << path.string()
+                                    << "\" and could not restore it: " << std::strerror(restore_errno)));
+    }
+    return absl::FailedPreconditionError(
+        inspect_errno != 0
+            ? TO_STRING(
+                  "Failed to inspect quarantined " << description << " \"" << path.string()
+                                                   << "\": " << std::strerror(inspect_errno))
+            : TO_STRING("Refusing to remove replaced " << description << " \"" << path.string() << "\""));
+  }
+
+  if (required_published_path && required_published_stat) {
+    auto published_stat = inspect_archive_entry(*required_published_path, "published recovery entry");
+    if (!published_stat.ok() || !published_stat->has_value() ||
+        !same_file_identity(published_stat->value(), *required_published_stat)) {
+      const int restore_result = rename_archive_entry_no_replace(cleanup_fd, "entry", parent_fd, filename.c_str());
+      const int restore_errno = errno;
+      ::close(cleanup_fd);
+      if (restore_result == 0)
+        ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+      ::close(parent_fd);
+      if (restore_result != 0) {
+        return absl::FailedPreconditionError(TO_STRING(
+            "Published recovery was replaced while quarantining "
+            << description << " \"" << path.string()
+            << "\", and the source could not be restored: " << std::strerror(restore_errno)));
+      }
+      return published_stat.ok()
+          ? absl::FailedPreconditionError(TO_STRING(
+                "Published recovery was replaced while quarantining " << description << " \"" << path.string() << "\""))
+          : published_stat.status();
+    }
+  }
+
+  if (::unlinkat(cleanup_fd, "entry", 0) != 0) {
+    const int saved_errno = errno;
+    ::close(cleanup_fd);
+    ::close(parent_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to remove quarantined " << description << " \"" << path.string()
+                                        << "\": " << std::strerror(saved_errno)));
+  }
+  const int close_cleanup_result = ::close(cleanup_fd);
+  const int close_cleanup_errno = errno;
+  const int remove_cleanup_result = ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+  const int remove_cleanup_errno = errno;
+  const int close_parent_result = ::close(parent_fd);
+  const int close_parent_errno = errno;
+  if (close_cleanup_result != 0 || remove_cleanup_result != 0 || close_parent_result != 0) {
+    const int saved_errno = close_cleanup_result != 0
+        ? close_cleanup_errno
+        : (remove_cleanup_result != 0 ? remove_cleanup_errno : close_parent_errno);
+    return absl::InternalError(TO_STRING(
+        "Removed " << description << " \"" << path.string()
+                   << "\" but failed to retire its protected cleanup directory: " << std::strerror(saved_errno)));
   }
   return absl::OkStatus();
 }
@@ -1552,13 +1694,52 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
   }
 
   const auto complete_recovery = [&](const fs::path& recovery_path, const fs::path& recovery_log_path) -> absl::Status {
-    HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_path));
+    HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_path, &output_stat, "archive recovery file"));
     if (has_output_log)
-      HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_log_path));
-    HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(output_path, output_stat, "archive work file"));
+      HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_log_path, &output_log_stat, "archive log recovery file"));
+
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RECOVERY")) {
+      ::unlink(recovery_path.c_str());
+      const int replacement_fd =
+          ::open(recovery_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+      if (replacement_fd >= 0) {
+        constexpr char kReplacement[] = "injected foreign archive recovery";
+        const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+        (void)replacement_bytes;
+        ::close(replacement_fd);
+      }
+    }
+
+    auto published_video_stat = inspect_archive_entry(recovery_path, "published archive recovery file");
+    auto published_log_stat = inspect_archive_entry(recovery_log_path, "published archive log recovery file");
+    const bool published_video_is_ours = published_video_stat.ok() && published_video_stat->has_value() &&
+        same_file_identity(published_video_stat->value(), output_stat);
+    const bool published_log_is_ours = !has_output_log ||
+        (published_log_stat.ok() && published_log_stat->has_value() &&
+         same_file_identity(published_log_stat->value(), output_log_stat));
+    if (!published_video_is_ours || !published_log_is_ours) {
+      if (published_video_is_ours)
+        HM_RETURN_IF_ERROR(
+            remove_archive_entry_if_owned(recovery_path, output_stat, "partial archive video recovery link"));
+      if (has_output_log && published_log_is_ours) {
+        HM_RETURN_IF_ERROR(
+            remove_archive_entry_if_owned(recovery_log_path, output_log_stat, "partial archive log recovery link"));
+      }
+      if (!published_video_stat.ok())
+        return published_video_stat.status();
+      if (!published_log_stat.ok())
+        return published_log_stat.status();
+      return absl::FailedPreconditionError(TO_STRING(
+          "Published archive recovery pair was replaced before source cleanup at \"" << recovery_path.string()
+                                                                                     << "\""));
+    }
+
+    HM_RETURN_IF_ERROR(
+        remove_archive_entry_if_owned(output_path, output_stat, "archive work file", &recovery_path, &output_stat));
     HM_RETURN_IF_ERROR(sync_parent_directory(output_path));
     if (has_output_log) {
-      HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(output_log_path, output_log_stat, "archive log sidecar"));
+      HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+          output_log_path, output_log_stat, "archive log sidecar", &recovery_log_path, &output_log_stat));
       HM_RETURN_IF_ERROR(sync_parent_directory(output_log_path));
     }
     return absl::OkStatus();
