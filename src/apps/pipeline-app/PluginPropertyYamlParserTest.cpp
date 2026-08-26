@@ -254,6 +254,39 @@ post_stitch_rotate_degrees: invalid
     return 1;
   }
 
+  auto parsed_default_converter = std::make_unique<NvDsConfig>();
+  if (!parse_config_yaml(
+          YAML::Load("application:\n  enable-perf-measurement: 0\n"), parsed_default_converter.get(), "/tmp") ||
+      std::string(parsed_default_converter->video_converter) != hm::deepstream::kNvVideoConvertElement ||
+      std::string(hm::deepstream::video_converter_element_name()) != hm::deepstream::kNvVideoConvertElement) {
+    std::cerr << "application.video-converter did not default to nvvideoconvert\n";
+    return 1;
+  }
+
+  auto parsed_dsx_converter = std::make_unique<NvDsConfig>();
+  const YAML::Node dsx_converter_config = YAML::Load(R"yaml(
+application:
+  enable-perf-measurement: 0
+  video-converter: dsxvideoconvert
+)yaml");
+  if (!parse_config_yaml(dsx_converter_config, parsed_dsx_converter.get(), "/tmp") ||
+      std::string(parsed_dsx_converter->video_converter) != hm::deepstream::kDsxVideoConvertElement ||
+      std::string(hm::deepstream::video_converter_element_name()) != hm::deepstream::kDsxVideoConvertElement) {
+    std::cerr << "application.video-converter did not select dsxvideoconvert\n";
+    return 1;
+  }
+
+  auto parsed_bad_converter = std::make_unique<NvDsConfig>();
+  const YAML::Node bad_converter_config = YAML::Load(R"yaml(
+application:
+  enable-perf-measurement: 0
+  video-converter: videoconvert
+)yaml");
+  if (parse_config_yaml(bad_converter_config, parsed_bad_converter.get(), "/tmp")) {
+    std::cerr << "Expected invalid application.video-converter to fail parsing\n";
+    return 1;
+  }
+
   const YAML::Node uri_playlist_config = YAML::Load(R"yaml(
 application:
   enable-perf-measurement: 0

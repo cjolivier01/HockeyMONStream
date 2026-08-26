@@ -10,6 +10,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstring>
 #include <set>
 #include <vector>
 
@@ -1831,6 +1832,23 @@ gboolean create_pipeline(
   gulong latency_probe_id;
 
   _dsmeta_quark = g_quark_from_static_string(NVDS_META_STRING);
+
+  if (config->video_converter[0] == '\0') {
+    std::strncpy(
+        config->video_converter,
+        hm::deepstream::default_video_converter_element_name(),
+        sizeof(config->video_converter) - 1);
+    config->video_converter[sizeof(config->video_converter) - 1] = '\0';
+  }
+  if (!hm::deepstream::set_video_converter_element_name(config->video_converter)) {
+    NVGSTDS_ERR_MSG_V(
+        "Invalid video converter element '%s'; expected nvvideoconvert or dsxvideoconvert", config->video_converter);
+    goto done;
+  }
+  if (!hm::deepstream::video_converter_element_factory_available(config->video_converter)) {
+    NVGSTDS_ERR_MSG_V("Video converter element '%s' is not registered", config->video_converter);
+    goto done;
+  }
 
   // AppCtx is reused by the pipeline-recreate path. EOS only describes the
   // previous GstPipeline generation and must never let a replacement skip its

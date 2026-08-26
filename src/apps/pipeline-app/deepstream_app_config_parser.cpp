@@ -315,6 +315,13 @@ gboolean parse_config_file(NvDsConfig* config, const gchar* cfg_file_path) {
   guint i, j;
   guint num_dewarper_source = 0;
 
+  strncpy(
+      config->video_converter,
+      hm::deepstream::default_video_converter_element_name(),
+      sizeof(config->video_converter) - 1);
+  config->video_converter[sizeof(config->video_converter) - 1] = '\0';
+  hm::deepstream::set_video_converter_element_name(config->video_converter);
+
   config->source_list_enabled = FALSE;
   config->source_attr_all_parsed = FALSE;
 

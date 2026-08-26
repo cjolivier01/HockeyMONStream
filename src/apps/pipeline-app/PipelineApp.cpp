@@ -115,6 +115,24 @@ hm::pipeline_internal::PreviewOverlaySelection preview_overlay_selection_from_en
   return selection;
 }
 
+const char* effective_video_converter_element_name(const NvDsConfig& config) {
+  return config.video_converter[0] ? config.video_converter : hm::deepstream::default_video_converter_element_name();
+}
+
+absl::Status select_video_converter_for_element_creation(const NvDsConfig& config, const char* context) {
+  const char* element_name = effective_video_converter_element_name(config);
+  if (!hm::deepstream::set_video_converter_element_name(element_name)) {
+    return absl::InvalidArgumentError(
+        std::string("Invalid application.video-converter value while configuring ") + context);
+  }
+  if (!hm::deepstream::video_converter_element_factory_available(element_name)) {
+    return absl::NotFoundError(
+        std::string("Configured video converter element '") + element_name + "' is not registered while configuring " +
+        context);
+  }
+  return absl::OkStatus();
+}
+
 struct OverlaySnapshotProbeState {
   std::atomic<unsigned>* flags{nullptr};
   std::atomic_bool failure_reported{false};
@@ -1044,6 +1062,7 @@ absl::Status PipelineApplication::configureInstances(
     std::vector<std::shared_ptr<HmApp>>& app_contexts) {
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
   std::vector<double> stage_stitch_output_rotations;
+  std::optional<std::string> stage_video_converter;
   const bool clean_only_requested = clean_stitching_artifacts_ || clean_stitching_from_control_points_;
   for (size_t i = 0; i < app_contexts.size(); ++i) {
     auto& app_ctx = app_contexts[i];
@@ -1304,6 +1323,13 @@ absl::Status PipelineApplication::configureInstances(
     if (!ui_preview_window_ids_.empty()) {
       app_ctx->config.hmsticher_config.ui_preview = TRUE;
     }
+    const std::string video_converter = effective_video_converter_element_name(app_ctx->config);
+    if (!stage_video_converter.has_value()) {
+      stage_video_converter = video_converter;
+    } else if (*stage_video_converter != video_converter) {
+      return absl::InvalidArgumentError(
+          "All active pipeline instances in a stage must use the same application.video-converter value");
+    }
     valid_app_contexts.emplace_back(std::move(app_ctx));
   }
   app_contexts = std::move(valid_app_contexts);
@@ -1353,6 +1379,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     if (app_contexts.size() != 1) {
       return absl::InvalidArgumentError("GPU-native UI previews require exactly one active pipeline context");
     }
+    HM_RETURN_IF_ERROR(
+        select_video_converter_for_element_creation(app_contexts.front()->config, "GPU-native previews"));
     constexpr guint64 kPreviewImageBudgetBytes = 64ULL * 1024ULL * 1024ULL;
     guint64 preview_image_bytes = 0;
     const hm::pipeline_internal::PreviewOverlaySelection overlay_selection = preview_overlay_state_.selection();
@@ -1790,6 +1818,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
   constexpr gint kProgramPreviewWidth = 1600;
   constexpr gint kProgramPreviewHeight = 900;
   const auto& app_context = app_contexts.front();
+  HM_RETURN_IF_ERROR(select_video_converter_for_element_creation(app_context->config, "source previews"));
   NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
   GstElement* program_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_preview_queue");
   GstElement* program_converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "program_preview_converter");
