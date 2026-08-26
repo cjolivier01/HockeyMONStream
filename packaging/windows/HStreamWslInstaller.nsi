@@ -7,11 +7,16 @@ SetCompressorDictSize 32
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
+!include "x64.nsh"
 
 !define PRODUCT_NAME "HStream"
 !define PRODUCT_PUBLISHER "HStream"
 !define PRODUCT_WEB_SITE "https://github.com/${REPOSITORY}"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\HStreamWSL"
+; WSLg owns Programs\HStream for Linux .desktop entries and periodically
+; reconciles that directory. Keep Windows-managed shortcuts elsewhere so its
+; reconciliation cannot delete them after installation.
+!define START_MENU_FOLDER "HStream Tools"
 !define MUI_ICON "${ICON_FILE}"
 !define MUI_UNICON "${ICON_FILE}"
 !define MUI_ABORTWARNING
@@ -37,14 +42,13 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "HStream contributors"
 Var DeepStreamDeb
 Var DeepStreamInput
 Var Dialog
+Var ElevatedPowerShellExe
 Var ExitCode
-Var GitHubToken
-Var GitHubTokenInput
 Var PowerShellExe
+Var RemoveLegacyShortcuts
 
 !insertmacro MUI_PAGE_WELCOME
 Page custom DeepStreamPage DeepStreamPageLeave
-Page custom GitHubTokenPage GitHubTokenPageLeave
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_LINK "Open the HStream release page"
@@ -61,9 +65,18 @@ Function .onInit
   StrCpy $PowerShellExe "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   IfFileExists "$PowerShellExe" +2 0
     StrCpy $PowerShellExe "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+  ; ShellExecute's 64-bit UAC broker cannot resolve the Sysnative alias that
+  ; the 32-bit installer uses for direct child processes.
+  StrCpy $ElevatedPowerShellExe "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+  ReadRegStr $0 HKCU "${PRODUCT_UNINST_KEY}" "ShortcutFolder"
+  ${If} $0 == ""
+    ReadRegStr $0 HKCU "${PRODUCT_UNINST_KEY}" "UninstallString"
+    ${If} $0 != ""
+      StrCpy $RemoveLegacyShortcuts "1"
+    ${EndIf}
+  ${EndIf}
   ${GetParameters} $0
   ${GetOptions} $0 "/DEEPSTREAM_DEB=" $DeepStreamDeb
-  ReadEnvStr $GitHubToken "HSTREAM_GITHUB_TOKEN"
 FunctionEnd
 
 Function un.onInit
@@ -71,6 +84,10 @@ Function un.onInit
   StrCpy $PowerShellExe "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   IfFileExists "$PowerShellExe" +2 0
     StrCpy $PowerShellExe "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+  ReadRegStr $0 HKCU "${PRODUCT_UNINST_KEY}" "ShortcutFolder"
+  ${If} $0 == ""
+    StrCpy $RemoveLegacyShortcuts "1"
+  ${EndIf}
 FunctionEnd
 
 Function DeepStreamPage
@@ -80,7 +97,7 @@ Function DeepStreamPage
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 30u "Select NVIDIA DeepStream 9.1.0-1+resolute2 for AMD64. It remains a local input and is not embedded in or uploaded by this installer."
+  ${NSD_CreateLabel} 0 0 100% 30u "Select NVIDIA DeepStream 9.1 for AMD64 (version 9.1.0-1 or newer in the 9.1 series). It remains local and is not embedded or uploaded."
   Pop $0
   ${NSD_CreateFileRequest} 0 42u 77% 13u "$DeepStreamDeb"
   Pop $DeepStreamInput
@@ -112,31 +129,9 @@ Function DeepStreamPageLeave
     Abort
 FunctionEnd
 
-Function GitHubTokenPage
-  nsDialogs::Create 1018
-  Pop $Dialog
-  ${If} $Dialog == error
-    Abort
-  ${EndIf}
-
-  ${NSD_CreateLabel} 0 0 100% 34u "GitHub access token (needed for private repositories):"
-  Pop $0
-  ${NSD_CreatePassword} 0 38u 100% 13u "$GitHubToken"
-  Pop $GitHubTokenInput
-  ${NSD_CreateLabel} 0 62u 100% 68u "Paste a fine-grained token with read-only Contents access to ${REPOSITORY}. The token is used only by this provisioning run, is not written to disk, and is not placed on a command line. Leave it blank only when the release repository is public."
-  Pop $0
-  nsDialogs::Show
-FunctionEnd
-
-Function GitHubTokenPageLeave
-  ${NSD_GetText} $GitHubTokenInput $GitHubToken
-FunctionEnd
-
 Function RunHStreamProvisioning
-  System::Call 'Kernel32::SetEnvironmentVariableW(w "HSTREAM_GITHUB_TOKEN", w "$GitHubToken") i .r0'
   nsExec::ExecToLog '"$PowerShellExe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\hstream-wsl.ps1" -Action Install -VersionTag "${VERSION_TAG}" -Repository "${REPOSITORY}" -DistroName "HStream" -DeepStreamDeb "$DeepStreamDeb"'
   Pop $ExitCode
-  System::Call 'Kernel32::SetEnvironmentVariableW(w "HSTREAM_GITHUB_TOKEN", w "") i .r0'
 FunctionEnd
 
 Section "HStream WSL environment" SEC_MAIN
@@ -150,7 +145,14 @@ Section "HStream WSL environment" SEC_MAIN
   Call RunHStreamProvisioning
   ${If} $ExitCode == "1701"
     DetailPrint "Requesting administrator approval for Windows WSL prerequisites..."
-    ExecShellWait "runas" "$PowerShellExe" `-NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& { param([string]$$p); $$b=[IO.File]::ReadAllBytes($$p); $$a=[Security.Cryptography.SHA256]::Create(); try { $$h=([BitConverter]::ToString($$a.ComputeHash($$b))).Replace('-','') } finally { $$a.Dispose() }; if ($$h -cne '${POWERSHELL_SHA256}') { exit 86 }; & ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($$b))) -Action EnsureWslMachine }" "$INSTDIR\hstream-wsl.ps1"` SW_SHOW $ExitCode
+    StrCpy $ExitCode "elevation-launch-failed"
+    ClearErrors
+    ${DisableX64FSRedirection}
+    ExecShellWait "runas" "$ElevatedPowerShellExe" `-NoLogo -NoProfile -ExecutionPolicy Bypass -Command "& { param([string]$$p); $$b=[IO.File]::ReadAllBytes($$p); $$a=[Security.Cryptography.SHA256]::Create(); try { $$h=([BitConverter]::ToString($$a.ComputeHash($$b))).Replace('-','') } finally { $$a.Dispose() }; if ($$h -cne '${POWERSHELL_SHA256}') { exit 86 }; & ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($$b))) -Action EnsureWslMachine }" "$INSTDIR\hstream-wsl.ps1"` SW_SHOW $ExitCode
+    ${EnableX64FSRedirection}
+    ${If} ${Errors}
+      StrCpy $ExitCode "elevation-launch-failed"
+    ${EndIf}
     ${If} $ExitCode == "0"
       Call RunHStreamProvisioning
     ${EndIf}
@@ -163,11 +165,18 @@ Section "HStream WSL environment" SEC_MAIN
     MessageBox MB_ICONSTOP|MB_OK "HStream provisioning failed with exit code $ExitCode. Review the installation details above and %LOCALAPPDATA%\HStream\installer.log."
     Abort
   ${Else}
-    CreateDirectory "$SMPROGRAMS\HStream"
-    CreateShortcut "$SMPROGRAMS\HStream\HStream UI.lnk" "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\hstream-wsl.ps1" -Action Launch -DistroName "HStream"' "$INSTDIR\hstream.ico"
-    CreateShortcut "$SMPROGRAMS\HStream\HStream Shell.lnk" "$WINDIR\System32\wsl.exe" '-d HStream --cd /home/hstream' "$INSTDIR\hstream.ico"
-    CreateShortcut "$SMPROGRAMS\HStream\Games.lnk" "$WINDIR\explorer.exe" '"\\wsl.localhost\HStream\home\hstream\Videos"' "$INSTDIR\hstream.ico"
-    CreateShortcut "$SMPROGRAMS\HStream\Output.lnk" "$WINDIR\explorer.exe" '"\\wsl.localhost\HStream\home\hstream\hstream_output"' "$INSTDIR\hstream.ico"
+    ${If} $RemoveLegacyShortcuts == "1"
+      ; Delete only the links owned by older installers. WSLg owns this folder.
+      Delete "$SMPROGRAMS\HStream\HStream UI.lnk"
+      Delete "$SMPROGRAMS\HStream\HStream Shell.lnk"
+      Delete "$SMPROGRAMS\HStream\Games.lnk"
+      Delete "$SMPROGRAMS\HStream\Output.lnk"
+    ${EndIf}
+    CreateDirectory "$SMPROGRAMS\${START_MENU_FOLDER}"
+    CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\HStream UI.lnk" "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\hstream-wsl.ps1" -Action Launch -DistroName "HStream"' "$INSTDIR\hstream.ico"
+    CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\HStream Shell.lnk" "$WINDIR\System32\wsl.exe" '-d HStream --cd /home/hstream' "$INSTDIR\hstream.ico"
+    CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Games.lnk" "$WINDIR\explorer.exe" '"\\wsl.localhost\HStream\home\hstream\Videos"' "$INSTDIR\hstream.ico"
+    CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Output.lnk" "$WINDIR\explorer.exe" '"\\wsl.localhost\HStream\home\hstream\hstream_output"' "$INSTDIR\hstream.ico"
   ${EndIf}
 
   WriteRegStr HKCU "Software\HStream" "InstallDir" "$INSTDIR"
@@ -177,6 +186,7 @@ Section "HStream WSL environment" SEC_MAIN
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "ShortcutFolder" "${START_MENU_FOLDER}"
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoRepair" 1
 SectionEnd
@@ -192,11 +202,17 @@ Section "Uninstall"
   ${EndIf}
 
 PreserveDistro:
-  Delete "$SMPROGRAMS\HStream\HStream UI.lnk"
-  Delete "$SMPROGRAMS\HStream\HStream Shell.lnk"
-  Delete "$SMPROGRAMS\HStream\Games.lnk"
-  Delete "$SMPROGRAMS\HStream\Output.lnk"
-  RMDir "$SMPROGRAMS\HStream"
+  ${If} $RemoveLegacyShortcuts == "1"
+    Delete "$SMPROGRAMS\HStream\HStream UI.lnk"
+    Delete "$SMPROGRAMS\HStream\HStream Shell.lnk"
+    Delete "$SMPROGRAMS\HStream\Games.lnk"
+    Delete "$SMPROGRAMS\HStream\Output.lnk"
+  ${EndIf}
+  Delete "$SMPROGRAMS\${START_MENU_FOLDER}\HStream UI.lnk"
+  Delete "$SMPROGRAMS\${START_MENU_FOLDER}\HStream Shell.lnk"
+  Delete "$SMPROGRAMS\${START_MENU_FOLDER}\Games.lnk"
+  Delete "$SMPROGRAMS\${START_MENU_FOLDER}\Output.lnk"
+  RMDir "$SMPROGRAMS\${START_MENU_FOLDER}"
   DeleteRegKey HKCU "${PRODUCT_UNINST_KEY}"
   DeleteRegKey HKCU "Software\HStream"
   Delete "$INSTDIR\hstream-wsl.ps1"
