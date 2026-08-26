@@ -152,6 +152,29 @@ absl::Status validate_field_mask_publication_authority(
     const std::string& expected_output_generation,
     const std::string& expected_output_authorization_id = {});
 
+class FieldMaskPublicationAuthorityMonitor {
+ public:
+  FieldMaskPublicationAuthorityMonitor();
+  ~FieldMaskPublicationAuthorityMonitor();
+  FieldMaskPublicationAuthorityMonitor(const FieldMaskPublicationAuthorityMonitor&) = delete;
+  FieldMaskPublicationAuthorityMonitor& operator=(const FieldMaskPublicationAuthorityMonitor&) = delete;
+
+  absl::Status Watch(
+      const std::string& game_dir,
+      const std::string& expected_output_generation,
+      const std::string& expected_output_authorization_id = {});
+  void Stop();
+
+  // Returns Unavailable while the control-plane worker is waiting for the
+  // superseding owner to retire, OK once this epoch regains authority, or the
+  // terminal validation error.
+  absl::Status status() const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 // Validates and decodes rink_mask_0.png while holding the Hugin and
 // config/rink transaction locks for one complete artifact generation.
 absl::StatusOr<cv::Mat> load_field_mask(

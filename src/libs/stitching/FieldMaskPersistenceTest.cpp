@@ -860,6 +860,30 @@ int main() {
     fs::remove_all(symlinked_previous);
     fs::remove_all(previous_target);
 
+    const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
+    const fs::path manifest_target = root / "rink-manifest-symlink-target";
+    fs::create_directories(symlinked_manifest / "previous");
+    fs::copy_file(root / "config.yaml", symlinked_manifest / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", symlinked_manifest / "previous" / "rink_mask_0.png");
+    std::ofstream(manifest_target) << "rink_mask_0.png\nconfig.yaml\n";
+    fs::create_symlink(manifest_target, symlinked_manifest / "new-files");
+    std::ofstream(symlinked_manifest / "state") << "PREPARED\n";
+    const std::string config_before_symlinked_manifest = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(symlinked_manifest) &&
+            fs::is_symlink(fs::symlink_status(symlinked_manifest / "new-files")) &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_symlinked_manifest;
+            }(),
+        "rink recovery must reject a symlinked manifest before removing committed artifacts");
+    fs::remove_all(symlinked_manifest);
+    fs::remove(manifest_target);
+
     const fs::path symlinked_backup = root / ".hstream-rink-symlinked-backup";
     const fs::path symlinked_backup_target = root / "rink-backup-symlink-target.yaml";
     fs::create_directories(symlinked_backup / "previous");
@@ -933,6 +957,14 @@ int main() {
         !hm::stitching::is_field_mask_configured(root.string()), "non-regular rink transaction state must fail closed");
     ok &= expect(fs::exists(nonregular), "non-regular rink transaction state must preserve its journal");
     fs::remove_all(nonregular);
+
+    const fs::path fifo_state = root / ".hstream-rink-fifo-state";
+    fs::create_directories(fifo_state);
+    ok &= expect(::mkfifo((fifo_state / "state").c_str(), 0600) == 0, "FIFO transaction-state fixture must be created");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(fifo_state),
+        "rink recovery must reject a FIFO state without blocking");
+    fs::remove_all(fifo_state);
 
     const fs::path missing_manifest = root / ".hstream-rink-missing-manifest";
     fs::create_directories(missing_manifest / "previous");
@@ -1061,6 +1093,49 @@ int main() {
         field_mask_write_finished && field_mask_write_result,
         "field-mask publication must resume after the Hugin artifact lock is released");
   }
+  const YAML::Node monitor_baseline = YAML::LoadFile((root / "config.yaml").string());
+  const auto monitor_owner = hm::stitching::current_live_stitched_output_owner_process();
+  const auto publish_monitor_epoch = [&](const std::string& generation, const std::string& authorization) {
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    if (!lock.ok())
+      return lock.status();
+    YAML::Node config = YAML::Clone(monitor_baseline);
+    config["rink"]["stitched_output_pending_generation"] = generation;
+    config["rink"]["stitched_output_pending_authorization_id"] = authorization;
+    config["rink"]["stitched_output_pending_owner_process"] = *monitor_owner;
+    return hm::stitching::publish_game_config(root, YAML::Dump(config) + "\n");
+  };
+  const absl::Status monitor_successor_published = monitor_owner.ok()
+      ? publish_monitor_epoch("monitor-generation-b", "monitor-authorization-b")
+      : monitor_owner.status();
+  hm::stitching::FieldMaskPublicationAuthorityMonitor authority_monitor;
+  const absl::Status monitor_started =
+      authority_monitor.Watch(root.string(), "monitor-generation-a", "monitor-authorization-a");
+  const absl::Status monitor_predecessor_restored = monitor_owner.ok()
+      ? publish_monitor_epoch("monitor-generation-a", "monitor-authorization-a")
+      : monitor_owner.status();
+  const auto monitor_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!authority_monitor.status().ok() && std::chrono::steady_clock::now() < monitor_deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  const absl::Status monitor_status = authority_monitor.status();
+  absl::Status monitor_config_restored = absl::FailedPreconditionError("Monitor config lock unavailable");
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    if (lock.ok())
+      monitor_config_restored = hm::stitching::publish_game_config(root, YAML::Dump(monitor_baseline) + "\n");
+  }
+  const bool monitor_recovered = monitor_owner.ok() && monitor_successor_published.ok() && monitor_started.ok() &&
+      monitor_predecessor_restored.ok() && monitor_status.ok() && monitor_config_restored.ok();
+  if (!monitor_recovered) {
+    std::cerr << "authority monitor fixture: owner=" << monitor_owner.status()
+              << ", successor=" << monitor_successor_published << ", start=" << monitor_started
+              << ", restored=" << monitor_predecessor_restored << ", monitor=" << monitor_status
+              << ", cleanup=" << monitor_config_restored << '\n';
+  }
+  ok &= expect(
+      monitor_recovered,
+      "superseded publication authority must resume through the control-plane monitor after predecessor rollback");
+
   hm::stitching::RinkProfile one_mask = profile;
   one_mask.masks.resize(1);
   status = hm::stitching::save_rink_profile(root.string(), one_mask);

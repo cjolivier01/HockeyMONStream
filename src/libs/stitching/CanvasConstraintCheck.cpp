@@ -26,11 +26,9 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <linux/fs.h>
 #include <openssl/evp.h>
 #include <png.h>
 #include <sys/file.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <tiffio.h>
@@ -576,7 +574,7 @@ absl::StatusOr<std::string> read_bounded_stitch_file(
     const fs::path& path,
     size_t maximum_bytes,
     const char* description) {
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0) {
     if (errno == ENOENT)
       return absl::NotFoundError(std::string(description) + " is missing");
@@ -762,7 +760,7 @@ struct ParsedStitchGenerationIdentity {
 };
 
 absl::StatusOr<std::string> read_stitch_generation_artifact(const fs::path& path) {
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0) {
     if (errno == ENOENT)
       return absl::NotFoundError("Hugin generation identity is missing: " + path.string());
@@ -965,7 +963,7 @@ absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir
 
   const auto append = [&](const char* name, bool required) -> absl::Status {
     const fs::path path = game_dir / name;
-    const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (descriptor < 0) {
       if (!required && errno == ENOENT) {
         const char missing = '0';
@@ -993,41 +991,19 @@ absl::StatusOr<std::string> stitch_artifact_fingerprint(const fs::path& game_dir
         EVP_DigestUpdate(context, size.data(), size.size() + 1) != 1) {
       return absl::InternalError("Unable to update Hugin artifact fingerprint metadata");
     }
-    constexpr uint64_t kSampleBytes = 64 * 1024;
-    const uint64_t file_size = static_cast<uint64_t>(before.st_size);
-    std::array<uint64_t, 5> offsets = {
-        0,
-        file_size / 4,
-        file_size / 2,
-        (file_size / 4) * 3,
-        file_size > kSampleBytes ? file_size - kSampleBytes : 0,
-    };
-    std::sort(offsets.begin(), offsets.end());
-    std::array<unsigned char, kSampleBytes> buffer{};
-    uint64_t previous_offset = std::numeric_limits<uint64_t>::max();
-    for (uint64_t sample_offset : offsets) {
-      if (sample_offset == previous_offset)
+    std::vector<unsigned char> buffer(1024 * 1024);
+    uint64_t offset = 0;
+    while (offset < static_cast<uint64_t>(before.st_size)) {
+      const size_t requested =
+          static_cast<size_t>(std::min<uint64_t>(buffer.size(), static_cast<uint64_t>(before.st_size) - offset));
+      const ssize_t count = ::pread(descriptor, buffer.data(), requested, static_cast<off_t>(offset));
+      if (count < 0 && errno == EINTR)
         continue;
-      previous_offset = sample_offset;
-      const std::string serialized_offset = std::to_string(sample_offset);
-      if (EVP_DigestUpdate(context, serialized_offset.data(), serialized_offset.size() + 1) != 1)
-        return absl::InternalError("Unable to update Hugin artifact fingerprint sample offset");
-      const size_t sample_size = static_cast<size_t>(std::min<uint64_t>(kSampleBytes, file_size - sample_offset));
-      size_t sample_read = 0;
-      while (sample_read < sample_size) {
-        const ssize_t count = ::pread(
-            descriptor,
-            buffer.data() + sample_read,
-            sample_size - sample_read,
-            static_cast<off_t>(sample_offset + sample_read));
-        if (count < 0 && errno == EINTR)
-          continue;
-        if (count <= 0)
-          return absl::InternalError("Unable to read Hugin artifact sample while fingerprinting: " + path.string());
-        sample_read += static_cast<size_t>(count);
-      }
-      if (EVP_DigestUpdate(context, buffer.data(), sample_size) != 1)
+      if (count <= 0)
+        return absl::InternalError("Unable to read Hugin artifact while fingerprinting: " + path.string());
+      if (EVP_DigestUpdate(context, buffer.data(), static_cast<size_t>(count)) != 1)
         return absl::InternalError("Unable to update Hugin artifact fingerprint payload");
+      offset += static_cast<uint64_t>(count);
     }
     struct stat after{};
     if (::fstat(descriptor, &after) != 0 || !stitch_stat_matches(before, after))
@@ -1076,16 +1052,8 @@ bool stitch_filesystem_has_unreliable_metadata(const fs::path& game_dir) {
   }
 }
 
-absl::StatusOr<std::string> process_scoped_stitch_generation_id(const std::string& logical_id) {
-  static const absl::StatusOr<std::string> process_token = random_stitch_logical_generation_id();
-  if (!process_token.ok())
-    return process_token.status();
-  std::ostringstream generation;
-  generation << "hstream-stitch-unreliable-filesystem-v1\nlogical-bytes=" << logical_id.size() << '\n'
-             << logical_id << "process-id=" << static_cast<uint64_t>(::getpid())
-             << "\nprocess-token-bytes=" << process_token->size() << '\n'
-             << *process_token;
-  return generation.str();
+std::string content_scoped_stitch_generation_id(const std::string& fingerprint) {
+  return "hstream-stitch-content-v1\nsha256=" + fingerprint + "\n";
 }
 
 absl::StatusOr<std::string> read_stitch_manifest(const fs::path& path, const char* description) {
@@ -1102,7 +1070,7 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     return absl::InternalError("Unable to inspect stitch transaction state: " + error.message());
   if (state_status.type() == fs::file_type::not_found)
     return std::string("UNPREPARED");
-  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return absl::FailedPreconditionError("Unable to open durable stitch transaction state");
   struct CloseDescriptor {
@@ -1147,7 +1115,7 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
 
 absl::StatusOr<bool> has_current_stitch_transaction_protocol(const fs::path& transaction) {
   const fs::path path = transaction / "journal_version";
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0) {
     if (errno == ENOENT)
       return false;
@@ -1204,126 +1172,7 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
     const char* value = std::getenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
     return value != nullptr && std::string(value) == "1";
   }();
-  const fs::path temporary = destination.parent_path() / ("." + destination.filename().string() + ".hstream-partial");
-  std::error_code error;
-  fs::remove(temporary, error);
-  if (error)
-    return absl::InternalError("Unable to remove incomplete stitch artifact: " + error.message());
-  struct Cleanup {
-    fs::path path;
-    ~Cleanup() {
-      if (path.empty())
-        return;
-      std::error_code ignored;
-      fs::remove(path, ignored);
-    }
-  } cleanup{temporary};
-  const auto publish = [&]() -> absl::Status {
-    std::error_code rename_error;
-    fs::rename(temporary, destination, rename_error);
-    if (rename_error)
-      return absl::InternalError("Unable to atomically publish stitch artifact: " + rename_error.message());
-    cleanup.path.clear();
-    return absl::OkStatus();
-  };
-  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (source_fd < 0) {
-    if (errno == ELOOP)
-      return absl::FailedPreconditionError("Stitch rollback source is a symbolic link: " + source.string());
-    return absl::InternalError("Unable to open stitch artifact for rollback: " + source.string());
-  }
-  struct DescriptorCleanup {
-    int descriptor;
-    ~DescriptorCleanup() {
-      if (descriptor >= 0)
-        ::close(descriptor);
-    }
-  } source_cleanup{source_fd};
-  struct stat metadata{};
-  if (::fstat(source_fd, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
-    return absl::FailedPreconditionError("Stitch rollback source is not a regular file: " + source.string());
-  }
-
-  int link_error = EOPNOTSUPP;
-  if (!force_portable_fallback) {
-    if (::link(source.c_str(), temporary.c_str()) == 0) {
-      struct stat linked_metadata{};
-      if (::lstat(temporary.c_str(), &linked_metadata) == 0 && S_ISREG(linked_metadata.st_mode) &&
-          linked_metadata.st_dev == metadata.st_dev && linked_metadata.st_ino == metadata.st_ino) {
-        if (::fsync(source_fd) != 0)
-          return absl::InternalError(
-              "Unable to sync linked stitch rollback artifact: " + std::string(std::strerror(errno)));
-        return publish();
-      }
-      link_error = ESTALE;
-      fs::remove(temporary, error);
-      if (error)
-        return absl::InternalError("Unable to remove invalid linked stitch rollback artifact: " + error.message());
-    } else {
-      link_error = errno;
-    }
-  }
-
-  const int destination_fd =
-      ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, metadata.st_mode & 0777);
-  if (destination_fd < 0) {
-    return absl::InternalError("Unable to create restored stitch artifact: " + destination.string());
-  }
-  DescriptorCleanup destination_cleanup{destination_fd};
-  const bool cloned = !force_portable_fallback && ::ioctl(destination_fd, FICLONE, source_fd) == 0;
-  const int clone_error = force_portable_fallback ? EOPNOTSUPP : errno;
-  if (!cloned) {
-    if (::lseek(source_fd, 0, SEEK_SET) < 0 || ::ftruncate(destination_fd, 0) != 0 ||
-        ::lseek(destination_fd, 0, SEEK_SET) < 0) {
-      return absl::InternalError(
-          "Unable to reset stitch rollback files for portable copy: " + std::string(std::strerror(errno)));
-    }
-    std::array<unsigned char, 64 * 1024> buffer{};
-    while (true) {
-      ssize_t count = ::read(source_fd, buffer.data(), buffer.size());
-      if (count < 0 && errno == EINTR)
-        continue;
-      if (count < 0) {
-        return absl::InternalError(
-            "Unable to read stitch rollback source after hard link (" + std::string(std::strerror(link_error)) +
-            ") and reflink (" + std::string(std::strerror(clone_error)) +
-            ") failed: " + std::string(std::strerror(errno)));
-      }
-      if (count == 0)
-        break;
-      size_t written = 0;
-      while (written < static_cast<size_t>(count)) {
-        const ssize_t result = ::write(destination_fd, buffer.data() + written, static_cast<size_t>(count) - written);
-        if (result < 0 && errno == EINTR)
-          continue;
-        if (result <= 0) {
-          return absl::InternalError(
-              "Unable to write stitch rollback artifact after hard link (" + std::string(std::strerror(link_error)) +
-              ") and reflink (" + std::string(std::strerror(clone_error)) +
-              ") failed: " + std::string(std::strerror(errno)));
-        }
-        written += static_cast<size_t>(result);
-      }
-    }
-  }
-
-  {
-    timespec times[2] = {};
-    times[0].tv_nsec = UTIME_OMIT;
-    times[1] = metadata.st_mtim;
-    const int mode_result = ::fchmod(destination_fd, metadata.st_mode & 07777);
-    const bool mode_restored = mode_result == 0 || errno == EOPNOTSUPP || errno == ENOTSUP || errno == EPERM;
-    const bool metadata_restored =
-        mode_restored && ::futimens(destination_fd, times) == 0 && ::fsync(destination_fd) == 0;
-    const int metadata_error = errno;
-    if (!metadata_restored) {
-      return absl::InternalError(
-          "Unable to preserve stitch rollback artifact metadata: " + std::string(std::strerror(metadata_error)));
-    }
-  }
-  destination_cleanup.descriptor = -1;
-  ::close(destination_fd);
-  return publish();
+  return snapshot_regular_file_for_rollback(source, destination, force_portable_fallback);
 }
 
 absl::StatusOr<bool> regular_stitch_file_exists_no_follow(const fs::path& path) {
@@ -1508,7 +1357,6 @@ absl::Status rebind_stitch_generation_artifact(const fs::path& transaction, cons
     logical_id = std::move(parsed->logical_id);
     recorded_fingerprint = std::move(parsed->fingerprint);
   }
-  const bool unreliable_filesystem = stitch_filesystem_has_unreliable_metadata(game_dir);
   auto fingerprint = stitch_artifact_fingerprint(game_dir);
   if (!fingerprint.ok())
     return fingerprint.status();
@@ -1517,7 +1365,7 @@ absl::Status rebind_stitch_generation_artifact(const fs::path& transaction, cons
     return verified_bindings.status();
   if (*verified_bindings != *bindings)
     return absl::AbortedError("Hugin artifacts changed while rebinding their generation identity");
-  if (unreliable_filesystem || (!recorded_fingerprint.empty() && recorded_fingerprint != *fingerprint)) {
+  if (!recorded_fingerprint.empty() && recorded_fingerprint != *fingerprint) {
     auto replacement_logical_id = random_stitch_logical_generation_id();
     if (!replacement_logical_id.ok())
       return replacement_logical_id.status();
@@ -1542,20 +1390,25 @@ absl::Status mark_stitch_transaction_rolled_back(const fs::path& transaction) {
 absl::Status recover_stitch_transactions_locked(const fs::path& root) {
   std::error_code error;
   bool recovered = false;
-  auto root_entries = stitch_directory_entries(root, "stitch transactions");
+  auto opened_root = PinnedDirectory::Open(root, "stitch transaction root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  PinnedDirectory root_directory = std::move(*opened_root);
+  auto root_entries = stitch_directory_entries(root_directory.path(), "stitch transactions");
   if (!root_entries.ok())
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
     if (directory_name.rfind(kStitchTransactionPrefix, 0) != 0)
       continue;
-    const fs::file_status transaction_status = entry.symlink_status(error);
-    if (error)
-      return absl::InternalError("Unable to inspect stitch transaction entry: " + error.message());
-    if (transaction_status.type() != fs::file_type::directory)
-      return absl::FailedPreconditionError("Stitch transaction is not a physical directory: " + directory_name);
+    auto opened_transaction = root_directory.OpenChild(directory_name, "stitch transaction directory");
+    if (!opened_transaction.ok())
+      return opened_transaction.status();
+    if (!opened_transaction->has_value())
+      continue;
+    PinnedDirectory transaction_directory = std::move(**opened_transaction);
     recovered = true;
-    const fs::path transaction = entry.path();
+    const fs::path transaction = transaction_directory.path();
     auto state = read_stitch_transaction_state(transaction);
     if (!state.ok())
       return state.status();
@@ -1565,13 +1418,18 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         return current_protocol.status();
       if (!*current_protocol)
         return absl::FailedPreconditionError("Unversioned stitch transaction cannot claim restored artifacts");
-      fs::remove_all(transaction / "previous", error);
-      if (error)
-        return absl::InternalError("Unable to retire restored stitch backups: " + error.message());
+      auto opened_previous = transaction_directory.OpenChild("previous", "stitch transaction backup directory");
+      if (!opened_previous.ok())
+        return opened_previous.status();
+      if (opened_previous->has_value()) {
+        auto cleanup = remove_pinned_directory(transaction_directory, "previous", **opened_previous);
+        if (!cleanup.ok())
+          return cleanup;
+      }
       auto status = fsync_stitch_path(transaction, true);
       if (!status.ok())
         return status;
-      status = rebind_stitch_generation_artifact(transaction, root);
+      status = rebind_stitch_generation_artifact(transaction, root_directory.path());
       if (!status.ok())
         return status;
       status = mark_stitch_transaction_rolled_back(transaction);
@@ -1605,15 +1463,14 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         return absl::FailedPreconditionError("Prepared stitch transaction has an incomplete artifact manifest");
       }
 
-      const fs::path previous = transaction / "previous";
       std::map<std::string, fs::path> backups;
-      const fs::file_status previous_status = fs::symlink_status(previous, error);
-      if (error == std::errc::no_such_file_or_directory)
-        error.clear();
-      else if (error)
-        return absl::InternalError("Unable to inspect stitch transaction backup directory: " + error.message());
-      if (previous_status.type() != fs::file_type::directory)
+      auto opened_previous = transaction_directory.OpenChild("previous", "stitch transaction backup directory");
+      if (!opened_previous.ok())
+        return opened_previous.status();
+      if (!opened_previous->has_value())
         return absl::FailedPreconditionError("Stitch transaction backup is not a directory");
+      PinnedDirectory previous_directory = std::move(**opened_previous);
+      const fs::path previous = previous_directory.path();
       auto previous_entries = stitch_directory_entries(previous, "stitch transaction backup");
       if (!previous_entries.ok())
         return previous_entries.status();
@@ -1681,7 +1538,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
       if (*state == "BACKING_UP") {
         backing_up_roots_complete = true;
         for (const std::string& name : prior_artifacts) {
-          auto root_is_regular = regular_stitch_file_exists_no_follow(root / name);
+          auto root_is_regular = regular_stitch_file_exists_no_follow(root_directory.path() / name);
           if (!root_is_regular.ok())
             return root_is_regular.status();
           backing_up_roots_complete &= *root_is_regular;
@@ -1708,7 +1565,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         }
         if (*state == "BACKING_UP") {
           for (const std::string& name : prior_artifacts) {
-            auto root_is_regular = regular_stitch_file_exists_no_follow(root / name);
+            auto root_is_regular = regular_stitch_file_exists_no_follow(root_directory.path() / name);
             if (!root_is_regular.ok())
               return root_is_regular.status();
             if (!*root_is_regular) {
@@ -1724,7 +1581,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
                 return absl::InternalError("Unable to replace incomplete stitch backup: " + error.message());
               backups.erase(existing_backup);
             }
-            auto preserve = clone_or_copy_stitch_rollback_file(root / name, previous / name);
+            auto preserve = clone_or_copy_stitch_rollback_file(root_directory.path() / name, previous / name);
             if (!preserve.ok())
               return preserve;
             backups.emplace(name, previous / name);
@@ -1745,7 +1602,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         for (const std::string& name : manifested) {
           if (prior_artifacts.count(name) != 0)
             continue;
-          fs::remove(root / name, error);
+          fs::remove(root_directory.path() / name, error);
           if (error)
             return absl::InternalError("Unable to remove interrupted stitch artifact: " + error.message());
         }
@@ -1754,10 +1611,10 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           const auto backup = backups.find(name);
           if (backup == backups.end())
             continue;
-          fs::remove(root / name, error);
+          fs::remove(root_directory.path() / name, error);
           if (error)
             return absl::InternalError("Unable to remove replacement stitch artifact: " + error.message());
-          auto restore = clone_or_copy_stitch_rollback_file(backup->second, root / name);
+          auto restore = clone_or_copy_stitch_rollback_file(backup->second, root_directory.path() / name);
           if (!restore.ok())
             return restore;
           ++restored;
@@ -1767,7 +1624,7 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           }
         }
         error.clear();
-        auto status = fsync_stitch_path(root, true);
+        auto status = fsync_stitch_path(root_directory.path(), true);
         if (!status.ok())
           return status;
         status = publish_transaction_state(transaction, "RESTORED\n");
@@ -1777,13 +1634,13 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
             interrupt != nullptr && std::string(interrupt) == "1") {
           return absl::InternalError("Injected stitch interruption after restored state");
         }
-        fs::remove_all(previous, error);
-        if (error)
-          return absl::InternalError("Unable to retire restored stitch backups: " + error.message());
+        status = remove_pinned_directory(transaction_directory, "previous", previous_directory);
+        if (!status.ok())
+          return status;
         status = fsync_stitch_path(transaction, true);
         if (!status.ok())
           return status;
-        status = rebind_stitch_generation_artifact(transaction, root);
+        status = rebind_stitch_generation_artifact(transaction, root_directory.path());
         if (!status.ok())
           return status;
         status = mark_stitch_transaction_rolled_back(transaction);
@@ -1791,11 +1648,11 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           return status;
       }
     }
-    fs::remove_all(transaction, error);
-    if (error)
-      return absl::InternalError("Unable to clean stitch transaction: " + error.message());
+    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    if (!cleanup.ok())
+      return cleanup;
   }
-  return recovered ? fsync_stitch_path(root, true) : absl::OkStatus();
+  return recovered ? fsync_stitch_path(root_directory.path(), true) : absl::OkStatus();
 }
 
 CanvasConstraintArtifactLock::~CanvasConstraintArtifactLock() {
@@ -1854,10 +1711,16 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (!identity.ok()) {
     if (absl::IsNotFound(identity.status())) {
+      if (unreliable_filesystem) {
+        auto fingerprint = stitch_artifact_fingerprint(game_dir);
+        if (!fingerprint.ok())
+          return fingerprint.status();
+        return content_scoped_stitch_generation_id(*fingerprint);
+      }
       auto legacy_generation = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacyGeneration);
       if (!legacy_generation.ok())
         return legacy_generation.status();
-      return unreliable_filesystem ? process_scoped_stitch_generation_id(*legacy_generation) : legacy_generation;
+      return legacy_generation;
     }
     return identity.status();
   }
@@ -1879,10 +1742,8 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
     auto parsed = parse_stitch_generation_identity(*identity);
     if (!parsed.ok())
       return parsed.status();
-    if (parsed->version == 3 && unreliable_filesystem)
-      return process_scoped_stitch_generation_id(parsed->logical_id);
     bindings_match = parsed->bindings == *bindings;
-    if (parsed->version == 3 && bindings_match)
+    if (parsed->version == 3 && bindings_match && !unreliable_filesystem)
       return parsed->logical_id;
     logical_id = parsed->version == 2 && parsed->bindings != *bindings
         ? legacy_v2_mismatched_stitch_generation_id(parsed->logical_id, *bindings)
@@ -1910,8 +1771,7 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
       game_dir / kStitchGenerationArtifact, serialize_stitch_generation_identity(logical_id, *bindings, *fingerprint));
   if (!status.ok())
     return status;
-  return unreliable_filesystem ? process_scoped_stitch_generation_id(logical_id)
-                               : absl::StatusOr<std::string>(logical_id);
+  return logical_id;
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_impl(

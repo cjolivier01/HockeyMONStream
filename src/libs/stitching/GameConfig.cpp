@@ -321,7 +321,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
     return absl::InternalError("Unable to inspect rink transaction state: " + error.message());
   if (state_status.type() == fs::file_type::not_found)
     return std::string("UNPREPARED");
-  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return absl::FailedPreconditionError("Unable to open durable rink transaction state");
   struct StateFileCleanup {
@@ -356,14 +356,10 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
 
 absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transaction) {
   const fs::path path = transaction / "new-files";
-  std::error_code error;
-  if (!fs::is_regular_file(path, error) || error)
-    return absl::FailedPreconditionError("Prepared rink transaction has no readable new-files manifest");
-  if (fs::file_size(path, error) > 64 * 1024 || error)
-    return absl::FailedPreconditionError("Prepared rink transaction manifest is too large");
-  std::ifstream input(path);
-  if (!input)
-    return absl::FailedPreconditionError("Unable to open prepared rink transaction manifest");
+  auto contents = read_bounded_regular_file_no_follow(path, 64 * 1024, "prepared rink transaction manifest");
+  if (!contents.ok())
+    return contents.status();
+  std::istringstream input(*contents);
   std::set<std::string> names;
   std::string name;
   while (input >> name) {
@@ -377,19 +373,24 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
 
 absl::Status recover_rink_transactions_locked(const fs::path& root) {
   std::error_code error;
-  auto root_entries = directory_entries(root, "rink transactions");
+  auto opened_root = PinnedDirectory::Open(root, "rink transaction root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  PinnedDirectory root_directory = std::move(*opened_root);
+  auto root_entries = directory_entries(root_directory.path(), "rink transactions");
   if (!root_entries.ok())
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
     if (directory_name.rfind(".hstream-rink-", 0) != 0)
       continue;
-    const fs::file_status transaction_status = entry.symlink_status(error);
-    if (error)
-      return absl::InternalError("Unable to inspect rink transaction entry: " + error.message());
-    if (transaction_status.type() != fs::file_type::directory)
-      return absl::FailedPreconditionError("Rink transaction is not a physical directory: " + directory_name);
-    const fs::path transaction = entry.path();
+    auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
+    if (!opened_transaction.ok())
+      return opened_transaction.status();
+    if (!opened_transaction->has_value())
+      continue;
+    PinnedDirectory transaction_directory = std::move(**opened_transaction);
+    const fs::path transaction = transaction_directory.path();
     auto state = read_rink_transaction_state(transaction);
     if (!state.ok())
       return state.status();
@@ -397,16 +398,14 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       auto manifest = read_rink_manifest(transaction);
       if (!manifest.ok())
         return manifest.status();
-      const fs::path previous = transaction / "previous";
       std::vector<fs::path> backups;
-      const fs::file_status previous_status = fs::symlink_status(previous, error);
-      if (error == std::errc::no_such_file_or_directory)
-        error.clear();
-      else if (error)
-        return absl::InternalError("Unable to inspect rink transaction backup directory: " + error.message());
-      if (previous_status.type() != fs::file_type::not_found) {
-        if (previous_status.type() != fs::file_type::directory)
-          return absl::FailedPreconditionError("Rink transaction backup is not a directory");
+      std::optional<PinnedDirectory> previous_directory;
+      auto opened_previous = transaction_directory.OpenChild("previous", "rink transaction backup directory");
+      if (!opened_previous.ok())
+        return opened_previous.status();
+      if (opened_previous->has_value()) {
+        previous_directory.emplace(std::move(**opened_previous));
+        const fs::path previous = previous_directory->path();
         auto previous_entries = directory_entries(previous, "rink transaction backup");
         if (!previous_entries.ok())
           return previous_entries.status();
@@ -421,13 +420,13 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         }
       }
       for (const std::string& name : *manifest) {
-        fs::remove(root / name, error);
+        fs::remove(root_directory.path() / name, error);
         if (error)
           return absl::InternalError("Unable to remove interrupted rink artifact: " + error.message());
       }
       size_t restored = 0;
       for (const fs::path& old : backups) {
-        const fs::path destination = root / old.filename();
+        const fs::path destination = root_directory.path() / old.filename();
         auto restore = link_clone_or_copy_rollback_file(old, destination);
         if (!restore.ok())
           return absl::InternalError("Unable to restore interrupted rink artifact: " + std::string(restore.message()));
@@ -441,18 +440,18 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         }
       }
       error.clear();
-      auto status = fsync_path(root, true);
+      auto status = fsync_path(root_directory.path(), true);
       if (!status.ok())
         return status;
       status = mark_rink_transaction_rolled_back(transaction);
       if (!status.ok())
         return status;
     }
-    fs::remove_all(transaction, error);
-    if (error)
-      return absl::InternalError("Unable to clean rink transaction: " + error.message());
+    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    if (!cleanup.ok())
+      return cleanup;
   }
-  return fsync_path(root, true);
+  return fsync_path(root_directory.path(), true);
 }
 
 absl::Status fsync_directory(const fs::path& path) {

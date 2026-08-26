@@ -1,13 +1,17 @@
 #include "hstream/src/libs/stitching/TransactionState.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <linux/fs.h>
 #include <sys/ioctl.h>
@@ -20,7 +24,11 @@ namespace {
 namespace fs = std::filesystem;
 
 absl::Status fsync_directory(const fs::path& directory) {
-  const int descriptor = ::open(directory.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+  const std::string filename = directory.filename().string();
+  const bool pinned_self_descriptor = directory.parent_path() == fs::path("/proc/self/fd") && !filename.empty() &&
+      std::all_of(filename.begin(), filename.end(), [](unsigned char value) { return std::isdigit(value); });
+  const int flags = O_RDONLY | O_CLOEXEC | O_DIRECTORY | (pinned_self_descriptor ? 0 : O_NOFOLLOW);
+  const int descriptor = ::open(directory.c_str(), flags);
   if (descriptor < 0) {
     return absl::InternalError(
         "Unable to open transaction directory for fsync: " + directory.string() + ": " + std::strerror(errno));
@@ -35,7 +43,195 @@ absl::Status fsync_directory(const fs::path& directory) {
   return absl::OkStatus();
 }
 
+bool same_inode(const struct stat& first, const struct stat& second) {
+  return first.st_dev == second.st_dev && first.st_ino == second.st_ino;
+}
+
+bool same_file_snapshot(const struct stat& first, const struct stat& second) {
+  return same_inode(first, second) && first.st_mode == second.st_mode && first.st_size == second.st_size &&
+      first.st_mtim.tv_sec == second.st_mtim.tv_sec && first.st_mtim.tv_nsec == second.st_mtim.tv_nsec &&
+      first.st_ctim.tv_sec == second.st_ctim.tv_sec && first.st_ctim.tv_nsec == second.st_ctim.tv_nsec;
+}
+
+absl::Status verify_directory_binding(int parent_descriptor, const std::string& name, int directory_descriptor) {
+  struct stat expected{};
+  struct stat current{};
+  if (::fstat(directory_descriptor, &expected) != 0 || !S_ISDIR(expected.st_mode))
+    return absl::InternalError("Unable to inspect pinned transaction directory: " + std::string(std::strerror(errno)));
+  if (::fstatat(parent_descriptor, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0) {
+    return absl::AbortedError(
+        "Transaction directory binding changed during recovery: " + std::string(std::strerror(errno)));
+  }
+  if (!S_ISDIR(current.st_mode) || !same_inode(expected, current))
+    return absl::AbortedError("Transaction directory binding changed during recovery: " + name);
+  return absl::OkStatus();
+}
+
+absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
+  const int iterator_descriptor = ::dup(directory_descriptor);
+  if (iterator_descriptor < 0)
+    return absl::InternalError(
+        "Unable to duplicate transaction directory descriptor: " + std::string(std::strerror(errno)));
+  DIR* iterator = ::fdopendir(iterator_descriptor);
+  if (iterator == nullptr) {
+    const int saved_errno = errno;
+    ::close(iterator_descriptor);
+    return absl::InternalError("Unable to enumerate transaction directory: " + std::string(std::strerror(saved_errno)));
+  }
+  struct IteratorCleanup {
+    DIR* iterator;
+    ~IteratorCleanup() {
+      ::closedir(iterator);
+    }
+  } cleanup{iterator};
+
+  while (true) {
+    errno = 0;
+    dirent* entry = ::readdir(iterator);
+    if (entry == nullptr) {
+      if (errno != 0)
+        return absl::InternalError("Unable to enumerate transaction directory: " + std::string(std::strerror(errno)));
+      break;
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..")
+      continue;
+    struct stat metadata{};
+    if (::fstatat(directory_descriptor, name.c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
+      return absl::AbortedError("Transaction entry changed during cleanup: " + name + ": " + std::strerror(errno));
+    }
+    if (S_ISDIR(metadata.st_mode)) {
+      const int child_descriptor =
+          ::openat(directory_descriptor, name.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+      if (child_descriptor < 0)
+        return absl::AbortedError("Transaction directory changed during cleanup: " + name);
+      struct ChildCleanup {
+        int descriptor;
+        ~ChildCleanup() {
+          ::close(descriptor);
+        }
+      } child_cleanup{child_descriptor};
+      struct stat opened_metadata{};
+      if (::fstat(child_descriptor, &opened_metadata) != 0 || !same_inode(metadata, opened_metadata))
+        return absl::AbortedError("Transaction directory changed during cleanup: " + name);
+      auto status = remove_directory_contents_no_follow(child_descriptor);
+      if (!status.ok())
+        return status;
+      status = verify_directory_binding(directory_descriptor, name, child_descriptor);
+      if (!status.ok())
+        return status;
+      if (::unlinkat(directory_descriptor, name.c_str(), AT_REMOVEDIR) != 0) {
+        return absl::InternalError("Unable to remove transaction directory " + name + ": " + std::strerror(errno));
+      }
+    } else if (::unlinkat(directory_descriptor, name.c_str(), 0) != 0) {
+      return absl::InternalError("Unable to remove transaction entry " + name + ": " + std::strerror(errno));
+    }
+  }
+  if (::fsync(directory_descriptor) != 0)
+    return absl::InternalError("Unable to sync cleaned transaction directory: " + std::string(std::strerror(errno)));
+  return absl::OkStatus();
+}
+
 } // namespace
+
+PinnedDirectory::~PinnedDirectory() {
+  if (descriptor_ >= 0)
+    ::close(descriptor_);
+}
+
+PinnedDirectory::PinnedDirectory(PinnedDirectory&& other) noexcept : descriptor_(other.descriptor_) {
+  other.descriptor_ = -1;
+}
+
+PinnedDirectory& PinnedDirectory::operator=(PinnedDirectory&& other) noexcept {
+  if (this == &other)
+    return *this;
+  if (descriptor_ >= 0)
+    ::close(descriptor_);
+  descriptor_ = other.descriptor_;
+  other.descriptor_ = -1;
+  return *this;
+}
+
+absl::StatusOr<PinnedDirectory> PinnedDirectory::Open(const fs::path& path, const std::string& description) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open " + description + ": " + std::strerror(errno));
+  return PinnedDirectory(descriptor);
+}
+
+absl::StatusOr<std::optional<PinnedDirectory>> PinnedDirectory::OpenChild(
+    const std::string& name,
+    const std::string& description) const {
+  if (descriptor_ < 0 || fs::path(name).filename() != name || name == "." || name == "..")
+    return absl::InvalidArgumentError("Invalid child directory name: " + name);
+  const int descriptor =
+      ::openat(descriptor_, name.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return std::optional<PinnedDirectory>();
+    return absl::FailedPreconditionError("Unable to open " + description + ": " + std::strerror(errno));
+  }
+  return std::optional<PinnedDirectory>(PinnedDirectory(descriptor));
+}
+
+fs::path PinnedDirectory::path() const {
+  return fs::path("/proc/self/fd") / std::to_string(descriptor_);
+}
+
+absl::Status remove_pinned_directory(
+    const PinnedDirectory& parent,
+    const std::string& name,
+    const PinnedDirectory& directory) {
+  auto status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
+  if (!status.ok())
+    return status;
+  status = remove_directory_contents_no_follow(directory.descriptor());
+  if (!status.ok())
+    return status;
+  status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
+  if (!status.ok())
+    return status;
+  if (::unlinkat(parent.descriptor(), name.c_str(), AT_REMOVEDIR) != 0)
+    return absl::InternalError("Unable to remove recovered transaction " + name + ": " + std::strerror(errno));
+  if (::fsync(parent.descriptor()) != 0)
+    return absl::InternalError("Unable to sync recovered transaction removal: " + std::string(std::strerror(errno)));
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::string> read_bounded_regular_file_no_follow(
+    const fs::path& path,
+    size_t maximum_bytes,
+    const std::string& description) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open " + description + ": " + std::strerror(errno));
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError("Invalid " + description);
+  }
+  std::string contents(static_cast<size_t>(metadata.st_size), '\0');
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::read(descriptor, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read " + description);
+    offset += static_cast<size_t>(count);
+  }
+  struct stat verified_metadata{};
+  if (::fstat(descriptor, &verified_metadata) != 0 || !same_file_snapshot(metadata, verified_metadata))
+    return absl::AbortedError(description + " changed while it was being read");
+  return contents;
+}
 
 absl::Status snapshot_regular_file_for_rollback(
     const fs::path& source,
@@ -46,7 +242,7 @@ absl::Status snapshot_regular_file_for_rollback(
   fs::remove(temporary, error);
   if (error)
     return absl::InternalError("Unable to remove incomplete rollback artifact: " + error.message());
-  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int source_fd = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (source_fd < 0) {
     if (errno == ELOOP)
       return absl::FailedPreconditionError("Rollback source is a symbolic link: " + source.string());

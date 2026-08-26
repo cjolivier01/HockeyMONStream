@@ -68,7 +68,7 @@ absl::StatusOr<std::string> read_file(const fs::path& path) {
 }
 
 absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t maximum_bytes) {
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return absl::NotFoundError("Unable to read Hugin file: " + path.string());
   struct CloseDescriptor {

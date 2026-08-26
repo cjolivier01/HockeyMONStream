@@ -221,6 +221,31 @@ int main() {
   fs::remove_all(symlinked_previous);
   fs::remove_all(previous_target);
 
+  const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
+  const fs::path manifest_target = root / "rink-manifest-symlink-target";
+  fs::create_directories(symlinked_manifest / "previous");
+  fs::copy_file(root / "config.yaml", symlinked_manifest / "previous" / "config.yaml");
+  fs::copy_file(root / "rink_mask_0.png", symlinked_manifest / "previous" / "rink_mask_0.png");
+  std::ofstream(manifest_target) << "config.yaml\nrink_mask_0.png\n";
+  fs::create_symlink(manifest_target, symlinked_manifest / "new-files");
+  std::ofstream(symlinked_manifest / "state") << "PREPARED\n";
+  const std::string config_before_symlinked_manifest = [&]() {
+    std::ifstream input(root / "config.yaml", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  const auto symlinked_manifest_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsFailedPrecondition(symlinked_manifest_read.status()) && fs::exists(symlinked_manifest) &&
+          fs::is_symlink(fs::symlink_status(symlinked_manifest / "new-files")) &&
+          [&]() {
+            std::ifstream input(root / "config.yaml", std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                config_before_symlinked_manifest;
+          }(),
+      "config recovery must reject a symlinked manifest before removing committed artifacts");
+  fs::remove_all(symlinked_manifest);
+  fs::remove(manifest_target);
+
   const fs::path unreadable = root / ".hstream-rink-unreadable";
   fs::create_directories(unreadable / "previous");
   fs::copy_file(root / "config.yaml", unreadable / "previous" / "config.yaml");
@@ -268,6 +293,15 @@ int main() {
       "config recovery must reject a symlinked rollback backup before mutating the committed config");
   fs::remove_all(symlinked_backup);
   fs::remove(symlinked_backup_target);
+
+  const fs::path fifo_state = root / ".hstream-rink-fifo-state";
+  fs::create_directories(fifo_state);
+  ok &= expect(::mkfifo((fifo_state / "state").c_str(), 0600) == 0, "FIFO transaction-state fixture must be created");
+  const auto fifo_state_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsFailedPrecondition(fifo_state_read.status()) && fs::exists(fifo_state),
+      "config recovery must reject a FIFO state without blocking");
+  fs::remove_all(fifo_state);
 
   std::ofstream(root / "config.yaml") << "generation: old\n";
   std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";

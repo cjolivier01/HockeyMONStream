@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <memory>
 #include <optional>
 
 #include <opencv2/core/types.hpp>
@@ -40,14 +41,13 @@ struct DsFieldMaskCtx {
   std::string loaded_output_authorization_id;
   std::optional<std::string> superseded_output_generation;
   std::string superseded_output_authorization_id;
-  size_t superseded_retry_frames_remaining{0};
+  std::unique_ptr<hm::stitching::FieldMaskPublicationAuthorityMonitor> superseded_authority_monitor;
   std::string calibration_invalidation_id;
 };
 
 namespace {
 
 constexpr float side_edges_bbox_by_half_width_ratio = 0.2;
-constexpr size_t kSupersededPublicationRetryFrames = 30;
 
 bool is_bit_set(const cv::Mat& mask, const cv::Point& point) {
   int byteIndex = (point.y * mask.cols + point.x / 8); // Byte index in the data
@@ -299,24 +299,20 @@ absl::Status DsFieldMaskProcessFrame(
        ctx->superseded_output_authorization_id != output_authorization_id)) {
     ctx->superseded_output_generation.reset();
     ctx->superseded_output_authorization_id.clear();
-    ctx->superseded_retry_frames_remaining = 0;
+    ctx->superseded_authority_monitor.reset();
   }
   if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
     if (ctx->superseded_output_generation.has_value()) {
-      if (ctx->superseded_retry_frames_remaining > 0) {
-        --ctx->superseded_retry_frames_remaining;
+      if (!ctx->superseded_authority_monitor)
+        return absl::InternalError("Publication authority monitor is unavailable");
+      const absl::Status authority = ctx->superseded_authority_monitor->status();
+      if (absl::IsUnavailable(authority))
         return absl::OkStatus();
-      }
-      const absl::Status authority = hm::stitching::validate_field_mask_publication_authority(
-          mask_path.parent_path().string(), output_generation, output_authorization_id);
-      if (absl::IsAborted(authority) || absl::IsUnavailable(authority)) {
-        ctx->superseded_retry_frames_remaining = kSupersededPublicationRetryFrames;
-        return absl::OkStatus();
-      }
       HM_RETURN_IF_ERROR(authority);
       ctx->superseded_output_generation.reset();
       ctx->superseded_output_authorization_id.clear();
+      ctx->superseded_authority_monitor.reset();
     }
     auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
     if (is_obsolete_detection_mask || !loaded_mask.ok()) {
@@ -341,7 +337,10 @@ absl::Status DsFieldMaskProcessFrame(
       if (absl::IsAborted(created)) {
         ctx->superseded_output_generation = output_generation;
         ctx->superseded_output_authorization_id = output_authorization_id;
-        ctx->superseded_retry_frames_remaining = kSupersededPublicationRetryFrames;
+        if (!ctx->superseded_authority_monitor)
+          ctx->superseded_authority_monitor = std::make_unique<hm::stitching::FieldMaskPublicationAuthorityMonitor>();
+        HM_RETURN_IF_ERROR(ctx->superseded_authority_monitor->Watch(
+            mask_path.parent_path().string(), output_generation, output_authorization_id));
         return absl::OkStatus();
       }
       HM_RETURN_IF_ERROR(created);

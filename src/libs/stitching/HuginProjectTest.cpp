@@ -174,6 +174,50 @@ std::string generation_stat_identity(const std::filesystem::path& directory, boo
   return identity.str();
 }
 
+bool generation_matches_in_child(const std::filesystem::path& game_dir, const std::string& expected) {
+  int descriptors[2] = {-1, -1};
+  if (::pipe(descriptors) != 0)
+    return false;
+  const pid_t child = ::fork();
+  if (child == 0) {
+    ::close(descriptors[0]);
+    auto lock = hm::stitching::HuginProject::RecoverAndLock(game_dir);
+    const auto generation = lock.ok() ? hm::stitching::HuginProject::GenerationId(game_dir, **lock)
+                                      : absl::StatusOr<std::string>(lock.status());
+    size_t written = 0;
+    while (generation.ok() && written < generation->size()) {
+      const ssize_t count = ::write(descriptors[1], generation->data() + written, generation->size() - written);
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        break;
+      written += static_cast<size_t>(count);
+    }
+    ::close(descriptors[1]);
+    _exit(generation.ok() && written == generation->size() ? 0 : 1);
+  }
+  ::close(descriptors[1]);
+  if (child < 0) {
+    ::close(descriptors[0]);
+    return false;
+  }
+  std::string actual;
+  std::array<char, 2048> buffer{};
+  while (true) {
+    const ssize_t count = ::read(descriptors[0], buffer.data(), buffer.size());
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      break;
+    actual.append(buffer.data(), static_cast<size_t>(count));
+  }
+  ::close(descriptors[0]);
+  int child_status = 0;
+  while (::waitpid(child, &child_status, 0) < 0 && errno == EINTR) {
+  }
+  return WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0 && actual == expected;
+}
+
 bool corrupt_png_pixel_offset_without_updating_crc(const std::filesystem::path& path) {
   std::vector<unsigned char> png = read_binary_file(path);
   const std::array<unsigned char, 4> type = {'o', 'F', 'F', 's'};
@@ -808,53 +852,57 @@ int main() {
         weak_parent_repeat = *second;
     }
   }
-  int weak_pipe[2] = {-1, -1};
-  const bool weak_pipe_created = ::pipe(weak_pipe) == 0;
-  const pid_t weak_child = weak_pipe_created ? ::fork() : -1;
-  if (weak_child == 0) {
-    ::close(weak_pipe[0]);
-    auto weak_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
-    const auto generation = weak_lock.ok() ? hm::stitching::HuginProject::GenerationId(root / "game", **weak_lock)
-                                           : absl::StatusOr<std::string>(weak_lock.status());
-    size_t written = 0;
-    while (generation.ok() && written < generation->size()) {
-      const ssize_t count = ::write(weak_pipe[1], generation->data() + written, generation->size() - written);
-      if (count < 0 && errno == EINTR)
-        continue;
-      if (count <= 0)
-        break;
-      written += static_cast<size_t>(count);
-    }
-    _exit(generation.ok() && written == generation->size() ? 0 : 1);
-  }
-  std::string weak_child_generation;
-  if (weak_child > 0) {
-    ::close(weak_pipe[1]);
-    std::array<char, 2048> buffer{};
-    ssize_t count = 0;
-    while ((count = ::read(weak_pipe[0], buffer.data(), buffer.size())) > 0)
-      weak_child_generation.append(buffer.data(), static_cast<size_t>(count));
-    ::close(weak_pipe[0]);
-  } else if (weak_pipe_created) {
-    ::close(weak_pipe[0]);
-    ::close(weak_pipe[1]);
-  }
-  int weak_child_status = 0;
-  if (weak_child > 0)
-    ::waitpid(weak_child, &weak_child_status, 0);
+  const bool weak_child_matches = generation_matches_in_child(root / "game", weak_parent_generation);
   ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
-  const bool weak_generation_scoped = weak_child > 0 && !weak_parent_generation.empty() &&
-      weak_parent_generation == weak_parent_repeat && !weak_child_generation.empty() &&
-      weak_child_generation != weak_parent_generation && WIFEXITED(weak_child_status) &&
-      WEXITSTATUS(weak_child_status) == 0 && !fs::exists(root / "game" / "stitching_generation_id");
-  if (!weak_generation_scoped) {
-    std::cerr << "sidecar-free weak generation fixture: child=" << weak_child
-              << " parent-bytes=" << weak_parent_generation.size() << " repeat-bytes=" << weak_parent_repeat.size()
-              << " child-bytes=" << weak_child_generation.size() << " status=" << weak_child_status
+  const bool weak_generation_stable = !weak_parent_generation.empty() && weak_parent_generation == weak_parent_repeat &&
+      weak_child_matches && !fs::exists(root / "game" / "stitching_generation_id");
+  if (!weak_generation_stable) {
+    std::cerr << "sidecar-free weak generation fixture: parent-bytes=" << weak_parent_generation.size()
+              << " repeat-bytes=" << weak_parent_repeat.size() << " child-matches=" << weak_child_matches
               << " sidecar=" << fs::exists(root / "game" / "stitching_generation_id") << '\n';
   }
   ok &= expect(
-      weak_generation_scoped, "sidecar-free generations on weak filesystems must be stable only within one process");
+      weak_generation_stable,
+      "sidecar-free generations on weak filesystems must remain content-stable across processes");
+
+  const fs::path full_digest_artifact = root / "game" / "hm_project.pto";
+  const std::vector<unsigned char> original_full_digest_artifact = read_binary_file(full_digest_artifact);
+  {
+    std::ofstream output(full_digest_artifact, std::ios::binary | std::ios::trunc);
+    output.write(
+        reinterpret_cast<const char*>(original_full_digest_artifact.data()),
+        static_cast<std::streamsize>(original_full_digest_artifact.size()));
+    const std::string padding(1024 * 1024, 'x');
+    output.write(padding.data(), static_cast<std::streamsize>(padding.size()));
+  }
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  auto full_digest_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  const auto full_digest_before = full_digest_lock.ok()
+      ? hm::stitching::HuginProject::GenerationId(root / "game", **full_digest_lock)
+      : absl::StatusOr<std::string>(full_digest_lock.status());
+  if (full_digest_lock.ok())
+    full_digest_lock->reset();
+  {
+    std::fstream output(full_digest_artifact, std::ios::binary | std::ios::in | std::ios::out);
+    output.seekp(400 * 1024);
+    output.put('y');
+  }
+  full_digest_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  const auto full_digest_after = full_digest_lock.ok()
+      ? hm::stitching::HuginProject::GenerationId(root / "game", **full_digest_lock)
+      : absl::StatusOr<std::string>(full_digest_lock.status());
+  if (full_digest_lock.ok())
+    full_digest_lock->reset();
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  ok &= expect(
+      full_digest_before.ok() && full_digest_after.ok() && *full_digest_before != *full_digest_after,
+      "weak-filesystem generations must detect same-size changes outside the former sampled regions");
+  {
+    std::ofstream output(full_digest_artifact, std::ios::binary | std::ios::trunc);
+    output.write(
+        reinterpret_cast<const char*>(original_full_digest_artifact.data()),
+        static_cast<std::streamsize>(original_full_digest_artifact.size()));
+  }
 
   std::string generation_before_interrupted_publication;
   {
@@ -1105,6 +1153,16 @@ int main() {
   fs::remove_all(symlinked_transaction_root);
   fs::remove_all(stitch_transaction_target);
 
+  const fs::path fifo_transaction_root = root / "fifo-transaction-root";
+  const fs::path fifo_transaction = fifo_transaction_root / ".hstream-stitch-fifo";
+  fs::create_directories(fifo_transaction);
+  ok &= expect(::mkfifo((fifo_transaction / "state").c_str(), 0600) == 0, "FIFO stitch-state fixture must be created");
+  const auto fifo_transaction_recovery = hm::stitching::HuginProject::Recover(fifo_transaction_root);
+  ok &= expect(
+      absl::IsFailedPrecondition(fifo_transaction_recovery) && fs::exists(fifo_transaction),
+      "Hugin recovery must reject a FIFO state without blocking");
+  fs::remove_all(fifo_transaction_root);
+
   const fs::path symlink_rollback_root = root / "symlinked-rollback-source";
   const fs::path symlink_rollback_transaction = symlink_rollback_root / ".hstream-stitch-backing";
   const fs::path rollback_symlink_target = root / "rollback-symlink-target.tif";
@@ -1320,6 +1378,21 @@ int main() {
   if (v2_lock.ok())
     v2_lock->reset();
 
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  auto weak_v3_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+  const auto weak_v3_generation = weak_v3_lock.ok()
+      ? hm::stitching::HuginProject::GenerationId(root / "game", **weak_v3_lock)
+      : absl::StatusOr<std::string>(weak_v3_lock.status());
+  if (weak_v3_lock.ok())
+    weak_v3_lock->reset();
+  const bool weak_v3_child_matches =
+      weak_v3_generation.ok() && generation_matches_in_child(root / "game", *weak_v3_generation);
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  ok &= expect(
+      weak_v3_generation.ok() && *weak_v3_generation == preserved_v2_generation && weak_v3_child_matches &&
+          read_text_file(root / "game" / "stitching_generation_id").rfind("version=3\n", 0) == 0,
+      "version-3 generations on weak filesystems must remain content-stable across processes");
+
   const fs::path replacement_root = root / "same-metadata-replacement";
   fs::create_directories(replacement_root);
   for (const std::string& name : artifact_names) {
@@ -1379,7 +1452,7 @@ int main() {
           unreliable_before.ok() && unreliable_timestamp_preserved && identity_forgeable && unreliable_after.ok() &&
               unreliable_repeat.ok() && *unreliable_after != *unreliable_before &&
               *unreliable_repeat == *unreliable_after,
-          "unreliable filesystems must use a stable process-scoped generation instead of trusting artifact metadata");
+          "unreliable filesystems must use a stable content-verified generation instead of trusting artifact metadata");
     }
     if (unreliable_lock.ok())
       unreliable_lock->reset();

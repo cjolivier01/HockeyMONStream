@@ -22,8 +22,9 @@ namespace hm {
 template <typename T>
 class CudaMat;
 namespace stitching {
+class FieldMaskPublicationAuthorityMonitor;
 struct StitchingCalibrationFramePair;
-}
+} // namespace stitching
 namespace stitcher {
 
 struct RuntimeFrameKey {
@@ -90,7 +91,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   using Super = STITCH_PRIV_BASE;
 
  public:
-  StitcherPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
+  StitcherPriv(int gpu_id, size_t batch_size);
   ~StitcherPriv();
 
   bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
@@ -209,7 +210,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::string field_mask_attempted_generation_;
   std::string field_mask_attempted_authorization_id_;
   bool field_mask_publication_superseded_{false};
-  size_t field_mask_superseded_retry_frames_remaining_{0};
+  std::unique_ptr<stitching::FieldMaskPublicationAuthorityMonitor> field_mask_authority_monitor_;
   bool calibration_completion_reported_{false};
   bool calibration_completion_ready_{false};
   std::atomic_bool calibration_cancelled_{false};

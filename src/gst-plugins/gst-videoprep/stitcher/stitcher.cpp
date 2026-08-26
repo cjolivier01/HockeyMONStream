@@ -165,7 +165,6 @@ NvBufSurfaceParams cuda_mat_surface_params(hm::CudaMat<Pixel>& mat, NvBufSurface
 } // namespace
 
 static constexpr int kNumStitcherLaplacianLevels = 11;
-static constexpr size_t kSupersededFieldMaskRetryFrames = 30;
 
 OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool configured_during_run,
@@ -217,6 +216,8 @@ void OnePassCalibrationCompletionLatch::finish_delivery(const std::string& calib
   }
 }
 
+StitcherPriv::StitcherPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
+
 StitcherPriv::~StitcherPriv() {
   Shutdown();
 }
@@ -260,6 +261,7 @@ void StitcherPriv::Shutdown() {
   release_high_bit_field_mask_canvas();
   calibration_invalidation_id_.clear();
   calibration_run_generation_.clear();
+  field_mask_authority_monitor_.reset();
   update_live_output_epoch(std::nullopt, std::string(), std::string());
   release_rotation_scratch();
 }
@@ -2057,21 +2059,21 @@ absl::Status StitcherPriv::GenerateOutput(
         (field_mask_attempted_generation_ != output_generation ||
          field_mask_attempted_authorization_id_ != output_authorization_id)) {
       field_mask_publication_superseded_ = false;
-      field_mask_superseded_retry_frames_remaining_ = 0;
+      field_mask_authority_monitor_.reset();
     } else if (!attempt_field_mask && field_mask_publication_superseded_) {
-      if (field_mask_superseded_retry_frames_remaining_ > 0) {
-        --field_mask_superseded_retry_frames_remaining_;
+      if (!field_mask_authority_monitor_) {
+        return report_calibration_failure(absl::InternalError("Publication authority monitor is unavailable"));
+      }
+      const absl::Status authority = field_mask_authority_monitor_->status();
+      if (absl::IsUnavailable(authority)) {
+        // The control-plane worker is waiting for the superseding epoch to
+        // retire; frame processing remains filesystem-free while it waits.
+      } else if (authority.ok()) {
+        field_mask_publication_superseded_ = false;
+        field_mask_authority_monitor_.reset();
+        attempt_field_mask = true;
       } else {
-        const absl::Status authority = stitching::validate_field_mask_publication_authority(
-            config_file_, output_generation, output_authorization_id);
-        if (authority.ok()) {
-          field_mask_publication_superseded_ = false;
-          attempt_field_mask = true;
-        } else if (absl::IsAborted(authority) || absl::IsUnavailable(authority)) {
-          field_mask_superseded_retry_frames_remaining_ = kSupersededFieldMaskRetryFrames;
-        } else {
-          return report_calibration_failure(authority);
-        }
+        return report_calibration_failure(authority);
       }
     }
 
@@ -2135,11 +2137,16 @@ absl::Status StitcherPriv::GenerateOutput(
           if (!mask_status.ok()) {
             if (absl::IsAborted(mask_status)) {
               // A newer live output generation owns publication. Keep this
-              // generation latched so expensive inference is retried only when
-              // a frame carrying that newer generation arrives.
+              // generation latched while a control-plane worker waits for an
+              // epoch change or rollback before retrying expensive inference.
               std::cout << "Field-mask publication superseded: " << mask_status << "\n" << std::flush;
               field_mask_publication_superseded_ = true;
-              field_mask_superseded_retry_frames_remaining_ = kSupersededFieldMaskRetryFrames;
+              if (!field_mask_authority_monitor_)
+                field_mask_authority_monitor_ = std::make_unique<stitching::FieldMaskPublicationAuthorityMonitor>();
+              const absl::Status monitor_status =
+                  field_mask_authority_monitor_->Watch(config_file_, output_generation, output_authorization_id);
+              if (!monitor_status.ok())
+                return report_calibration_failure(monitor_status);
             } else {
               std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
               if (absl::IsCancelled(mask_status)) {
@@ -2150,6 +2157,7 @@ absl::Status StitcherPriv::GenerateOutput(
             }
           } else {
             field_mask_publication_superseded_ = false;
+            field_mask_authority_monitor_.reset();
             mask_configured = true;
           }
         }

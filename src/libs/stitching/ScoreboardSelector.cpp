@@ -57,7 +57,7 @@ std::string snapshot_identity(const struct stat& metadata) {
 }
 
 absl::StatusOr<std::string> snapshot_file_identity(const fs::path& path) {
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
   struct CloseDescriptor {
@@ -101,7 +101,7 @@ struct OpenedSnapshotFile {
 };
 
 absl::StatusOr<OpenedSnapshotFile> open_snapshot_file(const fs::path& path) {
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
   struct stat metadata{};

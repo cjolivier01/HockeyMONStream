@@ -15,7 +15,10 @@ cc_library(
   hdrs = ["TransactionState.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:private"],
-  deps = ["@com_google_absl//absl/status:status"],
+  deps = [
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
 )
 
 cc_library(
