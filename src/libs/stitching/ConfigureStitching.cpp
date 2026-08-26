@@ -2360,6 +2360,7 @@ absl::Status save_rink_profile_locked(
     const std::string& hugin_generation,
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id,
+    const std::optional<double>& expected_persisted_rotation,
     const cv::Mat* stitched_image = nullptr) {
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
@@ -2439,24 +2440,29 @@ absl::Status save_rink_profile_locked(
     std::string current_output_generation;
     if (!expected_output_generation.empty()) {
       HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
-      auto configured_generation = current_stitched_output_generation_id_locked(game_dir, config, hugin_generation);
-      if (!configured_generation.ok())
-        return configured_generation.status();
-      std::string comparable_generation = *configured_generation;
+      if (!expected_persisted_rotation.has_value()) {
+        return absl::InvalidArgumentError(
+            "Expected stitched-output generation requires a persisted-rotation publication guard");
+      }
+      double current_persisted_rotation = 0.0;
+      HM_ASSIGN_OR_RETURN(current_persisted_rotation, configured_post_stitch_rotation(config));
+      if (current_persisted_rotation != *expected_persisted_rotation) {
+        return absl::AbortedError("Cannot publish a rink profile after the persisted stitched-output rotation changed");
+      }
       auto expected_size = stitched_output_size_from_generation(expected_output_generation);
       if (!expected_size.ok())
         return expected_size.status();
-      if (!expected_size->has_value()) {
-        auto legacy_generation = stitched_output_generation_without_dimensions(*configured_generation);
-        if (!legacy_generation.ok())
-          return legacy_generation.status();
-        comparable_generation = *legacy_generation;
+      if (expected_size->has_value()) {
+        CanvasSize current_size;
+        HM_ASSIGN_OR_RETURN(current_size, get_mapping_canvas_size(root));
+        if (current_size.width != (*expected_size)->width || current_size.height != (*expected_size)->height) {
+          return absl::AbortedError("Cannot publish a rink profile after the stitched-output canvas size changed");
+        }
       }
-      if (expected_output_generation != comparable_generation) {
-        return absl::AbortedError(
-            "Cannot publish a rink profile for a superseded stitched-output rotation or canvas size");
-      }
-      current_output_generation = *configured_generation;
+      // Runtime rotation may be an in-memory CLI/property override and is
+      // therefore authoritative even when it intentionally differs from the
+      // persisted YAML rotation guarded above.
+      current_output_generation = expected_output_generation;
     } else {
       auto configured_generation = configured_output_generation(config, hugin_generation);
       if (!configured_generation.ok())
@@ -2616,7 +2622,7 @@ absl::Status save_rink_profile(
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
-  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id);
+  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id, std::nullopt);
 }
 
 absl::Status save_rink_profile_with_stitched_image(
@@ -2638,13 +2644,30 @@ absl::Status save_rink_profile_with_stitched_image(
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
+  std::optional<double> expected_persisted_rotation;
+  if (!expected_output_generation.empty()) {
+    auto config_transaction = GameConfigTransactionLock::Acquire(root);
+    if (!config_transaction.ok())
+      return config_transaction.status();
+    auto config = load_config_or_empty(root / "config.yaml");
+    if (!config.ok())
+      return config.status();
+    HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+    HM_ASSIGN_OR_RETURN(expected_persisted_rotation, configured_post_stitch_rotation(*config));
+  }
   if (const char* delay = std::getenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS")) {
     const long delay_ms = std::strtol(delay, nullptr, 10);
     if (delay_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
   return save_rink_profile_locked(
-      game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id, &stitched_image);
+      game_dir,
+      profile,
+      *hugin_generation,
+      expected_output_generation,
+      expected_invalidation_id,
+      expected_persisted_rotation,
+      &stitched_image);
 }
 
 absl::Status create_field_mask(
@@ -2669,7 +2692,8 @@ absl::Status create_field_mask(
   // has already been superseded. Publication validates again under the config
   // transaction lock because a newer invalidation can still arrive while the
   // expensive inference is running.
-  if (!expected_invalidation_id.empty()) {
+  std::optional<double> expected_persisted_rotation;
+  if (!expected_invalidation_id.empty() || !expected_output_generation.empty()) {
     auto config_transaction = GameConfigTransactionLock::Acquire(root);
     if (!config_transaction.ok())
       return config_transaction.status();
@@ -2677,6 +2701,8 @@ absl::Status create_field_mask(
     if (!config.ok())
       return config.status();
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+    if (!expected_output_generation.empty())
+      HM_ASSIGN_OR_RETURN(expected_persisted_rotation, configured_post_stitch_rotation(*config));
   }
   if (const char* delay = std::getenv("HM_TEST_RINK_INFERENCE_DELAY_MS")) {
     const long delay_ms = std::strtol(delay, nullptr, 10);
@@ -2715,7 +2741,13 @@ absl::Status create_field_mask(
   RinkProfile profile;
   HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled));
   return save_rink_profile_locked(
-      game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id, &stitched);
+      game_dir,
+      profile,
+      *hugin_generation,
+      expected_output_generation,
+      expected_invalidation_id,
+      expected_persisted_rotation,
+      &stitched);
 }
 
 absl::Status configure_orientation(

@@ -363,6 +363,31 @@ int main() {
             cv::norm(after_stale_rotation, committed_snapshot, cv::NORM_INF) == 0 &&
             after_stale_rotation_config["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5,
         "stale rink inference must not overwrite a newer stitched-output rotation generation");
+
+    std::string live_override_generation;
+    auto live_override_canvas_size = hm::stitching::stitching_canvas_size(root.string());
+    {
+      auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+      ok &= expect(generation_lock.ok(), "runtime-rotation override fixture must lock Hugin artifacts");
+      if (generation_lock.ok()) {
+        auto hugin_generation = hm::stitching::HuginProject::GenerationId(root, **generation_lock);
+        if (hugin_generation.ok() && live_override_canvas_size.ok()) {
+          auto generation = hm::stitching::stitched_output_generation_id(
+              *hugin_generation, 9.0, live_override_canvas_size->width, live_override_canvas_size->height);
+          if (generation.ok())
+            live_override_generation = *generation;
+        }
+      }
+    }
+    const auto live_override_status = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(), profile, stale_snapshot, "rink-run-a", live_override_generation);
+    const YAML::Node after_live_override = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        !live_override_generation.empty() && live_override_status.ok() &&
+            after_live_override["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5 &&
+            after_live_override["rink"]["stitched_output_generation"].as<std::string>() == live_override_generation &&
+            hm::stitching::is_field_mask_configured(root.string(), live_override_generation, "rink-run-a"),
+        "live runtime rotation override must publish without rewriting the persisted rotation");
     ok &= expect(
         hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a").ok(),
         "current rotation generation must remain publishable after rejecting stale inference");
