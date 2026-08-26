@@ -722,6 +722,9 @@ int main() {
           project_after_pending_live_authorization == previous_project,
       "pending live stitched-output authorization must prevent Hugin artifact replacement");
   std::ofstream(root / "game" / "config.yaml") << "unrelated: preserved\n";
+  ok &= expect(
+      fs::remove(root / "game" / "stitching_generation_id"),
+      "legacy generation fixture must remove the logical identity sidecar");
   std::string generation_before_interrupted_publication;
   {
     auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
@@ -766,7 +769,7 @@ int main() {
       auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **generation_lock);
       ok &= expect(
           generation.ok() && *generation == generation_before_interrupted_publication,
-          "Hugin rollback must preserve the inode-based generation identity");
+          "Hugin rollback must preserve the logical generation identity");
     }
   }
   ::setenv("HM_TEST_STITCH_INTERRUPT_DURING_BACKUP", "1", 1);
@@ -799,7 +802,7 @@ int main() {
       auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **generation_lock);
       ok &= expect(
           generation.ok() && *generation == generation_before_interrupted_publication,
-          "partial backup rollback must preserve the inode-based generation identity");
+          "partial backup rollback must preserve the logical generation identity");
     }
   }
   ::setenv("HM_TEST_STITCH_INTERRUPT_AFTER_BACKUP_SYNC", "1", 1);
@@ -823,7 +826,7 @@ int main() {
       auto generation = hm::stitching::HuginProject::GenerationId(root / "game", **generation_lock);
       ok &= expect(
           generation.ok() && *generation == generation_before_interrupted_publication,
-          "complete backup rollback must preserve the inode-based generation identity");
+          "complete backup rollback must preserve the logical generation identity");
     }
   }
   ok &= expect(
@@ -922,6 +925,69 @@ int main() {
           fs::last_write_time(root / "game" / "autooptimiser_out.pto") <
               fs::last_write_time(root / "game" / "mapping_0000.tif"),
       "restored Hugin dependency ordering must remain usable");
+
+  const auto write_legacy_transaction_fixture = [&](const fs::path& game, const fs::path& transaction) {
+    fs::create_directories(transaction / "previous");
+    std::ofstream manifest(transaction / "artifacts");
+    for (const std::string& name : artifact_names) {
+      manifest << name << '\n';
+      std::ofstream(game / name) << "old-" << name << '\n';
+      std::ofstream(transaction / "previous" / name) << "old-" << name << '\n';
+    }
+  };
+  const auto read_fixture_file = [](const fs::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+
+  const fs::path consumed_root = root / "legacy-consumed-rollback";
+  const fs::path consumed_transaction = consumed_root / ".hstream-stitch-consumed";
+  fs::create_directories(consumed_root);
+  write_legacy_transaction_fixture(consumed_root, consumed_transaction);
+  fs::remove(consumed_transaction / "previous" / "hm_project.pto");
+  {
+    std::ofstream prior(consumed_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+    std::ofstream(consumed_transaction / "state") << "PREPARED\n";
+  }
+  const auto consumed_recovery = hm::stitching::HuginProject::Recover(consumed_root);
+  ok &= expect(
+      consumed_recovery.ok() && !fs::exists(consumed_transaction) &&
+          read_fixture_file(consumed_root / "hm_project.pto") == "old-hm_project.pto\n",
+      "legacy PREPARED recovery must retain an old artifact whose backup was already consumed");
+
+  const fs::path torn_root = root / "legacy-torn-manifest";
+  const fs::path torn_transaction = torn_root / ".hstream-stitch-torn";
+  fs::create_directories(torn_root);
+  write_legacy_transaction_fixture(torn_root, torn_transaction);
+  std::ofstream(torn_root / "mapping_0000.tif", std::ios::trunc) << "replacement\n";
+  std::ofstream(torn_transaction / "previous_artifacts", std::ios::trunc) << "mapping_000";
+  std::ofstream(torn_transaction / "state") << "PREPARED\n";
+  const auto torn_recovery = hm::stitching::HuginProject::Recover(torn_root);
+  ok &= expect(
+      torn_recovery.ok() && !fs::exists(torn_transaction) &&
+          read_fixture_file(torn_root / "mapping_0000.tif") == "old-mapping_0000.tif\n",
+      "legacy PREPARED recovery must rebuild a torn prior manifest from intact backups");
+
+  const fs::path unsafe_root = root / "legacy-unsafe-rollback";
+  const fs::path unsafe_transaction = unsafe_root / ".hstream-stitch-unsafe";
+  fs::create_directories(unsafe_root);
+  write_legacy_transaction_fixture(unsafe_root, unsafe_transaction);
+  fs::remove(unsafe_transaction / "previous" / "hm_project.pto");
+  std::ofstream(unsafe_root / "hm_project.pto", std::ios::trunc) << "replacement\n";
+  {
+    std::ofstream prior(unsafe_transaction / "previous_artifacts");
+    for (const std::string& name : artifact_names)
+      prior << name << '\n';
+    std::ofstream(unsafe_transaction / "state") << "ROLLING_BACK\n";
+  }
+  const auto unsafe_recovery = hm::stitching::HuginProject::Recover(unsafe_root);
+  ok &= expect(
+      !unsafe_recovery.ok() && fs::exists(unsafe_transaction) &&
+          read_fixture_file(unsafe_root / "hm_project.pto") == "replacement\n",
+      "legacy ROLLING_BACK recovery must fail closed instead of accepting a mixed generation");
+  fs::remove_all(unsafe_root);
 
   const fs::path malformed = root / "game" / ".hstream-stitch-malformed";
   fs::create_directories(malformed / "previous");

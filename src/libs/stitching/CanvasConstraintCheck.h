@@ -42,6 +42,7 @@ struct CanvasConstraintCompatibility {
 };
 
 inline constexpr char kStitchCanvasProvenanceArtifact[] = "stitching_canvas_provenance";
+inline constexpr char kStitchGenerationArtifact[] = "stitching_generation_id";
 
 // Returns the effective platform/runtime canvas limit. Malformed environment
 // overrides are ignored consistently by generation and validation paths.
@@ -54,6 +55,9 @@ const std::vector<std::string>& stitch_artifact_names();
 absl::Status recover_stitch_transactions_locked(const std::filesystem::path& game_dir);
 absl::Status fsync_stitch_path(const std::filesystem::path& path, bool directory = false);
 absl::Status write_stitch_transaction_file(const std::filesystem::path& path, const std::string& contents);
+absl::Status prepare_stitch_generation_publication(
+    const std::filesystem::path& staging,
+    const std::filesystem::path& game_dir);
 
 // Reviews one stable artifact generation. The caller must hold the Hugin
 // artifact lock for the complete call.

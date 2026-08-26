@@ -1172,6 +1172,7 @@ absl::Status clean_stitching_artifacts_impl(
   HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tif"));
   HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tiff"));
   HM_RETURN_IF_ERROR(clean_pattern("stitching_canvas_provenance"));
+  HM_RETURN_IF_ERROR(clean_pattern(kStitchGenerationArtifact));
   HM_RETURN_IF_ERROR(clean_pattern("panorama.tif"));
   HM_RETURN_IF_ERROR(clean_pattern("seam_file.png"));
   HM_RETURN_IF_ERROR(clean_pattern("matches.png"));

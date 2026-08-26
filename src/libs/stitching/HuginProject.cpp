@@ -1677,6 +1677,9 @@ absl::Status HuginProject::Configure(
     if (!validation.ok())
       return validation;
   }
+  status = prepare_stitch_generation_publication(staging, game_dir);
+  if (!status.ok())
+    return status;
   status = publish_artifacts(staging, game_dir, &cleanup.prepared);
   if (status.ok() && options.progress)
     options.progress("canvas", "complete", "Stitch maps and panorama preview are ready");
