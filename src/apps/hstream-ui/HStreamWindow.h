@@ -16,6 +16,7 @@
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
+#include <QtCore/QFile>
 #include <QtCore/QList>
 #include <QtCore/QProcess>
 
@@ -165,6 +166,9 @@ class HStreamWindow : public QMainWindow {
   int playbackProgressResetTimeoutMs() const;
   void handleArchiveOutputStatus(const QString& line);
   void updateArchiveOutputPathLabel();
+  void beginArchiveJobLog(const QString& configured_output_path, const QString& run_id);
+  void resolveArchiveJobLogPath(const QString& resolved_output_path);
+  void finishArchiveJobLog();
   void startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video);
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
@@ -452,6 +456,9 @@ class HStreamWindow : public QMainWindow {
   QString active_run_game_id_;
   QString active_archive_output_path_;
   QString active_archive_recovery_path_;
+  QFile archive_job_log_;
+  QString archive_job_log_path_;
+  bool archive_job_log_enabled_{false};
   qint64 active_archive_initial_size_{-1};
   qint64 active_archive_initial_mtime_ms_{-1};
   bool active_archive_video_is_hevc_{false};

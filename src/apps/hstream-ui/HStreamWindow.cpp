@@ -2072,6 +2072,7 @@ void HStreamWindow::loadBaselineDefaults() {
 }
 
 HStreamWindow::~HStreamWindow() {
+  finishArchiveJobLog();
   releaseArchiveFinalizerOwnership(false);
 }
 
@@ -4501,11 +4502,10 @@ void HStreamWindow::startPipeline() {
   if (archive_enabled) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
-    env.insert(
-        "HSTREAM_ARCHIVE_RUN_ID",
-        QString("%1-%2")
-            .arg(QCoreApplication::applicationPid())
-            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    const QString archive_run_id = QString("%1-%2")
+                                       .arg(QCoreApplication::applicationPid())
+                                       .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    env.insert("HSTREAM_ARCHIVE_RUN_ID", archive_run_id);
     active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_);
     const QString archive_dir = QFileInfo(active_archive_output_path_).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
@@ -4522,6 +4522,7 @@ void HStreamWindow::startPipeline() {
       updateRunControls();
       return;
     }
+    beginArchiveJobLog(active_archive_output_path_, archive_run_id);
     output_states_["archive-file"]->setText("WRITING");
     if (archive_output_path_label_)
       archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
@@ -4556,6 +4557,7 @@ void HStreamWindow::startPipeline() {
     if (stitched_status_)
       stitched_status_->setText("Stitched canvas preview");
     show_startup_error("The game could not be prepared for stitching calibration");
+    finishArchiveJobLog();
     updateRunControls();
     return;
   }
@@ -4596,6 +4598,7 @@ void HStreamWindow::startPipeline() {
     if (stitched_status_)
       stitched_status_->setText("Stitched canvas preview");
     show_startup_error("Required pretrained assets could not be prepared");
+    finishArchiveJobLog();
     updateRunControls();
     return;
   }
@@ -5011,6 +5014,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     startArchiveFinalization(archive_to_finalize, archive_game_id, active_archive_video_is_hevc_);
   } else {
     releaseArchiveFinalizerOwnership(true);
+    finishArchiveJobLog();
   }
   updateRunControls();
 }
@@ -5131,6 +5135,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   if (stitched_status_)
     stitched_status_->setText("Stitched canvas preview");
   appendLog(error_message);
+  if (error == QProcess::FailedToStart)
+    finishArchiveJobLog();
   updateRunControls();
 }
 
@@ -5728,6 +5734,7 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
   if (resolved_path.isEmpty()) {
     return;
   }
+  resolveArchiveJobLogPath(resolved_path);
   QString ownership_error;
   if (!acquireArchiveFinalizerOwnership(resolved_path, &ownership_error)) {
     appendLog(QString("archive finalizer ownership could not be established: %1").arg(ownership_error));
@@ -5746,6 +5753,88 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
   }
   appendLog(QString("archive backend %1 output: %2")
                 .arg(path_changed ? "resolved" : "confirmed", active_archive_output_path_));
+}
+
+void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, const QString& run_id) {
+  finishArchiveJobLog();
+  archive_job_log_enabled_ = true;
+
+  const QFileInfo output_info(configured_output_path);
+  QString safe_run_id = run_id.trimmed();
+  safe_run_id.replace(QRegularExpression("[^A-Za-z0-9_-]"), "_");
+  if (safe_run_id.isEmpty())
+    safe_run_id = "unknown";
+  const QString extension = output_info.suffix().isEmpty() ? QString() : "." + output_info.suffix();
+  archive_job_log_path_ = output_info.dir().filePath(
+      QString("%1.hstream-run-ui-%2%3.log").arg(output_info.completeBaseName(), safe_run_id, extension));
+  archive_job_log_.setFileName(archive_job_log_path_);
+  if (!archive_job_log_.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::NewOnly)) {
+    const QString error = archive_job_log_.errorString();
+    archive_job_log_enabled_ = false;
+    archive_job_log_path_.clear();
+    appendLog(QString("archive job log could not be created: %1").arg(error));
+    return;
+  }
+  if (!archive_job_log_.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+    const QString insecure_path = archive_job_log_path_;
+    archive_job_log_.close();
+    QFile::remove(insecure_path);
+    archive_job_log_enabled_ = false;
+    archive_job_log_path_.clear();
+    appendLog(QString("archive job log could not be secured for owner-only access: %1").arg(insecure_path));
+    return;
+  }
+  appendLog(QString("archive job log: %1").arg(archive_job_log_path_));
+}
+
+void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path) {
+  if (!archive_job_log_enabled_ || resolved_output_path.isEmpty())
+    return;
+  const QString resolved_log_path = QFileInfo(resolved_output_path).absoluteFilePath() + ".log";
+  if (archive_job_log_path_ == resolved_log_path)
+    return;
+
+  const QString provisional_path = archive_job_log_path_;
+  if (archive_job_log_.isOpen()) {
+    archive_job_log_.flush();
+    archive_job_log_.close();
+  }
+  const bool renamed = !provisional_path.isEmpty() && QFile::rename(provisional_path, resolved_log_path);
+  archive_job_log_path_ = renamed ? resolved_log_path : provisional_path;
+  archive_job_log_.setFileName(archive_job_log_path_);
+  if (archive_job_log_path_.isEmpty() ||
+      !archive_job_log_.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+    const QString error = archive_job_log_.errorString();
+    archive_job_log_enabled_ = false;
+    archive_job_log_path_.clear();
+    appendLog(QString("archive job log could not continue after output path resolution: %1").arg(error));
+    return;
+  }
+  if (!archive_job_log_.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+    const QString insecure_path = archive_job_log_path_;
+    archive_job_log_.close();
+    QFile::remove(insecure_path);
+    archive_job_log_enabled_ = false;
+    archive_job_log_path_.clear();
+    appendLog(QString("resolved archive job log could not be secured for owner-only access: %1").arg(insecure_path));
+    return;
+  }
+  if (renamed) {
+    appendLog(QString("archive job log resolved: %1").arg(archive_job_log_path_));
+  } else {
+    appendLog(QString("archive job log remains at %1 because it could not be renamed to %2")
+                  .arg(archive_job_log_path_, resolved_log_path));
+  }
+}
+
+void HStreamWindow::finishArchiveJobLog() {
+  if (archive_job_log_.isOpen()) {
+    archive_job_log_.flush();
+    archive_job_log_.close();
+  }
+  archive_job_log_.setFileName({});
+  archive_job_log_path_.clear();
+  archive_job_log_enabled_ = false;
 }
 
 void HStreamWindow::updateArchiveOutputPathLabel() {
@@ -6176,6 +6265,7 @@ void HStreamWindow::completeArchiveFinalization() {
           .arg(archive_finalize_target_path_)
           .arg(final_size)
           .arg(source_removed ? QString() : QString("; source retained at %1").arg(archive_finalize_source_path_)));
+  finishArchiveJobLog();
   QTimer::singleShot(500, archive_finalize_dialog_, &QDialog::accept);
   updateRunControls();
 }
@@ -6202,6 +6292,7 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   archive_finalize_dialog_->show();
   appendLog(QString("archive finalization failed: %1; recovery archive retained at %2")
                 .arg(failure_detail, archive_finalize_source_path_));
+  finishArchiveJobLog();
   updateRunControls();
 }
 
@@ -9710,8 +9801,18 @@ void HStreamWindow::addRtspOutput() {
 }
 
 void HStreamWindow::appendLog(const QString& message) {
+  const QString entry_timestamp = timestamp();
+  const QByteArray plain_entry = QString("%1 %2\n").arg(entry_timestamp, message).toUtf8();
+  QString archive_log_error;
+  if (archive_job_log_enabled_ && archive_job_log_.isOpen()) {
+    if (archive_job_log_.write(plain_entry) != plain_entry.size() || !archive_job_log_.flush()) {
+      archive_log_error = archive_job_log_.errorString();
+      archive_job_log_.close();
+      archive_job_log_enabled_ = false;
+    }
+  }
   if (capture_complete_log_) {
-    complete_log_ += QString("%1 %2\n").arg(timestamp(), message);
+    complete_log_ += QString::fromUtf8(plain_entry);
     if (complete_log_.size() > kMaxCapturedLogCharacters) {
       const qsizetype overflow = complete_log_.size() - kMaxCapturedLogCharacters;
       const qsizetype next_line = complete_log_.indexOf('\n', overflow);
@@ -9719,8 +9820,10 @@ void HStreamWindow::appendLog(const QString& message) {
     }
   }
   const QString html =
-      QString("<span style=\"color:#667085\">%1</span> %2").arg(timestamp().toHtmlEscaped(), ansi_to_html(message));
+      QString("<span style=\"color:#667085\">%1</span> %2").arg(entry_timestamp.toHtmlEscaped(), ansi_to_html(message));
   log_->append(html);
+  if (!archive_log_error.isEmpty())
+    appendLog(QString("archive job log write failed; file logging stopped: %1").arg(archive_log_error));
 }
 
 QString HStreamWindow::writePlaytrackerRuntimeConfig() {

@@ -4798,10 +4798,12 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("tracking_output-with-audio.mkv");
   const QString expected_path =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("custom-archive.mkv");
+  const QString expected_job_log = expected_path + ".log";
   const QString restarted_recovery_path =
       QDir(QFileInfo(expected_path).absolutePath()).filePath("custom-archive-finalization-failed.mkv");
   QDir().mkpath(QFileInfo(expected_path).absolutePath());
   QFile::remove(planned_path);
+  QFile::remove(expected_job_log);
   QFile::remove(restarted_recovery_path);
   QFile interrupted_archive(planned_path);
   if (!interrupted_archive.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
@@ -4862,10 +4864,28 @@ bool test_output_controls(HStreamWindow* window) {
   const bool missing_new_output_reported = expect(
       window->logText().contains(QString("archive output was not created; expected: %1").arg(expected_path)),
       "Archive playback must not claim that the safely recovered prior file came from the current run");
+  QFile persisted_job_log(expected_job_log);
+  const bool persisted_job_log_opened = persisted_job_log.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString persisted_job_log_text =
+      persisted_job_log_opened ? QString::fromUtf8(persisted_job_log.readAll()) : QString();
+  const QFileDevice::Permissions persisted_job_log_permissions = QFileInfo(expected_job_log).permissions();
+  const QFileDevice::Permissions non_owner_permissions = QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+      QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+  const bool job_log_persisted = expect(
+      persisted_job_log_opened &&
+          (persisted_job_log_permissions & (QFileDevice::ReadOwner | QFileDevice::WriteOwner)) ==
+              (QFileDevice::ReadOwner | QFileDevice::WriteOwner) &&
+          (persisted_job_log_permissions & non_owner_permissions) == 0 &&
+          persisted_job_log_text.contains("pipeline command") &&
+          persisted_job_log_text.contains(QString("archive backend resolved output: %1").arg(expected_path)) &&
+          persisted_job_log_text.contains("pipeline finished") &&
+          persisted_job_log_text.contains(QString("archive output was not created; expected: %1").arg(expected_path)),
+      "Each archive job must persist the UI log beside its resolved work video with owner-only permissions");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVER_EXISTING");
 
   const QString completed_source =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("completed-source.mkv");
+  const QString completed_job_log = completed_source + ".log";
   const QString concurrent_completed_target =
       QDir(window->gameDirectoryText())
           .filePath(QString("%1-tracking_output-with-audio.mp4").arg(window->gameIdText()));
@@ -4874,6 +4894,7 @@ bool test_output_controls(HStreamWindow* window) {
           .filePath(QString("%1-tracking_output-with-audio-1.mp4").arg(window->gameIdText()));
   const QString ffmpeg_arguments = QDir(output_root.path()).filePath("ffmpeg-arguments.txt");
   QFile::remove(completed_source);
+  QFile::remove(completed_job_log);
   QFile::remove(concurrent_completed_target);
   QFile::remove(completed_target);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", completed_source.toLocal8Bit());
@@ -4935,6 +4956,14 @@ bool test_output_controls(HStreamWindow* window) {
   QFile argument_file(ffmpeg_arguments);
   const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
   const QString argument_text = opened_arguments ? QString::fromUtf8(argument_file.readAll()) : QString();
+  QFile completed_log_file(completed_job_log);
+  const bool completed_log_opened = completed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString completed_log_text = completed_log_opened ? QString::fromUtf8(completed_log_file.readAll()) : QString();
+  const bool completed_log_persisted = expect(
+      completed_log_opened &&
+          completed_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(completed_source)) &&
+          completed_log_text.contains(QString("completed archive published: %1").arg(completed_target)),
+      "A completed job log must remain beside the work artifacts and include asynchronous MP4 finalization output");
   const bool archive_deployed = expect(
       finalizer_owner_lock_held && concurrent_completed_archive_created &&
           window->outputStateText("archive-file") == "SAVED" && QFileInfo(completed_target).size() > 0 &&
@@ -5028,9 +5057,9 @@ bool test_output_controls(HStreamWindow* window) {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
-      nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && finalization_visible &&
-      archive_deployed && durability_sync_responsive && failed_archive_retained && unsafe_retry_blocked &&
-      retry_unblocked_after_recovery;
+      nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
+      finalization_visible && completed_log_persisted && archive_deployed && durability_sync_responsive &&
+      failed_archive_retained && unsafe_retry_blocked && retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
