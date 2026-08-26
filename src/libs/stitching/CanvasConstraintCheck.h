@@ -52,6 +52,9 @@ std::optional<size_t> live_stitch_max_canvas_dimension();
 // and the accepted transaction manifests cannot diverge.
 const std::vector<std::string>& required_stitch_artifact_names();
 const std::vector<std::string>& stitch_artifact_names();
+// Verifies the parser-facing generation artifacts through bounded, no-follow,
+// nonblocking descriptors. The caller must hold the artifact lock.
+absl::Status validate_stitch_generation_artifact_bounds_locked(const std::filesystem::path& game_dir);
 absl::Status recover_stitch_transactions_locked(const std::filesystem::path& game_dir);
 absl::Status fsync_stitch_path(const std::filesystem::path& path, bool directory = false);
 absl::Status clone_or_copy_stitch_rollback_file(

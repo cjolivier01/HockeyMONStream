@@ -999,7 +999,11 @@ int main(int argc, char** argv) {
                   /*stitch_rotate_degrees=*/{},
                   /*supply_runtime_invalidation=*/false,
                   /*rink_inference_delay_ms=*/0,
-                  /*supply_control_points_environment=*/false),
+                  /*supply_control_points_environment=*/false,
+                  /*same_stage_instances=*/1,
+                  /*completion_timeout_ms=*/0,
+                  /*suppress_calibration_completion=*/false,
+                  /*pipeline_recreate_seconds=*/1),
               "one-pass pipeline with invalid seam must start") ||
           !expect(
               one_pass_invalid_seam.WaitFor(
@@ -1014,7 +1018,19 @@ int main(int argc, char** argv) {
               "one-pass invalid-seam playback must reach PLAYING before restart completes")) {
         return false;
       }
-      return stop_successfully(&one_pass_invalid_seam, "one-pass invalid-seam playback must accept Stop/SIGINT") &&
+      const size_t recreation_mark = one_pass_invalid_seam.Mark();
+      std::error_code remove_error;
+      fs::remove(game / "seam_file.png", remove_error);
+      const bool replay_rejected = !remove_error &&
+          one_pass_invalid_seam.WaitFor(
+              "Stitching control masks are missing or need regeneration", recreation_mark, kCalibrationTimeout) &&
+          one_pass_invalid_seam.output().find("captured stitching calibration frame", recreation_mark) ==
+              std::string::npos;
+      return expect(
+                 replay_rejected,
+                 "post-calibration recreation must reject artifact loss without replaying calibration authority") &&
+          expect(one_pass_invalid_seam.Terminate(),
+                 "post-calibration artifact-loss regression process must terminate after rejecting recreation") &&
           expect(restore_configure_only_seam(game / "seam_file.png"),
                  "one-pass invalid-seam regression must restore the valid seam fixture");
     }();

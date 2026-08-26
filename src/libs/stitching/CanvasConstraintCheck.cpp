@@ -68,7 +68,7 @@ const std::array<const char*, 9> kGenerationArtifacts = {
     "seam_file.png",
 };
 
-uint64_t maximum_generation_artifact_bytes(std::string_view name) {
+uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
   const auto ends_with = [name](std::string_view suffix) {
     return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
   };
@@ -80,7 +80,32 @@ uint64_t maximum_generation_artifact_bytes(std::string_view name) {
     return kMaximumPngArtifactBytes;
   if (name == kStitchCanvasProvenanceArtifact)
     return 4096;
+  if (name == kStitchGenerationArtifact)
+    return 16ULL * 1024ULL;
   return 0;
+}
+
+absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const char* name, bool required) {
+  const fs::path path = game_dir / name;
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (!required && errno == ENOENT)
+      return absl::OkStatus();
+    return absl::FailedPreconditionError("Unable to open bounded stitch artifact: " + path.string());
+  }
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  const uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      maximum_bytes == 0 || static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError("Invalid or oversized stitch artifact: " + path.string());
+  }
+  return absl::OkStatus();
 }
 
 const std::vector<std::string> kRequiredArtifacts = {
@@ -1050,7 +1075,7 @@ absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
     struct stat before{};
     if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0)
       return absl::FailedPreconditionError("Invalid Hugin artifact while fingerprinting: " + path.string());
-    const uint64_t maximum_bytes = maximum_generation_artifact_bytes(name);
+    const uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
     if (maximum_bytes == 0 || static_cast<uint64_t>(before.st_size) > maximum_bytes) {
       return absl::FailedPreconditionError("Oversized Hugin artifact while fingerprinting: " + path.string());
     }
@@ -1251,6 +1276,15 @@ const std::vector<std::string>& stitch_artifact_names() {
   return kArtifacts;
 }
 
+absl::Status validate_stitch_generation_artifact_bounds_locked(const fs::path& game_dir) {
+  for (const char* name : kGenerationArtifacts) {
+    const absl::Status status = validate_stitch_artifact_bounds(game_dir, name, /*required=*/true);
+    if (!status.ok())
+      return status;
+  }
+  return validate_stitch_artifact_bounds(game_dir, kStitchCanvasProvenanceArtifact, /*required=*/false);
+}
+
 absl::Status fsync_stitch_path(const fs::path& path, bool directory) {
   const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
   const int descriptor = ::open(path.c_str(), flags);
@@ -1269,7 +1303,11 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
     const char* value = std::getenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
     return value != nullptr && std::string(value) == "1";
   }();
-  return snapshot_regular_file_for_rollback(source, destination, force_portable_fallback);
+  const uint64_t maximum_bytes = maximum_stitch_artifact_bytes(source.filename().string());
+  if (maximum_bytes == 0)
+    return absl::FailedPreconditionError("Unrecognized stitch rollback artifact: " + source.string());
+  return snapshot_regular_file_for_rollback(
+      source, destination, force_portable_fallback, static_cast<size_t>(maximum_bytes));
 }
 
 absl::StatusOr<bool> regular_stitch_file_exists_no_follow(const fs::path& path) {
@@ -1897,30 +1935,24 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (!identity.ok()) {
     if (absl::IsNotFound(identity.status())) {
-      if (unreliable_filesystem) {
-        auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
-        if (!bindings.ok())
-          return bindings.status();
-        auto fingerprint = stitch_artifact_fingerprint(game_dir);
-        if (!fingerprint.ok())
-          return fingerprint.status();
-        auto verified_bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
-        if (!verified_bindings.ok())
-          return verified_bindings.status();
-        if (*verified_bindings != *bindings)
-          return absl::AbortedError("Hugin artifacts changed while adopting their generation identity");
-        const std::string logical_id = content_scoped_stitch_generation_id(*fingerprint);
-        auto status = publish_stitch_file_atomically(
-            game_dir / kStitchGenerationArtifact,
-            serialize_stitch_generation_identity(logical_id, *bindings, *fingerprint));
-        if (!status.ok())
-          return status;
-        return logical_id;
-      }
-      auto legacy_generation = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacyGeneration);
-      if (!legacy_generation.ok())
-        return legacy_generation.status();
-      return legacy_generation;
+      auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+      if (!bindings.ok())
+        return bindings.status();
+      auto fingerprint = stitch_artifact_fingerprint(game_dir);
+      if (!fingerprint.ok())
+        return fingerprint.status();
+      auto verified_bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+      if (!verified_bindings.ok())
+        return verified_bindings.status();
+      if (*verified_bindings != *bindings)
+        return absl::AbortedError("Hugin artifacts changed while adopting their generation identity");
+      const std::string logical_id = content_scoped_stitch_generation_id(*fingerprint);
+      auto status = publish_stitch_file_atomically(
+          game_dir / kStitchGenerationArtifact,
+          serialize_stitch_generation_identity(logical_id, *bindings, *fingerprint));
+      if (!status.ok())
+        return status;
+      return logical_id;
     }
     return identity.status();
   }

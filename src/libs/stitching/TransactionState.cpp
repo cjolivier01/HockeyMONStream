@@ -238,7 +238,8 @@ absl::StatusOr<std::string> read_bounded_regular_file_no_follow(
 absl::Status snapshot_regular_file_for_rollback(
     const fs::path& source,
     const fs::path& destination,
-    bool force_portable_fallback) {
+    bool force_portable_fallback,
+    size_t maximum_bytes) {
   const fs::path temporary = destination.parent_path() / ("." + destination.filename().string() + ".hstream-partial");
   std::error_code error;
   fs::remove(temporary, error);
@@ -280,8 +281,8 @@ absl::Status snapshot_regular_file_for_rollback(
     return absl::InternalError(
         "Unable to inspect opened rollback source " + source.string() + ": " + std::strerror(errno));
   }
-  if (!S_ISREG(metadata.st_mode))
-    return absl::FailedPreconditionError("Rollback source is not a regular file: " + source.string());
+  if (!S_ISREG(metadata.st_mode) || metadata.st_size < 0 || static_cast<uint64_t>(metadata.st_size) > maximum_bytes)
+    return absl::FailedPreconditionError("Rollback source is invalid or oversized: " + source.string());
 
   const int destination_fd =
       ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, metadata.st_mode & 0777);

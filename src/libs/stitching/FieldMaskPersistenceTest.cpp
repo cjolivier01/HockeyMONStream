@@ -15,6 +15,7 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
 #include <opencv2/imgcodecs.hpp>
 #include <sys/stat.h>
 #include <tiffio.h>
@@ -220,11 +221,16 @@ int main() {
         output.write(
             reinterpret_cast<const char*>(oversized_mask.data()), static_cast<std::streamsize>(oversized_mask.size()));
       }
+      const int oversized_descriptor = ::open(mask_path.c_str(), O_WRONLY | O_CLOEXEC);
+      const bool oversized_sparse_file =
+          oversized_descriptor >= 0 && ::ftruncate(oversized_descriptor, 512LL * 1024LL * 1024LL) == 0;
+      if (oversized_descriptor >= 0)
+        ::close(oversized_descriptor);
       const auto oversized_load = hm::stitching::load_field_mask(root.string(), *native_dimensioned_generation);
       ok &= expect(
-          valid_mask.size() >= 24 && absl::IsFailedPrecondition(oversized_load.status()) &&
+          valid_mask.size() >= 24 && oversized_sparse_file && absl::IsFailedPrecondition(oversized_load.status()) &&
               oversized_load.status().message().find("PNG dimensions") != std::string_view::npos,
-          "field-mask loading must reject oversized PNG dimensions before decode");
+          "field-mask loading must reject oversized PNG dimensions before allocating the encoded payload");
       std::ofstream output(mask_path, std::ios::binary | std::ios::trunc);
       output.write(reinterpret_cast<const char*>(valid_mask.data()), static_cast<std::streamsize>(valid_mask.size()));
       output.close();

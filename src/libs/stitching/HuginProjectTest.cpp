@@ -836,34 +836,33 @@ int main() {
   ok &= expect(!symlink_error, "symlinked prior-artifact fixture must restore the regular artifact");
   ok &= expect(
       fs::remove(root / "game" / "stitching_generation_id"),
-      "weak-filesystem legacy fixture must remove the identity sidecar recreated during rollback");
-  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
-  std::string weak_parent_generation;
-  std::string weak_parent_repeat;
+      "sidecar-free legacy fixture must remove the identity sidecar recreated during rollback");
+  std::string adopted_parent_generation;
+  std::string adopted_parent_repeat;
   {
-    auto weak_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
-    ok &= expect(weak_lock.ok(), "sidecar-free weak-filesystem fixture must lock");
-    if (weak_lock.ok()) {
-      const auto first = hm::stitching::HuginProject::GenerationId(root / "game", **weak_lock);
-      const auto second = hm::stitching::HuginProject::GenerationId(root / "game", **weak_lock);
+    auto adoption_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    ok &= expect(adoption_lock.ok(), "sidecar-free generation fixture must lock");
+    if (adoption_lock.ok()) {
+      const auto first = hm::stitching::HuginProject::GenerationId(root / "game", **adoption_lock);
+      const auto second = hm::stitching::HuginProject::GenerationId(root / "game", **adoption_lock);
       if (first.ok())
-        weak_parent_generation = *first;
+        adopted_parent_generation = *first;
       if (second.ok())
-        weak_parent_repeat = *second;
+        adopted_parent_repeat = *second;
     }
   }
-  const bool weak_child_matches = generation_matches_in_child(root / "game", weak_parent_generation);
-  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
-  const bool weak_generation_stable = !weak_parent_generation.empty() && weak_parent_generation == weak_parent_repeat &&
-      weak_child_matches && read_text_file(root / "game" / "stitching_generation_id").rfind("version=3\n", 0) == 0;
-  if (!weak_generation_stable) {
-    std::cerr << "sidecar-free weak generation fixture: parent-bytes=" << weak_parent_generation.size()
-              << " repeat-bytes=" << weak_parent_repeat.size() << " child-matches=" << weak_child_matches
+  const bool adopted_child_matches = generation_matches_in_child(root / "game", adopted_parent_generation);
+  const bool adopted_generation_stable = !adopted_parent_generation.empty() &&
+      adopted_parent_generation == adopted_parent_repeat && adopted_child_matches &&
+      read_text_file(root / "game" / "stitching_generation_id").rfind("version=3\n", 0) == 0;
+  if (!adopted_generation_stable) {
+    std::cerr << "sidecar-free generation fixture: parent-bytes=" << adopted_parent_generation.size()
+              << " repeat-bytes=" << adopted_parent_repeat.size() << " child-matches=" << adopted_child_matches
               << " sidecar=" << fs::exists(root / "game" / "stitching_generation_id") << '\n';
   }
   ok &= expect(
-      weak_generation_stable,
-      "sidecar-free generations on weak filesystems must be adopted once and remain content-stable across processes");
+      adopted_generation_stable,
+      "sidecar-free generations must be content-adopted once and remain stable across processes");
 
   const fs::path full_digest_artifact = root / "game" / "hm_project.pto";
   const std::vector<unsigned char> original_full_digest_artifact = read_binary_file(full_digest_artifact);
@@ -1351,9 +1350,15 @@ int main() {
   const auto oversized_generation = oversized_generation_lock.ok()
       ? hm::stitching::HuginProject::GenerationId(oversized_generation_root, **oversized_generation_lock)
       : absl::StatusOr<std::string>(oversized_generation_lock.status());
+  ::setenv("HM_TEST_STITCH_DISABLE_LINK_CLONE", "1", 1);
+  const absl::Status oversized_rollback = hm::stitching::clone_or_copy_stitch_rollback_file(
+      oversized_generation_root / "mapping_0000_x.tif", oversized_generation_root / "rollback-mapping.tif");
+  ::unsetenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
   ok &= expect(
-      !oversized_copy_error && oversized_mapping_written && absl::IsFailedPrecondition(oversized_generation.status()),
-      "generation fingerprinting must reject oversized sparse TIFFs before reading their payload");
+      !oversized_copy_error && oversized_mapping_written && absl::IsFailedPrecondition(oversized_generation.status()) &&
+          absl::IsFailedPrecondition(oversized_rollback) &&
+          !fs::exists(oversized_generation_root / "rollback-mapping.tif"),
+      "generation fingerprinting and rollback must reject oversized sparse TIFFs before reading their payload");
   if (oversized_generation_lock.ok())
     oversized_generation_lock->reset();
   fs::remove_all(oversized_generation_root);

@@ -1273,10 +1273,15 @@ absl::Status PipelineApplication::configureInstances(
           return absl::InternalError("Unable to publish the saved stitching invalidation ID to runtime plugins");
         }
       }
+      constexpr const char* kCalibrationRunGenerationPath =
+          "pipeline.hmstitcher.private-properties.calibration-run-generation";
+      // This capability is app-issued and applies only to the first plugin
+      // instance created for a classified calibration run. Override any value
+      // supplied by YAML before issuing the current run's generation.
+      HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kCalibrationRunGenerationPath, ""));
       if (app_ctx->configurator().stitching_calibration_required()) {
         HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(
-            "pipeline.hmstitcher.private-properties.calibration-run-generation",
-            std::to_string(main_loop_generation_ + 1)));
+            kCalibrationRunGenerationPath, std::to_string(main_loop_generation_ + 1)));
       }
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
@@ -1348,6 +1353,13 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    auto& stitcher_private_properties = app_contexts[i]->config.hmsticher_config.private_properties;
+    stitcher_private_properties.erase(
+        std::remove_if(
+            stitcher_private_properties.begin(),
+            stitcher_private_properties.end(),
+            [](const hm::gst::PluginProperty& property) { return property.name == "calibration-run-generation"; }),
+        stitcher_private_properties.end());
     const uint64_t initial_position_ns = initial_pipeline_position_ns(app_contexts[i].get());
     if (app_contexts[i]->configurator().stitching_calibration_required() && initial_position_ns != 0 &&
         !app_contexts[i]->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {

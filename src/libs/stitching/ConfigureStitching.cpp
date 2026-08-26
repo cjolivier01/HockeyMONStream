@@ -38,6 +38,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -82,7 +83,8 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
 constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
-constexpr size_t kMaximumFieldMaskPngBytes = 512ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
 
 void report_calibration_progress(const std::string& stage, const std::string& status, const std::string& message = {}) {
   std::cout << "HSTREAM_CALIBRATION stage=" << stage << " status=" << status;
@@ -1264,6 +1266,11 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   if (!up_to_date) {
     return false;
   }
+  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
+  if (!artifact_bounds.ok()) {
+    std::cout << "Stitching artifacts are unsafe or exceed parser byte limits: " << artifact_bounds << std::endl;
+    return false;
+  }
   CanvasSize canvas_size;
   TiffPlacement p0;
   TiffPlacement p1;
@@ -2398,12 +2405,37 @@ struct FieldMaskPng {
   std::string encoded;
 };
 
-absl::StatusOr<FieldMaskPng> read_field_mask_png(const std::string& path) {
-  std::string encoded;
-  HM_ASSIGN_OR_RETURN(encoded, read_bounded_regular_file_no_follow(path, kMaximumFieldMaskPngBytes, "field-mask PNG"));
-  if (encoded.size() < 29)
-    return absl::FailedPreconditionError("Field mask has a truncated PNG header: " + path);
-  const auto* header = reinterpret_cast<const unsigned char*>(encoded.data());
+absl::StatusOr<FieldMaskPng> read_field_mask_png(
+    const std::string& path,
+    const std::optional<CanvasSize>& expected_canvas_size) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open field-mask PNG: " + path + ": " + std::strerror(errno));
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
+    return absl::FailedPreconditionError("Invalid field-mask PNG: " + path);
+
+  std::array<unsigned char, 29> header_bytes{};
+  size_t header_offset = 0;
+  while (header_offset < header_bytes.size()) {
+    const ssize_t count = ::pread(
+        descriptor,
+        header_bytes.data() + header_offset,
+        header_bytes.size() - header_offset,
+        static_cast<off_t>(header_offset));
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Field mask has a truncated PNG header: " + path);
+    header_offset += static_cast<size_t>(count);
+  }
+  const auto* header = header_bytes.data();
   const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
   if (!std::equal(signature.begin(), signature.end(), header))
     return absl::FailedPreconditionError("Field mask is not a PNG image: " + path);
@@ -2421,8 +2453,53 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(const std::string& path) {
       static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels) {
     return absl::FailedPreconditionError("Field mask has invalid PNG dimensions: " + path);
   }
+  const CanvasSize canvas_size{.width = width, .height = height};
+  if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+      max_canvas_dimension.has_value() && canvas_exceeds_max_dimension(canvas_size, *max_canvas_dimension)) {
+    return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
+  }
+  if (expected_canvas_size.has_value() &&
+      (width != expected_canvas_size->width || height != expected_canvas_size->height)) {
+    return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
+  }
+
+  const uint64_t pixels = static_cast<uint64_t>(width) * height;
+  const uint64_t canvas_budget = std::min(
+      kMaximumFieldMaskPngBudgetBytes,
+      std::max(kMinimumFieldMaskPngBudgetBytes, pixels * 4 + kMinimumFieldMaskPngBudgetBytes));
+  if (metadata.st_size < 0 || static_cast<uint64_t>(metadata.st_size) > canvas_budget) {
+    return absl::FailedPreconditionError("Field-mask PNG exceeds its stitched-canvas resource budget: " + path);
+  }
+  std::string encoded;
+  try {
+    encoded.resize(static_cast<size_t>(metadata.st_size));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate the compressed field-mask PNG");
+  } catch (const std::length_error&) {
+    return absl::ResourceExhaustedError("Compressed field-mask PNG size exceeds the host container limit");
+  }
+  size_t offset = 0;
+  while (offset < encoded.size()) {
+    const ssize_t count =
+        ::pread(descriptor, encoded.data() + offset, encoded.size() - offset, static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read field-mask PNG: " + path);
+    offset += static_cast<size_t>(count);
+  }
+  struct stat verified_metadata{};
+  if (::fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
+      metadata.st_ino != verified_metadata.st_ino || metadata.st_mode != verified_metadata.st_mode ||
+      metadata.st_size != verified_metadata.st_size || metadata.st_mtim.tv_sec != verified_metadata.st_mtim.tv_sec ||
+      metadata.st_mtim.tv_nsec != verified_metadata.st_mtim.tv_nsec ||
+      metadata.st_ctim.tv_sec != verified_metadata.st_ctim.tv_sec ||
+      metadata.st_ctim.tv_nsec != verified_metadata.st_ctim.tv_nsec ||
+      !std::equal(header_bytes.begin(), header_bytes.end(), reinterpret_cast<const unsigned char*>(encoded.data()))) {
+    return absl::AbortedError("Field-mask PNG changed while it was being read: " + path);
+  }
   return FieldMaskPng{
-      .canvas_size = {.width = width, .height = height},
+      .canvas_size = canvas_size,
       .encoded = std::move(encoded),
   };
 }
@@ -2587,16 +2664,7 @@ absl::StatusOr<cv::Mat> load_field_mask_impl(
       loaded_hugin_generation,
       [&](const std::string& mask_path, const std::optional<CanvasSize>& expected_canvas_size) {
         FieldMaskPng encoded_mask;
-        HM_ASSIGN_OR_RETURN(encoded_mask, read_field_mask_png(mask_path));
-        const CanvasSize& header_size = encoded_mask.canvas_size;
-        if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
-            max_canvas_dimension.has_value() && canvas_exceeds_max_dimension(header_size, *max_canvas_dimension)) {
-          return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
-        }
-        if (expected_canvas_size.has_value() &&
-            (header_size.width != expected_canvas_size->width || header_size.height != expected_canvas_size->height)) {
-          return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
-        }
+        HM_ASSIGN_OR_RETURN(encoded_mask, read_field_mask_png(mask_path, expected_canvas_size));
         if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
           const long delay_ms = std::strtol(delay, nullptr, 10);
           if (delay_ms > 0)
