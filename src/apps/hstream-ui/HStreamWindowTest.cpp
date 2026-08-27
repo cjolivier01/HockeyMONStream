@@ -4890,6 +4890,61 @@ bool test_output_controls(HStreamWindow* window) {
       "Each archive job must persist the UI log beside its resolved work video with owner-only permissions");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVER_EXISTING");
 
+  bool same_filesystem_log_rollback = true;
+#ifdef Q_OS_UNIX
+  const auto guarded_same_filesystem_fallback = [&](const QString& basename,
+                                                    const char* failure_environment,
+                                                    bool expect_foreign_guard) {
+    const QString resolved_source = QDir(output_root.path()).filePath(basename + ".mkv");
+    const QString resolved_log = resolved_source + ".log";
+    const QString resolved_guard = resolved_log + ".hstream-pin";
+    QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
+    const QStringList provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QFile::remove(resolved_log);
+    QFile::remove(resolved_guard);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", resolved_source.toLocal8Bit());
+    qputenv(failure_environment, "1");
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    qunsetenv(failure_environment);
+    const QStringList provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString fallback_log_text;
+    for (const QString& provisional_log : provisional_logs_after) {
+      if (provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    QFile guard_file(resolved_guard);
+    const bool guard_opened = guard_file.open(QIODevice::ReadOnly);
+    const QByteArray guard_text = guard_opened ? guard_file.readAll() : QByteArray();
+    const bool result = !QFileInfo::exists(resolved_log) &&
+        fallback_log_text.contains(QString("archive backend resolved output: %1").arg(resolved_source)) &&
+        fallback_log_text.contains("pipeline finished") &&
+        (expect_foreign_guard ? guard_text == "injected foreign resolved log guard"
+                              : !QFileInfo::exists(resolved_guard));
+    QFile::remove(resolved_guard);
+    return result;
+  };
+  same_filesystem_log_rollback = expect(
+      guarded_same_filesystem_fallback(
+          "same-filesystem-guard-collision", "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_COLLISION", true) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-sync-failure", "HSTREAM_UI_TEST_ARCHIVE_SAME_FILESYSTEM_SYNC_FAILURE", false),
+      "Same-filesystem log publication must retain the guarded provisional log when its guard or sync commit fails");
+#endif
+
   bool cross_filesystem_log_persisted = true;
 #ifdef Q_OS_UNIX
   QTemporaryDir cross_filesystem_root("/dev/shm/hstream-ui-cross-filesystem-XXXXXX");
@@ -5623,11 +5678,12 @@ bool test_output_controls(HStreamWindow* window) {
   }
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
       nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
-      cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
-      durability_sync_responsive && target_cleanup_race_recovered && source_cleanup_sync_failure_recovered &&
-      cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
-      no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
-      publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery;
+      same_filesystem_log_rollback && cross_filesystem_log_persisted && finalization_visible &&
+      completed_log_persisted && archive_deployed && durability_sync_responsive && target_cleanup_race_recovered &&
+      source_cleanup_sync_failure_recovered && cleanup_directory_sync_failure_safe && guard_sync_failure_moved &&
+      failed_archive_retained && no_log_recovery_reserved && post_quarantine_recovery_safe &&
+      recovery_publication_sync_failure_safe && publication_sync_failure_moved && unsafe_retry_blocked &&
+      retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

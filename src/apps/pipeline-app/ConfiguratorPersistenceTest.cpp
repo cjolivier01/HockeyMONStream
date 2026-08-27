@@ -1763,20 +1763,28 @@ play-tracker:
   fs::create_hard_link(orphan_log_guard_backing, orphan_guard_occupied_log.string() + ".hstream-pin");
   const auto orphan_guard_recoveries =
       hm::configurator_internal::recover_stale_archive_work_files(orphan_guard_archive);
-  std::ifstream orphan_guard_recovery_stream(orphan_guard_expected, std::ios::binary);
+  std::ifstream orphan_guard_recovery_stream(orphan_guard_occupied, std::ios::binary);
   const std::string orphan_guard_recovery_content{
       std::istreambuf_iterator<char>(orphan_guard_recovery_stream), std::istreambuf_iterator<char>()};
-  std::ifstream orphan_guard_recovery_log_stream(orphan_guard_expected_log, std::ios::binary);
+  std::ifstream orphan_guard_recovery_log_stream(orphan_guard_occupied_log, std::ios::binary);
   const std::string orphan_guard_recovery_log_content{
       std::istreambuf_iterator<char>(orphan_guard_recovery_log_stream), std::istreambuf_iterator<char>()};
+  std::ifstream prior_guard_recovery_stream(orphan_guard_expected, std::ios::binary);
+  const std::string prior_guard_recovery_content{
+      std::istreambuf_iterator<char>(prior_guard_recovery_stream), std::istreambuf_iterator<char>()};
+  std::ifstream prior_guard_recovery_log_stream(orphan_guard_expected_log, std::ios::binary);
+  const std::string prior_guard_recovery_log_content{
+      std::istreambuf_iterator<char>(prior_guard_recovery_log_stream), std::istreambuf_iterator<char>()};
   ok &= expect(
-      orphan_guard_recoveries.ok() && orphan_guard_recoveries->size() == 1 &&
-          orphan_guard_recoveries->front() == orphan_guard_expected &&
+      orphan_guard_recoveries.ok() && orphan_guard_recoveries->size() == 2 &&
+          orphan_guard_recoveries->at(0) == orphan_guard_expected &&
+          orphan_guard_recoveries->at(1) == orphan_guard_occupied &&
           orphan_guard_recovery_content == "new stale video" && orphan_guard_recovery_log_content == "new stale log" &&
-          !fs::exists(orphan_guard_stale) && !fs::exists(orphan_guard_stale_log) &&
-          fs::is_regular_file(orphan_guard_occupied.string() + ".hstream-pin") &&
-          fs::is_regular_file(orphan_guard_occupied_log.string() + ".hstream-pin"),
-      "Stale recovery must skip a basename occupied only by durable guards from an older moved recovery");
+          prior_guard_recovery_content == "prior guarded video" &&
+          prior_guard_recovery_log_content == "prior guarded log" && !fs::exists(orphan_guard_stale) &&
+          !fs::exists(orphan_guard_stale_log) && !fs::exists(orphan_guard_occupied.string() + ".hstream-pin") &&
+          !fs::exists(orphan_guard_occupied_log.string() + ".hstream-pin"),
+      "Recovery must reconcile an older guard-only transaction before preserving a new stale archive");
 
   const auto interrupted_recovery_is_reconciled =
       [&](const std::string& name, bool has_log, bool destination_log_exists, bool destination_video_exists) {
@@ -1997,7 +2005,9 @@ play-tracker:
           !fs::exists(source_link_race_recovery.string() + ".log"),
       "Recovery publication must link the pinned source inode and leave a replacement source pathname untouched");
 
-  const auto interrupted_after_source_cleanup_is_reconciled = [&](const std::string& name, bool has_log) {
+  const auto interrupted_after_source_cleanup_is_reconciled = [&](const std::string& name,
+                                                                  bool has_log,
+                                                                  bool remove_visible_video) {
     const fs::path interrupted_dir = root / ("archive-post-source-cleanup-" + name);
     fs::create_directories(interrupted_dir);
     const fs::path configured = interrupted_dir / (name + ".mkv");
@@ -2011,18 +2021,25 @@ play-tracker:
     g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP", "1", TRUE);
     const auto interrupted = hm::configurator_internal::recover_stale_archive_work_files(configured);
     g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP");
+    if (remove_visible_video)
+      fs::remove(recovery);
     const auto resumed = hm::configurator_internal::recover_stale_archive_work_files(configured);
-    std::ifstream recovery_log_stream(recovery_log, std::ios::binary);
+    const fs::path expected_recovery =
+        remove_visible_video ? interrupted_dir / (name + "-finalization-failed-1.mkv") : recovery;
+    const fs::path expected_recovery_log = expected_recovery.string() + ".log";
+    std::ifstream recovery_log_stream(expected_recovery_log, std::ios::binary);
     const std::string recovery_log_content{
         std::istreambuf_iterator<char>(recovery_log_stream), std::istreambuf_iterator<char>()};
-    return !interrupted.ok() && resumed.ok() && resumed->size() == 1 && resumed->front() == recovery &&
-        fs::is_regular_file(recovery) && !fs::exists(source) && !fs::exists(source_log) &&
-        (has_log ? recovery_log_content == name + " trusted log" : !fs::exists(recovery_log));
+    return !interrupted.ok() && resumed.ok() && resumed->size() == 1 && resumed->front() == expected_recovery &&
+        fs::is_regular_file(expected_recovery) && !fs::exists(source) && !fs::exists(source_log) &&
+        (has_log ? recovery_log_content == name + " trusted log" : !fs::exists(expected_recovery_log));
   };
   ok &= expect(
-      interrupted_after_source_cleanup_is_reconciled("with-log", true) &&
-          interrupted_after_source_cleanup_is_reconciled("without-log", false),
-      "Restart recovery must finish log and no-log transactions interrupted after retiring the source video");
+      interrupted_after_source_cleanup_is_reconciled("with-log", true, false) &&
+          interrupted_after_source_cleanup_is_reconciled("without-log", false, false) &&
+          interrupted_after_source_cleanup_is_reconciled("guard-only-with-log", true, true) &&
+          interrupted_after_source_cleanup_is_reconciled("guard-only-without-log", false, true),
+      "Restart recovery must finish source-cleanup interruptions, including when only recovery guards remain");
 
   const auto late_interrupted_recovery_is_reconciled =
       [&](const std::string& name, bool has_log, const char* interruption_env) {

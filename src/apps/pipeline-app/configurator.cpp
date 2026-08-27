@@ -2508,12 +2508,28 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
   }
 
   // Once a source pathname is retired, matching recovery guards are the
-  // transaction record.  Never infer ownership from an unguarded visible
-  // recovery pair, and use the guards to rescue a pair whose visible names
-  // were replaced while the previous process was committing it.
-  for (const fs::path& recovery_path : directory_entries) {
-    if (!is_archive_recovery_path(recovery_path, configured_path))
+  // transaction record.  Discover a transaction from either its visible
+  // video or its video guard: a crash or later pathname replacement can leave
+  // the guard as the only surviving trusted name.
+  std::set<fs::path> recovery_paths;
+  for (const fs::path& entry : directory_entries) {
+    if (is_archive_recovery_path(entry, configured_path)) {
+      recovery_paths.insert(entry);
       continue;
+    }
+    constexpr absl::string_view kGuardSuffix = ".hstream-pin";
+    const std::string entry_string = entry.string();
+    if (!absl::EndsWith(entry_string, kGuardSuffix))
+      continue;
+    const fs::path guarded_path = entry_string.substr(0, entry_string.size() - kGuardSuffix.size());
+    if (is_archive_recovery_path(guarded_path, configured_path))
+      recovery_paths.insert(guarded_path);
+  }
+
+  // Never infer ownership from an unguarded visible recovery pair, and use
+  // the guards to rescue a pair whose visible names were replaced while the
+  // previous process was committing it.
+  for (const fs::path& recovery_path : recovery_paths) {
     const fs::path recovery_log_path = archive_log_sidecar(recovery_path);
     const fs::path recovery_guard_path = recovery_path.string() + ".hstream-pin";
     const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
