@@ -1857,6 +1857,7 @@ play-tracker:
   YAML::Node inherited_parameter_private(YAML::NodeType::Map);
   inherited_parameter_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   inherited_parameter_private["stitching"]["mapping_backend"] = "nona";
+  inherited_parameter_private["stitching"]["projection"] = "general_panini";
   inherited_parameter_private["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[110, 5, -5]");
   ok &= expect(
       hm::stitching::publish_game_config(inherited_parameter_dir, YAML::Dump(inherited_parameter_private) + "\n").ok(),
@@ -1887,10 +1888,11 @@ play-tracker:
           (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]
                                        ["previous_projection_parameters"][0]
                                            .as<double>() == 110.0 &&
-          !hm::get_node(
-               **inherited_parameter_final, "hstream_ui.generated_stitching_backend_choices.previous_projection")
-               .has_value(),
-      "Private parameters for an inherited projection must survive generated-choice normalization and reload");
+          (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection"]
+                  .as<std::string>() == "general_panini" &&
+          !hm::get_node(**inherited_parameter_final, "stitching.projection_parameters.general_panini").has_value(),
+      "Private parameters under the canonical key for an aliased projection scalar must survive generated-choice "
+      "normalization and reload");
 
   const fs::path legacy_opencv_dir = games / "legacy-opencv-no-projection";
   fs::create_directories(legacy_opencv_dir);
@@ -3745,6 +3747,10 @@ play-tracker:
   runtime_claim_config["pipeline"]["application"]["complete-configuration"] = "1";
   runtime_claim_config["pipeline"]["hmstitcher"]["enable"] = "1";
   runtime_claim_config["pipeline"]["hmstitcher"]["one-pass-mode"] = "1";
+  runtime_claim_config["stitching"]["mapping_backend"] = "nona";
+  runtime_claim_config["stitching"]["projection"] = "general-panini";
+  runtime_claim_config["stitching"]["run_autooptimizer"] = true;
+  runtime_claim_config["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[120, 15, -20]");
   runtime_claim_config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
   runtime_claim_config["hstream_ui"]["stitching_calibration"]["frame_count"] = 4;
   runtime_claim_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
@@ -3763,7 +3769,6 @@ play-tracker:
       /*clean_stitching_artifacts=*/false,
       /*clean_stitching_from_control_points=*/false,
       /*clean_expected_invalidation_id=*/"runtime-claim-a");
-  (void)runtime_claim_status;
   const absl::Status runtime_peer_claim_status = runtime_claim_peer.complete_configuration(
       /*force=*/false,
       /*clean_stitching_artifacts=*/false,
@@ -3772,15 +3777,20 @@ play-tracker:
   const YAML::Node claimed_runtime_config = YAML::LoadFile((runtime_claim_dir / "config.yaml").string());
   const YAML::Node claimed_runtime_calibration = claimed_runtime_config["hstream_ui"]["stitching_calibration"];
   ok &= expect(
-      runtime_claim_configurator.stitching_calibration_required() &&
+      runtime_claim_status.code() != absl::StatusCode::kAborted &&
+          runtime_claim_configurator.stitching_calibration_required() &&
           runtime_claim_configurator.active_stitching_invalidation_id() == "runtime-claim-a" &&
           runtime_peer_claim_status.code() != absl::StatusCode::kAborted &&
           runtime_claim_peer.active_stitching_invalidation_id() == "runtime-claim-a" &&
           claimed_runtime_calibration["status"].as<std::string>() == "pending" &&
           claimed_runtime_calibration["stale_from"].as<std::string>() == "input" &&
           claimed_runtime_calibration["artifacts_invalidated"].as<bool>() &&
+          claimed_runtime_calibration["backend_generation"]["projection_parameters"][0].as<double>() == 120.0 &&
+          claimed_runtime_calibration["backend_generation"]["projection_parameters"][1].as<double>() == 15.0 &&
+          claimed_runtime_calibration["backend_generation"]["projection_parameters"][2].as<double>() == -20.0 &&
           claimed_runtime_calibration["invalidation_id"].as<std::string>() == "runtime-claim-a",
-      "runtime-discovered missing mappings must share the reserved owner before Hugin publication can begin");
+      "runtime-discovered missing mappings with custom projection parameters must share the reserved owner before "
+      "Hugin publication can begin");
 
   const fs::path superseded_complete_dir = games / "superseded-complete";
   fs::create_directories(superseded_complete_dir);

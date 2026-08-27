@@ -558,6 +558,18 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       return std::nullopt;
     }
   };
+  auto canonical_projection_name = [](const std::optional<YAML::Node>& node) -> std::optional<std::string> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      const auto projection = stitching::ParseStitchProjection(node->as<std::string>());
+      if (!projection.ok())
+        return std::nullopt;
+      return std::string(stitching::StitchProjectionName(*projection));
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
   bool generated_autooptimizer_matches_private = !generated_autooptimizer.has_value();
   if (generated_autooptimizer.has_value() && generated_autooptimizer->IsScalar() && private_autooptimizer.has_value() &&
       private_autooptimizer->IsScalar()) {
@@ -644,12 +656,15 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
   }
   if (generated_projection_parameters.has_value() && generated_projection.has_value() &&
       generated_projection->IsScalar()) {
-    remove_yaml_key_path(config, {"stitching", "projection_parameters", generated_projection->as<std::string>()});
+    const auto generated_parameter_projection = canonical_projection_name(generated_projection);
+    if (generated_parameter_projection.has_value())
+      remove_yaml_key_path(config, {"stitching", "projection_parameters", *generated_parameter_projection});
     const auto restored_parameter_projection =
         previous_projection.has_value() && previous_projection->IsScalar() ? previous_projection : generated_projection;
-    if (restored_parameter_projection.has_value() && restored_parameter_projection->IsScalar() &&
-        previous_projection_parameters.has_value() && previous_projection_parameters->IsSequence()) {
-      config["stitching"]["projection_parameters"][restored_parameter_projection->as<std::string>()] =
+    const auto restored_parameter_projection_name = canonical_projection_name(restored_parameter_projection);
+    if (restored_parameter_projection_name.has_value() && previous_projection_parameters.has_value() &&
+        previous_projection_parameters->IsSequence()) {
+      config["stitching"]["projection_parameters"][*restored_parameter_projection_name] =
           YAML::Clone(*previous_projection_parameters);
     }
   }
@@ -7342,8 +7357,13 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     }
     const bool persisted_parameters_are_generated =
         persisted_values_are_generated && persisted_generated_projection_parameters.has_value();
-    const std::string persisted_parameter_projection =
-        persisted_projection_present ? persisted_projection->as<std::string>() : projection_name;
+    std::string persisted_parameter_projection = projection_name;
+    if (persisted_projection_present) {
+      const auto parsed_persisted_projection =
+          stitching::ParseStitchProjection(persisted_projection->as<std::string>());
+      if (parsed_persisted_projection.ok())
+        persisted_parameter_projection = stitching::StitchProjectionName(*parsed_persisted_projection);
+    }
     const auto persisted_parameter_path =
         get_node(persisted_private_config_, "stitching.projection_parameters." + persisted_parameter_projection);
     if (persisted_parameters_are_generated && persisted_previous_projection_parameters.has_value() &&
@@ -7749,11 +7769,19 @@ absl::Status Configurator::complete_configuration(
         bool expected_run_autooptimizer = false;
         HM_ASSIGN_OR_RETURN(
             expected_run_autooptimizer, get_yaml_bool_value(config_, "stitching.run_autooptimizer", false));
+        stitching::StitchProjection expected_projection;
+        HM_ASSIGN_OR_RETURN(
+            expected_projection,
+            stitching::ParseStitchProjection(get_node_value(config_, "stitching.projection", std::string())));
+        std::vector<double> expected_projection_parameters;
+        HM_ASSIGN_OR_RETURN(
+            expected_projection_parameters, stitching::read_stitch_projection_parameters(config_, expected_projection));
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
             get_node_value(config_, "stitching.mapping_backend", std::string()),
             get_node_value(config_, "stitching.projection", std::string()),
-            expected_run_autooptimizer};
+            expected_run_autooptimizer,
+            expected_projection_parameters};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));

@@ -6508,9 +6508,45 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           calibration["status"].as<std::string>() == "pending" &&
           calibration["stale_from"].as<std::string>() == "canvas" && !save->isEnabled(),
       "Saving General Panini parameters must persist Hugin order and invalidate calibration from the canvas stage");
+
+  YAML::Node generated_override = YAML::Clone(config);
+  generated_override["stitching"]["projection"] = "triplane";
+  generated_override["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[75]");
+  YAML::Node generated_choices = generated_override["hstream_ui"]["generated_stitching_backend_choices"];
+  generated_choices["control_point_matcher"] =
+      generated_override["stitching"]["control_point_matcher"].as<std::string>();
+  generated_choices["mapping_backend"] = "nona";
+  generated_choices["projection"] = "triplane";
+  generated_choices["run_autooptimizer"] = true;
+  generated_choices["projection_parameters"] = YAML::Load("[75]");
+  generated_choices["previous_control_point_matcher"] =
+      generated_override["stitching"]["control_point_matcher"].as<std::string>();
+  generated_choices["previous_mapping_backend"] = "nona";
+  generated_choices["previous_projection"] = "general-panini";
+  generated_choices["previous_run_autooptimizer"] = true;
+  generated_choices["previous_projection_parameters"] = YAML::Load("[120, 15, -20]");
+  std::ofstream(config_path) << YAML::Dump(generated_override) << '\n';
+  activate(create);
+  const bool generated_parameters_restored = expect(
+      projection->currentData().toString() == "general-panini" && compression->value() == 120.0 &&
+          top_squeeze->value() == 15.0 && bottom_squeeze->value() == -20.0,
+      "UI load must restore projection parameters displaced by generated backend choices");
+  projection->setCurrentIndex(projection->findData("triplane"));
+  QApplication::processEvents();
+  const bool generated_projection_parameters_discarded = expect(
+      compression->value() == 60.0,
+      "UI load must discard generated parameters for a projection that was not previously selected");
+
+  generated_override["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
+  std::ofstream(config_path) << YAML::Dump(generated_override) << '\n';
+  activate(create);
+  const bool edited_generated_parameters_are_user_intent = expect(
+      projection->currentData().toString() == "triplane" && compression->value() == 80.0,
+      "UI load must stop trusting generated-choice provenance after projection parameters are edited");
   game_id->setText(original_game_id);
   activate(create);
-  return saved;
+  return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
+      edited_generated_parameters_are_user_intent;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

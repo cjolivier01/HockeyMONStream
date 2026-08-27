@@ -3579,11 +3579,14 @@ bool generated_stitching_backend_choices_match_private(
     QString* previous_matcher = nullptr,
     QString* previous_backend = nullptr,
     QString* previous_projection = nullptr,
+    std::optional<std::vector<double>>* previous_projection_parameters = nullptr,
+    QString* generated_parameter_projection = nullptr,
     std::optional<bool>* previous_autooptimizer = nullptr,
     bool* autooptimizer_was_generated = nullptr) {
   YAML::Node generated_matcher;
   YAML::Node generated_backend;
   YAML::Node generated_projection;
+  YAML::Node generated_projection_parameters;
   YAML::Node generated_autooptimizer;
   YAML::Node private_matcher;
   YAML::Node private_backend;
@@ -3592,9 +3595,53 @@ bool generated_stitching_backend_choices_match_private(
   const bool generated_projection_present =
       lookup_yaml_path(config, "hstream_ui.generated_stitching_backend_choices.projection", &generated_projection);
   const bool private_projection_present = lookup_yaml_path(config, "stitching.projection", &private_projection);
+  std::optional<hm::stitching::StitchProjection> parsed_generated_projection;
+  std::optional<hm::stitching::StitchProjection> parsed_private_projection;
+  if (generated_projection_present && generated_projection.IsScalar()) {
+    const auto parsed = hm::stitching::ParseStitchProjection(generated_projection.as<std::string>());
+    if (parsed.ok())
+      parsed_generated_projection = *parsed;
+  }
+  if (private_projection_present && private_projection.IsScalar()) {
+    const auto parsed = hm::stitching::ParseStitchProjection(private_projection.as<std::string>());
+    if (parsed.ok())
+      parsed_private_projection = *parsed;
+  }
   const bool projection_matches = (!generated_projection_present && !private_projection_present) ||
-      (generated_projection_present && generated_projection.IsScalar() && private_projection_present &&
-       private_projection.IsScalar() && generated_projection.as<std::string>() == private_projection.as<std::string>());
+      (parsed_generated_projection.has_value() && parsed_private_projection.has_value() &&
+       *parsed_generated_projection == *parsed_private_projection);
+  const bool has_generated_projection_parameters = lookup_yaml_path(
+      config, "hstream_ui.generated_stitching_backend_choices.projection_parameters", &generated_projection_parameters);
+  auto parse_parameter_sequence = [](const YAML::Node& node,
+                                     hm::stitching::StitchProjection projection) -> std::optional<std::vector<double>> {
+    if (!node.IsSequence())
+      return std::nullopt;
+    try {
+      std::vector<double> values;
+      values.reserve(node.size());
+      for (const YAML::Node& item : node) {
+        if (!item.IsScalar())
+          return std::nullopt;
+        const double value = item.as<double>();
+        if (!std::isfinite(value))
+          return std::nullopt;
+        values.push_back(value);
+      }
+      if (!hm::stitching::ValidateStitchProjectionParameters(projection, values).ok())
+        return std::nullopt;
+      return values;
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  bool generated_projection_parameters_match = !has_generated_projection_parameters;
+  if (has_generated_projection_parameters && parsed_generated_projection.has_value()) {
+    const auto generated_values =
+        parse_parameter_sequence(generated_projection_parameters, *parsed_generated_projection);
+    const auto private_values = hm::stitching::read_stitch_projection_parameters(config, *parsed_generated_projection);
+    generated_projection_parameters_match =
+        generated_values.has_value() && private_values.ok() && *generated_values == *private_values;
+  }
   const bool has_generated_autooptimizer = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.run_autooptimizer", &generated_autooptimizer);
   const bool generated_autooptimizer_matches = !has_generated_autooptimizer ||
@@ -3610,16 +3657,22 @@ bool generated_stitching_backend_choices_match_private(
       private_matcher.IsScalar() && lookup_yaml_path(config, "stitching.mapping_backend", &private_backend) &&
       private_backend.IsScalar() && private_matcher.as<std::string>() == generated_matcher.as<std::string>() &&
       private_backend.as<std::string>() == generated_backend.as<std::string>() && projection_matches &&
-      generated_autooptimizer_matches;
+      generated_autooptimizer_matches && generated_projection_parameters_match;
   if (!matches) {
     return false;
   }
   if (autooptimizer_was_generated)
     *autooptimizer_was_generated = has_generated_autooptimizer;
+  if (generated_parameter_projection) {
+    *generated_parameter_projection = has_generated_projection_parameters && parsed_generated_projection.has_value()
+        ? QString::fromLatin1(hm::stitching::StitchProjectionName(*parsed_generated_projection))
+        : QString();
+  }
 
   YAML::Node previous_matcher_node;
   YAML::Node previous_backend_node;
   YAML::Node previous_projection_node;
+  QString restored_projection;
   if (previous_matcher &&
       lookup_yaml_path(
           config,
@@ -3648,8 +3701,28 @@ bool generated_stitching_backend_choices_match_private(
       previous_projection_node.IsScalar()) {
     const auto canonical =
         canonical_projection_choice(QString::fromStdString(previous_projection_node.as<std::string>()));
-    if (canonical.has_value())
+    if (canonical.has_value()) {
       *previous_projection = *canonical;
+      restored_projection = *canonical;
+    }
+  } else if (parsed_generated_projection.has_value()) {
+    restored_projection = QString::fromLatin1(hm::stitching::StitchProjectionName(*parsed_generated_projection));
+  }
+  if (previous_projection_parameters) {
+    *previous_projection_parameters = std::nullopt;
+    YAML::Node previous_parameters_node;
+    if (lookup_yaml_path(
+            config,
+            "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters",
+            &previous_parameters_node)) {
+      const auto parsed_restored_projection = hm::stitching::ParseStitchProjection(restored_projection.toStdString());
+      if (!parsed_restored_projection.ok())
+        return false;
+      const auto parsed_parameters = parse_parameter_sequence(previous_parameters_node, *parsed_restored_projection);
+      if (!parsed_parameters.has_value())
+        return false;
+      *previous_projection_parameters = *parsed_parameters;
+    }
   }
   YAML::Node previous_autooptimizer_node;
   if (previous_autooptimizer && has_generated_autooptimizer &&
@@ -12179,6 +12252,8 @@ void HStreamWindow::loadSavedControlConfig() {
     QString previous_control_point_matcher;
     QString previous_mapping_backend;
     QString previous_projection;
+    std::optional<std::vector<double>> previous_projection_parameters;
+    QString generated_parameter_projection;
     bool staged_projection_explicit = false;
     std::optional<bool> previous_run_autooptimizer;
     bool run_autooptimizer_was_generated = false;
@@ -12187,6 +12262,8 @@ void HStreamWindow::loadSavedControlConfig() {
         &previous_control_point_matcher,
         &previous_mapping_backend,
         &previous_projection,
+        &previous_projection_parameters,
+        &generated_parameter_projection,
         &previous_run_autooptimizer,
         &run_autooptimizer_was_generated);
     if (generated_backend_choices) {
@@ -12270,14 +12347,23 @@ void HStreamWindow::loadSavedControlConfig() {
       for (const auto& projection_info : hm::stitching::SupportedStitchProjections()) {
         if (hm::stitching::StitchProjectionParameters(projection_info.projection).empty())
           continue;
+        const QString projection_name = QString::fromLatin1(projection_info.name);
+        if (generated_backend_choices && projection_name == generated_parameter_projection)
+          continue;
         const YAML::Node configured = configured_projection_parameters[projection_info.name];
         if (!configured || !configured.IsDefined() || configured.IsNull())
           continue;
         auto parameters = hm::stitching::read_stitch_projection_parameters(config, projection_info.projection);
         if (!parameters.ok())
           throw std::invalid_argument(std::string(parameters.status().message()));
-        staged_projection_parameters[QString::fromLatin1(projection_info.name)] = *parameters;
+        staged_projection_parameters[projection_name] = *parameters;
       }
+    }
+    if (generated_backend_choices && previous_projection_parameters.has_value()) {
+      const QString restored_parameter_projection =
+          previous_projection.isEmpty() ? generated_parameter_projection : previous_projection;
+      if (!restored_parameter_projection.isEmpty())
+        staged_projection_parameters[restored_parameter_projection] = *previous_projection_parameters;
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
