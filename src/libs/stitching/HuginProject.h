@@ -50,6 +50,8 @@ class HuginProject {
     size_t canvas_height{0};
     bool max_output_width_applied{false};
     bool max_canvas_dimension_applied{false};
+    std::optional<MappingBackend> mapping_backend;
+    std::optional<StitchProjection> projection;
   };
 
   struct Options {
@@ -61,6 +63,7 @@ class HuginProject {
     std::optional<size_t> max_output_width;
     MappingBackend mapping_backend{MappingBackend::kOpenCvMagsac};
     bool run_autooptimizer{false};
+    std::optional<StitchProjection> projection;
     std::string expected_invalidation_id;
     std::optional<StitchingBackendChoices> expected_backend_choices;
     ProgressCallback progress;
@@ -73,7 +76,15 @@ class HuginProject {
       const std::vector<FeatureMatch>& matches);
   static absl::StatusOr<std::pair<size_t, size_t>> ParseCanvasSize(const std::string& pto);
   static absl::StatusOr<int> ParseProjection(const std::string& pto);
+  static absl::StatusOr<double> ParseHorizontalFov(const std::string& pto);
   static absl::StatusOr<CameraPose> ParseCameraPose(const std::string& pto, size_t image_index);
+
+  // Rewrites autooptimiser_out.pto to the selected Nona/Hugin projection in an
+  // unpublished staging directory before mapping TIFF generation.
+  static absl::Status ApplyProjection(
+      const std::filesystem::path& staging_directory,
+      StitchProjection projection,
+      const std::function<bool()>& is_cancelled = {});
 
   // Validate a two-camera enblend seam and expand any pixel-offset crop to the
   // full mapping canvas expected by hm-cupano.

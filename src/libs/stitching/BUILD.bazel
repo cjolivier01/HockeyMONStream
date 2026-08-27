@@ -247,6 +247,18 @@ cc_library(
 )
 
 cc_library(
+  name = "stitching_algorithms",
+  srcs = ["StitchingAlgorithms.cpp"],
+  hdrs = ["StitchingAlgorithms.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
   name = "homography_maps",
   srcs = ["HomographyMaps.cpp"],
   hdrs = ["HomographyMaps.h"],
@@ -258,6 +270,7 @@ cc_library(
   deps = [
     ":canvas_constraint_check",
     ":feature_matcher",
+    ":stitching_algorithms",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",

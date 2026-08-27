@@ -1640,6 +1640,72 @@ enum class SeamValidationMode {
   kNormalize,
 };
 
+struct ConfiguredStitchAlgorithms {
+  MappingBackend mapping_backend;
+  StitchProjection projection;
+};
+
+absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
+  const fs::path config_path = fs::path(game_dir) / "config.yaml";
+  std::error_code config_error;
+  if (!fs::exists(config_path, config_error) && !config_error)
+    return std::nullopt;
+  if (config_error)
+    return absl::InternalError("Unable to inspect stitching configuration: " + config_error.message());
+  auto loaded = load_game_config_file(config_path);
+  if (!loaded.ok())
+    return loaded.status();
+  if (!loaded->has_value())
+    return std::nullopt;
+  try {
+    const YAML::Node stitching = (**loaded)["stitching"];
+    if (!stitching || stitching.IsNull())
+      return std::nullopt;
+    if (!stitching.IsMap())
+      return absl::InvalidArgumentError("stitching must be a map");
+    const YAML::Node backend_node = stitching["mapping_backend"];
+    const YAML::Node projection_node = stitching["projection"];
+    const bool backend_present = backend_node && !backend_node.IsNull();
+    const bool projection_present = projection_node && !projection_node.IsNull();
+    if (!backend_present && !projection_present)
+      return std::nullopt;
+    if ((backend_present && !backend_node.IsScalar()) || (projection_present && !projection_node.IsScalar())) {
+      return absl::InvalidArgumentError("stitching mapping backend and projection must be scalar values");
+    }
+    MappingBackend backend = MappingBackend::kOpenCvMagsac;
+    if (backend_present)
+      HM_ASSIGN_OR_RETURN(backend, ParseMappingBackend(backend_node.as<std::string>()));
+    StitchProjection projection =
+        backend == MappingBackend::kNona ? StitchProjection::kGeneralPanini : StitchProjection::kRectilinear;
+    if (projection_present)
+      HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(projection_node.as<std::string>()));
+    HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(backend, projection));
+    return ConfiguredStitchAlgorithms{.mapping_backend = backend, .projection = projection};
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read stitching mapping choices: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_compatibility(
+    const std::string& game_dir,
+    const std::optional<HuginProject::CanvasProvenance>& provenance) {
+  std::optional<ConfiguredStitchAlgorithms> configured;
+  HM_ASSIGN_OR_RETURN(configured, configured_stitch_algorithms(game_dir));
+  if (!configured.has_value())
+    return CanvasProvenanceCompatibility{true, {}};
+  if (!provenance.has_value() || !provenance->mapping_backend.has_value() || !provenance->projection.has_value()) {
+    return CanvasProvenanceCompatibility{
+        false, "mapping algorithm provenance is missing; the selected backend and projection cannot be verified"};
+  }
+  if (*provenance->mapping_backend != configured->mapping_backend) {
+    return CanvasProvenanceCompatibility{false, "the selected mapping backend changed"};
+  }
+  if (*provenance->projection != configured->projection) {
+    return CanvasProvenanceCompatibility{false, "the selected output projection changed"};
+  }
+  return CanvasProvenanceCompatibility{true, {}};
+}
+
 static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     const std::string& game_dir,
     size_t max_output_width,
@@ -1687,6 +1753,13 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
       *provenance, canvas_size, max_output_width, live_stitch_max_canvas_dimension());
   if (!compatibility.compatible) {
     std::cout << "Stitching artifacts require mapping regeneration because " << compatibility.reason << std::endl;
+    return false;
+  }
+  CanvasProvenanceCompatibility algorithm_compatibility;
+  HM_ASSIGN_OR_RETURN(algorithm_compatibility, check_stitch_algorithm_provenance_compatibility(game_dir, *provenance));
+  if (!algorithm_compatibility.compatible) {
+    std::cout << "Stitching artifacts require mapping regeneration because " << algorithm_compatibility.reason
+              << std::endl;
     return false;
   }
   const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
@@ -1878,13 +1951,21 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     auto artifact_revision = stitch_artifact_revision_locked(game_dir);
     if (artifact_revision.ok() && *artifact_revision == previously_validated->artifact_revision &&
         test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
-      return LockedStitchingArtifacts{
-          .artifact_lock = std::move(*artifact_lock),
-          .canvas_size = previously_validated->canvas_size,
-          .generation_id = previously_validated->generation_id,
-          .artifact_revision = std::move(*artifact_revision),
-          .content_validated = previously_validated->content_validated,
-      };
+      auto provenance = HuginProject::ReadCanvasProvenance(game_dir, **artifact_lock);
+      if (provenance.ok()) {
+        CanvasProvenanceCompatibility algorithm_compatibility;
+        HM_ASSIGN_OR_RETURN(
+            algorithm_compatibility, check_stitch_algorithm_provenance_compatibility(game_dir, *provenance));
+        if (algorithm_compatibility.compatible) {
+          return LockedStitchingArtifacts{
+              .artifact_lock = std::move(*artifact_lock),
+              .canvas_size = previously_validated->canvas_size,
+              .generation_id = previously_validated->generation_id,
+              .artifact_revision = std::move(*artifact_revision),
+              .content_validated = previously_validated->content_validated,
+          };
+        }
+      }
     }
     if (!artifact_revision.ok() && !absl::IsNotFound(artifact_revision.status()))
       return artifact_revision.status();
@@ -2335,6 +2416,7 @@ absl::Status create_control_points(
   ControlPointMatcher control_point_matcher = ControlPointMatcher::kSuperPointLightGlue;
   MappingBackend mapping_backend = MappingBackend::kOpenCvMagsac;
   bool run_autooptimizer = false;
+  StitchProjection projection = StitchProjection::kRectilinear;
   const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
   try {
     if (fs::exists(game_config_path)) {
@@ -2349,6 +2431,13 @@ absl::Status create_control_points(
               read_scalar_or_default(config, {"stitching", "mapping_backend"}, MappingBackendName(mapping_backend))));
       HM_ASSIGN_OR_RETURN(
           run_autooptimizer, read_bool_or_default(config, {"stitching", "run_autooptimizer"}, run_autooptimizer));
+      HM_ASSIGN_OR_RETURN(
+          projection,
+          ParseStitchProjection(read_scalar_or_default(
+              config,
+              {"stitching", "projection"},
+              mapping_backend == MappingBackend::kNona ? StitchProjectionName(StitchProjection::kGeneralPanini)
+                                                       : StitchProjectionName(StitchProjection::kRectilinear))));
     }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(TO_STRING(
@@ -2357,7 +2446,9 @@ absl::Status create_control_points(
   const StitchingBackendChoices backend_choices{
       std::string(ControlPointMatcherName(control_point_matcher)),
       std::string(MappingBackendName(mapping_backend)),
+      std::string(StitchProjectionName(projection)),
       run_autooptimizer};
+  HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(mapping_backend, projection));
   if (!expected_invalidation_id.empty()) {
     YAML::Node config;
     try {
@@ -2452,13 +2543,13 @@ absl::Status create_control_points(
                                      << (input_files.size() == 1 ? "" : "s")
                                      << (skipped_frame_pairs == 0 ? "" : TO_STRING(", skipped " << skipped_frame_pairs))
                                      << ")"));
-
   HuginProject::Options options;
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
   options.mapping_backend = mapping_backend;
   options.run_autooptimizer = run_autooptimizer;
+  options.projection = projection;
   options.expected_invalidation_id = expected_invalidation_id;
   options.expected_backend_choices = backend_choices;
   options.progress = report_calibration_progress;

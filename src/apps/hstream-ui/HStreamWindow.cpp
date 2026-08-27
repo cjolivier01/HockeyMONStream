@@ -67,6 +67,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 #include <QtCore/QUuid>
 
@@ -174,6 +175,13 @@ std::optional<QString> canonical_mapping_backend_choice(QString value) {
   return std::nullopt;
 }
 
+std::optional<QString> canonical_projection_choice(QString value) {
+  auto projection = hm::stitching::ParseStitchProjection(value.toStdString());
+  if (!projection.ok())
+    return std::nullopt;
+  return QString::fromLatin1(hm::stitching::StitchProjectionName(*projection));
+}
+
 QString canonical_or_normalized_matcher_choice(QString value, const QString& fallback) {
   const QString normalized = normalize_backend_choice(value, fallback);
   return canonical_control_point_matcher_choice(normalized).value_or(normalized);
@@ -182,6 +190,11 @@ QString canonical_or_normalized_matcher_choice(QString value, const QString& fal
 QString canonical_or_normalized_mapping_choice(QString value, const QString& fallback) {
   const QString normalized = normalize_backend_choice(value, fallback);
   return canonical_mapping_backend_choice(normalized).value_or(normalized);
+}
+
+QString canonical_or_normalized_projection_choice(QString value, const QString& fallback) {
+  const QString normalized = normalize_backend_choice(value, fallback);
+  return canonical_projection_choice(normalized).value_or(normalized);
 }
 
 bool set_combo_to_data(QComboBox* combo, const QString& value) {
@@ -3564,14 +3577,23 @@ bool generated_stitching_backend_choices_match_private(
     const YAML::Node& config,
     QString* previous_matcher = nullptr,
     QString* previous_backend = nullptr,
+    QString* previous_projection = nullptr,
     std::optional<bool>* previous_autooptimizer = nullptr,
     bool* autooptimizer_was_generated = nullptr) {
   YAML::Node generated_matcher;
   YAML::Node generated_backend;
+  YAML::Node generated_projection;
   YAML::Node generated_autooptimizer;
   YAML::Node private_matcher;
   YAML::Node private_backend;
+  YAML::Node private_projection;
   YAML::Node private_autooptimizer;
+  const bool generated_projection_present =
+      lookup_yaml_path(config, "hstream_ui.generated_stitching_backend_choices.projection", &generated_projection);
+  const bool private_projection_present = lookup_yaml_path(config, "stitching.projection", &private_projection);
+  const bool projection_matches = (!generated_projection_present && !private_projection_present) ||
+      (generated_projection_present && generated_projection.IsScalar() && private_projection_present &&
+       private_projection.IsScalar() && generated_projection.as<std::string>() == private_projection.as<std::string>());
   const bool has_generated_autooptimizer = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.run_autooptimizer", &generated_autooptimizer);
   const bool generated_autooptimizer_matches = !has_generated_autooptimizer ||
@@ -3586,7 +3608,8 @@ bool generated_stitching_backend_choices_match_private(
       generated_backend.IsScalar() && lookup_yaml_path(config, "stitching.control_point_matcher", &private_matcher) &&
       private_matcher.IsScalar() && lookup_yaml_path(config, "stitching.mapping_backend", &private_backend) &&
       private_backend.IsScalar() && private_matcher.as<std::string>() == generated_matcher.as<std::string>() &&
-      private_backend.as<std::string>() == generated_backend.as<std::string>() && generated_autooptimizer_matches;
+      private_backend.as<std::string>() == generated_backend.as<std::string>() && projection_matches &&
+      generated_autooptimizer_matches;
   if (!matches) {
     return false;
   }
@@ -3595,6 +3618,7 @@ bool generated_stitching_backend_choices_match_private(
 
   YAML::Node previous_matcher_node;
   YAML::Node previous_backend_node;
+  YAML::Node previous_projection_node;
   if (previous_matcher &&
       lookup_yaml_path(
           config,
@@ -3616,6 +3640,15 @@ bool generated_stitching_backend_choices_match_private(
     if (canonical.has_value()) {
       *previous_backend = *canonical;
     }
+  }
+  if (previous_projection &&
+      lookup_yaml_path(
+          config, "hstream_ui.generated_stitching_backend_choices.previous_projection", &previous_projection_node) &&
+      previous_projection_node.IsScalar()) {
+    const auto canonical =
+        canonical_projection_choice(QString::fromStdString(previous_projection_node.as<std::string>()));
+    if (canonical.has_value())
+      *previous_projection = *canonical;
   }
   YAML::Node previous_autooptimizer_node;
   if (previous_autooptimizer && has_generated_autooptimizer &&
@@ -4117,10 +4150,34 @@ void HStreamWindow::loadBaselineDefaults() {
       throw std::runtime_error("Effective baseline stitching.mapping_backend is not supported");
     default_mapping_backend_ = *canonical;
   }
+  YAML::Node projection;
+  if (lookup_yaml_path(baseline_config_, "stitching.projection", &projection) && projection.IsScalar()) {
+    const QString configured = QString::fromStdString(projection.as<std::string>());
+    const auto canonical = canonical_projection_choice(configured);
+    if (!canonical.has_value())
+      throw std::runtime_error("Effective baseline stitching.projection is not supported");
+    default_projection_ = *canonical;
+  }
+  YAML::Node user_mapping_backend;
+  YAML::Node user_projection;
+  if (lookup_yaml_path(*user_overlay, "stitching.mapping_backend", &user_mapping_backend) &&
+      user_mapping_backend.IsScalar() && !lookup_yaml_path(*user_overlay, "stitching.projection", &user_projection) &&
+      default_mapping_backend_ != "nona") {
+    default_projection_ = "rectilinear";
+  }
   if (default_mapping_backend_ == "nona" && !default_run_autooptimizer_)
     default_mapping_backend_ = "opencv-magsac";
-  if (default_mapping_backend_ != "nona")
+  if (default_mapping_backend_ != "nona") {
     default_run_autooptimizer_ = false;
+    if (!lookup_yaml_path(*user_overlay, "stitching.projection", &user_projection))
+      default_projection_ = "rectilinear";
+  }
+  const auto default_backend = hm::stitching::ParseMappingBackend(default_mapping_backend_.toStdString());
+  const auto default_projection = hm::stitching::ParseStitchProjection(default_projection_.toStdString());
+  if (!default_backend.ok() || !default_projection.ok() ||
+      !hm::stitching::ValidateMappingBackendProjection(*default_backend, *default_projection).ok()) {
+    throw std::runtime_error("Effective baseline stitching mapping backend and projection are incompatible");
+  }
 
   checked("Stop_Direction_Change_Delay_Frames", integer("rink.camera.stop_on_dir_change_delay"), 0, 60);
   checked("Cancel_Stop_On_Opposite_Direction", boolean("rink.camera.cancel_stop_on_opposite_dir"), 0, 1);
@@ -4447,6 +4504,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       mapping_backend_combo_->setEnabled(!running);
     }
+    if (projection_combo_) {
+      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+      projection_combo_->setEnabled(!running);
+    }
     if (stitch_max_output_width_spin_) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       stitch_max_output_width_spin_->setEnabled(!running);
@@ -4571,6 +4632,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       run_autooptimizer_check_->setEnabled(nona && !running);
     }
+    updateProjectionCompatibility();
     updatePresetDirtyState();
   });
   if (run_autooptimizer_check_) {
@@ -4578,6 +4640,22 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     run_autooptimizer_check_->setChecked(nona);
     run_autooptimizer_check_->setEnabled(nona);
   }
+
+  projection_combo_ = new QComboBox();
+  projection_combo_->setObjectName("stitchProjectionCombo");
+  projection_combo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+  projection_combo_->setMinimumContentsLength(24);
+  projection_combo_->setMinimumWidth(260);
+  for (const auto& projection_info : hm::stitching::SupportedStitchProjections()) {
+    projection_combo_->addItem(
+        QString::fromLatin1(projection_info.display_name), QString::fromLatin1(projection_info.name));
+  }
+  int projection_index = projection_combo_->findData(default_projection_);
+  projection_combo_->setCurrentIndex(projection_index < 0 ? 0 : projection_index);
+  projection_combo_->setToolTip(
+      "Output projection used to generate the stitch maps. Non-rectilinear Hugin projections require NONA.");
+  connect(projection_combo_, &QComboBox::currentIndexChanged, this, [this]() { updatePresetDirtyState(); });
+  updateProjectionCompatibility();
 
   stitch_frame_time_edit_ = new QTimeEdit();
   stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
@@ -5359,21 +5437,27 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* mapping_label = new QLabel("Mapping backend");
     mapping_label->setObjectName("mappingBackendLabel");
     mapping_label->setBuddy(mapping_backend_combo_);
+    auto* projection_label = new QLabel("Projection");
+    projection_label->setObjectName("stitchProjectionLabel");
+    projection_label->setBuddy(projection_combo_);
     auto* max_width_label = new QLabel("Max stitched width");
     max_width_label->setObjectName("stitchMaxOutputWidthLabel");
     max_width_label->setBuddy(stitch_max_output_width_spin_);
     control_point_matcher_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     mapping_backend_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    projection_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     stitch_max_output_width_spin_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     run_autooptimizer_check_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     algorithms_layout->addWidget(matcher_label, 0, 0);
     algorithms_layout->addWidget(control_point_matcher_combo_, 0, 1);
     algorithms_layout->addWidget(mapping_label, 1, 0);
     algorithms_layout->addWidget(mapping_backend_combo_, 1, 1);
-    algorithms_layout->addWidget(max_width_label, 2, 0);
-    algorithms_layout->addWidget(stitch_max_output_width_spin_, 2, 1);
-    algorithms_layout->addWidget(run_autooptimizer_check_, 3, 0, 1, 2);
-    algorithms_layout->setRowStretch(4, 1);
+    algorithms_layout->addWidget(projection_label, 2, 0);
+    algorithms_layout->addWidget(projection_combo_, 2, 1);
+    algorithms_layout->addWidget(max_width_label, 3, 0);
+    algorithms_layout->addWidget(stitch_max_output_width_spin_, 3, 1);
+    algorithms_layout->addWidget(run_autooptimizer_check_, 4, 0, 1, 2);
+    algorithms_layout->setRowStretch(5, 1);
     control_tabs->addTab(algorithms_page, "Algorithms");
   }
   layout->addWidget(control_tabs);
@@ -5590,6 +5674,24 @@ QString HStreamWindow::mappingBackend() const {
   return mapping_backend_combo_ ? mapping_backend_combo_->currentData().toString() : default_mapping_backend_;
 }
 
+QString HStreamWindow::stitchProjection() const {
+  return projection_combo_ ? projection_combo_->currentData().toString() : default_projection_;
+}
+
+void HStreamWindow::updateProjectionCompatibility() {
+  if (!projection_combo_)
+    return;
+  const bool nona = mappingBackend() == "nona";
+  if (auto* model = qobject_cast<QStandardItemModel*>(projection_combo_->model())) {
+    for (int index = 0; index < projection_combo_->count(); ++index) {
+      if (auto* item = model->item(index))
+        item->setEnabled(nona || projection_combo_->itemData(index).toString() == "rectilinear");
+    }
+  }
+  if (!nona && stitchProjection() != "rectilinear")
+    set_combo_to_data(projection_combo_, "rectilinear");
+}
+
 std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> HStreamWindow::lockStitchingCanvasConstraint(
     const QString& game_id) {
   if (!qgetenv("HSTREAM_UI_TEST_CANVAS_CHECK").isEmpty())
@@ -5739,6 +5841,11 @@ bool HStreamWindow::saveStitchingCalibrationState(
             : QString(),
         default_mapping_backend_);
     const bool current_run_autooptimizer = read_run_autooptimizer_from_config(config, default_run_autooptimizer_);
+    const QString current_projection = canonical_or_normalized_projection_choice(
+        config["stitching"]["projection"] && config["stitching"]["projection"].IsScalar()
+            ? QString::fromStdString(config["stitching"]["projection"].as<std::string>())
+            : QString(),
+        default_projection_);
     const int current_max_output_width = read_stitch_max_output_width_from_config(
         config,
         default_stitch_max_output_width_,
@@ -5759,7 +5866,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
         current_stitch_frame_time_valid && current_stitch_frame_time == active_stitch_frame_time_ &&
         current_control_points == control_points && current_frame_count == active_calibration_frame_count_ &&
         current_control_point_matcher == active_control_point_matcher_ &&
-        current_mapping_backend == active_mapping_backend_ && current_run_autooptimizer == active_run_autooptimizer_ &&
+        current_mapping_backend == active_mapping_backend_ && current_projection == active_projection_ &&
+        current_run_autooptimizer == active_run_autooptimizer_ &&
         current_max_output_width == active_stitch_max_output_width_;
     if (already_completed) {
       if (applied)
@@ -5770,7 +5878,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
     if (!current_stitch_frame_time_valid || current_stitch_frame_time != active_stitch_frame_time_ ||
         current_control_points != control_points || current_frame_count != active_calibration_frame_count_ ||
         current_control_point_matcher != active_control_point_matcher_ ||
-        current_mapping_backend != active_mapping_backend_ || current_run_autooptimizer != active_run_autooptimizer_ ||
+        current_mapping_backend != active_mapping_backend_ || current_projection != active_projection_ ||
+        current_run_autooptimizer != active_run_autooptimizer_ ||
         current_max_output_width != active_stitch_max_output_width_ || current_status != "pending" ||
         current_stale != stale_from || current_invalidation_id != expected_invalidation_id ||
         current_invalidated != expected_invalidated) {
@@ -5788,6 +5897,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
   config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
   config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
   config["stitching"]["run_autooptimizer"] = active_run_autooptimizer_;
+  config["stitching"]["projection"] = active_projection_.toStdString();
   if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
     config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
   }
@@ -5840,6 +5950,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   QString saved_control_point_matcher = default_control_point_matcher_;
   QString saved_mapping_backend = default_mapping_backend_;
   bool saved_run_autooptimizer = default_run_autooptimizer_;
+  QString saved_projection = default_projection_;
   QString saved_status;
   QString saved_stale_from;
   bool saved_artifacts_invalidated = false;
@@ -5886,6 +5997,11 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
             QString::fromStdString(mapping_backend.as<std::string>()), default_mapping_backend_);
       }
       saved_run_autooptimizer = read_run_autooptimizer_from_config(config, default_run_autooptimizer_);
+      YAML::Node projection;
+      if (lookup_yaml_path(config, "stitching.projection", &projection) && projection.IsScalar()) {
+        saved_projection = canonical_or_normalized_projection_choice(
+            QString::fromStdString(projection.as<std::string>()), default_projection_);
+      }
       try {
         saved_max_output_width = read_stitch_max_output_width_from_config(
             config,
@@ -5932,12 +6048,14 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     const bool mapping_backend_changed = saved_mapping_backend != active_mapping_backend_;
     const bool run_autooptimizer_changed = (saved_mapping_backend == "nona" ? saved_run_autooptimizer : false) !=
         (active_mapping_backend_ == "nona" ? active_run_autooptimizer_ : false);
+    const bool projection_changed = saved_projection != active_projection_;
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
     remove_yaml_path(config, {"stitching", "mapping_backend"});
     remove_yaml_path(config, {"stitching", "run_autooptimizer"});
+    remove_yaml_path(config, {"stitching", "projection"});
     remove_yaml_path(config, {"stitching", "max_output_width"});
     remove_yaml_path(config, {"stitching", "calibration_frame_count"});
     remove_stitch_max_output_width_native_aliases(config);
@@ -5948,12 +6066,14 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
     config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
     config["stitching"]["run_autooptimizer"] = active_run_autooptimizer_;
+    config["stitching"]["projection"] = active_projection_.toStdString();
     if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
       config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
     }
     write_stitch_max_output_width_override(config, active_stitch_max_output_width_, default_stitch_max_output_width_);
     const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed ||
-        frame_count_changed || control_point_matcher_changed || mapping_backend_changed || run_autooptimizer_changed ||
+        frame_count_changed || control_point_matcher_changed || mapping_backend_changed || projection_changed ||
+        run_autooptimizer_changed ||
         canvas_constraint.calibration_required || saved_status != "complete";
     if (!needs_calibration) {
       active_calibration_start_stage_.clear();
@@ -5976,7 +6096,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
 
     QString stale_from = saved_stale_from;
     if (!calibration_stage_index(stale_from).has_value()) {
-      stale_from = (mapping_backend_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) &&
+      stale_from = (mapping_backend_changed || projection_changed || run_autooptimizer_changed ||
+                    canvas_constraint.calibration_required) &&
               !control_point_matcher_changed && !control_points_changed && !frame_count_changed
           ? QString("canvas")
           : QString("input");
@@ -5990,7 +6111,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       stale_from = "features";
     }
     const size_t canvas_index = *calibration_stage_index("canvas");
-    if ((mapping_backend_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) &&
+    if ((mapping_backend_changed || projection_changed || run_autooptimizer_changed ||
+         canvas_constraint.calibration_required) &&
         !control_point_matcher_changed && !control_points_changed && !frame_count_changed &&
         canvas_index < *calibration_stage_index(stale_from)) {
       stale_from = "canvas";
@@ -6004,10 +6126,11 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     clean_all = active_force_reconfigure_ || stitch_frame_time_changed ||
         (stale_from != "features" &&
          (!saved_artifacts_invalidated || control_points_changed || control_point_matcher_changed ||
-          mapping_backend_changed || run_autooptimizer_changed || canvas_constraint.cleanup_required));
+          mapping_backend_changed || projection_changed || run_autooptimizer_changed ||
+          canvas_constraint.cleanup_required));
     const bool width_only_change_from_complete_state = saved_status == "complete" && max_output_width_changed &&
         !active_force_reconfigure_ && !stitch_frame_time_changed && !frame_count_changed && !control_points_changed &&
-        !control_point_matcher_changed && !mapping_backend_changed && !run_autooptimizer_changed;
+        !control_point_matcher_changed && !mapping_backend_changed && !projection_changed && !run_autooptimizer_changed;
     if (width_only_change_from_complete_state && !canvas_constraint.cleanup_required)
       clean_all = false;
 
@@ -6714,6 +6837,7 @@ void HStreamWindow::startPipeline() {
   active_stitch_frame_time_ = stitchFrameTime();
   active_control_point_matcher_ = controlPointMatcher();
   active_mapping_backend_ = mappingBackend();
+  active_projection_ = stitchProjection();
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
@@ -6833,6 +6957,7 @@ void HStreamWindow::startPipeline() {
   saved_run_autooptimizer_ = active_run_autooptimizer_;
   saved_control_point_matcher_ = active_control_point_matcher_;
   saved_mapping_backend_ = active_mapping_backend_;
+  saved_projection_ = active_projection_;
   updatePresetDirtyState();
   calibration_pending_ = calibration_required;
   if (calibration_pending_)
@@ -11286,6 +11411,8 @@ void HStreamWindow::updateRunControls() {
   if (mapping_backend_combo_) {
     mapping_backend_combo_->setEnabled(!running && !finalizing);
   }
+  if (projection_combo_)
+    projection_combo_->setEnabled(!running && !finalizing);
   if (stitch_max_output_width_spin_) {
     stitch_max_output_width_spin_->setEnabled(!running && !finalizing);
   }
@@ -11580,6 +11707,10 @@ void HStreamWindow::resetCameraControls() {
   if (!pipeline_running && mapping_backend_combo_) {
     set_combo_to_data(mapping_backend_combo_, default_mapping_backend_);
   }
+  if (!pipeline_running && projection_combo_) {
+    set_combo_to_data(projection_combo_, default_projection_);
+    updateProjectionCompatibility();
+  }
   if (!pipeline_running && stitch_max_output_width_spin_) {
     stitch_max_output_width_spin_->setValue(default_stitch_max_output_width_);
   }
@@ -11626,6 +11757,7 @@ void HStreamWindow::captureSavedControlState() {
   saved_run_autooptimizer_ = runAutooptimizer();
   saved_control_point_matcher_ = controlPointMatcher();
   saved_mapping_backend_ = mappingBackend();
+  saved_projection_ = stitchProjection();
   updatePresetDirtyState();
 }
 
@@ -11639,7 +11771,8 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_stitching_control_points_ != stitchingCalibrationControlPoints() ||
       saved_stitching_calibration_frame_count_ != stitchingCalibrationFrameCount() ||
       saved_stitch_max_output_width_ != stitchingMaxOutputWidth() || saved_run_autooptimizer_ != runAutooptimizer() ||
-      saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend();
+      saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
+      saved_projection_ != stitchProjection();
   if (!dirty) {
     for (const auto& [id, default_value] : camera_defaults_) {
       Q_UNUSED(default_value);
@@ -11686,6 +11819,12 @@ void HStreamWindow::loadSavedControlConfig() {
     const bool blocked = mapping_backend_combo_->blockSignals(true);
     set_combo_to_data(mapping_backend_combo_, default_mapping_backend_);
     mapping_backend_combo_->blockSignals(blocked);
+  }
+  if (projection_combo_) {
+    const bool blocked = projection_combo_->blockSignals(true);
+    set_combo_to_data(projection_combo_, default_projection_);
+    projection_combo_->blockSignals(blocked);
+    updateProjectionCompatibility();
   }
   if (stitch_max_output_width_spin_) {
     const bool blocked = stitch_max_output_width_spin_->blockSignals(true);
@@ -11839,6 +11978,7 @@ void HStreamWindow::loadSavedControlConfig() {
     QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     QString staged_control_point_matcher = default_control_point_matcher_;
     QString staged_mapping_backend = default_mapping_backend_;
+    QString staged_projection = default_projection_;
     YAML::Node control_points;
     if (control_points_spin_ &&
         lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
@@ -11878,12 +12018,15 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     QString previous_control_point_matcher;
     QString previous_mapping_backend;
+    QString previous_projection;
+    bool staged_projection_explicit = false;
     std::optional<bool> previous_run_autooptimizer;
     bool run_autooptimizer_was_generated = false;
     const bool generated_backend_choices = generated_stitching_backend_choices_match_private(
         config,
         &previous_control_point_matcher,
         &previous_mapping_backend,
+        &previous_projection,
         &previous_run_autooptimizer,
         &run_autooptimizer_was_generated);
     if (generated_backend_choices) {
@@ -11895,6 +12038,10 @@ void HStreamWindow::loadSavedControlConfig() {
       }
       if (run_autooptimizer_was_generated) {
         staged_run_autooptimizer = previous_run_autooptimizer.value_or(default_run_autooptimizer_);
+      }
+      if (!previous_projection.isEmpty()) {
+        staged_projection = previous_projection;
+        staged_projection_explicit = true;
       }
     } else {
       YAML::Node control_point_matcher;
@@ -11918,9 +12065,24 @@ void HStreamWindow::loadSavedControlConfig() {
           appendLog(QString("ignored unsupported stitching.mapping_backend=%1").arg(configured));
         }
       }
+      YAML::Node projection;
+      const bool projection_configured =
+          lookup_yaml_path(config, "stitching.projection", &projection) && projection.IsScalar();
+      if (projection_configured) {
+        const QString configured = QString::fromStdString(projection.as<std::string>());
+        const auto canonical = canonical_projection_choice(configured);
+        if (canonical.has_value()) {
+          staged_projection = *canonical;
+          staged_projection_explicit = true;
+        } else {
+          appendLog(QString("ignored unsupported stitching.projection=%1").arg(configured));
+        }
+      }
     }
     if (staged_mapping_backend == "nona" && !staged_run_autooptimizer) {
       staged_mapping_backend = "opencv-magsac";
+      staged_projection = "rectilinear";
+      staged_projection_explicit = false;
       normalized_nona_without_autooptimizer = true;
       appendLog("replaced invalid NONA-without-autooptimizer setting with the default MAGSAC++ backend");
     } else if (staged_mapping_backend != "nona" && staged_run_autooptimizer) {
@@ -11928,6 +12090,16 @@ void HStreamWindow::loadSavedControlConfig() {
       normalized_inactive_autooptimizer = true;
       appendLog("disabled the inactive panorama autooptimizer for the selected native mapping backend");
     }
+    if (!staged_projection_explicit && staged_mapping_backend != "nona")
+      staged_projection = "rectilinear";
+    const auto parsed_backend = hm::stitching::ParseMappingBackend(staged_mapping_backend.toStdString());
+    const auto parsed_projection = hm::stitching::ParseStitchProjection(staged_projection.toStdString());
+    if (!parsed_backend.ok() || !parsed_projection.ok())
+      throw std::invalid_argument("stitching mapping backend or projection is not supported");
+    const auto projection_compatibility =
+        hm::stitching::ValidateMappingBackendProjection(*parsed_backend, *parsed_projection);
+    if (!projection_compatibility.ok())
+      throw std::invalid_argument(std::string(projection_compatibility.message()));
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
       auto angle_x10 = [&rounded_control](const YAML::Node& value, const QString& path) {
@@ -12028,6 +12200,14 @@ void HStreamWindow::loadSavedControlConfig() {
       const bool blocked = mapping_backend_combo_->blockSignals(true);
       set_combo_to_data(mapping_backend_combo_, staged_mapping_backend);
       mapping_backend_combo_->blockSignals(blocked);
+    }
+    if (projection_combo_) {
+      updateProjectionCompatibility();
+      const bool blocked = projection_combo_->blockSignals(true);
+      const bool selected = set_combo_to_data(projection_combo_, staged_projection);
+      projection_combo_->blockSignals(blocked);
+      if (!selected)
+        throw std::invalid_argument("saved stitching projection is incompatible with the mapping backend");
     }
     if (stitch_max_output_width_spin_) {
       const bool blocked = stitch_max_output_width_spin_->blockSignals(true);
@@ -12190,6 +12370,7 @@ bool HStreamWindow::applySavedControlConfig(
            "stitching.control_point_matcher",
            "stitching.mapping_backend",
            "stitching.run_autooptimizer",
+           "stitching.projection",
            "stitching.max_output_width",
            "pipeline.hmplaycropper.properties.shadow-lift",
            "pipeline.hmplaycropper.properties.shadow-lift-black-point",
@@ -12257,14 +12438,17 @@ bool HStreamWindow::applySavedControlConfig(
   const QString selected_control_point_matcher = controlPointMatcher();
   const QString selected_mapping_backend = mappingBackend();
   const bool selected_run_autooptimizer = runAutooptimizer();
+  const QString selected_projection = stitchProjection();
   const QString previous_control_point_matcher =
       saved_control_point_matcher_.isEmpty() ? default_control_point_matcher_ : saved_control_point_matcher_;
   const QString previous_mapping_backend =
       saved_mapping_backend_.isEmpty() ? default_mapping_backend_ : saved_mapping_backend_;
+  const QString previous_projection = saved_projection_.isEmpty() ? default_projection_ : saved_projection_;
   const bool control_point_matcher_changed = previous_control_point_matcher != selected_control_point_matcher;
   const bool mapping_backend_changed = previous_mapping_backend != selected_mapping_backend;
   const bool run_autooptimizer_changed = (previous_mapping_backend == "nona" ? previous_run_autooptimizer : false) !=
       (selected_mapping_backend == "nona" ? selected_run_autooptimizer : false);
+  const bool projection_changed = previous_projection != selected_projection;
   remove_yaml_path(config, {"stitching", "stitch_frame_time"});
   remove_yaml_path(config, {"stitching", "calibration_frame_count"});
   if (stitch_frame_time != default_stitch_frame_time_) {
@@ -12276,9 +12460,11 @@ bool HStreamWindow::applySavedControlConfig(
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   config["stitching"]["run_autooptimizer"] = selected_run_autooptimizer;
+  config["stitching"]["projection"] = selected_projection.toStdString();
   write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
   if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
-      mapping_backend_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) {
+      mapping_backend_changed || projection_changed || run_autooptimizer_changed ||
+      canvas_constraint.calibration_required) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["control_points"] = selected_control_points;
     calibration["frame_count"] = selected_frame_count;
@@ -12289,7 +12475,7 @@ bool HStreamWindow::applySavedControlConfig(
         : ((control_points_changed || control_point_matcher_changed) ? "features" : "canvas");
     const bool only_width_changed = canvas_constraint.calibration_required && !stitch_frame_time_changed &&
         !control_points_changed && !frame_count_changed && !control_point_matcher_changed && !mapping_backend_changed &&
-        !run_autooptimizer_changed;
+        !projection_changed && !run_autooptimizer_changed;
     calibration["artifacts_invalidated"] = only_width_changed && !canvas_constraint.cleanup_required;
     calibration["invalidation_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     appendLog("stitching calibration settings changed; stitching calibration marked stale");

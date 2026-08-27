@@ -16,6 +16,7 @@ namespace hm::stitching {
 struct StitchingBackendChoices {
   std::string control_point_matcher;
   std::string mapping_backend;
+  std::string projection;
   bool run_autooptimizer{false};
 };
 

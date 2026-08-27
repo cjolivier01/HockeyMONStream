@@ -998,12 +998,14 @@ absl::Status validate_backend_generation_claim(
     const YAML::Node claim = calibration["backend_generation"];
     if (!claim || !claim.IsMap() || !claim["invalidation_id"] || !claim["invalidation_id"].IsScalar() ||
         !claim["control_point_matcher"] || !claim["control_point_matcher"].IsScalar() || !claim["mapping_backend"] ||
-        !claim["mapping_backend"].IsScalar() || !claim["run_autooptimizer"] || !claim["run_autooptimizer"].IsScalar()) {
+        !claim["mapping_backend"].IsScalar() || !claim["projection"] || !claim["projection"].IsScalar() ||
+        !claim["run_autooptimizer"] || !claim["run_autooptimizer"].IsScalar()) {
       return absl::AbortedError("Stitching backend generation claim is missing or incomplete");
     }
     const bool claim_matches = claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
         claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
+        claim["projection"].as<std::string>() == expected_choices.projection &&
         claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
     if (!claim_matches)
       return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
@@ -1013,13 +1015,14 @@ absl::Status validate_backend_generation_claim(
     const YAML::Node stitching = config["stitching"];
     if (!stitching || !stitching.IsMap() || !stitching["control_point_matcher"] ||
         !stitching["control_point_matcher"].IsScalar() || !stitching["mapping_backend"] ||
-        !stitching["mapping_backend"].IsScalar() || !stitching["run_autooptimizer"] ||
-        !stitching["run_autooptimizer"].IsScalar()) {
+        !stitching["mapping_backend"].IsScalar() || !stitching["projection"] || !stitching["projection"].IsScalar() ||
+        !stitching["run_autooptimizer"] || !stitching["run_autooptimizer"].IsScalar()) {
       return absl::AbortedError("Worker-visible stitching backend choices are missing or incomplete");
     }
     const bool worker_tuple_matches =
         stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
+        stitching["projection"].as<std::string>() == expected_choices.projection &&
         stitching["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
     if (!worker_tuple_matches)
       return absl::AbortedError("Worker-visible stitching backend choices changed during calibration");
@@ -1067,13 +1070,31 @@ absl::Status reserve_stitching_backend_generation_in_config(
     return generation_status;
   try {
     YAML::Node claim = config["hstream_ui"]["stitching_calibration"]["backend_generation"];
-    const bool claim_is_current = claim && claim.IsMap() && claim["invalidation_id"] &&
+    const bool claim_has_current_generation = claim && claim.IsMap() && claim["invalidation_id"] &&
         claim["invalidation_id"].IsScalar() && claim["invalidation_id"].as<std::string>() == expected_invalidation_id;
-    if (!claim_is_current) {
+    if (!claim_has_current_generation) {
       claim["invalidation_id"] = expected_invalidation_id;
       claim["control_point_matcher"] = expected_choices.control_point_matcher;
       claim["mapping_backend"] = expected_choices.mapping_backend;
+      claim["projection"] = expected_choices.projection;
       claim["run_autooptimizer"] = expected_choices.run_autooptimizer;
+    } else {
+      // Claims created before projection-aware calibration contain the other
+      // three immutable choices. Extend only an exactly matching legacy claim;
+      // malformed or competing claims must fail validation without mutation.
+      const bool legacy_claim = claim["control_point_matcher"] && claim["control_point_matcher"].IsScalar() &&
+          claim["mapping_backend"] && claim["mapping_backend"].IsScalar() &&
+          (!claim["projection"] || !claim["projection"].IsDefined() || claim["projection"].IsNull()) &&
+          claim["run_autooptimizer"] && claim["run_autooptimizer"].IsScalar();
+      if (legacy_claim) {
+        const bool legacy_matches =
+            claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
+            claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
+            claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
+        if (!legacy_matches)
+          return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
+        claim["projection"] = expected_choices.projection;
+      }
     }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(

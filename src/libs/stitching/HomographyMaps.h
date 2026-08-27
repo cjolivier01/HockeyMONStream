@@ -8,18 +8,10 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "opencv2/core.hpp"
 
 namespace hm::stitching {
-
-enum class MappingBackend {
-  kNona,
-  kOpenCvMagsac,
-  kOpenCvAffineRansac,
-};
-
-const char* MappingBackendName(MappingBackend backend);
-absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value);
 
 struct HomographyMapResult {
   size_t source_canvas_width{0};

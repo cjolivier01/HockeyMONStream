@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/HomographyMaps.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -170,6 +171,58 @@ int main() {
   ok &= expect(hm::stitching::ParseMappingBackend("RANSAC").ok(), "mapping backend parser should accept UI label");
   ok &= expect(
       !hm::stitching::ParseMappingBackend("unknown").ok(), "mapping backend parser should reject unknown choices");
+  const auto& projections = hm::stitching::SupportedStitchProjections();
+  ok &= expect(projections.size() == 22, "all Hugin projection choices must be exposed");
+  constexpr std::array<const char*, 22> expected_projection_names = {
+      "rectilinear",
+      "cylindrical",
+      "equirectangular",
+      "full-frame-fisheye",
+      "stereographic",
+      "mercator",
+      "transverse-mercator",
+      "sinusoidal",
+      "lambert-cylindrical-equal-area",
+      "lambert-azimuthal-equal-area",
+      "albers-equal-area-conic",
+      "miller-cylindrical",
+      "panini",
+      "architectural",
+      "orthographic",
+      "equisolid",
+      "equirectangular-panini",
+      "biplane",
+      "triplane",
+      "general-panini",
+      "thoby",
+      "hammer-aitoff",
+  };
+  for (size_t index = 0; index < projections.size(); ++index) {
+    const auto parsed = hm::stitching::ParseStitchProjection(projections[index].name);
+    ok &= expect(
+        parsed.ok() && *parsed == projections[index].projection &&
+            std::string(projections[index].name) == expected_projection_names[index] &&
+            projections[index].hugin_projection == static_cast<int>(index),
+        "projection names must match their explicit Hugin identifiers and round-trip");
+  }
+  ok &= expect(
+      hm::stitching::ParseStitchProjection("panini_general").ok(),
+      "projection parser should accept the General Panini alias");
+  ok &=
+      expect(!hm::stitching::ParseStitchProjection("unknown").ok(), "projection parser should reject unknown choices");
+  ok &= expect(
+      hm::stitching::ValidateMappingBackendProjection(
+          hm::stitching::MappingBackend::kNona, hm::stitching::StitchProjection::kGeneralPanini)
+          .ok(),
+      "Nona must accept General Panini");
+  ok &= expect(
+      !hm::stitching::ValidateMappingBackendProjection(
+           hm::stitching::MappingBackend::kOpenCvMagsac, hm::stitching::StitchProjection::kGeneralPanini)
+              .ok() &&
+          hm::stitching::ValidateMappingBackendProjection(
+              hm::stitching::MappingBackend::kOpenCvAffineRansac, hm::stitching::StitchProjection::kRectilinear)
+              .ok(),
+      "OpenCV mapping backends must reject non-rectilinear projections");
 
   fs::path three_point_affine_dir = root / "three-point-affine";
   fs::create_directories(three_point_affine_dir);

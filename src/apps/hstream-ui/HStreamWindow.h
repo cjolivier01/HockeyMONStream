@@ -335,6 +335,8 @@ class HStreamWindow : public QMainWindow {
   QString stitchFrameTime() const;
   QString controlPointMatcher() const;
   QString mappingBackend() const;
+  QString stitchProjection() const;
+  void updateProjectionCompatibility();
   bool prepareStitchingCalibrationRun(
       const QString& runner,
       const QString& working_dir,
@@ -443,6 +445,7 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* run_autooptimizer_check_{nullptr};
   QComboBox* control_point_matcher_combo_{nullptr};
   QComboBox* mapping_backend_combo_{nullptr};
+  QComboBox* projection_combo_{nullptr};
   QTimeEdit* stitch_frame_time_edit_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
@@ -598,6 +601,7 @@ class HStreamWindow : public QMainWindow {
   QString active_stitch_frame_time_;
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
+  QString active_projection_;
   QString active_calibration_start_stage_;
   QString active_calibration_invalidation_id_;
   bool calibration_restart_requested_{false};
@@ -632,6 +636,7 @@ class HStreamWindow : public QMainWindow {
   bool default_run_autooptimizer_{false};
   QString default_control_point_matcher_{"superpoint-lightglue"};
   QString default_mapping_backend_{"opencv-magsac"};
+  QString default_projection_{"rectilinear"};
   std::map<QString, int> saved_camera_controls_;
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};
@@ -643,6 +648,7 @@ class HStreamWindow : public QMainWindow {
   QString saved_stitch_frame_time_;
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
+  QString saved_projection_;
   std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;

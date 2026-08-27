@@ -287,7 +287,10 @@ int main() {
   ok &= expect(canvas.ok() && canvas->first == 12092 && canvas->second == 9267, "PTO canvas dimensions must parse");
   auto projection = hm::stitching::HuginProject::ParseProjection(base);
   ok &= expect(projection.ok() && *projection == 2, "PTO panorama projection must parse");
+  auto horizontal_fov = hm::stitching::HuginProject::ParseHorizontalFov(base);
+  ok &= expect(horizontal_fov.ok() && *horizontal_fov == 360.0, "PTO panorama horizontal FOV must parse");
   ok &= expect(!hm::stitching::HuginProject::ParseProjection("p w12 h6\n").ok(), "missing projection must fail");
+  ok &= expect(!hm::stitching::HuginProject::ParseHorizontalFov("p f2 w12 h6\n").ok(), "missing FOV must fail");
   ok &= expect(!hm::stitching::HuginProject::ParseCanvasSize("p f2 w12 v360\n").ok(), "missing height must fail");
   const std::string pose_project =
       "i w5312 h2988 f0 r-1.25e-2 p2.5 y-43.75 Tpy0 n\"left.png\"\n"
@@ -328,6 +331,7 @@ int main() {
   const fs::path nona = root / "nona";
   const fs::path nona_invocations = root / "nona.invocations";
   const fs::path enblend = root / "enblend";
+  const fs::path enblend_invocations = root / "enblend.invocations";
   const fs::path fixtures = root / "fixtures";
   const fs::path rounding_overflow_fixtures = root / "rounding-overflow-fixtures";
   fs::create_directories(fixtures);
@@ -434,15 +438,28 @@ int main() {
   ok &= expect(
       write_tool(
           pano_modify,
-          "args=\"$*\"; canvas=; output=; input=\n"
-          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --canvas=*) canvas=${1#--canvas=} ;; "
+          "args=\"$*\"; projection=; parameters=; canvas=; output=; input=\n"
+          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --projection=19) projection=19 ;; "
+          "--projection-parameter=*) parameters=${1#*=} ;; --canvas=*) canvas=${1#--canvas=} ;; "
+          "--fov=AUTO|--crop=AUTO) ;; --output=*) output=${1#*=} ;; "
           "-o) shift; output=$1 ;; *) input=$1 ;; esac; shift; done\n"
-          "test -n \"$canvas\"; test \"$output\" = .autooptimiser_out.resize.pto; "
-          "test \"$input\" = autooptimiser_out.pto\n"
-          "width=${canvas%x*}; height=${canvas#*x}\n"
-          "awk -v width=\"$width\" -v height=\"$height\" "
+          "test -n \"$canvas\"; test \"$input\" = autooptimiser_out.pto\n"
+          "if test \"$projection\" = 19; then\n"
+          "  if test -n \"${HM_TEST_PANINI_PARAMETERS:-}\"; then parameters=$HM_TEST_PANINI_PARAMETERS; fi\n"
+          "  test -n \"$parameters\"\n"
+          "  if test \"$canvas\" = AUTO; then width=200; height=100; else "
+          "case \"$canvas\" in *%) ;; *) exit 92 ;; esac; width=62; height=31; fi\n"
+          "  awk -v parameters=\"$parameters\" -v width=$width -v height=$height '/^p / { "
+          "sub(/f[0-9]+/, \"f19\"); sub(/w[0-9]+/, \"w\" width); sub(/h[0-9]+/, \"h\" height); "
+          "$0 = $0 \" S0,\" width \",0,\" height \" P\\\"\" parameters \"\\\"\" } { print }' "
+          "\"$input\" > \"$output\"\n"
+          "else\n"
+          "  test \"$output\" = .autooptimiser_out.resize.pto\n"
+          "  width=${canvas%x*}; height=${canvas#*x}\n"
+          "  awk -v width=\"$width\" -v height=\"$height\" "
           "'/^p / { sub(/w[0-9]+/, \"w\" width); sub(/h[0-9]+/, \"h\" height) } { print }' "
           "\"$input\" > \"$output\"\n"
+          "fi\n"
           "printf '%s\\n' \"$args\" >> '" +
               pano_modify_args.string() + "'\n"),
       "fake pano_modify must be created");
@@ -463,7 +480,10 @@ int main() {
   ok &= expect(
       write_tool(
           enblend,
-          "cp '" + fixtures.string() +
+          "printf '%s\\n' run >> '" + enblend_invocations.string() +
+              "'\n"
+              "cp '" +
+              fixtures.string() +
               "/seam_file.png' seam_file.png\n"
               "cp '" +
               fixtures.string() + "/panorama.tif' panorama.tif\n"),
@@ -529,6 +549,7 @@ int main() {
   ok &= expect(
       absl::IsCancelled(cancelled_optimizer) && cancellation_elapsed < std::chrono::seconds(5),
       "optimizer cancellation must terminate the Hugin process group before pipeline shutdown times out");
+  options.projection = hm::stitching::StitchProjection::kGeneralPanini;
   const auto configured = hm::stitching::HuginProject::Configure(
       root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
   if (!configured.ok())
@@ -545,11 +566,11 @@ int main() {
     const std::string contents((std::istreambuf_iterator<char>(optimized)), std::istreambuf_iterator<char>());
     const auto scaled = hm::stitching::HuginProject::ParseCanvasSize(contents);
     ok &= expect(
-        scaled.ok() && scaled->first == 63 && scaled->second == 32,
-        "pre-Nona PTO scaling must leave one pixel of Nona placement headroom");
+        scaled.ok() && scaled->first == 62 && scaled->second == 31,
+        "General Panini AUTO geometry must remain inside the pre-Nona canvas limits");
     ok &= expect(
-        contents.find("p f2 ") != std::string::npos,
-        "pano_modify must preserve the projection selected by autooptimiser");
+        contents.find("p f19 ") != std::string::npos && contents.find("P\"100 0 0\"") != std::string::npos,
+        "single-pass calibration must publish the selected General Panini projection");
     std::ifstream optimizer_invocations(autooptimiser_args);
     const std::string optimizer_args(
         (std::istreambuf_iterator<char>(optimizer_invocations)), std::istreambuf_iterator<char>());
@@ -562,13 +583,21 @@ int main() {
         "Hugin orchestration must optimize once without requesting unsupported output scaling");
     const std::string pano_modify_invocations = read_text_file(pano_modify_args);
     ok &= expect(
-        pano_modify_invocations.find("--canvas=63x32 -o .autooptimiser_out.resize.pto autooptimiser_out.pto") !=
-            std::string::npos,
-        "oversized Hugin canvases must reserve placement-rounding headroom through pano_modify");
+        pano_modify_invocations.find(".autooptimiser_out.resize.pto") == std::string::npos,
+        "projection geometry already within the configured canvas must not be resized a second time");
+    ok &= expect(
+        pano_modify_invocations.find("--projection=19 --projection-parameter=100 0 0") != std::string::npos &&
+            pano_modify_invocations.find("--fov=AUTO --canvas=AUTO --crop=AUTO") != std::string::npos &&
+            pano_modify_invocations.find("--canvas=49.75%") != std::string::npos,
+        "General Panini conversion must request standard parameters, automatic geometry, and one bounded scaling");
     const std::string nona_runs = read_text_file(nona_invocations);
     ok &= expect(
         std::count(nona_runs.begin(), nona_runs.end(), '\n') == 1,
-        "initial placement headroom must avoid repeating expensive Nona map generation");
+        "Nona must render the selected projection exactly once");
+    const std::string enblend_runs = read_text_file(enblend_invocations);
+    ok &= expect(
+        std::count(enblend_runs.begin(), enblend_runs.end(), '\n') == 1,
+        "enblend must stitch the selected projection exactly once");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
     cv::Mat expected_seam;
     cv::copyMakeBorder(seam, expected_seam, 1, 1, 1, 1, cv::BORDER_REPLICATE);
@@ -607,13 +636,33 @@ int main() {
     const auto provenance = hm::stitching::HuginProject::ReadCanvasProvenance(root / "game", **provenance_lock);
     ok &= expect(
         provenance.ok() && provenance->has_value() && (*provenance)->max_output_width == 0 &&
-            (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 100 &&
-            (*provenance)->source_canvas_height == 51 && (*provenance)->canvas_width == 42 &&
+            (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 62 &&
+            (*provenance)->source_canvas_height == 32 && (*provenance)->canvas_width == 42 &&
             (*provenance)->canvas_height == 32 && !(*provenance)->max_output_width_applied &&
-            (*provenance)->max_canvas_dimension_applied,
-        "published Hugin provenance must record source/final canvases and applied generation constraints");
+            !(*provenance)->max_canvas_dimension_applied &&
+            (*provenance)->mapping_backend == hm::stitching::MappingBackend::kNona &&
+            (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini,
+        "published Hugin provenance must record source/final canvases, generation constraints, and mapping algorithm");
     provenance_lock->reset();
   }
+
+  const fs::path nonfinite_panini = root / "nonfinite-panini";
+  fs::create_directories(nonfinite_panini);
+  std::error_code copy_error;
+  fs::copy_file(
+      root / "game" / "hm_project.pto",
+      nonfinite_panini / "autooptimiser_out.pto",
+      fs::copy_options::overwrite_existing,
+      copy_error);
+  ok &= expect(!copy_error, "non-finite Panini fixture PTO must be copied");
+  ::setenv("HM_TEST_PANINI_PARAMETERS", "nan 0 0", 1);
+  const auto nonfinite_parameters =
+      hm::stitching::HuginProject::ApplyProjection(nonfinite_panini, hm::stitching::StitchProjection::kGeneralPanini);
+  ::unsetenv("HM_TEST_PANINI_PARAMETERS");
+  ok &= expect(
+      absl::IsFailedPrecondition(nonfinite_parameters),
+      "non-finite parameters emitted by pano_modify must fail before remap publication");
+  options.projection.reset();
 
   const fs::path width_headroom_game = root / "nona-width-headroom-game";
   fs::create_directories(width_headroom_game);
@@ -913,16 +962,20 @@ int main() {
   YAML::Node backend_claim(YAML::NodeType::Map);
   backend_claim["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_claim["stitching"]["mapping_backend"] = "nona";
+  backend_claim["stitching"]["projection"] = "equirectangular";
   backend_claim["stitching"]["run_autooptimizer"] = true;
   backend_claim["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   backend_claim["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
   backend_claim["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "hugin-backend-a";
-  const hm::stitching::StitchingBackendChoices expected_backend_choices{"superpoint-lightglue", "nona", true};
+  const hm::stitching::StitchingBackendChoices expected_backend_choices{
+      "superpoint-lightglue", "nona", "equirectangular", true};
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["invalidation_id"] = "hugin-backend-a";
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["control_point_matcher"] =
       expected_backend_choices.control_point_matcher;
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"] =
       expected_backend_choices.mapping_backend;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection"] =
+      expected_backend_choices.projection;
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["run_autooptimizer"] =
       expected_backend_choices.run_autooptimizer;
   std::ofstream(root / "game" / "config.yaml") << YAML::Dump(backend_claim) << '\n';
@@ -934,7 +987,7 @@ int main() {
       return;
     backend_changed_during_hugin = true;
     YAML::Node changed = YAML::LoadFile((root / "game" / "config.yaml").string());
-    changed["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+    changed["stitching"]["projection"] = "general-panini";
     std::ofstream(root / "game" / "config.yaml") << YAML::Dump(changed) << '\n';
   };
   const auto mismatched_backend_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
@@ -945,7 +998,7 @@ int main() {
   ok &= expect(
       backend_changed_during_hugin && absl::IsAborted(mismatched_backend_hugin) &&
           project_after_mismatched_backend == previous_project,
-      "Hugin publication must abort when the worker-visible backend tuple changes under its generation claim");
+      "Hugin publication must abort when the worker-visible projection changes under its generation claim");
   options.expected_invalidation_id.clear();
   options.expected_backend_choices.reset();
   {

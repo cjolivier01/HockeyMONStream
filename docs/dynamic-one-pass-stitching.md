@@ -21,6 +21,27 @@ Remove the guessed one-pass `hmstitcher` dimensions. Let the first input batch d
 5. Audit downstream components (`ds-fieldmask`, `ds-playtracker`, `hmplaycropper`, sinks) for cached dimensions or scratch allocations that assume the initial caps are final. Move any such allocations to `set_caps` or make them reallocate on caps changes.
 6. Remove the configurator one-pass fallback dimensions and update `AGENTS.md` once the dynamic path is verified.
 
+## Projection-aware calibration
+
+Fresh calibration selects `stitching.mapping_backend` and `stitching.projection` before mapping TIFF generation. With
+`nona`, Hugin optimizes the camera alignment, converts the unpublished PTO directly to the selected output projection,
+generates both camera remap sets in one mapping phase, and runs `enblend` once. The existing bounds-safety logic may
+rerender that same selected projection at a smaller scale when TIFF placement rounding exceeds the canvas; it does not
+create or consume an intermediate stitched video frame. The normal downstream rink inference therefore sees the final
+projected stitch; calibration no longer creates an ordinary panorama for a separate first rink detection or performs a
+second projection/remap/stitch stage.
+
+`nona` supports every Hugin projection exposed by the UI. The native `opencv-magsac` and
+`opencv-affine-ransac` mapping backends currently support rectilinear output only. Incompatible YAML pairs fail
+validation, while the UI disables non-rectilinear choices whenever an OpenCV backend is selected. Older OpenCV
+overrides that did not store a projection migrate to rectilinear.
+
+General Panini uses Hugin projection `f19` with the standard unsqueezed parameters `100,0,0`. Hugin recalculates the
+projection-aware field of view, canvas, and largest all-image crop so the published remaps do not retain the black
+hourglass-shaped region produced by forcing Panini into the old rectilinear canvas. The crop is scaled down when
+necessary so it never exceeds the original calibrated canvas or configured live canvas limits. Steady-state video
+remains on the existing GPU remap and stitch path.
+
 ## Validation
 
 - Build `//src/apps/pipeline-app:pipeline-app` and relevant `gst-videoprep` tests.

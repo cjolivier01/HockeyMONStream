@@ -45,17 +45,24 @@ bool write_canvas_provenance(
     size_t source_height = 0,
     size_t max_canvas_dimension = 0,
     bool max_output_width_applied = false,
-    bool max_canvas_dimension_applied = false) {
+    bool max_canvas_dimension_applied = false,
+    const std::string& mapping_backend = {},
+    const std::string& projection = {}) {
   source_width = source_width == 0 ? width : source_width;
   source_height = source_height == 0 ? height : source_height;
+  const bool algorithm_aware = !mapping_backend.empty() || !projection.empty();
+  if (algorithm_aware && (mapping_backend.empty() || projection.empty()))
+    return false;
   return write_text_file(
       dir / "stitching_canvas_provenance",
-      "version=2\nmax-output-width=" + std::to_string(max_output_width) + "\nmax-canvas-dimension=" +
-          std::to_string(max_canvas_dimension) + "\nsource-canvas-width=" + std::to_string(source_width) +
+      std::string(algorithm_aware ? "version=3\n" : "version=2\n") + "max-output-width=" +
+          std::to_string(max_output_width) + "\nmax-canvas-dimension=" + std::to_string(max_canvas_dimension) +
+          "\nsource-canvas-width=" + std::to_string(source_width) +
           "\nsource-canvas-height=" + std::to_string(source_height) + "\ncanvas-width=" + std::to_string(width) +
           "\ncanvas-height=" + std::to_string(height) +
           "\nmax-output-width-applied=" + std::to_string(max_output_width_applied ? 1 : 0) +
-          "\nmax-canvas-dimension-applied=" + std::to_string(max_canvas_dimension_applied ? 1 : 0) + "\n");
+          "\nmax-canvas-dimension-applied=" + std::to_string(max_canvas_dimension_applied ? 1 : 0) + "\n" +
+          (algorithm_aware ? "mapping-backend=" + mapping_backend + "\nprojection=" + projection + "\n" : ""));
 }
 
 bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_px, float y_px) {
@@ -290,6 +297,59 @@ bool expect_configured(const fs::path& dir, bool expected, const std::string& la
     return false;
   }
   return true;
+}
+
+bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "mapping-algorithm-provenance";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  YAML::Node config;
+  config["stitching"]["mapping_backend"] = "nona";
+  config["stitching"]["projection"] = "cylindrical";
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
+    return false;
+  if (!expect_configured(dir, false, "legacy provenance must not mask a selected projection"))
+    return false;
+  if (!write_canvas_provenance(
+          dir,
+          /*max_output_width=*/0,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/0,
+          /*source_height=*/0,
+          /*max_canvas_dimension=*/0,
+          /*max_output_width_applied=*/false,
+          /*max_canvas_dimension_applied=*/false,
+          "nona",
+          "cylindrical")) {
+    return false;
+  }
+  auto first = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  if (!first.ok() || !first->artifact_lock)
+    return false;
+  hm::stitching::ValidatedStitchingArtifacts previous{
+      .canvas_size = first->canvas_size,
+      .generation_id = first->generation_id,
+      .artifact_revision = first->artifact_revision,
+      .content_validated = first->content_validated,
+  };
+  first->artifact_lock.reset();
+
+  config["stitching"]["projection"] = "general-panini";
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
+    return false;
+  auto projection_changed = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, previous);
+  if (!projection_changed.ok() || projection_changed->artifact_lock ||
+      !expect_configured(dir, false, "a direct YAML projection change must invalidate existing maps")) {
+    return false;
+  }
+
+  config["stitching"]["mapping_backend"] = "opencv-magsac";
+  config["stitching"]["projection"] = "rectilinear";
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
+    return false;
+  return expect_configured(dir, false, "a direct YAML mapping backend change must invalidate existing maps");
 }
 
 bool run_configured_child(
@@ -1712,6 +1772,10 @@ int main() {
 
   if (!expect_dependency_invalidation_report(tmpdir)) {
     finish(tmpdir, 7);
+  }
+
+  if (!expect_mapping_algorithm_changes_require_regeneration(tmpdir)) {
+    finish(tmpdir, 48);
   }
 
   if (!expect_clean_preserves_unrelated_config(tmpdir)) {

@@ -2331,11 +2331,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   auto* run_autooptimizer = require_child<QCheckBox>(window, "runAutooptimizerCheck");
   auto* save_preset_button = require_child<QPushButton>(window, "savePresetButton");
   auto* control_point_matcher_label = require_child<QLabel>(window, "controlPointMatcherLabel");
   auto* mapping_backend_label = require_child<QLabel>(window, "mappingBackendLabel");
+  auto* projection_label = require_child<QLabel>(window, "stitchProjectionLabel");
   auto* stitch_max_output_width_label = require_child<QLabel>(window, "stitchMaxOutputWidthLabel");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
@@ -2384,8 +2386,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time ||
-      !control_point_matcher || !mapping_backend || !control_point_matcher_label || !mapping_backend_label ||
-      !stitch_max_output_width || !run_autooptimizer || !save_preset_button || !stitch_max_output_width_label ||
+      !control_point_matcher || !mapping_backend || !projection || !control_point_matcher_label ||
+      !mapping_backend_label || !projection_label || !stitch_max_output_width || !run_autooptimizer ||
+      !save_preset_button || !stitch_max_output_width_label ||
       !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking ||
       !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
       !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
@@ -2472,17 +2475,37 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const bool unimplemented_matchers_disabled = control_point_matcher->model() &&
       !(control_point_matcher->model()->flags(control_point_matcher->model()->index(1, 0)) & Qt::ItemIsEnabled) &&
       !(control_point_matcher->model()->flags(control_point_matcher->model()->index(2, 0)) & Qt::ItemIsEnabled);
+  const QString original_mapping_backend = mapping_backend->currentData().toString();
+  const QString original_projection = projection->currentData().toString();
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  QApplication::processEvents();
+  bool all_nona_projections_enabled = projection->model() && projection->count() == 22;
+  for (int index = 0; all_nona_projections_enabled && index < projection->count(); ++index) {
+    all_nona_projections_enabled = projection->model()->flags(projection->model()->index(index, 0)) & Qt::ItemIsEnabled;
+  }
+  projection->setCurrentIndex(projection->findData("general-panini"));
+  mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
+  QApplication::processEvents();
+  bool only_rectilinear_enabled = projection->currentData().toString() == "rectilinear";
+  for (int index = 0; only_rectilinear_enabled && index < projection->count(); ++index) {
+    const bool enabled = projection->model()->flags(projection->model()->index(index, 0)) & Qt::ItemIsEnabled;
+    only_rectilinear_enabled = enabled == (projection->itemData(index).toString() == "rectilinear");
+  }
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData(original_projection));
+  mapping_backend->setCurrentIndex(mapping_backend->findData(original_mapping_backend));
+  QApplication::processEvents();
   if (!expect(
           program_controls->isAncestorOf(max_speed_x) && program_controls->isAncestorOf(bring_up_shadows) &&
               stitched_controls->isAncestorOf(rotate) && !camera1_host->isAncestorOf(max_speed_x) &&
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
               stitched_controls->isAncestorOf(control_point_matcher) &&
-              stitched_controls->isAncestorOf(mapping_backend) &&
+              stitched_controls->isAncestorOf(mapping_backend) && stitched_controls->isAncestorOf(projection) &&
               stitched_controls->isAncestorOf(stitch_max_output_width) &&
               stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 4 &&
               stitched_control_tabs->count() == 2 && stitched_control_tabs->tabText(1) == "Algorithms" &&
               control_point_matcher_label->text() == "Control-point matcher" &&
-              mapping_backend_label->text() == "Mapping backend" &&
+              mapping_backend_label->text() == "Mapping backend" && projection_label->text() == "Projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
               !run_autooptimizer->isChecked() && !run_autooptimizer->isEnabled() &&
@@ -2491,8 +2514,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               control_point_matcher->itemText(1) == "DeDoDe + LightGlue" &&
               control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
               mapping_backend->count() == 3 && mapping_backend->itemText(0) == "NONA" &&
-              mapping_backend->itemText(1) == "MAGSAC++" && mapping_backend->itemText(2) == "RANSAC",
-          "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
+              mapping_backend->itemText(1) == "MAGSAC++" && mapping_backend->itemText(2) == "RANSAC" &&
+              projection->findData("general-panini") >= 0 && all_nona_projections_enabled && only_rectilinear_enabled,
+          "Algorithm controls must expose compatible projections in the earliest preview tab whose frames reflect "
+          "their pipeline stage")) {
     return false;
   }
   const bool save_enabled_before_inactive_optimizer_toggle = save_preset_button->isEnabled();
@@ -6438,10 +6463,13 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !zoom_in_aggressiveness ||
       !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !exposure ||
       !lift_shadow_black_point || !use_10_bit_grading || !reset || !save || !create || !game_id || !start || !stop ||
-      !restart || !pipeline_process || !mode || !stitch_frame_time || !stitch_max_output_width) {
+      !restart || !pipeline_process || !mode || !stitch_frame_time || !stitch_max_output_width || !mapping_backend ||
+      !projection) {
     return false;
   }
 
@@ -7331,12 +7359,20 @@ bool test_camera_controls(HStreamWindow* window) {
   YAML::Node generated_backend_marker_config = YAML::LoadFile(config.string());
   generated_backend_marker_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   generated_backend_marker_config["stitching"]["mapping_backend"] = "nona";
+  generated_backend_marker_config["stitching"].remove("projection");
   generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
       "superpoint-lightglue";
   generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
+  YAML::Node generated_choices = generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"];
+  generated_choices.remove("projection");
+  generated_choices["previous_mapping_backend"] = "opencv-magsac";
+  generated_choices.remove("previous_projection");
   std::ofstream(config) << YAML::Dump(generated_backend_marker_config) << '\n';
   activate(create);
-  if (!expect(!save->isEnabled(), "Reloading generated backend provenance should keep unchanged UI controls clean")) {
+  if (!expect(
+          mapping_backend->currentData().toString() == "opencv-magsac" &&
+              projection->currentData().toString() == "rectilinear" && !save->isEnabled(),
+          "Legacy generated OpenCV backend provenance without a projection must migrate to rectilinear")) {
     return false;
   }
   max_speed_x->setValue(450);
@@ -8444,13 +8480,15 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* control_point_matcher = require_child<QComboBox>(&user_default_window, "controlPointMatcherCombo");
     auto* mapping_backend = require_child<QComboBox>(&user_default_window, "mappingBackendCombo");
     auto* run_autooptimizer = require_child<QCheckBox>(&user_default_window, "runAutooptimizerCheck");
+    auto* projection = require_child<QComboBox>(&user_default_window, "stitchProjectionCombo");
     auto* stitch_rotation = require_child<QSlider>(&user_default_window, "cameraSlider_Stitch_Rotate_Degrees");
     auto* fixed_edge_left =
         require_child<QSlider>(&user_default_window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
     auto* fixed_edge_right =
         require_child<QSlider>(&user_default_window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
     ok = game_id && create && save && start && stop && mode && stitch_frame_time && stitch_max_output_width &&
-        control_point_matcher && mapping_backend && run_autooptimizer && stitch_rotation && fixed_edge_left &&
+        control_point_matcher && mapping_backend && projection && run_autooptimizer && stitch_rotation &&
+        fixed_edge_left &&
         fixed_edge_right;
     if (ok) {
       game_id->setText("ui-user-stitch-default");
@@ -8460,8 +8498,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
               stitch_max_output_width->value() == 0 &&
               control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
               mapping_backend->currentData().toString() == "opencv-affine-ransac" && !run_autooptimizer->isChecked() &&
-              !run_autooptimizer->isEnabled() && fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 &&
-              save->isEnabled(),
+              !run_autooptimizer->isEnabled() && projection->currentData().toString() == "rectilinear" &&
+              fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 && save->isEnabled(),
           "User-level defaults must initialize the UI, reject unimplemented matchers, accept mapping aliases, and "
           "generated private backend choices and lower-layer max-width aliases must not mask them");
       activate(save);
@@ -8482,6 +8520,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
           saved_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
               saved_zero["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
               saved_zero["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
+              saved_zero["stitching"]["projection"].as<std::string>() == "rectilinear" &&
               !lookup_yaml_path(saved_zero, {"stitching", "max_output_width"}, nullptr) &&
               !saved_zero["stitching"]["run_autooptimizer"].as<bool>() &&
               !lookup_yaml_path(saved_zero, {"hstream_ui", "generated_stitching_backend_choices"}, nullptr) &&
@@ -8492,9 +8531,11 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       copied_config_node = YAML::LoadFile(copied_config.string());
       copied_config_node["stitching"]["mapping_backend"] = "opencv-magsac";
       copied_config_node["stitching"]["run_autooptimizer"] = false;
+      copied_config_node["stitching"]["projection"] = "rectilinear";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
           "superpoint-lightglue";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "opencv-magsac";
+      copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["projection"] = "rectilinear";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["run_autooptimizer"] = false;
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
           "superpoint-lightglue";
@@ -8505,7 +8546,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(create);
       ok &= expect(
           mapping_backend->currentData().toString() == "opencv-affine-ransac" && !run_autooptimizer->isChecked() &&
-              !run_autooptimizer->isEnabled() && save->isEnabled(),
+              !run_autooptimizer->isEnabled() && projection->currentData().toString() == "rectilinear" &&
+              save->isEnabled(),
           "UI load must restore previous explicit stitching algorithm choices displaced by CLI materialization");
 
       copied_config_node = YAML::LoadFile(copied_config.string());
@@ -8516,13 +8558,15 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(create);
       ok &= expect(
           mapping_backend->currentData().toString() == "opencv-magsac" && !run_autooptimizer->isChecked() &&
-              save->isEnabled(),
+              projection->currentData().toString() == "rectilinear" && save->isEnabled(),
           "UI load must normalize an invalid NONA-without-autooptimizer pair and offer to save the correction");
       activate(save);
       const YAML::Node normalized_backend = YAML::LoadFile(copied_config.string());
       ok &= expect(
           normalized_backend["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
-              !normalized_backend["stitching"]["run_autooptimizer"].as<bool>() && !save->isEnabled(),
+              !normalized_backend["stitching"]["run_autooptimizer"].as<bool>() &&
+              normalized_backend["stitching"]["projection"].as<std::string>() == "rectilinear" &&
+              !save->isEnabled(),
           "Saving a normalized backend pair must persist MAGSAC with the autooptimizer disabled");
 
       copied_config_node = YAML::LoadFile(copied_config.string());
@@ -8532,7 +8576,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(create);
       ok &= expect(
           mapping_backend->currentData().toString() == "nona" && run_autooptimizer->isChecked() &&
-              run_autooptimizer->isEnabled(),
+              run_autooptimizer->isEnabled() && projection->currentData().toString() == "rectilinear",
           "Reloading a valid NONA preset after OpenCV must enable its required autooptimizer control");
 
       copied_config_node = YAML::LoadFile(copied_config.string());
@@ -8542,7 +8586,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(create);
       ok &= expect(
           mapping_backend->currentData().toString() == "opencv-magsac" && !run_autooptimizer->isChecked() &&
-              !run_autooptimizer->isEnabled(),
+              !run_autooptimizer->isEnabled() && projection->currentData().toString() == "rectilinear",
           "Reloading OpenCV after NONA must disable the inactive autooptimizer control");
 
       mode->setCurrentIndex(mode->findData("program"));
