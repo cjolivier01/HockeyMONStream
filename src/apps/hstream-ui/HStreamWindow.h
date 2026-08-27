@@ -331,6 +331,7 @@ class HStreamWindow : public QMainWindow {
   int stitchingCalibrationControlPoints() const;
   int stitchingCalibrationFrameCount() const;
   int stitchingMaxOutputWidth() const;
+  bool runAutooptimizer() const;
   QString stitchFrameTime() const;
   QString controlPointMatcher() const;
   QString mappingBackend() const;
@@ -439,6 +440,7 @@ class HStreamWindow : public QMainWindow {
   QSpinBox* control_points_spin_{nullptr};
   QSpinBox* calibration_frame_count_spin_{nullptr};
   QSpinBox* stitch_max_output_width_spin_{nullptr};
+  QCheckBox* run_autooptimizer_check_{nullptr};
   QComboBox* control_point_matcher_combo_{nullptr};
   QComboBox* mapping_backend_combo_{nullptr};
   QTimeEdit* stitch_frame_time_edit_{nullptr};
@@ -592,6 +594,7 @@ class HStreamWindow : public QMainWindow {
   int active_calibration_control_points_{0};
   int active_calibration_frame_count_{0};
   int active_stitch_max_output_width_{0};
+  bool active_run_autooptimizer_{false};
   QString active_stitch_frame_time_;
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
@@ -626,12 +629,14 @@ class HStreamWindow : public QMainWindow {
   QString baseline_config_root_;
   QString default_stitch_frame_time_{"00:00:00"};
   int default_stitch_max_output_width_{0};
+  bool default_run_autooptimizer_{false};
   QString default_control_point_matcher_{"superpoint-lightglue"};
-  QString default_mapping_backend_{"nona"};
+  QString default_mapping_backend_{"opencv-magsac"};
   std::map<QString, int> saved_camera_controls_;
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};
   int saved_stitch_max_output_width_{0};
+  bool saved_run_autooptimizer_{false};
   QString development_runtime_root_;
   QString development_pipeline_runner_;
   QString development_bazel_bin_;

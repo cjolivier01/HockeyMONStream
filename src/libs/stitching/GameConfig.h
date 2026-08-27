@@ -13,6 +13,12 @@
 
 namespace hm::stitching {
 
+struct StitchingBackendChoices {
+  std::string control_point_matcher;
+  std::string mapping_backend;
+  bool run_autooptimizer{false};
+};
+
 // Serializes every read-modify-write operation on a game's config.yaml.
 class GameConfigLock final {
  public:
@@ -108,6 +114,34 @@ absl::Status validate_no_pending_live_stitched_output_authorization_file_locked(
 absl::StatusOr<std::string> current_live_stitched_output_owner_process();
 absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_view identity);
 absl::StatusOr<bool> live_stitched_output_authorization_is_active(const YAML::Node& config);
+
+// Claims one immutable algorithm tuple for a pending/completed calibration
+// generation. A concurrent process may share the generation only when it uses
+// the same effective choices.
+absl::Status reserve_stitching_backend_generation(
+    const std::filesystem::path& game_dir,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices);
+
+// Adds or validates the immutable backend claim in a document that already
+// contains the matching worker-visible tuple. The caller must hold
+// GameConfigTransactionLock and publish this document before releasing it so
+// the claim and tuple can never become separate config generations.
+absl::Status reserve_stitching_backend_generation_in_config(
+    YAML::Node& config,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices);
+
+// Validates both the immutable generation claim and the worker-visible
+// stitching tuple. The file variant requires GameConfigTransactionLock.
+absl::Status validate_stitching_backend_generation(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices);
+absl::Status validate_stitching_backend_generation_file_locked(
+    const std::filesystem::path& config_path,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices);
 
 // Applies only changes made between baseline and desired to latest. This is a
 // three-way merge for independently owned config paths, not a conflict

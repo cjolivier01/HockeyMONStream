@@ -1427,6 +1427,7 @@ play-tracker:
       bundled_baseline.ok() ? YAML::Clone(bundled_baseline->values) : YAML::Node(YAML::NodeType::Map);
   backend_choices_baseline["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
   backend_choices_baseline["stitching"]["mapping_backend"] = "magsac";
+  backend_choices_baseline["stitching"]["run_autooptimizer"] = true;
   std::ofstream(backend_choices_baseline_root / "baseline.yaml") << YAML::Dump(backend_choices_baseline) << '\n';
   const fs::path backend_choices_dir = games / "backend-choices";
   fs::create_directories(backend_choices_dir);
@@ -1440,10 +1441,32 @@ play-tracker:
           backend_choices_private->has_value() &&
           (**backend_choices_private)["stitching"]["control_point_matcher"].as<std::string>() ==
               "superpoint-lightglue" &&
-          (**backend_choices_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac",
-      "Effective stitching matcher/backend choices from lower config layers must be materialized into game-private "
-      "config with canonical spellings");
+          (**backend_choices_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          (**backend_choices_private)["stitching"]["run_autooptimizer"].as<bool>(),
+      "Effective stitching algorithm choices from lower config layers must be materialized into game-private config "
+      "with canonical spellings");
+  const fs::path backend_omitted_baseline_root = root / "backend-omitted-baseline";
+  fs::create_directories(backend_omitted_baseline_root);
+  YAML::Node backend_omitted_baseline =
+      bundled_baseline.ok() ? YAML::Clone(bundled_baseline->values) : YAML::Node(YAML::NodeType::Map);
+  backend_omitted_baseline["stitching"].remove("mapping_backend");
+  backend_omitted_baseline["stitching"].remove("run_autooptimizer");
+  std::ofstream(backend_omitted_baseline_root / "baseline.yaml") << YAML::Dump(backend_omitted_baseline) << '\n';
+  const fs::path backend_omitted_dir = games / "backend-omitted";
+  fs::create_directories(backend_omitted_dir);
+  hm::Configurator backend_omitted(
+      "backend-omitted", backend_omitted_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status backend_omitted_configured = backend_omitted.configure();
+  const absl::Status backend_omitted_persisted = backend_omitted.persist_effective_stitching_backend_choices();
+  auto backend_omitted_private = hm::stitching::load_game_config_file(backend_omitted_dir / "config.yaml");
+  ok &= expect(
+      backend_omitted_configured.ok() && backend_omitted_persisted.ok() && backend_omitted_private.ok() &&
+          backend_omitted_private->has_value() &&
+          (**backend_omitted_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          !(**backend_omitted_private)["stitching"]["run_autooptimizer"].as<bool>(),
+      "Missing backend keys in an older baseline must materialize the valid MAGSAC-without-autooptimizer defaults");
   backend_choices_baseline["stitching"]["mapping_backend"] = "affine-ransac";
+  backend_choices_baseline["stitching"]["run_autooptimizer"] = false;
   std::ofstream(backend_choices_baseline_root / "baseline.yaml") << YAML::Dump(backend_choices_baseline) << '\n';
   hm::Configurator backend_choices_changed(
       "backend-choices", backend_choices_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
@@ -1455,25 +1478,30 @@ play-tracker:
       backend_choices_changed_configured.ok() && backend_choices_changed_persisted.ok() &&
           backend_choices_changed_private.ok() && backend_choices_changed_private->has_value() &&
           (**backend_choices_changed_private)["stitching"]["mapping_backend"].as<std::string>() ==
-              "opencv-affine-ransac",
-      "Generated game-private stitching backend choices must not mask later lower-layer config changes");
+              "opencv-affine-ransac" &&
+          !(**backend_choices_changed_private)["stitching"]["run_autooptimizer"].as<bool>(),
+      "Generated game-private stitching algorithm choices must not mask later lower-layer config changes");
   const fs::path backend_cli_dir = games / "backend-cli";
   fs::create_directories(backend_cli_dir);
   YAML::Node backend_cli_private(YAML::NodeType::Map);
   backend_cli_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_cli_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+  backend_cli_private["stitching"]["run_autooptimizer"] = false;
   ok &= expect(
       hm::stitching::publish_game_config(backend_cli_dir, YAML::Dump(backend_cli_private) + "\n").ok(),
       "backend CLI fixture must publish");
   hm::Configurator backend_cli("backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_cli_configured = backend_cli.configure();
   const absl::Status backend_cli_option = backend_cli.apply_config_item("stitching.mapping_backend", "opencv-magsac");
+  const absl::Status backend_cli_autooptimizer = backend_cli.apply_config_item("stitching.run_autooptimizer", "true");
   const absl::Status backend_cli_persisted = backend_cli.persist_effective_stitching_backend_choices();
   auto backend_cli_generated = hm::stitching::load_game_config_file(backend_cli_dir / "config.yaml");
   hm::Configurator backend_cli_repeated("backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_cli_repeated_configured = backend_cli_repeated.configure();
   const absl::Status backend_cli_repeated_option =
       backend_cli_repeated.apply_config_item("stitching.mapping_backend", "opencv-magsac");
+  const absl::Status backend_cli_repeated_autooptimizer =
+      backend_cli_repeated.apply_config_item("stitching.run_autooptimizer", "true");
   const absl::Status backend_cli_repeated_persisted =
       backend_cli_repeated.persist_effective_stitching_backend_choices();
   auto backend_cli_repeated_generated = hm::stitching::load_game_config_file(backend_cli_dir / "config.yaml");
@@ -1482,36 +1510,239 @@ play-tracker:
   const absl::Status backend_cli_restored = backend_cli_reloaded.persist_effective_stitching_backend_choices();
   auto backend_cli_final = hm::stitching::load_game_config_file(backend_cli_dir / "config.yaml");
   ok &= expect(
-      backend_cli_configured.ok() && backend_cli_option.ok() && backend_cli_persisted.ok() &&
-          backend_cli_generated.ok() && backend_cli_generated->has_value() &&
+      backend_cli_configured.ok() && backend_cli_option.ok() && backend_cli_autooptimizer.ok() &&
+          backend_cli_persisted.ok() && backend_cli_generated.ok() && backend_cli_generated->has_value() &&
           (**backend_cli_generated)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          (**backend_cli_generated)["stitching"]["run_autooptimizer"].as<bool>() &&
           (**backend_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"]
                   .as<std::string>() == "opencv-affine-ransac" &&
+          !(**backend_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"]
+               .as<bool>() &&
           backend_cli_repeated_configured.ok() && backend_cli_repeated_option.ok() &&
-          backend_cli_repeated_persisted.ok() && backend_cli_repeated_generated.ok() &&
-          backend_cli_repeated_generated->has_value() &&
+          backend_cli_repeated_autooptimizer.ok() && backend_cli_repeated_persisted.ok() &&
+          backend_cli_repeated_generated.ok() && backend_cli_repeated_generated->has_value() &&
           (**backend_cli_repeated_generated)["hstream_ui"]["generated_stitching_backend_choices"]
                                             ["previous_mapping_backend"]
                                                 .as<std::string>() == "opencv-affine-ransac" &&
           backend_cli_reconfigured.ok() && backend_cli_restored.ok() && backend_cli_final.ok() &&
           backend_cli_final->has_value() &&
           (**backend_cli_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
+          !(**backend_cli_final)["stitching"]["run_autooptimizer"].as<bool>() &&
           !hm::get_node(**backend_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "CLI materialization must preserve and restore an existing explicit game-private stitching backend choice");
+
+  const fs::path malformed_backend_dir = games / "malformed-backend-cli";
+  fs::create_directories(malformed_backend_dir);
+  YAML::Node malformed_backend_private(YAML::NodeType::Map);
+  malformed_backend_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  malformed_backend_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+  malformed_backend_private["stitching"]["run_autooptimizer"] = "invalid";
+  malformed_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
+      "superpoint-lightglue";
+  malformed_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] =
+      "opencv-affine-ransac";
+  malformed_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["run_autooptimizer"] = "invalid";
+  ok &= expect(
+      hm::stitching::publish_game_config(malformed_backend_dir, YAML::Dump(malformed_backend_private) + "\n").ok(),
+      "malformed private backend fixture must publish");
+  hm::Configurator malformed_backend_cli(
+      "malformed-backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status malformed_backend_configured = malformed_backend_cli.configure();
+  const absl::Status malformed_backend_mapping =
+      malformed_backend_cli.apply_config_item("stitching.mapping_backend", "opencv-magsac");
+  const absl::Status malformed_backend_autooptimizer =
+      malformed_backend_cli.apply_config_item("stitching.run_autooptimizer", "false");
+  const absl::Status malformed_backend_repaired = malformed_backend_cli.persist_effective_stitching_backend_choices();
+  auto malformed_backend_after_repair = hm::stitching::load_game_config_file(malformed_backend_dir / "config.yaml");
+  hm::Configurator malformed_backend_restarted(
+      "malformed-backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status malformed_backend_reconfigured = malformed_backend_restarted.configure();
+  const absl::Status malformed_backend_restored =
+      malformed_backend_restarted.persist_effective_stitching_backend_choices();
+  auto malformed_backend_final = hm::stitching::load_game_config_file(malformed_backend_dir / "config.yaml");
+  ok &= expect(
+      malformed_backend_configured.ok() && malformed_backend_mapping.ok() && malformed_backend_autooptimizer.ok() &&
+          malformed_backend_repaired.ok() && malformed_backend_after_repair.ok() &&
+          malformed_backend_after_repair->has_value() &&
+          !hm::get_node(
+               **malformed_backend_after_repair,
+               "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+               .has_value() &&
+          malformed_backend_reconfigured.ok() && malformed_backend_restored.ok() && malformed_backend_final.ok() &&
+          malformed_backend_final->has_value() &&
+          (**malformed_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          !(**malformed_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
+          !hm::get_node(
+               **malformed_backend_final,
+               "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+               .has_value(),
+      "A valid CLI override must repair malformed private optimizer provenance across a restart without throwing");
+
+  const fs::path legacy_backend_dir = games / "legacy-generated-backend";
+  fs::create_directories(legacy_backend_dir);
+  YAML::Node legacy_backend_private(YAML::NodeType::Map);
+  legacy_backend_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  legacy_backend_private["stitching"]["mapping_backend"] = "nona";
+  legacy_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
+      "superpoint-lightglue";
+  legacy_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
+  ok &= expect(
+      hm::stitching::publish_game_config(legacy_backend_dir, YAML::Dump(legacy_backend_private) + "\n").ok(),
+      "legacy generated-backend fixture must publish");
+  hm::Configurator legacy_backend_migration(
+      "legacy-generated-backend", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status legacy_backend_configured = legacy_backend_migration.configure();
+  const absl::Status legacy_backend_mapping =
+      legacy_backend_migration.apply_config_item("stitching.mapping_backend", "opencv-affine-ransac");
+  const absl::Status legacy_backend_autooptimizer =
+      legacy_backend_migration.apply_config_item("stitching.run_autooptimizer", "false");
+  const absl::Status legacy_backend_migrated = legacy_backend_migration.persist_effective_stitching_backend_choices();
+  auto legacy_backend_after_migration = hm::stitching::load_game_config_file(legacy_backend_dir / "config.yaml");
+  hm::Configurator legacy_backend_restarted(
+      "legacy-generated-backend", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status legacy_backend_reconfigured = legacy_backend_restarted.configure();
+  const absl::Status legacy_backend_restored = legacy_backend_restarted.persist_effective_stitching_backend_choices();
+  auto legacy_backend_final = hm::stitching::load_game_config_file(legacy_backend_dir / "config.yaml");
+  ok &= expect(
+      legacy_backend_configured.ok() && legacy_backend_mapping.ok() && legacy_backend_autooptimizer.ok() &&
+          legacy_backend_migrated.ok() && legacy_backend_after_migration.ok() &&
+          legacy_backend_after_migration->has_value() &&
+          !hm::get_node(
+               **legacy_backend_after_migration,
+               "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+               .has_value() &&
+          legacy_backend_reconfigured.ok() && legacy_backend_restored.ok() && legacy_backend_final.ok() &&
+          legacy_backend_final->has_value() &&
+          (**legacy_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          !(**legacy_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
+          !hm::get_node(
+               **legacy_backend_final, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+               .has_value(),
+      "Legacy two-field generated backend provenance must migrate across two launches without restoring NONA as "
+      "user intent");
+
+  const fs::path backend_generation_dir = games / "backend-generation";
+  fs::create_directories(backend_generation_dir);
+  YAML::Node backend_generation_private(YAML::NodeType::Map);
+  backend_generation_private["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  backend_generation_private["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "shared-generation-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(backend_generation_dir, YAML::Dump(backend_generation_private) + "\n").ok(),
+      "shared backend-generation fixture must publish");
+  hm::Configurator first_backend_generation(
+      "backend-generation", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator second_backend_generation(
+      "backend-generation", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status first_generation_configured = first_backend_generation.configure();
+  const absl::Status second_generation_configured = second_backend_generation.configure();
+  const absl::Status first_generation_backend =
+      first_backend_generation.apply_config_item("stitching.mapping_backend", "opencv-magsac");
+  const absl::Status first_generation_autooptimizer =
+      first_backend_generation.apply_config_item("stitching.run_autooptimizer", "false");
+  const absl::Status second_generation_backend =
+      second_backend_generation.apply_config_item("stitching.mapping_backend", "opencv-affine-ransac");
+  const absl::Status second_generation_autooptimizer =
+      second_backend_generation.apply_config_item("stitching.run_autooptimizer", "false");
+  g_setenv("HSTREAM_GAME_CONFIG_TEST_INTERRUPT_BEFORE_RENAME", "1", TRUE);
+  const absl::Status first_generation_interrupted =
+      first_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
+  g_unsetenv("HSTREAM_GAME_CONFIG_TEST_INTERRUPT_BEFORE_RENAME");
+  auto backend_generation_after_interruption =
+      hm::stitching::load_game_config_file(backend_generation_dir / "config.yaml");
+  const absl::Status first_generation_reserved =
+      first_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
+  const absl::Status second_generation_rejected =
+      second_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
+  auto backend_generation_final = hm::stitching::load_game_config_file(backend_generation_dir / "config.yaml");
+  ok &= expect(
+      first_generation_configured.ok() && second_generation_configured.ok() && first_generation_backend.ok() &&
+          first_generation_autooptimizer.ok() && second_generation_backend.ok() &&
+          second_generation_autooptimizer.ok() && !first_generation_interrupted.ok() &&
+          backend_generation_after_interruption.ok() && backend_generation_after_interruption->has_value() &&
+          !hm::get_node(**backend_generation_after_interruption, "stitching.mapping_backend").has_value() &&
+          !hm::get_node(**backend_generation_after_interruption, "hstream_ui.generated_stitching_backend_choices")
+               .has_value() &&
+          !hm::get_node(**backend_generation_after_interruption, "hstream_ui.stitching_calibration.backend_generation")
+               .has_value() &&
+          first_generation_reserved.ok() && absl::IsAborted(second_generation_rejected) &&
+          backend_generation_final.ok() && backend_generation_final->has_value() &&
+          (**backend_generation_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          (**backend_generation_final)["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"]
+                  .as<std::string>() == "opencv-magsac" &&
+          (**backend_generation_final)["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"]
+                  .as<std::string>() == "opencv-magsac",
+      "Backend provenance, worker tuple, and generation claim must publish atomically, and preloaded configurators "
+      "must not share one invalidation ID with different backend tuples");
+
+  const fs::path invalid_backend_dir = games / "invalid-backend-cli";
+  fs::create_directories(invalid_backend_dir);
+  std::ofstream(invalid_backend_dir / "seam_file.png") << "preserved seam\n";
+  std::ofstream(invalid_backend_dir / "mapping_0000.tif") << "preserved mapping\n";
+  YAML::Node invalid_backend_private(YAML::NodeType::Map);
+  invalid_backend_private["pipeline"]["application"]["complete-configuration"] = 1;
+  invalid_backend_private["pipeline"]["hmstitcher"]["enable"] = 1;
+  invalid_backend_private["stitching"]["mapping_backend"] = "opencv-magsac";
+  invalid_backend_private["stitching"]["run_autooptimizer"] = false;
+  invalid_backend_private["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
+  invalid_backend_private["hstream_ui"]["stitching_calibration"]["frame_count"] = 1;
+  invalid_backend_private["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  invalid_backend_private["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
+  invalid_backend_private["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = false;
+  invalid_backend_private["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "invalid-backend-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(invalid_backend_dir, YAML::Dump(invalid_backend_private) + "\n").ok(),
+      "invalid backend CLI fixture must publish");
+  std::ifstream invalid_backend_before_stream(invalid_backend_dir / "config.yaml", std::ios::binary);
+  const std::string invalid_backend_before{
+      std::istreambuf_iterator<char>(invalid_backend_before_stream), std::istreambuf_iterator<char>()};
+  hm::Configurator invalid_backend_cli(
+      "invalid-backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status invalid_backend_configured = invalid_backend_cli.configure();
+  const absl::Status invalid_backend_option =
+      invalid_backend_cli.apply_config_item("stitching.mapping_backend", "nona");
+  const absl::Status invalid_backend_autooptimizer =
+      invalid_backend_cli.apply_config_item("stitching.run_autooptimizer", "false");
+  const absl::Status invalid_backend_status = invalid_backend_cli.complete_configuration(
+      /*force=*/false,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/{},
+      /*show_render_sink=*/false,
+      /*show_render_scale=*/-1.0);
+  std::ifstream invalid_backend_after_stream(invalid_backend_dir / "config.yaml", std::ios::binary);
+  const std::string invalid_backend_after{
+      std::istreambuf_iterator<char>(invalid_backend_after_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      invalid_backend_configured.ok() && invalid_backend_option.ok() && invalid_backend_autooptimizer.ok() &&
+          absl::IsInvalidArgument(invalid_backend_status) &&
+          std::string(invalid_backend_status.message()).find("requires stitching.run_autooptimizer=true") !=
+              std::string::npos &&
+          invalid_backend_after == invalid_backend_before &&
+          fs::is_regular_file(invalid_backend_dir / "seam_file.png") &&
+          fs::is_regular_file(invalid_backend_dir / "mapping_0000.tif"),
+      "A direct NONA-without-autooptimizer override must fail before changing private config or cleaning artifacts");
+
+  const fs::path backend_partial_baseline_root = root / "backend-partial-baseline";
+  fs::create_directories(backend_partial_baseline_root);
+  YAML::Node backend_partial_baseline = YAML::Clone(test_baseline);
+  backend_partial_baseline["stitching"]["mapping_backend"] = "opencv-magsac";
+  backend_partial_baseline["stitching"]["run_autooptimizer"] = true;
+  std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
   const fs::path backend_partial_dir = games / "backend-partial";
   fs::create_directories(backend_partial_dir);
   YAML::Node backend_partial_private(YAML::NodeType::Map);
-  backend_partial_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+  backend_partial_private["stitching"]["mapping_backend"] = "nona";
   ok &= expect(
       hm::stitching::publish_game_config(backend_partial_dir, YAML::Dump(backend_partial_private) + "\n").ok(),
       "backend partial fixture must publish");
-  hm::Configurator backend_partial("backend-partial", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator backend_partial(
+      "backend-partial", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_partial_configured = backend_partial.configure();
   const absl::Status backend_partial_option =
       backend_partial.apply_config_item("stitching.mapping_backend", "opencv-magsac");
   const absl::Status backend_partial_persisted = backend_partial.persist_effective_stitching_backend_choices();
   hm::Configurator backend_partial_reloaded(
-      "backend-partial", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+      "backend-partial", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_partial_reconfigured = backend_partial_reloaded.configure();
   const absl::Status backend_partial_restored = backend_partial_reloaded.persist_effective_stitching_backend_choices();
   auto backend_partial_final = hm::stitching::load_game_config_file(backend_partial_dir / "config.yaml");
@@ -1519,10 +1750,13 @@ play-tracker:
       backend_partial_configured.ok() && backend_partial_option.ok() && backend_partial_persisted.ok() &&
           backend_partial_reconfigured.ok() && backend_partial_restored.ok() && backend_partial_final.ok() &&
           backend_partial_final->has_value() &&
-          !hm::get_node(**backend_partial_final, "stitching.control_point_matcher").has_value() &&
-          (**backend_partial_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
-          !hm::get_node(**backend_partial_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
-      "CLI materialization must preserve and restore an existing single-key game-private stitching backend choice");
+          (**backend_partial_final)["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+          (**backend_partial_final)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**backend_partial_final)["stitching"]["run_autooptimizer"].as<bool>() &&
+          (**backend_partial_final)["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"]
+                  .as<std::string>() == "nona",
+      "Restoring a partial private backend choice must keep the complete effective worker tuple materialized and its "
+      "provenance intact");
 
   YAML::Node source_uri_spellings(YAML::NodeType::Map);
   source_uri_spellings["source0"]["enable"] = 1;

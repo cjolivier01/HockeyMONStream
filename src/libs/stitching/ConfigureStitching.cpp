@@ -2255,6 +2255,31 @@ std::string read_scalar_or_default(
   return current && current.IsScalar() ? current.as<std::string>() : fallback;
 }
 
+absl::StatusOr<bool> read_bool_or_default(
+    const YAML::Node& root,
+    const std::initializer_list<std::string>& path,
+    bool fallback) {
+  YAML::Node current = root;
+  std::string display_path;
+  for (const std::string& key : path) {
+    if (!display_path.empty())
+      display_path += ".";
+    display_path += key;
+    if (!current || !current.IsMap())
+      return fallback;
+    current = current[key];
+  }
+  if (!current)
+    return fallback;
+  if (!current.IsScalar())
+    return absl::InvalidArgumentError(display_path + " must be a boolean scalar");
+  try {
+    return current.as<bool>();
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(display_path + " must be true or false: " + exception.what());
+  }
+}
+
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2) {
@@ -2308,7 +2333,8 @@ absl::Status create_control_points(
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   ControlPointMatcher control_point_matcher = ControlPointMatcher::kSuperPointLightGlue;
-  MappingBackend mapping_backend = MappingBackend::kNona;
+  MappingBackend mapping_backend = MappingBackend::kOpenCvMagsac;
+  bool run_autooptimizer = false;
   const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
   try {
     if (fs::exists(game_config_path)) {
@@ -2321,10 +2347,27 @@ absl::Status create_control_points(
           mapping_backend,
           ParseMappingBackend(
               read_scalar_or_default(config, {"stitching", "mapping_backend"}, MappingBackendName(mapping_backend))));
+      HM_ASSIGN_OR_RETURN(
+          run_autooptimizer, read_bool_or_default(config, {"stitching", "run_autooptimizer"}, run_autooptimizer));
     }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(TO_STRING(
         "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
+  }
+  const StitchingBackendChoices backend_choices{
+      std::string(ControlPointMatcherName(control_point_matcher)),
+      std::string(MappingBackendName(mapping_backend)),
+      run_autooptimizer};
+  if (!expected_invalidation_id.empty()) {
+    YAML::Node config;
+    try {
+      config = YAML::LoadFile(game_config_path.string());
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(TO_STRING(
+          "Failed to validate stitching backend generation from " << game_config_path.string() << ": "
+                                                                  << exception.what()));
+    }
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
   }
 
   report_calibration_progress(
@@ -2415,7 +2458,9 @@ absl::Status create_control_points(
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
   options.mapping_backend = mapping_backend;
+  options.run_autooptimizer = run_autooptimizer;
   options.expected_invalidation_id = expected_invalidation_id;
+  options.expected_backend_choices = backend_choices;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
   absl::Status last_candidate_status =

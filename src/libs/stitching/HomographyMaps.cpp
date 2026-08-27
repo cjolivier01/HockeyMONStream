@@ -30,6 +30,11 @@ constexpr double kAffineRansacReprojectionThreshold = 10.0;
 constexpr double kRansacConfidence = 0.999;
 constexpr int kRansacMaxIterations = 10000;
 constexpr double kProjectivePoleEpsilon = 1e-9;
+constexpr size_t kRobustConsensusMatchCount = 16;
+constexpr size_t kMinimumRobustMagsacInliers = 8;
+constexpr double kMinimumMagsacInlierRatio = 0.5;
+constexpr double kMinimumMagsacSourceSpanRatio = 0.1;
+constexpr double kMinimumMagsacSourceAreaRatio = 0.01;
 
 std::string normalize_choice(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -46,12 +51,16 @@ absl::Status validate_image(const cv::Mat& image, const char* name) {
   return absl::OkStatus();
 }
 
-absl::Status validate_output_size(int width, int height) {
-  if (width <= 0 || height <= 0 || width >= kUnmapped || height >= kUnmapped)
-    return absl::ResourceExhaustedError("OpenCV mapping canvas exceeds uint16 remap limits");
+absl::Status validate_output_size(double width, double height) {
+  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0 || height <= 0.0 ||
+      width >= static_cast<double>(kUnmapped) || height >= static_cast<double>(kUnmapped) ||
+      width > static_cast<double>(std::numeric_limits<int>::max()) ||
+      height > static_cast<double>(std::numeric_limits<int>::max())) {
+    return absl::FailedPreconditionError("OpenCV mapping candidate canvas exceeds uint16 remap limits");
+  }
   constexpr int64_t kMaxPixels = 128LL * 1024LL * 1024LL;
-  if (static_cast<int64_t>(width) * height > kMaxPixels)
-    return absl::ResourceExhaustedError("OpenCV mapping canvas exceeds decoded-image safety limits");
+  if (width > static_cast<double>(kMaxPixels) / height)
+    return absl::FailedPreconditionError("OpenCV mapping candidate canvas exceeds decoded-image safety limits");
   return absl::OkStatus();
 }
 
@@ -91,6 +100,71 @@ bool finite_matrix(const cv::Mat& matrix) {
     }
   }
   return true;
+}
+
+absl::Status validate_magsac_consensus(
+    const std::vector<FeatureMatch>& matches,
+    const cv::Mat& inliers,
+    size_t inlier_count,
+    const cv::Mat& left_image,
+    const cv::Mat& right_image) {
+  if (matches.size() < kRobustConsensusMatchCount)
+    return absl::OkStatus();
+
+  const size_t ratio_inliers =
+      static_cast<size_t>(std::ceil(kMinimumMagsacInlierRatio * static_cast<double>(matches.size())));
+  const size_t required_inliers = std::max(kMinimumRobustMagsacInliers, ratio_inliers);
+  if (inlier_count < required_inliers) {
+    return absl::FailedPreconditionError(
+        "OpenCV MAGSAC stitching transform has insufficient consensus: " + std::to_string(inlier_count) +
+        " inliers from " + std::to_string(matches.size()) + " control points; at least " +
+        std::to_string(required_inliers) + " are required");
+  }
+
+  const cv::Mat flat_inliers = inliers.reshape(1, 1);
+  const unsigned char* mask = flat_inliers.ptr<unsigned char>();
+  std::vector<cv::Point2f> left_inliers;
+  std::vector<cv::Point2f> right_inliers;
+  left_inliers.reserve(inlier_count);
+  right_inliers.reserve(inlier_count);
+  for (size_t i = 0; i < matches.size(); ++i) {
+    if (mask[i]) {
+      left_inliers.push_back(matches[i].left);
+      right_inliers.push_back(matches[i].right);
+    }
+  }
+
+  const auto validate_coverage = [](const std::vector<cv::Point2f>& points, const cv::Mat& image, const char* label) {
+    float minimum_x = points.front().x;
+    float maximum_x = minimum_x;
+    float minimum_y = points.front().y;
+    float maximum_y = minimum_y;
+    for (const cv::Point2f& point : points) {
+      minimum_x = std::min(minimum_x, point.x);
+      maximum_x = std::max(maximum_x, point.x);
+      minimum_y = std::min(minimum_y, point.y);
+      maximum_y = std::max(maximum_y, point.y);
+    }
+    std::vector<cv::Point2f> hull;
+    cv::convexHull(points, hull);
+    const double covered_area = std::abs(cv::contourArea(hull));
+    const double image_area = static_cast<double>(image.cols) * image.rows;
+    if (maximum_x - minimum_x < kMinimumMagsacSourceSpanRatio * image.cols ||
+        maximum_y - minimum_y < kMinimumMagsacSourceSpanRatio * image.rows ||
+        covered_area < kMinimumMagsacSourceAreaRatio * image_area) {
+      return absl::FailedPreconditionError(
+          std::string("OpenCV MAGSAC stitching transform has insufficient inlier coverage across the ") + label +
+          " image");
+    }
+    return absl::OkStatus();
+  };
+  absl::Status coverage = validate_coverage(right_inliers, right_image, "right/source");
+  if (!coverage.ok())
+    return coverage;
+  coverage = validate_coverage(left_inliers, left_image, "left/destination");
+  if (!coverage.ok())
+    return coverage;
+  return absl::OkStatus();
 }
 
 absl::Status write_rgba_tiff_with_placement(
@@ -158,6 +232,22 @@ absl::StatusOr<cv::Point2d> transform_point(const cv::Matx33d& matrix, const cv:
   return cv::Point2d{x, y};
 }
 
+absl::Status validate_projective_domain(const cv::Matx33d& matrix, const cv::Mat& image) {
+  std::optional<bool> negative_denominator;
+  for (const cv::Point2d& point : image_corners(image)) {
+    const double denominator = matrix(2, 0) * point.x + matrix(2, 1) * point.y + matrix(2, 2);
+    if (!std::isfinite(denominator) || std::abs(denominator) < kProjectivePoleEpsilon) {
+      return absl::FailedPreconditionError("OpenCV stitching transform has a projective pole in the source image");
+    }
+    const bool negative = std::signbit(denominator);
+    if (negative_denominator.has_value() && negative != *negative_denominator) {
+      return absl::FailedPreconditionError("OpenCV stitching transform has a projective pole in the source image");
+    }
+    negative_denominator = negative;
+  }
+  return absl::OkStatus();
+}
+
 cv::Matx33d to_matx33(const cv::Mat& matrix) {
   cv::Mat as64;
   matrix.convertTo(as64, CV_64F);
@@ -218,7 +308,8 @@ void fill_projective_maps(
       const cv::Point2d source = {
           (canvas_to_right(0, 0) * canvas_x + canvas_to_right(0, 1) * canvas_y + canvas_to_right(0, 2)) / denominator,
           (canvas_to_right(1, 0) * canvas_x + canvas_to_right(1, 1) * canvas_y + canvas_to_right(1, 2)) / denominator};
-      if (!std::isfinite(source.x) || !std::isfinite(source.y))
+      if (!std::isfinite(source.x) || !std::isfinite(source.y) || source.x <= -0.5 || source.y <= -0.5 ||
+          source.x >= static_cast<double>(source_w) - 0.5 || source.y >= static_cast<double>(source_h) - 0.5)
         continue;
       const int sx = static_cast<int>(std::lround(source.x));
       const int sy = static_cast<int>(std::lround(source.y));
@@ -306,7 +397,7 @@ const char* MappingBackendName(MappingBackend backend) {
 }
 
 absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value) {
-  const std::string normalized = normalize_choice(value.empty() ? "nona" : value);
+  const std::string normalized = normalize_choice(value.empty() ? "opencv-magsac" : value);
   if (normalized == "nona")
     return MappingBackend::kNona;
   if (normalized == "opencv-magsac" || normalized == "magsac" || normalized == "magsac++")
@@ -394,6 +485,11 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     return absl::FailedPreconditionError(
         "OpenCV stitching transform has too few inlier control points: " + std::to_string(inlier_count));
   }
+  if (backend == MappingBackend::kOpenCvMagsac) {
+    status = validate_magsac_consensus(matches, inliers, inlier_count, left_bgr, right_bgr);
+    if (!status.ok())
+      return status;
+  }
 
   cv::Mat right_to_left_64;
   right_to_left.convertTo(right_to_left_64, CV_64F);
@@ -405,6 +501,9 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     return absl::FailedPreconditionError("OpenCV inverse stitching transform is invalid");
   cv::Matx33d rtl = to_matx33(right_to_left_64);
   cv::Matx33d ltr = to_matx33(left_to_right_64);
+  status = validate_projective_domain(rtl, right_bgr);
+  if (!status.ok())
+    return status;
 
   std::vector<cv::Point2d> canvas_points;
   for (const cv::Point2d& p : image_corners(left_bgr))

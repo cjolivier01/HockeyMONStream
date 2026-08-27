@@ -12,6 +12,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HomographyMaps.h"
 
 namespace hm::stitching {
@@ -58,8 +59,10 @@ class HuginProject {
     double horizontal_fov{108.0};
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
-    MappingBackend mapping_backend{MappingBackend::kNona};
+    MappingBackend mapping_backend{MappingBackend::kOpenCvMagsac};
+    bool run_autooptimizer{false};
     std::string expected_invalidation_id;
+    std::optional<StitchingBackendChoices> expected_backend_choices;
     ProgressCallback progress;
     std::function<bool()> is_cancelled;
   };

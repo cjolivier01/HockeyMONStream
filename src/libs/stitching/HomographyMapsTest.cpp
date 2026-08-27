@@ -162,6 +162,10 @@ int main() {
 
   ok &= expect(
       hm::stitching::ParseMappingBackend("opencv_magsac").ok(), "mapping backend parser should accept underscores");
+  auto default_backend = hm::stitching::ParseMappingBackend("");
+  ok &= expect(
+      default_backend.ok() && *default_backend == hm::stitching::MappingBackend::kOpenCvMagsac,
+      "an omitted mapping backend should default to MAGSAC");
   ok &= expect(hm::stitching::ParseMappingBackend("MAGSAC++").ok(), "mapping backend parser should accept UI label");
   ok &= expect(hm::stitching::ParseMappingBackend("RANSAC").ok(), "mapping backend parser should accept UI label");
   ok &= expect(
@@ -182,6 +186,133 @@ int main() {
            root / "three-point-magsac", left, right, three_point_matches, hm::stitching::MappingBackend::kOpenCvMagsac)
            .ok(),
       "MAGSAC mapping should reject fewer than four control points");
+
+  fs::path low_consensus_dir = root / "low-consensus";
+  fs::create_directories(low_consensus_dir);
+  std::vector<hm::stitching::FeatureMatch> low_consensus_matches = {
+      {{17.0f, 6.0f}, {5.0f, 10.0f}, 0.9f},
+      {{87.0f, 6.0f}, {75.0f, 10.0f}, 0.9f},
+      {{17.0f, 66.0f}, {5.0f, 70.0f}, 0.9f},
+      {{87.0f, 66.0f}, {75.0f, 70.0f}, 0.9f},
+  };
+  for (int i = 0; i < 12; ++i) {
+    low_consensus_matches.push_back(
+        {{static_cast<float>((i * 37 + 11) % 97), static_cast<float>((i * 53 + 7) % 79)},
+         {static_cast<float>(15 + (i % 4) * 20), static_cast<float>(18 + (i / 4) * 22)},
+         0.2f});
+  }
+  auto low_consensus = hm::stitching::CreateOpenCvMappingFiles(
+      low_consensus_dir, left, right, low_consensus_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !low_consensus.ok() &&
+          std::string(low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
+      "MAGSAC mapping should reject a 16-point set supported by only four inliers");
+
+  fs::path clustered_consensus_dir = root / "clustered-consensus";
+  fs::create_directories(clustered_consensus_dir);
+  std::vector<hm::stitching::FeatureMatch> clustered_consensus_matches;
+  for (int y = 30; y < 38; y += 2) {
+    for (int x = 40; x < 48; x += 2) {
+      clustered_consensus_matches.push_back(
+          {{static_cast<float>(x + 12), static_cast<float>(y - 4)},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  auto clustered_consensus = hm::stitching::CreateOpenCvMappingFiles(
+      clustered_consensus_dir, left, right, clustered_consensus_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !clustered_consensus.ok() &&
+          std::string(clustered_consensus.status().message()).find("inlier coverage") != std::string::npos,
+      "MAGSAC mapping should reject inliers confined to a small source-image region");
+
+  fs::path collapsed_destination_dir = root / "collapsed-destination";
+  fs::create_directories(collapsed_destination_dir);
+  std::vector<hm::stitching::FeatureMatch> collapsed_destination_matches;
+  for (int y = 10; y <= 70; y += 20) {
+    for (int x = 10; x <= 70; x += 20) {
+      collapsed_destination_matches.push_back(
+          {{static_cast<float>(40.0 + x * 0.08), static_cast<float>(30.0 + y * 0.08)},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  auto collapsed_destination = hm::stitching::CreateOpenCvMappingFiles(
+      collapsed_destination_dir,
+      left,
+      right,
+      collapsed_destination_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !collapsed_destination.ok() &&
+          std::string(collapsed_destination.status().message()).find("left/destination") != std::string::npos,
+      "MAGSAC mapping should reject a destination consensus collapsed into a small repeated-image patch");
+
+  fs::path projective_pole_dir = root / "projective-pole";
+  fs::create_directories(projective_pole_dir);
+  std::vector<hm::stitching::FeatureMatch> projective_pole_matches;
+  for (const float x : {4.0f, 12.0f, 20.0f, 28.0f}) {
+    for (const float y : {4.0f, 12.0f, 20.0f}) {
+      const float denominator = 1.0f - x / 50.0f;
+      projective_pole_matches.push_back({{x / denominator, y / denominator}, {x, y}, 0.9f});
+    }
+  }
+  auto projective_pole = hm::stitching::CreateOpenCvMappingFiles(
+      projective_pole_dir, left, right, projective_pole_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !projective_pole.ok() &&
+          std::string(projective_pole.status().message()).find("projective pole") != std::string::npos,
+      "MAGSAC mapping should reject a fitted homography whose projective pole crosses the source image");
+
+  fs::path near_projective_pole_dir = root / "near-projective-pole";
+  fs::create_directories(near_projective_pole_dir);
+  std::vector<hm::stitching::FeatureMatch> near_projective_pole_matches;
+  for (const float x : {4.0f, 12.0f, 20.0f, 28.0f}) {
+    for (const float y : {4.0f, 12.0f, 20.0f}) {
+      const float denominator = 1.0f - x / 99.1f;
+      near_projective_pole_matches.push_back({{x / denominator, y / denominator}, {x, y}, 0.9f});
+    }
+  }
+  auto near_projective_pole = hm::stitching::CreateOpenCvMappingFiles(
+      near_projective_pole_dir,
+      left,
+      right,
+      near_projective_pole_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !near_projective_pole.ok() && near_projective_pole.status().code() == absl::StatusCode::kFailedPrecondition,
+      "MAGSAC mapping should reject near-pole canvas extents as a retryable candidate failure before integer conversion");
+
+  fs::path skewed_projective_dir = root / "skewed-projective";
+  fs::create_directories(skewed_projective_dir);
+  const std::vector<hm::stitching::FeatureMatch> skewed_projective_matches = {
+      {{47.9864197f, 165.182816f}, {0.0f, 0.0f}, 0.9f},
+      {{132.504471f, 177.040726f}, {99.0f, 0.0f}, 0.9f},
+      {{262.785645f, 359.930878f}, {99.0f, 79.0f}, 0.9f},
+      {{347.189575f, 823.083191f}, {0.0f, 79.0f}, 0.9f},
+  };
+  auto skewed_projective = hm::stitching::CreateOpenCvMappingFiles(
+      skewed_projective_dir, left, right, skewed_projective_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(skewed_projective.ok(), "a skewed projective mapping should generate bounded remap artifacts");
+  if (skewed_projective.ok()) {
+    const cv::Mat skewed_x = cv::imread((skewed_projective_dir / "mapping_0001_x.tif").string(), cv::IMREAD_ANYDEPTH);
+    const cv::Mat skewed_y = cv::imread((skewed_projective_dir / "mapping_0001_y.tif").string(), cv::IMREAD_ANYDEPTH);
+    const TiffPlacement placement = read_tiff_placement(skewed_projective_dir / "mapping_0001.tif");
+    const int exterior_x = 232 - placement.x;
+    const int exterior_y = 191 - placement.y;
+    const auto& h = skewed_projective->right_to_left_homography;
+    const cv::Matx33d left_to_right = cv::Matx33d(h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]).inv();
+    const cv::Vec3d projected = left_to_right * cv::Vec3d(232.0, 191.0, 1.0);
+    const double projected_x = projected[0] / projected[2];
+    const double projected_y = projected[1] / projected[2];
+    ok &= expect(
+        !skewed_x.empty() && !skewed_y.empty() && exterior_x >= 0 && exterior_y >= 0 && exterior_x < skewed_x.cols &&
+            exterior_y < skewed_x.rows &&
+            (projected_x < -0.5 || projected_x >= right.cols - 0.5 || projected_y < -0.5 ||
+             projected_y >= right.rows - 0.5) &&
+            !remap_valid_at(skewed_x, skewed_y, exterior_x, exterior_y),
+        "a pole-adjacent point inside the TIFF AABB but outside the transformed image polygon must remain unmapped");
+  }
 
   fs::path rotated_dir = root / "rotated";
   fs::create_directories(rotated_dir);

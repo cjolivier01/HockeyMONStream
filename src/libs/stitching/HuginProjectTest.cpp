@@ -479,6 +479,8 @@ int main() {
   }
   hm::stitching::HuginProject::Options options;
   options.max_canvas_dimension = 64;
+  options.mapping_backend = hm::stitching::MappingBackend::kNona;
+  options.run_autooptimizer = true;
   fs::create_directories(root / "private-inputs");
   ok &= expect(
       cv::imwrite((root / "private-inputs" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(11, 12, 13))),
@@ -703,6 +705,78 @@ int main() {
                   fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "working fake Nona and enblend tools must be restored after retry provenance validation");
 
+  const auto optimizer_args_size = fs::file_size(autooptimiser_args);
+  hm::stitching::HuginProject::Options optimizer_disabled_options;
+  std::string optimizer_disabled_message;
+  fs::create_directories(root / "optimizer-disabled-game");
+  std::vector<hm::stitching::FeatureMatch> optimizer_disabled_matches;
+  for (int y = 6; y < 48; y += 10) {
+    for (int x = 16; x < 64; x += 10) {
+      optimizer_disabled_matches.push_back(
+          {{static_cast<float>(x), static_cast<float>(y)},
+           {static_cast<float>(x - 8), static_cast<float>(y + 3)},
+           0.9f});
+    }
+  }
+  cv::Mat optimizer_disabled_seam(51, 73, CV_8UC1, cv::Scalar(0));
+  optimizer_disabled_seam.colRange(36, optimizer_disabled_seam.cols).setTo(cv::Scalar(255));
+  ok &= expect(
+      cv::imwrite((root / "optimizer-disabled-seam.png").string(), optimizer_disabled_seam),
+      "optimizer-disabled seam fixture must exist");
+  ok &= expect(
+      write_tool(
+          enblend,
+          "cp '" +
+              (root / "optimizer-disabled-seam.png").string() +
+              "' seam_file.png\n"
+          "cp '" +
+              fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "optimizer-disabled fake enblend must preserve the native seam");
+  optimizer_disabled_options.progress =
+      [&](const std::string& stage, const std::string& status, const std::string& message) {
+        if (stage == "optimizer" && status == "complete")
+          optimizer_disabled_message = message;
+      };
+  ::setenv("HM_AUTOOPTIMISER", (root / "missing-autooptimiser-disabled-by-default").c_str(), 1);
+  const auto optimizer_disabled = hm::stitching::HuginProject::Configure(
+      root / "optimizer-disabled-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      optimizer_disabled_matches,
+      optimizer_disabled_options);
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
+  if (!optimizer_disabled.ok())
+    std::cerr << optimizer_disabled << '\n';
+  ok &= expect(optimizer_disabled.ok(), "Hugin calibration must succeed with its default optimizer setting disabled");
+  ok &= expect(
+      fs::file_size(autooptimiser_args) == optimizer_args_size,
+      "Hugin calibration must skip autooptimiser unless explicitly enabled");
+  ok &= expect(
+      optimizer_disabled_message.find("disabled") != std::string::npos,
+      "Optimizer-disabled calibration progress must explain that the stage was skipped");
+  if (optimizer_disabled.ok()) {
+    std::ifstream generated(root / "optimizer-disabled-game" / "hm_project.pto", std::ios::binary);
+    std::ifstream published(root / "optimizer-disabled-game" / "autooptimiser_out.pto", std::ios::binary);
+    const std::string generated_project((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
+    const std::string published_project((std::istreambuf_iterator<char>(published)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        generated_project == published_project,
+        "optimizer-disabled calibration must publish the generated Hugin project without modifying its geometry");
+  }
+
+  hm::stitching::HuginProject::Options invalid_nona_options;
+  invalid_nona_options.mapping_backend = hm::stitching::MappingBackend::kNona;
+  const auto invalid_nona = hm::stitching::HuginProject::Configure(
+      root / "optimizer-disabled-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      invalid_nona_options);
+  ok &= expect(
+      absl::IsInvalidArgument(invalid_nona) &&
+          std::string(invalid_nona.message()).find("requires stitching.run_autooptimizer=true") != std::string::npos,
+      "NONA must reject optimizer-disabled calibration instead of publishing unaligned camera geometry");
+
   const fs::path fallback_game = root / "fallback-game";
   fs::create_directories(fallback_game);
   ok &= expect(write_tool(enblend, "exit 44\n"), "failing fake enblend must be created");
@@ -835,6 +909,45 @@ int main() {
       project_after_superseded_hugin == previous_project &&
           config_after_superseded_hugin.find("invalidation_id: hugin-run-b") != std::string::npos,
       "superseded Hugin publication must preserve both the prior artifacts and the newer invalidation");
+
+  YAML::Node backend_claim(YAML::NodeType::Map);
+  backend_claim["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  backend_claim["stitching"]["mapping_backend"] = "nona";
+  backend_claim["stitching"]["run_autooptimizer"] = true;
+  backend_claim["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  backend_claim["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+  backend_claim["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "hugin-backend-a";
+  const hm::stitching::StitchingBackendChoices expected_backend_choices{"superpoint-lightglue", "nona", true};
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["invalidation_id"] = "hugin-backend-a";
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["control_point_matcher"] =
+      expected_backend_choices.control_point_matcher;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"] =
+      expected_backend_choices.mapping_backend;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["run_autooptimizer"] =
+      expected_backend_choices.run_autooptimizer;
+  std::ofstream(root / "game" / "config.yaml") << YAML::Dump(backend_claim) << '\n';
+  options.expected_invalidation_id = "hugin-backend-a";
+  options.expected_backend_choices = expected_backend_choices;
+  bool backend_changed_during_hugin = false;
+  options.progress = [&](const std::string& stage, const std::string& status, const std::string&) {
+    if (stage != "canvas" || status != "started" || backend_changed_during_hugin)
+      return;
+    backend_changed_during_hugin = true;
+    YAML::Node changed = YAML::LoadFile((root / "game" / "config.yaml").string());
+    changed["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+    std::ofstream(root / "game" / "config.yaml") << YAML::Dump(changed) << '\n';
+  };
+  const auto mismatched_backend_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  const auto project_after_mismatched_backend = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      backend_changed_during_hugin && absl::IsAborted(mismatched_backend_hugin) &&
+          project_after_mismatched_backend == previous_project,
+      "Hugin publication must abort when the worker-visible backend tuple changes under its generation claim");
+  options.expected_invalidation_id.clear();
+  options.expected_backend_choices.reset();
   {
     std::ofstream config(root / "game" / "config.yaml");
     config << "hstream_ui:\n"
@@ -842,6 +955,7 @@ int main() {
               "    status: complete\n"
               "    invalidation_id: hugin-run-a\n";
   }
+  options.expected_invalidation_id = "hugin-run-a";
   options.progress = {};
   const auto completed_owner_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
   const auto project_after_completed_owner = [&]() {
