@@ -5182,7 +5182,8 @@ bool test_output_controls(HStreamWindow* window) {
           .entryList(
               {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", target_cleanup_race_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", target_cleanup_race_source.toLocal8Bit());
+  qputenv(
+      "HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", (target_cleanup_race_source + ".hstream-pin").toLocal8Bit());
   activate(start);
   for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
     QApplication::processEvents();
@@ -5215,13 +5216,63 @@ bool test_output_controls(HStreamWindow* window) {
           finalize_headline && finalize_headline->text() == "Video finalization failed" && target_cleanup_race_detail &&
           target_cleanup_race_detail->text().contains(target_cleanup_race_recovery) &&
           target_cleanup_race_recovery_text == "completed lossless archive" && foreign_target_retained,
-      "A target replaced during source cleanup must fail into trusted MKV recovery and leave the foreign MP4 untouched");
+      "A target replaced during source-guard retirement must fail into trusted MKV recovery and leave the foreign MP4 untouched");
   if (target_cleanup_race_ok)
     activate(target_cleanup_race_ok);
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+
+  const QString guard_sync_failure_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("guard-sync-failure.mkv");
+  QFile::remove(guard_sync_failure_source);
+  QFile::remove(guard_sync_failure_source + ".log");
+  const QStringList finalized_before_guard_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", guard_sync_failure_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE", "mp4-guard");
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE");
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  auto* guard_sync_failure_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* guard_sync_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  const QStringList finalized_after_guard_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  QString guard_sync_failure_target;
+  for (const QString& target_name : finalized_after_guard_sync_failure) {
+    if (!finalized_before_guard_sync_failure.contains(target_name)) {
+      guard_sync_failure_target = QDir(window->gameDirectoryText()).filePath(target_name);
+      break;
+    }
+  }
+  QFile guard_sync_failure_target_file(guard_sync_failure_target);
+  const bool guard_sync_failure_target_opened = guard_sync_failure_target_file.open(QIODevice::ReadOnly);
+  const QByteArray guard_sync_failure_target_text =
+      guard_sync_failure_target_opened ? guard_sync_failure_target_file.readAll() : QByteArray();
+  const bool cleanup_directory_sync_failure_safe = expect(
+      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+          guard_sync_failure_detail &&
+          guard_sync_failure_detail->text().contains("identity guard could not be retired safely") &&
+          guard_sync_failure_target_text == "completed lossless archive" &&
+          QFileInfo::exists(guard_sync_failure_target + ".hstream-pin"),
+      "A cleanup-directory sync failure must retain the trusted MP4 and report its restored identity guard");
+  if (guard_sync_failure_ok)
+    activate(guard_sync_failure_ok);
+  const QString guard_sync_failure_manual = guard_sync_failure_target + ".manually-retained";
+  QFile::remove(guard_sync_failure_manual);
+  const bool guard_sync_failure_moved =
+      !guard_sync_failure_target.isEmpty() && QFile::rename(guard_sync_failure_target, guard_sync_failure_manual);
+  archive->setChecked(false);
+  archive->setChecked(true);
 
   const QString source_sync_failure =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("source-sync-failure.mkv");
@@ -5284,6 +5335,8 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-3.mkv");
   const QString failed_source_log = failed_source + ".log";
   const QString failed_recovery_log = failed_recovery + ".log";
+  const QString failed_recovery_rescue = failed_recovery + ".hstream-rescue";
+  const QString failed_recovery_log_rescue = failed_recovery_log + ".hstream-rescue";
   const QStringList finalized_before_failure =
       QDir(window->gameDirectoryText())
           .entryList(
@@ -5298,6 +5351,8 @@ bool test_output_controls(HStreamWindow* window) {
   QFile::remove(failed_recovery);
   QFile::remove(failed_source_log);
   QFile::remove(failed_recovery_log);
+  QFile::remove(failed_recovery_rescue);
+  QFile::remove(failed_recovery_log_rescue);
   const QString dangling_resolved_log_target =
       QDir(QFileInfo(failed_source).absolutePath()).filePath("missing-resolved-log-target");
   QFile::remove(dangling_resolved_log_target);
@@ -5313,6 +5368,9 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_GUARD_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_GUARD_REPLACEMENT_DURING_SYNC", "1");
   qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.1");
   activate(start);
   for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
@@ -5325,7 +5383,7 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(window->gameDirectoryText())
           .entryList(
               {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  QFile failed_log_file(failed_recovery_log);
+  QFile failed_log_file(failed_recovery_log_rescue);
   const bool failed_log_opened = failed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
   const QString failed_log_text = failed_log_opened ? QString::fromUtf8(failed_log_file.readAll()) : QString();
   QFile replaced_log_file(replaced_log_path);
@@ -5341,6 +5399,17 @@ bool test_output_controls(HStreamWindow* window) {
   const bool trusted_recovery_guard_opened = trusted_recovery_guard_file.open(QIODevice::ReadOnly);
   const QByteArray trusted_recovery_guard_text =
       trusted_recovery_guard_opened ? trusted_recovery_guard_file.readAll() : QByteArray();
+  QFile replaced_recovery_log_file(failed_recovery_log);
+  const bool replaced_recovery_log_opened = replaced_recovery_log_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_recovery_log_text =
+      replaced_recovery_log_opened ? replaced_recovery_log_file.readAll() : QByteArray();
+  QFile replaced_recovery_log_guard_file(failed_recovery_log + ".hstream-pin");
+  const bool replaced_recovery_log_guard_opened = replaced_recovery_log_guard_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_recovery_log_guard_text =
+      replaced_recovery_log_guard_opened ? replaced_recovery_log_guard_file.readAll() : QByteArray();
+  QFile trusted_recovery_file(failed_recovery_rescue);
+  const bool trusted_recovery_opened = trusted_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray trusted_recovery_text = trusted_recovery_opened ? trusted_recovery_file.readAll() : QByteArray();
   QString replaced_open_log_text;
   const QStringList provisional_logs =
       QDir(QFileInfo(failed_source).absolutePath())
@@ -5362,16 +5431,20 @@ bool test_output_controls(HStreamWindow* window) {
           window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
           finalize_headline && finalize_headline->text() == "Video finalization failed" &&
           finalize_headline->property("finalizationState").toString() == "failed" && finalize_detail &&
-          finalize_detail->text().contains(failed_recovery) && finalize_ok && finalize_ok->isVisible() &&
+          finalize_detail->text().contains(failed_recovery_rescue) && finalize_ok && finalize_ok->isVisible() &&
           finalize_ok->toolTip().contains("Close the finalization result") &&
           finalize_ok->statusTip() == finalize_ok->toolTip() && replaced_source_opened &&
           replaced_source_text == "injected foreign archive source" &&
           replaced_open_log_text == "injected foreign open log pathname" &&
           replaced_recovery_text == "injected foreign recovery during sync" && trusted_recovery_guard_opened &&
-          trusted_recovery_guard_text == "completed lossless archive" && !QFileInfo::exists(failed_source_log) &&
-          failed_log_opened && failed_log_text.contains("archive finalization failed") &&
-          !failed_recovery.contains(".hstream-run-") && finalized_after_failure == finalized_before_failure,
-      "A failed remux must preserve a same-name recovery MKV and reopened job log outside the stale-run namespace");
+          trusted_recovery_guard_text == "injected foreign recovery guard during sync" &&
+          replaced_recovery_log_text == "injected foreign recovery log during sync" &&
+          replaced_recovery_log_guard_text == "injected foreign recovery log guard during sync" &&
+          trusted_recovery_opened && trusted_recovery_text == "completed lossless archive" &&
+          !QFileInfo::exists(failed_source_log) && failed_log_opened &&
+          failed_log_text.contains("archive finalization failed") && !failed_recovery.contains(".hstream-run-") &&
+          finalized_after_failure == finalized_before_failure,
+      "A failed remux must durably rescue the trusted recovery pair if both visible names and guards are replaced");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL");
@@ -5379,6 +5452,9 @@ bool test_output_controls(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_GUARD_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_GUARD_REPLACEMENT_DURING_SYNC");
   qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
   if (finalize_ok)
     activate(finalize_ok);
@@ -5460,6 +5536,52 @@ bool test_output_controls(HStreamWindow* window) {
   if (finalize_ok)
     activate(finalize_ok);
 
+  const QString publication_sync_failure_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("recovery-publication-sync-failure.mkv");
+  const QString publication_sync_failure_log = publication_sync_failure_source + ".log";
+  const QString publication_sync_failure_recovery =
+      QDir(QFileInfo(publication_sync_failure_source).absolutePath())
+          .filePath("recovery-publication-sync-failure-finalization-failed.mkv");
+  const QString publication_sync_failure_manual = publication_sync_failure_source + ".manually-retained";
+  QFile::remove(publication_sync_failure_source);
+  QFile::remove(publication_sync_failure_log);
+  QFile::remove(publication_sync_failure_source + ".hstream-pin");
+  QFile::remove(publication_sync_failure_log + ".hstream-pin");
+  QFile::remove(publication_sync_failure_recovery);
+  QFile::remove(publication_sync_failure_recovery + ".log");
+  QFile::remove(publication_sync_failure_manual);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", publication_sync_failure_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE", "1");
+  activate(start);
+  for (int i = 0; i < 300 &&
+       (window->outputStateText("archive-file") != "ERROR" || !finalize_detail ||
+        !finalize_detail->text().contains("could not make the recovery pair durable"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QFile publication_sync_failure_log_file(publication_sync_failure_log);
+  const bool publication_sync_failure_log_opened =
+      publication_sync_failure_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString publication_sync_failure_log_text =
+      publication_sync_failure_log_opened ? QString::fromUtf8(publication_sync_failure_log_file.readAll()) : QString();
+  const bool recovery_publication_sync_failure_safe = expect(
+      QFileInfo(publication_sync_failure_source).size() > 0 && publication_sync_failure_log_opened &&
+          publication_sync_failure_log_text.contains("archive finalization failed") &&
+          QFileInfo::exists(publication_sync_failure_source + ".hstream-pin") &&
+          !QFileInfo::exists(publication_sync_failure_recovery) &&
+          !QFileInfo::exists(publication_sync_failure_recovery + ".log") && finalize_detail &&
+          finalize_detail->text().contains(publication_sync_failure_source) &&
+          finalize_detail->text().contains("could not make the recovery pair durable"),
+      "A recovery-publication sync failure must retain the original video and log before source cleanup");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE");
+  if (finalize_ok)
+    activate(finalize_ok);
+  const bool publication_sync_failure_moved =
+      QFile::rename(publication_sync_failure_source, publication_sync_failure_manual);
+  archive->setChecked(false);
+  archive->setChecked(true);
+
   const QString blocked_directory =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("blocked-recovery");
   const QString blocked_source = QDir(blocked_directory).filePath("blocked-source.mkv");
@@ -5503,8 +5625,9 @@ bool test_output_controls(HStreamWindow* window) {
       nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
       cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
       durability_sync_responsive && target_cleanup_race_recovered && source_cleanup_sync_failure_recovered &&
-      failed_archive_retained && no_log_recovery_reserved && post_quarantine_recovery_safe && unsafe_retry_blocked &&
-      retry_unblocked_after_recovery;
+      cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
+      no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
+      publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

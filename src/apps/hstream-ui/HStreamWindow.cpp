@@ -1154,7 +1154,78 @@ bool copy_open_file_no_replace(
     const QString& destination,
     int* destination_fd,
     struct stat* destination_stat,
-    int* saved_errno) {
+    int* saved_errno,
+    QString* rollback_error);
+
+QString rescue_open_file_no_replace(
+    int source_fd,
+    const struct stat& expected_stat,
+    const QString& preferred_path,
+    QString* error,
+    struct stat* rescued_stat = nullptr) {
+  struct stat pinned_source_stat{};
+  if (source_fd < 0 || ::fstat(source_fd, &pinned_source_stat) != 0 || !S_ISREG(pinned_source_stat.st_mode) ||
+      !same_file_identity(pinned_source_stat, expected_stat)) {
+    if (error)
+      *error = "the pinned source identity is unavailable";
+    return {};
+  }
+  for (int suffix = 0; suffix < 1000; ++suffix) {
+    const QString candidate = suffix == 0 ? preferred_path + ".hstream-rescue"
+                                          : QString("%1.hstream-rescue-%2").arg(preferred_path).arg(suffix);
+    int saved_errno = 0;
+    struct stat published_stat = expected_stat;
+    bool published = link_open_file_no_replace(source_fd, candidate, &saved_errno);
+    QString copy_rollback_error;
+    if (!published && saved_errno != EEXIST) {
+      int copied_fd = -1;
+      published = copy_open_file_no_replace(
+          source_fd, candidate, &copied_fd, &published_stat, &saved_errno, &copy_rollback_error);
+      if (copied_fd >= 0)
+        ::close(copied_fd);
+    }
+    if (!published) {
+      if (saved_errno == EEXIST)
+        continue;
+      if (error) {
+        *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+        if (!copy_rollback_error.isEmpty())
+          *error += QString("; copy rollback remains unresolved: %1").arg(copy_rollback_error);
+      }
+      return {};
+    }
+    if (!path_has_file_identity(candidate, published_stat)) {
+      if (error)
+        *error = QString("rescue pathname was replaced while being published: %1").arg(candidate);
+      return {};
+    }
+    QString sync_error;
+    if (sync_parent_directory(candidate, &sync_error)) {
+      if (rescued_stat)
+        *rescued_stat = published_stat;
+      return candidate;
+    }
+    QString cleanup_error;
+    remove_path_if_same_identity(candidate, published_stat, &cleanup_error, {}, nullptr);
+    if (error) {
+      *error = QString("could not make rescue pathname durable: %1").arg(sync_error);
+      if (!cleanup_error.isEmpty())
+        *error += QString("; rescue cleanup remains unresolved: %1").arg(cleanup_error);
+    }
+    return {};
+  }
+  if (error)
+    *error = "no unused rescue pathname remained";
+  return {};
+}
+
+bool copy_open_file_no_replace(
+    int source_fd,
+    const QString& destination,
+    int* destination_fd,
+    struct stat* destination_stat,
+    int* saved_errno,
+    QString* rollback_error) {
   const QByteArray encoded_destination = QFile::encodeName(destination);
   const int output_fd =
       ::open(encoded_destination.constData(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
@@ -1167,6 +1238,10 @@ bool copy_open_file_no_replace(
   struct stat created_stat{};
   if (::fstat(output_fd, &created_stat) != 0 || !S_ISREG(created_stat.st_mode)) {
     const int created_stat_errno = errno;
+    if (rollback_error) {
+      *rollback_error =
+          QString("created destination identity is unavailable; partial copy retained at %1").arg(destination);
+    }
     ::close(output_fd);
     if (saved_errno)
       *saved_errno = created_stat_errno;
@@ -1220,7 +1295,8 @@ bool copy_open_file_no_replace(
   if (!copied || ::fsync(output_fd) != 0 || ::fstat(output_fd, &copied_stat) != 0 || !S_ISREG(copied_stat.st_mode)) {
     const int copy_errno = errno;
     QString cleanup_error;
-    remove_path_if_same_identity(destination, created_stat, &cleanup_error, {}, nullptr);
+    if (!remove_path_if_same_identity(destination, created_stat, &cleanup_error, {}, nullptr) && rollback_error)
+      *rollback_error = cleanup_error;
     ::close(output_fd);
     if (saved_errno)
       *saved_errno = copy_errno;
@@ -1379,9 +1455,7 @@ bool remove_path_if_same_identity(
 
   const int unlink_result = ::unlinkat(cleanup_fd, "entry", 0);
   const int unlink_errno = errno;
-  const int guard_unlink_result = ::unlinkat(cleanup_fd, "guard", 0);
-  const int guard_unlink_errno = errno;
-  if (unlink_result == 0 && guard_unlink_result == 0 && !required_identity_path.isEmpty()) {
+  if (unlink_result == 0 && !required_identity_path.isEmpty()) {
     const QString replacement_trigger = qEnvironmentVariable("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
     if (!replacement_trigger.isEmpty() && replacement_trigger == path) {
       qunsetenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
@@ -1402,9 +1476,12 @@ bool remove_path_if_same_identity(
       const bool restored = link_open_file_no_replace(pinned_fd, path, &restore_errno);
       int rescue_errno = 0;
       const bool rescued = restored || link_open_file_no_replace(pinned_fd, path + ".hstream-pin", &rescue_errno);
+      const int guard_cleanup_result = ::unlinkat(cleanup_fd, "guard", 0);
       ::close(cleanup_fd);
-      if (rescued)
+      if (rescued && guard_cleanup_result == 0)
         ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+      if (rescued)
+        ::fsync(parent_fd);
       ::close(pinned_fd);
       ::close(parent_fd);
       if (error) {
@@ -1419,14 +1496,52 @@ bool remove_path_if_same_identity(
       return false;
     }
   }
+  const int guard_unlink_result = ::unlinkat(cleanup_fd, "guard", 0);
+  const int guard_unlink_errno = errno;
   ::close(cleanup_fd);
   const int cleanup_result = ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
   const int cleanup_errno = errno;
+  int directory_sync_result = 0;
+  int directory_sync_errno = 0;
+  if (unlink_result == 0 && guard_unlink_result == 0 && cleanup_result == 0) {
+    const QString forced_sync_failure = qEnvironmentVariable("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE");
+    const bool force_directory_sync_failure =
+        forced_sync_failure == path || (forced_sync_failure == "mp4-guard" && path.endsWith(".mp4.hstream-pin"));
+    if (force_directory_sync_failure) {
+      qunsetenv("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE");
+      directory_sync_result = -1;
+      directory_sync_errno = EIO;
+    } else {
+      directory_sync_result = ::fsync(parent_fd);
+      directory_sync_errno = errno;
+    }
+    if (directory_sync_result != 0) {
+      int restore_errno = 0;
+      const bool restored = link_open_file_no_replace(pinned_fd, path, &restore_errno);
+      int rescue_errno = 0;
+      const bool rescued = restored || link_open_file_no_replace(pinned_fd, path + ".hstream-pin", &rescue_errno);
+      if (rescued)
+        ::fsync(parent_fd);
+      if (error) {
+        *error = restored
+            ? QString("directory sync failed after cleanup; restored path at %1: %2")
+                  .arg(path, QString::fromLocal8Bit(std::strerror(directory_sync_errno)))
+            : (rescued
+                   ? QString("directory sync failed after cleanup; retained identity at %1.hstream-pin: %2")
+                         .arg(path, QString::fromLocal8Bit(std::strerror(directory_sync_errno)))
+                   : QString("directory sync failed after cleanup and the identity could not be retained: %1; %2 / %3")
+                         .arg(
+                             QString::fromLocal8Bit(std::strerror(directory_sync_errno)),
+                             QString::fromLocal8Bit(std::strerror(restore_errno)),
+                             QString::fromLocal8Bit(std::strerror(rescue_errno))));
+      }
+    }
+  }
   ::close(pinned_fd);
   ::close(parent_fd);
-  if (unlink_result == 0 && guard_unlink_result == 0 && cleanup_result == 0)
+  if (unlink_result == 0 && guard_unlink_result == 0 && cleanup_result == 0 && directory_sync_result == 0)
     return true;
-  if (error) {
+  if (error && directory_sync_result == 0) {
     *error = QString::fromLocal8Bit(
         std::strerror(
             unlink_result != 0 ? unlink_errno : (guard_unlink_result != 0 ? guard_unlink_errno : cleanup_errno)));
@@ -6333,7 +6448,9 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   };
   if (!renamed && rename_errno == EXDEV && pinned_log_fd >= 0 && expected_log_inode != 0) {
     int copy_errno = 0;
-    if (copy_open_file_no_replace(pinned_log_fd, resolved_log_path, &copied_log_fd, &copied_log_stat, &copy_errno)) {
+    QString copy_rollback_error;
+    if (copy_open_file_no_replace(
+            pinned_log_fd, resolved_log_path, &copied_log_fd, &copied_log_stat, &copy_errno, &copy_rollback_error)) {
       QString copied_guard_error;
       if (create_open_file_guard(copied_log_fd, resolved_log_path, &copied_log_guard_path, &copied_guard_error)) {
         cross_filesystem_copy_ready = true;
@@ -6348,6 +6465,8 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
     } else {
       durability_error = QString("could not copy resolved log across filesystems: %1")
                              .arg(QString::fromLocal8Bit(std::strerror(copy_errno)));
+      if (!copy_rollback_error.isEmpty())
+        durability_error += QString("; rollback remains unresolved: %1").arg(copy_rollback_error);
       QString rollback_sync_error;
       if (!sync_parent_directory(resolved_log_path, &rollback_sync_error))
         durability_error += QString("; destination rollback sync failed: %1").arg(rollback_sync_error);
@@ -6675,34 +6794,52 @@ void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
   archive_finalize_owner_lock_path_.clear();
 }
 
-void HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard) {
+bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require_target_identity) {
+  bool released = true;
 #ifdef Q_OS_UNIX
   struct stat source_stat{};
   if (remove_guard && archive_finalize_source_fd_ >= 0 && !archive_finalize_source_guard_path_.isEmpty() &&
       ::fstat(archive_finalize_source_fd_, &source_stat) == 0 && S_ISREG(source_stat.st_mode)) {
     QString cleanup_error;
     const bool source_path_is_primary = path_has_file_identity(archive_finalize_source_path_, source_stat);
-    if (!remove_path_if_same_identity(
-            archive_finalize_source_guard_path_,
-            source_stat,
-            &cleanup_error,
-            source_path_is_primary ? archive_finalize_source_path_ : QString(),
-            source_path_is_primary ? &source_stat : nullptr)) {
+    struct stat target_stat{};
+    const bool target_identity_available = require_target_identity && archive_finalize_target_fd_ >= 0 &&
+        ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
+        static_cast<quint64>(target_stat.st_dev) == archive_finalize_target_device_ &&
+        static_cast<quint64>(target_stat.st_ino) == archive_finalize_target_inode_;
+    const QString required_path = require_target_identity
+        ? archive_finalize_target_path_
+        : (source_path_is_primary ? archive_finalize_source_path_ : QString());
+    const struct stat* required_stat = require_target_identity ? (target_identity_available ? &target_stat : nullptr)
+                                                               : (source_path_is_primary ? &source_stat : nullptr);
+    if ((require_target_identity && !target_identity_available) ||
+        !remove_path_if_same_identity(
+            archive_finalize_source_guard_path_, source_stat, &cleanup_error, required_path, required_stat)) {
+      released = false;
+      if (cleanup_error.isEmpty())
+        cleanup_error = "the completed MP4 identity is unavailable";
       appendLog(QString("archive source identity guard retained at %1: %2")
                     .arg(archive_finalize_source_guard_path_, cleanup_error));
     }
+  } else if (remove_guard && !archive_finalize_source_guard_path_.isEmpty()) {
+    released = false;
+    appendLog(QString("archive source identity guard retained at %1: source identity is unavailable")
+                  .arg(archive_finalize_source_guard_path_));
   }
-  if (archive_finalize_source_fd_ >= 0)
+  if ((!remove_guard || released) && archive_finalize_source_fd_ >= 0)
     ::close(archive_finalize_source_fd_);
 #endif
+  if (remove_guard && !released)
+    return false;
   archive_finalize_source_fd_ = -1;
   archive_finalize_source_device_ = 0;
   archive_finalize_source_inode_ = 0;
   archive_finalize_source_guard_path_.clear();
+  return true;
 }
 
 bool HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
-  bool target_path_valid = true;
+  bool released = true;
 #ifdef Q_OS_UNIX
   struct stat target_stat{};
   if (remove_guard && archive_finalize_target_fd_ >= 0 && !archive_finalize_target_guard_path_.isEmpty() &&
@@ -6714,19 +6851,25 @@ bool HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
             &cleanup_error,
             archive_finalize_target_path_,
             &target_stat)) {
-      target_path_valid = path_has_file_identity(archive_finalize_target_path_, target_stat);
+      released = false;
       appendLog(QString("completed archive identity guard retained at %1: %2")
                     .arg(archive_finalize_target_guard_path_, cleanup_error));
     }
+  } else if (remove_guard && !archive_finalize_target_guard_path_.isEmpty()) {
+    released = false;
+    appendLog(QString("completed archive identity guard retained at %1: target identity is unavailable")
+                  .arg(archive_finalize_target_guard_path_));
   }
-  if (archive_finalize_target_fd_ >= 0)
+  if ((!remove_guard || released) && archive_finalize_target_fd_ >= 0)
     ::close(archive_finalize_target_fd_);
 #endif
+  if (remove_guard && !released)
+    return false;
   archive_finalize_target_fd_ = -1;
   archive_finalize_target_device_ = 0;
   archive_finalize_target_inode_ = 0;
   archive_finalize_target_guard_path_.clear();
-  return target_path_valid;
+  return true;
 }
 
 void HStreamWindow::startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video) {
@@ -7052,6 +7195,9 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncRecovery) {
     QString failure_detail = archive_finalize_pending_failure_detail_;
     bool recovery_identity_valid = true;
+    bool recovery_log_identity_valid = true;
+    bool recovery_artifact_retained = true;
+    bool recovery_log_retained = true;
 #ifdef Q_OS_UNIX
     struct stat recovery_stat{};
     if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC")) {
@@ -7066,42 +7212,141 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         ::close(replacement_fd);
       }
     }
-    recovery_identity_valid = archive_finalize_source_fd_ >= 0 &&
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_GUARD_REPLACEMENT_DURING_SYNC")) {
+      const QByteArray encoded_guard = QFile::encodeName(archive_finalize_source_guard_path_);
+      ::unlink(encoded_guard.constData());
+      const int replacement_fd =
+          ::open(encoded_guard.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+      if (replacement_fd >= 0) {
+        constexpr char kReplacement[] = "injected foreign recovery guard during sync";
+        const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+        (void)replacement_bytes;
+        ::close(replacement_fd);
+      }
+    }
+    const bool recovery_fd_valid = archive_finalize_source_fd_ >= 0 &&
         ::fstat(archive_finalize_source_fd_, &recovery_stat) == 0 && S_ISREG(recovery_stat.st_mode) &&
         static_cast<quint64>(recovery_stat.st_dev) == archive_finalize_source_device_ &&
-        static_cast<quint64>(recovery_stat.st_ino) == archive_finalize_source_inode_ &&
-        path_has_file_identity(archive_finalize_source_path_, recovery_stat);
-    bool recovery_log_identity_valid = true;
+        static_cast<quint64>(recovery_stat.st_ino) == archive_finalize_source_inode_;
+    recovery_identity_valid = recovery_fd_valid && path_has_file_identity(archive_finalize_source_path_, recovery_stat);
+    const bool recovery_guard_valid = recovery_fd_valid && !archive_finalize_source_guard_path_.isEmpty() &&
+        path_has_file_identity(archive_finalize_source_guard_path_, recovery_stat);
     struct stat recovery_log_stat{};
     if (archive_finalize_recovery_log_fd_ >= 0) {
-      recovery_log_identity_valid = ::fstat(archive_finalize_recovery_log_fd_, &recovery_log_stat) == 0 &&
+      if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC")) {
+        const QByteArray encoded_log = QFile::encodeName(archive_job_log_path_);
+        ::unlink(encoded_log.constData());
+        const int replacement_fd =
+            ::open(encoded_log.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (replacement_fd >= 0) {
+          constexpr char kReplacement[] = "injected foreign recovery log during sync";
+          const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+          (void)replacement_bytes;
+          ::close(replacement_fd);
+        }
+      }
+      if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_GUARD_REPLACEMENT_DURING_SYNC")) {
+        const QByteArray encoded_log_guard = QFile::encodeName(archive_job_log_guard_path_);
+        ::unlink(encoded_log_guard.constData());
+        const int replacement_fd =
+            ::open(encoded_log_guard.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (replacement_fd >= 0) {
+          constexpr char kReplacement[] = "injected foreign recovery log guard during sync";
+          const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+          (void)replacement_bytes;
+          ::close(replacement_fd);
+        }
+      }
+      const bool recovery_log_fd_valid = ::fstat(archive_finalize_recovery_log_fd_, &recovery_log_stat) == 0 &&
           S_ISREG(recovery_log_stat.st_mode) &&
           static_cast<quint64>(recovery_log_stat.st_dev) == archive_finalize_recovery_log_device_ &&
-          static_cast<quint64>(recovery_log_stat.st_ino) == archive_finalize_recovery_log_inode_ &&
-          path_has_file_identity(archive_job_log_path_, recovery_log_stat);
-    }
-    if (!recovery_identity_valid || !recovery_log_identity_valid) {
-      failure_detail +=
-          "\n\nA recovery pathname was replaced during durability sync; the trusted artifact "
-          "was retained at its identity-guard path.";
-      if (!recovery_identity_valid && !archive_finalize_source_guard_path_.isEmpty()) {
-        archive_finalize_source_path_ = archive_finalize_source_guard_path_;
-        archive_finalize_source_guard_path_.clear();
-      }
-      if (!recovery_log_identity_valid && !archive_job_log_guard_path_.isEmpty()) {
+          static_cast<quint64>(recovery_log_stat.st_ino) == archive_finalize_recovery_log_inode_;
+      recovery_log_identity_valid =
+          recovery_log_fd_valid && path_has_file_identity(archive_job_log_path_, recovery_log_stat);
+      const bool recovery_log_guard_valid = recovery_log_fd_valid && !archive_job_log_guard_path_.isEmpty() &&
+          path_has_file_identity(archive_job_log_guard_path_, recovery_log_stat);
+      if (!recovery_log_identity_valid) {
         if (archive_job_log_.isOpen()) {
           archive_job_log_.flush();
           archive_job_log_.close();
         }
-        archive_job_log_path_ = archive_job_log_guard_path_;
+        if (recovery_log_guard_valid) {
+          archive_job_log_path_ = archive_job_log_guard_path_;
+          archive_job_log_guard_path_.clear();
+        } else if (recovery_log_fd_valid) {
+          QString rescue_error;
+          struct stat rescued_log_stat{};
+          archive_job_log_path_ = rescue_open_file_no_replace(
+              archive_finalize_recovery_log_fd_,
+              recovery_log_stat,
+              archive_job_log_path_,
+              &rescue_error,
+              &rescued_log_stat);
+          archive_job_log_guard_path_.clear();
+          if (archive_job_log_path_.isEmpty()) {
+            recovery_log_retained = false;
+            failure_detail += QString(
+                                  "\n\nThe trusted recovery log pathname and guard were replaced, and a rescue "
+                                  "link could not be published: %1")
+                                  .arg(rescue_error);
+          } else {
+            recovery_log_stat = rescued_log_stat;
+            archive_finalize_recovery_log_device_ = static_cast<quint64>(rescued_log_stat.st_dev);
+            archive_finalize_recovery_log_inode_ = static_cast<quint64>(rescued_log_stat.st_ino);
+          }
+        } else {
+          recovery_log_retained = false;
+        }
+        if (recovery_log_retained) {
+          QString reopen_error;
+          archive_job_log_enabled_ = reopenArchiveJobLog(
+              archive_job_log_path_,
+              &reopen_error,
+              archive_finalize_recovery_log_device_,
+              archive_finalize_recovery_log_inode_);
+          if (!archive_job_log_enabled_)
+            failure_detail += QString("\n\nThe trusted recovery log was retained at %1 but could not be reopened: %2")
+                                  .arg(archive_job_log_path_, reopen_error);
+        }
+      } else if (!recovery_log_guard_valid) {
         archive_job_log_guard_path_.clear();
-        QString reopen_error;
-        archive_job_log_enabled_ = reopenArchiveJobLog(
-            archive_job_log_path_,
-            &reopen_error,
-            archive_finalize_recovery_log_device_,
-            archive_finalize_recovery_log_inode_);
       }
+    }
+    if (!recovery_identity_valid) {
+      if (recovery_guard_valid) {
+        archive_finalize_source_path_ = archive_finalize_source_guard_path_;
+        archive_finalize_source_guard_path_.clear();
+      } else if (recovery_fd_valid) {
+        QString rescue_error;
+        struct stat rescued_video_stat{};
+        archive_finalize_source_path_ = rescue_open_file_no_replace(
+            archive_finalize_source_fd_,
+            recovery_stat,
+            archive_finalize_source_path_,
+            &rescue_error,
+            &rescued_video_stat);
+        archive_finalize_source_guard_path_.clear();
+        if (archive_finalize_source_path_.isEmpty()) {
+          recovery_artifact_retained = false;
+          failure_detail += QString(
+                                "\n\nThe trusted recovery pathname and guard were replaced, and a rescue link "
+                                "could not be published: %1")
+                                .arg(rescue_error);
+        } else {
+          recovery_stat = rescued_video_stat;
+          archive_finalize_source_device_ = static_cast<quint64>(rescued_video_stat.st_dev);
+          archive_finalize_source_inode_ = static_cast<quint64>(rescued_video_stat.st_ino);
+        }
+      } else {
+        recovery_artifact_retained = false;
+      }
+      if (recovery_artifact_retained)
+        failure_detail += QString(
+                              "\n\nA recovery pathname was replaced during durability sync; the trusted video "
+                              "was retained at %1.")
+                              .arg(archive_finalize_source_path_);
+    } else if (!recovery_guard_valid) {
+      archive_finalize_source_guard_path_.clear();
     }
 #endif
     if (exit_status != QProcess::NormalExit || exit_code != 0) {
@@ -7115,18 +7360,24 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
               "another archive run until this file has been copied to safety.")
               .arg(exit_code)
               .arg(helper_detail.isEmpty() ? QString() : "\n" + helper_detail);
-    } else {
+    } else if (recovery_artifact_retained && recovery_log_retained) {
       archive_finalize_blocked_source_path_.clear();
       appendLog(QString("recovery archive safely synced: %1").arg(archive_finalize_source_path_));
+    } else {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
     }
 #ifdef Q_OS_UNIX
-    if (archive_finalize_recovery_log_fd_ >= 0)
+    if (archive_finalize_recovery_log_fd_ >= 0 && recovery_log_retained)
       ::close(archive_finalize_recovery_log_fd_);
 #endif
-    archive_finalize_recovery_log_fd_ = -1;
-    archive_finalize_recovery_log_device_ = 0;
-    archive_finalize_recovery_log_inode_ = 0;
-    releaseArchiveFinalizeSource(recovery_identity_valid && exit_status == QProcess::NormalExit && exit_code == 0);
+    if (recovery_log_retained) {
+      archive_finalize_recovery_log_fd_ = -1;
+      archive_finalize_recovery_log_device_ = 0;
+      archive_finalize_recovery_log_inode_ = 0;
+    }
+    if (recovery_artifact_retained) {
+      releaseArchiveFinalizeSource(recovery_identity_valid && exit_status == QProcess::NormalExit && exit_code == 0);
+    }
     showArchiveFinalizationFailure(failure_detail);
     return;
   }
@@ -7406,11 +7657,60 @@ void HStreamWindow::completeArchiveFinalization() {
     }
   }
 #endif
-  if (!releaseArchiveFinalizeTarget(true)) {
-    failArchiveFinalization("The completed MP4 pathname changed while retiring its identity guard.");
+  if (!releaseArchiveFinalizeSource(true, true)) {
+    failArchiveFinalization("The completed MP4 pathname changed while retiring the source identity guard.");
     return;
   }
-  releaseArchiveFinalizeSource(true);
+  if (!releaseArchiveFinalizeTarget(true)) {
+    QString retained_target;
+#ifdef Q_OS_UNIX
+    struct stat retained_target_stat{};
+    const bool have_target_identity = archive_finalize_target_fd_ >= 0 &&
+        ::fstat(archive_finalize_target_fd_, &retained_target_stat) == 0 && S_ISREG(retained_target_stat.st_mode);
+    if (have_target_identity && path_has_file_identity(archive_finalize_target_path_, retained_target_stat)) {
+      retained_target = archive_finalize_target_path_;
+    } else if (
+        have_target_identity && path_has_file_identity(archive_finalize_target_guard_path_, retained_target_stat)) {
+      retained_target = archive_finalize_target_guard_path_;
+    } else if (
+        have_target_identity &&
+        path_has_file_identity(archive_finalize_target_guard_path_ + ".hstream-pin", retained_target_stat)) {
+      retained_target = archive_finalize_target_guard_path_ + ".hstream-pin";
+    } else if (have_target_identity) {
+      for (int attempt = 0; attempt < 1000; ++attempt) {
+        const QString candidate =
+            available_final_archive_path(gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_);
+        if (candidate.isEmpty())
+          break;
+        int rescue_errno = 0;
+        if (!link_open_file_no_replace(archive_finalize_target_fd_, candidate, &rescue_errno)) {
+          if (rescue_errno == EEXIST)
+            continue;
+          break;
+        }
+        QString sync_error;
+        if (path_has_file_identity(candidate, retained_target_stat) && sync_parent_directory(candidate, &sync_error)) {
+          retained_target = candidate;
+          break;
+        }
+      }
+    }
+#endif
+    archive_finalize_failed_ = true;
+    if (!retained_target.isEmpty()) {
+      archive_finalize_source_path_ = retained_target;
+      archive_finalize_blocked_source_path_ = retained_target;
+    }
+    releaseArchiveFinalizeTarget(false);
+    releaseArchiveFinalizerOwnership(true);
+    showArchiveFinalizationFailure(
+        retained_target.isEmpty()
+            ? "The completed MP4 identity guard could not be retired, and its pinned pathname could not be rescued."
+            : QString(
+                  "The completed MP4 identity guard could not be retired safely. The trusted MP4 was retained at %1.")
+                  .arg(retained_target));
+    return;
+  }
   releaseArchiveFinalizerOwnership(true);
   output_states_["archive-file"]->setText("SAVED");
   if (archive_output_path_label_)
@@ -7712,6 +8012,35 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
               QString("could not protect recovery log at %1: %2").arg(candidate_log, candidate_log_guard_error);
           break;
         }
+      }
+
+      QString recovery_publication_sync_error;
+      const bool force_recovery_publication_sync_failure =
+          qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE");
+      if (force_recovery_publication_sync_failure) {
+        qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE");
+        recovery_publication_sync_error = "recovery-publication sync failure requested by test";
+      }
+      const bool recovery_publication_is_durable = !force_recovery_publication_sync_failure &&
+          ::fsync(archive_finalize_source_fd_) == 0 && (!has_job_log || ::fsync(pinned_log_fd) == 0) &&
+          sync_parent_directory(candidate, &recovery_publication_sync_error);
+      if (!recovery_publication_is_durable) {
+        if (recovery_publication_sync_error.isEmpty())
+          recovery_publication_sync_error = QString::fromLocal8Bit(std::strerror(errno));
+        QString cleanup_error;
+        if (!candidate_log_guard_path.isEmpty())
+          remove_path_if_same_identity(candidate_log_guard_path, original_log_stat, &cleanup_error);
+        remove_path_if_same_identity(candidate_source_guard_path, original_archive_stat, &cleanup_error);
+        remove_path_if_same_identity(candidate, original_archive_stat, &cleanup_error);
+        if (candidate_log_reserved)
+          remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error);
+        if (marker_fd >= 0)
+          ::close(marker_fd);
+        recovery_move_error = QString("could not make the recovery pair durable before source cleanup: %1")
+                                  .arg(recovery_publication_sync_error);
+        if (!cleanup_error.isEmpty())
+          recovery_move_error += QString("; partial recovery cleanup remains unresolved: %1").arg(cleanup_error);
+        break;
       }
 
       if (candidate_log_is_marker) {

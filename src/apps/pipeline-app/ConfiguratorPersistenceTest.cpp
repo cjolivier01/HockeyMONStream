@@ -1697,6 +1697,29 @@ play-tracker:
           provisional_foreign_log_content == "foreign resolved log",
       "Stale recovery must prefer the guarded provisional UI log and leave a foreign resolved sidecar untouched");
 
+  const fs::path dual_guarded_dir = root / "archive-dual-guarded-log";
+  fs::create_directories(dual_guarded_dir);
+  const fs::path dual_guarded_configured = dual_guarded_dir / "dual.mkv";
+  const std::string dual_guarded_run_id = "77777777-00112233-4455-6677-8899-aabbccddeeff";
+  const fs::path dual_guarded_source =
+      dual_guarded_dir / ("dual.hstream-run-v3-99999999-" + dual_guarded_run_id + ".mkv");
+  const fs::path dual_guarded_resolved_log = dual_guarded_source.string() + ".log";
+  const fs::path dual_guarded_provisional_log =
+      dual_guarded_dir / ("dual.hstream-run-ui-" + dual_guarded_run_id + ".mkv.log");
+  std::ofstream(dual_guarded_source, std::ios::binary) << "dual guarded video";
+  std::ofstream(dual_guarded_resolved_log, std::ios::binary) << "newer resolved log";
+  std::ofstream(dual_guarded_provisional_log, std::ios::binary) << "older provisional log";
+  fs::create_hard_link(dual_guarded_source, dual_guarded_source.string() + ".hstream-pin");
+  fs::create_hard_link(dual_guarded_resolved_log, dual_guarded_resolved_log.string() + ".hstream-pin");
+  fs::create_hard_link(dual_guarded_provisional_log, dual_guarded_provisional_log.string() + ".hstream-pin");
+  const auto dual_guarded_recovery =
+      hm::configurator_internal::recover_stale_archive_work_files(dual_guarded_configured);
+  ok &= expect(
+      !dual_guarded_recovery.ok() && dual_guarded_recovery.status().code() == absl::StatusCode::kFailedPrecondition &&
+          fs::is_regular_file(dual_guarded_source) && fs::is_regular_file(dual_guarded_resolved_log) &&
+          fs::is_regular_file(dual_guarded_provisional_log),
+      "Stale recovery must reject distinct guarded provisional and resolved logs instead of pairing stale contents");
+
   const fs::path log_collision_dir = root / "archive-log-collision";
   fs::create_directories(log_collision_dir);
   const fs::path log_collision_archive = log_collision_dir / "collision.mkv";
@@ -1790,6 +1813,52 @@ play-tracker:
           interrupted_recovery_is_reconciled("no-log-pair-linked", false, true, true) &&
           interrupted_recovery_is_reconciled("no-log-video-linked", false, false, true),
       "Restart recovery must reconcile every interrupted hard-link publication boundary without splitting artifacts");
+
+  const fs::path guarded_reconcile_dir = root / "archive-guarded-reconcile";
+  fs::create_directories(guarded_reconcile_dir);
+  const fs::path guarded_reconcile_configured = guarded_reconcile_dir / "guarded.mkv";
+  const fs::path guarded_reconcile_recovery = guarded_reconcile_dir / "guarded-finalization-failed.mkv";
+  const fs::path guarded_reconcile_log = guarded_reconcile_recovery.string() + ".log";
+  const fs::path guarded_reconcile_expected = guarded_reconcile_dir / "guarded-finalization-failed-1.mkv";
+  const fs::path guarded_reconcile_expected_log = guarded_reconcile_expected.string() + ".log";
+  const fs::path guarded_video_backing = guarded_reconcile_dir / "trusted-video-backing";
+  const fs::path guarded_log_backing = guarded_reconcile_dir / "trusted-log-backing";
+  std::ofstream(guarded_video_backing, std::ios::binary) << "trusted guarded video";
+  std::ofstream(guarded_log_backing, std::ios::binary) << "trusted guarded log";
+  std::ofstream(guarded_reconcile_recovery, std::ios::binary) << "foreign visible recovery";
+  fs::create_hard_link(guarded_log_backing, guarded_reconcile_log);
+  fs::create_hard_link(guarded_video_backing, guarded_reconcile_recovery.string() + ".hstream-pin");
+  fs::create_hard_link(guarded_log_backing, guarded_reconcile_log.string() + ".hstream-pin");
+  const auto guarded_reconciled =
+      hm::configurator_internal::recover_stale_archive_work_files(guarded_reconcile_configured);
+  std::ifstream guarded_reconciled_video_stream(guarded_reconcile_expected, std::ios::binary);
+  const std::string guarded_reconciled_video{
+      std::istreambuf_iterator<char>(guarded_reconciled_video_stream), std::istreambuf_iterator<char>()};
+  std::ifstream guarded_reconciled_log_stream(guarded_reconcile_expected_log, std::ios::binary);
+  const std::string guarded_reconciled_log{
+      std::istreambuf_iterator<char>(guarded_reconciled_log_stream), std::istreambuf_iterator<char>()};
+  std::ifstream guarded_foreign_stream(guarded_reconcile_recovery, std::ios::binary);
+  const std::string guarded_foreign{
+      std::istreambuf_iterator<char>(guarded_foreign_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      guarded_reconciled.ok() && guarded_reconciled->size() == 1 &&
+          guarded_reconciled->front() == guarded_reconcile_expected &&
+          guarded_reconciled_video == "trusted guarded video" && guarded_reconciled_log == "trusted guarded log" &&
+          guarded_foreign == "foreign visible recovery" &&
+          !fs::exists(guarded_reconcile_expected.string() + ".hstream-pin") &&
+          !fs::exists(guarded_reconcile_expected_log.string() + ".hstream-pin"),
+      "Restart reconciliation must rescue trusted guarded identities instead of reporting a replaced visible pair");
+
+  const fs::path unguarded_reconcile_dir = root / "archive-unguarded-reconcile";
+  fs::create_directories(unguarded_reconcile_dir);
+  const fs::path unguarded_reconcile_configured = unguarded_reconcile_dir / "unguarded.mkv";
+  const fs::path unguarded_reconcile_recovery = unguarded_reconcile_dir / "unguarded-finalization-failed.mkv";
+  std::ofstream(unguarded_reconcile_recovery, std::ios::binary) << "unguarded foreign recovery";
+  const auto unguarded_reconciled =
+      hm::configurator_internal::recover_stale_archive_work_files(unguarded_reconcile_configured);
+  ok &= expect(
+      unguarded_reconciled.ok() && unguarded_reconciled->empty() && fs::is_regular_file(unguarded_reconcile_recovery),
+      "Restart reconciliation must not report an unguarded recovery artifact as an interrupted committed transaction");
 
   const auto interrupted_collision_is_reconciled =
       [&](const std::string& name, bool has_log, bool destination_video_is_foreign) {
@@ -1954,6 +2023,114 @@ play-tracker:
       interrupted_after_source_cleanup_is_reconciled("with-log", true) &&
           interrupted_after_source_cleanup_is_reconciled("without-log", false),
       "Restart recovery must finish log and no-log transactions interrupted after retiring the source video");
+
+  const auto late_interrupted_recovery_is_reconciled =
+      [&](const std::string& name, bool has_log, const char* interruption_env) {
+        const fs::path interrupted_dir = root / ("archive-late-interruption-" + name);
+        fs::create_directories(interrupted_dir);
+        const fs::path configured = interrupted_dir / (name + ".mkv");
+        const fs::path source = interrupted_dir / (name + ".hstream-run-99999999-dead.mkv");
+        const fs::path source_log = source.string() + ".log";
+        const fs::path recovery = interrupted_dir / (name + "-finalization-failed.mkv");
+        const fs::path recovery_log = recovery.string() + ".log";
+        std::ofstream(source, std::ios::binary) << name << " late video";
+        if (has_log)
+          std::ofstream(source_log, std::ios::binary) << name << " late log";
+        g_setenv(interruption_env, "1", TRUE);
+        const auto interrupted = hm::configurator_internal::recover_stale_archive_work_files(configured);
+        g_unsetenv(interruption_env);
+        const auto resumed = hm::configurator_internal::recover_stale_archive_work_files(configured);
+        std::ifstream recovery_video_stream(recovery, std::ios::binary);
+        const std::string recovery_video{
+            std::istreambuf_iterator<char>(recovery_video_stream), std::istreambuf_iterator<char>()};
+        std::ifstream recovery_log_stream(recovery_log, std::ios::binary);
+        const std::string recovery_log_content{
+            std::istreambuf_iterator<char>(recovery_log_stream), std::istreambuf_iterator<char>()};
+        return !interrupted.ok() && resumed.ok() && resumed->size() == 1 && resumed->front() == recovery &&
+            recovery_video == name + " late video" && !fs::exists(source) && !fs::exists(source_log) &&
+            !fs::exists(recovery.string() + ".hstream-pin") && !fs::exists(recovery_log.string() + ".hstream-pin") &&
+            (has_log ? recovery_log_content == name + " late log" : !fs::exists(recovery_log));
+      };
+  ok &= expect(
+      late_interrupted_recovery_is_reconciled(
+          "after-log-cleanup", true, "HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_LOG_CLEANUP") &&
+          late_interrupted_recovery_is_reconciled(
+              "after-marker-cleanup", false, "HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_LOG_CLEANUP") &&
+          late_interrupted_recovery_is_reconciled(
+              "during-guard-retirement", true, "HSTREAM_CONFIGURATOR_TEST_INTERRUPT_DURING_ARCHIVE_GUARD_RETIREMENT") &&
+          late_interrupted_recovery_is_reconciled(
+              "between-guard-pairs",
+              true,
+              "HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_RECOVERY_GUARD_RETIREMENT"),
+      "Restart recovery must finish transactions interrupted after sidecar cleanup and during guard retirement");
+
+  const fs::path between_guards_dir = root / "archive-between-guards";
+  fs::create_directories(between_guards_dir);
+  const fs::path between_guards_configured = between_guards_dir / "between.mkv";
+  const fs::path between_guards_source = between_guards_dir / "between.hstream-run-99999999-dead.mkv";
+  const fs::path between_guards_source_log = between_guards_source.string() + ".log";
+  const fs::path between_guards_foreign_log = between_guards_dir / "between-finalization-failed.mkv.log";
+  const fs::path between_guards_rescued = between_guards_dir / "between-finalization-failed-1.mkv";
+  std::ofstream(between_guards_source, std::ios::binary) << "trusted between-guards video";
+  std::ofstream(between_guards_source_log, std::ios::binary) << "trusted between-guards log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_LOG_BETWEEN_GUARDS", "1", TRUE);
+  const auto between_guards_interrupted =
+      hm::configurator_internal::recover_stale_archive_work_files(between_guards_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_LOG_BETWEEN_GUARDS");
+  const auto between_guards_recovered =
+      hm::configurator_internal::recover_stale_archive_work_files(between_guards_configured);
+  std::ifstream between_guards_video_stream(between_guards_rescued, std::ios::binary);
+  const std::string between_guards_video{
+      std::istreambuf_iterator<char>(between_guards_video_stream), std::istreambuf_iterator<char>()};
+  std::ifstream between_guards_log_stream(between_guards_rescued.string() + ".log", std::ios::binary);
+  const std::string between_guards_log{
+      std::istreambuf_iterator<char>(between_guards_log_stream), std::istreambuf_iterator<char>()};
+  std::ifstream between_guards_foreign_log_stream(between_guards_foreign_log, std::ios::binary);
+  const std::string between_guards_foreign_log_content{
+      std::istreambuf_iterator<char>(between_guards_foreign_log_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !between_guards_interrupted.ok() && between_guards_recovered.ok() && between_guards_recovered->size() == 1 &&
+          between_guards_recovered->front() == between_guards_rescued &&
+          between_guards_video == "trusted between-guards video" &&
+          between_guards_log == "trusted between-guards log" &&
+          between_guards_foreign_log_content == "injected foreign archive log between guard retirements",
+      "Recovery guard retirement must rescue both trusted identities if the visible log is replaced between removals");
+
+  const fs::path source_guard_restart_dir = root / "archive-source-guard-restart";
+  fs::create_directories(source_guard_restart_dir);
+  const fs::path source_guard_restart_configured = source_guard_restart_dir / "source-guard.mkv";
+  const fs::path source_guard_restart_source = source_guard_restart_dir / "source-guard.hstream-run-99999999-dead.mkv";
+  const fs::path source_guard_restart_source_log = source_guard_restart_source.string() + ".log";
+  const fs::path source_guard_restart_recovery = source_guard_restart_dir / "source-guard-finalization-failed.mkv";
+  const fs::path source_guard_restart_foreign_log = source_guard_restart_recovery.string() + ".log";
+  const fs::path source_guard_restart_rescue = source_guard_restart_dir / "source-guard-finalization-failed-1.mkv";
+  std::ofstream(source_guard_restart_source, std::ios::binary) << "trusted source-guard restart video";
+  std::ofstream(source_guard_restart_source_log, std::ios::binary) << "trusted source-guard restart log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_RECOVERY_GUARD_RETIREMENT", "1", TRUE);
+  const auto source_guard_restart_interrupted =
+      hm::configurator_internal::recover_stale_archive_work_files(source_guard_restart_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_RECOVERY_GUARD_RETIREMENT");
+  fs::remove(source_guard_restart_foreign_log);
+  std::ofstream(source_guard_restart_foreign_log, std::ios::binary) << "foreign log after recovery guards retired";
+  const auto source_guard_restart_recovered =
+      hm::configurator_internal::recover_stale_archive_work_files(source_guard_restart_configured);
+  std::ifstream source_guard_restart_video_stream(source_guard_restart_rescue, std::ios::binary);
+  const std::string source_guard_restart_video{
+      std::istreambuf_iterator<char>(source_guard_restart_video_stream), std::istreambuf_iterator<char>()};
+  std::ifstream source_guard_restart_log_stream(source_guard_restart_rescue.string() + ".log", std::ios::binary);
+  const std::string source_guard_restart_log{
+      std::istreambuf_iterator<char>(source_guard_restart_log_stream), std::istreambuf_iterator<char>()};
+  std::ifstream source_guard_restart_foreign_stream(source_guard_restart_foreign_log, std::ios::binary);
+  const std::string source_guard_restart_foreign{
+      std::istreambuf_iterator<char>(source_guard_restart_foreign_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !source_guard_restart_interrupted.ok() && source_guard_restart_recovered.ok() &&
+          source_guard_restart_recovered->size() == 1 &&
+          source_guard_restart_recovered->front() == source_guard_restart_rescue &&
+          source_guard_restart_video == "trusted source-guard restart video" &&
+          source_guard_restart_log == "trusted source-guard restart log" &&
+          source_guard_restart_foreign == "foreign log after recovery guards retired",
+      "Restart must restore transaction guards from the source pair and rescue a replaced visible recovery log");
 
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /
