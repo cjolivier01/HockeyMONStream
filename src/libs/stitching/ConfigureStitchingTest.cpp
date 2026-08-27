@@ -1586,7 +1586,6 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
   ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER");
   ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS");
   ::unsetenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
-  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
 
   std::ifstream snapshot_identity_input(
       result.ok() && result->load_snapshot
@@ -1595,13 +1594,56 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
       std::ios::binary);
   const std::string snapshot_identity{
       std::istreambuf_iterator<char>(snapshot_identity_input), std::istreambuf_iterator<char>()};
-  if (!reached_delay || error || !result.ok() || !result->artifact_lock || !result->load_snapshot ||
-      result->canvas_size.width != 160 || result->canvas_size.height != 32 ||
-      fs::is_symlink(result->load_snapshot->directory() / "mapping_0001.tif") ||
+  const bool transient_verified = result.ok() && result->load_snapshot && result->load_snapshot->verify().ok();
+  const fs::path persistently_changed = dir / "mapping_0001_x.tif";
+  const auto preserved_write_time = fs::last_write_time(persistently_changed);
+  std::fstream changed(persistently_changed, std::ios::binary | std::ios::in | std::ios::out);
+  changed.seekg(0, std::ios::end);
+  const std::streamoff changed_size = changed.tellg();
+  char changed_byte = 0;
+  if (changed_size > 0) {
+    changed.seekg(changed_size / 2);
+    changed.get(changed_byte);
+    changed_byte ^= 0x5a;
+    changed.seekp(changed_size / 2);
+    changed.put(changed_byte);
+    changed.flush();
+  }
+  changed.close();
+  fs::last_write_time(persistently_changed, preserved_write_time);
+  const bool persistent_change_rejected = result.ok() && result->load_snapshot && !result->load_snapshot->verify().ok();
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+
+  if (!reached_delay || error || !transient_verified || changed_size <= 0 || !persistent_change_rejected ||
+      !result.ok() || !result->artifact_lock || !result->load_snapshot || result->canvas_size.width != 160 ||
+      result->canvas_size.height != 32 || fs::is_symlink(result->load_snapshot->directory() / "mapping_0001.tif") ||
       snapshot_identity != expected_identity) {
     std::cerr << "unreliable-filesystem validation must use one pinned artifact generation: " << result.status()
               << std::endl;
     return false;
+  }
+  return true;
+}
+
+bool expect_validation_copy_offload_outcomes(const fs::path& tmpdir) {
+  for (const char* outcome : {"unsupported", "partial", "zero"}) {
+    const fs::path dir = tmpdir / ("validation_copy_offload_" + std::string(outcome));
+    fs::remove_all(dir);
+    if (!write_valid_stitching_artifacts(dir))
+      return false;
+    ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+    ::setenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE", "1", 1);
+    ::setenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT", outcome, 1);
+    auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+    const bool verified = load.ok() && load->artifact_lock && load->load_snapshot && load->load_snapshot->verify().ok();
+    ::unsetenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT");
+    ::unsetenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
+    ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+    if (!verified) {
+      std::cerr << "validation snapshot copy outcome must remain loadable (" << outcome << "): " << load.status()
+                << std::endl;
+      return false;
+    }
   }
   return true;
 }
@@ -1813,6 +1855,10 @@ int main() {
 
   if (!expect_unreliable_load_refreshes_legacy_identity_revision(tmpdir)) {
     finish(tmpdir, 45);
+  }
+
+  if (!expect_validation_copy_offload_outcomes(tmpdir)) {
+    finish(tmpdir, 46);
   }
 
   finish(tmpdir, 0);

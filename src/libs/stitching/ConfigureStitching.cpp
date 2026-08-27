@@ -126,24 +126,32 @@ constexpr std::array<StitchSnapshotArtifactSpec, 13> kStitchValidationSnapshotAr
     {kStitchGenerationArtifact, false},
 }};
 
-void wait_at_test_stitch_phase(const char* delay_variable, const char* marker_variable, const char* release_variable) {
+absl::Status wait_at_test_stitch_phase(
+    const char* delay_variable,
+    const char* marker_variable,
+    const char* release_variable) {
   const char* delay = std::getenv(delay_variable);
   if (delay == nullptr)
-    return;
-  if (const char* marker = std::getenv(marker_variable))
-    std::ofstream(marker, std::ios::out | std::ios::trunc) << "ready\n";
+    return absl::OkStatus();
+  if (const char* marker = std::getenv(marker_variable)) {
+    std::ofstream output(marker, std::ios::out | std::ios::trunc);
+    output << "ready\n";
+    if (!output)
+      return absl::InternalError("Unable to publish stitch test phase marker");
+  }
   if (const char* release = std::getenv(release_variable)) {
     for (int attempt = 0; attempt < 1000; ++attempt) {
       std::error_code error;
       if (fs::exists(release, error) && !error)
-        return;
+        return absl::OkStatus();
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    return;
+    return absl::DeadlineExceededError("Timed out waiting for stitch test phase release");
   }
   const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
   if (delay_ms > 0)
     std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+  return absl::OkStatus();
 }
 
 void report_calibration_progress(const std::string& stage, const std::string& status, const std::string& message = {}) {
@@ -565,8 +573,20 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
     uint64_t remaining = static_cast<uint64_t>(artifact->metadata.st_size);
     while (remaining > 0) {
       const size_t requested = static_cast<size_t>(std::min<uint64_t>(remaining, 16ULL * 1024ULL * 1024ULL));
-      const ssize_t count = ::copy_file_range(
-          artifact->descriptor, &source_offset, destination_descriptor, &destination_offset, requested, 0);
+      ssize_t count = 0;
+      const char* test_result = std::getenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT");
+      if (test_result != nullptr && std::string(test_result) == "unsupported") {
+        errno = EOPNOTSUPP;
+        count = -1;
+      } else if (test_result != nullptr && std::string(test_result) == "zero") {
+        count = 0;
+      } else {
+        const size_t offload_request = test_result != nullptr && std::string(test_result) == "partial"
+            ? std::max<size_t>(1, requested / 2)
+            : requested;
+        count = ::copy_file_range(
+            artifact->descriptor, &source_offset, destination_descriptor, &destination_offset, offload_request, 0);
+      }
       if (count < 0 && errno == EINTR)
         continue;
       if (count <= 0)
@@ -1752,8 +1772,15 @@ const fs::path& StitchingArtifactLoadSnapshot::directory() const {
 }
 
 absl::Status StitchingArtifactLoadSnapshot::verify() const {
-  HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(impl_->source_directory, impl_->artifacts));
-  if (!stitch_artifact_metadata_is_reliable(impl_->source_directory)) {
+  const bool metadata_is_reliable = stitch_artifact_metadata_is_reliable(impl_->source_directory);
+  if (metadata_is_reliable) {
+    HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(impl_->source_directory, impl_->artifacts));
+    auto revision = stitch_artifact_revision_locked(impl_->source_directory);
+    if (!revision.ok())
+      return revision.status();
+    if (*revision != impl_->expected_revision)
+      return absl::AbortedError("Control-mask artifact paths changed while their pinned generation was loaded");
+  } else {
     auto identity = stitch_artifact_content_identity_locked(impl_->source_directory);
     if (!identity.ok())
       return identity.status();
@@ -1762,11 +1789,6 @@ absl::Status StitchingArtifactLoadSnapshot::verify() const {
       return absl::AbortedError("Control-mask artifact contents changed while their pinned generation was loaded");
     }
   }
-  auto revision = stitch_artifact_revision_locked(impl_->source_directory);
-  if (!revision.ok())
-    return revision.status();
-  if (*revision != impl_->expected_revision)
-    return absl::AbortedError("Control-mask artifact paths changed while their pinned generation was loaded");
   return absl::OkStatus();
 }
 
@@ -1897,10 +1919,10 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     if (attempt == 1)
       return absl::AbortedError("Stitch artifacts changed repeatedly while their content was validated");
   }
-  wait_at_test_stitch_phase(
+  HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
       "HM_TEST_STITCH_POST_VALIDATION_DELAY_MS",
       "HM_TEST_STITCH_POST_VALIDATION_MARKER",
-      "HM_TEST_STITCH_POST_VALIDATION_RELEASE");
+      "HM_TEST_STITCH_POST_VALIDATION_RELEASE"));
   std::string generation_id;
   const bool stable_load_snapshot = create_load_snapshot && !metadata_is_reliable;
   if (!stable_load_snapshot && validate_generation_content) {
@@ -1921,10 +1943,10 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     std::unique_ptr<StitchingArtifactLoadSnapshot> snapshot = std::move(created_snapshot.snapshot);
     StitchingArtifactLoadSnapshot::Impl* snapshot_impl = created_snapshot.impl;
     if (stable_load_snapshot) {
-      wait_at_test_stitch_phase(
+      HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
           "HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS",
           "HM_TEST_STITCH_STABLE_VALIDATION_MARKER",
-          "HM_TEST_STITCH_STABLE_VALIDATION_RELEASE");
+          "HM_TEST_STITCH_STABLE_VALIDATION_RELEASE"));
       bool snapshot_configured = false;
       CanvasSize snapshot_canvas;
       HM_ASSIGN_OR_RETURN(
