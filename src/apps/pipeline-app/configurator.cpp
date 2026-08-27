@@ -535,6 +535,12 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
   const auto generated_projection = get_node(config, "hstream_ui.generated_stitching_backend_choices.projection");
   const auto generated_projection_parameters =
       get_node(config, "hstream_ui.generated_stitching_backend_choices.projection_parameters");
+  const auto previous_projection =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection");
+  const auto previous_projection_parameters =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
+  const auto previous_generated_projection_parameters =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
   const auto private_matcher = get_node(config, "stitching.control_point_matcher");
   const auto private_backend = get_node(config, "stitching.mapping_backend");
   const auto private_autooptimizer = get_node(config, "stitching.run_autooptimizer");
@@ -558,17 +564,24 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       return std::nullopt;
     }
   };
-  auto canonical_projection_name = [](const std::optional<YAML::Node>& node) -> std::optional<std::string> {
+  auto parsed_projection = [](const std::optional<YAML::Node>& node) -> std::optional<stitching::StitchProjection> {
     if (!node.has_value() || !node->IsScalar())
       return std::nullopt;
     try {
       const auto projection = stitching::ParseStitchProjection(node->as<std::string>());
       if (!projection.ok())
         return std::nullopt;
-      return std::string(stitching::StitchProjectionName(*projection));
+      return *projection;
     } catch (const YAML::Exception&) {
       return std::nullopt;
     }
+  };
+  auto canonical_projection_name =
+      [&parsed_projection](const std::optional<YAML::Node>& node) -> std::optional<std::string> {
+    const auto projection = parsed_projection(node);
+    if (!projection.has_value())
+      return std::nullopt;
+    return std::string(stitching::StitchProjectionName(*projection));
   };
   bool generated_autooptimizer_matches_private = !generated_autooptimizer.has_value();
   if (generated_autooptimizer.has_value() && generated_autooptimizer->IsScalar() && private_autooptimizer.has_value() &&
@@ -580,11 +593,12 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       generated_autooptimizer_matches_private = false;
     }
   }
+  const auto generated_projection_value = parsed_projection(generated_projection);
+  const auto private_projection_value = parsed_projection(private_projection);
   const bool generated_projection_matches_private =
       (!generated_projection.has_value() && !private_projection.has_value()) ||
-      (generated_projection.has_value() && generated_projection->IsScalar() && private_projection.has_value() &&
-       private_projection->IsScalar() &&
-       private_projection->as<std::string>() == generated_projection->as<std::string>());
+      (generated_projection_value.has_value() && private_projection_value.has_value() &&
+       *generated_projection_value == *private_projection_value);
   bool generated_projection_parameters_match_private = !generated_projection_parameters.has_value();
   if (generated_projection_parameters.has_value() && generated_projection.has_value() &&
       generated_projection->IsScalar()) {
@@ -596,13 +610,29 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
     generated_projection_parameters_match_private =
         generated_values.has_value() && private_values.ok() && *generated_values == *private_values;
   }
+  const auto metadata_parameters_valid = [&numeric_sequence](
+                                             const std::optional<YAML::Node>& parameters,
+                                             const std::optional<stitching::StitchProjection>& projection) {
+    if (!parameters.has_value())
+      return true;
+    const auto values = numeric_sequence(parameters);
+    return projection.has_value() && values.has_value() &&
+        stitching::ValidateStitchProjectionParameters(*projection, *values).ok();
+  };
+  const auto previous_projection_value =
+      previous_projection.has_value() ? parsed_projection(previous_projection) : generated_projection_value;
+  const bool previous_projection_parameters_valid =
+      metadata_parameters_valid(previous_projection_parameters, previous_projection_value);
+  const bool previous_generated_projection_parameters_valid =
+      metadata_parameters_valid(previous_generated_projection_parameters, generated_projection_value);
   const bool generated_matches_private = generated_matcher.has_value() && generated_matcher->IsScalar() &&
       generated_backend.has_value() && generated_backend->IsScalar() && private_matcher.has_value() &&
       private_matcher->IsScalar() && private_backend.has_value() && private_backend->IsScalar() &&
       private_matcher->as<std::string>() == generated_matcher->as<std::string>() &&
       private_backend->as<std::string>() == generated_backend->as<std::string>() &&
       generated_autooptimizer_matches_private && generated_projection_matches_private &&
-      generated_projection_parameters_match_private;
+      generated_projection_parameters_match_private && previous_projection_parameters_valid &&
+      previous_generated_projection_parameters_valid;
   if (!generated_matches_private) {
     return false;
   }
@@ -613,12 +643,6 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend");
   const auto previous_autooptimizer =
       get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer");
-  const auto previous_projection =
-      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection");
-  const auto previous_projection_parameters =
-      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
-  const auto previous_generated_projection_parameters =
-      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
   if (previous_matcher.has_value() && previous_matcher->IsScalar()) {
     config["stitching"]["control_point_matcher"] = previous_matcher->as<std::string>();
   } else {
@@ -7121,6 +7145,12 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.projection");
   const auto generated_projection_parameters =
       get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.projection_parameters");
+  const auto generated_previous_projection =
+      get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection");
+  const auto generated_previous_projection_parameters =
+      get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
+  const auto generated_previous_generated_projection_parameters = get_node(
+      private_config_, "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
   const auto private_matcher = get_node(private_config_, "stitching.control_point_matcher");
   const auto private_backend = get_node(private_config_, "stitching.mapping_backend");
   const auto private_autooptimizer = get_node(private_config_, "stitching.run_autooptimizer");
@@ -7149,6 +7179,9 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection");
   const auto persisted_previous_projection_parameters = get_node(
       persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
+  const auto persisted_previous_generated_projection_parameters = get_node(
+      persisted_private_config_,
+      "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
   const auto parsed_boolean = [](const std::optional<YAML::Node>& node) -> std::optional<bool> {
     if (!node.has_value() || !node->IsScalar())
       return std::nullopt;
@@ -7192,6 +7225,17 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       return std::nullopt;
     }
   };
+  const auto parsed_projection =
+      [](const std::optional<YAML::Node>& node) -> std::optional<stitching::StitchProjection> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      const auto projection = stitching::ParseStitchProjection(node->as<std::string>());
+      return projection.ok() ? std::optional<stitching::StitchProjection>(*projection) : std::nullopt;
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
   const std::optional<bool> generated_autooptimizer_value = parsed_boolean(generated_autooptimizer);
   const std::optional<bool> private_autooptimizer_value = parsed_boolean(private_autooptimizer);
   const std::optional<bool> persisted_autooptimizer_value = parsed_boolean(persisted_autooptimizer);
@@ -7205,6 +7249,32 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       parsed_numeric_sequence(persisted_generated_projection_parameters);
   const std::optional<std::vector<double>> persisted_projection_parameter_values =
       configured_parameters(persisted_private_config_, persisted_projection);
+  const auto generated_projection_value = parsed_projection(generated_projection);
+  const auto private_projection_value = parsed_projection(private_projection);
+  const auto persisted_generated_projection_value = parsed_projection(persisted_generated_projection);
+  const auto persisted_projection_value = parsed_projection(persisted_projection);
+  const auto generated_previous_projection_value = generated_previous_projection.has_value()
+      ? parsed_projection(generated_previous_projection)
+      : generated_projection_value;
+  const auto persisted_previous_projection_value = persisted_previous_projection.has_value()
+      ? parsed_projection(persisted_previous_projection)
+      : persisted_generated_projection_value;
+  const auto metadata_parameters_valid = [&parsed_numeric_sequence](
+                                             const std::optional<YAML::Node>& parameters,
+                                             const std::optional<stitching::StitchProjection>& parameter_projection) {
+    if (!parameters.has_value())
+      return true;
+    const auto values = parsed_numeric_sequence(parameters);
+    return parameter_projection.has_value() && values.has_value() &&
+        stitching::ValidateStitchProjectionParameters(*parameter_projection, *values).ok();
+  };
+  const bool generated_parameter_metadata_valid =
+      metadata_parameters_valid(generated_previous_projection_parameters, generated_previous_projection_value) &&
+      metadata_parameters_valid(generated_previous_generated_projection_parameters, generated_projection_value);
+  const bool persisted_parameter_metadata_valid =
+      metadata_parameters_valid(persisted_previous_projection_parameters, persisted_previous_projection_value) &&
+      metadata_parameters_valid(
+          persisted_previous_generated_projection_parameters, persisted_generated_projection_value);
   const bool generated_parameters_match_private = !generated_projection_parameters.has_value() ||
       (generated_projection_parameter_values.has_value() && private_projection_parameter_values.has_value() &&
        *generated_projection_parameter_values == *private_projection_parameter_values);
@@ -7220,11 +7290,9 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const bool persisted_projection_present = persisted_projection.has_value() && persisted_projection->IsScalar();
   const bool persisted_autooptimizer_present = persisted_autooptimizer_value.has_value();
   const bool persisted_generated_projection_matches =
-      ((!persisted_generated_projection.has_value() || !persisted_generated_projection->IsScalar()) &&
-       !persisted_projection.has_value()) ||
-      (persisted_generated_projection.has_value() && persisted_generated_projection->IsScalar() &&
-       persisted_projection_present &&
-       persisted_projection->as<std::string>() == persisted_generated_projection->as<std::string>());
+      (!persisted_generated_projection.has_value() && !persisted_projection.has_value()) ||
+      (persisted_generated_projection_value.has_value() && persisted_projection_value.has_value() &&
+       *persisted_projection_value == *persisted_generated_projection_value);
   const bool persisted_generated_autooptimizer_matches = !persisted_generated_autooptimizer_value.has_value() ||
       (persisted_generated_autooptimizer_value.has_value() && persisted_autooptimizer_value.has_value() &&
        *persisted_generated_autooptimizer_value == *persisted_autooptimizer_value);
@@ -7238,17 +7306,20 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       persisted_matcher->as<std::string>() == persisted_generated_matcher->as<std::string>() &&
       persisted_backend->as<std::string>() == persisted_generated_backend->as<std::string>() &&
       persisted_generated_autooptimizer_matches && persisted_generated_projection_matches &&
-      persisted_generated_parameters_match;
+      persisted_generated_parameters_match && persisted_parameter_metadata_valid;
   const bool generated_private_values = generated_matcher.has_value() && generated_matcher->IsScalar() &&
       generated_backend.has_value() && generated_backend->IsScalar() && generated_autooptimizer_value.has_value() &&
       generated_projection.has_value() && generated_projection->IsScalar() && private_values_present &&
       private_matcher->as<std::string>() == generated_matcher->as<std::string>() &&
       private_backend->as<std::string>() == generated_backend->as<std::string>() &&
-      private_projection->as<std::string>() == generated_projection->as<std::string>() &&
-      *private_autooptimizer_value == *generated_autooptimizer_value && generated_parameters_match_private;
+      private_projection_value.has_value() && generated_projection_value.has_value() &&
+      *private_projection_value == *generated_projection_value &&
+      *private_autooptimizer_value == *generated_autooptimizer_value && generated_parameters_match_private &&
+      generated_parameter_metadata_valid;
   const bool effective_values_are_generated_private = generated_private_values &&
       matcher_name == private_matcher->as<std::string>() && backend_name == private_backend->as<std::string>() &&
-      projection_name == private_projection->as<std::string>() && run_autooptimizer == *private_autooptimizer_value;
+      private_projection_value.has_value() && projection == *private_projection_value &&
+      run_autooptimizer == *private_autooptimizer_value;
   if (effective_values_are_generated_private) {
     HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(lower_layer_config_));
     HM_ASSIGN_OR_RETURN(backend_name, canonical_backend(lower_layer_config_));
@@ -7307,9 +7378,9 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const bool private_matches = private_matcher.has_value() && private_matcher->IsScalar() &&
       private_matcher->as<std::string>() == matcher_name && private_backend.has_value() &&
       private_backend->IsScalar() && private_backend->as<std::string>() == backend_name &&
-      private_projection.has_value() && private_projection->IsScalar() &&
-      private_projection->as<std::string>() == projection_name && private_autooptimizer_value.has_value() &&
-      *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters;
+      private_projection_value.has_value() && *private_projection_value == projection &&
+      private_autooptimizer_value.has_value() && *private_autooptimizer_value == run_autooptimizer &&
+      private_projection_parameters == projection_parameters;
   if (private_matches) {
     if (loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
       HM_RETURN_IF_ERROR(
