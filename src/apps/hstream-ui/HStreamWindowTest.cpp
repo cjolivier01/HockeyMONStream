@@ -6585,13 +6585,14 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
+  auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   auto* compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
   auto* top_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniTopSqueezeSpin");
   auto* bottom_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniBottomSqueezeSpin");
-  if (!game_id || !create || !save || !mapping_backend || !projection || !compression || !top_squeeze ||
-      !bottom_squeeze) {
+  if (!game_id || !create || !save || !control_point_matcher || !mapping_backend || !projection || !compression ||
+      !top_squeeze || !bottom_squeeze) {
     return false;
   }
   const QString original_game_id = game_id->text();
@@ -6669,29 +6670,14 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       projection->currentData().toString() == "triplane" && compression->value() == 80.0,
       "UI load must stop trusting generated-choice provenance after projection parameters are edited");
 
-  YAML::Node invalid_previous_projection = YAML::Clone(generated_override);
-  invalid_previous_projection["stitching"]["projection"] = "triplane";
-  invalid_previous_projection["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
-  YAML::Node invalid_previous_choices =
-      invalid_previous_projection["hstream_ui"]["generated_stitching_backend_choices"];
-  invalid_previous_choices["projection"] = "triplane";
-  invalid_previous_choices["projection_parameters"] = YAML::Load("[80]");
-  invalid_previous_choices["previous_projection"] = "invalid-projection";
-  invalid_previous_choices.remove("previous_projection_parameters");
-  std::ofstream(config_path) << YAML::Dump(invalid_previous_projection) << '\n';
-  activate(create);
-  const bool invalid_previous_projection_is_user_intent = expect(
-      projection->currentData().toString() == "triplane" && compression->value() == 80.0,
-      "UI load must distrust a present invalid previous projection even when previous parameters are absent");
-
   YAML::Node generated_backend_alias = YAML::Clone(config);
-  generated_backend_alias["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
+  generated_backend_alias["stitching"]["control_point_matcher"] = "dedode";
   generated_backend_alias["stitching"]["mapping_backend"] = "MAGSAC++";
   generated_backend_alias["stitching"]["projection"] = "rectilinear";
   generated_backend_alias["stitching"]["run_autooptimizer"] = false;
   YAML::Node generated_backend_alias_choices =
       generated_backend_alias["hstream_ui"]["generated_stitching_backend_choices"];
-  generated_backend_alias_choices["control_point_matcher"] = "superpoint-lightglue";
+  generated_backend_alias_choices["control_point_matcher"] = "dedode-lightglue";
   generated_backend_alias_choices["mapping_backend"] = "opencv-magsac";
   generated_backend_alias_choices["projection"] = "rectilinear";
   generated_backend_alias_choices["run_autooptimizer"] = false;
@@ -6705,15 +6691,66 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   std::ofstream(config_path) << YAML::Dump(generated_backend_alias) << '\n';
   activate(create);
   const bool generated_backend_aliases_restore_previous = expect(
-      mapping_backend->currentData().toString() == "nona" && projection->currentData().toString() == "general-panini" &&
-          compression->value() == 120.0 && top_squeeze->value() == 15.0 && bottom_squeeze->value() == -20.0,
-      "UI load must compare generated matcher and mapping backend provenance through accepted aliases");
+      control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+          mapping_backend->currentData().toString() == "nona" &&
+          projection->currentData().toString() == "general-panini" && compression->value() == 120.0 &&
+          top_squeeze->value() == 15.0 && bottom_squeeze->value() == -20.0,
+      "UI load must compare generated matcher and mapping backend provenance with shared parser semantics");
+
+  auto malformed_previous_choice_rejects_marker = [&](const char* key, const char* value, const char* message) {
+    YAML::Node malformed = YAML::Clone(generated_backend_alias);
+    malformed["hstream_ui"]["generated_stitching_backend_choices"][key] = value;
+    std::ofstream(config_path) << YAML::Dump(malformed) << '\n';
+    activate(create);
+    return expect(
+        control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+            mapping_backend->currentData().toString() == "opencv-magsac" &&
+            projection->currentData().toString() == "rectilinear",
+        message);
+  };
+  const bool invalid_previous_matcher_rejects_marker = malformed_previous_choice_rejects_marker(
+      "previous_control_point_matcher",
+      "invalid-matcher",
+      "UI load must reject the entire generated marker when its previous matcher is malformed");
+  const bool invalid_previous_backend_rejects_marker = malformed_previous_choice_rejects_marker(
+      "previous_mapping_backend",
+      "invalid-backend",
+      "UI load must reject the entire generated marker when its previous mapping backend is malformed");
+  YAML::Node invalid_previous_projection = YAML::Clone(generated_backend_alias);
+  YAML::Node invalid_previous_projection_choices =
+      invalid_previous_projection["hstream_ui"]["generated_stitching_backend_choices"];
+  invalid_previous_projection_choices["previous_projection"] = "invalid-projection";
+  invalid_previous_projection_choices.remove("previous_projection_parameters");
+  std::ofstream(config_path) << YAML::Dump(invalid_previous_projection) << '\n';
+  activate(create);
+  const bool invalid_previous_projection_rejects_marker = expect(
+      control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+          mapping_backend->currentData().toString() == "opencv-magsac" &&
+          projection->currentData().toString() == "rectilinear",
+      "UI load must reject the entire generated marker when its previous projection scalar is malformed");
+  YAML::Node unselectable_previous_matcher = YAML::Clone(generated_backend_alias);
+  unselectable_previous_matcher["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
+      "dedode-lightglue";
+  std::ofstream(config_path) << YAML::Dump(unselectable_previous_matcher) << '\n';
+  const int dedode_index = control_point_matcher->findData("dedode-lightglue");
+  control_point_matcher->setCurrentIndex(dedode_index);
+  const bool unselectable_stale_state_selected = expect(
+      dedode_index >= 0 && control_point_matcher->currentData().toString() == "dedode-lightglue",
+      "UI test setup must select a stale disabled matcher before loading generated provenance");
+  activate(create);
+  const bool unselectable_previous_matcher_is_ignored = expect(
+      control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+          mapping_backend->currentData().toString() == "nona" &&
+          projection->currentData().toString() == "general-panini",
+      "UI load must trust valid generated provenance while ignoring a previous matcher disabled in this UI");
   game_id->setText(original_game_id);
   activate(create);
   return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
-      edited_generated_parameters_are_user_intent && invalid_previous_projection_is_user_intent &&
-      generated_backend_aliases_restore_previous;
+      edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&
+      invalid_previous_matcher_rejects_marker && invalid_previous_backend_rejects_marker &&
+      invalid_previous_projection_rejects_marker && unselectable_stale_state_selected &&
+      unselectable_previous_matcher_is_ignored;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

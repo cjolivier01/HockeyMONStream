@@ -1,7 +1,6 @@
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -92,39 +91,6 @@ absl::StatusOr<FeaturePairInput> prepare_feature_pair(
 
 FeatureMatcher::FeatureMatcher(std::unique_ptr<hm::onnx::Session> session, int input_channels)
     : session_(std::move(session)), input_channels_(input_channels) {}
-
-const char* ControlPointMatcherName(ControlPointMatcher matcher) {
-  switch (matcher) {
-    case ControlPointMatcher::kSuperPointLightGlue:
-      return "superpoint-lightglue";
-    case ControlPointMatcher::kDeDoDeLightGlue:
-      return "dedode-lightglue";
-    case ControlPointMatcher::kLoFTR:
-      return "loftr";
-  }
-  return "superpoint-lightglue";
-}
-
-absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& value) {
-  std::string normalized = value.empty() ? "superpoint-lightglue" : value;
-  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
-    return c == '_' ? '-' : static_cast<char>(std::tolower(c));
-  });
-  if (normalized == "aliked-lightglue" || normalized == "raco-aliked-lightglue" ||
-      normalized == "native-aliked-lightglue" || normalized == "superpoint-lightglue" || normalized == "superpoint" ||
-      normalized == "lightglue") {
-    return ControlPointMatcher::kSuperPointLightGlue;
-  }
-  if (normalized == "dedode-lightglue" || normalized == "dedode") {
-    return ControlPointMatcher::kDeDoDeLightGlue;
-  }
-  if (normalized == "loftr") {
-    return ControlPointMatcher::kLoFTR;
-  }
-  return absl::InvalidArgumentError(
-      "Unsupported native control-point matcher \"" + value +
-      "\"; choose superpoint-lightglue, dedode-lightglue, or loftr");
-}
 
 absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     const std::string& model_path,

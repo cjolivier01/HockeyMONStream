@@ -234,12 +234,25 @@ cc_test(
 )
 
 cc_library(
+  name = "control_point_matcher",
+  srcs = ["ControlPointMatcher.cpp"],
+  hdrs = ["ControlPointMatcher.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
   name = "feature_matcher",
   srcs = ["FeatureMatcher.cpp"],
   hdrs = ["FeatureMatcher.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":control_point_matcher",
     "//src/libs/onnx:session",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",

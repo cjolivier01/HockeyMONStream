@@ -71,6 +71,7 @@ cc_library(
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:user_config",
         "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:control_point_matcher",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:live_stitching_generation",

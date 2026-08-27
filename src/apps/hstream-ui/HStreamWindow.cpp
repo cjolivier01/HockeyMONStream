@@ -64,6 +64,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/stitching/ControlPointMatcher.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
@@ -152,28 +153,42 @@ QString normalize_backend_choice(QString value, const QString& fallback) {
   return value.isEmpty() ? fallback : value;
 }
 
-std::optional<QString> canonical_control_point_matcher_choice(QString value) {
-  value = value.trimmed().toLower().replace('_', '-');
-  if (value.isEmpty() || value == "aliked-lightglue" || value == "raco-aliked-lightglue" ||
-      value == "native-aliked-lightglue" || value == "superpoint-lightglue" || value == "superpoint" ||
-      value == "lightglue") {
-    return QString("superpoint-lightglue");
+std::optional<hm::stitching::ControlPointMatcher> parse_control_point_matcher_choice(const QString& value) {
+  const auto parsed = hm::stitching::ParseControlPointMatcher(value.toStdString());
+  return parsed.ok() ? std::optional<hm::stitching::ControlPointMatcher>(*parsed) : std::nullopt;
+}
+
+std::optional<hm::stitching::MappingBackend> parse_mapping_backend_choice(const QString& value) {
+  const auto parsed = hm::stitching::ParseMappingBackend(value.toStdString());
+  return parsed.ok() ? std::optional<hm::stitching::MappingBackend>(*parsed) : std::nullopt;
+}
+
+bool ui_selectable_control_point_matcher(hm::stitching::ControlPointMatcher matcher) {
+  return matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue;
+}
+
+bool ui_selectable_mapping_backend(hm::stitching::MappingBackend backend) {
+  switch (backend) {
+    case hm::stitching::MappingBackend::kNona:
+    case hm::stitching::MappingBackend::kOpenCvMagsac:
+    case hm::stitching::MappingBackend::kOpenCvAffineRansac:
+      return true;
   }
-  return std::nullopt;
+  return false;
+}
+
+std::optional<QString> canonical_control_point_matcher_choice(QString value) {
+  const auto parsed = parse_control_point_matcher_choice(value);
+  if (!parsed.has_value() || !ui_selectable_control_point_matcher(*parsed))
+    return std::nullopt;
+  return QString::fromLatin1(hm::stitching::ControlPointMatcherName(*parsed));
 }
 
 std::optional<QString> canonical_mapping_backend_choice(QString value) {
-  value = value.trimmed().toLower().replace('_', '-');
-  if (value.isEmpty() || value == "opencv-magsac" || value == "magsac" || value == "magsac++") {
-    return QString("opencv-magsac");
-  }
-  if (value == "nona") {
-    return QString("nona");
-  }
-  if (value == "opencv-affine-ransac" || value == "affine-ransac" || value == "ransac") {
-    return QString("opencv-affine-ransac");
-  }
-  return std::nullopt;
+  const auto parsed = parse_mapping_backend_choice(value);
+  if (!parsed.has_value() || !ui_selectable_mapping_backend(*parsed))
+    return std::nullopt;
+  return QString::fromLatin1(hm::stitching::MappingBackendName(*parsed));
 }
 
 std::optional<QString> canonical_projection_choice(QString value) {
@@ -208,6 +223,14 @@ bool set_combo_to_data(QComboBox* combo, const QString& value) {
     return false;
   combo->setCurrentIndex(index);
   return true;
+}
+
+bool combo_data_is_selectable(const QComboBox* combo, const QString& value) {
+  if (!combo)
+    return false;
+  const int index = combo->findData(value);
+  return index >= 0 &&
+      (!combo->model() || (combo->model()->flags(combo->model()->index(index, 0)) & Qt::ItemIsEnabled));
 }
 
 std::optional<size_t> calibration_stage_index(const QString& stage) {
@@ -3656,16 +3679,16 @@ bool generated_stitching_backend_choices_match_private(
   const bool private_matcher_present = lookup_yaml_path(config, "stitching.control_point_matcher", &private_matcher);
   const bool private_backend_present = lookup_yaml_path(config, "stitching.mapping_backend", &private_backend);
   const auto parsed_generated_matcher = generated_matcher_present && generated_matcher.IsScalar()
-      ? canonical_control_point_matcher_choice(QString::fromStdString(generated_matcher.as<std::string>()))
+      ? parse_control_point_matcher_choice(QString::fromStdString(generated_matcher.as<std::string>()))
       : std::nullopt;
   const auto parsed_private_matcher = private_matcher_present && private_matcher.IsScalar()
-      ? canonical_control_point_matcher_choice(QString::fromStdString(private_matcher.as<std::string>()))
+      ? parse_control_point_matcher_choice(QString::fromStdString(private_matcher.as<std::string>()))
       : std::nullopt;
   const auto parsed_generated_backend = generated_backend_present && generated_backend.IsScalar()
-      ? canonical_mapping_backend_choice(QString::fromStdString(generated_backend.as<std::string>()))
+      ? parse_mapping_backend_choice(QString::fromStdString(generated_backend.as<std::string>()))
       : std::nullopt;
   const auto parsed_private_backend = private_backend_present && private_backend.IsScalar()
-      ? canonical_mapping_backend_choice(QString::fromStdString(private_backend.as<std::string>()))
+      ? parse_mapping_backend_choice(QString::fromStdString(private_backend.as<std::string>()))
       : std::nullopt;
   const bool matches = parsed_generated_matcher.has_value() && parsed_private_matcher.has_value() &&
       *parsed_generated_matcher == *parsed_private_matcher && parsed_generated_backend.has_value() &&
@@ -3689,24 +3712,24 @@ bool generated_stitching_backend_choices_match_private(
   const bool previous_matcher_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher", &previous_matcher_node);
   const auto parsed_previous_matcher = previous_matcher_present && previous_matcher_node.IsScalar()
-      ? canonical_control_point_matcher_choice(QString::fromStdString(previous_matcher_node.as<std::string>()))
+      ? parse_control_point_matcher_choice(QString::fromStdString(previous_matcher_node.as<std::string>()))
       : std::nullopt;
   if (previous_matcher_present && !parsed_previous_matcher.has_value()) {
     return false;
   }
   if (previous_matcher && parsed_previous_matcher.has_value()) {
-    *previous_matcher = *parsed_previous_matcher;
+    *previous_matcher = QString::fromLatin1(hm::stitching::ControlPointMatcherName(*parsed_previous_matcher));
   }
   const bool previous_backend_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend", &previous_backend_node);
   const auto parsed_previous_backend = previous_backend_present && previous_backend_node.IsScalar()
-      ? canonical_mapping_backend_choice(QString::fromStdString(previous_backend_node.as<std::string>()))
+      ? parse_mapping_backend_choice(QString::fromStdString(previous_backend_node.as<std::string>()))
       : std::nullopt;
   if (previous_backend_present && !parsed_previous_backend.has_value()) {
     return false;
   }
   if (previous_backend && parsed_previous_backend.has_value()) {
-    *previous_backend = *parsed_previous_backend;
+    *previous_backend = QString::fromLatin1(hm::stitching::MappingBackendName(*parsed_previous_backend));
   }
   const bool previous_projection_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.previous_projection", &previous_projection_node);
@@ -12319,10 +12342,20 @@ void HStreamWindow::loadSavedControlConfig() {
         &run_autooptimizer_was_generated);
     if (generated_backend_choices) {
       if (!previous_control_point_matcher.isEmpty()) {
-        staged_control_point_matcher = previous_control_point_matcher;
+        if (combo_data_is_selectable(control_point_matcher_combo_, previous_control_point_matcher)) {
+          staged_control_point_matcher = previous_control_point_matcher;
+        } else {
+          appendLog(QString("ignored generated-choice previous control-point matcher unavailable in this UI: %1")
+                        .arg(previous_control_point_matcher));
+        }
       }
       if (!previous_mapping_backend.isEmpty()) {
-        staged_mapping_backend = previous_mapping_backend;
+        if (combo_data_is_selectable(mapping_backend_combo_, previous_mapping_backend)) {
+          staged_mapping_backend = previous_mapping_backend;
+        } else {
+          appendLog(QString("ignored generated-choice previous mapping backend unavailable in this UI: %1")
+                        .arg(previous_mapping_backend));
+        }
       }
       if (run_autooptimizer_was_generated) {
         staged_run_autooptimizer = previous_run_autooptimizer.value_or(default_run_autooptimizer_);
