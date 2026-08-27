@@ -1553,13 +1553,30 @@ play-tracker:
   const absl::Status malformed_backend_autooptimizer =
       malformed_backend_cli.apply_config_item("stitching.run_autooptimizer", "false");
   const absl::Status malformed_backend_repaired = malformed_backend_cli.persist_effective_stitching_backend_choices();
+  auto malformed_backend_after_repair = hm::stitching::load_game_config_file(malformed_backend_dir / "config.yaml");
+  hm::Configurator malformed_backend_restarted(
+      "malformed-backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status malformed_backend_reconfigured = malformed_backend_restarted.configure();
+  const absl::Status malformed_backend_restored =
+      malformed_backend_restarted.persist_effective_stitching_backend_choices();
   auto malformed_backend_final = hm::stitching::load_game_config_file(malformed_backend_dir / "config.yaml");
   ok &= expect(
       malformed_backend_configured.ok() && malformed_backend_mapping.ok() && malformed_backend_autooptimizer.ok() &&
-          malformed_backend_repaired.ok() && malformed_backend_final.ok() && malformed_backend_final->has_value() &&
+          malformed_backend_repaired.ok() && malformed_backend_after_repair.ok() &&
+          malformed_backend_after_repair->has_value() &&
+          !hm::get_node(
+               **malformed_backend_after_repair,
+               "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+               .has_value() &&
+          malformed_backend_reconfigured.ok() && malformed_backend_restored.ok() && malformed_backend_final.ok() &&
+          malformed_backend_final->has_value() &&
           (**malformed_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
-          !(**malformed_backend_final)["stitching"]["run_autooptimizer"].as<bool>(),
-      "A valid CLI override must repair malformed private optimizer provenance without throwing");
+          !(**malformed_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
+          !hm::get_node(
+               **malformed_backend_final,
+               "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+               .has_value(),
+      "A valid CLI override must repair malformed private optimizer provenance across a restart without throwing");
 
   const fs::path legacy_backend_dir = games / "legacy-generated-backend";
   fs::create_directories(legacy_backend_dir);

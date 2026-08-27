@@ -7038,7 +7038,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   // newly required optimizer opt-in.
   const bool persisted_legacy_values_are_generated = persisted_generated_matcher.has_value() &&
       persisted_generated_matcher->IsScalar() && persisted_generated_backend.has_value() &&
-      persisted_generated_backend->IsScalar() && !persisted_generated_autooptimizer.has_value() &&
+      persisted_generated_backend->IsScalar() && !persisted_generated_autooptimizer_value.has_value() &&
       persisted_matcher_present && persisted_backend_present &&
       persisted_matcher->as<std::string>() == persisted_generated_matcher->as<std::string>() &&
       persisted_backend->as<std::string>() == persisted_generated_backend->as<std::string>();
