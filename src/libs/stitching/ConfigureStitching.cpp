@@ -558,7 +558,24 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
     const char* value = std::getenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
     return value != nullptr && std::string(value) == "1";
   }();
-  if (disable_clone || ::ioctl(destination_descriptor, FICLONE, artifact->descriptor) != 0) {
+  bool copied = !disable_clone && ::ioctl(destination_descriptor, FICLONE, artifact->descriptor) == 0;
+  if (!copied) {
+    off_t source_offset = 0;
+    off_t destination_offset = 0;
+    uint64_t remaining = static_cast<uint64_t>(artifact->metadata.st_size);
+    while (remaining > 0) {
+      const size_t requested = static_cast<size_t>(std::min<uint64_t>(remaining, 16ULL * 1024ULL * 1024ULL));
+      const ssize_t count = ::copy_file_range(
+          artifact->descriptor, &source_offset, destination_descriptor, &destination_offset, requested, 0);
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        break;
+      remaining -= static_cast<uint64_t>(count);
+    }
+    copied = remaining == 0;
+  }
+  if (!copied) {
     if (::ftruncate(destination_descriptor, 0) != 0 || ::lseek(destination_descriptor, 0, SEEK_SET) != 0)
       return absl::InternalError("Unable to prepare private stitch validation snapshot copy");
     std::vector<unsigned char> buffer(1024 * 1024);
