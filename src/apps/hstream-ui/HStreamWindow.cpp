@@ -3580,6 +3580,7 @@ bool generated_stitching_backend_choices_match_private(
     QString* previous_backend = nullptr,
     QString* previous_projection = nullptr,
     std::optional<std::vector<double>>* previous_projection_parameters = nullptr,
+    std::optional<std::vector<double>>* previous_generated_projection_parameters = nullptr,
     QString* generated_parameter_projection = nullptr,
     std::optional<bool>* previous_autooptimizer = nullptr,
     bool* autooptimizer_was_generated = nullptr) {
@@ -3722,6 +3723,21 @@ bool generated_stitching_backend_choices_match_private(
       if (!parsed_parameters.has_value())
         return false;
       *previous_projection_parameters = *parsed_parameters;
+    }
+  }
+  if (previous_generated_projection_parameters) {
+    *previous_generated_projection_parameters = std::nullopt;
+    YAML::Node previous_parameters_node;
+    if (lookup_yaml_path(
+            config,
+            "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters",
+            &previous_parameters_node)) {
+      if (!parsed_generated_projection.has_value())
+        return false;
+      const auto parsed_parameters = parse_parameter_sequence(previous_parameters_node, *parsed_generated_projection);
+      if (!parsed_parameters.has_value())
+        return false;
+      *previous_generated_projection_parameters = *parsed_parameters;
     }
   }
   YAML::Node previous_autooptimizer_node;
@@ -12253,6 +12269,7 @@ void HStreamWindow::loadSavedControlConfig() {
     QString previous_mapping_backend;
     QString previous_projection;
     std::optional<std::vector<double>> previous_projection_parameters;
+    std::optional<std::vector<double>> previous_generated_projection_parameters;
     QString generated_parameter_projection;
     bool staged_projection_explicit = false;
     std::optional<bool> previous_run_autooptimizer;
@@ -12263,6 +12280,7 @@ void HStreamWindow::loadSavedControlConfig() {
         &previous_mapping_backend,
         &previous_projection,
         &previous_projection_parameters,
+        &previous_generated_projection_parameters,
         &generated_parameter_projection,
         &previous_run_autooptimizer,
         &run_autooptimizer_was_generated);
@@ -12358,6 +12376,10 @@ void HStreamWindow::loadSavedControlConfig() {
           throw std::invalid_argument(std::string(parameters.status().message()));
         staged_projection_parameters[projection_name] = *parameters;
       }
+    }
+    if (generated_backend_choices && previous_generated_projection_parameters.has_value() &&
+        !generated_parameter_projection.isEmpty()) {
+      staged_projection_parameters[generated_parameter_projection] = *previous_generated_projection_parameters;
     }
     if (generated_backend_choices && previous_projection_parameters.has_value()) {
       const QString restored_parameter_projection =

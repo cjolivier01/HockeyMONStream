@@ -6537,6 +6537,15 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       compression->value() == 60.0,
       "UI load must discard generated parameters for a projection that was not previously selected");
 
+  generated_choices["previous_generated_projection_parameters"] = YAML::Load("[80]");
+  std::ofstream(config_path) << YAML::Dump(generated_override) << '\n';
+  activate(create);
+  projection->setCurrentIndex(projection->findData("triplane"));
+  QApplication::processEvents();
+  const bool displaced_inactive_parameters_restored = expect(
+      compression->value() == 80.0,
+      "UI load must restore an inactive custom parameter vector displaced by a generated projection");
+
   generated_override["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
   std::ofstream(config_path) << YAML::Dump(generated_override) << '\n';
   activate(create);
@@ -6546,7 +6555,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   game_id->setText(original_game_id);
   activate(create);
   return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
-      edited_generated_parameters_are_user_intent;
+      displaced_inactive_parameters_restored && edited_generated_parameters_are_user_intent;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

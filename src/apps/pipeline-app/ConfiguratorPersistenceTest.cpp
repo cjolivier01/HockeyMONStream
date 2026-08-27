@@ -1859,6 +1859,7 @@ play-tracker:
   inherited_parameter_private["stitching"]["mapping_backend"] = "nona";
   inherited_parameter_private["stitching"]["projection"] = "general_panini";
   inherited_parameter_private["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[110, 5, -5]");
+  inherited_parameter_private["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
   ok &= expect(
       hm::stitching::publish_game_config(inherited_parameter_dir, YAML::Dump(inherited_parameter_private) + "\n").ok(),
       "inherited projection parameter fixture must publish");
@@ -1867,8 +1868,27 @@ play-tracker:
       backend_partial_baseline_root.string(),
       hm::Configurator::kUseConfigFileGpu);
   const absl::Status inherited_parameter_first_configured = inherited_parameter_first.configure();
+  const absl::Status inherited_parameter_projection_overridden =
+      inherited_parameter_first.apply_config_item("stitching.projection", "triplane");
   const absl::Status inherited_parameter_first_persisted =
       inherited_parameter_first.persist_effective_stitching_backend_choices();
+  auto inherited_parameter_generated = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  const bool inherited_inactive_parameters_captured = inherited_parameter_generated.ok() &&
+      inherited_parameter_generated->has_value() &&
+      (**inherited_parameter_generated)["hstream_ui"]["generated_stitching_backend_choices"]
+                                       ["previous_generated_projection_parameters"][0]
+                                           .as<double>() == 80.0;
+  absl::Status inherited_parameter_generated_published = absl::UnknownError("generated fixture was not loaded");
+  if (inherited_parameter_generated.ok() && inherited_parameter_generated->has_value()) {
+    YAML::Node& generated = **inherited_parameter_generated;
+    generated["stitching"]["projection"] = "triplane";
+    generated["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[60]");
+    YAML::Node generated_choices = generated["hstream_ui"]["generated_stitching_backend_choices"];
+    generated_choices["projection"] = "triplane";
+    generated_choices["projection_parameters"] = YAML::Load("[60]");
+    inherited_parameter_generated_published =
+        hm::stitching::publish_game_config(inherited_parameter_dir, YAML::Dump(generated) + "\n");
+  }
   hm::Configurator inherited_parameter_reloaded(
       "inherited-projection-private-parameters",
       backend_partial_baseline_root.string(),
@@ -1878,11 +1898,14 @@ play-tracker:
       inherited_parameter_reloaded.persist_effective_stitching_backend_choices();
   auto inherited_parameter_final = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
   ok &= expect(
-      inherited_parameter_first_configured.ok() && inherited_parameter_first_persisted.ok() &&
-          inherited_parameter_reconfigured.ok() && inherited_parameter_restored.ok() &&
-          inherited_parameter_final.ok() && inherited_parameter_final->has_value() &&
+      inherited_parameter_first_configured.ok() && inherited_parameter_projection_overridden.ok() &&
+          inherited_parameter_first_persisted.ok() && inherited_inactive_parameters_captured &&
+          inherited_parameter_generated_published.ok() && inherited_parameter_reconfigured.ok() &&
+          inherited_parameter_restored.ok() && inherited_parameter_final.ok() &&
+          inherited_parameter_final->has_value() &&
           (**inherited_parameter_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
               110.0 &&
+          (**inherited_parameter_final)["stitching"]["projection_parameters"]["triplane"][0].as<double>() == 80.0 &&
           (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["projection_parameters"][0]
                   .as<double>() == 110.0 &&
           (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]
@@ -1891,8 +1914,8 @@ play-tracker:
           (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection"]
                   .as<std::string>() == "general_panini" &&
           !hm::get_node(**inherited_parameter_final, "stitching.projection_parameters.general_panini").has_value(),
-      "Private parameters under the canonical key for an aliased projection scalar must survive generated-choice "
-      "normalization and reload");
+      "Private active and inactive parameters under canonical keys for an aliased projection scalar must survive "
+      "cross-projection generated-choice normalization and reload");
 
   const fs::path legacy_opencv_dir = games / "legacy-opencv-no-projection";
   fs::create_directories(legacy_opencv_dir);

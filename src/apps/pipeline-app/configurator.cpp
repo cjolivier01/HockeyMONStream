@@ -617,6 +617,8 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection");
   const auto previous_projection_parameters =
       get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
+  const auto previous_generated_projection_parameters =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
   if (previous_matcher.has_value() && previous_matcher->IsScalar()) {
     config["stitching"]["control_point_matcher"] = previous_matcher->as<std::string>();
   } else {
@@ -657,8 +659,14 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
   if (generated_projection_parameters.has_value() && generated_projection.has_value() &&
       generated_projection->IsScalar()) {
     const auto generated_parameter_projection = canonical_projection_name(generated_projection);
-    if (generated_parameter_projection.has_value())
+    if (generated_parameter_projection.has_value()) {
       remove_yaml_key_path(config, {"stitching", "projection_parameters", *generated_parameter_projection});
+      if (previous_generated_projection_parameters.has_value() &&
+          previous_generated_projection_parameters->IsSequence()) {
+        config["stitching"]["projection_parameters"][*generated_parameter_projection] =
+            YAML::Clone(*previous_generated_projection_parameters);
+      }
+    }
     const auto restored_parameter_projection =
         previous_projection.has_value() && previous_projection->IsScalar() ? previous_projection : generated_projection;
     const auto restored_parameter_projection_name = canonical_projection_name(restored_parameter_projection);
@@ -7272,6 +7280,22 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   HM_ASSIGN_OR_RETURN(
       private_projection_parameters, stitching::read_stitch_projection_parameters(private_config_, projection));
 
+  const auto displaced_generated_projection_parameters =
+      get_node(private_config_, "stitching.projection_parameters." + projection_name);
+  std::optional<std::string> private_parameter_projection;
+  if (private_projection.has_value() && private_projection->IsScalar()) {
+    try {
+      const auto parsed_private_projection = stitching::ParseStitchProjection(private_projection->as<std::string>());
+      if (parsed_private_projection.ok())
+        private_parameter_projection = stitching::StitchProjectionName(*parsed_private_projection);
+    } catch (const YAML::Exception&) {
+    }
+  }
+  const bool generated_projection_displaces_inactive_parameters =
+      displaced_generated_projection_parameters.has_value() &&
+      displaced_generated_projection_parameters->IsSequence() &&
+      (!private_parameter_projection.has_value() || *private_parameter_projection != projection_name);
+
   const bool private_matches = private_matcher.has_value() && private_matcher->IsScalar() &&
       private_matcher->as<std::string>() == matcher_name && private_backend.has_value() &&
       private_backend->IsScalar() && private_backend->as<std::string>() == backend_name &&
@@ -7378,6 +7402,14 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     } else {
       remove_yaml_key_path(
           private_config_, {"hstream_ui", "generated_stitching_backend_choices", "previous_projection_parameters"});
+    }
+    if (generated_projection_displaces_inactive_parameters) {
+      private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_generated_projection_parameters"] =
+          YAML::Clone(*displaced_generated_projection_parameters);
+    } else {
+      remove_yaml_key_path(
+          private_config_,
+          {"hstream_ui", "generated_stitching_backend_choices", "previous_generated_projection_parameters"});
     }
   }
   HM_RETURN_IF_ERROR(
