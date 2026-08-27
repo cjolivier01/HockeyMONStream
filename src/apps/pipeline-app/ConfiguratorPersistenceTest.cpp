@@ -1651,7 +1651,10 @@ play-tracker:
           std::all_of(
               stale_recoveries->begin(),
               stale_recoveries->end(),
-              [](const fs::path& path) { return fs::is_regular_file(path); }) &&
+              [](const fs::path& path) {
+                return fs::is_regular_file(path) && !fs::exists(path.string() + ".hstream-pin") &&
+                    !fs::exists(path.string() + ".log.hstream-pin");
+              }) &&
           fs::is_regular_file(live_run) && fs::is_regular_file(legacy_live_ui_run),
       "Restart recovery must pair each stale job log with its recovered video while retaining work whose owner is alive");
   const auto repeated_stale_recoveries = hm::configurator_internal::recover_stale_archive_work_files(custom_archive);
@@ -1668,9 +1671,11 @@ play-tracker:
       provisional_log_dir / ("provisional.hstream-run-v3-99999999-" + provisional_run_id + ".mkv");
   const fs::path provisional_log =
       provisional_log_dir / ("provisional.hstream-run-ui-" + provisional_run_id + ".mkv.log");
+  const fs::path provisional_resolved_log = provisional_source.string() + ".log";
   const fs::path provisional_recovery = provisional_log_dir / "provisional-finalization-failed.mkv";
   std::ofstream(provisional_source, std::ios::binary) << "video before UI path resolution";
   std::ofstream(provisional_log, std::ios::binary) << "provisional UI log";
+  std::ofstream(provisional_resolved_log, std::ios::binary) << "foreign resolved log";
   fs::create_hard_link(provisional_source, provisional_source.string() + ".hstream-pin");
   fs::create_hard_link(provisional_log, provisional_log.string() + ".hstream-pin");
   const auto provisional_recoveries =
@@ -1678,13 +1683,19 @@ play-tracker:
   std::ifstream provisional_recovered_log(provisional_recovery.string() + ".log", std::ios::binary);
   const std::string provisional_recovered_log_content{
       std::istreambuf_iterator<char>(provisional_recovered_log), std::istreambuf_iterator<char>()};
+  std::ifstream provisional_foreign_log_stream(provisional_resolved_log, std::ios::binary);
+  const std::string provisional_foreign_log_content{
+      std::istreambuf_iterator<char>(provisional_foreign_log_stream), std::istreambuf_iterator<char>()};
   ok &= expect(
       provisional_recoveries.ok() && provisional_recoveries->size() == 1 &&
           provisional_recoveries->front() == provisional_recovery && !fs::exists(provisional_source) &&
           !fs::exists(provisional_log) && !fs::exists(provisional_source.string() + ".hstream-pin") &&
           !fs::exists(provisional_log.string() + ".hstream-pin") && fs::is_regular_file(provisional_recovery) &&
-          provisional_recovered_log_content == "provisional UI log",
-      "Stale recovery must pair a video with the provisional UI log left by a crash before path resolution");
+          !fs::exists(provisional_recovery.string() + ".hstream-pin") &&
+          !fs::exists(provisional_recovery.string() + ".log.hstream-pin") &&
+          provisional_recovered_log_content == "provisional UI log" &&
+          provisional_foreign_log_content == "foreign resolved log",
+      "Stale recovery must prefer the guarded provisional UI log and leave a foreign resolved sidecar untouched");
 
   const fs::path log_collision_dir = root / "archive-log-collision";
   fs::create_directories(log_collision_dir);

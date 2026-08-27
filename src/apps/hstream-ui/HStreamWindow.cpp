@@ -6309,6 +6309,28 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   int copied_log_fd = -1;
   struct stat copied_log_stat{};
   QString copied_log_guard_path;
+  const auto rollback_cross_filesystem_copy = [&]() {
+    QString rollback_error;
+    if (path_has_file_identity(resolved_log_path, copied_log_stat)) {
+      QString cleanup_error;
+      if (!remove_path_if_same_identity(resolved_log_path, copied_log_stat, &cleanup_error))
+        rollback_error = cleanup_error;
+    }
+    if (!copied_log_guard_path.isEmpty() && path_has_file_identity(copied_log_guard_path, copied_log_stat)) {
+      QString cleanup_error;
+      if (!remove_path_if_same_identity(copied_log_guard_path, copied_log_stat, &cleanup_error) &&
+          rollback_error.isEmpty()) {
+        rollback_error = cleanup_error;
+      }
+    }
+    QString directory_sync_error;
+    if (!sync_parent_directory(resolved_log_path, &directory_sync_error)) {
+      rollback_error = rollback_error.isEmpty()
+          ? directory_sync_error
+          : QString("%1; destination rollback sync failed: %2").arg(rollback_error, directory_sync_error);
+    }
+    return rollback_error;
+  };
   if (!renamed && rename_errno == EXDEV && pinned_log_fd >= 0 && expected_log_inode != 0) {
     int copy_errno = 0;
     if (copy_open_file_no_replace(pinned_log_fd, resolved_log_path, &copied_log_fd, &copied_log_stat, &copy_errno)) {
@@ -6316,15 +6338,19 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
       if (create_open_file_guard(copied_log_fd, resolved_log_path, &copied_log_guard_path, &copied_guard_error)) {
         cross_filesystem_copy_ready = true;
       } else {
-        QString cleanup_error;
-        remove_path_if_same_identity(resolved_log_path, copied_log_stat, &cleanup_error);
+        const QString rollback_error = rollback_cross_filesystem_copy();
         ::close(copied_log_fd);
         copied_log_fd = -1;
         durability_error = QString("could not protect cross-filesystem log copy: %1").arg(copied_guard_error);
+        if (!rollback_error.isEmpty())
+          durability_error += QString("; rollback remains unresolved: %1").arg(rollback_error);
       }
     } else {
       durability_error = QString("could not copy resolved log across filesystems: %1")
                              .arg(QString::fromLocal8Bit(std::strerror(copy_errno)));
+      QString rollback_sync_error;
+      if (!sync_parent_directory(resolved_log_path, &rollback_sync_error))
+        durability_error += QString("; destination rollback sync failed: %1").arg(rollback_sync_error);
     }
   }
 #else
@@ -6362,9 +6388,9 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
             ? QString("cross-filesystem log publication was replaced before it became durable")
             : destination_sync_error;
       }
-      QString cleanup_error;
-      remove_path_if_same_identity(resolved_log_path, copied_log_stat, &cleanup_error);
-      remove_path_if_same_identity(copied_log_guard_path, copied_log_stat, &cleanup_error);
+      const QString rollback_error = rollback_cross_filesystem_copy();
+      if (!rollback_error.isEmpty())
+        durability_error += QString("; rollback remains unresolved: %1").arg(rollback_error);
       cross_filesystem_copy_ready = false;
     }
   }
@@ -6385,9 +6411,9 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
     }
   }
   if (cross_filesystem_copy_ready && !copied_across_filesystems) {
-    QString cleanup_error;
-    remove_path_if_same_identity(resolved_log_path, copied_log_stat, &cleanup_error);
-    remove_path_if_same_identity(copied_log_guard_path, copied_log_stat, &cleanup_error);
+    const QString rollback_error = rollback_cross_filesystem_copy();
+    if (!rollback_error.isEmpty())
+      reopen_error += QString("; destination rollback remains unresolved: %1").arg(rollback_error);
     archive_job_log_path_ = provisional_path;
     QString provisional_reopen_error;
     reopened =
@@ -6535,12 +6561,13 @@ void HStreamWindow::finishArchiveJobLog() {
     archive_job_log_.close();
   }
 #ifdef Q_OS_UNIX
-  // Keep the deterministic hard link as the durable committed identity for
-  // the published log.  Removing the final guard cannot be made atomic with
-  // validation of the user-visible pathname.
-  if (!archive_job_log_guard_path_.isEmpty() && have_open_log_identity &&
-      !path_has_file_identity(archive_job_log_guard_path_, open_log_stat)) {
-    appendLog(QString("archive job log identity guard was replaced at %1").arg(archive_job_log_guard_path_));
+  if (!archive_job_log_guard_path_.isEmpty() && have_open_log_identity) {
+    QString guard_cleanup_error;
+    if (!remove_path_if_same_identity(
+            archive_job_log_guard_path_, open_log_stat, &guard_cleanup_error, archive_job_log_path_, &open_log_stat)) {
+      appendLog(QString("archive job log identity guard retained at %1: %2")
+                    .arg(archive_job_log_guard_path_, guard_cleanup_error));
+    }
   }
 #endif
   archive_job_log_.setFileName({});
@@ -6651,11 +6678,16 @@ void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
 void HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard) {
 #ifdef Q_OS_UNIX
   struct stat source_stat{};
-  if (remove_guard && archive_finalize_stage_ != ArchiveFinalizeStage::kSyncRecovery &&
-      archive_finalize_source_fd_ >= 0 && !archive_finalize_source_guard_path_.isEmpty() &&
+  if (remove_guard && archive_finalize_source_fd_ >= 0 && !archive_finalize_source_guard_path_.isEmpty() &&
       ::fstat(archive_finalize_source_fd_, &source_stat) == 0 && S_ISREG(source_stat.st_mode)) {
     QString cleanup_error;
-    if (!remove_path_if_same_identity(archive_finalize_source_guard_path_, source_stat, &cleanup_error)) {
+    const bool source_path_is_primary = path_has_file_identity(archive_finalize_source_path_, source_stat);
+    if (!remove_path_if_same_identity(
+            archive_finalize_source_guard_path_,
+            source_stat,
+            &cleanup_error,
+            source_path_is_primary ? archive_finalize_source_path_ : QString(),
+            source_path_is_primary ? &source_stat : nullptr)) {
       appendLog(QString("archive source identity guard retained at %1: %2")
                     .arg(archive_finalize_source_guard_path_, cleanup_error));
     }
@@ -6669,13 +6701,23 @@ void HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard) {
   archive_finalize_source_guard_path_.clear();
 }
 
-void HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
+bool HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
+  bool target_path_valid = true;
 #ifdef Q_OS_UNIX
   struct stat target_stat{};
   if (remove_guard && archive_finalize_target_fd_ >= 0 && !archive_finalize_target_guard_path_.isEmpty() &&
-      ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
-      !path_has_file_identity(archive_finalize_target_guard_path_, target_stat)) {
-    appendLog(QString("completed archive identity guard was replaced at %1").arg(archive_finalize_target_guard_path_));
+      ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode)) {
+    QString cleanup_error;
+    if (!remove_path_if_same_identity(
+            archive_finalize_target_guard_path_,
+            target_stat,
+            &cleanup_error,
+            archive_finalize_target_path_,
+            &target_stat)) {
+      target_path_valid = path_has_file_identity(archive_finalize_target_path_, target_stat);
+      appendLog(QString("completed archive identity guard retained at %1: %2")
+                    .arg(archive_finalize_target_guard_path_, cleanup_error));
+    }
   }
   if (archive_finalize_target_fd_ >= 0)
     ::close(archive_finalize_target_fd_);
@@ -6684,6 +6726,7 @@ void HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
   archive_finalize_target_device_ = 0;
   archive_finalize_target_inode_ = 0;
   archive_finalize_target_guard_path_.clear();
+  return target_path_valid;
 }
 
 void HStreamWindow::startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video) {
@@ -7343,6 +7386,10 @@ void HStreamWindow::completeArchiveFinalization() {
   source_removed = QFile::remove(archive_finalize_source_path_);
 #endif
 #ifdef Q_OS_UNIX
+  if (!path_has_file_identity(archive_finalize_target_path_, target_stat)) {
+    failArchiveFinalization("The completed MP4 pathname changed while committing source cleanup.");
+    return;
+  }
   if (source_removed) {
     QString source_cleanup_sync_error;
     const bool force_source_sync_failure =
@@ -7359,8 +7406,11 @@ void HStreamWindow::completeArchiveFinalization() {
     }
   }
 #endif
+  if (!releaseArchiveFinalizeTarget(true)) {
+    failArchiveFinalization("The completed MP4 pathname changed while retiring its identity guard.");
+    return;
+  }
   releaseArchiveFinalizeSource(true);
-  releaseArchiveFinalizeTarget(true);
   releaseArchiveFinalizerOwnership(true);
   output_states_["archive-file"]->setText("SAVED");
   if (archive_output_path_label_)

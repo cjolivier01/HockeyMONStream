@@ -5141,8 +5141,7 @@ bool test_output_controls(HStreamWindow* window) {
   const QByteArray replaced_owner_lock_text =
       replaced_owner_lock_opened ? replaced_owner_lock_file.readAll() : QByteArray();
   const bool completed_log_persisted = expect(
-      completed_log_opened &&
-          QFileInfo(completed_job_log + ".hstream-pin").size() == QFileInfo(completed_job_log).size() &&
+      completed_log_opened && !QFileInfo::exists(completed_job_log + ".hstream-pin") &&
           completed_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(completed_source)) &&
           completed_log_text.contains(QString("completed archive published: %1").arg(replaced_completed_target)),
       "A completed job log must remain beside the work artifacts and include asynchronous MP4 finalization output");
@@ -5150,7 +5149,7 @@ bool test_output_controls(HStreamWindow* window) {
       finalizer_owner_lock_held && concurrent_completed_archive_created && dangling_completed_target_created &&
           QFileInfo(dangling_completed_target).isSymLink() && window->outputStateText("archive-file") == "SAVED" &&
           completed_video_text == "completed lossless archive" &&
-          QFileInfo(replaced_completed_target + ".hstream-pin").size() == completed_video_text.size() &&
+          !QFileInfo::exists(replaced_completed_target + ".hstream-pin") &&
           replaced_target_text == "injected foreign completed target" &&
           foreign_source_text == "injected foreign source before ffmpeg input" &&
           replaced_owner_lock_text == "injected foreign owner lock" &&
@@ -5166,6 +5165,59 @@ bool test_output_controls(HStreamWindow* window) {
       "Finalization must remux the pinned source FD, skip dangling names, republish a target replaced during sync, "
       "and leave replacement source, target, and ownership-lock paths untouched");
 
+  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+
+  const QString target_cleanup_race_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("target-cleanup-race.mkv");
+  const QString target_cleanup_race_recovery = QDir(QFileInfo(target_cleanup_race_source).absolutePath())
+                                                   .filePath("target-cleanup-race-finalization-failed.mkv");
+  QFile::remove(target_cleanup_race_source);
+  QFile::remove(target_cleanup_race_source + ".log");
+  QFile::remove(target_cleanup_race_recovery);
+  const QStringList finalized_before_target_cleanup_race =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", target_cleanup_race_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", target_cleanup_race_source.toLocal8Bit());
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
+  auto* target_cleanup_race_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* target_cleanup_race_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  QFile target_cleanup_race_recovery_file(target_cleanup_race_recovery);
+  const bool target_cleanup_race_recovery_opened = target_cleanup_race_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray target_cleanup_race_recovery_text =
+      target_cleanup_race_recovery_opened ? target_cleanup_race_recovery_file.readAll() : QByteArray();
+  const QStringList finalized_after_target_cleanup_race =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  bool foreign_target_retained =
+      finalized_after_target_cleanup_race.size() == finalized_before_target_cleanup_race.size() + 1;
+  for (const QString& target_name : finalized_after_target_cleanup_race) {
+    if (finalized_before_target_cleanup_race.contains(target_name))
+      continue;
+    QFile target_file(QDir(window->gameDirectoryText()).filePath(target_name));
+    foreign_target_retained = foreign_target_retained && target_file.open(QIODevice::ReadOnly) &&
+        target_file.readAll() == "injected foreign publication after quarantine";
+  }
+  const bool target_cleanup_race_recovered = expect(
+      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+          finalize_headline && finalize_headline->text() == "Video finalization failed" && target_cleanup_race_detail &&
+          target_cleanup_race_detail->text().contains(target_cleanup_race_recovery) &&
+          target_cleanup_race_recovery_text == "completed lossless archive" && foreign_target_retained,
+      "A target replaced during source cleanup must fail into trusted MKV recovery and leave the foreign MP4 untouched");
+  if (target_cleanup_race_ok)
+    activate(target_cleanup_race_ok);
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -5450,8 +5502,8 @@ bool test_output_controls(HStreamWindow* window) {
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
       nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
       cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
-      durability_sync_responsive && source_cleanup_sync_failure_recovered && failed_archive_retained &&
-      no_log_recovery_reserved && post_quarantine_recovery_safe && unsafe_retry_blocked &&
+      durability_sync_responsive && target_cleanup_race_recovered && source_cleanup_sync_failure_recovered &&
+      failed_archive_retained && no_log_recovery_reserved && post_quarantine_recovery_safe && unsafe_retry_blocked &&
       retry_unblocked_after_recovery;
 }
 

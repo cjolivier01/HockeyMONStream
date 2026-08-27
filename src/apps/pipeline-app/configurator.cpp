@@ -1774,16 +1774,44 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
   if (!S_ISREG(output_stat.st_mode) || output_stat.st_size <= 0)
     return std::optional<fs::path>();
 
-  fs::path output_log_path = archive_log_sidecar(output_path);
-  struct stat output_log_stat{};
-  bool has_output_log = ::lstat(output_log_path.c_str(), &output_log_stat) == 0;
-  int output_log_inspection_errno = has_output_log ? 0 : errno;
-  if (!has_output_log && output_log_inspection_errno == ENOENT) {
-    const std::optional<fs::path> provisional_log = provisional_archive_log_sidecar(output_path, recovery_name_base);
-    if (provisional_log.has_value()) {
+  const fs::path resolved_output_log_path = archive_log_sidecar(output_path);
+  struct stat resolved_output_log_stat{};
+  const bool has_resolved_output_log = ::lstat(resolved_output_log_path.c_str(), &resolved_output_log_stat) == 0;
+  const int resolved_output_log_errno = has_resolved_output_log ? 0 : errno;
+  if (!has_resolved_output_log && resolved_output_log_errno != ENOENT) {
+    return absl::InternalError(TO_STRING(
+        "Failed to inspect archive log sidecar \"" << resolved_output_log_path.string()
+                                                   << "\": " << std::strerror(resolved_output_log_errno)));
+  }
+
+  fs::path output_log_path = resolved_output_log_path;
+  struct stat output_log_stat = resolved_output_log_stat;
+  bool has_output_log = has_resolved_output_log;
+  int output_log_inspection_errno = resolved_output_log_errno;
+  const std::optional<fs::path> provisional_log = provisional_archive_log_sidecar(output_path, recovery_name_base);
+  if (provisional_log.has_value()) {
+    struct stat provisional_log_stat{};
+    const bool has_provisional_log = ::lstat(provisional_log->c_str(), &provisional_log_stat) == 0;
+    const int provisional_log_errno = has_provisional_log ? 0 : errno;
+    if (!has_provisional_log && provisional_log_errno != ENOENT) {
+      return absl::InternalError(TO_STRING(
+          "Failed to inspect provisional archive log sidecar \"" << provisional_log->string()
+                                                                 << "\": " << std::strerror(provisional_log_errno)));
+    }
+    bool provisional_log_is_guarded = false;
+    if (has_provisional_log && S_ISREG(provisional_log_stat.st_mode)) {
+      const fs::path provisional_guard = provisional_log->string() + ".hstream-pin";
+      auto provisional_guard_stat = inspect_archive_entry(provisional_guard, "provisional archive log identity guard");
+      if (!provisional_guard_stat.ok())
+        return provisional_guard_stat.status();
+      provisional_log_is_guarded = provisional_guard_stat->has_value() &&
+          same_file_identity(provisional_guard_stat->value(), provisional_log_stat);
+    }
+    if (provisional_log_is_guarded || (!has_resolved_output_log && has_provisional_log)) {
       output_log_path = *provisional_log;
-      has_output_log = ::lstat(output_log_path.c_str(), &output_log_stat) == 0;
-      output_log_inspection_errno = has_output_log ? 0 : errno;
+      output_log_stat = provisional_log_stat;
+      has_output_log = true;
+      output_log_inspection_errno = 0;
     }
   }
   if (!has_output_log && output_log_inspection_errno != ENOENT) {
@@ -1853,6 +1881,8 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
   }
 
   const auto complete_recovery = [&](const fs::path& recovery_path, const fs::path& recovery_log_path) -> absl::Status {
+    const fs::path recovery_guard_path = recovery_path.string() + ".hstream-pin";
+    const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
     HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_path, &output_stat, "archive recovery file"));
     if (has_output_log)
       HM_RETURN_IF_ERROR(sync_archive_and_parent(recovery_log_path, &output_log_stat, "archive log recovery file"));
@@ -1908,7 +1938,6 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
                                                                                      << "\""));
     }
 
-    const fs::path recovery_guard_path = recovery_path.string() + ".hstream-pin";
     auto recovery_guard_stat = inspect_archive_entry(recovery_guard_path, "archive recovery identity guard");
     if (!recovery_guard_stat.ok())
       return recovery_guard_stat.status();
@@ -1920,7 +1949,6 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
           TO_STRING("Archive recovery identity guard was replaced: \"" << recovery_guard_path.string() << "\""));
     }
     if (has_output_log) {
-      const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
       auto recovery_log_guard_stat =
           inspect_archive_entry(recovery_log_guard_path, "archive log recovery identity guard");
       if (!recovery_log_guard_stat.ok())
@@ -1967,7 +1995,6 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
             remove_archive_entry_if_owned(recovery_guard_path, output_stat, "partial archive recovery identity guard"));
       }
       if (has_output_log) {
-        const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
         auto current_log_guard = inspect_archive_entry(recovery_log_guard_path, "partial log recovery identity guard");
         if (current_log_guard.ok() && current_log_guard->has_value() &&
             same_file_identity(current_log_guard->value(), output_log_stat)) {
@@ -1991,6 +2018,17 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
           recovery_log_path, output_stat, "archive no-log recovery marker", &recovery_path, &output_stat));
       HM_RETURN_IF_ERROR(sync_parent_directory(recovery_log_path));
     }
+    if (has_output_log) {
+      HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+          recovery_log_guard_path,
+          output_log_stat,
+          "committed archive log recovery identity guard",
+          &recovery_log_path,
+          &output_log_stat));
+    }
+    HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+        recovery_guard_path, output_stat, "committed archive recovery identity guard", &recovery_path, &output_stat));
+    HM_RETURN_IF_ERROR(sync_parent_directory(recovery_path));
     return absl::OkStatus();
   };
 
@@ -2334,8 +2372,39 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         break;
       }
     }
-    if (reconciled)
+    if (reconciled) {
+      const fs::path recovery_guard_path = recovery_path.string() + ".hstream-pin";
+      auto recovery_guard_stat = inspect_archive_entry(recovery_guard_path, "reconciled archive recovery guard");
+      if (!recovery_guard_stat.ok())
+        return recovery_guard_stat.status();
+      if (recovery_guard_stat->has_value() &&
+          same_file_identity(recovery_guard_stat->value(), recovery_stat->value())) {
+        HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+            recovery_guard_path,
+            recovery_stat->value(),
+            "reconciled archive recovery guard",
+            &recovery_path,
+            &recovery_stat->value()));
+      }
+      if (recovery_log_stat->has_value()) {
+        const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
+        auto recovery_log_guard_stat =
+            inspect_archive_entry(recovery_log_guard_path, "reconciled archive log recovery guard");
+        if (!recovery_log_guard_stat.ok())
+          return recovery_log_guard_stat.status();
+        if (recovery_log_guard_stat->has_value() &&
+            same_file_identity(recovery_log_guard_stat->value(), recovery_log_stat->value())) {
+          HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+              recovery_log_guard_path,
+              recovery_log_stat->value(),
+              "reconciled archive log recovery guard",
+              &recovery_log_path,
+              &recovery_log_stat->value()));
+        }
+      }
+      HM_RETURN_IF_ERROR(sync_parent_directory(recovery_path));
       recovered.push_back(recovery_path);
+    }
   }
 
   iterator_error.clear();

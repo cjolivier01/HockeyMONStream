@@ -184,7 +184,7 @@ class HStreamWindow : public QMainWindow {
   bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
   void releaseArchiveFinalizerOwnership(bool remove_lock_file);
   void releaseArchiveFinalizeSource(bool remove_guard);
-  void releaseArchiveFinalizeTarget(bool remove_guard);
+  bool releaseArchiveFinalizeTarget(bool remove_guard);
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
