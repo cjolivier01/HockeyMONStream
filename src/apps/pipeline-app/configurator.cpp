@@ -2235,6 +2235,15 @@ absl::Status remove_archive_entry_if_owned(
         "Failed to remove quarantined " << description << " \"" << path.string()
                                         << "\": " << std::strerror(saved_errno)));
   }
+  if (::fsync(cleanup_fd) != 0) {
+    const int saved_errno = errno;
+    ::close(cleanup_fd);
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to make private cleanup guard durable for " << description << " \"" << path.string()
+                                                            << "\": " << std::strerror(saved_errno)));
+  }
 
   if ((required_published_path && required_published_stat) ||
       (second_required_published_path && second_required_published_stat)) {
@@ -2408,7 +2417,7 @@ absl::StatusOr<std::string> publish_unique_archive_reconciliation_guard(
   return absl::ResourceExhaustedError("No unused archive reconciliation guard name remained");
 }
 
-absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent_path) {
+absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent_path, int remaining_passes = 4) {
   struct ReconciledEntry {
     fs::path public_path;
     fs::path guard_path;
@@ -2495,17 +2504,19 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
         "Failed to open archive directory for scoped cleanup reconciliation \"" << parent_path.string()
                                                                                 << "\": " << std::strerror(errno)));
   }
-  std::error_code iterator_error;
-  std::vector<fs::path> entries;
-  for (fs::directory_iterator it(parent_path, iterator_error), end; it != end; it.increment(iterator_error)) {
-    if (iterator_error) {
-      ::close(parent_fd);
-      return absl::InternalError(TO_STRING(
-          "Failed to inspect archive cleanup directory \"" << parent_path.string()
-                                                           << "\": " << iterator_error.message()));
+  const auto list_parent_entries = [&]() -> absl::StatusOr<std::vector<fs::path>> {
+    std::error_code iterator_error;
+    std::vector<fs::path> current_entries;
+    for (fs::directory_iterator it(parent_path, iterator_error), end; it != end; it.increment(iterator_error)) {
+      if (iterator_error) {
+        return absl::InternalError(TO_STRING(
+            "Failed to inspect archive cleanup directory \"" << parent_path.string()
+                                                             << "\": " << iterator_error.message()));
+      }
+      current_entries.push_back(it->path());
     }
-    entries.push_back(it->path());
-  }
+    return current_entries;
+  };
   static const std::regex cleanup_name_pattern(
       R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   static const std::regex reconciliation_guard_name_pattern(
@@ -2516,6 +2527,13 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
   const auto is_reconciliation_guard_name = [&](const std::string& name) {
     return std::regex_match(name, reconciliation_guard_name_pattern);
   };
+  auto entries_status = list_parent_entries();
+  if (!entries_status.ok()) {
+    ::close(parent_fd);
+    return entries_status.status();
+  }
+  const std::vector<fs::path> entries = std::move(*entries_status);
+  bool deferred_cleanup = false;
   for (const fs::path& cleanup_path : entries) {
     const std::string cleanup_name = cleanup_path.filename().string();
     if (!is_cleanup_directory_name(cleanup_name))
@@ -2558,6 +2576,58 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
     }
     const std::array<fs::path, 2> owned_public_paths = {
         parent_path / (*owned_target_name + ".hstream-cleanup-pin"), parent_path / *owned_target_name};
+    const std::string reconciliation_guard_prefix = ".hstream-reconcile-" + cleanup_id + "-";
+    const auto reconciliation_has_live_blocker = [&]() -> absl::StatusOr<bool> {
+      auto current_entries = list_parent_entries();
+      if (!current_entries.ok())
+        return current_entries.status();
+      for (const fs::path& candidate : *current_entries) {
+        const std::string candidate_name = candidate.filename().string();
+        if (candidate_name.rfind(reconciliation_guard_prefix, 0) == 0)
+          return true;
+        if (candidate_name == cleanup_name || !is_cleanup_directory_name(candidate_name))
+          continue;
+        const int candidate_fd =
+            ::openat(parent_fd, candidate_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (candidate_fd < 0) {
+          if (errno == ENOENT)
+            continue;
+          return absl::InternalError(
+              TO_STRING("Failed to inspect dependent archive cleanup transaction: " << std::strerror(errno)));
+        }
+        const auto candidate_owner = read_archive_cleanup_owner(candidate_fd);
+        ::close(candidate_fd);
+        if (candidate_owner.ok() && candidate_owner->rfind(reconciliation_guard_prefix, 0) == 0)
+          return true;
+      }
+      return false;
+    };
+    const auto retire_uncommitted_cleanup_if_unblocked = [&]() -> absl::StatusOr<bool> {
+      if (::flock(parent_fd, LOCK_EX) != 0) {
+        return absl::InternalError(
+            TO_STRING("Failed to serialize archive cleanup retirement: " << std::strerror(errno)));
+      }
+      auto blocked = reconciliation_has_live_blocker();
+      if (!blocked.ok()) {
+        ::flock(parent_fd, LOCK_UN);
+        return blocked.status();
+      }
+      if (*blocked) {
+        ::flock(parent_fd, LOCK_UN);
+        return false;
+      }
+      if (retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
+        const int saved_errno = errno;
+        ::flock(parent_fd, LOCK_UN);
+        return absl::InternalError(
+            TO_STRING("Failed to retire archive cleanup transaction: " << std::strerror(saved_errno)));
+      }
+      if (::flock(parent_fd, LOCK_UN) != 0) {
+        return absl::InternalError(
+            TO_STRING("Failed to release archive cleanup retirement lock: " << std::strerror(errno)));
+      }
+      return true;
+    };
     std::vector<ReconciledEntry> reconciled;
     struct PrivateEntry {
       const char* name;
@@ -2630,7 +2700,13 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       continue;
     }
     if (private_entries.empty()) {
-      for (const fs::path& candidate : entries) {
+      auto live_entries_status = list_parent_entries();
+      if (!live_entries_status.ok()) {
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        return live_entries_status.status();
+      }
+      for (const fs::path& candidate : *live_entries_status) {
         const std::string candidate_name = candidate.filename().string();
         if (!is_reconciliation_guard_name(candidate_name))
           continue;
@@ -2724,12 +2800,16 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
           return fallback_cleanup;
         }
       }
-      if (retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
-        const int saved_errno = errno;
+      auto retirement = retire_uncommitted_cleanup_if_unblocked();
+      if (!retirement.ok()) {
         ::close(cleanup_fd);
         ::close(parent_fd);
-        return absl::InternalError(
-            TO_STRING("Failed to retire empty archive cleanup transaction: " << std::strerror(saved_errno)));
+        return retirement.status();
+      }
+      if (!*retirement) {
+        deferred_cleanup = true;
+        ::close(cleanup_fd);
+        continue;
       }
       ::close(cleanup_fd);
       continue;
@@ -2856,7 +2936,13 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       if (!guard_path.empty())
         reconciled.push_back({public_path, guard_path, fs::path(), private_entry.identity});
     }
-    for (const fs::path& candidate : entries) {
+    auto live_entries_status = list_parent_entries();
+    if (!live_entries_status.ok()) {
+      ::close(cleanup_fd);
+      ::close(parent_fd);
+      return live_entries_status.status();
+    }
+    for (const fs::path& candidate : *live_entries_status) {
       const std::string candidate_name = candidate.filename().string();
       if (!is_reconciliation_guard_name(candidate_name))
         continue;
@@ -2939,17 +3025,22 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
         return retire_status;
       }
     }
-    if (retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
-      const int saved_errno = errno;
+    auto retirement = retire_uncommitted_cleanup_if_unblocked();
+    if (!retirement.ok()) {
       ::close(cleanup_fd);
       ::close(parent_fd);
-      return absl::InternalError(TO_STRING(
-          "Failed to retire reconciled cleanup directory \"" << cleanup_path.string()
-                                                             << "\": " << std::strerror(saved_errno)));
+      return retirement.status();
+    }
+    if (!*retirement) {
+      deferred_cleanup = true;
+      ::close(cleanup_fd);
+      continue;
     }
     ::close(cleanup_fd);
   }
   ::close(parent_fd);
+  if (deferred_cleanup && remaining_passes > 0)
+    return reconcile_scoped_archive_cleanup_directories(parent_path, remaining_passes - 1);
   return absl::OkStatus();
 }
 

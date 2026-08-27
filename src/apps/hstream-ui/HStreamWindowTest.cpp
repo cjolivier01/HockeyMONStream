@@ -5377,7 +5377,7 @@ bool test_output_controls(HStreamWindow* window) {
   const QString reconciliation_guard_prefix = ".hstream-reconcile-";
   const QDir reconciliation_game_dir(window->gameDirectoryText());
   for (const QString& name : reconciliation_game_dir.entryList(QDir::Files | QDir::Hidden | QDir::System, QDir::Name)) {
-    if (!name.startsWith(reconciliation_guard_prefix))
+    if (!name.startsWith(reconciliation_guard_prefix) || name.endsWith(".hstream-cleanup-pin"))
       continue;
     reconciliation_rescue_path = reconciliation_game_dir.filePath(name);
     QFile rescue_file(reconciliation_rescue_path);
@@ -5418,15 +5418,30 @@ bool test_output_controls(HStreamWindow* window) {
 #endif
   reconciliation_foreign_file.close();
   QFile::remove(reconciliation_race_target);
-  bool reconciliation_rescue_restored = false;
+  qputenv(
+      "HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE",
+      (reconciliation_rescue_path + ".hstream-cleanup-pin").toLocal8Bit());
+  QString reconciliation_guard_retirement_error;
+  const bool reconciliation_guard_retirement_interrupted = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      window->gameDirectoryText(), &reconciliation_guard_retirement_error);
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE");
+  const bool reconciliation_outer_owner_only = QFileInfo::exists(reconciliation_race_cleanup) &&
+      QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("owner")) &&
+      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("entry")) &&
+      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("guard")) &&
+      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("fallback"));
+  const bool reconciliation_guard_public_fallback =
+      QFileInfo::exists(reconciliation_rescue_path + ".hstream-cleanup-pin");
+  QString reconciliation_stable_pass_error;
+  const bool reconciliation_stable_pass = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      window->gameDirectoryText(), &reconciliation_stable_pass_error);
   QFile reconciliation_restored_target(reconciliation_race_target);
-  if (reconciliation_restored_target.open(QIODevice::ReadOnly)) {
-    reconciliation_rescue_restored =
-        reconciliation_restored_target.readAll() == "trusted UI reconciliation-race target";
-  } else {
-    reconciliation_rescue_restored =
-        !reconciliation_rescue_path.isEmpty() && QFile::rename(reconciliation_rescue_path, reconciliation_race_target);
-  }
+  const bool reconciliation_rescue_restored = !reconciliation_guard_retirement_interrupted &&
+      reconciliation_outer_owner_only && !reconciliation_guard_public_fallback && reconciliation_stable_pass &&
+      reconciliation_restored_target.open(QIODevice::ReadOnly) &&
+      reconciliation_restored_target.readAll() == "trusted UI reconciliation-race target" &&
+      !QFileInfo::exists(reconciliation_race_cleanup) && !QFileInfo::exists(reconciliation_rescue_path) &&
+      !QFileInfo::exists(reconciliation_rescue_path + ".hstream-cleanup-pin");
   QFile::remove(reconciliation_trigger_source);
   QFile::remove(reconciliation_trigger_source + ".log");
   archive->setChecked(false);

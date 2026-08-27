@@ -2411,6 +2411,27 @@ play-tracker:
       "Cleanup reconciliation must retain a dedicated trusted guard through private-link retirement if the public path is replaced");
   const bool reconciliation_race_foreign_removed =
       !reconciliation_race_foreign_path.empty() && fs::remove(reconciliation_race_foreign_path);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE", "1", TRUE);
+  const auto reconciliation_guard_retirement_interrupted =
+      hm::configurator_internal::recover_stale_archive_work_files(reconciliation_race_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE");
+  bool reconciliation_guard_nested_transaction = false;
+  bool reconciliation_outer_owner_only = false;
+  bool reconciliation_guard_public_fallback = false;
+  for (const fs::path& entry : fs::directory_iterator(reconciliation_race_dir)) {
+    const std::string name = entry.filename().string();
+    if (fs::is_directory(entry) && name.rfind(".hstream-cleanup-v2-", 0) == 0) {
+      if (fs::exists(entry / "owner") && !fs::exists(entry / "entry") && !fs::exists(entry / "guard") &&
+          !fs::exists(entry / "fallback")) {
+        reconciliation_outer_owner_only = true;
+      } else {
+        reconciliation_guard_nested_transaction = true;
+      }
+    }
+    reconciliation_guard_public_fallback |=
+        fs::is_regular_file(entry) && name.find(".hstream-reconcile-") == 0 &&
+        absl::EndsWith(name, ".hstream-cleanup-pin");
+  }
   const auto reconciliation_race_resumed =
       hm::configurator_internal::recover_stale_archive_work_files(reconciliation_race_configured);
   bool reconciliation_race_artifacts_remain = false;
@@ -2424,11 +2445,13 @@ play-tracker:
   const std::string reconciliation_race_recovery_content{
       std::istreambuf_iterator<char>(reconciliation_race_recovery_stream), std::istreambuf_iterator<char>()};
   ok &= expect(
-      reconciliation_race_foreign_removed && reconciliation_race_resumed.ok() &&
+      reconciliation_race_foreign_removed && !reconciliation_guard_retirement_interrupted.ok() &&
+          reconciliation_guard_nested_transaction && reconciliation_outer_owner_only &&
+          !reconciliation_guard_public_fallback && reconciliation_race_resumed.ok() &&
           reconciliation_race_resumed->size() == 1 &&
           reconciliation_race_recovery_content == "trusted reconciliation-race video" &&
           !reconciliation_race_artifacts_remain,
-      "Cleanup reconciliation must resume after a pathname conflict is removed and retire its durable guards");
+      "Stable cleanup passes must resolve nested guard retirement before retiring its owner-only transaction");
 
   const fs::path fallback_restore_race_dir = root / "archive-cleanup-fallback-restore-race";
   fs::create_directories(fallback_restore_race_dir);
