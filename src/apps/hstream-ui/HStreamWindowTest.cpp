@@ -32,6 +32,8 @@
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
+#include <QtWidgets/QScrollArea>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
@@ -389,6 +391,19 @@ bool capture_interaction_artifact(HStreamWindow* window, const QString& name) {
   const QString path = QDir(artifact_dir).filePath(name);
   return expect(
       !composed.isNull() && composed.save(path), "Could not save composed X11 screenshot: " + path.toStdString());
+}
+
+bool capture_widget_artifact(QWidget* widget, const QString& name) {
+  const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR");
+  if (artifact_dir.isEmpty())
+    return true;
+  if (!widget || !QDir().mkpath(artifact_dir))
+    return expect(false, "Could not prepare the widget artifact directory");
+  QApplication::processEvents();
+  const QPixmap screenshot = widget->grab();
+  const QString path = QDir(artifact_dir).filePath(name);
+  return expect(
+      !screenshot.isNull() && screenshot.save(path), "Could not save widget screenshot: " + path.toStdString());
 }
 
 bool test_path_scoped_auto_rollback() {
@@ -2343,6 +2358,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* mapping_backend_label = require_child<QLabel>(window, "mappingBackendLabel");
   auto* projection_label = require_child<QLabel>(window, "stitchProjectionLabel");
   auto* stitch_max_output_width_label = require_child<QLabel>(window, "stitchMaxOutputWidthLabel");
+  std::array<QLabel*, 3> projection_parameter_labels = {
+      require_child<QLabel>(window, "projectionParameter1Label"),
+      require_child<QLabel>(window, "projectionParameter2Label"),
+      require_child<QLabel>(window, "projectionParameter3Label")};
+  const std::array<QDoubleSpinBox*, 3> projection_parameter_spins = {
+      panini_compression, panini_top_squeeze, panini_bottom_squeeze};
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -2377,6 +2398,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* program_controls = require_child<QWidget>(window, "programAssociatedControls");
   auto* program_controls_toggle = require_child<QToolButton>(window, "programControlsToggle");
   auto* stitched_controls = require_child<QWidget>(window, "stitchedAssociatedControls");
+  auto* algorithms_scroll = require_child<QScrollArea>(window, "stitchingAlgorithmsScrollArea");
+  auto* algorithms_page = require_child<QWidget>(window, "stitchingAlgorithmsTab");
   auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
   auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
   auto* program_focus = require_child<QPushButton>(window, "programFocusButton");
@@ -2393,15 +2416,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !control_point_matcher || !mapping_backend || !projection || !panini_compression || !panini_top_squeeze ||
       !panini_bottom_squeeze || !control_point_matcher_label || !mapping_backend_label || !projection_label ||
       !stitch_max_output_width || !run_autooptimizer || !save_preset_button || !stitch_max_output_width_label ||
+      !projection_parameter_labels[0] || !projection_parameter_labels[1] || !projection_parameter_labels[2] ||
       !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking ||
       !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
       !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
       !preview_surface || !preview_target || !stitched_surface || !stitched_target || !camera1_host ||
       !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
       !external_notice || !camera1_notice || !stitched_status || !preview_status || !program_controls ||
-      !program_controls_toggle || !stitched_controls || !program_control_tabs || !stitched_control_tabs ||
-      !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back ||
-      !seek_forward || !seek_position || !pipeline_process) {
+      !program_controls_toggle || !stitched_controls || !algorithms_scroll || !algorithms_page ||
+      !program_control_tabs || !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel ||
+      !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2481,6 +2505,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !(control_point_matcher->model()->flags(control_point_matcher->model()->index(2, 0)) & Qt::ItemIsEnabled);
   const QString original_mapping_backend = mapping_backend->currentData().toString();
   const QString original_projection = projection->currentData().toString();
+  window->resize(1440, 900);
+  preview_tabs->setCurrentIndex(1);
+  stitched_control_tabs->setCurrentIndex(1);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   bool all_nona_projections_enabled = projection->model() && projection->count() == 22;
@@ -2529,6 +2556,77 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const bool enabled = projection->model()->flags(projection->model()->index(index, 0)) & Qt::ItemIsEnabled;
     only_rectilinear_enabled = enabled == (projection->itemData(index).toString() == "rectilinear");
   }
+  auto projection_layout_is_legible = [&]() {
+    const auto parsed_projection =
+        hm::stitching::ParseStitchProjection(projection->currentData().toString().toStdString());
+    const size_t expected_parameter_count =
+        parsed_projection.ok() && mapping_backend->currentData().toString() == "nona"
+        ? hm::stitching::StitchProjectionParameters(*parsed_projection).size()
+        : 0;
+    bool legible = algorithms_scroll->isVisible() && algorithms_page->isVisible() &&
+        (algorithms_page->height() <= algorithms_scroll->viewport()->height() ||
+         algorithms_scroll->verticalScrollBar()->maximum() > 0) &&
+        projection->width() >= projection->minimumSizeHint().width() &&
+        projection->width() >= projection->fontMetrics().horizontalAdvance(projection->currentText()) + 36;
+    for (size_t parameter_index = 0; parameter_index < projection_parameter_labels.size(); ++parameter_index) {
+      QLabel* label = projection_parameter_labels[parameter_index];
+      QDoubleSpinBox* spin = projection_parameter_spins[parameter_index];
+      const bool expected_visible = parameter_index < expected_parameter_count;
+      legible = legible && label->isVisible() == expected_visible && spin->isVisible() == expected_visible;
+      if (!expected_visible)
+        continue;
+      legible = legible && label->width() >= label->sizeHint().width() &&
+          label->height() >= label->minimumSizeHint().height() && spin->width() >= spin->minimumSizeHint().width() &&
+          spin->height() >= spin->minimumSizeHint().height() && !label->geometry().intersects(spin->geometry()) &&
+          algorithms_page->contentsRect().contains(label->geometry()) &&
+          algorithms_page->contentsRect().contains(spin->geometry());
+    }
+    if (!legible) {
+      std::cerr << "projection layout is not legible: backend="
+                << mapping_backend->currentData().toString().toStdString()
+                << " projection=" << projection->currentData().toString().toStdString()
+                << " page-visible=" << algorithms_page->isVisible() << " projection-width=" << projection->width()
+                << " projection-min-width=" << projection->minimumSizeHint().width()
+                << " text-width=" << projection->fontMetrics().horizontalAdvance(projection->currentText()) << '\n';
+      for (size_t parameter_index = 0; parameter_index < projection_parameter_labels.size(); ++parameter_index) {
+        QLabel* label = projection_parameter_labels[parameter_index];
+        QDoubleSpinBox* spin = projection_parameter_spins[parameter_index];
+        std::cerr << "parameter " << parameter_index
+                  << " expected-visible=" << (parameter_index < expected_parameter_count)
+                  << " label-visible=" << label->isVisible() << " label=" << label->width() << 'x' << label->height()
+                  << " label-hint=" << label->sizeHint().width() << 'x' << label->sizeHint().height()
+                  << " spin-visible=" << spin->isVisible() << " spin=" << spin->width() << 'x' << spin->height()
+                  << " spin-min-hint=" << spin->minimumSizeHint().width() << 'x' << spin->minimumSizeHint().height()
+                  << '\n';
+      }
+    }
+    return legible;
+  };
+  bool all_projection_layouts_legible = true;
+  bool all_projection_artifacts_captured = true;
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  for (int index = 0; index < projection->count(); ++index) {
+    projection->setCurrentIndex(index);
+    QApplication::processEvents();
+    const QString projection_name = projection->currentData().toString();
+    all_projection_layouts_legible = all_projection_layouts_legible && projection_layout_is_legible();
+    all_projection_artifacts_captured = all_projection_artifacts_captured &&
+        capture_widget_artifact(algorithms_page, QString("stitching-algorithms-nona-%1.png").arg(projection_name));
+  }
+  const std::array<std::pair<QString, QString>, 2> native_backends = {{
+      {QStringLiteral("opencv-magsac"), QStringLiteral("MAGSAC++")},
+      {QStringLiteral("opencv-affine-ransac"), QStringLiteral("RANSAC")},
+  }};
+  for (const auto& [backend_name, backend_label] : native_backends) {
+    const int backend_index = mapping_backend->findData(backend_name);
+    mapping_backend->setCurrentIndex(mapping_backend->findData(backend_name));
+    QApplication::processEvents();
+    all_projection_layouts_legible = all_projection_layouts_legible && backend_index >= 0 &&
+        mapping_backend->currentData().toString() == backend_name && mapping_backend->currentText() == backend_label &&
+        projection->currentData().toString() == "rectilinear" && projection_layout_is_legible();
+    all_projection_artifacts_captured = all_projection_artifacts_captured &&
+        capture_widget_artifact(algorithms_page, QString("stitching-algorithms-%1-rectilinear.png").arg(backend_name));
+  }
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   projection->setCurrentIndex(projection->findData(original_projection));
   mapping_backend->setCurrentIndex(mapping_backend->findData(original_mapping_backend));
@@ -2555,7 +2653,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               mapping_backend->itemText(1) == "MAGSAC++" && mapping_backend->itemText(2) == "RANSAC" &&
               projection->findData("general-panini") >= 0 && all_nona_projections_enabled && only_rectilinear_enabled &&
               general_panini_parameters_visible && albers_parameters_visible && biplane_parameters_visible &&
-              triplane_parameters_visible && fixed_panini_parameters_hidden && parameters_hidden_for_native_backend,
+              triplane_parameters_visible && fixed_panini_parameters_hidden && parameters_hidden_for_native_backend &&
+              all_projection_layouts_legible && all_projection_artifacts_captured,
           "Algorithm controls must expose compatible projections in the earliest preview tab whose frames reflect "
           "their pipeline stage")) {
     return false;
@@ -5101,6 +5200,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   const int fake_sink_commands_after = window->logText().count("--enable-sinks=FAKE");
   const int render_sink_commands_after = window->logText().count("--enable-sinks=RENDER");
+  const int gpu_preview_commands_after = window->logText().count("--ui-preview-windows=");
+  const int inactive_preview_commands_after = window->logText().count("--ui-preview-active=none");
   const bool disabled_sink_selection =
       fake_sink_commands_after == fake_sink_commands_before + (x11_test_backend ? 0 : 2) &&
       render_sink_commands_after == render_sink_commands_before + (x11_test_backend ? 2 : 0);
@@ -5108,6 +5209,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     std::cerr << "disabled render sink counts: platform=" << QGuiApplication::platformName().toStdString()
               << " fake=" << fake_sink_commands_before << "->" << fake_sink_commands_after
               << " render=" << render_sink_commands_before << "->" << render_sink_commands_after << '\n';
+  }
+  const int expected_dormant_preview_launches =
+      x11_test_backend ? render_sink_commands_after - render_sink_commands_before : 0;
+  const bool dormant_preview_provisioned =
+      gpu_preview_commands_after == gpu_preview_commands_before + expected_dormant_preview_launches &&
+      inactive_preview_commands_after == inactive_preview_commands_before + expected_dormant_preview_launches;
+  if (!dormant_preview_provisioned) {
+    std::cerr << "disabled preview provisioning counts: platform=" << QGuiApplication::platformName().toStdString()
+              << " windows=" << gpu_preview_commands_before << "->" << gpu_preview_commands_after
+              << " inactive=" << inactive_preview_commands_before << "->" << inactive_preview_commands_after << '\n';
   }
   const bool rendering_disabled =
       expect(
@@ -5123,10 +5234,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           window->logText().count("--source-render-window-ids=") == source_embedded_commands_before,
           "Disabling video rendering should not attach native source-camera preview windows") &&
       expect(
-          window->logText().count("--ui-preview-windows=") ==
-                  gpu_preview_commands_before + (x11_test_backend ? 1 : 0) &&
-              window->logText().count("--ui-preview-active=none") ==
-                  inactive_preview_commands_before + (x11_test_backend ? 1 : 0),
+          dormant_preview_provisioned,
           "An X11 run that starts disabled should provision dormant GPU branches so rendering can be enabled live") &&
       expect(
           external_notice->text() == "Video rendering is disabled",
@@ -6546,6 +6654,14 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       compression->value() == 80.0,
       "UI load must restore an inactive custom parameter vector displaced by a generated projection");
 
+  generated_override["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[125, 10, -10]");
+  std::ofstream(config_path) << YAML::Dump(generated_override) << '\n';
+  activate(create);
+  const bool edited_inactive_parameters_are_preserved = expect(
+      projection->currentData().toString() == "general-panini" && compression->value() == 125.0 &&
+          top_squeeze->value() == 10.0 && bottom_squeeze->value() == -10.0,
+      "UI load must preserve current inactive projection parameters over stale restoration metadata");
+
   generated_override["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
   std::ofstream(config_path) << YAML::Dump(generated_override) << '\n';
   activate(create);
@@ -6555,7 +6671,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   game_id->setText(original_game_id);
   activate(create);
   return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
-      displaced_inactive_parameters_restored && edited_generated_parameters_are_user_intent;
+      displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
+      edited_generated_parameters_are_user_intent;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

@@ -5549,8 +5549,15 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
+    auto* algorithms_scroll = new QScrollArea();
+    algorithms_scroll->setObjectName("stitchingAlgorithmsScrollArea");
+    algorithms_scroll->setFrameShape(QFrame::NoFrame);
+    algorithms_scroll->setWidgetResizable(true);
+    algorithms_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    algorithms_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     auto* algorithms_page = new QWidget();
     algorithms_page->setObjectName("stitchingAlgorithmsTab");
+    algorithms_page->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     auto* algorithms_layout = new QGridLayout(algorithms_page);
     algorithms_layout->setContentsMargins(8, 8, 8, 8);
     algorithms_layout->setColumnStretch(1, 1);
@@ -5585,7 +5592,9 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     algorithms_layout->addWidget(stitch_max_output_width_spin_, 6, 1);
     algorithms_layout->addWidget(run_autooptimizer_check_, 7, 0, 1, 2);
     algorithms_layout->setRowStretch(8, 1);
-    control_tabs->addTab(algorithms_page, "Algorithms");
+    algorithms_scroll->setWidget(algorithms_page);
+    control_tabs->addTab(algorithms_scroll, "Algorithms");
+    updateProjectionParameterControls();
   }
   layout->addWidget(control_tabs);
   parent->addWidget(group);
@@ -5870,6 +5879,15 @@ void HStreamWindow::updateProjectionParameterControls() {
     set_control_help(spin, description);
   }
   projection_parameter_controls_projection_ = projection_name;
+  if (stitched_control_tabs_) {
+    if (auto* algorithms_page = stitched_control_tabs_->findChild<QWidget*>("stitchingAlgorithmsTab")) {
+      if (algorithms_page->layout())
+        algorithms_page->layout()->activate();
+      if (algorithms_page->layout())
+        algorithms_page->setMinimumSize(algorithms_page->layout()->minimumSize());
+      algorithms_page->updateGeometry();
+    }
+  }
 }
 
 void HStreamWindow::updateProjectionCompatibility() {
@@ -12384,8 +12402,17 @@ void HStreamWindow::loadSavedControlConfig() {
     if (generated_backend_choices && previous_projection_parameters.has_value()) {
       const QString restored_parameter_projection =
           previous_projection.isEmpty() ? generated_parameter_projection : previous_projection;
-      if (!restored_parameter_projection.isEmpty())
+      const bool restores_generated_projection = restored_parameter_projection == generated_parameter_projection;
+      YAML::Node configured_parameters;
+      const bool configured_parameters_present = !restored_parameter_projection.isEmpty() &&
+          lookup_yaml_path(
+              config,
+              QStringLiteral("stitching.projection_parameters.") + restored_parameter_projection,
+              &configured_parameters);
+      if (!restored_parameter_projection.isEmpty() &&
+          (restores_generated_projection || !configured_parameters_present)) {
         staged_projection_parameters[restored_parameter_projection] = *previous_projection_parameters;
+      }
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {

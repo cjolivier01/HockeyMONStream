@@ -1883,6 +1883,7 @@ play-tracker:
     YAML::Node& generated = **inherited_parameter_generated;
     generated["stitching"]["projection"] = "triplane";
     generated["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[60]");
+    generated["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[115, 5, -5]");
     YAML::Node generated_choices = generated["hstream_ui"]["generated_stitching_backend_choices"];
     generated_choices["projection"] = "triplane";
     generated_choices["projection_parameters"] = YAML::Load("[60]");
@@ -1897,6 +1898,15 @@ play-tracker:
   const absl::Status inherited_parameter_restored =
       inherited_parameter_reloaded.persist_effective_stitching_backend_choices();
   auto inherited_parameter_final = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  hm::Configurator inherited_parameter_roundtrip(
+      "inherited-projection-private-parameters",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status inherited_parameter_roundtrip_configured = inherited_parameter_roundtrip.configure();
+  const absl::Status inherited_parameter_roundtrip_persisted =
+      inherited_parameter_roundtrip.persist_effective_stitching_backend_choices();
+  auto inherited_parameter_after_roundtrip =
+      hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
   ok &= expect(
       inherited_parameter_first_configured.ok() && inherited_parameter_projection_overridden.ok() &&
           inherited_parameter_first_persisted.ok() && inherited_inactive_parameters_captured &&
@@ -1904,15 +1914,19 @@ play-tracker:
           inherited_parameter_restored.ok() && inherited_parameter_final.ok() &&
           inherited_parameter_final->has_value() &&
           (**inherited_parameter_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
-              110.0 &&
+              115.0 &&
           (**inherited_parameter_final)["stitching"]["projection_parameters"]["triplane"][0].as<double>() == 80.0 &&
           (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["projection_parameters"][0]
-                  .as<double>() == 110.0 &&
+                  .as<double>() == 115.0 &&
           (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]
                                        ["previous_projection_parameters"][0]
-                                           .as<double>() == 110.0 &&
+                                           .as<double>() == 115.0 &&
           (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection"]
                   .as<std::string>() == "general_panini" &&
+          inherited_parameter_roundtrip_configured.ok() && inherited_parameter_roundtrip_persisted.ok() &&
+          inherited_parameter_after_roundtrip.ok() && inherited_parameter_after_roundtrip->has_value() &&
+          (**inherited_parameter_after_roundtrip)["stitching"]["projection_parameters"]["general-panini"][0]
+                  .as<double>() == 115.0 &&
           !hm::get_node(**inherited_parameter_final, "stitching.projection_parameters.general_panini").has_value(),
       "Private active and inactive parameters under canonical keys for an aliased projection scalar must survive "
       "cross-projection generated-choice normalization and reload");
