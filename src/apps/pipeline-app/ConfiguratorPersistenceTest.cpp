@@ -2040,6 +2040,44 @@ play-tracker:
       "Any present invalid previous algorithm choice must distrust the complete generated marker without partially "
       "restoring its other fields");
 
+  auto invalid_previous_tuple_is_retained = [&](const std::string& game_name, bool malformed_autooptimizer) {
+    const fs::path game_dir = games / game_name;
+    fs::create_directories(game_dir);
+    YAML::Node private_config = YAML::Clone(generated_alias_private);
+    YAML::Node choices = private_config["hstream_ui"]["generated_stitching_backend_choices"];
+    if (malformed_autooptimizer) {
+      choices["previous_run_autooptimizer"] = "invalid";
+    } else {
+      choices["previous_mapping_backend"] = "opencv-magsac";
+      choices["previous_projection"] = "general-panini";
+      choices["previous_run_autooptimizer"] = false;
+      choices.remove("previous_projection_parameters");
+    }
+    const std::string expected_marker = YAML::Dump(choices);
+    const absl::Status published = hm::stitching::publish_game_config(game_dir, YAML::Dump(private_config) + "\n");
+    hm::Configurator configurator(
+        game_name, backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const absl::Status configured = configurator.configure();
+    const absl::Status persisted = configurator.persist_effective_stitching_backend_choices();
+    auto final_config = hm::stitching::load_game_config_file(game_dir / "config.yaml");
+    if (!published.ok() || !configured.ok() || !persisted.ok() || !final_config.ok() || !final_config->has_value()) {
+      return false;
+    }
+    const YAML::Node& final = **final_config;
+    const auto retained_marker = hm::get_node(final, "hstream_ui.generated_stitching_backend_choices");
+    return final["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+        final["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+        final["stitching"]["projection"].as<std::string>() == "general_panini" &&
+        final["stitching"]["run_autooptimizer"].as<bool>() &&
+        final["stitching"]["projection_parameters"]["general-panini"][0].as<double>() == 110.0 &&
+        retained_marker.has_value() && YAML::Dump(*retained_marker) == expected_marker;
+  };
+  ok &= expect(
+      invalid_previous_tuple_is_retained("incompatible-previous-tuple", false) &&
+          invalid_previous_tuple_is_retained("malformed-previous-autooptimizer", true),
+      "Malformed or backend-incompatible previous optimizer metadata must retain the complete generated marker and "
+      "current worker tuple");
+
   const fs::path generated_alias_roundtrip_dir = games / "generated-projection-alias-roundtrip";
   fs::create_directories(generated_alias_roundtrip_dir);
   const absl::Status generated_alias_roundtrip_published =

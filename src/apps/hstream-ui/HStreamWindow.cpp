@@ -3668,10 +3668,24 @@ bool generated_stitching_backend_choices_match_private(
   }
   const bool has_generated_autooptimizer = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.run_autooptimizer", &generated_autooptimizer);
+  auto parse_boolean = [](const YAML::Node& node) -> std::optional<bool> {
+    if (!node.IsScalar())
+      return std::nullopt;
+    try {
+      return node.as<bool>();
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  const auto parsed_generated_autooptimizer =
+      has_generated_autooptimizer ? parse_boolean(generated_autooptimizer) : std::nullopt;
+  const bool private_autooptimizer_present =
+      lookup_yaml_path(config, "stitching.run_autooptimizer", &private_autooptimizer);
+  const auto parsed_private_autooptimizer =
+      private_autooptimizer_present ? parse_boolean(private_autooptimizer) : std::nullopt;
   const bool generated_autooptimizer_matches = !has_generated_autooptimizer ||
-      (generated_autooptimizer.IsScalar() &&
-       lookup_yaml_path(config, "stitching.run_autooptimizer", &private_autooptimizer) &&
-       private_autooptimizer.IsScalar() && private_autooptimizer.as<bool>() == generated_autooptimizer.as<bool>());
+      (parsed_generated_autooptimizer.has_value() && parsed_private_autooptimizer.has_value() &&
+       *parsed_private_autooptimizer == *parsed_generated_autooptimizer);
   const bool generated_matcher_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher);
   const bool generated_backend_present =
@@ -3747,6 +3761,28 @@ bool generated_stitching_backend_choices_match_private(
   } else if (parsed_generated_projection.has_value()) {
     restored_projection = QString::fromLatin1(hm::stitching::StitchProjectionName(*parsed_generated_projection));
   }
+  YAML::Node previous_autooptimizer_node;
+  const bool previous_autooptimizer_present = lookup_yaml_path(
+      config,
+      "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer",
+      &previous_autooptimizer_node);
+  const auto parsed_previous_autooptimizer =
+      previous_autooptimizer_present ? parse_boolean(previous_autooptimizer_node) : std::nullopt;
+  if (previous_autooptimizer_present && !parsed_previous_autooptimizer.has_value()) {
+    return false;
+  }
+  if (parsed_previous_backend.has_value() && parsed_previous_projection.has_value()) {
+    const auto previous_projection_value =
+        hm::stitching::ParseStitchProjection(parsed_previous_projection->toStdString());
+    if (!previous_projection_value.ok() ||
+        !hm::stitching::ValidateMappingBackendProjection(*parsed_previous_backend, *previous_projection_value).ok()) {
+      return false;
+    }
+  }
+  if (parsed_previous_backend == hm::stitching::MappingBackend::kNona && parsed_previous_autooptimizer.has_value() &&
+      !*parsed_previous_autooptimizer) {
+    return false;
+  }
   if (previous_projection_parameters) {
     *previous_projection_parameters = std::nullopt;
     YAML::Node previous_parameters_node;
@@ -3778,14 +3814,10 @@ bool generated_stitching_backend_choices_match_private(
       *previous_generated_projection_parameters = *parsed_parameters;
     }
   }
-  YAML::Node previous_autooptimizer_node;
-  if (previous_autooptimizer && has_generated_autooptimizer &&
-      lookup_yaml_path(
-          config,
-          "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer",
-          &previous_autooptimizer_node) &&
-      previous_autooptimizer_node.IsScalar()) {
-    *previous_autooptimizer = previous_autooptimizer_node.as<bool>();
+  if (previous_autooptimizer) {
+    *previous_autooptimizer = std::nullopt;
+    if (has_generated_autooptimizer && parsed_previous_autooptimizer.has_value())
+      *previous_autooptimizer = *parsed_previous_autooptimizer;
   }
   return true;
 }

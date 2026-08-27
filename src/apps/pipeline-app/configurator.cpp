@@ -543,6 +543,8 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher");
   const auto previous_backend =
       get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend");
+  const auto previous_autooptimizer =
+      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer");
   const auto previous_generated_projection_parameters =
       get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
   const auto private_matcher = get_node(config, "stitching.control_point_matcher");
@@ -596,6 +598,15 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
     try {
       const auto backend = stitching::ParseMappingBackend(node->as<std::string>());
       return backend.ok() ? std::optional<stitching::MappingBackend>(*backend) : std::nullopt;
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  auto parsed_boolean = [](const std::optional<YAML::Node>& node) -> std::optional<bool> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      return node->as<bool>();
     } catch (const YAML::Exception&) {
       return std::nullopt;
     }
@@ -657,19 +668,34 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
   const bool previous_backend_valid = !previous_backend.has_value() || parsed_backend(previous_backend).has_value();
   const bool previous_projection_valid =
       !previous_projection.has_value() || parsed_projection(previous_projection).has_value();
+  const bool previous_autooptimizer_valid =
+      !previous_autooptimizer.has_value() || parsed_boolean(previous_autooptimizer).has_value();
+  const auto previous_backend_value = parsed_backend(previous_backend);
+  const auto previous_autooptimizer_value = parsed_boolean(previous_autooptimizer);
+  bool previous_backend_tuple_valid = true;
+  if (previous_backend_value.has_value()) {
+    std::optional<stitching::StitchProjection> effective_previous_projection = parsed_projection(previous_projection);
+    if (!effective_previous_projection.has_value() && !previous_projection.has_value() &&
+        *previous_backend_value != stitching::MappingBackend::kNona) {
+      effective_previous_projection = stitching::StitchProjection::kRectilinear;
+    }
+    previous_backend_tuple_valid =
+        (!effective_previous_projection.has_value() ||
+         stitching::ValidateMappingBackendProjection(*previous_backend_value, *effective_previous_projection).ok()) &&
+        (*previous_backend_value != stitching::MappingBackend::kNona || !previous_autooptimizer_value.has_value() ||
+         *previous_autooptimizer_value);
+  }
   const bool generated_matches_private = generated_matcher_value.has_value() && private_matcher_value.has_value() &&
       *generated_matcher_value == *private_matcher_value && generated_backend_value.has_value() &&
       private_backend_value.has_value() && *generated_backend_value == *private_backend_value &&
       generated_autooptimizer_matches_private && generated_projection_matches_private &&
       generated_projection_parameters_match_private && previous_projection_parameters_valid &&
       previous_generated_projection_parameters_valid && previous_matcher_valid && previous_backend_valid &&
-      previous_projection_valid;
+      previous_projection_valid && previous_autooptimizer_valid && previous_backend_tuple_valid;
   if (!generated_matches_private) {
     return false;
   }
 
-  const auto previous_autooptimizer =
-      get_node(config, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer");
   if (previous_matcher.has_value() && previous_matcher->IsScalar()) {
     config["stitching"]["control_point_matcher"] = previous_matcher->as<std::string>();
   } else {
@@ -7178,6 +7204,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher");
   const auto generated_previous_backend =
       get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend");
+  const auto generated_previous_autooptimizer =
+      get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer");
   const auto generated_previous_projection =
       get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection");
   const auto generated_previous_projection_parameters =
@@ -7330,19 +7358,47 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     return parameter_projection.has_value() && values.has_value() &&
         stitching::ValidateStitchProjectionParameters(*parameter_projection, *values).ok();
   };
+  const auto previous_backend_tuple_valid = [&parsed_backend, &parsed_boolean, &parsed_projection](
+                                                const std::optional<YAML::Node>& previous_backend_node,
+                                                const std::optional<YAML::Node>& previous_projection_node,
+                                                const std::optional<YAML::Node>& previous_autooptimizer_node) {
+    const auto previous_backend_value = parsed_backend(previous_backend_node);
+    const auto previous_projection_value = parsed_projection(previous_projection_node);
+    const auto previous_autooptimizer_value = parsed_boolean(previous_autooptimizer_node);
+    if ((previous_backend_node.has_value() && !previous_backend_value.has_value()) ||
+        (previous_projection_node.has_value() && !previous_projection_value.has_value()) ||
+        (previous_autooptimizer_node.has_value() && !previous_autooptimizer_value.has_value())) {
+      return false;
+    }
+    if (!previous_backend_value.has_value())
+      return true;
+    std::optional<stitching::StitchProjection> effective_previous_projection = previous_projection_value;
+    if (!effective_previous_projection.has_value() && *previous_backend_value != stitching::MappingBackend::kNona) {
+      effective_previous_projection = stitching::StitchProjection::kRectilinear;
+    }
+    return (!effective_previous_projection.has_value() ||
+            stitching::ValidateMappingBackendProjection(*previous_backend_value, *effective_previous_projection)
+                .ok()) &&
+        (*previous_backend_value != stitching::MappingBackend::kNona || !previous_autooptimizer_value.has_value() ||
+         *previous_autooptimizer_value);
+  };
   const bool generated_parameter_metadata_valid =
       metadata_parameters_valid(generated_previous_projection_parameters, generated_previous_projection_value) &&
       metadata_parameters_valid(generated_previous_generated_projection_parameters, generated_projection_value) &&
       (!generated_previous_matcher.has_value() || parsed_matcher(generated_previous_matcher).has_value()) &&
       (!generated_previous_backend.has_value() || parsed_backend(generated_previous_backend).has_value()) &&
-      (!generated_previous_projection.has_value() || generated_previous_projection_value.has_value());
+      (!generated_previous_projection.has_value() || generated_previous_projection_value.has_value()) &&
+      previous_backend_tuple_valid(
+          generated_previous_backend, generated_previous_projection, generated_previous_autooptimizer);
   const bool persisted_parameter_metadata_valid =
       metadata_parameters_valid(persisted_previous_projection_parameters, persisted_previous_projection_value) &&
       metadata_parameters_valid(
           persisted_previous_generated_projection_parameters, persisted_generated_projection_value) &&
       (!persisted_previous_matcher.has_value() || parsed_matcher(persisted_previous_matcher).has_value()) &&
       (!persisted_previous_backend.has_value() || parsed_backend(persisted_previous_backend).has_value()) &&
-      (!persisted_previous_projection.has_value() || persisted_previous_projection_value.has_value());
+      (!persisted_previous_projection.has_value() || persisted_previous_projection_value.has_value()) &&
+      previous_backend_tuple_valid(
+          persisted_previous_backend, persisted_previous_projection, persisted_previous_autooptimizer);
   const bool generated_parameters_match_private = !generated_projection_parameters.has_value() ||
       (generated_projection_parameter_values.has_value() && private_projection_parameter_values.has_value() &&
        *generated_projection_parameter_values == *private_projection_parameter_values);

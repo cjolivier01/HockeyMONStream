@@ -6588,11 +6588,12 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
+  auto* run_autooptimizer = require_child<QCheckBox>(window, "runAutooptimizerCheck");
   auto* compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
   auto* top_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniTopSqueezeSpin");
   auto* bottom_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniBottomSqueezeSpin");
-  if (!game_id || !create || !save || !control_point_matcher || !mapping_backend || !projection || !compression ||
-      !top_squeeze || !bottom_squeeze) {
+  if (!game_id || !create || !save || !control_point_matcher || !mapping_backend || !projection || !run_autooptimizer ||
+      !compression || !top_squeeze || !bottom_squeeze) {
     return false;
   }
   const QString original_game_id = game_id->text();
@@ -6728,6 +6729,43 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           mapping_backend->currentData().toString() == "opencv-magsac" &&
           projection->currentData().toString() == "rectilinear",
       "UI load must reject the entire generated marker when its previous projection scalar is malformed");
+  auto worker_tuple_fixture = [&]() {
+    YAML::Node fixture = YAML::Clone(generated_backend_alias);
+    fixture["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+    fixture["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] = "superpoint";
+    return fixture;
+  };
+  auto show_non_worker_tuple = [&]() {
+    mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+    projection->setCurrentIndex(projection->findData("general-panini"));
+    QApplication::processEvents();
+  };
+  auto worker_tuple_is_visible = [&](const char* message) {
+    return expect(
+        control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+            mapping_backend->currentData().toString() == "opencv-magsac" &&
+            projection->currentData().toString() == "rectilinear" && !run_autooptimizer->isChecked(),
+        message);
+  };
+  YAML::Node incompatible_previous_tuple = worker_tuple_fixture();
+  YAML::Node incompatible_previous_choices =
+      incompatible_previous_tuple["hstream_ui"]["generated_stitching_backend_choices"];
+  incompatible_previous_choices["previous_mapping_backend"] = "opencv-magsac";
+  incompatible_previous_choices["previous_projection"] = "general-panini";
+  incompatible_previous_choices["previous_run_autooptimizer"] = false;
+  std::ofstream(config_path) << YAML::Dump(incompatible_previous_tuple) << '\n';
+  show_non_worker_tuple();
+  activate(create);
+  const bool incompatible_previous_tuple_rejects_marker = worker_tuple_is_visible(
+      "UI load must reject incompatible previous backend/projection provenance and load the current worker tuple");
+  YAML::Node malformed_previous_autooptimizer = worker_tuple_fixture();
+  malformed_previous_autooptimizer["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"] =
+      "not-a-boolean";
+  std::ofstream(config_path) << YAML::Dump(malformed_previous_autooptimizer) << '\n';
+  show_non_worker_tuple();
+  activate(create);
+  const bool malformed_previous_autooptimizer_rejects_marker = worker_tuple_is_visible(
+      "UI load must reject a malformed previous autooptimizer without aborting the current worker-tuple load");
   YAML::Node unselectable_previous_matcher = YAML::Clone(generated_backend_alias);
   unselectable_previous_matcher["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
       "dedode-lightglue";
@@ -6749,7 +6787,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
       edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&
       invalid_previous_matcher_rejects_marker && invalid_previous_backend_rejects_marker &&
-      invalid_previous_projection_rejects_marker && unselectable_stale_state_selected &&
+      invalid_previous_projection_rejects_marker && incompatible_previous_tuple_rejects_marker &&
+      malformed_previous_autooptimizer_rejects_marker && unselectable_stale_state_selected &&
       unselectable_previous_matcher_is_ignored;
 }
 
