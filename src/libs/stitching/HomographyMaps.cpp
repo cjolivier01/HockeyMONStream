@@ -30,6 +30,11 @@ constexpr double kAffineRansacReprojectionThreshold = 10.0;
 constexpr double kRansacConfidence = 0.999;
 constexpr int kRansacMaxIterations = 10000;
 constexpr double kProjectivePoleEpsilon = 1e-9;
+constexpr size_t kRobustConsensusMatchCount = 16;
+constexpr size_t kMinimumRobustMagsacInliers = 8;
+constexpr double kMinimumMagsacInlierRatio = 0.5;
+constexpr double kMinimumMagsacSourceSpanRatio = 0.1;
+constexpr double kMinimumMagsacSourceAreaRatio = 0.01;
 
 std::string normalize_choice(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -95,6 +100,56 @@ bool finite_matrix(const cv::Mat& matrix) {
     }
   }
   return true;
+}
+
+absl::Status validate_magsac_consensus(
+    const std::vector<FeatureMatch>& matches,
+    const cv::Mat& inliers,
+    size_t inlier_count,
+    const cv::Mat& source_image) {
+  if (matches.size() < kRobustConsensusMatchCount)
+    return absl::OkStatus();
+
+  const size_t ratio_inliers =
+      static_cast<size_t>(std::ceil(kMinimumMagsacInlierRatio * static_cast<double>(matches.size())));
+  const size_t required_inliers = std::max(kMinimumRobustMagsacInliers, ratio_inliers);
+  if (inlier_count < required_inliers) {
+    return absl::FailedPreconditionError(
+        "OpenCV MAGSAC stitching transform has insufficient consensus: " + std::to_string(inlier_count) +
+        " inliers from " + std::to_string(matches.size()) + " control points; at least " +
+        std::to_string(required_inliers) + " are required");
+  }
+
+  const cv::Mat flat_inliers = inliers.reshape(1, 1);
+  const unsigned char* mask = flat_inliers.ptr<unsigned char>();
+  std::vector<cv::Point2f> source_inliers;
+  source_inliers.reserve(inlier_count);
+  for (size_t i = 0; i < matches.size(); ++i) {
+    if (mask[i])
+      source_inliers.push_back(matches[i].right);
+  }
+
+  float minimum_x = source_inliers.front().x;
+  float maximum_x = minimum_x;
+  float minimum_y = source_inliers.front().y;
+  float maximum_y = minimum_y;
+  for (const cv::Point2f& point : source_inliers) {
+    minimum_x = std::min(minimum_x, point.x);
+    maximum_x = std::max(maximum_x, point.x);
+    minimum_y = std::min(minimum_y, point.y);
+    maximum_y = std::max(maximum_y, point.y);
+  }
+  std::vector<cv::Point2f> hull;
+  cv::convexHull(source_inliers, hull);
+  const double covered_area = std::abs(cv::contourArea(hull));
+  const double source_area = static_cast<double>(source_image.cols) * source_image.rows;
+  if (maximum_x - minimum_x < kMinimumMagsacSourceSpanRatio * source_image.cols ||
+      maximum_y - minimum_y < kMinimumMagsacSourceSpanRatio * source_image.rows ||
+      covered_area < kMinimumMagsacSourceAreaRatio * source_area) {
+    return absl::FailedPreconditionError(
+        "OpenCV MAGSAC stitching transform has insufficient inlier coverage across the source image");
+  }
+  return absl::OkStatus();
 }
 
 absl::Status write_rgba_tiff_with_placement(
@@ -413,6 +468,11 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
   if (inlier_count < minimum_inliers) {
     return absl::FailedPreconditionError(
         "OpenCV stitching transform has too few inlier control points: " + std::to_string(inlier_count));
+  }
+  if (backend == MappingBackend::kOpenCvMagsac) {
+    status = validate_magsac_consensus(matches, inliers, inlier_count, right_bgr);
+    if (!status.ok())
+      return status;
   }
 
   cv::Mat right_to_left_64;

@@ -239,7 +239,6 @@ class Configurator {
   bool stitching_calibration_required_{false};
   bool scoreboard_perspective_materialized_from_rink_{false};
   bool loaded_generated_stitching_backend_choices_{false};
-  bool restored_generated_stitching_backend_choices_{false};
   mutable std::map<std::string, int> archive_lock_fds_;
   mutable std::map<std::string, int> archive_work_lock_fds_;
   mutable std::map<std::string, std::filesystem::path> archive_run_paths_;

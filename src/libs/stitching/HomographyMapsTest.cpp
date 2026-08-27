@@ -187,6 +187,45 @@ int main() {
            .ok(),
       "MAGSAC mapping should reject fewer than four control points");
 
+  fs::path low_consensus_dir = root / "low-consensus";
+  fs::create_directories(low_consensus_dir);
+  std::vector<hm::stitching::FeatureMatch> low_consensus_matches = {
+      {{17.0f, 6.0f}, {5.0f, 10.0f}, 0.9f},
+      {{87.0f, 6.0f}, {75.0f, 10.0f}, 0.9f},
+      {{17.0f, 66.0f}, {5.0f, 70.0f}, 0.9f},
+      {{87.0f, 66.0f}, {75.0f, 70.0f}, 0.9f},
+  };
+  for (int i = 0; i < 12; ++i) {
+    low_consensus_matches.push_back(
+        {{static_cast<float>((i * 37 + 11) % 97), static_cast<float>((i * 53 + 7) % 79)},
+         {static_cast<float>(15 + (i % 4) * 20), static_cast<float>(18 + (i / 4) * 22)},
+         0.2f});
+  }
+  auto low_consensus = hm::stitching::CreateOpenCvMappingFiles(
+      low_consensus_dir, left, right, low_consensus_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !low_consensus.ok() &&
+          std::string(low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
+      "MAGSAC mapping should reject a 16-point set supported by only four inliers");
+
+  fs::path clustered_consensus_dir = root / "clustered-consensus";
+  fs::create_directories(clustered_consensus_dir);
+  std::vector<hm::stitching::FeatureMatch> clustered_consensus_matches;
+  for (int y = 30; y < 38; y += 2) {
+    for (int x = 40; x < 48; x += 2) {
+      clustered_consensus_matches.push_back(
+          {{static_cast<float>(x + 12), static_cast<float>(y - 4)},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  auto clustered_consensus = hm::stitching::CreateOpenCvMappingFiles(
+      clustered_consensus_dir, left, right, clustered_consensus_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !clustered_consensus.ok() &&
+          std::string(clustered_consensus.status().message()).find("inlier coverage") != std::string::npos,
+      "MAGSAC mapping should reject inliers confined to a small source-image region");
+
   fs::path projective_pole_dir = root / "projective-pole";
   fs::create_directories(projective_pole_dir);
   std::vector<hm::stitching::FeatureMatch> projective_pole_matches;

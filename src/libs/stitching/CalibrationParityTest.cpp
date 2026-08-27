@@ -144,6 +144,7 @@ std::optional<HuginOutcome> configure_hugin(
   }
   hm::stitching::HuginProject::Options options;
   options.max_canvas_dimension = 2048;
+  options.mapping_backend = hm::stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
   const auto configured = hm::stitching::HuginProject::Configure(output_dir, matches, options);
   if (!configured.ok()) {

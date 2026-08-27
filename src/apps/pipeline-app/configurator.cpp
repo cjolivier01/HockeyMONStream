@@ -7014,17 +7014,13 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     HM_ASSIGN_OR_RETURN(run_autooptimizer, canonical_autooptimizer(lower_layer_config_));
   }
 
+  if (backend_name == stitching::MappingBackendName(stitching::MappingBackend::kNona) && !run_autooptimizer) {
+    return absl::InvalidArgumentError("The nona mapping backend requires stitching.run_autooptimizer=true");
+  }
+
   config_["stitching"]["control_point_matcher"] = matcher_name;
   config_["stitching"]["mapping_backend"] = backend_name;
   config_["stitching"]["run_autooptimizer"] = run_autooptimizer;
-
-  if (restored_generated_stitching_backend_choices_ && explicit_value_rank("stitching.control_point_matcher") < 3 &&
-      explicit_value_rank("stitching.mapping_backend") < 3 && explicit_value_rank("stitching.run_autooptimizer") < 3) {
-    HM_RETURN_IF_ERROR(save_private_config(private_config_, expected_invalidation_id));
-    loaded_generated_stitching_backend_choices_ = false;
-    restored_generated_stitching_backend_choices_ = false;
-    return absl::OkStatus();
-  }
 
   const bool private_matches = private_matcher.has_value() && private_matcher->IsScalar() &&
       private_matcher->as<std::string>() == matcher_name && private_backend.has_value() &&
@@ -7231,20 +7227,10 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
   loaded_generated_stitching_backend_choices_ = false;
-  restored_generated_stitching_backend_choices_ = false;
   if (private_config.has_value()) {
     const YAML::Node original_private_config = YAML::Clone(*private_config);
     private_config_ = YAML::Clone(*private_config);
-    restored_generated_stitching_backend_choices_ =
-        get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher")
-            .has_value() ||
-        get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
-            .has_value() ||
-        get_node(private_config_, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer")
-            .has_value();
     loaded_generated_stitching_backend_choices_ = normalize_generated_stitching_backend_choices(private_config_);
-    restored_generated_stitching_backend_choices_ =
-        restored_generated_stitching_backend_choices_ && loaded_generated_stitching_backend_choices_;
     persisted_private_config_ =
         YAML::Clone(loaded_generated_stitching_backend_choices_ ? original_private_config : private_config_);
     record_explicit_overlay(private_config_, {}, 2);

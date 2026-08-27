@@ -8571,6 +8571,28 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
             !save->isEnabled(),
         "A baseline native null must not mask a later numeric private max-width alias used by the pipeline");
   }
+  baseline["stitching"].remove("mapping_backend");
+  baseline["stitching"].remove("run_autooptimizer");
+  {
+    std::ofstream out(QDir(baseline_root.path()).filePath("baseline.yaml").toStdString());
+    out << YAML::Dump(baseline) << '\n';
+  }
+  {
+    std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
+    out << "{}\n";
+  }
+  try {
+    HStreamWindow legacy_baseline_window;
+    auto* mapping_backend = require_child<QComboBox>(&legacy_baseline_window, "mappingBackendCombo");
+    auto* run_autooptimizer = require_child<QCheckBox>(&legacy_baseline_window, "runAutooptimizerCheck");
+    ok &= expect(
+        mapping_backend && run_autooptimizer && mapping_backend->currentData().toString() == "opencv-magsac" &&
+            !run_autooptimizer->isChecked(),
+        "A baseline predating stitching backend keys must start with MAGSAC and the autooptimizer disabled");
+  } catch (const std::exception& error) {
+    std::cerr << "FAIL: Older baseline UI startup threw: " << error.what() << '\n';
+    ok = false;
+  }
   if (original_home.isEmpty())
     qunsetenv("HOME");
   else

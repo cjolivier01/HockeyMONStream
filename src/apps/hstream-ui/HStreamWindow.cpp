@@ -4099,7 +4099,7 @@ void HStreamWindow::loadBaselineDefaults() {
     default_stitch_max_output_width_ = read_stitch_max_output_width_from_config(
         loaded->values, 0, std::numeric_limits<int>::max(), /*native_fallback_for_null_canonical=*/true);
   }
-  default_run_autooptimizer_ = boolean("stitching.run_autooptimizer") != 0;
+  default_run_autooptimizer_ = read_run_autooptimizer_from_config(baseline_config_, false);
   YAML::Node control_point_matcher;
   if (lookup_yaml_path(baseline_config_, "stitching.control_point_matcher", &control_point_matcher) &&
       control_point_matcher.IsScalar()) {
