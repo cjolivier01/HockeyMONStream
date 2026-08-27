@@ -2166,6 +2166,42 @@ play-tracker:
           source_guard_restart_foreign == "foreign log after recovery guards retired",
       "Restart must restore an absent source from its guards and rescue a recovery pair whose visible names vanished");
 
+  const fs::path missing_log_guard_dir = root / "archive-missing-recovery-log-guard";
+  fs::create_directories(missing_log_guard_dir);
+  const fs::path missing_log_guard_configured = missing_log_guard_dir / "missing-log-guard.mkv";
+  const fs::path missing_log_guard_source = missing_log_guard_dir / "missing-log-guard.hstream-run-99999999-dead.mkv";
+  const fs::path missing_log_guard_source_log = missing_log_guard_source.string() + ".log";
+  const fs::path missing_log_guard_recovery = missing_log_guard_dir / "missing-log-guard-finalization-failed.mkv";
+  const fs::path missing_log_guard_recovery_log = missing_log_guard_recovery.string() + ".log";
+  const fs::path missing_log_guard_video_backing = missing_log_guard_dir / "video-backing";
+  const fs::path missing_log_guard_log_backing = missing_log_guard_dir / "log-backing";
+  std::ofstream(missing_log_guard_video_backing, std::ios::binary) << "missing-log-guard trusted video";
+  std::ofstream(missing_log_guard_log_backing, std::ios::binary) << "missing-log-guard trusted log";
+  fs::create_hard_link(missing_log_guard_video_backing, missing_log_guard_recovery);
+  fs::create_hard_link(missing_log_guard_log_backing, missing_log_guard_recovery_log);
+  fs::create_hard_link(missing_log_guard_video_backing, missing_log_guard_recovery.string() + ".hstream-pin");
+  fs::create_hard_link(missing_log_guard_video_backing, missing_log_guard_source.string() + ".hstream-pin");
+  fs::create_hard_link(missing_log_guard_log_backing, missing_log_guard_source_log.string() + ".hstream-pin");
+  const auto missing_log_guard_recovered =
+      hm::configurator_internal::recover_stale_archive_work_files(missing_log_guard_configured);
+  std::ifstream missing_log_guard_video_stream(missing_log_guard_recovery, std::ios::binary);
+  const std::string missing_log_guard_video{
+      std::istreambuf_iterator<char>(missing_log_guard_video_stream), std::istreambuf_iterator<char>()};
+  std::ifstream missing_log_guard_log_stream(missing_log_guard_recovery_log, std::ios::binary);
+  const std::string missing_log_guard_log{
+      std::istreambuf_iterator<char>(missing_log_guard_log_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      missing_log_guard_recovered.ok() && missing_log_guard_recovered->size() == 1 &&
+          missing_log_guard_recovered->front() == missing_log_guard_recovery &&
+          missing_log_guard_video == "missing-log-guard trusted video" &&
+          missing_log_guard_log == "missing-log-guard trusted log" &&
+          !fs::exists(missing_log_guard_recovery.string() + ".hstream-pin") &&
+          !fs::exists(missing_log_guard_recovery_log.string() + ".hstream-pin") &&
+          !fs::exists(missing_log_guard_source.string() + ".hstream-pin") &&
+          !fs::exists(missing_log_guard_source_log.string() + ".hstream-pin") &&
+          !fs::exists(missing_log_guard_dir / "missing-log-guard-finalization-failed-1.mkv"),
+      "Restart must reconstruct a missing recovery log guard from the surviving source guard without splitting the pair");
+
   const fs::path guard_only_log_dir = root / "archive-guard-only-log";
   fs::create_directories(guard_only_log_dir);
   const std::string guard_only_owner = std::to_string(::getpid()) + "-11223344-5566-7788-99aa-bbccddeeff00";
@@ -2224,7 +2260,9 @@ play-tracker:
           !fs::exists(reconstructed_recovery_log.string() + ".hstream-pin"),
       "Collision handling must retire reconstructed guards while the durable source pair moves to one new recovery");
 
-  const auto partial_rescue_is_resumed = [&](const std::string& name, const char* interruption_env) {
+  const auto partial_rescue_is_resumed = [&](const std::string& name,
+                                             const char* interruption_env,
+                                             bool remove_superseded_log = false) {
     const fs::path interrupted_dir = root / ("archive-partial-rescue-" + name);
     fs::create_directories(interrupted_dir);
     const fs::path configured = interrupted_dir / (name + ".mkv");
@@ -2242,6 +2280,8 @@ play-tracker:
     g_setenv(interruption_env, "1", TRUE);
     const auto rescue_interrupted = hm::configurator_internal::recover_stale_archive_work_files(configured);
     g_unsetenv(interruption_env);
+    if (remove_superseded_log)
+      fs::remove(recovery.string() + ".log");
     const auto resumed = hm::configurator_internal::recover_stale_archive_work_files(configured);
     const auto settled = hm::configurator_internal::recover_stale_archive_work_files(configured);
     std::ifstream rescued_video_stream(rescued, std::ios::binary);
@@ -2252,7 +2292,9 @@ play-tracker:
     const bool result = !source_cleanup_interrupted.ok() && !rescue_interrupted.ok() && resumed.ok() &&
         resumed->size() == 1 && resumed->front() == rescued && settled.ok() && settled->empty() &&
         rescued_video == name + " partial rescue video" && rescued_log == name + " partial rescue log" &&
-        !fs::exists(rescued.string() + ".hstream-pin") && !fs::exists(rescued.string() + ".log.hstream-pin");
+        !fs::exists(rescued.string() + ".hstream-pin") && !fs::exists(rescued.string() + ".log.hstream-pin") &&
+        (!remove_superseded_log ||
+         (!fs::exists(recovery.string() + ".log") && !fs::exists(recovery.string() + ".log.hstream-pin")));
     if (!result) {
       std::cerr << "partial rescue " << name << " source-interrupt=" << source_cleanup_interrupted.status()
                 << " rescue-interrupt=" << rescue_interrupted.status() << " resumed=" << resumed.status()
@@ -2270,8 +2312,8 @@ play-tracker:
           partial_rescue_is_resumed(
               "after-video-link", "HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_RESCUE_VIDEO_LINK") &&
           partial_rescue_is_resumed(
-              "between-old-guards", "HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BETWEEN_SUPERSEDED_GUARD_REMOVALS"),
-      "Restart must resume rescue publication after every link and between superseded guard removals");
+              "between-old-guards", "HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BETWEEN_SUPERSEDED_GUARD_REMOVALS", true),
+      "Restart must resume rescue publication after every link and after loss of a superseded visible pathname");
 
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /

@@ -1821,49 +1821,6 @@ absl::Status retire_archive_recovery_guards(
   };
 
   HM_RETURN_IF_ERROR(validate_pair());
-  if (recovery_log_stat) {
-    HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
-        recovery_log_guard_path,
-        *recovery_log_stat,
-        "committed archive log recovery identity guard",
-        &recovery_path,
-        &recovery_stat,
-        &recovery_log_path,
-        recovery_log_stat));
-    if (allow_test_injection && g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_DURING_ARCHIVE_GUARD_RETIREMENT")) {
-      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_DURING_ARCHIVE_GUARD_RETIREMENT");
-      HM_RETURN_IF_ERROR(restore_missing_guard(
-          recovery_log_fd,
-          recovery_log_path,
-          *recovery_log_stat,
-          recovery_log_guard_path,
-          "archive log recovery identity guard"));
-      return absl::UnavailableError("archive recovery interruption requested during guard retirement");
-    }
-    if (allow_test_injection && g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_LOG_BETWEEN_GUARDS")) {
-      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_LOG_BETWEEN_GUARDS");
-      ::unlink(recovery_log_path.c_str());
-      const int replacement_fd =
-          ::open(recovery_log_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
-      if (replacement_fd >= 0) {
-        constexpr char kReplacement[] = "injected foreign archive log between guard retirements";
-        const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
-        (void)replacement_bytes;
-        ::close(replacement_fd);
-      }
-    }
-    const absl::Status pair_after_log_guard = validate_pair();
-    if (!pair_after_log_guard.ok()) {
-      const absl::Status restored = restore_missing_guard(
-          recovery_log_fd,
-          recovery_log_path,
-          *recovery_log_stat,
-          recovery_log_guard_path,
-          "archive log recovery identity guard");
-      return restored.ok() ? pair_after_log_guard : restored;
-    }
-  }
-
   const absl::Status video_guard_cleanup = remove_archive_entry_if_owned(
       recovery_guard_path,
       recovery_stat,
@@ -1873,17 +1830,47 @@ absl::Status retire_archive_recovery_guards(
       recovery_log_stat ? &recovery_log_path : nullptr,
       recovery_log_stat);
   if (!video_guard_cleanup.ok()) {
-    if (recovery_log_stat) {
-      const absl::Status restored = restore_missing_guard(
-          recovery_log_fd,
-          recovery_log_path,
-          *recovery_log_stat,
-          recovery_log_guard_path,
-          "archive log recovery identity guard");
-      if (!restored.ok())
-        return restored;
-    }
     return video_guard_cleanup;
+  }
+  if (allow_test_injection && g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_DURING_ARCHIVE_GUARD_RETIREMENT")) {
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_DURING_ARCHIVE_GUARD_RETIREMENT");
+    return absl::UnavailableError("archive recovery interruption requested during guard retirement");
+  }
+  if (allow_test_injection && recovery_log_stat &&
+      g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_LOG_BETWEEN_GUARDS")) {
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_LOG_BETWEEN_GUARDS");
+    ::unlink(recovery_log_path.c_str());
+    const int replacement_fd =
+        ::open(recovery_log_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (replacement_fd >= 0) {
+      constexpr char kReplacement[] = "injected foreign archive log between guard retirements";
+      const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+      (void)replacement_bytes;
+      ::close(replacement_fd);
+    }
+  }
+  const absl::Status pair_after_video_guard = validate_pair();
+  if (!pair_after_video_guard.ok()) {
+    const absl::Status video_guard_restored = restore_missing_guard(
+        recovery_fd, recovery_path, recovery_stat, recovery_guard_path, "archive recovery identity guard");
+    if (!video_guard_restored.ok())
+      return video_guard_restored;
+    return pair_after_video_guard;
+  }
+  if (recovery_log_stat) {
+    const absl::Status log_guard_cleanup = remove_archive_entry_if_owned(
+        recovery_log_guard_path,
+        *recovery_log_stat,
+        "committed archive log recovery identity guard",
+        &recovery_path,
+        &recovery_stat,
+        &recovery_log_path,
+        recovery_log_stat);
+    if (!log_guard_cleanup.ok()) {
+      const absl::Status restored = restore_missing_guard(
+          recovery_fd, recovery_path, recovery_stat, recovery_guard_path, "archive recovery identity guard");
+      return restored.ok() ? log_guard_cleanup : restored;
+    }
   }
   const absl::Status committed_pair = validate_pair();
   if (!committed_pair.ok()) {
@@ -2248,17 +2235,10 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
       g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_LOG_CLEANUP");
       return absl::UnavailableError("archive recovery interruption requested after log cleanup");
     }
-    HM_RETURN_IF_ERROR(retire_archive_recovery_guards(
-        recovery_path,
-        output_stat,
-        output_fd,
-        recovery_log_path,
-        has_output_log ? &output_log_stat : nullptr,
-        output_log_fd));
-    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_RECOVERY_GUARD_RETIREMENT")) {
-      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_RECOVERY_GUARD_RETIREMENT");
-      return absl::UnavailableError("archive recovery interruption requested after recovery guard retirement");
-    }
+    // Retire the source transaction record while the recovery guards still
+    // protect both identities.  The recovery video guard is then retired
+    // before its log guard, so a crash never leaves a discoverable video
+    // transaction without a durable log identity.
     if (output_guard_stat->has_value()) {
       HM_RETURN_IF_ERROR(retire_archive_recovery_guards(
           recovery_path,
@@ -2271,6 +2251,17 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
           has_output_log ? &output_log_guard_path : nullptr,
           false));
     }
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_RECOVERY_GUARD_RETIREMENT")) {
+      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_RECOVERY_GUARD_RETIREMENT");
+      return absl::UnavailableError("archive recovery interruption requested between guard-pair retirements");
+    }
+    HM_RETURN_IF_ERROR(retire_archive_recovery_guards(
+        recovery_path,
+        output_stat,
+        output_fd,
+        recovery_log_path,
+        has_output_log ? &output_log_stat : nullptr,
+        output_log_fd));
     HM_RETURN_IF_ERROR(sync_parent_directory(recovery_path));
     return absl::OkStatus();
   };
@@ -2727,11 +2718,12 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         inspect_archive_entry(recovery_log_guard_path, "interrupted archive log recovery guard");
     if (!recovery_log_guard_stat.ok())
       return recovery_log_guard_stat.status();
-    if (!recovery_guard_stat->has_value()) {
-      // A process can stop after retiring the recovery guards but before
-      // retiring the original work-file guards.  Recreate the transaction
-      // guards from that still-durable pair before validating the visible
-      // recovery names below.
+    if (!recovery_guard_stat->has_value() || !recovery_log_guard_stat->has_value()) {
+      // A process can stop while retiring either guard pair.  Recreate every
+      // missing recovery identity from the still-durable source pair before
+      // validating the visible recovery names below.  In particular, do not
+      // interpret a surviving video guard as a no-log transaction merely
+      // because its log guard was the last unlink persisted before a crash.
       auto visible_video = inspect_archive_entry(recovery_path, "unguarded interrupted archive recovery file");
       auto visible_log = inspect_archive_entry(recovery_log_path, "unguarded interrupted archive recovery log");
       if (!visible_video.ok())
@@ -2749,6 +2741,10 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
           return source_guard_stat.status();
         if (!source_guard_stat->has_value() || !S_ISREG(source_guard_stat->value().st_mode) ||
             source_guard_stat->value().st_size <= 0) {
+          continue;
+        }
+        if (recovery_guard_stat->has_value() &&
+            !same_file_identity(recovery_guard_stat->value(), source_guard_stat->value())) {
           continue;
         }
 
@@ -2789,7 +2785,9 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
             visible_video->has_value() && same_file_identity(source_guard_stat->value(), visible_video->value());
         const bool visible_log_matches = source_log_guard_stat.has_value() && visible_log->has_value() &&
             same_file_identity(source_log_guard_stat.value(), visible_log->value());
-        if (!visible_video_matches && !visible_log_matches) {
+        const bool recovery_video_matches = recovery_guard_stat->has_value() &&
+            same_file_identity(recovery_guard_stat->value(), source_guard_stat->value());
+        if (!visible_video_matches && !visible_log_matches && !recovery_video_matches) {
           continue;
         }
         if (recovery_log_guard_stat->has_value() &&
@@ -2822,27 +2820,93 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
           recovery_log_guard_stat = source_log_guard_stat;
         }
 
-        const int source_guard_fd =
-            ::open(possible_source_guard.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        struct stat pinned_source_guard_stat{};
-        if (source_guard_fd < 0 || ::fstat(source_guard_fd, &pinned_source_guard_stat) != 0 ||
-            !same_file_identity(pinned_source_guard_stat, source_guard_stat->value())) {
-          if (source_guard_fd >= 0)
-            ::close(source_guard_fd);
-          return absl::FailedPreconditionError(
-              TO_STRING("Interrupted source video guard changed at \"" << possible_source_guard.string() << "\""));
+        if (!recovery_guard_stat->has_value()) {
+          const int source_guard_fd =
+              ::open(possible_source_guard.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+          struct stat pinned_source_guard_stat{};
+          if (source_guard_fd < 0 || ::fstat(source_guard_fd, &pinned_source_guard_stat) != 0 ||
+              !same_file_identity(pinned_source_guard_stat, source_guard_stat->value())) {
+            if (source_guard_fd >= 0)
+              ::close(source_guard_fd);
+            return absl::FailedPreconditionError(
+                TO_STRING("Interrupted source video guard changed at \"" << possible_source_guard.string() << "\""));
+          }
+          const absl::Status video_guard_link = create_archive_recovery_link(
+              source_guard_fd,
+              possible_source_guard,
+              source_guard_stat->value(),
+              recovery_guard_path,
+              "restored archive recovery guard");
+          ::close(source_guard_fd);
+          HM_RETURN_IF_ERROR(video_guard_link);
+          recovery_guard_stat = source_guard_stat;
         }
-        const absl::Status video_guard_link = create_archive_recovery_link(
-            source_guard_fd,
-            possible_source_guard,
-            source_guard_stat->value(),
-            recovery_guard_path,
-            "restored archive recovery guard");
-        ::close(source_guard_fd);
-        HM_RETURN_IF_ERROR(video_guard_link);
         HM_RETURN_IF_ERROR(sync_parent_directory(recovery_path));
-        recovery_guard_stat = source_guard_stat;
         break;
+      }
+    }
+    if (!recovery_guard_stat->has_value() && recovery_log_guard_stat->has_value() &&
+        S_ISREG(recovery_log_guard_stat->value().st_mode)) {
+      // The video guard is retired first.  A lone log guard therefore records
+      // a committed visible pair whose final guard cleanup was interrupted.
+      // It can also be the superseded half of a rescue transaction; in that
+      // case, prefer the other fully guarded pair and retire only this guard.
+      const struct stat retired_log_stat = recovery_log_guard_stat->value();
+      bool superseded_by_guarded_pair = false;
+      for (const fs::path& other_path : recovery_paths) {
+        if (other_path == recovery_path)
+          continue;
+        const fs::path other_log_path = archive_log_sidecar(other_path);
+        const fs::path other_guard_path = other_path.string() + ".hstream-pin";
+        const fs::path other_log_guard_path = other_log_path.string() + ".hstream-pin";
+        auto other_video = inspect_archive_entry(other_path, "completed guarded recovery video");
+        auto other_video_guard = inspect_archive_entry(other_guard_path, "completed recovery video guard");
+        auto other_log = inspect_archive_entry(other_log_path, "completed guarded recovery log");
+        auto other_log_guard = inspect_archive_entry(other_log_guard_path, "completed recovery log guard");
+        if (!other_video.ok())
+          return other_video.status();
+        if (!other_video_guard.ok())
+          return other_video_guard.status();
+        if (!other_log.ok())
+          return other_log.status();
+        if (!other_log_guard.ok())
+          return other_log_guard.status();
+        if (!other_video->has_value() || !other_video_guard->has_value() ||
+            !same_file_identity(other_video->value(), other_video_guard->value()) || !other_log->has_value() ||
+            !other_log_guard->has_value() || !same_file_identity(other_log->value(), retired_log_stat) ||
+            !same_file_identity(other_log_guard->value(), retired_log_stat)) {
+          continue;
+        }
+        HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+            recovery_log_guard_path,
+            retired_log_stat,
+            "superseded retired archive log guard",
+            &other_path,
+            &other_video_guard->value(),
+            &other_log_path,
+            &retired_log_stat));
+        superseded_by_guarded_pair = true;
+        break;
+      }
+      if (superseded_by_guarded_pair)
+        continue;
+
+      auto visible_video = inspect_archive_entry(recovery_path, "committed recovery video after guard retirement");
+      auto visible_log = inspect_archive_entry(recovery_log_path, "committed recovery log after guard retirement");
+      if (!visible_video.ok())
+        return visible_video.status();
+      if (!visible_log.ok())
+        return visible_log.status();
+      if (visible_video->has_value() && S_ISREG(visible_video->value().st_mode) && visible_video->value().st_size > 0 &&
+          visible_log->has_value() && same_file_identity(visible_log->value(), retired_log_stat)) {
+        HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+            recovery_log_guard_path,
+            retired_log_stat,
+            "retired archive log recovery guard",
+            &recovery_log_path,
+            &retired_log_stat));
+        recovered.push_back(recovery_path);
+        continue;
       }
     }
     if (!recovery_guard_stat->has_value() || !S_ISREG(recovery_guard_stat->value().st_mode) ||
@@ -2979,6 +3043,14 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
               duplicate_log_stat.has_value() ? &other_log_path : nullptr,
               duplicate_log_stat.has_value() ? &duplicate_log_stat.value() : nullptr));
         }
+        HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+            recovery_guard_path,
+            trusted_video_stat,
+            "superseded duplicate archive recovery guard",
+            &other_path,
+            &trusted_video_stat,
+            duplicate_log_stat.has_value() ? &other_log_path : nullptr,
+            duplicate_log_stat.has_value() ? &duplicate_log_stat.value() : nullptr));
         if (has_trusted_log) {
           HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
               recovery_log_guard_path,
@@ -2989,14 +3061,6 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
               &other_log_path,
               &trusted_log_stat));
         }
-        HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
-            recovery_guard_path,
-            trusted_video_stat,
-            "superseded duplicate archive recovery guard",
-            &other_path,
-            &trusted_video_stat,
-            duplicate_log_stat.has_value() ? &other_log_path : nullptr,
-            duplicate_log_stat.has_value() ? &duplicate_log_stat.value() : nullptr));
         duplicate_committed_elsewhere = true;
         break;
       }
@@ -3101,20 +3165,6 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
               &candidate,
               &trusted_video_stat));
         }
-        if (has_trusted_log) {
-          HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
-              recovery_log_guard_path,
-              trusted_log_stat,
-              "superseded archive log recovery guard",
-              &candidate,
-              &trusted_video_stat,
-              &candidate_log,
-              &trusted_log_stat));
-          if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BETWEEN_SUPERSEDED_GUARD_REMOVALS")) {
-            g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BETWEEN_SUPERSEDED_GUARD_REMOVALS");
-            return absl::UnavailableError("archive recovery interruption requested between superseded guard removals");
-          }
-        }
         HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
             recovery_guard_path,
             trusted_video_stat,
@@ -3123,6 +3173,20 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
             &trusted_video_stat,
             has_trusted_log ? &candidate_log : nullptr,
             has_trusted_log ? &trusted_log_stat : nullptr));
+        if (has_trusted_log) {
+          if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BETWEEN_SUPERSEDED_GUARD_REMOVALS")) {
+            g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BETWEEN_SUPERSEDED_GUARD_REMOVALS");
+            return absl::UnavailableError("archive recovery interruption requested between superseded guard removals");
+          }
+          HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+              recovery_log_guard_path,
+              trusted_log_stat,
+              "superseded archive log recovery guard",
+              &candidate,
+              &trusted_video_stat,
+              &candidate_log,
+              &trusted_log_stat));
+        }
         committed_path = candidate;
         committed_log_path = candidate_log;
         rescued = true;
