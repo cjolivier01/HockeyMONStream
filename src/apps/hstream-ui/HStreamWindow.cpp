@@ -3649,16 +3649,28 @@ bool generated_stitching_backend_choices_match_private(
       (generated_autooptimizer.IsScalar() &&
        lookup_yaml_path(config, "stitching.run_autooptimizer", &private_autooptimizer) &&
        private_autooptimizer.IsScalar() && private_autooptimizer.as<bool>() == generated_autooptimizer.as<bool>());
-  const bool matches =
-      lookup_yaml_path(
-          config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher) &&
-      generated_matcher.IsScalar() &&
-      lookup_yaml_path(config, "hstream_ui.generated_stitching_backend_choices.mapping_backend", &generated_backend) &&
-      generated_backend.IsScalar() && lookup_yaml_path(config, "stitching.control_point_matcher", &private_matcher) &&
-      private_matcher.IsScalar() && lookup_yaml_path(config, "stitching.mapping_backend", &private_backend) &&
-      private_backend.IsScalar() && private_matcher.as<std::string>() == generated_matcher.as<std::string>() &&
-      private_backend.as<std::string>() == generated_backend.as<std::string>() && projection_matches &&
-      generated_autooptimizer_matches && generated_projection_parameters_match;
+  const bool generated_matcher_present = lookup_yaml_path(
+      config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher);
+  const bool generated_backend_present =
+      lookup_yaml_path(config, "hstream_ui.generated_stitching_backend_choices.mapping_backend", &generated_backend);
+  const bool private_matcher_present = lookup_yaml_path(config, "stitching.control_point_matcher", &private_matcher);
+  const bool private_backend_present = lookup_yaml_path(config, "stitching.mapping_backend", &private_backend);
+  const auto parsed_generated_matcher = generated_matcher_present && generated_matcher.IsScalar()
+      ? canonical_control_point_matcher_choice(QString::fromStdString(generated_matcher.as<std::string>()))
+      : std::nullopt;
+  const auto parsed_private_matcher = private_matcher_present && private_matcher.IsScalar()
+      ? canonical_control_point_matcher_choice(QString::fromStdString(private_matcher.as<std::string>()))
+      : std::nullopt;
+  const auto parsed_generated_backend = generated_backend_present && generated_backend.IsScalar()
+      ? canonical_mapping_backend_choice(QString::fromStdString(generated_backend.as<std::string>()))
+      : std::nullopt;
+  const auto parsed_private_backend = private_backend_present && private_backend.IsScalar()
+      ? canonical_mapping_backend_choice(QString::fromStdString(private_backend.as<std::string>()))
+      : std::nullopt;
+  const bool matches = parsed_generated_matcher.has_value() && parsed_private_matcher.has_value() &&
+      *parsed_generated_matcher == *parsed_private_matcher && parsed_generated_backend.has_value() &&
+      parsed_private_backend.has_value() && *parsed_generated_backend == *parsed_private_backend &&
+      projection_matches && generated_autooptimizer_matches && generated_projection_parameters_match;
   if (!matches) {
     return false;
   }
@@ -3674,37 +3686,40 @@ bool generated_stitching_backend_choices_match_private(
   YAML::Node previous_backend_node;
   YAML::Node previous_projection_node;
   QString restored_projection;
-  if (previous_matcher &&
-      lookup_yaml_path(
-          config,
-          "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher",
-          &previous_matcher_node) &&
-      previous_matcher_node.IsScalar()) {
-    const auto canonical =
-        canonical_control_point_matcher_choice(QString::fromStdString(previous_matcher_node.as<std::string>()));
-    if (canonical.has_value()) {
-      *previous_matcher = *canonical;
-    }
+  const bool previous_matcher_present = lookup_yaml_path(
+      config, "hstream_ui.generated_stitching_backend_choices.previous_control_point_matcher", &previous_matcher_node);
+  const auto parsed_previous_matcher = previous_matcher_present && previous_matcher_node.IsScalar()
+      ? canonical_control_point_matcher_choice(QString::fromStdString(previous_matcher_node.as<std::string>()))
+      : std::nullopt;
+  if (previous_matcher_present && !parsed_previous_matcher.has_value()) {
+    return false;
   }
-  if (previous_backend &&
-      lookup_yaml_path(
-          config, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend", &previous_backend_node) &&
-      previous_backend_node.IsScalar()) {
-    const auto canonical =
-        canonical_mapping_backend_choice(QString::fromStdString(previous_backend_node.as<std::string>()));
-    if (canonical.has_value()) {
-      *previous_backend = *canonical;
-    }
+  if (previous_matcher && parsed_previous_matcher.has_value()) {
+    *previous_matcher = *parsed_previous_matcher;
   }
-  if (previous_projection &&
-      lookup_yaml_path(
-          config, "hstream_ui.generated_stitching_backend_choices.previous_projection", &previous_projection_node) &&
-      previous_projection_node.IsScalar()) {
-    const auto canonical =
-        canonical_projection_choice(QString::fromStdString(previous_projection_node.as<std::string>()));
-    if (canonical.has_value()) {
-      *previous_projection = *canonical;
-      restored_projection = *canonical;
+  const bool previous_backend_present = lookup_yaml_path(
+      config, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend", &previous_backend_node);
+  const auto parsed_previous_backend = previous_backend_present && previous_backend_node.IsScalar()
+      ? canonical_mapping_backend_choice(QString::fromStdString(previous_backend_node.as<std::string>()))
+      : std::nullopt;
+  if (previous_backend_present && !parsed_previous_backend.has_value()) {
+    return false;
+  }
+  if (previous_backend && parsed_previous_backend.has_value()) {
+    *previous_backend = *parsed_previous_backend;
+  }
+  const bool previous_projection_present = lookup_yaml_path(
+      config, "hstream_ui.generated_stitching_backend_choices.previous_projection", &previous_projection_node);
+  const auto parsed_previous_projection = previous_projection_present && previous_projection_node.IsScalar()
+      ? canonical_projection_choice(QString::fromStdString(previous_projection_node.as<std::string>()))
+      : std::nullopt;
+  if (previous_projection_present && !parsed_previous_projection.has_value()) {
+    return false;
+  }
+  if (parsed_previous_projection.has_value()) {
+    restored_projection = *parsed_previous_projection;
+    if (previous_projection) {
+      *previous_projection = *parsed_previous_projection;
     }
   } else if (parsed_generated_projection.has_value()) {
     restored_projection = QString::fromLatin1(hm::stitching::StitchProjectionName(*parsed_generated_projection));

@@ -6668,11 +6668,52 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const bool edited_generated_parameters_are_user_intent = expect(
       projection->currentData().toString() == "triplane" && compression->value() == 80.0,
       "UI load must stop trusting generated-choice provenance after projection parameters are edited");
+
+  YAML::Node invalid_previous_projection = YAML::Clone(generated_override);
+  invalid_previous_projection["stitching"]["projection"] = "triplane";
+  invalid_previous_projection["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
+  YAML::Node invalid_previous_choices =
+      invalid_previous_projection["hstream_ui"]["generated_stitching_backend_choices"];
+  invalid_previous_choices["projection"] = "triplane";
+  invalid_previous_choices["projection_parameters"] = YAML::Load("[80]");
+  invalid_previous_choices["previous_projection"] = "invalid-projection";
+  invalid_previous_choices.remove("previous_projection_parameters");
+  std::ofstream(config_path) << YAML::Dump(invalid_previous_projection) << '\n';
+  activate(create);
+  const bool invalid_previous_projection_is_user_intent = expect(
+      projection->currentData().toString() == "triplane" && compression->value() == 80.0,
+      "UI load must distrust a present invalid previous projection even when previous parameters are absent");
+
+  YAML::Node generated_backend_alias = YAML::Clone(config);
+  generated_backend_alias["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
+  generated_backend_alias["stitching"]["mapping_backend"] = "MAGSAC++";
+  generated_backend_alias["stitching"]["projection"] = "rectilinear";
+  generated_backend_alias["stitching"]["run_autooptimizer"] = false;
+  YAML::Node generated_backend_alias_choices =
+      generated_backend_alias["hstream_ui"]["generated_stitching_backend_choices"];
+  generated_backend_alias_choices["control_point_matcher"] = "superpoint-lightglue";
+  generated_backend_alias_choices["mapping_backend"] = "opencv-magsac";
+  generated_backend_alias_choices["projection"] = "rectilinear";
+  generated_backend_alias_choices["run_autooptimizer"] = false;
+  generated_backend_alias_choices.remove("projection_parameters");
+  generated_backend_alias_choices["previous_control_point_matcher"] = "superpoint";
+  generated_backend_alias_choices["previous_mapping_backend"] = "nona";
+  generated_backend_alias_choices["previous_projection"] = "general-panini";
+  generated_backend_alias_choices["previous_run_autooptimizer"] = true;
+  generated_backend_alias_choices["previous_projection_parameters"] = YAML::Load("[120, 15, -20]");
+  generated_backend_alias_choices.remove("previous_generated_projection_parameters");
+  std::ofstream(config_path) << YAML::Dump(generated_backend_alias) << '\n';
+  activate(create);
+  const bool generated_backend_aliases_restore_previous = expect(
+      mapping_backend->currentData().toString() == "nona" && projection->currentData().toString() == "general-panini" &&
+          compression->value() == 120.0 && top_squeeze->value() == 15.0 && bottom_squeeze->value() == -20.0,
+      "UI load must compare generated matcher and mapping backend provenance through accepted aliases");
   game_id->setText(original_game_id);
   activate(create);
   return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
-      edited_generated_parameters_are_user_intent;
+      edited_generated_parameters_are_user_intent && invalid_previous_projection_is_user_intent &&
+      generated_backend_aliases_restore_previous;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

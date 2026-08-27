@@ -1967,6 +1967,71 @@ play-tracker:
           !hm::get_node(**generated_alias_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "Generated projection provenance must match canonical aliases and restore the prior projection tuple");
 
+  const fs::path generated_backend_alias_dir = games / "generated-backend-alias";
+  fs::create_directories(generated_backend_alias_dir);
+  YAML::Node generated_backend_alias_private(YAML::NodeType::Map);
+  generated_backend_alias_private["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
+  generated_backend_alias_private["stitching"]["mapping_backend"] = "MAGSAC++";
+  generated_backend_alias_private["stitching"]["projection"] = "rectilinear";
+  generated_backend_alias_private["stitching"]["run_autooptimizer"] = false;
+  generated_backend_alias_private["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[111, 1, -1]");
+  YAML::Node generated_backend_alias_choices =
+      generated_backend_alias_private["hstream_ui"]["generated_stitching_backend_choices"];
+  generated_backend_alias_choices["control_point_matcher"] = "superpoint-lightglue";
+  generated_backend_alias_choices["mapping_backend"] = "opencv-magsac";
+  generated_backend_alias_choices["projection"] = "rectilinear";
+  generated_backend_alias_choices["run_autooptimizer"] = false;
+  generated_backend_alias_choices["previous_control_point_matcher"] = "superpoint";
+  generated_backend_alias_choices["previous_mapping_backend"] = "nona";
+  generated_backend_alias_choices["previous_projection"] = "general-panini";
+  generated_backend_alias_choices["previous_run_autooptimizer"] = true;
+  generated_backend_alias_choices["previous_projection_parameters"] = YAML::Load("[111, 1, -1]");
+  const absl::Status generated_backend_alias_published = hm::stitching::publish_game_config(
+      generated_backend_alias_dir, YAML::Dump(generated_backend_alias_private) + "\n");
+  hm::Configurator generated_backend_alias_configurator(
+      "generated-backend-alias", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status generated_backend_alias_configured = generated_backend_alias_configurator.configure();
+  const absl::Status generated_backend_alias_persisted =
+      generated_backend_alias_configurator.persist_effective_stitching_backend_choices();
+  auto generated_backend_alias_final =
+      hm::stitching::load_game_config_file(generated_backend_alias_dir / "config.yaml");
+  ok &= expect(
+      generated_backend_alias_published.ok() && generated_backend_alias_configured.ok() &&
+          generated_backend_alias_persisted.ok() && generated_backend_alias_final.ok() &&
+          generated_backend_alias_final->has_value() &&
+          (**generated_backend_alias_final)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**generated_backend_alias_final)["stitching"]["projection"].as<std::string>() == "general-panini" &&
+          (**generated_backend_alias_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
+              111.0 &&
+          !hm::get_node(**generated_backend_alias_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "Generated matcher and mapping provenance must compare accepted aliases canonically before restoring the prior "
+      "tuple");
+
+  const fs::path invalid_previous_projection_dir = games / "invalid-previous-projection";
+  fs::create_directories(invalid_previous_projection_dir);
+  YAML::Node invalid_previous_projection_private = YAML::Clone(generated_alias_private);
+  YAML::Node invalid_previous_projection_choices =
+      invalid_previous_projection_private["hstream_ui"]["generated_stitching_backend_choices"];
+  invalid_previous_projection_choices["previous_projection"] = "invalid-projection";
+  invalid_previous_projection_choices.remove("previous_projection_parameters");
+  const absl::Status invalid_previous_projection_published = hm::stitching::publish_game_config(
+      invalid_previous_projection_dir, YAML::Dump(invalid_previous_projection_private) + "\n");
+  hm::Configurator invalid_previous_projection_configurator(
+      "invalid-previous-projection", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status invalid_previous_projection_configured = invalid_previous_projection_configurator.configure();
+  const absl::Status invalid_previous_projection_persisted =
+      invalid_previous_projection_configurator.persist_effective_stitching_backend_choices();
+  auto invalid_previous_projection_final =
+      hm::stitching::load_game_config_file(invalid_previous_projection_dir / "config.yaml");
+  ok &= expect(
+      invalid_previous_projection_published.ok() && invalid_previous_projection_configured.ok() &&
+          invalid_previous_projection_persisted.ok() && invalid_previous_projection_final.ok() &&
+          invalid_previous_projection_final->has_value() &&
+          (**invalid_previous_projection_final)["stitching"]["projection"].as<std::string>() == "general_panini" &&
+          (**invalid_previous_projection_final)["stitching"]["projection_parameters"]["general-panini"][0]
+                  .as<double>() == 110.0,
+      "A present invalid previous projection must distrust generated provenance even without previous parameters");
+
   const fs::path malformed_displaced_parameters_dir = games / "malformed-displaced-projection-parameters";
   fs::create_directories(malformed_displaced_parameters_dir);
   YAML::Node malformed_displaced_parameters_private = YAML::Clone(generated_alias_private);
