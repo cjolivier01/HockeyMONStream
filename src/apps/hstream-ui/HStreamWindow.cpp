@@ -11696,6 +11696,8 @@ void HStreamWindow::loadSavedControlConfig() {
     const bool blocked = run_autooptimizer_check_->blockSignals(true);
     run_autooptimizer_check_->setChecked(default_run_autooptimizer_);
     run_autooptimizer_check_->blockSignals(blocked);
+    const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+    run_autooptimizer_check_->setEnabled(!running && mappingBackend() == "nona");
   }
   if (stitch_frame_time_edit_) {
     const bool blocked = stitch_frame_time_edit_->blockSignals(true);
@@ -12036,6 +12038,8 @@ void HStreamWindow::loadSavedControlConfig() {
       const bool blocked = run_autooptimizer_check_->blockSignals(true);
       run_autooptimizer_check_->setChecked(staged_run_autooptimizer);
       run_autooptimizer_check_->blockSignals(blocked);
+      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+      run_autooptimizer_check_->setEnabled(!running && mappingBackend() == "nona");
     }
     for (const auto& [id, value] : staged_controls) {
       const auto slider_it = camera_sliders_.find(id);

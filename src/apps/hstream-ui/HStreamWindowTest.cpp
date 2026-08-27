@@ -8525,6 +8525,26 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
               !normalized_backend["stitching"]["run_autooptimizer"].as<bool>() && !save->isEnabled(),
           "Saving a normalized backend pair must persist MAGSAC with the autooptimizer disabled");
 
+      copied_config_node = YAML::LoadFile(copied_config.string());
+      copied_config_node["stitching"]["mapping_backend"] = "nona";
+      copied_config_node["stitching"]["run_autooptimizer"] = true;
+      std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+      activate(create);
+      ok &= expect(
+          mapping_backend->currentData().toString() == "nona" && run_autooptimizer->isChecked() &&
+              run_autooptimizer->isEnabled(),
+          "Reloading a valid NONA preset after OpenCV must enable its required autooptimizer control");
+
+      copied_config_node = YAML::LoadFile(copied_config.string());
+      copied_config_node["stitching"]["mapping_backend"] = "opencv-magsac";
+      copied_config_node["stitching"]["run_autooptimizer"] = false;
+      std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+      activate(create);
+      ok &= expect(
+          mapping_backend->currentData().toString() == "opencv-magsac" && !run_autooptimizer->isChecked() &&
+              !run_autooptimizer->isEnabled(),
+          "Reloading OpenCV after NONA must disable the inactive autooptimizer control");
+
       mode->setCurrentIndex(mode->findData("program"));
       const int zero_argument_count = user_default_window.logText().count("--stitch-frame-time=00:00:00");
       qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
