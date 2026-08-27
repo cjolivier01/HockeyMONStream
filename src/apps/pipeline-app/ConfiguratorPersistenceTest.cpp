@@ -2125,6 +2125,45 @@ play-tracker:
           !fs::exists(replaced_recovery_guard_dir / "replaced-guard-finalization-failed-1.mkv"),
       "Restart must reject a replaced recovery video guard instead of pairing it with the trusted source log");
 
+  const fs::path replaced_recovery_log_guard_dir = root / "archive-replaced-recovery-log-guard";
+  fs::create_directories(replaced_recovery_log_guard_dir);
+  const fs::path replaced_recovery_log_guard_configured = replaced_recovery_log_guard_dir / "replaced-log-guard.mkv";
+  const fs::path replaced_recovery_log_guard_source =
+      replaced_recovery_log_guard_dir / "replaced-log-guard.hstream-run-99999999-dead.mkv";
+  const fs::path replaced_recovery_log_guard_source_log = replaced_recovery_log_guard_source.string() + ".log";
+  const fs::path replaced_recovery_log_guard_recovery =
+      replaced_recovery_log_guard_dir / "replaced-log-guard-finalization-failed.mkv";
+  const fs::path replaced_recovery_log_guard_recovery_log = replaced_recovery_log_guard_recovery.string() + ".log";
+  const fs::path replaced_recovery_log_guard_path = replaced_recovery_log_guard_recovery_log.string() + ".hstream-pin";
+  std::ofstream(replaced_recovery_log_guard_source, std::ios::binary) << "trusted replaced-log-guard video";
+  std::ofstream(replaced_recovery_log_guard_source_log, std::ios::binary) << "trusted replaced-log-guard log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP", "1", TRUE);
+  const auto replaced_recovery_log_guard_interrupted =
+      hm::configurator_internal::recover_stale_archive_work_files(replaced_recovery_log_guard_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP");
+  fs::remove(replaced_recovery_log_guard_path);
+  std::ofstream(replaced_recovery_log_guard_path, std::ios::binary) << "foreign replaced recovery log guard";
+  const auto replaced_recovery_log_guard_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(replaced_recovery_log_guard_configured);
+  std::ifstream replaced_recovery_log_guard_video_stream(replaced_recovery_log_guard_recovery, std::ios::binary);
+  const std::string replaced_recovery_log_guard_video{
+      std::istreambuf_iterator<char>(replaced_recovery_log_guard_video_stream), std::istreambuf_iterator<char>()};
+  std::ifstream replaced_recovery_log_guard_log_stream(replaced_recovery_log_guard_recovery_log, std::ios::binary);
+  const std::string replaced_recovery_log_guard_log{
+      std::istreambuf_iterator<char>(replaced_recovery_log_guard_log_stream), std::istreambuf_iterator<char>()};
+  std::ifstream replaced_recovery_log_guard_foreign_stream(replaced_recovery_log_guard_path, std::ios::binary);
+  const std::string replaced_recovery_log_guard_foreign{
+      std::istreambuf_iterator<char>(replaced_recovery_log_guard_foreign_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !replaced_recovery_log_guard_interrupted.ok() && !replaced_recovery_log_guard_restart.ok() &&
+          replaced_recovery_log_guard_video == "trusted replaced-log-guard video" &&
+          replaced_recovery_log_guard_log == "trusted replaced-log-guard log" &&
+          replaced_recovery_log_guard_foreign == "foreign replaced recovery log guard" &&
+          fs::exists(replaced_recovery_log_guard_source.string() + ".hstream-pin") &&
+          fs::exists(replaced_recovery_log_guard_source_log.string() + ".hstream-pin") &&
+          !fs::exists(replaced_recovery_log_guard_dir / "replaced-log-guard-finalization-failed-1.mkv"),
+      "Restart must reject a replaced recovery log guard instead of pairing it with the trusted source video");
+
   const auto late_interrupted_recovery_is_reconciled =
       [&](const std::string& name, bool has_log, const char* interruption_env, bool expect_reported = true) {
         const fs::path interrupted_dir = root / ("archive-late-interruption-" + name);

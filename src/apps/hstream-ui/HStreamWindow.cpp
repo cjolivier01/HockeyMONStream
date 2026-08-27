@@ -1129,6 +1129,50 @@ bool link_open_file_no_replace(int source_fd, const QString& destination, int* s
 #endif
 }
 
+bool durably_publish_cleanup_fallback(
+    int cleanup_fd,
+    const char* cleanup_entry,
+    int parent_fd,
+    const QByteArray& filename,
+    const struct stat& expected_stat,
+    QByteArray* retained_name,
+    QString* error) {
+  const std::array<QByteArray, 2> candidates = {filename, filename + ".hstream-pin"};
+  int saved_errno = EEXIST;
+  for (const QByteArray& candidate : candidates) {
+    bool published = ::linkat(cleanup_fd, cleanup_entry, parent_fd, candidate.constData(), 0) == 0;
+    if (!published) {
+      saved_errno = errno;
+      if (saved_errno == EEXIST) {
+        struct stat existing_stat{};
+        published = ::fstatat(parent_fd, candidate.constData(), &existing_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
+            same_file_identity(existing_stat, expected_stat);
+      }
+    }
+    if (!published)
+      continue;
+    if (::fsync(parent_fd) != 0) {
+      if (error)
+        *error =
+            QString("could not make retained pathname durable: %1").arg(QString::fromLocal8Bit(std::strerror(errno)));
+      return false;
+    }
+    struct stat published_stat{};
+    if (::fstatat(parent_fd, candidate.constData(), &published_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !same_file_identity(published_stat, expected_stat)) {
+      if (error)
+        *error = "retained pathname changed before it became durable";
+      return false;
+    }
+    if (retained_name)
+      *retained_name = candidate;
+    return true;
+  }
+  if (error)
+    *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+  return false;
+}
+
 bool create_open_file_guard(int source_fd, const QString& protected_path, QString* guard_path, QString* error) {
   const QString candidate = protected_path + ".hstream-pin";
   int saved_errno = 0;
@@ -1414,26 +1458,49 @@ bool remove_path_if_same_identity(
   }
 
   struct stat quarantined_stat{};
-  const bool quarantined_is_ours = ::fstatat(cleanup_fd, "entry", &quarantined_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
-      same_file_identity(quarantined_stat, expected_stat);
+  const bool quarantined_was_inspected = ::fstatat(cleanup_fd, "entry", &quarantined_stat, AT_SYMLINK_NOFOLLOW) == 0;
+  const bool quarantined_is_ours = quarantined_was_inspected && same_file_identity(quarantined_stat, expected_stat);
   bool required_identity_is_ours = true;
   if (!required_identity_path.isEmpty()) {
     const struct stat& expected_required_stat = required_identity_stat ? *required_identity_stat : expected_stat;
     required_identity_is_ours = path_has_file_identity(required_identity_path, expected_required_stat);
   }
   if (!quarantined_is_ours || !required_identity_is_ours) {
-    int restore_errno = 0;
-    const bool restored =
-        rename_entry_no_replace(cleanup_fd, "entry", parent_fd, encoded_filename.constData(), &restore_errno);
+    QByteArray retained_name;
+    QString retention_error;
+    const bool retained =
+        quarantined_was_inspected &&
+        durably_publish_cleanup_fallback(
+            cleanup_fd, "entry", parent_fd, encoded_filename, quarantined_stat, &retained_name, &retention_error);
+    int cleanup_result = -1;
+    int cleanup_errno = 0;
+    if (retained) {
+      cleanup_result = ::unlinkat(cleanup_fd, "entry", 0);
+      cleanup_errno = errno;
+      if (cleanup_result == 0) {
+        cleanup_result = ::fsync(cleanup_fd);
+        cleanup_errno = errno;
+      }
+    }
     ::close(cleanup_fd);
-    if (restored)
-      ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+    if (cleanup_result == 0) {
+      cleanup_result = ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+      cleanup_errno = errno;
+      if (cleanup_result == 0) {
+        cleanup_result = ::fsync(parent_fd);
+        cleanup_errno = errno;
+      }
+    }
     ::close(pinned_fd);
     ::close(parent_fd);
     if (error) {
-      *error = restored ? QString("refusing to remove a replaced path: %1").arg(path)
-                        : QString("could not restore quarantined path %1: %2")
-                              .arg(path, QString::fromLocal8Bit(std::strerror(restore_errno)));
+      *error = retained ? QString("refusing to remove a replaced path: %1; retained at %2")
+                              .arg(path, QString::fromLocal8Bit(retained_name))
+                        : QString("could not retain quarantined path %1: %2").arg(path, retention_error);
+      if (!retained)
+        *error += "; cleanup fallback retained";
+      else if (cleanup_result != 0)
+        *error += QString("; cleanup fallback remains: %1").arg(QString::fromLocal8Bit(std::strerror(cleanup_errno)));
     }
     return false;
   }
@@ -1472,26 +1539,40 @@ bool remove_path_if_same_identity(
     }
     const struct stat& expected_required_stat = required_identity_stat ? *required_identity_stat : expected_stat;
     if (!path_has_file_identity(required_identity_path, expected_required_stat)) {
-      int restore_errno = 0;
-      const bool restored = link_open_file_no_replace(pinned_fd, path, &restore_errno);
-      int rescue_errno = 0;
-      const bool rescued = restored || link_open_file_no_replace(pinned_fd, path + ".hstream-pin", &rescue_errno);
-      const int guard_cleanup_result = ::unlinkat(cleanup_fd, "guard", 0);
+      QByteArray retained_name;
+      QString retention_error;
+      const bool rescued = durably_publish_cleanup_fallback(
+          cleanup_fd, "guard", parent_fd, encoded_filename, pinned_stat, &retained_name, &retention_error);
+      int cleanup_result = -1;
+      int cleanup_errno = 0;
+      if (rescued) {
+        cleanup_result = ::unlinkat(cleanup_fd, "guard", 0);
+        cleanup_errno = errno;
+        if (cleanup_result == 0) {
+          cleanup_result = ::fsync(cleanup_fd);
+          cleanup_errno = errno;
+        }
+      }
       ::close(cleanup_fd);
-      if (rescued && guard_cleanup_result == 0)
-        ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
-      if (rescued)
-        ::fsync(parent_fd);
+      if (cleanup_result == 0) {
+        cleanup_result = ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+        cleanup_errno = errno;
+        if (cleanup_result == 0) {
+          cleanup_result = ::fsync(parent_fd);
+          cleanup_errno = errno;
+        }
+      }
       ::close(pinned_fd);
       ::close(parent_fd);
       if (error) {
-        *error = restored
-            ? QString("published path was replaced; restored source at %1").arg(path)
-            : (rescued ? QString("published path was replaced; retained source guard at %1.hstream-pin").arg(path)
-                       : QString("published path was replaced and source could not be retained: %1 / %2")
-                             .arg(
-                                 QString::fromLocal8Bit(std::strerror(restore_errno)),
-                                 QString::fromLocal8Bit(std::strerror(rescue_errno))));
+        *error = rescued
+            ? QString("published path was replaced; retained source at %1")
+                  .arg(QDir(QFileInfo(path).absolutePath()).filePath(QString::fromLocal8Bit(retained_name)))
+            : QString("published path was replaced and source could not be retained: %1").arg(retention_error);
+        if (!rescued)
+          *error += "; cleanup fallback retained";
+        else if (cleanup_result != 0)
+          *error += QString("; cleanup fallback remains: %1").arg(QString::fromLocal8Bit(std::strerror(cleanup_errno)));
       }
       return false;
     }

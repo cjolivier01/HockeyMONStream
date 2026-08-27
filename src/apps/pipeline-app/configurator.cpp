@@ -1479,6 +1479,44 @@ int rename_archive_entry_no_replace(
       SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name, kRenameNoReplace));
 }
 
+absl::StatusOr<std::string> durably_publish_archive_cleanup_fallback(
+    int cleanup_fd,
+    const char* cleanup_entry,
+    int parent_fd,
+    const std::string& filename,
+    const struct stat& expected_stat,
+    const char* description) {
+  const std::array<std::string, 2> candidates = {filename, filename + ".hstream-pin"};
+  int saved_errno = EEXIST;
+  for (const std::string& candidate : candidates) {
+    bool published = ::linkat(cleanup_fd, cleanup_entry, parent_fd, candidate.c_str(), 0) == 0;
+    if (!published) {
+      saved_errno = errno;
+      if (saved_errno == EEXIST) {
+        struct stat existing_stat{};
+        published = ::fstatat(parent_fd, candidate.c_str(), &existing_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
+            same_file_identity(existing_stat, expected_stat);
+      }
+    }
+    if (!published)
+      continue;
+    if (::fsync(parent_fd) != 0) {
+      return absl::InternalError(TO_STRING(
+          "Failed to make retained " << description << " pathname durable at \"" << candidate
+                                     << "\": " << std::strerror(errno)));
+    }
+    struct stat published_stat{};
+    if (::fstatat(parent_fd, candidate.c_str(), &published_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !same_file_identity(published_stat, expected_stat)) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Retained " << description << " pathname changed at \"" << candidate << "\""));
+    }
+    return candidate;
+  }
+  return absl::InternalError(
+      TO_STRING("Failed to retain " << description << " pathname: " << std::strerror(saved_errno)));
+}
+
 absl::Status remove_archive_entry_if_owned(
     const fs::path& path,
     const struct stat& expected_stat,
@@ -1632,52 +1670,40 @@ absl::Status remove_archive_entry_if_owned(
     }
     const absl::Status required_status = validate_required_publications();
     if (!required_status.ok()) {
-      const int restore_result = rename_archive_entry_no_replace(cleanup_fd, "entry", parent_fd, filename.c_str());
-      const int restore_errno = errno;
-      std::string rescue_name;
-      int rescue_result = -1;
-      int rescue_errno = 0;
-      bool cleanup_entry_removed = false;
-      if (restore_result != 0) {
-        rescue_name = filename + ".hstream-pin";
-        rescue_result = ::linkat(pinned_fd, "", parent_fd, rescue_name.c_str(), AT_EMPTY_PATH);
-        rescue_errno = errno;
-        if (rescue_result != 0 && rescue_errno == EEXIST) {
-          struct stat existing_rescue_stat{};
-          if (::fstatat(parent_fd, rescue_name.c_str(), &existing_rescue_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
-              same_file_identity(existing_rescue_stat, pinned_stat)) {
-            rescue_result = 0;
-          }
-        }
-        if (rescue_result == 0) {
-          const int unlink_entry_result = ::unlinkat(cleanup_fd, "entry", 0);
-          const int unlink_entry_errno = errno;
-          cleanup_entry_removed = unlink_entry_result == 0;
-          const int sync_result = ::fsync(parent_fd);
-          const int sync_errno = errno;
-          if (unlink_entry_result != 0 || sync_result != 0) {
-            rescue_result = -1;
-            rescue_errno = unlink_entry_result != 0 ? unlink_entry_errno : sync_errno;
-          }
+      const auto retained_path =
+          durably_publish_archive_cleanup_fallback(cleanup_fd, "entry", parent_fd, filename, pinned_stat, description);
+      int cleanup_result = -1;
+      int cleanup_errno = 0;
+      if (retained_path.ok()) {
+        cleanup_result = ::unlinkat(cleanup_fd, "entry", 0);
+        cleanup_errno = errno;
+        if (cleanup_result == 0) {
+          cleanup_result = ::fsync(cleanup_fd);
+          cleanup_errno = errno;
         }
       }
       ::close(cleanup_fd);
-      if (restore_result == 0 || cleanup_entry_removed)
-        ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+      if (cleanup_result == 0) {
+        cleanup_result = ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+        cleanup_errno = errno;
+        if (cleanup_result == 0) {
+          cleanup_result = ::fsync(parent_fd);
+          cleanup_errno = errno;
+        }
+      }
       ::close(pinned_fd);
       ::close(parent_fd);
-      if (restore_result != 0) {
-        return absl::FailedPreconditionError(TO_STRING(
-            "Published recovery was replaced while quarantining "
-            << description << " \"" << path.string()
-            << "\", and the source could not be restored: " << std::strerror(restore_errno)
-            << (rescue_result == 0
-                    ? TO_STRING("; retained the pinned inode at \"" << (parent_path / rescue_name).string() << "\"")
-                    : TO_STRING("; guard retention failed: " << std::strerror(rescue_errno)))));
-      }
       return absl::FailedPreconditionError(TO_STRING(
-          "Published recovery was replaced while quarantining " << description << " \"" << path.string()
-                                                                << "\": " << required_status.message()));
+          "Published recovery was replaced while quarantining "
+          << description << " \"" << path.string() << "\": " << required_status.message()
+          << (retained_path.ok()
+                  ? TO_STRING("; retained the pinned inode at \"" << (parent_path / *retained_path).string() << "\"")
+                  : TO_STRING("; " << retained_path.status().message()))
+          << (!retained_path.ok()
+                  ? "; cleanup fallback retained"
+                  : (cleanup_result == 0
+                         ? ""
+                         : TO_STRING("; cleanup fallback remains: " << std::strerror(cleanup_errno))))));
     }
   }
 
@@ -1704,11 +1730,8 @@ absl::Status remove_archive_entry_if_owned(
                                         << "\": " << std::strerror(saved_errno)));
   }
 
-  const int remove_guard_result = ::unlinkat(cleanup_fd, "guard", 0);
-  const int remove_guard_errno = errno;
-  if (remove_guard_result == 0 &&
-      ((required_published_path && required_published_stat) ||
-       (second_required_published_path && second_required_published_stat))) {
+  if ((required_published_path && required_published_stat) ||
+      (second_required_published_path && second_required_published_stat)) {
     if (std::strcmp(description, "archive work file") == 0 &&
         g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE")) {
       ::unlink(required_published_path->c_str());
@@ -1723,29 +1746,44 @@ absl::Status remove_archive_entry_if_owned(
     }
     const absl::Status required_status = validate_required_publications();
     if (!required_status.ok()) {
-      const int restore_result = ::linkat(pinned_fd, "", parent_fd, filename.c_str(), AT_EMPTY_PATH);
-      const int restore_errno = errno;
-      const std::string rescue_name = filename + ".hstream-pin";
-      const int rescue_result =
-          restore_result == 0 ? 0 : ::linkat(pinned_fd, "", parent_fd, rescue_name.c_str(), AT_EMPTY_PATH);
-      const int rescue_errno = errno;
+      const auto retained_path =
+          durably_publish_archive_cleanup_fallback(cleanup_fd, "guard", parent_fd, filename, pinned_stat, description);
+      int cleanup_result = -1;
+      int cleanup_errno = 0;
+      if (retained_path.ok()) {
+        cleanup_result = ::unlinkat(cleanup_fd, "guard", 0);
+        cleanup_errno = errno;
+        if (cleanup_result == 0) {
+          cleanup_result = ::fsync(cleanup_fd);
+          cleanup_errno = errno;
+        }
+      }
       ::close(cleanup_fd);
-      if (rescue_result == 0)
-        ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+      if (cleanup_result == 0) {
+        cleanup_result = ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+        cleanup_errno = errno;
+        if (cleanup_result == 0) {
+          cleanup_result = ::fsync(parent_fd);
+          cleanup_errno = errno;
+        }
+      }
       ::close(pinned_fd);
       ::close(parent_fd);
       return absl::FailedPreconditionError(TO_STRING(
           "Published recovery was replaced after quarantining "
-          << description << " \"" << path.string() << "\"; source restore "
-          << (restore_result == 0
-                  ? "succeeded"
-                  : (rescue_result == 0 ? TO_STRING(
-                                              "failed (" << std::strerror(restore_errno) << "); retained guard at \""
-                                                         << rescue_name << "\"")
-                                        : TO_STRING("and guard retention failed: " << std::strerror(rescue_errno))))
-          << "; " << required_status.message()));
+          << description << " \"" << path.string() << "\"; " << required_status.message()
+          << (retained_path.ok()
+                  ? TO_STRING("; retained the pinned inode at \"" << (parent_path / *retained_path).string() << "\"")
+                  : TO_STRING("; " << retained_path.status().message()))
+          << (!retained_path.ok()
+                  ? "; cleanup fallback retained"
+                  : (cleanup_result == 0
+                         ? ""
+                         : TO_STRING("; cleanup fallback remains: " << std::strerror(cleanup_errno))))));
     }
   }
+  const int remove_guard_result = ::unlinkat(cleanup_fd, "guard", 0);
+  const int remove_guard_errno = errno;
   const int close_cleanup_result = ::close(cleanup_fd);
   const int close_cleanup_errno = errno;
   const int remove_cleanup_result = ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
@@ -2786,6 +2824,7 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
           return source_guard_stat.status();
         if (!source_guard_stat->has_value())
           continue;
+        bool source_log_guard_exists = false;
         bool source_log_matches_recovery = false;
         if (recovery_log_guard_stat->has_value()) {
           const std::string source_guard_string = possible_source_guard.string();
@@ -2802,20 +2841,29 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
             auto source_log_guard_stat = inspect_archive_entry(possible_log_guard, "surviving source log guard");
             if (!source_log_guard_stat.ok())
               return source_log_guard_stat.status();
-            if (source_log_guard_stat->has_value() &&
-                same_file_identity(source_log_guard_stat->value(), recovery_log_guard_stat->value())) {
-              source_log_matches_recovery = true;
-              break;
+            if (source_log_guard_stat->has_value()) {
+              source_log_guard_exists = true;
+              if (same_file_identity(source_log_guard_stat->value(), recovery_log_guard_stat->value())) {
+                source_log_matches_recovery = true;
+                break;
+              }
             }
           }
         }
+        const bool source_video_matches_guard =
+            same_file_identity(source_guard_stat->value(), recovery_guard_stat->value());
         const bool source_video_matches_visible = visible_recovery_video->has_value() &&
             same_file_identity(source_guard_stat->value(), visible_recovery_video->value());
-        if ((source_video_matches_visible || source_log_matches_recovery) &&
-            !same_file_identity(source_guard_stat->value(), recovery_guard_stat->value())) {
+        if ((source_video_matches_visible || source_log_matches_recovery) && !source_video_matches_guard) {
           return absl::FailedPreconditionError(TO_STRING(
               "Archive recovery video guard conflicts with the surviving source transaction at \""
               << recovery_guard_path.string() << "\""));
+        }
+        if (source_video_matches_guard && recovery_log_guard_stat->has_value() &&
+            (!source_log_guard_exists || !source_log_matches_recovery)) {
+          return absl::FailedPreconditionError(TO_STRING(
+              "Archive recovery log guard conflicts with the surviving source transaction at \""
+              << recovery_log_guard_path.string() << "\""));
         }
       }
     }
