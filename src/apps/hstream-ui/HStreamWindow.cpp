@@ -6412,6 +6412,17 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   int rename_errno = 0;
   const QString provisional_guard_path = archive_job_log_guard_path_;
   const QString resolved_guard_path = resolved_log_path + ".hstream-pin";
+  const auto restore_provisional_log = [&](int* saved_errno, QString* error) {
+    if (path_has_file_identity(provisional_path, open_log_stat))
+      return sync_parent_directory(provisional_path, error);
+    if (!link_open_file_no_replace(pinned_log_fd, provisional_path, saved_errno) ||
+        !path_has_file_identity(provisional_path, open_log_stat)) {
+      if (error && error->isEmpty())
+        *error = QString::fromLocal8Bit(std::strerror(*saved_errno));
+      return false;
+    }
+    return sync_parent_directory(provisional_path, error);
+  };
   bool resolved_guard_published = false;
   if (!provisional_path.isEmpty() && expected_log_inode != 0 && pinned_log_fd >= 0) {
     if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_COLLISION")) {
@@ -6436,15 +6447,65 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
                                .arg(QString::fromLocal8Bit(std::strerror(guard_link_errno)));
       }
     } else {
-      renamed = rename_path_no_replace(provisional_path, resolved_log_path, &rename_errno) &&
-          path_has_file_identity(resolved_log_path, open_log_stat);
-      if (!renamed) {
+      QString guard_sync_error;
+      const bool force_guard_sync_failure =
+          qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_SYNC_FAILURE");
+      if (force_guard_sync_failure)
+        qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_SYNC_FAILURE");
+      const bool guard_is_durable = !force_guard_sync_failure &&
+          sync_parent_directory(resolved_guard_path, &guard_sync_error) &&
+          path_has_file_identity(resolved_guard_path, open_log_stat);
+      if (force_guard_sync_failure)
+        guard_sync_error = "resolved log guard sync failure requested by test";
+      if (!guard_is_durable) {
+        durability_error = guard_sync_error.isEmpty() ? QString("resolved log guard changed before durability sync")
+                                                      : guard_sync_error;
         QString guard_cleanup_error;
-        if (!remove_path_if_same_identity(resolved_guard_path, open_log_stat, &guard_cleanup_error) &&
-            durability_error.isEmpty()) {
-          durability_error = QString("could not roll back unused resolved log guard: %1").arg(guard_cleanup_error);
-        }
+        if (!remove_path_if_same_identity(resolved_guard_path, open_log_stat, &guard_cleanup_error))
+          durability_error += QString("; could not roll back unused resolved log guard: %1").arg(guard_cleanup_error);
         resolved_guard_published = false;
+      } else {
+        const bool rename_succeeded = rename_path_no_replace(provisional_path, resolved_log_path, &rename_errno);
+        if (rename_succeeded &&
+            qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_REPLACEMENT_AFTER_RENAME")) {
+          qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_REPLACEMENT_AFTER_RENAME");
+          const QByteArray encoded_log = QFile::encodeName(resolved_log_path);
+          ::unlink(encoded_log.constData());
+          const int replacement_fd =
+              ::open(encoded_log.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+          if (replacement_fd >= 0) {
+            constexpr char kReplacement[] = "injected foreign resolved log after rename";
+            const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+            (void)replacement_bytes;
+            ::close(replacement_fd);
+          }
+        }
+        renamed = rename_succeeded && path_has_file_identity(resolved_log_path, open_log_stat);
+        if (!renamed) {
+          if (rename_succeeded) {
+            QString restore_error;
+            int restore_errno = 0;
+            if (!restore_provisional_log(&restore_errno, &restore_error)) {
+              durability_error =
+                  QString("resolved log was replaced after rename; provisional restore failed: %1").arg(restore_error);
+            } else {
+              QString guard_cleanup_error;
+              if (!remove_path_if_same_identity(
+                      resolved_guard_path, open_log_stat, &guard_cleanup_error, provisional_path, &open_log_stat)) {
+                durability_error = QString("resolved log was replaced; guard retained: %1").arg(guard_cleanup_error);
+              } else {
+                resolved_guard_published = false;
+              }
+            }
+          } else {
+            QString guard_cleanup_error;
+            if (!remove_path_if_same_identity(resolved_guard_path, open_log_stat, &guard_cleanup_error) &&
+                durability_error.isEmpty()) {
+              durability_error = QString("could not roll back unused resolved log guard: %1").arg(guard_cleanup_error);
+            }
+            resolved_guard_published = false;
+          }
+        }
       }
     }
   }
@@ -6539,12 +6600,8 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
           ? QString("same-filesystem log publication was replaced before it became durable")
           : publication_error;
       int rollback_errno = 0;
-      bool provisional_restored = rename_path_no_replace(resolved_log_path, provisional_path, &rollback_errno) &&
-          path_has_file_identity(provisional_path, open_log_stat);
-      if (!provisional_restored && !path_has_file_identity(provisional_path, open_log_stat)) {
-        provisional_restored = link_open_file_no_replace(pinned_log_fd, provisional_path, &rollback_errno) &&
-            path_has_file_identity(provisional_path, open_log_stat);
-      }
+      QString restore_error;
+      const bool provisional_restored = restore_provisional_log(&rollback_errno, &restore_error);
       if (provisional_restored && path_has_file_identity(provisional_guard_path, open_log_stat)) {
         QString cleanup_error;
         if (path_has_file_identity(resolved_log_path, open_log_stat) &&
@@ -6563,8 +6620,9 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
           durability_error += QString("; rollback sync failed: %1").arg(rollback_sync_error);
         }
       } else {
-        durability_error += QString("; could not restore the guarded provisional log: %1")
-                                .arg(QString::fromLocal8Bit(std::strerror(rollback_errno)));
+        durability_error +=
+            QString("; could not restore the guarded provisional log: %1")
+                .arg(restore_error.isEmpty() ? QString::fromLocal8Bit(std::strerror(rollback_errno)) : restore_error);
       }
       renamed = false;
       resolved_guard_published = false;
@@ -6636,8 +6694,13 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
       int restore_errno = 0;
       if (link_open_file_no_replace(pinned_log_fd, provisional_path, &restore_errno)) {
         archive_job_log_path_ = provisional_path;
-        reopen_error.clear();
-        reopened = reopenArchiveJobLog(archive_job_log_path_, &reopen_error, expected_log_device, expected_log_inode);
+        QString restoration_sync_error;
+        if (sync_parent_directory(provisional_path, &restoration_sync_error)) {
+          reopen_error.clear();
+          reopened = reopenArchiveJobLog(archive_job_log_path_, &reopen_error, expected_log_device, expected_log_inode);
+        } else {
+          reopen_error = QString("restored provisional log could not be made durable: %1").arg(restoration_sync_error);
+        }
       }
     }
   }

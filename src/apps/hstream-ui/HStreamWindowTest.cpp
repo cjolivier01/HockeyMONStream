@@ -4894,7 +4894,8 @@ bool test_output_controls(HStreamWindow* window) {
 #ifdef Q_OS_UNIX
   const auto guarded_same_filesystem_fallback = [&](const QString& basename,
                                                     const char* failure_environment,
-                                                    bool expect_foreign_guard) {
+                                                    bool expect_foreign_guard,
+                                                    bool expect_foreign_log) {
     const QString resolved_source = QDir(output_root.path()).filePath(basename + ".mkv");
     const QString resolved_log = resolved_source + ".log";
     const QString resolved_guard = resolved_log + ".hstream-pin";
@@ -4929,20 +4930,35 @@ bool test_output_controls(HStreamWindow* window) {
     QFile guard_file(resolved_guard);
     const bool guard_opened = guard_file.open(QIODevice::ReadOnly);
     const QByteArray guard_text = guard_opened ? guard_file.readAll() : QByteArray();
-    const bool result = !QFileInfo::exists(resolved_log) &&
+    QFile resolved_log_file(resolved_log);
+    const bool resolved_log_opened = resolved_log_file.open(QIODevice::ReadOnly);
+    const QByteArray resolved_log_text = resolved_log_opened ? resolved_log_file.readAll() : QByteArray();
+    const bool result = (expect_foreign_log ? resolved_log_text == "injected foreign resolved log after rename"
+                                            : !QFileInfo::exists(resolved_log)) &&
         fallback_log_text.contains(QString("archive backend resolved output: %1").arg(resolved_source)) &&
         fallback_log_text.contains("pipeline finished") &&
         (expect_foreign_guard ? guard_text == "injected foreign resolved log guard"
                               : !QFileInfo::exists(resolved_guard));
+    QFile::remove(resolved_log);
     QFile::remove(resolved_guard);
     return result;
   };
   same_filesystem_log_rollback = expect(
       guarded_same_filesystem_fallback(
-          "same-filesystem-guard-collision", "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_COLLISION", true) &&
+          "same-filesystem-guard-collision", "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_COLLISION", true, false) &&
           guarded_same_filesystem_fallback(
-              "same-filesystem-sync-failure", "HSTREAM_UI_TEST_ARCHIVE_SAME_FILESYSTEM_SYNC_FAILURE", false),
-      "Same-filesystem log publication must retain the guarded provisional log when its guard or sync commit fails");
+              "same-filesystem-guard-sync-failure",
+              "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_SYNC_FAILURE",
+              false,
+              false) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-sync-failure", "HSTREAM_UI_TEST_ARCHIVE_SAME_FILESYSTEM_SYNC_FAILURE", false, false) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-post-rename-replacement",
+              "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_REPLACEMENT_AFTER_RENAME",
+              false,
+              true),
+      "Same-filesystem log publication must retain the guarded provisional log across guard, sync, and rename races");
 #endif
 
   bool cross_filesystem_log_persisted = true;
