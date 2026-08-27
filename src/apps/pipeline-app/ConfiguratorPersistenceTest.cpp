@@ -2345,6 +2345,51 @@ play-tracker:
           !fs::exists(concurrent_cleanup_target) && !concurrent_cleanup_artifacts_remain,
       "Concurrent removers must serialize before sharing or retiring a deterministic cleanup fallback");
 
+  const fs::path interrupted_concurrent_dir = root / "archive-interrupted-concurrent-cleanup";
+  fs::create_directories(interrupted_concurrent_dir);
+  const fs::path interrupted_concurrent_target = interrupted_concurrent_dir / "interrupted-concurrent-cleanup.mkv";
+  std::ofstream(interrupted_concurrent_target, std::ios::binary) << "trusted interrupted concurrent-cleanup video";
+  struct stat interrupted_concurrent_stat{};
+  const bool interrupted_concurrent_stat_ok =
+      ::lstat(interrupted_concurrent_target.c_str(), &interrupted_concurrent_stat) == 0;
+  std::atomic<bool> interrupted_concurrent_start{false};
+  absl::Status interrupted_concurrent_first = absl::OkStatus();
+  absl::Status interrupted_concurrent_second = absl::OkStatus();
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION", interrupted_concurrent_target.c_str(), TRUE);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", interrupted_concurrent_target.c_str(), TRUE);
+  const auto interrupted_concurrent_remove = [&](absl::Status* result) {
+    while (!interrupted_concurrent_start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    *result = hm::configurator_internal::remove_archive_entry_if_owned_for_test(
+        interrupted_concurrent_target,
+        static_cast<uintmax_t>(interrupted_concurrent_stat.st_dev),
+        static_cast<uintmax_t>(interrupted_concurrent_stat.st_ino));
+  };
+  std::thread interrupted_concurrent_thread_one(interrupted_concurrent_remove, &interrupted_concurrent_first);
+  std::thread interrupted_concurrent_thread_two(interrupted_concurrent_remove, &interrupted_concurrent_second);
+  interrupted_concurrent_start.store(true, std::memory_order_release);
+  interrupted_concurrent_thread_one.join();
+  interrupted_concurrent_thread_two.join();
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION");
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+  fs::path interrupted_concurrent_transaction;
+  for (const fs::path& entry : fs::directory_iterator(interrupted_concurrent_dir)) {
+    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+      interrupted_concurrent_transaction = entry;
+  }
+  const auto interrupted_concurrent_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(interrupted_concurrent_dir / "configured.mkv");
+  std::ifstream interrupted_concurrent_restored_stream(interrupted_concurrent_target, std::ios::binary);
+  const std::string interrupted_concurrent_restored{
+      std::istreambuf_iterator<char>(interrupted_concurrent_restored_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      interrupted_concurrent_stat_ok && !interrupted_concurrent_first.ok() && !interrupted_concurrent_second.ok() &&
+          !interrupted_concurrent_transaction.empty() && interrupted_concurrent_restart.ok() &&
+          interrupted_concurrent_restart->empty() &&
+          interrupted_concurrent_restored == "trusted interrupted concurrent-cleanup video" &&
+          !fs::exists(interrupted_concurrent_transaction),
+      "A second remover must not report success while an interrupted concurrent transaction can restore the target");
+
   const fs::path log_quarantine_dir = root / "archive-log-quarantine-interruption";
   fs::create_directories(log_quarantine_dir);
   const fs::path log_quarantine_configured = log_quarantine_dir / "log-quarantine.mkv";

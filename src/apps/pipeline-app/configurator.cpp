@@ -1720,6 +1720,83 @@ absl::StatusOr<std::string> read_archive_cleanup_owner(int cleanup_fd) {
   return decoded_target;
 }
 
+absl::StatusOr<bool> archive_cleanup_target_has_pending_transaction(
+    int parent_fd,
+    const std::string& target_name,
+    const struct stat& expected_stat) {
+  const std::string fallback_name = target_name + ".hstream-cleanup-pin";
+  struct stat fallback_stat{};
+  if (::fstatat(parent_fd, fallback_name.c_str(), &fallback_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+    if (same_file_identity(fallback_stat, expected_stat))
+      return true;
+    return absl::FailedPreconditionError(
+        TO_STRING("Archive cleanup fallback for \"" << target_name << "\" belongs to another file"));
+  }
+  if (errno != ENOENT) {
+    return absl::InternalError(TO_STRING(
+        "Failed to inspect archive cleanup fallback for \"" << target_name << "\": " << std::strerror(errno)));
+  }
+
+  const int scan_fd = ::dup(parent_fd);
+  if (scan_fd < 0) {
+    return absl::InternalError(TO_STRING("Failed to scan archive cleanup transactions: " << std::strerror(errno)));
+  }
+  DIR* directory = ::fdopendir(scan_fd);
+  if (!directory) {
+    const int saved_errno = errno;
+    ::close(scan_fd);
+    return absl::InternalError(
+        TO_STRING("Failed to scan archive cleanup transactions: " << std::strerror(saved_errno)));
+  }
+  static const std::regex cleanup_name_pattern(
+      R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+  bool pending = false;
+  absl::Status scan_status = absl::OkStatus();
+  int scan_errno = 0;
+  while (true) {
+    errno = 0;
+    const dirent* entry = ::readdir(directory);
+    if (!entry) {
+      scan_errno = errno;
+      break;
+    }
+    const std::string cleanup_name(entry->d_name);
+    if (!std::regex_match(cleanup_name, cleanup_name_pattern))
+      continue;
+    const int cleanup_fd = ::openat(parent_fd, cleanup_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (cleanup_fd < 0) {
+      if (errno == ENOENT)
+        continue;
+      scan_status =
+          absl::InternalError(TO_STRING("Failed to inspect archive cleanup transaction: " << std::strerror(errno)));
+      break;
+    }
+    const auto owned_target_name = read_archive_cleanup_owner(cleanup_fd);
+    pending = owned_target_name.ok() && *owned_target_name == target_name;
+    for (const char* private_name : {"entry", "guard", "fallback"}) {
+      struct stat private_stat{};
+      if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+        pending |= same_file_identity(private_stat, expected_stat);
+      } else if (errno != ENOENT) {
+        scan_status = absl::InternalError(
+            TO_STRING("Failed to inspect archive cleanup transaction entry: " << std::strerror(errno)));
+        break;
+      }
+    }
+    ::close(cleanup_fd);
+    if (pending || !scan_status.ok())
+      break;
+  }
+  if (::closedir(directory) != 0 && scan_status.ok()) {
+    scan_status = absl::InternalError(TO_STRING("Failed to close archive cleanup scan: " << std::strerror(errno)));
+  } else if (scan_errno != 0 && scan_status.ok()) {
+    scan_status =
+        absl::InternalError(TO_STRING("Failed to scan archive cleanup transactions: " << std::strerror(scan_errno)));
+  }
+  HM_RETURN_IF_ERROR(scan_status);
+  return pending;
+}
+
 bool archive_cleanup_name_matches_fd(int cleanup_fd, int parent_fd, const std::string& cleanup_name) {
   struct stat cleanup_stat{};
   struct stat named_stat{};
@@ -1942,11 +2019,37 @@ absl::Status remove_archive_entry_if_owned(
     }
     return absl::OkStatus();
   };
+  const fs::path parent_path = path.parent_path().empty() ? fs::path(".") : path.parent_path();
+  const std::string filename = path.filename().string();
   auto current_stat = inspect_archive_entry(path, description);
   if (!current_stat.ok())
     return current_stat.status();
-  if (!current_stat->has_value())
+  if (!current_stat->has_value()) {
+    const int parent_fd = ::open(parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (parent_fd < 0) {
+      return absl::InternalError(TO_STRING("Failed to open archive cleanup parent: " << std::strerror(errno)));
+    }
+    if (::flock(parent_fd, LOCK_EX) != 0) {
+      const int saved_errno = errno;
+      ::close(parent_fd);
+      return absl::InternalError(
+          TO_STRING("Failed to serialize missing archive cleanup: " << std::strerror(saved_errno)));
+    }
+    auto pending = archive_cleanup_target_has_pending_transaction(parent_fd, filename, expected_stat);
+    auto rechecked_stat = inspect_archive_entry(path, description);
+    ::close(parent_fd);
+    HM_RETURN_IF_ERROR(pending.status());
+    HM_RETURN_IF_ERROR(rechecked_stat.status());
+    if (*pending) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Cleanup of \"" << path.string() << "\" is still pending recovery"));
+    }
+    if (rechecked_stat->has_value()) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Cleanup path reappeared while checking recovery at \"" << path.string() << "\""));
+    }
     return absl::OkStatus();
+  }
   if (!same_file_identity(current_stat->value(), expected_stat)) {
     return absl::FailedPreconditionError(
         TO_STRING("Refusing to remove replaced " << description << " \"" << path.string() << "\""));
@@ -1967,8 +2070,6 @@ absl::Status remove_archive_entry_if_owned(
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
-  const fs::path parent_path = path.parent_path().empty() ? fs::path(".") : path.parent_path();
-  const std::string filename = path.filename().string();
   const int parent_fd = ::open(parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (parent_fd < 0) {
     ::close(pinned_fd);
@@ -1991,8 +2092,20 @@ absl::Status remove_archive_entry_if_owned(
     return locked_current_stat.status();
   }
   if (!locked_current_stat->has_value()) {
+    auto pending = archive_cleanup_target_has_pending_transaction(parent_fd, filename, pinned_stat);
+    auto rechecked_stat = inspect_archive_entry(path, description);
     ::close(pinned_fd);
     ::close(parent_fd);
+    HM_RETURN_IF_ERROR(pending.status());
+    HM_RETURN_IF_ERROR(rechecked_stat.status());
+    if (*pending) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Cleanup of \"" << path.string() << "\" is still pending recovery"));
+    }
+    if (rechecked_stat->has_value()) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Cleanup path reappeared while checking recovery at \"" << path.string() << "\""));
+    }
     return absl::OkStatus();
   }
   if (!same_file_identity(locked_current_stat->value(), pinned_stat)) {

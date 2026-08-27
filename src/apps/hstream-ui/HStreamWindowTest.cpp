@@ -97,6 +97,23 @@ struct HStreamWindowTestAccess {
   static QStringList pipelineArguments(HStreamWindow* window) {
     return window->pipelineArguments();
   }
+
+  static void finishArchiveJobLogAfterFinalizationFailure(
+      HStreamWindow* window,
+      const QString& configured_output_path,
+      const QString& resolved_output_path,
+      const QString& run_id,
+      QString* log_path,
+      QString* guard_path) {
+    window->beginArchiveJobLog(configured_output_path, run_id);
+    window->resolveArchiveJobLogPath(resolved_output_path);
+    window->archive_finalize_source_path_ = resolved_output_path;
+    if (log_path)
+      *log_path = window->archive_job_log_path_;
+    if (guard_path)
+      *guard_path = window->archive_job_log_guard_path_;
+    window->finishArchiveJobLogAfterFinalizationFailure();
+  }
 };
 
 namespace fs = std::filesystem;
@@ -8815,7 +8832,85 @@ bool test_cleanup_transaction_protocol() {
       concurrent_setup && concurrent_first && concurrent_second && !QFileInfo::exists(concurrent_target) &&
           concurrent_artifacts.isEmpty(),
       "UI cleanup must serialize concurrent removers before they share a deterministic fallback");
+
+  const QString interrupted_concurrent_dir = QDir(root.path()).filePath("interrupted-concurrent-removers");
+  QDir().mkpath(interrupted_concurrent_dir);
+  const QString interrupted_concurrent_target = QDir(interrupted_concurrent_dir).filePath("interrupted-concurrent.mp4");
+  struct stat interrupted_concurrent_stat{};
+  const bool interrupted_concurrent_setup =
+      write_file(interrupted_concurrent_target, "trusted interrupted concurrent UI cleanup") &&
+      file_identity(interrupted_concurrent_target, &interrupted_concurrent_stat);
+  std::atomic<bool> interrupted_concurrent_start{false};
+  bool interrupted_concurrent_first = true;
+  bool interrupted_concurrent_second = true;
+  QString interrupted_concurrent_first_error;
+  QString interrupted_concurrent_second_error;
+  qputenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION", interrupted_concurrent_target.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", interrupted_concurrent_target.toLocal8Bit());
+  const auto remove_with_interruption = [&](bool* result, QString* error) {
+    while (!interrupted_concurrent_start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    *result = hm::ui_internal::remove_owned_path_for_test(
+        interrupted_concurrent_target,
+        static_cast<quint64>(interrupted_concurrent_stat.st_dev),
+        static_cast<quint64>(interrupted_concurrent_stat.st_ino),
+        error);
+  };
+  std::thread interrupted_concurrent_thread_one(
+      remove_with_interruption, &interrupted_concurrent_first, &interrupted_concurrent_first_error);
+  std::thread interrupted_concurrent_thread_two(
+      remove_with_interruption, &interrupted_concurrent_second, &interrupted_concurrent_second_error);
+  interrupted_concurrent_start.store(true, std::memory_order_release);
+  interrupted_concurrent_thread_one.join();
+  interrupted_concurrent_thread_two.join();
+  qunsetenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION");
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+  const QString interrupted_concurrent_transaction = cleanup_transaction(interrupted_concurrent_dir);
+  QString interrupted_concurrent_restart_error;
+  const bool interrupted_concurrent_restart = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      interrupted_concurrent_dir, &interrupted_concurrent_restart_error);
+  QFile interrupted_concurrent_restored_file(interrupted_concurrent_target);
+  const bool interrupted_concurrent_restored_opened = interrupted_concurrent_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      interrupted_concurrent_setup && !interrupted_concurrent_first && !interrupted_concurrent_second &&
+          !interrupted_concurrent_transaction.isEmpty() && interrupted_concurrent_restart &&
+          interrupted_concurrent_restored_opened &&
+          interrupted_concurrent_restored_file.readAll() == "trusted interrupted concurrent UI cleanup" &&
+          !QFileInfo::exists(interrupted_concurrent_transaction),
+      "A second UI remover must not report success while an interrupted concurrent transaction can restore the target");
   return ok;
+#endif
+}
+
+bool test_early_finalization_failure_retains_log_guard(HStreamWindow* window, const QString& root) {
+#ifndef Q_OS_UNIX
+  Q_UNUSED(window);
+  Q_UNUSED(root);
+  return true;
+#else
+  const QString configured_path = QDir(root).filePath("early-failure-configured.mkv");
+  const QString versioned_source =
+      QDir(root).filePath("early-failure.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-aabbccddeeff.mkv");
+  QString versioned_log;
+  QString versioned_guard;
+  HStreamWindowTestAccess::finishArchiveJobLogAfterFinalizationFailure(
+      window, configured_path, versioned_source, "early-failure", &versioned_log, &versioned_guard);
+  const bool versioned_pair_guarded = QFileInfo::exists(versioned_log) && QFileInfo::exists(versioned_guard);
+
+  const QString recovered_source = QDir(root).filePath("early-failure-finalization-failed.mkv");
+  QString recovered_log;
+  QString recovered_guard;
+  HStreamWindowTestAccess::finishArchiveJobLogAfterFinalizationFailure(
+      window, configured_path, recovered_source, "recovered-failure", &recovered_log, &recovered_guard);
+  const bool recovered_guard_retired = QFileInfo::exists(recovered_log) && !QFileInfo::exists(recovered_guard);
+
+  QFile::remove(versioned_guard);
+  QFile::remove(versioned_log);
+  QFile::remove(recovered_guard);
+  QFile::remove(recovered_log);
+  return expect(
+      versioned_pair_guarded && recovered_guard_retired,
+      "An early finalization failure must retain the versioned log guard until backend recovery can move the pair");
 #endif
 }
 
@@ -8865,6 +8960,11 @@ int main(int argc, char** argv) {
   }
   HStreamWindow window;
   window.show();
+
+  if (!test_early_finalization_failure_retains_log_guard(&window, source_root.path())) {
+    std::cerr << "test_early_finalization_failure_retains_log_guard failed\n";
+    return 1;
+  }
 
   if (!test_game_setup(&window, source_root.path())) {
     std::cerr << "test_game_setup failed\n";

@@ -1048,13 +1048,21 @@ QString available_final_archive_path(const QString& game_dir, const QString& gam
   return {};
 }
 
+const QRegularExpression& unique_archive_run_suffix_pattern() {
+  static const QRegularExpression pattern(
+      R"(\.hstream-run-v3-[0-9]+-[0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+  return pattern;
+}
+
+bool archive_work_path_needs_backend_recovery(const QString& path) {
+  return unique_archive_run_suffix_pattern().match(QFileInfo(path).completeBaseName()).hasMatch();
+}
+
 QString failed_archive_candidate(const QString& source_path, int suffix) {
   const QFileInfo source(source_path);
   const QString extension = source.suffix().isEmpty() ? QString() : "." + source.suffix();
   QString source_base = source.completeBaseName();
-  static const QRegularExpression unique_run_suffix(
-      R"(\.hstream-run-v3-[0-9]+-[0-9]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
-  source_base.remove(unique_run_suffix);
+  source_base.remove(unique_archive_run_suffix_pattern());
   const QString base = source_base + "-finalization-failed";
   const QString filename = suffix == 0 ? base + extension : QString("%1-%2%3").arg(base).arg(suffix).arg(extension);
   return QDir(source.absolutePath()).filePath(filename);
@@ -1764,6 +1772,88 @@ bool read_ui_cleanup_owner(int cleanup_fd, QByteArray* target_name, QString* err
   if (error)
     *error = QString::fromLocal8Bit(std::strerror(saved_errno));
   return false;
+}
+
+bool ui_cleanup_target_has_pending_transaction(
+    int parent_fd,
+    const QByteArray& target_name,
+    const struct stat& expected_stat,
+    QString* error) {
+  const QByteArray fallback_name = target_name + ".hstream-cleanup-pin";
+  struct stat fallback_stat{};
+  if (::fstatat(parent_fd, fallback_name.constData(), &fallback_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+    if (same_file_identity(fallback_stat, expected_stat))
+      return true;
+    if (error)
+      *error = QString("cleanup fallback for %1 belongs to another file").arg(QString::fromLocal8Bit(target_name));
+    return true;
+  }
+  if (errno != ENOENT) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return true;
+  }
+
+  const int scan_fd = ::dup(parent_fd);
+  if (scan_fd < 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return true;
+  }
+  DIR* directory = ::fdopendir(scan_fd);
+  if (!directory) {
+    const int saved_errno = errno;
+    ::close(scan_fd);
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+    return true;
+  }
+  static const QRegularExpression cleanup_name_pattern(
+      R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+  bool pending = false;
+  int scan_errno = 0;
+  while (true) {
+    errno = 0;
+    const dirent* entry = ::readdir(directory);
+    if (!entry) {
+      scan_errno = errno;
+      break;
+    }
+    const QByteArray cleanup_name(entry->d_name);
+    if (!cleanup_name_pattern.match(QString::fromLatin1(cleanup_name)).hasMatch())
+      continue;
+    const int cleanup_fd =
+        ::openat(parent_fd, cleanup_name.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (cleanup_fd < 0) {
+      if (errno == ENOENT)
+        continue;
+      scan_errno = errno;
+      break;
+    }
+    QByteArray owned_target_name;
+    QString owner_error;
+    pending = read_ui_cleanup_owner(cleanup_fd, &owned_target_name, &owner_error) && owned_target_name == target_name;
+    for (const char* private_name : {"entry", "guard", "fallback"}) {
+      struct stat private_stat{};
+      if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+        pending |= same_file_identity(private_stat, expected_stat);
+      } else if (errno != ENOENT) {
+        scan_errno = errno;
+        break;
+      }
+    }
+    ::close(cleanup_fd);
+    if (pending || scan_errno != 0)
+      break;
+  }
+  if (::closedir(directory) != 0 && scan_errno == 0)
+    scan_errno = errno;
+  if (scan_errno != 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(scan_errno));
+    return true;
+  }
+  return pending;
 }
 
 bool ui_cleanup_name_matches_fd(int cleanup_fd, int parent_fd, const QByteArray& cleanup_name) {
@@ -2518,10 +2608,41 @@ bool remove_path_if_same_identity(
     const QString& required_identity_path = {},
     const struct stat* required_identity_stat = nullptr) {
   const QByteArray encoded_path = QFile::encodeName(path);
+  const QFileInfo path_info(path);
+  const QByteArray encoded_parent = QFile::encodeName(path_info.absolutePath());
+  const QByteArray encoded_filename = QFile::encodeName(path_info.fileName());
   struct stat current_stat{};
   if (::lstat(encoded_path.constData(), &current_stat) != 0) {
-    if (errno == ENOENT)
+    if (errno == ENOENT) {
+      const int parent_fd = ::open(encoded_parent.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+      if (parent_fd < 0 || ::flock(parent_fd, LOCK_EX) != 0) {
+        const int saved_errno = errno;
+        if (parent_fd >= 0)
+          ::close(parent_fd);
+        if (error)
+          *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+        return false;
+      }
+      const bool pending = ui_cleanup_target_has_pending_transaction(parent_fd, encoded_filename, expected_stat, error);
+      struct stat rechecked_stat{};
+      const bool reappeared =
+          ::fstatat(parent_fd, encoded_filename.constData(), &rechecked_stat, AT_SYMLINK_NOFOLLOW) == 0;
+      const int recheck_errno = reappeared ? 0 : errno;
+      ::close(parent_fd);
+      if (pending) {
+        if (error && error->isEmpty())
+          *error = QString("cleanup of %1 is still pending recovery").arg(path);
+        return false;
+      }
+      if (reappeared || recheck_errno != ENOENT) {
+        if (error) {
+          *error = reappeared ? QString("cleanup path reappeared while checking recovery: %1").arg(path)
+                              : QString::fromLocal8Bit(std::strerror(recheck_errno));
+        }
+        return false;
+      }
       return true;
+    }
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(errno));
     return false;
@@ -2547,9 +2668,6 @@ bool remove_path_if_same_identity(
   if (serialization_delay == "1" || (!serialization_delay.isEmpty() && serialization_delay == path))
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  const QFileInfo path_info(path);
-  const QByteArray encoded_parent = QFile::encodeName(path_info.absolutePath());
-  const QByteArray encoded_filename = QFile::encodeName(path_info.fileName());
   const int parent_fd = ::open(encoded_parent.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (parent_fd < 0) {
     if (error)
@@ -2568,12 +2686,23 @@ bool remove_path_if_same_identity(
   struct stat locked_path_stat{};
   if (::fstatat(parent_fd, encoded_filename.constData(), &locked_path_stat, AT_SYMLINK_NOFOLLOW) != 0) {
     const int saved_errno = errno;
+    bool pending = false;
+    if (saved_errno == ENOENT)
+      pending = ui_cleanup_target_has_pending_transaction(parent_fd, encoded_filename, pinned_stat, error);
+    struct stat rechecked_stat{};
+    const bool reappeared = saved_errno == ENOENT &&
+        ::fstatat(parent_fd, encoded_filename.constData(), &rechecked_stat, AT_SYMLINK_NOFOLLOW) == 0;
+    const int recheck_errno = reappeared ? 0 : errno;
     ::close(pinned_fd);
     ::close(parent_fd);
-    if (saved_errno == ENOENT)
+    if (saved_errno == ENOENT && !pending && !reappeared && recheck_errno == ENOENT)
       return true;
-    if (error)
+    if (saved_errno == ENOENT && error && error->isEmpty()) {
+      *error = pending ? QString("cleanup of %1 is still pending recovery").arg(path)
+                       : QString("cleanup path reappeared while checking recovery: %1").arg(path);
+    } else if (saved_errno != ENOENT && error) {
       *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+    }
     return false;
   }
   if (!same_file_identity(locked_path_stat, pinned_stat)) {
@@ -8218,6 +8347,10 @@ void HStreamWindow::finishArchiveJobLog(bool retire_identity_guard) {
     appendLog(QString("archive job log final durability sync failed: %1").arg(durability_error));
 }
 
+void HStreamWindow::finishArchiveJobLogAfterFinalizationFailure() {
+  finishArchiveJobLog(!archive_work_path_needs_backend_recovery(archive_finalize_source_path_));
+}
+
 void HStreamWindow::updateArchiveOutputPathLabel() {
   if (!archive_output_path_label_) {
     return;
@@ -9302,7 +9435,7 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   archive_finalize_dialog_->show();
   appendLog(QString("archive finalization failed: %1; recovery archive retained at %2")
                 .arg(failure_detail, archive_finalize_source_path_));
-  finishArchiveJobLog();
+  finishArchiveJobLogAfterFinalizationFailure();
   updateRunControls();
 }
 

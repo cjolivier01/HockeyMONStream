@@ -180,6 +180,7 @@ class HStreamWindow : public QMainWindow {
       quint64 expected_device = 0,
       quint64 expected_inode = 0);
   void finishArchiveJobLog(bool retire_identity_guard = true);
+  void finishArchiveJobLogAfterFinalizationFailure();
   void startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video);
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
