@@ -1710,6 +1710,40 @@ play-tracker:
           occupied_log_content == "unrelated existing log",
       "Recovery of a video without a log must skip basenames occupied by unrelated log sidecars");
 
+  const fs::path orphan_guard_dir = root / "archive-orphan-guard-collision";
+  fs::create_directories(orphan_guard_dir);
+  const fs::path orphan_guard_archive = orphan_guard_dir / "orphan.mkv";
+  const fs::path orphan_guard_stale = orphan_guard_dir / "orphan.hstream-run-99999999-dead.mkv";
+  const fs::path orphan_guard_stale_log = orphan_guard_stale.string() + ".log";
+  const fs::path orphan_guard_occupied = orphan_guard_dir / "orphan-finalization-failed.mkv";
+  const fs::path orphan_guard_occupied_log = orphan_guard_occupied.string() + ".log";
+  const fs::path orphan_guard_expected = orphan_guard_dir / "orphan-finalization-failed-1.mkv";
+  const fs::path orphan_guard_expected_log = orphan_guard_expected.string() + ".log";
+  const fs::path orphan_guard_backing = orphan_guard_dir / "prior-video-backing";
+  const fs::path orphan_log_guard_backing = orphan_guard_dir / "prior-log-backing";
+  std::ofstream(orphan_guard_stale, std::ios::binary) << "new stale video";
+  std::ofstream(orphan_guard_stale_log, std::ios::binary) << "new stale log";
+  std::ofstream(orphan_guard_backing, std::ios::binary) << "prior guarded video";
+  std::ofstream(orphan_log_guard_backing, std::ios::binary) << "prior guarded log";
+  fs::create_hard_link(orphan_guard_backing, orphan_guard_occupied.string() + ".hstream-pin");
+  fs::create_hard_link(orphan_log_guard_backing, orphan_guard_occupied_log.string() + ".hstream-pin");
+  const auto orphan_guard_recoveries =
+      hm::configurator_internal::recover_stale_archive_work_files(orphan_guard_archive);
+  std::ifstream orphan_guard_recovery_stream(orphan_guard_expected, std::ios::binary);
+  const std::string orphan_guard_recovery_content{
+      std::istreambuf_iterator<char>(orphan_guard_recovery_stream), std::istreambuf_iterator<char>()};
+  std::ifstream orphan_guard_recovery_log_stream(orphan_guard_expected_log, std::ios::binary);
+  const std::string orphan_guard_recovery_log_content{
+      std::istreambuf_iterator<char>(orphan_guard_recovery_log_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      orphan_guard_recoveries.ok() && orphan_guard_recoveries->size() == 1 &&
+          orphan_guard_recoveries->front() == orphan_guard_expected &&
+          orphan_guard_recovery_content == "new stale video" && orphan_guard_recovery_log_content == "new stale log" &&
+          !fs::exists(orphan_guard_stale) && !fs::exists(orphan_guard_stale_log) &&
+          fs::is_regular_file(orphan_guard_occupied.string() + ".hstream-pin") &&
+          fs::is_regular_file(orphan_guard_occupied_log.string() + ".hstream-pin"),
+      "Stale recovery must skip a basename occupied only by durable guards from an older moved recovery");
+
   const auto interrupted_recovery_is_reconciled =
       [&](const std::string& name, bool has_log, bool destination_log_exists, bool destination_video_exists) {
         const fs::path interrupted_dir = root / ("archive-interrupted-" + name);
@@ -1983,6 +2017,29 @@ play-tracker:
       replaced_lock.ok() && !replaced_lock_cleanup.ok() && !fs::exists(replaced_lock_work) &&
           replaced_lock_content == "injected foreign archive owner lock",
       "Stale recovery must never delete a replacement ownership-lock entry after acquiring the original inode");
+
+  const fs::path replaced_reservation_archive = custom_archive_dir / "replaced-reservation.mkv";
+  const fs::path replaced_reservation_work = custom_archive_dir /
+      "replaced-reservation.hstream-run-v3-99999990-99999989-44556677-8899-aabb-ccdd-eeff00112233.mkv";
+  std::ofstream(replaced_reservation_work, std::ios::binary);
+  const auto replaced_reservation_lock =
+      hm::configurator_internal::acquire_archive_work_owner_lock(replaced_reservation_work);
+  if (replaced_reservation_lock.ok())
+    ::close(*replaced_reservation_lock);
+  const fs::path replaced_reservation_lock_path =
+      hm::configurator_internal::archive_work_owner_lock_path(replaced_reservation_work);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RESERVATION_BEFORE_CLEANUP", "1", TRUE);
+  const auto replaced_reservation_cleanup =
+      hm::configurator_internal::recover_stale_archive_work_files(replaced_reservation_archive);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RESERVATION_BEFORE_CLEANUP");
+  std::ifstream replaced_reservation_stream(replaced_reservation_work, std::ios::binary);
+  const std::string replaced_reservation_content{
+      std::istreambuf_iterator<char>(replaced_reservation_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      replaced_reservation_lock.ok() && !replaced_reservation_cleanup.ok() &&
+          replaced_reservation_content == "injected foreign archive reservation" &&
+          fs::is_regular_file(replaced_reservation_lock_path),
+      "A replaced zero-byte reservation must retain its ownership sidecar when identity-checked cleanup fails");
 
   const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
   const auto conflicting_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);

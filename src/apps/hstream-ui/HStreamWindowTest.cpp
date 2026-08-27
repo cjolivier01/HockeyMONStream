@@ -4923,6 +4923,114 @@ bool test_output_controls(HStreamWindow* window) {
             cross_log_text.contains(QString("archive backend resolved output: %1").arg(cross_filesystem_source)) &&
             cross_log_text.contains("pipeline finished"),
         "A backend-resolved archive on another filesystem must receive a secure copied-and-continued UI log");
+
+    const QString cross_filesystem_sync_failure_source =
+        QDir(cross_filesystem_root.path()).filePath("cross-filesystem-sync-failure.mkv");
+    const QString cross_filesystem_sync_failure_log = cross_filesystem_sync_failure_source + ".log";
+    QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
+    const QStringList provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_sync_failure_source.toLocal8Bit());
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_SYNC_FAILURE", "1");
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const QStringList provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString fallback_log_text;
+    for (const QString& provisional_log : provisional_logs_after) {
+      if (provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    cross_filesystem_log_persisted &= expect(
+        !QFileInfo::exists(cross_filesystem_sync_failure_log) &&
+            fallback_log_text.contains(
+                QString("archive backend resolved output: %1").arg(cross_filesystem_sync_failure_source)) &&
+            fallback_log_text.contains("pipeline finished"),
+        "A cross-filesystem destination-sync failure must retain and continue the durable provisional UI log");
+
+    const QString cross_filesystem_copy_replacement_source =
+        QDir(cross_filesystem_root.path()).filePath("cross-filesystem-copy-replacement.mkv");
+    const QString cross_filesystem_copy_replacement_log = cross_filesystem_copy_replacement_source + ".log";
+    const QStringList replacement_provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_copy_replacement_source.toLocal8Bit());
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_COPY_REPLACEMENT", "1");
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const QStringList replacement_provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString replacement_fallback_log_text;
+    for (const QString& provisional_log : replacement_provisional_logs_after) {
+      if (replacement_provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        replacement_fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    QFile foreign_cross_filesystem_log(cross_filesystem_copy_replacement_log);
+    const bool foreign_cross_filesystem_log_opened = foreign_cross_filesystem_log.open(QIODevice::ReadOnly);
+    const QByteArray foreign_cross_filesystem_log_text =
+        foreign_cross_filesystem_log_opened ? foreign_cross_filesystem_log.readAll() : QByteArray();
+    cross_filesystem_log_persisted &= expect(
+        foreign_cross_filesystem_log_text == "injected foreign cross-filesystem log" &&
+            replacement_fallback_log_text.contains(
+                QString("archive backend resolved output: %1").arg(cross_filesystem_copy_replacement_source)) &&
+            replacement_fallback_log_text.contains("pipeline finished"),
+        "Cross-filesystem copy error cleanup must preserve a replacement pathname and continue the pinned provisional log");
+
+    const QString cross_filesystem_reopen_failure_source =
+        QDir(cross_filesystem_root.path()).filePath("cross-filesystem-reopen-failure.mkv");
+    const QString cross_filesystem_reopen_failure_log = cross_filesystem_reopen_failure_source + ".log";
+    const QStringList reopen_provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_reopen_failure_source.toLocal8Bit());
+    qputenv(
+        "HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_REOPEN_FAILURE", cross_filesystem_reopen_failure_log.toLocal8Bit());
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const QStringList reopen_provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString reopen_fallback_log_text;
+    for (const QString& provisional_log : reopen_provisional_logs_after) {
+      if (reopen_provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        reopen_fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    cross_filesystem_log_persisted &= expect(
+        !QFileInfo::exists(cross_filesystem_reopen_failure_log) &&
+            reopen_fallback_log_text.contains(
+                QString("archive backend resolved output: %1").arg(cross_filesystem_reopen_failure_source)) &&
+            reopen_fallback_log_text.contains("pipeline finished"),
+        "A cross-filesystem copied-log reopen failure must fall back to the original pinned identity and keep logging");
   }
 #endif
 
@@ -5047,7 +5155,9 @@ bool test_output_controls(HStreamWindow* window) {
           foreign_source_text == "injected foreign source before ffmpeg input" &&
           replaced_owner_lock_text == "injected foreign owner lock" &&
           QFileInfo(concurrent_completed_target).size() > 0 && argument_text.contains("-n\n") &&
-          !argument_text.contains("-y\n") && argument_text.contains(QString("/proc/self/fd/%1").arg(197)) &&
+          !argument_text.contains("-y\n") &&
+          argument_text.contains(QRegularExpression(R"(-i\n/proc/self/fd/[0-9]+\n)")) &&
+          !argument_text.contains("/proc/self/fd/197") && !argument_text.contains("/proc/self/fd/198") &&
           argument_text.contains(
               QString("/.%1-tracking_output-with-audio.hstream-finalize-").arg(window->gameIdText())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
@@ -5056,6 +5166,50 @@ bool test_output_controls(HStreamWindow* window) {
       "Finalization must remux the pinned source FD, skip dangling names, republish a target replaced during sync, "
       "and leave replacement source, target, and ownership-lock paths untouched");
 
+  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+
+  const QString source_sync_failure =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("source-sync-failure.mkv");
+  const QString source_sync_failure_recovery =
+      QDir(QFileInfo(source_sync_failure).absolutePath()).filePath("source-sync-failure-finalization-failed.mkv");
+  QFile::remove(source_sync_failure);
+  QFile::remove(source_sync_failure + ".log");
+  QFile::remove(source_sync_failure_recovery);
+  const QStringList finalized_before_source_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", source_sync_failure.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_PARENT_SYNC_FAILURE", "1");
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
+  auto* source_sync_failure_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* source_sync_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  QFile source_sync_failure_recovery_file(source_sync_failure_recovery);
+  const bool source_sync_failure_recovery_opened = source_sync_failure_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray source_sync_failure_recovery_text =
+      source_sync_failure_recovery_opened ? source_sync_failure_recovery_file.readAll() : QByteArray();
+  const QStringList finalized_after_source_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  const bool source_cleanup_sync_failure_recovered = expect(
+      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+          finalize_headline && finalize_headline->text() == "Video finalization failed" && source_sync_failure_detail &&
+          source_sync_failure_detail->text().contains(source_sync_failure_recovery) &&
+          source_sync_failure_recovery_text == "completed lossless archive" &&
+          finalized_after_source_sync_failure == finalized_before_source_sync_failure,
+      "A source-parent sync failure must withdraw the MP4 and durably recover the pinned MKV instead of reporting success");
+  if (source_sync_failure_ok)
+    activate(source_sync_failure_ok);
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -5296,8 +5450,9 @@ bool test_output_controls(HStreamWindow* window) {
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
       nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
       cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
-      durability_sync_responsive && failed_archive_retained && no_log_recovery_reserved &&
-      post_quarantine_recovery_safe && unsafe_retry_blocked && retry_unblocked_after_recovery;
+      durability_sync_responsive && source_cleanup_sync_failure_recovered && failed_archive_retained &&
+      no_log_recovery_reserved && post_quarantine_recovery_safe && unsafe_retry_blocked &&
+      retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

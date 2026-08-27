@@ -100,9 +100,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kArchiveFinalizeChildVideoFd = 197;
-constexpr int kArchiveFinalizeChildLogFd = 198;
-
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr int kDefaultStitchCalibrationFrameCount = 4;
@@ -1145,6 +1142,13 @@ bool create_open_file_guard(int source_fd, const QString& protected_path, QStrin
   return false;
 }
 
+bool remove_path_if_same_identity(
+    const QString& path,
+    const struct stat& expected_stat,
+    QString* error,
+    const QString& required_identity_path,
+    const struct stat* required_identity_stat);
+
 bool copy_open_file_no_replace(
     int source_fd,
     const QString& destination,
@@ -1160,10 +1164,33 @@ bool copy_open_file_no_replace(
     return false;
   }
 
+  struct stat created_stat{};
+  if (::fstat(output_fd, &created_stat) != 0 || !S_ISREG(created_stat.st_mode)) {
+    const int created_stat_errno = errno;
+    ::close(output_fd);
+    if (saved_errno)
+      *saved_errno = created_stat_errno;
+    return false;
+  }
+
   bool copied = true;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_COPY_REPLACEMENT")) {
+    qunsetenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_COPY_REPLACEMENT");
+    ::unlink(encoded_destination.constData());
+    const int replacement_fd =
+        ::open(encoded_destination.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (replacement_fd >= 0) {
+      constexpr char kReplacement[] = "injected foreign cross-filesystem log";
+      const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+      (void)replacement_bytes;
+      ::close(replacement_fd);
+    }
+    copied = false;
+    errno = EIO;
+  }
   off_t offset = 0;
   std::array<char, 64 * 1024> buffer{};
-  while (true) {
+  while (copied) {
     const ssize_t bytes_read = ::pread(source_fd, buffer.data(), buffer.size(), offset);
     if (bytes_read == 0)
       break;
@@ -1192,8 +1219,9 @@ bool copy_open_file_no_replace(
   struct stat copied_stat{};
   if (!copied || ::fsync(output_fd) != 0 || ::fstat(output_fd, &copied_stat) != 0 || !S_ISREG(copied_stat.st_mode)) {
     const int copy_errno = errno;
+    QString cleanup_error;
+    remove_path_if_same_identity(destination, created_stat, &cleanup_error, {}, nullptr);
     ::close(output_fd);
-    ::unlink(encoded_destination.constData());
     if (saved_errno)
       *saved_errno = copy_errno;
     return false;
@@ -6196,7 +6224,6 @@ void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, co
   if (::fstat(archive_job_log_.handle(), &initial_log_stat) != 0 || !S_ISREG(initial_log_stat.st_mode)) {
     const QString identity_error = QString::fromLocal8Bit(std::strerror(errno));
     archive_job_log_.close();
-    QFile::remove(archive_job_log_path_);
     archive_job_log_enabled_ = false;
     archive_job_log_path_.clear();
     appendLog(QString("archive job log could not be identity-pinned: %1").arg(identity_error));
@@ -6207,8 +6234,12 @@ void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, co
   QString guard_error;
   if (!create_open_file_guard(
           archive_job_log_.handle(), archive_job_log_path_, &archive_job_log_guard_path_, &guard_error)) {
+    QString cleanup_error;
+    if (!remove_path_if_same_identity(archive_job_log_path_, initial_log_stat, &cleanup_error) &&
+        !cleanup_error.isEmpty()) {
+      guard_error += QString("; created log was retained: %1").arg(cleanup_error);
+    }
     archive_job_log_.close();
-    QFile::remove(archive_job_log_path_);
     archive_job_log_enabled_ = false;
     archive_job_log_path_.clear();
     archive_job_log_guard_path_.clear();
@@ -6260,6 +6291,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   }
 #endif
   bool renamed = false;
+  bool cross_filesystem_copy_ready = false;
   bool copied_across_filesystems = false;
 #ifdef Q_OS_UNIX
   int rename_errno = 0;
@@ -6282,7 +6314,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
     if (copy_open_file_no_replace(pinned_log_fd, resolved_log_path, &copied_log_fd, &copied_log_stat, &copy_errno)) {
       QString copied_guard_error;
       if (create_open_file_guard(copied_log_fd, resolved_log_path, &copied_log_guard_path, &copied_guard_error)) {
-        copied_across_filesystems = true;
+        cross_filesystem_copy_ready = true;
       } else {
         QString cleanup_error;
         remove_path_if_same_identity(resolved_log_path, copied_log_stat, &cleanup_error);
@@ -6302,42 +6334,89 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
     archive_job_log_.flush();
     archive_job_log_.close();
   }
-  archive_job_log_path_ = (renamed || copied_across_filesystems) ? resolved_log_path : provisional_path;
+  archive_job_log_path_ = renamed ? resolved_log_path : provisional_path;
+  quint64 selected_log_device = expected_log_device;
+  quint64 selected_log_inode = expected_log_inode;
 #ifdef Q_OS_UNIX
-  if ((renamed || copied_across_filesystems) && !sync_parent_directory(resolved_log_path, &durability_error) &&
-      durability_error.isEmpty())
+  if (renamed && !sync_parent_directory(resolved_log_path, &durability_error) && durability_error.isEmpty())
     durability_error = "unknown parent-directory sync error";
-  if (copied_across_filesystems) {
-    expected_log_device = static_cast<quint64>(copied_log_stat.st_dev);
-    expected_log_inode = static_cast<quint64>(copied_log_stat.st_ino);
-    archive_job_log_device_ = expected_log_device;
-    archive_job_log_inode_ = expected_log_inode;
-    ::close(copied_log_fd);
-    copied_log_fd = -1;
+  if (cross_filesystem_copy_ready) {
+    QString destination_sync_error;
+    bool force_destination_sync_failure =
+        qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_SYNC_FAILURE");
+    if (force_destination_sync_failure)
+      qunsetenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_SYNC_FAILURE");
+    const bool destination_parent_synced = !force_destination_sync_failure &&
+        sync_parent_directory(resolved_log_path, &destination_sync_error) &&
+        path_has_file_identity(resolved_log_path, copied_log_stat) &&
+        path_has_file_identity(copied_log_guard_path, copied_log_stat);
+    if (force_destination_sync_failure)
+      destination_sync_error = "cross-filesystem destination sync failure requested by test";
+    if (destination_parent_synced) {
+      archive_job_log_path_ = resolved_log_path;
+      selected_log_device = static_cast<quint64>(copied_log_stat.st_dev);
+      selected_log_inode = static_cast<quint64>(copied_log_stat.st_ino);
+    } else {
+      if (durability_error.isEmpty()) {
+        durability_error = destination_sync_error.isEmpty()
+            ? QString("cross-filesystem log publication was replaced before it became durable")
+            : destination_sync_error;
+      }
+      QString cleanup_error;
+      remove_path_if_same_identity(resolved_log_path, copied_log_stat, &cleanup_error);
+      remove_path_if_same_identity(copied_log_guard_path, copied_log_stat, &cleanup_error);
+      cross_filesystem_copy_ready = false;
+    }
   }
 #endif
   QString reopen_error;
-  if (!reopenArchiveJobLog(archive_job_log_path_, &reopen_error, expected_log_device, expected_log_inode)) {
+  bool reopened = reopenArchiveJobLog(archive_job_log_path_, &reopen_error, selected_log_device, selected_log_inode);
 #ifdef Q_OS_UNIX
+  if (cross_filesystem_copy_ready && reopened) {
+    if (path_has_file_identity(resolved_log_path, copied_log_stat) &&
+        path_has_file_identity(copied_log_guard_path, copied_log_stat)) {
+      copied_across_filesystems = true;
+      archive_job_log_device_ = selected_log_device;
+      archive_job_log_inode_ = selected_log_inode;
+    } else {
+      archive_job_log_.close();
+      reopened = false;
+      reopen_error = "cross-filesystem log publication was replaced while being reopened";
+    }
+  }
+  if (cross_filesystem_copy_ready && !copied_across_filesystems) {
+    QString cleanup_error;
+    remove_path_if_same_identity(resolved_log_path, copied_log_stat, &cleanup_error);
+    remove_path_if_same_identity(copied_log_guard_path, copied_log_stat, &cleanup_error);
+    archive_job_log_path_ = provisional_path;
+    QString provisional_reopen_error;
+    reopened =
+        reopenArchiveJobLog(provisional_path, &provisional_reopen_error, expected_log_device, expected_log_inode);
+    if (!reopened && !provisional_reopen_error.isEmpty())
+      reopen_error += QString("; provisional log reopen failed: %1").arg(provisional_reopen_error);
+    cross_filesystem_copy_ready = false;
+  }
+  if (!reopened) {
     // The no-replace rename may have succeeded before the destination was
     // concurrently removed/replaced.  Recover the still-open trusted inode
     // under its provisional name instead of adopting the replacement.
-    if (pinned_log_fd >= 0 && expected_log_inode != 0 &&
-        !path_has_file_identity(archive_job_log_path_, open_log_stat)) {
+    if (pinned_log_fd >= 0 && expected_log_inode != 0 && !path_has_file_identity(provisional_path, open_log_stat)) {
       int restore_errno = 0;
       if (link_open_file_no_replace(pinned_log_fd, provisional_path, &restore_errno)) {
         archive_job_log_path_ = provisional_path;
         reopen_error.clear();
-        reopenArchiveJobLog(archive_job_log_path_, &reopen_error, expected_log_device, expected_log_inode);
+        reopened = reopenArchiveJobLog(archive_job_log_path_, &reopen_error, expected_log_device, expected_log_inode);
       }
     }
+  }
+  if (copied_log_fd >= 0) {
+    ::close(copied_log_fd);
+    copied_log_fd = -1;
+  }
+  if (pinned_log_fd >= 0) {
     ::close(pinned_log_fd);
     pinned_log_fd = -1;
-#endif
   }
-#ifdef Q_OS_UNIX
-  if (pinned_log_fd >= 0)
-    ::close(pinned_log_fd);
 #endif
   if (!archive_job_log_.isOpen()) {
     archive_job_log_enabled_ = false;
@@ -6386,6 +6465,14 @@ bool HStreamWindow::reopenArchiveJobLog(
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL") && path.contains(".hstream-run-v3-")) {
     if (error)
       *error = "archive log reopen failure requested by test";
+    return false;
+  }
+  const QString forced_cross_filesystem_reopen_failure =
+      qEnvironmentVariable("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_REOPEN_FAILURE");
+  if (!forced_cross_filesystem_reopen_failure.isEmpty() && path == forced_cross_filesystem_reopen_failure) {
+    qunsetenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_REOPEN_FAILURE");
+    if (error)
+      *error = "cross-filesystem archive log reopen failure requested by test";
     return false;
   }
   archive_job_log_.setFileName(path);
@@ -6795,6 +6882,10 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
     return;
   }
 
+  QString archive_input = archive_finalize_source_path_;
+#ifdef Q_OS_UNIX
+  archive_input = QString("/proc/self/fd/%1").arg(archive_finalize_source_fd_);
+#endif
   QStringList arguments = {
       "-hide_banner",
       "-n",
@@ -6802,7 +6893,7 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
       "pipe:1",
       "-nostats",
       "-i",
-      QString("/proc/self/fd/%1").arg(kArchiveFinalizeChildVideoFd),
+      archive_input,
       "-map",
       "0:v:0",
       "-map",
@@ -6825,10 +6916,8 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
 #ifdef Q_OS_UNIX
   const int inherited_source_fd = archive_finalize_source_fd_;
   archive_finalize_process_->setChildProcessModifier([inherited_source_fd]() {
-    if (::dup2(inherited_source_fd, kArchiveFinalizeChildVideoFd) < 0)
-      ::_exit(127);
-    const int descriptor_flags = ::fcntl(kArchiveFinalizeChildVideoFd, F_GETFD);
-    if (descriptor_flags < 0 || ::fcntl(kArchiveFinalizeChildVideoFd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) < 0)
+    const int descriptor_flags = ::fcntl(inherited_source_fd, F_GETFD);
+    if (descriptor_flags < 0 || ::fcntl(inherited_source_fd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) < 0)
       ::_exit(127);
   });
 #endif
@@ -6893,21 +6982,17 @@ bool HStreamWindow::startArchiveDurabilitySync(const QString& path, ArchiveFinal
       *error = "The archive durability identity is no longer available.";
     return false;
   }
-  QStringList sync_arguments = {"-f", QString("/proc/self/fd/%1").arg(kArchiveFinalizeChildVideoFd)};
+  QStringList sync_arguments = {"-f", QString("/proc/self/fd/%1").arg(inherited_video_fd)};
   if (inherited_log_fd >= 0)
-    sync_arguments << QString("/proc/self/fd/%1").arg(kArchiveFinalizeChildLogFd);
+    sync_arguments << QString("/proc/self/fd/%1").arg(inherited_log_fd);
   archive_finalize_process_->setArguments(sync_arguments);
   archive_finalize_process_->setChildProcessModifier([inherited_video_fd, inherited_log_fd]() {
-    if (::dup2(inherited_video_fd, kArchiveFinalizeChildVideoFd) < 0)
-      ::_exit(127);
-    int descriptor_flags = ::fcntl(kArchiveFinalizeChildVideoFd, F_GETFD);
-    if (descriptor_flags < 0 || ::fcntl(kArchiveFinalizeChildVideoFd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) < 0)
+    int descriptor_flags = ::fcntl(inherited_video_fd, F_GETFD);
+    if (descriptor_flags < 0 || ::fcntl(inherited_video_fd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) < 0)
       ::_exit(127);
     if (inherited_log_fd >= 0) {
-      if (::dup2(inherited_log_fd, kArchiveFinalizeChildLogFd) < 0)
-        ::_exit(127);
-      descriptor_flags = ::fcntl(kArchiveFinalizeChildLogFd, F_GETFD);
-      if (descriptor_flags < 0 || ::fcntl(kArchiveFinalizeChildLogFd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) < 0)
+      descriptor_flags = ::fcntl(inherited_log_fd, F_GETFD);
+      if (descriptor_flags < 0 || ::fcntl(inherited_log_fd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) < 0)
         ::_exit(127);
     }
   });
@@ -7256,6 +7341,23 @@ void HStreamWindow::completeArchiveFinalization() {
   }
 #else
   source_removed = QFile::remove(archive_finalize_source_path_);
+#endif
+#ifdef Q_OS_UNIX
+  if (source_removed) {
+    QString source_cleanup_sync_error;
+    const bool force_source_sync_failure =
+        qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_SOURCE_PARENT_SYNC_FAILURE");
+    if (force_source_sync_failure) {
+      qunsetenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_PARENT_SYNC_FAILURE");
+      source_cleanup_sync_error = "source-parent sync failure requested by test";
+    }
+    if (force_source_sync_failure ||
+        !sync_parent_directory(archive_finalize_source_path_, &source_cleanup_sync_error)) {
+      failArchiveFinalization(QString("The completed MP4 was saved, but source cleanup could not be made durable: %1")
+                                  .arg(source_cleanup_sync_error));
+      return;
+    }
+  }
 #endif
   releaseArchiveFinalizeSource(true);
   releaseArchiveFinalizeTarget(true);

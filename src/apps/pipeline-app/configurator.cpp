@@ -1997,12 +1997,29 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
   for (int suffix = 0; suffix < 1000; ++suffix) {
     const fs::path recovery_path = archive_recovery_candidate(recovery_name_base, suffix);
     const fs::path recovery_log_path = archive_log_sidecar(recovery_path);
+    const fs::path recovery_guard_path = recovery_path.string() + ".hstream-pin";
+    const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
     auto recovery_stat = inspect_archive_entry(recovery_path, "archive recovery path");
     if (!recovery_stat.ok())
       return recovery_stat.status();
     auto recovery_log_stat = inspect_archive_entry(recovery_log_path, "archive log recovery path");
     if (!recovery_log_stat.ok())
       return recovery_log_stat.status();
+    auto recovery_guard_stat = inspect_archive_entry(recovery_guard_path, "archive recovery identity guard");
+    if (!recovery_guard_stat.ok())
+      return recovery_guard_stat.status();
+    auto recovery_log_guard_stat =
+        inspect_archive_entry(recovery_log_guard_path, "archive log recovery identity guard");
+    if (!recovery_log_guard_stat.ok())
+      return recovery_log_guard_stat.status();
+    const bool recovery_guard_is_ours =
+        recovery_guard_stat->has_value() && same_file_identity(recovery_guard_stat->value(), output_stat);
+    const bool recovery_log_guard_is_ours = has_output_log && recovery_log_guard_stat->has_value() &&
+        same_file_identity(recovery_log_guard_stat->value(), output_log_stat);
+    if ((recovery_guard_stat->has_value() && !recovery_guard_is_ours) ||
+        (recovery_log_guard_stat->has_value() && !recovery_log_guard_is_ours)) {
+      continue;
+    }
 
     if (has_output_log) {
       const bool recovery_is_ours =
@@ -2424,8 +2441,26 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     if (has_v3_ownership && (recovery_lock_fd >= 0 || recovery_lock_is_absent) && S_ISREG(candidate_stat.st_mode) &&
         candidate_stat.st_size == 0) {
       int cleanup_errno = 0;
+      if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RESERVATION_BEFORE_CLEANUP")) {
+        ::unlink(candidate.c_str());
+        const int replacement_fd =
+            ::open(candidate.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (replacement_fd >= 0) {
+          constexpr char kReplacement[] = "injected foreign archive reservation";
+          const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+          (void)replacement_bytes;
+          ::close(replacement_fd);
+        }
+        g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_RESERVATION_BEFORE_CLEANUP");
+      }
       const absl::Status candidate_cleanup =
           remove_archive_entry_if_owned(candidate, candidate_stat, "abandoned archive work reservation");
+      if (!candidate_cleanup.ok()) {
+        if (recovery_lock_fd >= 0)
+          ::close(recovery_lock_fd);
+        recovery_lock_fd = -1;
+        return candidate_cleanup;
+      }
       absl::Status lock_cleanup = absl::OkStatus();
       if (have_recovery_lock_identity) {
         if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK")) {
@@ -2447,8 +2482,6 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
         cleanup_errno = errno;
       recovery_lock_fd = -1;
       HM_RETURN_IF_ERROR(sync_parent_directory(candidate));
-      if (!candidate_cleanup.ok())
-        return candidate_cleanup;
       if (!lock_cleanup.ok())
         return lock_cleanup;
       if (cleanup_errno != 0) {
