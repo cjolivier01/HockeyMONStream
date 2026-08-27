@@ -1580,6 +1580,11 @@ absl::Status HuginProject::Configure(
   if (matches.size() < kMinimumUsableMatches) {
     return absl::FailedPreconditionError("Insufficient control points for Hugin optimization");
   }
+  if (options.mapping_backend == MappingBackend::kNona && !options.run_autooptimizer) {
+    return absl::InvalidArgumentError(
+        "The NONA mapping backend requires stitching.run_autooptimizer=true; choose opencv-magsac or "
+        "opencv-affine-ransac to calibrate without Hugin autooptimization");
+  }
   for (const fs::path& image : {left_image, right_image}) {
     auto status = validate_nonempty_file(image);
     if (!status.ok())
@@ -1649,13 +1654,11 @@ absl::Status HuginProject::Configure(
   if (!status.ok())
     return status;
 
-  std::optional<std::string> autooptimiser_path;
   if (options.mapping_backend == MappingBackend::kNona && options.run_autooptimizer) {
     auto autooptimiser = executable("HM_AUTOOPTIMISER", "autooptimiser");
     if (!autooptimiser.ok())
       return autooptimiser.status();
-    autooptimiser_path = *autooptimiser;
-    status = run_autooptimiser(*autooptimiser_path, staging, options.is_cancelled);
+    status = run_autooptimiser(*autooptimiser, staging, options.is_cancelled);
     if (!status.ok())
       return status;
     if (options.progress)
@@ -1671,7 +1674,7 @@ absl::Status HuginProject::Configure(
           "complete",
           options.mapping_backend == MappingBackend::kNona
               ? "Panorama optimizer disabled; using the generated Hugin project"
-              : "Native OpenCV mapping does not require Hugin optimization");
+              : "Panorama optimizer disabled; native OpenCV mapping does not require Hugin optimization");
     }
   }
   if (options.progress)

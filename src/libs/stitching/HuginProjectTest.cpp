@@ -479,6 +479,7 @@ int main() {
   }
   hm::stitching::HuginProject::Options options;
   options.max_canvas_dimension = 64;
+  options.mapping_backend = hm::stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
   fs::create_directories(root / "private-inputs");
   ok &= expect(
@@ -708,6 +709,29 @@ int main() {
   hm::stitching::HuginProject::Options optimizer_disabled_options;
   std::string optimizer_disabled_message;
   fs::create_directories(root / "optimizer-disabled-game");
+  std::vector<hm::stitching::FeatureMatch> optimizer_disabled_matches;
+  for (int y = 6; y < 48; y += 10) {
+    for (int x = 16; x < 64; x += 10) {
+      optimizer_disabled_matches.push_back(
+          {{static_cast<float>(x), static_cast<float>(y)},
+           {static_cast<float>(x - 8), static_cast<float>(y + 3)},
+           0.9f});
+    }
+  }
+  cv::Mat optimizer_disabled_seam(51, 73, CV_8UC1, cv::Scalar(0));
+  optimizer_disabled_seam.colRange(36, optimizer_disabled_seam.cols).setTo(cv::Scalar(255));
+  ok &= expect(
+      cv::imwrite((root / "optimizer-disabled-seam.png").string(), optimizer_disabled_seam),
+      "optimizer-disabled seam fixture must exist");
+  ok &= expect(
+      write_tool(
+          enblend,
+          "cp '" +
+              (root / "optimizer-disabled-seam.png").string() +
+              "' seam_file.png\n"
+          "cp '" +
+              fixtures.string() + "/panorama.tif' panorama.tif\n"),
+      "optimizer-disabled fake enblend must preserve the native seam");
   optimizer_disabled_options.progress =
       [&](const std::string& stage, const std::string& status, const std::string& message) {
         if (stage == "optimizer" && status == "complete")
@@ -718,7 +742,7 @@ int main() {
       root / "optimizer-disabled-game",
       root / "private-inputs" / "left.png",
       root / "private-inputs" / "right.png",
-      matches,
+      optimizer_disabled_matches,
       optimizer_disabled_options);
   ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
   if (!optimizer_disabled.ok())
@@ -739,6 +763,19 @@ int main() {
         generated_project == published_project,
         "optimizer-disabled calibration must publish the generated Hugin project without modifying its geometry");
   }
+
+  hm::stitching::HuginProject::Options invalid_nona_options;
+  invalid_nona_options.mapping_backend = hm::stitching::MappingBackend::kNona;
+  const auto invalid_nona = hm::stitching::HuginProject::Configure(
+      root / "optimizer-disabled-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      invalid_nona_options);
+  ok &= expect(
+      absl::IsInvalidArgument(invalid_nona) &&
+          std::string(invalid_nona.message()).find("requires stitching.run_autooptimizer=true") != std::string::npos,
+      "NONA must reject optimizer-disabled calibration instead of publishing unaligned camera geometry");
 
   const fs::path fallback_game = root / "fallback-game";
   fs::create_directories(fallback_game);

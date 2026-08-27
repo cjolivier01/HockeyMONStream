@@ -631,7 +631,7 @@ class HStreamWindow : public QMainWindow {
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{false};
   QString default_control_point_matcher_{"superpoint-lightglue"};
-  QString default_mapping_backend_{"nona"};
+  QString default_mapping_backend_{"opencv-magsac"};
   std::map<QString, int> saved_camera_controls_;
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};

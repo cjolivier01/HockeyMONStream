@@ -3563,11 +3563,21 @@ bool has_conflicting_stitch_max_output_width_native_alias(YAML::Node config, int
 bool generated_stitching_backend_choices_match_private(
     const YAML::Node& config,
     QString* previous_matcher = nullptr,
-    QString* previous_backend = nullptr) {
+    QString* previous_backend = nullptr,
+    std::optional<bool>* previous_autooptimizer = nullptr,
+    bool* autooptimizer_was_generated = nullptr) {
   YAML::Node generated_matcher;
   YAML::Node generated_backend;
+  YAML::Node generated_autooptimizer;
   YAML::Node private_matcher;
   YAML::Node private_backend;
+  YAML::Node private_autooptimizer;
+  const bool has_generated_autooptimizer = lookup_yaml_path(
+      config, "hstream_ui.generated_stitching_backend_choices.run_autooptimizer", &generated_autooptimizer);
+  const bool generated_autooptimizer_matches = !has_generated_autooptimizer ||
+      (generated_autooptimizer.IsScalar() &&
+       lookup_yaml_path(config, "stitching.run_autooptimizer", &private_autooptimizer) &&
+       private_autooptimizer.IsScalar() && private_autooptimizer.as<bool>() == generated_autooptimizer.as<bool>());
   const bool matches =
       lookup_yaml_path(
           config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher) &&
@@ -3576,10 +3586,12 @@ bool generated_stitching_backend_choices_match_private(
       generated_backend.IsScalar() && lookup_yaml_path(config, "stitching.control_point_matcher", &private_matcher) &&
       private_matcher.IsScalar() && lookup_yaml_path(config, "stitching.mapping_backend", &private_backend) &&
       private_backend.IsScalar() && private_matcher.as<std::string>() == generated_matcher.as<std::string>() &&
-      private_backend.as<std::string>() == generated_backend.as<std::string>();
+      private_backend.as<std::string>() == generated_backend.as<std::string>() && generated_autooptimizer_matches;
   if (!matches) {
     return false;
   }
+  if (autooptimizer_was_generated)
+    *autooptimizer_was_generated = has_generated_autooptimizer;
 
   YAML::Node previous_matcher_node;
   YAML::Node previous_backend_node;
@@ -3604,6 +3616,15 @@ bool generated_stitching_backend_choices_match_private(
     if (canonical.has_value()) {
       *previous_backend = *canonical;
     }
+  }
+  YAML::Node previous_autooptimizer_node;
+  if (previous_autooptimizer && has_generated_autooptimizer &&
+      lookup_yaml_path(
+          config,
+          "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer",
+          &previous_autooptimizer_node) &&
+      previous_autooptimizer_node.IsScalar()) {
+    *previous_autooptimizer = previous_autooptimizer_node.as<bool>();
   }
   return true;
 }
@@ -4495,7 +4516,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   run_autooptimizer_check_->setChecked(default_run_autooptimizer_);
   set_control_help(
       run_autooptimizer_check_,
-      "Opt in to Hugin's automatic panorama alignment during stitching calibration. Disabled by default.");
+      "Opt in to Hugin's automatic panorama alignment during stitching calibration. Required by the NONA mapping "
+      "backend and disabled by default; native OpenCV mapping does not use it.");
   connect(run_autooptimizer_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
 
   control_point_matcher_combo_ = new QComboBox();
@@ -11816,14 +11838,23 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     QString previous_control_point_matcher;
     QString previous_mapping_backend;
+    std::optional<bool> previous_run_autooptimizer;
+    bool run_autooptimizer_was_generated = false;
     const bool generated_backend_choices = generated_stitching_backend_choices_match_private(
-        config, &previous_control_point_matcher, &previous_mapping_backend);
+        config,
+        &previous_control_point_matcher,
+        &previous_mapping_backend,
+        &previous_run_autooptimizer,
+        &run_autooptimizer_was_generated);
     if (generated_backend_choices) {
       if (!previous_control_point_matcher.isEmpty()) {
         staged_control_point_matcher = previous_control_point_matcher;
       }
       if (!previous_mapping_backend.isEmpty()) {
         staged_mapping_backend = previous_mapping_backend;
+      }
+      if (run_autooptimizer_was_generated) {
+        staged_run_autooptimizer = previous_run_autooptimizer.value_or(default_run_autooptimizer_);
       }
     } else {
       YAML::Node control_point_matcher;

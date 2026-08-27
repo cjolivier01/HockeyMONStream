@@ -2333,7 +2333,7 @@ absl::Status create_control_points(
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   ControlPointMatcher control_point_matcher = ControlPointMatcher::kSuperPointLightGlue;
-  MappingBackend mapping_backend = MappingBackend::kNona;
+  MappingBackend mapping_backend = MappingBackend::kOpenCvMagsac;
   bool run_autooptimizer = false;
   const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
   try {

@@ -107,7 +107,8 @@ stitching:
     m_kpts0: null
     m_kpts1: null
   control_point_matcher: "superpoint-lightglue"
-  mapping_backend: "nona"
+  # Native mapping keeps calibration functional when Hugin autooptimization is disabled.
+  mapping_backend: "opencv-magsac"
   # Opt in to Hugin's automatic alignment pass during stitching calibration.
   run_autooptimizer: false
   max_output_dimension: null

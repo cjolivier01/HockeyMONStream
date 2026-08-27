@@ -2482,7 +2482,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               mapping_backend_label->text() == "Mapping backend" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
-              !run_autooptimizer->isChecked() && control_point_matcher->count() == 3 &&
+              !run_autooptimizer->isChecked() && mapping_backend->currentData().toString() == "opencv-magsac" &&
+              control_point_matcher->count() == 3 &&
               control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
               control_point_matcher->itemText(1) == "DeDoDe + LightGlue" &&
               control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
@@ -8384,18 +8385,22 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
 
       copied_config_node = YAML::LoadFile(copied_config.string());
       copied_config_node["stitching"]["mapping_backend"] = "opencv-magsac";
+      copied_config_node["stitching"]["run_autooptimizer"] = false;
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
           "superpoint-lightglue";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "opencv-magsac";
+      copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["run_autooptimizer"] = false;
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
           "superpoint-lightglue";
       copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"] =
           "opencv-affine-ransac";
+      copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"] = true;
       std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
       activate(create);
       ok &= expect(
-          mapping_backend->currentData().toString() == "opencv-affine-ransac" && !save->isEnabled(),
-          "UI load must restore previous explicit backend choices displaced by CLI materialization");
+          mapping_backend->currentData().toString() == "opencv-affine-ransac" && run_autooptimizer->isChecked() &&
+              !save->isEnabled(),
+          "UI load must restore previous explicit stitching algorithm choices displaced by CLI materialization");
 
       mode->setCurrentIndex(mode->findData("program"));
       const int zero_argument_count = user_default_window.logText().count("--stitch-frame-time=00:00:00");
