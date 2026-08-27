@@ -2207,6 +2207,42 @@ play-tracker:
           !fs::exists(committed_retirement_transaction),
       "A durable commit record must finish deletion after interruption between fallback and guard retirement");
 
+  const fs::path pending_commit_dir = root / "archive-pending-commit-publication";
+  fs::create_directories(pending_commit_dir);
+  const fs::path pending_commit_target = pending_commit_dir / "pending-commit.mkv";
+  std::ofstream(pending_commit_target, std::ios::binary) << "trusted pending-commit video";
+  struct stat pending_commit_stat{};
+  const bool pending_commit_stat_ok = ::lstat(pending_commit_target.c_str(), &pending_commit_stat) == 0;
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH", "1", TRUE);
+  const absl::Status pending_commit_first = pending_commit_stat_ok
+      ? hm::configurator_internal::remove_archive_entry_if_owned_for_test(
+            pending_commit_target,
+            static_cast<uintmax_t>(pending_commit_stat.st_dev),
+            static_cast<uintmax_t>(pending_commit_stat.st_ino))
+      : absl::InternalError("pending-commit fixture identity is unavailable");
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH");
+  fs::path pending_commit_transaction;
+  for (const fs::path& entry : fs::directory_iterator(pending_commit_dir)) {
+    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+      pending_commit_transaction = entry;
+  }
+  const bool pending_commit_unpublished = !pending_commit_transaction.empty() &&
+      fs::exists(pending_commit_transaction / "owner") &&
+      fs::exists(pending_commit_transaction / "committed.pending") &&
+      !fs::exists(pending_commit_transaction / "committed") &&
+      fs::exists(pending_commit_transaction / "guard") && fs::exists(pending_commit_transaction / "fallback") &&
+      !fs::exists(pending_commit_target);
+  const auto pending_commit_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(pending_commit_dir / "configured.mkv");
+  std::ifstream pending_commit_restored_stream(pending_commit_target, std::ios::binary);
+  const std::string pending_commit_restored{
+      std::istreambuf_iterator<char>(pending_commit_restored_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !pending_commit_first.ok() && pending_commit_unpublished && pending_commit_restart.ok() &&
+          pending_commit_restart->empty() && pending_commit_restored == "trusted pending-commit video" &&
+          !fs::exists(pending_commit_transaction),
+      "An interruption before atomic commit publication must leave no visible commit and roll deletion back on restart");
+
   const fs::path foreign_fallback_dir = root / "archive-foreign-private-fallback";
   fs::create_directories(foreign_fallback_dir);
   const fs::path foreign_fallback_target = foreign_fallback_dir / "foreign-fallback-target.mkv";
@@ -2350,8 +2386,14 @@ play-tracker:
   g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
   bool reconciliation_race_rescued = false;
   bool reconciliation_race_foreign_retained = false;
+  bool reconciliation_race_private_links_retired = false;
   fs::path reconciliation_race_foreign_path;
   for (const fs::path& entry : fs::directory_iterator(reconciliation_race_dir)) {
+    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0) {
+      reconciliation_race_private_links_retired = fs::exists(entry / "owner") && !fs::exists(entry / "entry") &&
+          !fs::exists(entry / "guard") && !fs::exists(entry / "fallback");
+      continue;
+    }
     if (!fs::is_regular_file(entry))
       continue;
     std::ifstream entry_stream(entry, std::ios::binary);
@@ -2365,8 +2407,8 @@ play-tracker:
   }
   ok &= expect(
       !reconciliation_race_first.ok() && !reconciliation_race_restart.ok() && reconciliation_race_rescued &&
-          reconciliation_race_foreign_retained,
-      "Cleanup reconciliation must retain a dedicated trusted guard if its observed public pathname is replaced");
+          reconciliation_race_foreign_retained && reconciliation_race_private_links_retired,
+      "Cleanup reconciliation must retain a dedicated trusted guard through private-link retirement if the public path is replaced");
   const bool reconciliation_race_foreign_removed =
       !reconciliation_race_foreign_path.empty() && fs::remove(reconciliation_race_foreign_path);
   const auto reconciliation_race_resumed =

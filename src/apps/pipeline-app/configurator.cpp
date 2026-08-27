@@ -1488,6 +1488,7 @@ constexpr char kArchiveCleanupDirectoryPrefix[] = ".hstream-cleanup-v2-";
 constexpr char kArchiveCleanupOwnerName[] = "owner";
 constexpr char kArchiveCleanupOwnerMagic[] = "hstream-cleanup-v2\n";
 constexpr char kArchiveCleanupCommittedName[] = "committed";
+constexpr char kArchiveCleanupCommittedStagingName[] = "committed.pending";
 constexpr char kArchiveCleanupCommittedMagic[] = "hstream-cleanup-committed-v1\n";
 
 struct ArchiveCleanupCommittedIdentity {
@@ -1510,7 +1511,7 @@ absl::Status create_archive_cleanup_committed(int cleanup_fd, const struct stat&
   }
   const int committed_fd = ::openat(
       cleanup_fd,
-      kArchiveCleanupCommittedName,
+      kArchiveCleanupCommittedStagingName,
       O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
       S_IRUSR | S_IWUSR);
   if (committed_fd < 0) {
@@ -1535,14 +1536,50 @@ absl::Status create_archive_cleanup_committed(int cleanup_fd, const struct stat&
     saved_errno = errno;
   if (::close(committed_fd) != 0 && saved_errno == 0)
     saved_errno = errno;
-  if (saved_errno == 0 && ::fsync(cleanup_fd) != 0)
-    saved_errno = errno;
-  if (saved_errno == 0)
-    return absl::OkStatus();
-  ::unlinkat(cleanup_fd, kArchiveCleanupCommittedName, 0);
-  ::fsync(cleanup_fd);
-  return absl::InternalError(
-      TO_STRING("Failed to persist archive cleanup commit record: " << std::strerror(saved_errno)));
+  if (saved_errno != 0) {
+    ::unlinkat(cleanup_fd, kArchiveCleanupCommittedStagingName, 0);
+    ::fsync(cleanup_fd);
+    return absl::InternalError(
+        TO_STRING("Failed to persist archive cleanup commit record: " << std::strerror(saved_errno)));
+  }
+  if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH")) {
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH");
+    return absl::UnavailableError("archive cleanup interruption requested before commit publication");
+  }
+  if (rename_archive_entry_no_replace(
+          cleanup_fd,
+          kArchiveCleanupCommittedStagingName,
+          cleanup_fd,
+          kArchiveCleanupCommittedName) != 0) {
+    const int rename_errno = errno;
+    ::unlinkat(cleanup_fd, kArchiveCleanupCommittedStagingName, 0);
+    ::fsync(cleanup_fd);
+    return absl::InternalError(
+        TO_STRING("Failed to publish archive cleanup commit record: " << std::strerror(rename_errno)));
+  }
+  if (::fsync(cleanup_fd) != 0) {
+    return absl::InternalError(
+        TO_STRING("Failed to make archive cleanup commit publication durable: " << std::strerror(errno)));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status discard_archive_cleanup_committed_staging(int cleanup_fd) {
+  struct stat staging_stat{};
+  if (::fstatat(cleanup_fd, kArchiveCleanupCommittedStagingName, &staging_stat, AT_SYMLINK_NOFOLLOW) != 0) {
+    if (errno == ENOENT)
+      return absl::OkStatus();
+    return absl::InternalError(
+        TO_STRING("Failed to inspect archive cleanup commit staging file: " << std::strerror(errno)));
+  }
+  if (!S_ISREG(staging_stat.st_mode)) {
+    return absl::FailedPreconditionError("archive cleanup commit staging entry is not a regular file");
+  }
+  if (::unlinkat(cleanup_fd, kArchiveCleanupCommittedStagingName, 0) != 0 || ::fsync(cleanup_fd) != 0) {
+    return absl::InternalError(
+        TO_STRING("Failed to discard archive cleanup commit staging file: " << std::strerror(errno)));
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::optional<ArchiveCleanupCommittedIdentity>> read_archive_cleanup_committed(int cleanup_fd) {
@@ -2346,10 +2383,12 @@ absl::StatusOr<std::string> publish_unique_archive_reconciliation_guard(
     int source_fd,
     int parent_fd,
     const std::string& public_name,
+    const std::string& cleanup_id,
     const struct stat& expected_stat) {
+  const std::string guard_kind = absl::EndsWith(public_name, ".hstream-cleanup-pin") ? "fallback" : "target";
   for (int attempt = 0; attempt < 1000; ++attempt) {
     gchar* uuid = g_uuid_string_random();
-    const std::string candidate = public_name + ".hstream-reconcile-" + uuid;
+    const std::string candidate = ".hstream-reconcile-" + cleanup_id + "-" + guard_kind + "-" + uuid;
     g_free(uuid);
     if (::linkat(source_fd, "", parent_fd, candidate.c_str(), AT_EMPTY_PATH) != 0) {
       if (errno == EEXIST)
@@ -2373,9 +2412,11 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
   struct ReconciledEntry {
     fs::path public_path;
     fs::path guard_path;
+    fs::path required_path;
     struct stat identity{};
   };
-  const auto finish_reconciled_entry = [](const ReconciledEntry& entry) -> absl::Status {
+  const auto prepare_reconciled_entry = [](ReconciledEntry* reconciled_entry) -> absl::Status {
+    ReconciledEntry& entry = *reconciled_entry;
     constexpr absl::string_view kFallbackSuffix = ".hstream-cleanup-pin";
     fs::path required_path = entry.public_path;
     if (absl::EndsWith(entry.public_path.string(), kFallbackSuffix)) {
@@ -2437,8 +2478,16 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
             << required_path.string() << "\"; trusted inode retained at \"" << entry.guard_path.string() << "\""));
       }
     }
+    entry.required_path = required_path;
+    return absl::OkStatus();
+  };
+  const auto retire_reconciled_entry = [](const ReconciledEntry& entry) -> absl::Status {
     return remove_archive_entry_if_owned(
-        entry.guard_path, entry.identity, "archive reconciliation guard", &required_path, &entry.identity);
+        entry.guard_path,
+        entry.identity,
+        "archive reconciliation guard",
+        &entry.required_path,
+        &entry.identity);
   };
   const int parent_fd = ::open(parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (parent_fd < 0) {
@@ -2460,7 +2509,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
   static const std::regex cleanup_name_pattern(
       R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   static const std::regex reconciliation_guard_name_pattern(
-      R"(^.+\.hstream-reconcile-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      R"(^\.hstream-reconcile-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-(target|fallback)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   const auto is_cleanup_directory_name = [&](const std::string& name) {
     return std::regex_match(name, cleanup_name_pattern);
   };
@@ -2471,6 +2520,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
     const std::string cleanup_name = cleanup_path.filename().string();
     if (!is_cleanup_directory_name(cleanup_name))
       continue;
+    const std::string cleanup_id = cleanup_name.substr(std::strlen(kArchiveCleanupDirectoryPrefix));
     const int cleanup_fd = ::openat(parent_fd, cleanup_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (cleanup_fd < 0) {
       const int saved_errno = errno;
@@ -2493,6 +2543,12 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
     if (!owned_target_name.ok()) {
       ::close(cleanup_fd);
       continue;
+    }
+    const absl::Status staging_status = discard_archive_cleanup_committed_staging(cleanup_fd);
+    if (!staging_status.ok()) {
+      ::close(cleanup_fd);
+      ::close(parent_fd);
+      return staging_status;
     }
     const auto committed_identity = read_archive_cleanup_committed(cleanup_fd);
     if (!committed_identity.ok()) {
@@ -2574,6 +2630,41 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       continue;
     }
     if (private_entries.empty()) {
+      for (const fs::path& candidate : entries) {
+        const std::string candidate_name = candidate.filename().string();
+        if (!is_reconciliation_guard_name(candidate_name))
+          continue;
+        const std::string guard_prefix = ".hstream-reconcile-" + cleanup_id + "-";
+        fs::path guarded_public_path;
+        if (candidate_name.rfind(guard_prefix + "fallback-", 0) == 0)
+          guarded_public_path = owned_public_paths[0];
+        else if (candidate_name.rfind(guard_prefix + "target-", 0) == 0)
+          guarded_public_path = owned_public_paths[1];
+        if (guarded_public_path.empty())
+          continue;
+        auto candidate_stat = inspect_archive_entry(candidate, "interrupted archive reconciliation guard");
+        if (!candidate_stat.ok()) {
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          return candidate_stat.status();
+        }
+        if (!candidate_stat->has_value())
+          continue;
+        ReconciledEntry interrupted{
+            guarded_public_path, candidate, fs::path(), candidate_stat->value()};
+        const absl::Status prepare_status = prepare_reconciled_entry(&interrupted);
+        if (!prepare_status.ok()) {
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          return prepare_status;
+        }
+        const absl::Status retire_status = retire_reconciled_entry(interrupted);
+        if (!retire_status.ok()) {
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          return retire_status;
+        }
+      }
       const fs::path original_path = parent_path / *owned_target_name;
       const fs::path fallback_path = original_path.string() + ".hstream-cleanup-pin";
       auto fallback_stat = inspect_archive_entry(fallback_path, "empty archive cleanup fallback");
@@ -2737,7 +2828,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
                                                        << "\": " << std::strerror(saved_errno)));
         }
         auto guard_name = publish_unique_archive_reconciliation_guard(
-            private_fd, parent_fd, public_path.filename().string(), pinned_stat);
+            private_fd, parent_fd, public_path.filename().string(), cleanup_id, pinned_stat);
         ::close(private_fd);
         if (!guard_name.ok()) {
           ::close(cleanup_fd);
@@ -2752,18 +2843,6 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
             "HStream cleanup entry has no public identity at \"" << cleanup_path.string() << "/" << private_entry.name
                                                                  << "\""));
       }
-      if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION") && !public_path.empty()) {
-        g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
-        ::unlink(public_path.c_str());
-        const int replacement_fd =
-            ::open(public_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
-        if (replacement_fd >= 0) {
-          constexpr char kReplacement[] = "foreign public cleanup identity";
-          const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
-          (void)replacement_bytes;
-          ::close(replacement_fd);
-        }
-      }
       struct stat current_stat{};
       if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
           !same_file_identity(current_stat, private_entry.identity)) {
@@ -2775,18 +2854,19 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
                                                            << "\": " << std::strerror(saved_errno)));
       }
       if (!guard_path.empty())
-        reconciled.push_back({public_path, guard_path, private_entry.identity});
-    }
-    for (const ReconciledEntry& entry : reconciled) {
-      const absl::Status finish_status = finish_reconciled_entry(entry);
-      if (!finish_status.ok()) {
-        ::close(cleanup_fd);
-        ::close(parent_fd);
-        return finish_status;
-      }
+        reconciled.push_back({public_path, guard_path, fs::path(), private_entry.identity});
     }
     for (const fs::path& candidate : entries) {
-      if (!is_reconciliation_guard_name(candidate.filename().string()))
+      const std::string candidate_name = candidate.filename().string();
+      if (!is_reconciliation_guard_name(candidate_name))
+        continue;
+      const std::string guard_prefix = ".hstream-reconcile-" + cleanup_id + "-";
+      fs::path guarded_public_path;
+      if (candidate_name.rfind(guard_prefix + "fallback-", 0) == 0)
+        guarded_public_path = owned_public_paths[0];
+      else if (candidate_name.rfind(guard_prefix + "target-", 0) == 0)
+        guarded_public_path = owned_public_paths[1];
+      if (guarded_public_path.empty())
         continue;
       auto candidate_stat = inspect_archive_entry(candidate, "stale archive reconciliation guard");
       if (!candidate_stat.ok()) {
@@ -2799,37 +2879,21 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       const auto reconciled_identity = std::find_if(reconciled.begin(), reconciled.end(), [&](const auto& entry) {
         return same_file_identity(candidate_stat->value(), entry.identity);
       });
-      if (reconciled_identity == reconciled.end())
-        continue;
-      fs::path required_path;
-      for (const fs::path& owned_path : owned_public_paths) {
-        auto owned_stat = inspect_archive_entry(owned_path, "owned archive cleanup publication");
-        if (!owned_stat.ok()) {
-          ::close(cleanup_fd);
-          ::close(parent_fd);
-          return owned_stat.status();
-        }
-        if (owned_stat->has_value() && same_file_identity(owned_stat->value(), candidate_stat->value())) {
-          required_path = owned_path;
-          break;
-        }
-      }
-      if (required_path.empty()) {
+      if (reconciled_identity == reconciled.end()) {
         ::close(cleanup_fd);
         ::close(parent_fd);
         return absl::FailedPreconditionError(TO_STRING(
-            "Archive reconciliation guard has no durable public identity at \"" << candidate.string() << "\""));
+            "Archive reconciliation guard identity does not match its cleanup transaction at \""
+            << candidate.string() << "\""));
       }
-      const absl::Status stale_guard_status = remove_archive_entry_if_owned(
-          candidate,
-          candidate_stat->value(),
-          "stale archive reconciliation guard",
-          &required_path,
-          &candidate_stat->value());
-      if (!stale_guard_status.ok()) {
+      reconciled.push_back({guarded_public_path, candidate, fs::path(), candidate_stat->value()});
+    }
+    for (ReconciledEntry& entry : reconciled) {
+      const absl::Status prepare_status = prepare_reconciled_entry(&entry);
+      if (!prepare_status.ok()) {
         ::close(cleanup_fd);
         ::close(parent_fd);
-        return stale_guard_status;
+        return prepare_status;
       }
     }
     for (const PrivateEntry& private_entry : private_entries) {
@@ -2852,6 +2916,28 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       return absl::InternalError(TO_STRING(
           "Failed to sync reconciled cleanup directory \"" << cleanup_path.string()
                                                            << "\": " << std::strerror(saved_errno)));
+    }
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION") &&
+        !reconciled.empty()) {
+      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
+      const fs::path& public_path = reconciled.front().required_path;
+      ::unlink(public_path.c_str());
+      const int replacement_fd =
+          ::open(public_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+      if (replacement_fd >= 0) {
+        constexpr char kReplacement[] = "foreign public cleanup identity";
+        const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+        (void)replacement_bytes;
+        ::close(replacement_fd);
+      }
+    }
+    for (const ReconciledEntry& entry : reconciled) {
+      const absl::Status retire_status = retire_reconciled_entry(entry);
+      if (!retire_status.ok()) {
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        return retire_status;
+      }
     }
     if (retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
       const int saved_errno = errno;

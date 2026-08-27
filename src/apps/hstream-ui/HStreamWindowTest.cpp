@@ -5363,7 +5363,7 @@ bool test_output_controls(HStreamWindow* window) {
   QFile::remove(reconciliation_trigger_source);
   QFile::remove(reconciliation_trigger_source + ".log");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", reconciliation_trigger_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION", reconciliation_race_fallback.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION", reconciliation_race_target.toLocal8Bit());
   activate(start);
   for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
     QApplication::processEvents();
@@ -5374,8 +5374,7 @@ bool test_output_controls(HStreamWindow* window) {
   auto* reconciliation_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
   QString reconciliation_rescue_path;
   QByteArray reconciliation_rescue_content;
-  const QString reconciliation_guard_prefix =
-      QFileInfo(reconciliation_race_fallback).fileName() + ".hstream-reconcile-";
+  const QString reconciliation_guard_prefix = ".hstream-reconcile-";
   const QDir reconciliation_game_dir(window->gameDirectoryText());
   for (const QString& name : reconciliation_game_dir.entryList(QDir::Files | QDir::Hidden | QDir::System, QDir::Name)) {
     if (!name.startsWith(reconciliation_guard_prefix))
@@ -5385,7 +5384,7 @@ bool test_output_controls(HStreamWindow* window) {
     if (rescue_file.open(QIODevice::ReadOnly))
       reconciliation_rescue_content = rescue_file.readAll();
   }
-  QFile reconciliation_foreign_file(reconciliation_race_fallback);
+  QFile reconciliation_foreign_file(reconciliation_race_target);
   const bool reconciliation_foreign_opened = reconciliation_foreign_file.open(QIODevice::ReadOnly);
   const QByteArray reconciliation_foreign_content =
       reconciliation_foreign_opened ? reconciliation_foreign_file.readAll() : QByteArray();
@@ -5397,7 +5396,11 @@ bool test_output_controls(HStreamWindow* window) {
       window->outputStateText("archive-file") == "ERROR" &&
           reconciliation_rescue_content == "trusted UI reconciliation-race target" &&
           reconciliation_foreign_content == "foreign public cleanup identity" &&
-          QFileInfo::exists(reconciliation_race_cleanup) && !QFileInfo::exists(committed_ui_cleanup) &&
+          QFileInfo::exists(reconciliation_race_cleanup) &&
+          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("entry")) &&
+          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("guard")) &&
+          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("fallback")) &&
+          !QFileInfo::exists(committed_ui_cleanup) &&
           !QFileInfo::exists(QDir(committed_ui_cleanup).filePath("owner")) &&
           QFileInfo::exists(QDir(live_ui_cleanup).filePath("entry")) && QFileInfo::exists(live_ui_fallback) &&
           unrelated_ui_cleanup_content == "unrelated UI cleanup-looking notes" &&
@@ -5406,7 +5409,7 @@ bool test_output_controls(HStreamWindow* window) {
           QFileInfo::exists(QDir(unrelated_ui_cleanup_directory).filePath("fallback")) &&
           QFileInfo::exists(unrelated_ui_cleanup_sibling_owner) &&
           !QFileInfo::exists(QDir(window->gameDirectoryText()).filePath("notes")),
-      "UI cleanup reconciliation must use a dedicated guard and leave unrelated cleanup-looking entries untouched");
+      "UI cleanup reconciliation must keep its dedicated guard through private-link retirement and leave unrelated entries untouched");
   if (reconciliation_failure_ok)
     activate(reconciliation_failure_ok);
 #ifdef Q_OS_UNIX
@@ -5414,7 +5417,7 @@ bool test_output_controls(HStreamWindow* window) {
     ::close(live_ui_cleanup_fd);
 #endif
   reconciliation_foreign_file.close();
-  QFile::remove(reconciliation_race_fallback);
+  QFile::remove(reconciliation_race_target);
   bool reconciliation_rescue_restored = false;
   QFile reconciliation_restored_target(reconciliation_race_target);
   if (reconciliation_restored_target.open(QIODevice::ReadOnly)) {
@@ -8559,6 +8562,79 @@ bool test_cleanup_transaction_protocol() {
       committed_setup && !committed_first && committed_authenticated && committed_restart &&
           !QFileInfo::exists(committed_target) && !QFileInfo::exists(committed_transaction),
       "UI cleanup must finish a durable commit interrupted between fallback and guard retirement");
+
+  const QString pending_commit_dir = QDir(root.path()).filePath("pending-commit-publication");
+  QDir().mkpath(pending_commit_dir);
+  const QString pending_commit_target = QDir(pending_commit_dir).filePath("pending-commit.mp4");
+  struct stat pending_commit_stat{};
+  QString pending_commit_error;
+  const bool pending_commit_setup =
+      write_file(pending_commit_target, "trusted pending-commit UI cleanup") &&
+      file_identity(pending_commit_target, &pending_commit_stat);
+  qputenv("HSTREAM_UI_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH", "1");
+  const bool pending_commit_first = pending_commit_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+          pending_commit_target,
+          static_cast<quint64>(pending_commit_stat.st_dev),
+          static_cast<quint64>(pending_commit_stat.st_ino),
+          &pending_commit_error);
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH");
+  const QString pending_commit_transaction = cleanup_transaction(pending_commit_dir);
+  const bool pending_commit_unpublished = !pending_commit_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("committed.pending")) &&
+      !QFileInfo::exists(QDir(pending_commit_transaction).filePath("committed")) &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("guard")) &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("fallback")) &&
+      !QFileInfo::exists(pending_commit_target);
+  QString pending_commit_restart_error;
+  const bool pending_commit_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(pending_commit_dir, &pending_commit_restart_error);
+  QFile pending_commit_restored_file(pending_commit_target);
+  const bool pending_commit_restored_opened = pending_commit_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      pending_commit_setup && !pending_commit_first && pending_commit_unpublished && pending_commit_restart &&
+          pending_commit_restored_opened &&
+          pending_commit_restored_file.readAll() == "trusted pending-commit UI cleanup" &&
+          !QFileInfo::exists(pending_commit_transaction),
+      "UI interruption before atomic commit publication must roll deletion back without exposing a partial marker");
+
+  const QString missing_fallback_dir = QDir(root.path()).filePath("missing-fallback-before-commit");
+  QDir().mkpath(missing_fallback_dir);
+  const QString missing_fallback_target = QDir(missing_fallback_dir).filePath("missing-fallback.mp4");
+  struct stat missing_fallback_stat{};
+  QString missing_fallback_error;
+  const bool missing_fallback_setup =
+      write_file(missing_fallback_target, "trusted missing-fallback UI cleanup") &&
+      file_identity(missing_fallback_target, &missing_fallback_stat);
+  qputenv(
+      "HSTREAM_UI_TEST_REMOVE_FALLBACK_BEFORE_QUARANTINE",
+      (missing_fallback_target + ".hstream-cleanup-pin").toLocal8Bit());
+  const bool missing_fallback_first = missing_fallback_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+          missing_fallback_target,
+          static_cast<quint64>(missing_fallback_stat.st_dev),
+          static_cast<quint64>(missing_fallback_stat.st_ino),
+          &missing_fallback_error);
+  qunsetenv("HSTREAM_UI_TEST_REMOVE_FALLBACK_BEFORE_QUARANTINE");
+  const QString missing_fallback_transaction = cleanup_transaction(missing_fallback_dir);
+  const bool missing_fallback_uncommitted = !missing_fallback_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(missing_fallback_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(missing_fallback_transaction).filePath("guard")) &&
+      !QFileInfo::exists(QDir(missing_fallback_transaction).filePath("committed")) &&
+      !QFileInfo::exists(missing_fallback_target) &&
+      !QFileInfo::exists(missing_fallback_target + ".hstream-cleanup-pin");
+  QString missing_fallback_restart_error;
+  const bool missing_fallback_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(missing_fallback_dir, &missing_fallback_restart_error);
+  QFile missing_fallback_restored_file(missing_fallback_target);
+  const bool missing_fallback_restored_opened = missing_fallback_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      missing_fallback_setup && !missing_fallback_first && missing_fallback_uncommitted && missing_fallback_restart &&
+          missing_fallback_restored_opened &&
+          missing_fallback_restored_file.readAll() == "trusted missing-fallback UI cleanup" &&
+          !QFileInfo::exists(missing_fallback_transaction),
+      "A missing public fallback must not bypass the UI commit protocol or lose its private guard");
 
   const QString foreign_dir = QDir(root.path()).filePath("foreign-fallback");
   const QString foreign_target = QDir(foreign_dir).filePath("foreign-fallback.mp4");
