@@ -61,6 +61,7 @@
 #include <X11/Xutil.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -1002,9 +1003,14 @@ bool write_fake_ffmpeg(const QString& path) {
   file.write("print('progress=continue', flush=True)\n");
   file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_FAIL') == '1':\n");
   file.write("    if os.environ.get('HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY') == '1':\n");
-  file.write("        os.chmod(os.path.dirname(source), 0o500)\n");
+  file.write("        os.chmod(os.path.dirname(os.environ['HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH']), 0o500)\n");
   file.write("    print('intentional remux failure', file=sys.stderr, flush=True)\n");
   file.write("    sys.exit(17)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT') == '1':\n");
+  file.write("    original = os.environ['HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH']\n");
+  file.write("    os.unlink(original)\n");
+  file.write("    with open(original, 'wb') as replacement:\n");
+  file.write("        replacement.write(b'injected foreign source before ffmpeg input')\n");
   file.write("time.sleep(0.15)\n");
   file.write("shutil.copyfile(source, target)\n");
   file.write("print('out_time=00:10:00.000000', flush=True)\n");
@@ -1025,7 +1031,8 @@ bool write_fake_sync(const QString& path) {
   file.write("import sys\n");
   file.write("import time\n");
   file.write("time.sleep(float(os.environ.get('HSTREAM_UI_TEST_SYNC_DELAY', '0')))\n");
-  file.write("if len(sys.argv) != 3 or sys.argv[1] != '-f' or not os.path.exists(sys.argv[2]):\n");
+  file.write(
+      "if len(sys.argv) < 3 or sys.argv[1] != '-f' or not all(os.path.exists(path) for path in sys.argv[2:]):\n");
   file.write("    sys.exit(19)\n");
   file.close();
   return QFile::setPermissions(
@@ -4883,6 +4890,42 @@ bool test_output_controls(HStreamWindow* window) {
       "Each archive job must persist the UI log beside its resolved work video with owner-only permissions");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVER_EXISTING");
 
+  bool cross_filesystem_log_persisted = true;
+#ifdef Q_OS_UNIX
+  QTemporaryDir cross_filesystem_root("/dev/shm/hstream-ui-cross-filesystem-XXXXXX");
+  struct stat output_root_stat{};
+  struct stat cross_root_stat{};
+  const QByteArray encoded_output_root = QFile::encodeName(output_root.path());
+  const QByteArray encoded_cross_root = QFile::encodeName(cross_filesystem_root.path());
+  const bool distinct_cross_filesystem = cross_filesystem_root.isValid() &&
+      ::stat(encoded_output_root.constData(), &output_root_stat) == 0 &&
+      ::stat(encoded_cross_root.constData(), &cross_root_stat) == 0 &&
+      output_root_stat.st_dev != cross_root_stat.st_dev;
+  if (distinct_cross_filesystem) {
+    const QString cross_filesystem_source = QDir(cross_filesystem_root.path()).filePath("cross-filesystem-output.mkv");
+    const QString cross_filesystem_log = cross_filesystem_source + ".log";
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_source.toLocal8Bit());
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    QFile cross_log_file(cross_filesystem_log);
+    const bool cross_log_opened = cross_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+    const QString cross_log_text = cross_log_opened ? QString::fromUtf8(cross_log_file.readAll()) : QString();
+    cross_filesystem_log_persisted = expect(
+        cross_log_opened &&
+            cross_log_text.contains(QString("archive backend resolved output: %1").arg(cross_filesystem_source)) &&
+            cross_log_text.contains("pipeline finished"),
+        "A backend-resolved archive on another filesystem must receive a secure copied-and-continued UI log");
+  }
+#endif
+
   const QString completed_source =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("completed-source.mkv");
   const QString completed_job_log = completed_source + ".log";
@@ -4891,18 +4934,31 @@ bool test_output_controls(HStreamWindow* window) {
           .filePath(QString("%1-tracking_output-with-audio.mp4").arg(window->gameIdText()));
   const QString completed_target =
       QDir(window->gameDirectoryText())
+          .filePath(QString("%1-tracking_output-with-audio-2.mp4").arg(window->gameIdText()));
+  const QString replaced_completed_target =
+      QDir(window->gameDirectoryText())
+          .filePath(QString("%1-tracking_output-with-audio-3.mp4").arg(window->gameIdText()));
+  const QString dangling_completed_target =
+      QDir(window->gameDirectoryText())
           .filePath(QString("%1-tracking_output-with-audio-1.mp4").arg(window->gameIdText()));
+  const QString missing_completed_target = QDir(window->gameDirectoryText()).filePath("missing-completed-target");
   const QString ffmpeg_arguments = QDir(output_root.path()).filePath("ffmpeg-arguments.txt");
   QFile::remove(completed_source);
   QFile::remove(completed_job_log);
   QFile::remove(concurrent_completed_target);
   QFile::remove(completed_target);
+  QFile::remove(replaced_completed_target);
+  QFile::remove(dangling_completed_target);
+  QFile::remove(missing_completed_target);
+  const bool dangling_completed_target_created = QFile::link(missing_completed_target, dangling_completed_target);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", completed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
   qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
   qputenv("HSTREAM_UI_TEST_FFMPEG_ARGS", ffmpeg_arguments.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.25");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_SUCCESS_SOURCE_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT", "1");
   activate(start);
   QDialog* finalize_dialog = nullptr;
   QProgressBar* finalize_progress = nullptr;
@@ -4953,7 +5009,9 @@ bool test_output_controls(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_SUCCESS_SOURCE_REPLACEMENT");
+  qunsetenv("HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
   QFile argument_file(ffmpeg_arguments);
   const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
@@ -4961,24 +5019,42 @@ bool test_output_controls(HStreamWindow* window) {
   QFile completed_log_file(completed_job_log);
   const bool completed_log_opened = completed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
   const QString completed_log_text = completed_log_opened ? QString::fromUtf8(completed_log_file.readAll()) : QString();
+  QFile completed_video_file(replaced_completed_target);
+  const bool completed_video_opened = completed_video_file.open(QIODevice::ReadOnly);
+  const QByteArray completed_video_text = completed_video_opened ? completed_video_file.readAll() : QByteArray();
+  QFile foreign_source_file(completed_source);
+  const bool foreign_source_opened = foreign_source_file.open(QIODevice::ReadOnly);
+  const QByteArray foreign_source_text = foreign_source_opened ? foreign_source_file.readAll() : QByteArray();
+  QFile replaced_target_file(completed_target);
+  const bool replaced_target_opened = replaced_target_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_target_text = replaced_target_opened ? replaced_target_file.readAll() : QByteArray();
+  QFile replaced_owner_lock_file(finalizer_owner_lock_path);
+  const bool replaced_owner_lock_opened = replaced_owner_lock_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_owner_lock_text =
+      replaced_owner_lock_opened ? replaced_owner_lock_file.readAll() : QByteArray();
   const bool completed_log_persisted = expect(
       completed_log_opened &&
+          QFileInfo(completed_job_log + ".hstream-pin").size() == QFileInfo(completed_job_log).size() &&
           completed_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(completed_source)) &&
-          completed_log_text.contains(QString("completed archive published: %1").arg(completed_target)),
+          completed_log_text.contains(QString("completed archive published: %1").arg(replaced_completed_target)),
       "A completed job log must remain beside the work artifacts and include asynchronous MP4 finalization output");
   const bool archive_deployed = expect(
-      finalizer_owner_lock_held && concurrent_completed_archive_created &&
-          window->outputStateText("archive-file") == "SAVED" && QFileInfo(completed_target).size() > 0 &&
-          QFileInfo(concurrent_completed_target).size() > 0 && QFileInfo(completed_source).size() > 0 &&
-          !QFileInfo::exists(finalizer_owner_lock_path) && argument_text.contains("-n\n") &&
-          !argument_text.contains("-y\n") &&
+      finalizer_owner_lock_held && concurrent_completed_archive_created && dangling_completed_target_created &&
+          QFileInfo(dangling_completed_target).isSymLink() && window->outputStateText("archive-file") == "SAVED" &&
+          completed_video_text == "completed lossless archive" &&
+          QFileInfo(replaced_completed_target + ".hstream-pin").size() == completed_video_text.size() &&
+          replaced_target_text == "injected foreign completed target" &&
+          foreign_source_text == "injected foreign source before ffmpeg input" &&
+          replaced_owner_lock_text == "injected foreign owner lock" &&
+          QFileInfo(concurrent_completed_target).size() > 0 && argument_text.contains("-n\n") &&
+          !argument_text.contains("-y\n") && argument_text.contains(QString("/proc/self/fd/%1").arg(197)) &&
           argument_text.contains(
               QString("/.%1-tracking_output-with-audio.hstream-finalize-").arg(window->gameIdText())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
           argument_text.contains("-tag:v\nhvc1") &&
-          window->logText().contains(QString("completed archive published: %1").arg(completed_target)),
-      "Concurrent completion must retain finalizer ownership, keep the first MP4, publish a suffixed lossless "
-      "faststart MP4, and leave a replaced source pathname untouched");
+          window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),
+      "Finalization must remux the pinned source FD, skip dangling names, republish a target replaced during sync, "
+      "and leave replacement source, target, and ownership-lock paths untouched");
 
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
@@ -5029,6 +5105,9 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_REPLACEMENT", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.1");
   activate(start);
   for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
     QApplication::processEvents();
@@ -5049,6 +5128,13 @@ bool test_output_controls(HStreamWindow* window) {
   QFile replaced_source_file(failed_source);
   const bool replaced_source_opened = replaced_source_file.open(QIODevice::ReadOnly);
   const QByteArray replaced_source_text = replaced_source_opened ? replaced_source_file.readAll() : QByteArray();
+  QFile replaced_recovery_file(failed_recovery);
+  const bool replaced_recovery_opened = replaced_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_recovery_text = replaced_recovery_opened ? replaced_recovery_file.readAll() : QByteArray();
+  QFile trusted_recovery_guard_file(failed_recovery + ".hstream-pin");
+  const bool trusted_recovery_guard_opened = trusted_recovery_guard_file.open(QIODevice::ReadOnly);
+  const QByteArray trusted_recovery_guard_text =
+      trusted_recovery_guard_opened ? trusted_recovery_guard_file.readAll() : QByteArray();
   QString replaced_open_log_text;
   const QStringList provisional_logs =
       QDir(QFileInfo(failed_source).absolutePath())
@@ -5074,16 +5160,20 @@ bool test_output_controls(HStreamWindow* window) {
           finalize_ok->toolTip().contains("Close the finalization result") &&
           finalize_ok->statusTip() == finalize_ok->toolTip() && replaced_source_opened &&
           replaced_source_text == "injected foreign archive source" &&
-          replaced_open_log_text == "injected foreign open log pathname" && QFileInfo(failed_recovery).size() > 0 &&
-          !QFileInfo::exists(failed_source_log) && failed_log_opened &&
-          failed_log_text.contains("archive finalization failed") && !failed_recovery.contains(".hstream-run-") &&
-          finalized_after_failure == finalized_before_failure,
+          replaced_open_log_text == "injected foreign open log pathname" &&
+          replaced_recovery_text == "injected foreign recovery during sync" && trusted_recovery_guard_opened &&
+          trusted_recovery_guard_text == "completed lossless archive" && !QFileInfo::exists(failed_source_log) &&
+          failed_log_opened && failed_log_text.contains("archive finalization failed") &&
+          !failed_recovery.contains(".hstream-run-") && finalized_after_failure == finalized_before_failure,
       "A failed remux must preserve a same-name recovery MKV and reopened job log outside the stale-run namespace");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
   if (finalize_ok)
     activate(finalize_ok);
 
@@ -5205,9 +5295,9 @@ bool test_output_controls(HStreamWindow* window) {
   }
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
       nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
-      finalization_visible && completed_log_persisted && archive_deployed && durability_sync_responsive &&
-      failed_archive_retained && no_log_recovery_reserved && post_quarantine_recovery_safe && unsafe_retry_blocked &&
-      retry_unblocked_after_recovery;
+      cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
+      durability_sync_responsive && failed_archive_retained && no_log_recovery_reserved &&
+      post_quarantine_recovery_safe && unsafe_retry_blocked && retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "StitcherOnePassConfig.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
@@ -377,6 +378,19 @@ fs::path archive_log_sidecar(const fs::path& output_path) {
   fs::path log_path = output_path;
   log_path += ".log";
   return log_path;
+}
+
+bool is_archive_recovery_path(const fs::path& candidate, const fs::path& configured_path) {
+  if (candidate.parent_path() != configured_path.parent_path() || candidate.extension() != configured_path.extension())
+    return false;
+  const std::string candidate_stem = candidate.stem().string();
+  const std::string prefix = configured_path.stem().string() + "-finalization-failed";
+  if (!absl::StartsWith(candidate_stem, prefix))
+    return false;
+  const std::string suffix = candidate_stem.substr(prefix.size());
+  return suffix.empty() ||
+      (suffix.front() == '-' && suffix.size() > 1 &&
+       std::all_of(suffix.begin() + 1, suffix.end(), [](unsigned char value) { return std::isdigit(value) != 0; }));
 }
 
 int as_int(const YAML::Node& node) {
@@ -1619,8 +1633,11 @@ absl::Status remove_archive_entry_if_owned(
                                         << "\": " << std::strerror(saved_errno)));
   }
 
-  if (required_published_path && required_published_stat) {
-    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE")) {
+  const int remove_guard_result = ::unlinkat(cleanup_fd, "guard", 0);
+  const int remove_guard_errno = errno;
+  if (remove_guard_result == 0 && required_published_path && required_published_stat) {
+    if (std::strcmp(description, "archive work file") == 0 &&
+        g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE")) {
       ::unlink(required_published_path->c_str());
       const int replacement_fd =
           ::open(required_published_path->c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
@@ -1636,10 +1653,12 @@ absl::Status remove_archive_entry_if_owned(
         !same_file_identity(published_stat->value(), *required_published_stat)) {
       const int restore_result = ::linkat(pinned_fd, "", parent_fd, filename.c_str(), AT_EMPTY_PATH);
       const int restore_errno = errno;
-      if (restore_result == 0)
-        ::unlinkat(cleanup_fd, "guard", 0);
+      const std::string rescue_name = filename + ".hstream-pin";
+      const int rescue_result =
+          restore_result == 0 ? 0 : ::linkat(pinned_fd, "", parent_fd, rescue_name.c_str(), AT_EMPTY_PATH);
+      const int rescue_errno = errno;
       ::close(cleanup_fd);
-      if (restore_result == 0)
+      if (rescue_result == 0)
         ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
       ::close(pinned_fd);
       ::close(parent_fd);
@@ -1648,11 +1667,14 @@ absl::Status remove_archive_entry_if_owned(
       return absl::FailedPreconditionError(TO_STRING(
           "Published recovery was replaced after quarantining "
           << description << " \"" << path.string() << "\"; source restore "
-          << (restore_result == 0 ? "succeeded" : std::strerror(restore_errno))));
+          << (restore_result == 0
+                  ? "succeeded"
+                  : (rescue_result == 0 ? TO_STRING(
+                                              "failed (" << std::strerror(restore_errno) << "); retained guard at \""
+                                                         << rescue_name << "\"")
+                                        : TO_STRING("and guard retention failed: " << std::strerror(rescue_errno))))));
     }
   }
-  const int remove_guard_result = ::unlinkat(cleanup_fd, "guard", 0);
-  const int remove_guard_errno = errno;
   const int close_cleanup_result = ::close(cleanup_fd);
   const int close_cleanup_errno = errno;
   const int remove_cleanup_result = ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
@@ -1677,18 +1699,18 @@ absl::Status remove_archive_entry_if_owned(
 }
 
 absl::Status create_archive_recovery_link(
+    int source_fd,
     const fs::path& source,
     const struct stat& expected_source_stat,
     const fs::path& destination,
     const char* description) {
-  auto source_stat = inspect_archive_entry(source, description);
-  if (!source_stat.ok())
-    return source_stat.status();
-  if (!source_stat->has_value() || !same_file_identity(source_stat->value(), expected_source_stat)) {
+  struct stat pinned_source_stat{};
+  if (source_fd < 0 || ::fstat(source_fd, &pinned_source_stat) != 0 || !S_ISREG(pinned_source_stat.st_mode) ||
+      !same_file_identity(pinned_source_stat, expected_source_stat)) {
     return absl::FailedPreconditionError(
         TO_STRING("Refusing to link replaced " << description << " \"" << source.string() << "\""));
   }
-  if (::link(source.c_str(), destination.c_str()) != 0) {
+  if (::linkat(source_fd, "", AT_FDCWD, destination.c_str(), AT_EMPTY_PATH) != 0) {
     const int saved_errno = errno;
     if (saved_errno == EEXIST)
       return absl::AlreadyExistsError(
@@ -1735,11 +1757,19 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     const fs::path& output_path,
     const fs::path& recovery_name_base) {
   struct stat output_stat{};
-  if (::lstat(output_path.c_str(), &output_stat) != 0) {
+  const int output_fd = ::open(output_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (output_fd < 0) {
     if (errno == ENOENT)
       return std::optional<fs::path>();
     return absl::InternalError(
         TO_STRING("Failed to inspect archive work file \"" << output_path.string() << "\": " << std::strerror(errno)));
+  }
+  absl::Cleanup close_output = [output_fd]() { ::close(output_fd); };
+  struct stat named_output_stat{};
+  if (::fstat(output_fd, &output_stat) != 0 || ::lstat(output_path.c_str(), &named_output_stat) != 0 ||
+      !same_file_identity(output_stat, named_output_stat)) {
+    return absl::FailedPreconditionError(
+        TO_STRING("Archive work file was replaced while being pinned: \"" << output_path.string() << "\""));
   }
   if (!S_ISREG(output_stat.st_mode) || output_stat.st_size <= 0)
     return std::optional<fs::path>();
@@ -1765,11 +1795,32 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     return absl::FailedPreconditionError(
         TO_STRING("Archive log sidecar is not a regular file: \"" << output_log_path.string() << "\""));
   }
+  int output_log_fd = -1;
+  if (has_output_log) {
+    output_log_fd = ::open(output_log_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    struct stat pinned_output_log_stat{};
+    if (output_log_fd < 0 || ::fstat(output_log_fd, &pinned_output_log_stat) != 0 ||
+        !S_ISREG(pinned_output_log_stat.st_mode) || !same_file_identity(pinned_output_log_stat, output_log_stat)) {
+      if (output_log_fd >= 0)
+        ::close(output_log_fd);
+      return absl::FailedPreconditionError(
+          TO_STRING("Archive log sidecar was replaced while being pinned: \"" << output_log_path.string() << "\""));
+    }
+  }
+  absl::Cleanup close_output_log = [&output_log_fd]() {
+    if (output_log_fd >= 0)
+      ::close(output_log_fd);
+  };
   const fs::path output_guard_path = output_path.string() + ".hstream-pin";
   const fs::path output_log_guard_path = output_log_path.string() + ".hstream-pin";
   auto output_guard_stat = inspect_archive_entry(output_guard_path, "archive work-file identity guard");
   if (!output_guard_stat.ok())
     return output_guard_stat.status();
+  if (!output_guard_stat->has_value()) {
+    HM_RETURN_IF_ERROR(create_archive_recovery_link(
+        output_fd, output_path, output_stat, output_guard_path, "archive work-file identity guard"));
+    output_guard_stat = std::optional<struct stat>(output_stat);
+  }
   if (output_guard_stat->has_value() && !same_file_identity(output_guard_stat->value(), output_stat)) {
     return absl::FailedPreconditionError(
         TO_STRING("Archive work-file identity guard was replaced: \"" << output_guard_path.string() << "\""));
@@ -1779,10 +1830,26 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
     output_log_guard_stat = inspect_archive_entry(output_log_guard_path, "archive log identity guard");
     if (!output_log_guard_stat.ok())
       return output_log_guard_stat.status();
+    if (!output_log_guard_stat->has_value()) {
+      HM_RETURN_IF_ERROR(create_archive_recovery_link(
+          output_log_fd, output_log_path, output_log_stat, output_log_guard_path, "archive log identity guard"));
+      output_log_guard_stat = std::optional<struct stat>(output_log_stat);
+    }
     if (output_log_guard_stat->has_value() && !same_file_identity(output_log_guard_stat->value(), output_log_stat)) {
       return absl::FailedPreconditionError(
           TO_STRING("Archive log identity guard was replaced: \"" << output_log_guard_path.string() << "\""));
     }
+  }
+  if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_SOURCE_BEFORE_LINK")) {
+    ::unlink(output_path.c_str());
+    const int replacement_fd = ::open(output_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (replacement_fd >= 0) {
+      constexpr char kReplacement[] = "injected foreign archive source before link";
+      const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+      (void)replacement_bytes;
+      ::close(replacement_fd);
+    }
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_SOURCE_BEFORE_LINK");
   }
 
   const auto complete_recovery = [&](const fs::path& recovery_path, const fs::path& recovery_log_path) -> absl::Status {
@@ -1841,6 +1908,36 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
                                                                                      << "\""));
     }
 
+    const fs::path recovery_guard_path = recovery_path.string() + ".hstream-pin";
+    auto recovery_guard_stat = inspect_archive_entry(recovery_guard_path, "archive recovery identity guard");
+    if (!recovery_guard_stat.ok())
+      return recovery_guard_stat.status();
+    if (!recovery_guard_stat->has_value()) {
+      HM_RETURN_IF_ERROR(create_archive_recovery_link(
+          output_fd, output_path, output_stat, recovery_guard_path, "archive recovery identity guard"));
+    } else if (!same_file_identity(recovery_guard_stat->value(), output_stat)) {
+      return absl::FailedPreconditionError(
+          TO_STRING("Archive recovery identity guard was replaced: \"" << recovery_guard_path.string() << "\""));
+    }
+    if (has_output_log) {
+      const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
+      auto recovery_log_guard_stat =
+          inspect_archive_entry(recovery_log_guard_path, "archive log recovery identity guard");
+      if (!recovery_log_guard_stat.ok())
+        return recovery_log_guard_stat.status();
+      if (!recovery_log_guard_stat->has_value()) {
+        HM_RETURN_IF_ERROR(create_archive_recovery_link(
+            output_log_fd,
+            output_log_path,
+            output_log_stat,
+            recovery_log_guard_path,
+            "archive log recovery identity guard"));
+      } else if (!same_file_identity(recovery_log_guard_stat->value(), output_log_stat)) {
+        return absl::FailedPreconditionError(TO_STRING(
+            "Archive log recovery identity guard was replaced: \"" << recovery_log_guard_path.string() << "\""));
+      }
+    }
+
     if (output_guard_stat->has_value()) {
       HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
           output_guard_path, output_stat, "archive work-file identity guard", &recovery_path, &output_stat));
@@ -1863,9 +1960,28 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
         if (!sidecar_cleanup.ok())
           return sidecar_cleanup;
       }
+      auto current_recovery_guard = inspect_archive_entry(recovery_guard_path, "partial recovery identity guard");
+      if (current_recovery_guard.ok() && current_recovery_guard->has_value() &&
+          same_file_identity(current_recovery_guard->value(), output_stat)) {
+        HM_RETURN_IF_ERROR(
+            remove_archive_entry_if_owned(recovery_guard_path, output_stat, "partial archive recovery identity guard"));
+      }
+      if (has_output_log) {
+        const fs::path recovery_log_guard_path = recovery_log_path.string() + ".hstream-pin";
+        auto current_log_guard = inspect_archive_entry(recovery_log_guard_path, "partial log recovery identity guard");
+        if (current_log_guard.ok() && current_log_guard->has_value() &&
+            same_file_identity(current_log_guard->value(), output_log_stat)) {
+          HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+              recovery_log_guard_path, output_log_stat, "partial archive log recovery identity guard"));
+        }
+      }
       return source_cleanup;
     }
     HM_RETURN_IF_ERROR(sync_parent_directory(output_path));
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP")) {
+      g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP");
+      return absl::UnavailableError("archive recovery interruption requested after source cleanup");
+    }
     if (has_output_log) {
       HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
           output_log_path, output_log_stat, "archive log sidecar", &recovery_log_path, &output_log_stat));
@@ -1915,8 +2031,8 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
         recovery_log_stat = std::optional<struct stat>();
       }
       if (recovery_is_ours && !recovery_log_stat->has_value()) {
-        const absl::Status log_link =
-            create_archive_recovery_link(output_log_path, output_log_stat, recovery_log_path, "archive log sidecar");
+        const absl::Status log_link = create_archive_recovery_link(
+            output_log_fd, output_log_path, output_log_stat, recovery_log_path, "archive log sidecar");
         if (!log_link.ok()) {
           if (absl::IsAlreadyExists(log_link))
             continue;
@@ -1928,15 +2044,15 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
         return std::optional<fs::path>(recovery_path);
       }
 
-      const absl::Status log_link =
-          create_archive_recovery_link(output_log_path, output_log_stat, recovery_log_path, "archive log sidecar");
+      const absl::Status log_link = create_archive_recovery_link(
+          output_log_fd, output_log_path, output_log_stat, recovery_log_path, "archive log sidecar");
       if (!log_link.ok()) {
         if (absl::IsAlreadyExists(log_link))
           continue;
         return log_link;
       }
       const absl::Status video_link =
-          create_archive_recovery_link(output_path, output_stat, recovery_path, "archive work file");
+          create_archive_recovery_link(output_fd, output_path, output_stat, recovery_path, "archive work file");
       if (!video_link.ok()) {
         HM_RETURN_IF_ERROR(
             remove_archive_entry_if_owned(recovery_log_path, output_log_stat, "partial archive log recovery link"));
@@ -1968,7 +2084,7 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
       if (recovery_is_ours) {
         if (!recovery_log_is_marker) {
           const absl::Status marker_link = create_archive_recovery_link(
-              output_path, output_stat, recovery_log_path, "archive no-log recovery marker");
+              output_fd, output_path, output_stat, recovery_log_path, "archive no-log recovery marker");
           if (!marker_link.ok()) {
             if (absl::IsAlreadyExists(marker_link))
               continue;
@@ -1981,7 +2097,7 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
 
       if (recovery_log_is_marker) {
         const absl::Status video_link =
-            create_archive_recovery_link(output_path, output_stat, recovery_path, "archive work file");
+            create_archive_recovery_link(output_fd, output_path, output_stat, recovery_path, "archive work file");
         if (!video_link.ok()) {
           if (absl::IsAlreadyExists(video_link))
             continue;
@@ -1991,15 +2107,15 @@ absl::StatusOr<std::optional<fs::path>> preserve_archive_work_file(
         return std::optional<fs::path>(recovery_path);
       }
 
-      const absl::Status marker_link =
-          create_archive_recovery_link(output_path, output_stat, recovery_log_path, "archive no-log recovery marker");
+      const absl::Status marker_link = create_archive_recovery_link(
+          output_fd, output_path, output_stat, recovery_log_path, "archive no-log recovery marker");
       if (!marker_link.ok()) {
         if (absl::IsAlreadyExists(marker_link))
           continue;
         return marker_link;
       }
       const absl::Status video_link =
-          create_archive_recovery_link(output_path, output_stat, recovery_path, "archive work file");
+          create_archive_recovery_link(output_fd, output_path, output_stat, recovery_path, "archive work file");
       if (!video_link.ok()) {
         HM_RETURN_IF_ERROR(
             remove_archive_entry_if_owned(recovery_log_path, output_stat, "archive no-log recovery marker"));
@@ -2115,7 +2231,97 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
   std::vector<fs::path> recovered;
   const std::string prefix = configured_path.stem().string() + ".hstream-run-";
   const std::string extension = configured_path.extension().string();
+  std::vector<fs::path> directory_entries;
   std::error_code iterator_error;
+  for (fs::directory_iterator it(configured_path.parent_path(), iterator_error), end; it != end;
+       it.increment(iterator_error)) {
+    if (iterator_error) {
+      return absl::InternalError(TO_STRING(
+          "Failed to inspect archive work directory \"" << configured_path.parent_path().string()
+                                                        << "\": " << iterator_error.message()));
+    }
+    directory_entries.push_back(it->path());
+  }
+
+  // Reconcile transactions that had already retired their .hstream-run-*
+  // video when the process stopped.  The recovery pair itself is the durable
+  // transaction record at this boundary.
+  for (const fs::path& recovery_path : directory_entries) {
+    if (!is_archive_recovery_path(recovery_path, configured_path))
+      continue;
+    auto recovery_stat = inspect_archive_entry(recovery_path, "completed archive recovery file");
+    if (!recovery_stat.ok())
+      return recovery_stat.status();
+    if (!recovery_stat->has_value() || !S_ISREG(recovery_stat->value().st_mode) ||
+        recovery_stat->value().st_size <= 0) {
+      continue;
+    }
+    const fs::path recovery_log_path = archive_log_sidecar(recovery_path);
+    auto recovery_log_stat = inspect_archive_entry(recovery_log_path, "completed archive recovery sidecar");
+    if (!recovery_log_stat.ok())
+      return recovery_log_stat.status();
+    bool reconciled = false;
+    if (recovery_log_stat->has_value() && same_file_identity(recovery_log_stat->value(), recovery_stat->value())) {
+      bool source_video_still_exists = false;
+      for (const fs::path& possible_source : directory_entries) {
+        const std::string source_name = possible_source.filename().string();
+        if (!absl::StartsWith(source_name, prefix) || !absl::EndsWith(source_name, extension))
+          continue;
+        auto source_stat = inspect_archive_entry(possible_source, "active interrupted archive source");
+        if (!source_stat.ok())
+          return source_stat.status();
+        if (source_stat->has_value() && same_file_identity(source_stat->value(), recovery_stat->value())) {
+          source_video_still_exists = true;
+          break;
+        }
+      }
+      if (source_video_still_exists)
+        continue;
+      HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+          recovery_log_path,
+          recovery_stat->value(),
+          "completed archive no-log recovery marker",
+          &recovery_path,
+          &recovery_stat->value()));
+      HM_RETURN_IF_ERROR(sync_parent_directory(recovery_log_path));
+      reconciled = true;
+    } else if (recovery_log_stat->has_value() && S_ISREG(recovery_log_stat->value().st_mode)) {
+      const std::string source_log_suffix = extension + ".log";
+      for (const fs::path& possible_source_log : directory_entries) {
+        const std::string source_log_name = possible_source_log.filename().string();
+        if (!absl::StartsWith(source_log_name, prefix) || !absl::EndsWith(source_log_name, source_log_suffix))
+          continue;
+        const std::string source_video_text =
+            possible_source_log.string().substr(0, possible_source_log.string().size() - 4);
+        const fs::path possible_source_video(source_video_text);
+        auto source_video_stat = inspect_archive_entry(possible_source_video, "interrupted archive source video");
+        if (!source_video_stat.ok())
+          return source_video_stat.status();
+        if (source_video_stat->has_value())
+          continue;
+        auto source_log_stat = inspect_archive_entry(possible_source_log, "interrupted archive source log");
+        if (!source_log_stat.ok())
+          return source_log_stat.status();
+        if (!source_log_stat->has_value() ||
+            !same_file_identity(source_log_stat->value(), recovery_log_stat->value())) {
+          continue;
+        }
+        HM_RETURN_IF_ERROR(remove_archive_entry_if_owned(
+            possible_source_log,
+            source_log_stat->value(),
+            "interrupted archive source log",
+            &recovery_log_path,
+            &recovery_log_stat->value()));
+        HM_RETURN_IF_ERROR(sync_parent_directory(possible_source_log));
+        reconciled = true;
+        break;
+      }
+    }
+    if (reconciled)
+      recovered.push_back(recovery_path);
+  }
+
+  iterator_error.clear();
   for (fs::directory_iterator it(configured_path.parent_path(), iterator_error), end; it != end;
        it.increment(iterator_error)) {
     if (iterator_error) {
@@ -2134,12 +2340,23 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     bool owner_is_live = false;
     const bool has_v3_ownership = absl::StartsWith(ownership, "v3-");
     int recovery_lock_fd = -1;
+    struct stat recovery_lock_stat{};
+    bool have_recovery_lock_identity = false;
     bool recovery_lock_is_absent = false;
     fs::path recovery_lock_path;
     if (has_v3_ownership) {
       recovery_lock_path = archive_work_owner_lock_path(candidate);
       recovery_lock_fd = ::open(recovery_lock_path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
       if (recovery_lock_fd >= 0) {
+        have_recovery_lock_identity =
+            ::fstat(recovery_lock_fd, &recovery_lock_stat) == 0 && S_ISREG(recovery_lock_stat.st_mode);
+        if (!have_recovery_lock_identity) {
+          const int saved_errno = errno;
+          ::close(recovery_lock_fd);
+          return absl::InternalError(TO_STRING(
+              "Failed to pin archive work ownership lock \"" << recovery_lock_path.string()
+                                                             << "\": " << std::strerror(saved_errno)));
+        }
         if (::flock(recovery_lock_fd, LOCK_EX | LOCK_NB) != 0) {
           const int saved_errno = errno;
           ::close(recovery_lock_fd);
@@ -2207,15 +2424,33 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
     if (has_v3_ownership && (recovery_lock_fd >= 0 || recovery_lock_is_absent) && S_ISREG(candidate_stat.st_mode) &&
         candidate_stat.st_size == 0) {
       int cleanup_errno = 0;
-      if (::unlink(candidate.c_str()) != 0 && errno != ENOENT) {
-        cleanup_errno = errno;
-      } else if (::unlink(recovery_lock_path.c_str()) != 0 && errno != ENOENT) {
-        cleanup_errno = errno;
+      const absl::Status candidate_cleanup =
+          remove_archive_entry_if_owned(candidate, candidate_stat, "abandoned archive work reservation");
+      absl::Status lock_cleanup = absl::OkStatus();
+      if (have_recovery_lock_identity) {
+        if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK")) {
+          ::unlink(recovery_lock_path.c_str());
+          const int replacement_fd =
+              ::open(recovery_lock_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+          if (replacement_fd >= 0) {
+            constexpr char kReplacement[] = "injected foreign archive owner lock";
+            const ssize_t replacement_bytes = ::write(replacement_fd, kReplacement, sizeof(kReplacement) - 1);
+            (void)replacement_bytes;
+            ::close(replacement_fd);
+          }
+          g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK");
+        }
+        lock_cleanup =
+            remove_archive_entry_if_owned(recovery_lock_path, recovery_lock_stat, "archive work ownership lock");
       }
       if (recovery_lock_fd >= 0 && ::close(recovery_lock_fd) != 0 && cleanup_errno == 0)
         cleanup_errno = errno;
       recovery_lock_fd = -1;
       HM_RETURN_IF_ERROR(sync_parent_directory(candidate));
+      if (!candidate_cleanup.ok())
+        return candidate_cleanup;
+      if (!lock_cleanup.ok())
+        return lock_cleanup;
       if (cleanup_errno != 0) {
         return absl::InternalError(TO_STRING(
             "Failed to remove abandoned archive work reservation \"" << candidate.string()
@@ -2242,7 +2477,14 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
       return recovery.status();
     }
     if (recovery_lock_fd >= 0) {
-      ::unlink(recovery_lock_path.c_str());
+      if (have_recovery_lock_identity) {
+        const absl::Status lock_cleanup =
+            remove_archive_entry_if_owned(recovery_lock_path, recovery_lock_stat, "archive work ownership lock");
+        if (!lock_cleanup.ok()) {
+          ::close(recovery_lock_fd);
+          return lock_cleanup;
+        }
+      }
       ::close(recovery_lock_fd);
     }
     if (recovery->has_value())

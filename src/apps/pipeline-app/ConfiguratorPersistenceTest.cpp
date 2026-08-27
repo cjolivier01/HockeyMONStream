@@ -436,8 +436,8 @@ play-tracker:
   fs::create_directories(runtime_video_converter_game_dir);
   YAML::Node runtime_video_converter_override(YAML::NodeType::Map);
   runtime_video_converter_override["runtime"]["video_converter"] = "dsxvideoconvert";
-  std::ofstream(runtime_video_converter_game_dir / "config.yaml") << YAML::Dump(runtime_video_converter_override)
-                                                                  << '\n';
+  std::ofstream(runtime_video_converter_game_dir / "config.yaml")
+      << YAML::Dump(runtime_video_converter_override) << '\n';
   hm::Configurator mapping_runtime_video_converter(
       "mapping-runtime-video-converter", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_runtime_video_converter_loaded = mapping_runtime_video_converter.configure().ok() &&
@@ -1863,6 +1863,53 @@ play-tracker:
           !fs::exists(post_quarantine_destination_log),
       "Protected cleanup must restore its pinned source and retire its partial sidecar if publication is replaced after quarantine unlink");
 
+  const fs::path source_link_race_dir = root / "archive-source-link-race";
+  fs::create_directories(source_link_race_dir);
+  const fs::path source_link_race_source = source_link_race_dir / "source-link-race.mkv";
+  const fs::path source_link_race_recovery = source_link_race_dir / "source-link-race-finalization-failed.mkv";
+  std::ofstream(source_link_race_source, std::ios::binary) << "trusted source pinned before recovery link";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_SOURCE_BEFORE_LINK", "1", TRUE);
+  const auto source_link_race = hm::configurator_internal::preserve_existing_archive_work_file(source_link_race_source);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_SOURCE_BEFORE_LINK");
+  std::ifstream source_link_race_source_stream(source_link_race_source, std::ios::binary);
+  const std::string source_link_race_source_content{
+      std::istreambuf_iterator<char>(source_link_race_source_stream), std::istreambuf_iterator<char>()};
+  std::ifstream source_link_race_recovery_stream(source_link_race_recovery, std::ios::binary);
+  const std::string source_link_race_recovery_content{
+      std::istreambuf_iterator<char>(source_link_race_recovery_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !source_link_race.ok() && source_link_race_source_content == "injected foreign archive source before link" &&
+          source_link_race_recovery_content == "trusted source pinned before recovery link" &&
+          !fs::exists(source_link_race_recovery.string() + ".log"),
+      "Recovery publication must link the pinned source inode and leave a replacement source pathname untouched");
+
+  const auto interrupted_after_source_cleanup_is_reconciled = [&](const std::string& name, bool has_log) {
+    const fs::path interrupted_dir = root / ("archive-post-source-cleanup-" + name);
+    fs::create_directories(interrupted_dir);
+    const fs::path configured = interrupted_dir / (name + ".mkv");
+    const fs::path source = interrupted_dir / (name + ".hstream-run-99999999-dead.mkv");
+    const fs::path source_log = source.string() + ".log";
+    const fs::path recovery = interrupted_dir / (name + "-finalization-failed.mkv");
+    const fs::path recovery_log = recovery.string() + ".log";
+    std::ofstream(source, std::ios::binary) << name << " trusted video";
+    if (has_log)
+      std::ofstream(source_log, std::ios::binary) << name << " trusted log";
+    g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP", "1", TRUE);
+    const auto interrupted = hm::configurator_internal::recover_stale_archive_work_files(configured);
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP");
+    const auto resumed = hm::configurator_internal::recover_stale_archive_work_files(configured);
+    std::ifstream recovery_log_stream(recovery_log, std::ios::binary);
+    const std::string recovery_log_content{
+        std::istreambuf_iterator<char>(recovery_log_stream), std::istreambuf_iterator<char>()};
+    return !interrupted.ok() && resumed.ok() && resumed->size() == 1 && resumed->front() == recovery &&
+        fs::is_regular_file(recovery) && !fs::exists(source) && !fs::exists(source_log) &&
+        (has_log ? recovery_log_content == name + " trusted log" : !fs::exists(recovery_log));
+  };
+  ok &= expect(
+      interrupted_after_source_cleanup_is_reconciled("with-log", true) &&
+          interrupted_after_source_cleanup_is_reconciled("without-log", false),
+      "Restart recovery must finish log and no-log transactions interrupted after retiring the source video");
+
   const fs::path finalizer_archive = custom_archive_dir / "finalizer-ownership.mkv";
   const fs::path finalizer_work = custom_archive_dir /
       ("finalizer-ownership.hstream-run-v3-99999996-" + std::to_string(::getpid()) +
@@ -1917,6 +1964,25 @@ play-tracker:
           repeated_failed_start_cleanup.ok() && repeated_failed_start_cleanup->empty() &&
           !fs::exists(failed_start_work) && !fs::exists(failed_start_lock_path),
       "Repeated failed starts must durably clean each relinquished zero-byte v3 reservation and ownership sidecar");
+
+  const fs::path replaced_lock_archive = custom_archive_dir / "replaced-lock.mkv";
+  const fs::path replaced_lock_work =
+      custom_archive_dir / "replaced-lock.hstream-run-v3-99999992-99999991-33445566-7788-99aa-bbcc-ddeeff001122.mkv";
+  std::ofstream(replaced_lock_work, std::ios::binary);
+  const auto replaced_lock = hm::configurator_internal::acquire_archive_work_owner_lock(replaced_lock_work);
+  if (replaced_lock.ok())
+    ::close(*replaced_lock);
+  const fs::path replaced_lock_path = hm::configurator_internal::archive_work_owner_lock_path(replaced_lock_work);
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK", "1", TRUE);
+  const auto replaced_lock_cleanup = hm::configurator_internal::recover_stale_archive_work_files(replaced_lock_archive);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_ARCHIVE_OWNER_LOCK");
+  std::ifstream replaced_lock_stream(replaced_lock_path, std::ios::binary);
+  const std::string replaced_lock_content{
+      std::istreambuf_iterator<char>(replaced_lock_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      replaced_lock.ok() && !replaced_lock_cleanup.ok() && !fs::exists(replaced_lock_work) &&
+          replaced_lock_content == "injected foreign archive owner lock",
+      "Stale recovery must never delete a replacement ownership-lock entry after acquiring the original inode");
 
   const auto first_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
   const auto conflicting_archive_lock = hm::configurator_internal::acquire_archive_output_lock(custom_archive);
