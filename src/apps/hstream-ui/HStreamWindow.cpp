@@ -1857,7 +1857,11 @@ QString publish_unique_ui_reconciliation_guard(
   return {};
 }
 
-bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QString* error, int remaining_passes = 4) {
+bool reconcile_scoped_ui_cleanup_directory_pass(
+    const QString& directory_path,
+    QString* error,
+    bool* deferred,
+    bool* made_progress_out) {
   struct ReconciledEntry {
     QString public_path;
     QString guard_path;
@@ -1969,6 +1973,7 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
   const QStringList names =
       QDir(directory_path).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
   bool deferred_cleanup = false;
+  bool made_progress = false;
   for (const QString& cleanup_name : names) {
     if (!cleanup_name_pattern.match(cleanup_name).hasMatch())
       continue;
@@ -2147,6 +2152,7 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
           *error = QString::fromLocal8Bit(std::strerror(saved_errno));
         return false;
       }
+      made_progress = true;
       ::close(cleanup_fd);
       continue;
     }
@@ -2258,6 +2264,7 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
         ::close(cleanup_fd);
         continue;
       }
+      made_progress = true;
       ::close(cleanup_fd);
       continue;
     }
@@ -2478,12 +2485,30 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
       ::close(cleanup_fd);
       continue;
     }
+    made_progress = true;
     ::close(cleanup_fd);
   }
   ::close(parent_fd);
-  if (deferred_cleanup && remaining_passes > 0)
-    return reconcile_scoped_ui_cleanup_directory(directory_path, error, remaining_passes - 1);
+  *deferred = deferred_cleanup;
+  *made_progress_out = made_progress;
   return true;
+}
+
+bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QString* error) {
+  while (true) {
+    bool deferred = false;
+    bool made_progress = false;
+    if (!reconcile_scoped_ui_cleanup_directory_pass(directory_path, error, &deferred, &made_progress))
+      return false;
+    if (!deferred)
+      return true;
+    if (!made_progress) {
+      if (error)
+        *error = QString("cleanup reconciliation made no progress while dependent transactions remained in %1")
+                     .arg(directory_path);
+      return false;
+    }
+  }
 }
 
 bool remove_path_if_same_identity(

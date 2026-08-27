@@ -2453,6 +2453,80 @@ play-tracker:
           !reconciliation_race_artifacts_remain,
       "Stable cleanup passes must resolve nested guard retirement before retiring its owner-only transaction");
 
+  const fs::path deep_cleanup_chain_dir = root / "archive-deep-cleanup-chain";
+  fs::create_directories(deep_cleanup_chain_dir);
+  const std::array<std::string, 6> deep_cleanup_ids = {
+      "00000000-0000-4000-8000-000000000010",
+      "00000000-0000-4000-8000-000000000020",
+      "00000000-0000-4000-8000-000000000030",
+      "00000000-0000-4000-8000-000000000040",
+      "00000000-0000-4000-8000-000000000050",
+      "00000000-0000-4000-8000-000000000060",
+  };
+  bool deep_cleanup_chain_setup = true;
+  for (size_t index = 0; index < deep_cleanup_ids.size(); ++index) {
+    const fs::path transaction =
+        deep_cleanup_chain_dir / (".hstream-cleanup-v2-" + deep_cleanup_ids[index]);
+    fs::create_directories(transaction);
+    const std::string target_name = index == 0
+        ? "deep-cleanup-root.mkv"
+        : ".hstream-reconcile-" + deep_cleanup_ids[index - 1] +
+            "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+    gchar* encoded_target = g_base64_encode(
+        reinterpret_cast<const guchar*>(target_name.data()), static_cast<gsize>(target_name.size()));
+    std::ofstream owner_stream(transaction / "owner", std::ios::binary);
+    owner_stream << "hstream-cleanup-v2\n" << encoded_target;
+    owner_stream.close();
+    deep_cleanup_chain_setup &= owner_stream.good();
+    g_free(encoded_target);
+  }
+  const auto deep_cleanup_chain_recovery = hm::configurator_internal::recover_stale_archive_work_files(
+      deep_cleanup_chain_dir / "configured.mkv");
+  const bool deep_cleanup_chain_retired =
+      std::none_of(fs::directory_iterator(deep_cleanup_chain_dir), fs::directory_iterator(), [](const auto& entry) {
+        return entry.path().filename().string().rfind(".hstream-cleanup-v2-", 0) == 0;
+      });
+  ok &= expect(
+      deep_cleanup_chain_setup && deep_cleanup_chain_recovery.ok() && deep_cleanup_chain_recovery->empty() &&
+          deep_cleanup_chain_retired,
+      "Cleanup reconciliation must reach a fixed point beyond the former five-pass dependency limit");
+
+  const fs::path blocked_cleanup_chain_dir = root / "archive-blocked-cleanup-chain";
+  const std::string blocked_outer_id = "00000000-0000-4000-8000-000000000070";
+  const std::string blocked_nested_id = "00000000-0000-4000-8000-000000000080";
+  const fs::path blocked_outer = blocked_cleanup_chain_dir / (".hstream-cleanup-v2-" + blocked_outer_id);
+  const fs::path blocked_nested = blocked_cleanup_chain_dir / (".hstream-cleanup-v2-" + blocked_nested_id);
+  fs::create_directories(blocked_outer);
+  fs::create_directories(blocked_nested);
+  const std::string blocked_nested_target =
+      ".hstream-reconcile-" + blocked_outer_id + "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+  gchar* blocked_outer_target = g_base64_encode(
+      reinterpret_cast<const guchar*>("blocked-cleanup-root.mkv"), std::strlen("blocked-cleanup-root.mkv"));
+  gchar* blocked_nested_target_encoded = g_base64_encode(
+      reinterpret_cast<const guchar*>(blocked_nested_target.data()), static_cast<gsize>(blocked_nested_target.size()));
+  std::ofstream(blocked_outer / "owner", std::ios::binary) << "hstream-cleanup-v2\n" << blocked_outer_target;
+  std::ofstream(blocked_nested / "owner", std::ios::binary)
+      << "hstream-cleanup-v2\n"
+      << blocked_nested_target_encoded;
+  g_free(blocked_outer_target);
+  g_free(blocked_nested_target_encoded);
+  const int blocked_nested_fd =
+      ::open(blocked_nested.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const bool blocked_cleanup_chain_locked =
+      blocked_nested_fd >= 0 && ::flock(blocked_nested_fd, LOCK_EX | LOCK_NB) == 0;
+  const auto blocked_cleanup_chain_recovery = hm::configurator_internal::recover_stale_archive_work_files(
+      blocked_cleanup_chain_dir / "configured.mkv");
+  const bool blocked_cleanup_chain_retained = fs::exists(blocked_outer) && fs::exists(blocked_nested);
+  if (blocked_nested_fd >= 0)
+    ::close(blocked_nested_fd);
+  const auto blocked_cleanup_chain_resumed = hm::configurator_internal::recover_stale_archive_work_files(
+      blocked_cleanup_chain_dir / "configured.mkv");
+  ok &= expect(
+      blocked_cleanup_chain_locked && !blocked_cleanup_chain_recovery.ok() && blocked_cleanup_chain_retained &&
+          blocked_cleanup_chain_resumed.ok() && blocked_cleanup_chain_resumed->empty() &&
+          !fs::exists(blocked_outer) && !fs::exists(blocked_nested),
+      "Cleanup reconciliation must fail closed at a blocked fixed point and resume after the blocker releases");
+
   const fs::path fallback_restore_race_dir = root / "archive-cleanup-fallback-restore-race";
   fs::create_directories(fallback_restore_race_dir);
   const fs::path fallback_restore_race_configured = fallback_restore_race_dir / "restore-race.mkv";

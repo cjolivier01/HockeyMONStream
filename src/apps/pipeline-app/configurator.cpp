@@ -2417,7 +2417,13 @@ absl::StatusOr<std::string> publish_unique_archive_reconciliation_guard(
   return absl::ResourceExhaustedError("No unused archive reconciliation guard name remained");
 }
 
-absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent_path, int remaining_passes = 4) {
+struct ArchiveCleanupReconciliationPass {
+  bool deferred = false;
+  bool made_progress = false;
+};
+
+absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanup_directories_pass(
+    const fs::path& parent_path) {
   struct ReconciledEntry {
     fs::path public_path;
     fs::path guard_path;
@@ -2515,6 +2521,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       }
       current_entries.push_back(it->path());
     }
+    std::sort(current_entries.begin(), current_entries.end());
     return current_entries;
   };
   static const std::regex cleanup_name_pattern(
@@ -2534,6 +2541,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
   }
   const std::vector<fs::path> entries = std::move(*entries_status);
   bool deferred_cleanup = false;
+  bool made_progress = false;
   for (const fs::path& cleanup_path : entries) {
     const std::string cleanup_name = cleanup_path.filename().string();
     if (!is_cleanup_directory_name(cleanup_name))
@@ -2696,6 +2704,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
             "Failed to retire committed archive cleanup transaction \"" << cleanup_path.string()
                                                                         << "\": " << std::strerror(saved_errno)));
       }
+      made_progress = true;
       ::close(cleanup_fd);
       continue;
     }
@@ -2811,6 +2820,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
         ::close(cleanup_fd);
         continue;
       }
+      made_progress = true;
       ::close(cleanup_fd);
       continue;
     }
@@ -3036,12 +3046,26 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       ::close(cleanup_fd);
       continue;
     }
+    made_progress = true;
     ::close(cleanup_fd);
   }
   ::close(parent_fd);
-  if (deferred_cleanup && remaining_passes > 0)
-    return reconcile_scoped_archive_cleanup_directories(parent_path, remaining_passes - 1);
-  return absl::OkStatus();
+  return ArchiveCleanupReconciliationPass{deferred_cleanup, made_progress};
+}
+
+absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent_path) {
+  while (true) {
+    auto pass = reconcile_scoped_archive_cleanup_directories_pass(parent_path);
+    if (!pass.ok())
+      return pass.status();
+    if (!pass->deferred)
+      return absl::OkStatus();
+    if (!pass->made_progress) {
+      return absl::FailedPreconditionError(TO_STRING(
+          "Archive cleanup reconciliation made no progress while dependent transactions remained in \""
+          << parent_path.string() << "\""));
+    }
+  }
 }
 
 absl::Status retire_archive_recovery_guards(

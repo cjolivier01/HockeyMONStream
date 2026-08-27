@@ -8707,6 +8707,77 @@ bool test_cleanup_transaction_protocol() {
           !QFileInfo::exists(failed_unlink_transaction),
       "UI cleanup must retain authenticated ownership after a private unlink failure until restart rollback");
 
+  const QString deep_cleanup_chain_dir = QDir(root.path()).filePath("deep-cleanup-chain");
+  QDir().mkpath(deep_cleanup_chain_dir);
+  const QStringList deep_cleanup_ids = {
+      "00000000-0000-4000-8000-000000000010",
+      "00000000-0000-4000-8000-000000000020",
+      "00000000-0000-4000-8000-000000000030",
+      "00000000-0000-4000-8000-000000000040",
+      "00000000-0000-4000-8000-000000000050",
+      "00000000-0000-4000-8000-000000000060",
+  };
+  bool deep_cleanup_chain_setup = true;
+  for (qsizetype index = 0; index < deep_cleanup_ids.size(); ++index) {
+    const QString transaction =
+        QDir(deep_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + deep_cleanup_ids[index]);
+    const QString target_name = index == 0
+        ? "deep-cleanup-root.mp4"
+        : ".hstream-reconcile-" + deep_cleanup_ids[index - 1] +
+            "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+    deep_cleanup_chain_setup = deep_cleanup_chain_setup && QDir().mkpath(transaction) &&
+        write_file(
+            QDir(transaction).filePath("owner"),
+            QByteArray("hstream-cleanup-v2\n") + target_name.toLocal8Bit().toBase64());
+  }
+  QString deep_cleanup_chain_error;
+  const bool deep_cleanup_chain_reconciled =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(deep_cleanup_chain_dir, &deep_cleanup_chain_error);
+  const bool deep_cleanup_chain_retired =
+      QDir(deep_cleanup_chain_dir)
+          .entryList(
+              {".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name)
+          .isEmpty();
+  ok &= expect(
+      deep_cleanup_chain_setup && deep_cleanup_chain_reconciled && deep_cleanup_chain_retired,
+      "UI cleanup reconciliation must reach a fixed point beyond the former five-pass dependency limit");
+
+  const QString blocked_cleanup_chain_dir = QDir(root.path()).filePath("blocked-cleanup-chain");
+  const QString blocked_outer_id = "00000000-0000-4000-8000-000000000070";
+  const QString blocked_nested_id = "00000000-0000-4000-8000-000000000080";
+  const QString blocked_outer =
+      QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_outer_id);
+  const QString blocked_nested =
+      QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_nested_id);
+  const QString blocked_nested_target =
+      ".hstream-reconcile-" + blocked_outer_id + "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const bool blocked_cleanup_chain_setup = QDir().mkpath(blocked_outer) && QDir().mkpath(blocked_nested) &&
+      write_file(
+          QDir(blocked_outer).filePath("owner"),
+          QByteArray("hstream-cleanup-v2\n") + QByteArray("blocked-cleanup-root.mp4").toBase64()) &&
+      write_file(
+          QDir(blocked_nested).filePath("owner"),
+          QByteArray("hstream-cleanup-v2\n") + blocked_nested_target.toLocal8Bit().toBase64());
+  const int blocked_nested_fd =
+      ::open(QFile::encodeName(blocked_nested).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const bool blocked_cleanup_chain_locked =
+      blocked_nested_fd >= 0 && ::flock(blocked_nested_fd, LOCK_EX | LOCK_NB) == 0;
+  QString blocked_cleanup_chain_error;
+  const bool blocked_cleanup_chain_reconciled = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      blocked_cleanup_chain_dir, &blocked_cleanup_chain_error);
+  const bool blocked_cleanup_chain_retained =
+      QFileInfo::exists(blocked_outer) && QFileInfo::exists(blocked_nested);
+  if (blocked_nested_fd >= 0)
+    ::close(blocked_nested_fd);
+  QString blocked_cleanup_chain_resume_error;
+  const bool blocked_cleanup_chain_resumed = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      blocked_cleanup_chain_dir, &blocked_cleanup_chain_resume_error);
+  ok &= expect(
+      blocked_cleanup_chain_setup && blocked_cleanup_chain_locked && !blocked_cleanup_chain_reconciled &&
+          blocked_cleanup_chain_retained && blocked_cleanup_chain_resumed && !QFileInfo::exists(blocked_outer) &&
+          !QFileInfo::exists(blocked_nested),
+      "UI cleanup reconciliation must fail closed at a blocked fixed point and resume after the blocker releases");
+
   const QString concurrent_dir = QDir(root.path()).filePath("concurrent-removers");
   QDir().mkpath(concurrent_dir);
   const QString concurrent_target = QDir(concurrent_dir).filePath("concurrent.mp4");
