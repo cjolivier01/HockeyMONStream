@@ -68,6 +68,7 @@
 #include <QtCore/QUuid>
 
 #ifdef Q_OS_UNIX
+#include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/file.h>
@@ -1185,6 +1186,8 @@ bool rename_entry_no_replace(
     const char* destination_name,
     int* saved_errno);
 
+bool create_ui_cleanup_committed(int cleanup_fd, const struct stat& expected_stat, QString* error);
+
 bool ensure_durable_ui_removal_fallback(
     int pinned_fd,
     const QString& path,
@@ -1219,7 +1222,8 @@ bool retire_durable_ui_removal_fallback(
     int parent_fd,
     const DurableUiRemovalFallback& fallback,
     const struct stat& expected_stat,
-    QString* error) {
+    QString* error,
+    bool commit_deletion = false) {
   if (!fallback.retire_on_success)
     return true;
   const QByteArray fallback_name = QFile::encodeName(QFileInfo(fallback.path).fileName());
@@ -1261,9 +1265,17 @@ bool retire_durable_ui_removal_fallback(
       *error = QString("public cleanup fallback was replaced at %1: %2").arg(fallback.path, restore_error);
     return false;
   }
+  if (commit_deletion && !create_ui_cleanup_committed(cleanup_fd, expected_stat, error))
+    return false;
   if (::unlinkat(cleanup_fd, "fallback", 0) != 0 || ::fsync(cleanup_fd) != 0) {
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(errno));
+    return false;
+  }
+  if (commit_deletion && qEnvironmentVariable("HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT") == fallback.path) {
+    qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT");
+    if (error)
+      *error = "cleanup interruption requested after fallback retirement";
     return false;
   }
   return true;
@@ -1489,6 +1501,119 @@ bool rename_entry_no_replace(
 constexpr char kUiCleanupDirectoryPrefix[] = ".hstream-cleanup-v2-";
 constexpr char kUiCleanupOwnerName[] = "owner";
 constexpr char kUiCleanupOwnerMagic[] = "hstream-cleanup-v2\n";
+constexpr char kUiCleanupCommittedName[] = "committed";
+constexpr char kUiCleanupCommittedMagic[] = "hstream-cleanup-committed-v1\n";
+
+struct UiCleanupCommittedIdentity {
+  quint64 device = 0;
+  quint64 inode = 0;
+};
+
+bool ui_cleanup_identity_matches(const UiCleanupCommittedIdentity& committed_identity, const struct stat& entry_stat) {
+  return committed_identity.device == static_cast<quint64>(entry_stat.st_dev) &&
+      committed_identity.inode == static_cast<quint64>(entry_stat.st_ino);
+}
+
+bool create_ui_cleanup_committed(int cleanup_fd, const struct stat& expected_stat, QString* error) {
+  struct stat guard_stat{};
+  if (::fstatat(cleanup_fd, "guard", &guard_stat, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(guard_stat.st_mode) ||
+      !same_file_identity(guard_stat, expected_stat)) {
+    if (error)
+      *error = "cleanup guard changed before deletion commit";
+    return false;
+  }
+  const int committed_fd = ::openat(
+      cleanup_fd, kUiCleanupCommittedName, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+  if (committed_fd < 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return false;
+  }
+  const QByteArray record = QByteArray(kUiCleanupCommittedMagic) +
+      QByteArray::number(static_cast<qulonglong>(expected_stat.st_dev)) + "\n" +
+      QByteArray::number(static_cast<qulonglong>(expected_stat.st_ino)) + "\n";
+  qsizetype written = 0;
+  int saved_errno = 0;
+  while (written < record.size()) {
+    const ssize_t result = ::write(committed_fd, record.constData() + written, record.size() - written);
+    if (result < 0 && errno == EINTR)
+      continue;
+    if (result <= 0) {
+      saved_errno = result < 0 ? errno : EIO;
+      break;
+    }
+    written += result;
+  }
+  if (saved_errno == 0 && ::fsync(committed_fd) != 0)
+    saved_errno = errno;
+  if (::close(committed_fd) != 0 && saved_errno == 0)
+    saved_errno = errno;
+  if (saved_errno == 0 && ::fsync(cleanup_fd) != 0)
+    saved_errno = errno;
+  if (saved_errno == 0)
+    return true;
+  ::unlinkat(cleanup_fd, kUiCleanupCommittedName, 0);
+  ::fsync(cleanup_fd);
+  if (error)
+    *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+  return false;
+}
+
+bool read_ui_cleanup_committed(
+    int cleanup_fd,
+    std::optional<UiCleanupCommittedIdentity>* committed_identity,
+    QString* error) {
+  const int committed_fd =
+      ::openat(cleanup_fd, kUiCleanupCommittedName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (committed_fd < 0) {
+    if (errno == ENOENT) {
+      if (committed_identity)
+        committed_identity->reset();
+      return true;
+    }
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return false;
+  }
+  struct stat committed_stat{};
+  QByteArray record;
+  int saved_errno = 0;
+  if (::fstat(committed_fd, &committed_stat) != 0) {
+    saved_errno = errno;
+  } else if (!S_ISREG(committed_stat.st_mode) || committed_stat.st_size <= 0 || committed_stat.st_size > 1024) {
+    saved_errno = EINVAL;
+  } else {
+    record.resize(static_cast<qsizetype>(committed_stat.st_size));
+    qsizetype read_bytes = 0;
+    while (read_bytes < record.size()) {
+      const ssize_t result = ::read(committed_fd, record.data() + read_bytes, record.size() - read_bytes);
+      if (result < 0 && errno == EINTR)
+        continue;
+      if (result <= 0) {
+        saved_errno = result < 0 ? errno : EIO;
+        break;
+      }
+      read_bytes += result;
+    }
+  }
+  if (::close(committed_fd) != 0 && saved_errno == 0)
+    saved_errno = errno;
+  const QByteArray magic(kUiCleanupCommittedMagic);
+  const QList<QByteArray> values = record.mid(magic.size()).split('\n');
+  bool device_ok = false;
+  bool inode_ok = false;
+  const qulonglong device = values.size() == 3 ? values[0].toULongLong(&device_ok, 10) : 0;
+  const qulonglong inode = values.size() == 3 ? values[1].toULongLong(&inode_ok, 10) : 0;
+  if (saved_errno != 0 || !record.startsWith(magic) || values.size() != 3 || !values[2].isEmpty() || !device_ok ||
+      !inode_ok || QByteArray::number(device) != values[0] || QByteArray::number(inode) != values[1]) {
+    if (error)
+      *error = "cleanup commit record is invalid";
+    return false;
+  }
+  if (committed_identity)
+    *committed_identity = UiCleanupCommittedIdentity{device, inode};
+  return true;
+}
 
 bool create_ui_cleanup_owner(int cleanup_fd, int parent_fd, const QByteArray& target_name, QString* error) {
   const int owner_fd = ::openat(
@@ -1595,11 +1720,44 @@ bool remove_named_ui_cleanup_directory(int cleanup_fd, int parent_fd, const QByt
   return ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR) == 0;
 }
 
+bool ui_cleanup_directory_contains_only_metadata(int cleanup_fd) {
+  const int scan_fd = ::dup(cleanup_fd);
+  if (scan_fd < 0)
+    return false;
+  DIR* directory = ::fdopendir(scan_fd);
+  if (!directory) {
+    const int saved_errno = errno;
+    ::close(scan_fd);
+    errno = saved_errno;
+    return false;
+  }
+  errno = 0;
+  while (const dirent* entry = ::readdir(directory)) {
+    const QByteArray name(entry->d_name);
+    if (name == "." || name == ".." || name == kUiCleanupOwnerName || name == kUiCleanupCommittedName)
+      continue;
+    ::closedir(directory);
+    errno = ENOTEMPTY;
+    return false;
+  }
+  const int saved_errno = errno;
+  if (::closedir(directory) != 0 && saved_errno == 0)
+    return false;
+  errno = saved_errno;
+  return saved_errno == 0;
+}
+
 bool retire_ui_cleanup_directory(int cleanup_fd, int parent_fd, const QByteArray& cleanup_name) {
   if (!ui_cleanup_name_matches_fd(cleanup_fd, parent_fd, cleanup_name)) {
     errno = ESTALE;
     return false;
   }
+  if (!ui_cleanup_directory_contains_only_metadata(cleanup_fd))
+    return false;
+  if (::unlinkat(cleanup_fd, kUiCleanupCommittedName, 0) != 0 && errno != ENOENT)
+    return false;
+  if (::fsync(cleanup_fd) != 0)
+    return false;
   if (::unlinkat(cleanup_fd, kUiCleanupOwnerName, 0) != 0 || ::fsync(cleanup_fd) != 0)
     return false;
   return remove_named_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
@@ -1768,6 +1926,15 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
       ::close(cleanup_fd);
       continue;
     }
+    std::optional<UiCleanupCommittedIdentity> committed_identity;
+    QString committed_error;
+    if (!read_ui_cleanup_committed(cleanup_fd, &committed_identity, &committed_error)) {
+      ::close(cleanup_fd);
+      ::close(parent_fd);
+      if (error)
+        *error = committed_error;
+      return false;
+    }
     const QString owned_target_path = QDir(directory_path).filePath(QFile::decodeName(owned_target_name));
     const std::array<QString, 2> owned_public_paths = {owned_target_path + ".hstream-cleanup-pin", owned_target_path};
     std::vector<ReconciledEntry> reconciled;
@@ -1788,6 +1955,59 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
           *error = QString::fromLocal8Bit(std::strerror(saved_errno));
         return false;
       }
+    }
+    const bool has_quarantined_entry =
+        std::any_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
+          return std::strcmp(entry.name, "entry") == 0;
+        });
+    const auto guard_entry = std::find_if(private_entries.begin(), private_entries.end(), [](const auto& entry) {
+      return std::strcmp(entry.name, "guard") == 0;
+    });
+    const auto fallback_entry = std::find_if(private_entries.begin(), private_entries.end(), [](const auto& entry) {
+      return std::strcmp(entry.name, "fallback") == 0;
+    });
+    if (committed_identity.has_value()) {
+      if (has_quarantined_entry) {
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        if (error)
+          *error = QString("committed cleanup still contains an entry at %1").arg(cleanup_name);
+        return false;
+      }
+      for (const PrivateEntry& private_entry : private_entries) {
+        if (!S_ISREG(private_entry.identity.st_mode) ||
+            !ui_cleanup_identity_matches(*committed_identity, private_entry.identity)) {
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          if (error)
+            *error = QString("committed cleanup identity mismatch at %1/%2").arg(cleanup_name, private_entry.name);
+          return false;
+        }
+      }
+      for (const PrivateEntry& private_entry : private_entries) {
+        struct stat current_stat{};
+        if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !same_file_identity(current_stat, private_entry.identity) ||
+            ::unlinkat(cleanup_fd, private_entry.name, 0) != 0) {
+          const int saved_errno = errno;
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          if (error)
+            *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+          return false;
+        }
+      }
+      if (::fsync(cleanup_fd) != 0 || !retire_ui_cleanup_directory(cleanup_fd, parent_fd, encoded_cleanup) ||
+          ::fsync(parent_fd) != 0) {
+        const int saved_errno = errno;
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        if (error)
+          *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+        return false;
+      }
+      ::close(cleanup_fd);
+      continue;
     }
     if (private_entries.empty()) {
       const QString original_path = QDir(directory_path).filePath(QFile::decodeName(owned_target_name));
@@ -1865,15 +2085,66 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
       ::close(cleanup_fd);
       continue;
     }
-    const bool has_quarantined_entry =
-        std::any_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
-          return std::strcmp(entry.name, "entry") == 0;
-        });
-    const bool has_quarantined_fallback =
-        std::any_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
-          return std::strcmp(entry.name, "fallback") == 0;
-        });
-    const bool committed_delete = !has_quarantined_entry && has_quarantined_fallback;
+    if (!has_quarantined_entry && guard_entry != private_entries.end()) {
+      if (fallback_entry != private_entries.end() &&
+          !same_file_identity(guard_entry->identity, fallback_entry->identity)) {
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        if (error)
+          *error = QString("uncommitted cleanup fallback does not match its trusted guard at %1").arg(cleanup_name);
+        return false;
+      }
+      bool guard_is_public =
+          std::any_of(owned_public_paths.begin(), owned_public_paths.end(), [&](const QString& path) {
+            return path_has_file_identity(path, guard_entry->identity);
+          });
+      if (!guard_is_public && fallback_entry != private_entries.end()) {
+        const QByteArray fallback_name = owned_target_name + ".hstream-cleanup-pin";
+        int restore_errno = 0;
+        if (rename_entry_no_replace(cleanup_fd, "fallback", parent_fd, fallback_name.constData(), &restore_errno)) {
+          if (::fsync(cleanup_fd) != 0 || ::fsync(parent_fd) != 0) {
+            const int saved_errno = errno;
+            ::close(cleanup_fd);
+            ::close(parent_fd);
+            if (error)
+              *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+            return false;
+          }
+          private_entries.erase(
+              std::remove_if(
+                  private_entries.begin(),
+                  private_entries.end(),
+                  [](const auto& entry) { return std::strcmp(entry.name, "fallback") == 0; }),
+              private_entries.end());
+          guard_is_public = true;
+        } else if (restore_errno != EEXIST) {
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          if (error)
+            *error = QString::fromLocal8Bit(std::strerror(restore_errno));
+          return false;
+        }
+      }
+      if (!guard_is_public) {
+        const int guard_fd = ::openat(cleanup_fd, "guard", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+        struct stat pinned_guard_stat{};
+        const bool guard_pinned = guard_fd >= 0 && ::fstat(guard_fd, &pinned_guard_stat) == 0 &&
+            same_file_identity(pinned_guard_stat, guard_entry->identity);
+        const int publish_result =
+            guard_pinned ? ::linkat(guard_fd, "", parent_fd, owned_target_name.constData(), AT_EMPTY_PATH) : -1;
+        const int publish_errno = guard_pinned ? errno : (guard_fd < 0 ? errno : ESTALE);
+        if (guard_fd >= 0)
+          ::close(guard_fd);
+        if (publish_result != 0 || ::fsync(parent_fd) != 0) {
+          const int saved_errno = publish_result != 0 ? publish_errno : errno;
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          if (error)
+            *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+          return false;
+        }
+      }
+    }
     for (const PrivateEntry& private_entry : private_entries) {
       QString public_path;
       for (const QString& candidate : owned_public_paths) {
@@ -1920,7 +2191,7 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
             ::close(replacement_fd);
           }
         }
-      } else if (!committed_delete) {
+      } else {
         ::close(cleanup_fd);
         ::close(parent_fd);
         if (error)
@@ -2052,6 +2323,9 @@ bool remove_path_if_same_identity(
       *error = QString::fromLocal8Bit(std::strerror(saved_errno));
     return false;
   }
+  const QString serialization_delay = qEnvironmentVariable("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION");
+  if (serialization_delay == "1" || (!serialization_delay.isEmpty() && serialization_delay == path))
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   const QFileInfo path_info(path);
   const QByteArray encoded_parent = QFile::encodeName(path_info.absolutePath());
@@ -2061,6 +2335,32 @@ bool remove_path_if_same_identity(
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(errno));
     ::close(pinned_fd);
+    return false;
+  }
+  if (::flock(parent_fd, LOCK_EX) != 0) {
+    const int saved_errno = errno;
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+    return false;
+  }
+  struct stat locked_path_stat{};
+  if (::fstatat(parent_fd, encoded_filename.constData(), &locked_path_stat, AT_SYMLINK_NOFOLLOW) != 0) {
+    const int saved_errno = errno;
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    if (saved_errno == ENOENT)
+      return true;
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+    return false;
+  }
+  if (!same_file_identity(locked_path_stat, pinned_stat)) {
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    if (error)
+      *error = QString("refusing to remove a replaced path: %1").arg(path);
     return false;
   }
   const QByteArray cleanup_name =
@@ -2215,9 +2515,23 @@ bool remove_path_if_same_identity(
     return false;
   }
 
-  const int unlink_result = ::unlinkat(cleanup_fd, "entry", 0);
+  const QString forced_entry_unlink_failure =
+      qEnvironmentVariable("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
+  const bool fail_entry_unlink = forced_entry_unlink_failure == "1" ||
+      (!forced_entry_unlink_failure.isEmpty() && forced_entry_unlink_failure == path);
+  if (fail_entry_unlink)
+    errno = EIO;
+  const int unlink_result = fail_entry_unlink ? -1 : ::unlinkat(cleanup_fd, "entry", 0);
   const int unlink_errno = errno;
-  if (unlink_result == 0 && !required_identity_path.isEmpty()) {
+  if (unlink_result != 0) {
+    ::close(cleanup_fd);
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(unlink_errno));
+    return false;
+  }
+  if (!required_identity_path.isEmpty()) {
     const QString replacement_trigger = qEnvironmentVariable("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
     if (!replacement_trigger.isEmpty() && replacement_trigger == path) {
       qunsetenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
@@ -2274,11 +2588,19 @@ bool remove_path_if_same_identity(
   }
   QString fallback_retirement_error;
   const bool fallback_retired = retire_durable_ui_removal_fallback(
-      cleanup_fd, parent_fd, durable_removal_fallback, pinned_stat, &fallback_retirement_error);
-  const int guard_unlink_result = fallback_retired ? ::unlinkat(cleanup_fd, "guard", 0) : -1;
+      cleanup_fd, parent_fd, durable_removal_fallback, pinned_stat, &fallback_retirement_error, true);
+  const QString forced_guard_unlink_failure =
+      qEnvironmentVariable("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_GUARD_UNLINK_FAILURE");
+  const bool fail_guard_unlink = forced_guard_unlink_failure == "1" ||
+      (!forced_guard_unlink_failure.isEmpty() && forced_guard_unlink_failure == path);
+  if (fallback_retired && fail_guard_unlink)
+    errno = EIO;
+  const int guard_unlink_result = fallback_retired && !fail_guard_unlink ? ::unlinkat(cleanup_fd, "guard", 0) : -1;
   const int guard_unlink_errno = errno;
   const int cleanup_result =
-      fallback_retired && retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) ? 0 : -1;
+      fallback_retired && guard_unlink_result == 0 && retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name)
+      ? 0
+      : -1;
   const int cleanup_errno = errno;
   ::close(cleanup_fd);
   int directory_sync_result = 0;
@@ -2324,7 +2646,7 @@ bool remove_path_if_same_identity(
     return true;
   }
   if (error && directory_sync_result == 0) {
-    *error = !fallback_retired && guard_unlink_result == 0
+    *error = !fallback_retired
         ? fallback_retirement_error
         : QString::fromLocal8Bit(
               std::strerror(
@@ -3035,6 +3357,37 @@ double ratio_x100(int value) {
 }
 
 } // namespace
+
+bool hm::ui_internal::remove_owned_path_for_test(
+    const QString& path,
+    quint64 expected_device,
+    quint64 expected_inode,
+    QString* error) {
+#ifdef Q_OS_UNIX
+  struct stat expected_stat{};
+  expected_stat.st_dev = static_cast<dev_t>(expected_device);
+  expected_stat.st_ino = static_cast<ino_t>(expected_inode);
+  return remove_path_if_same_identity(path, expected_stat, error);
+#else
+  Q_UNUSED(path);
+  Q_UNUSED(expected_device);
+  Q_UNUSED(expected_inode);
+  if (error)
+    *error = "owned-path cleanup is unavailable on this platform";
+  return false;
+#endif
+}
+
+bool hm::ui_internal::reconcile_cleanup_directory_for_test(const QString& directory_path, QString* error) {
+#ifdef Q_OS_UNIX
+  return reconcile_scoped_ui_cleanup_directory(directory_path, error);
+#else
+  Q_UNUSED(directory_path);
+  if (error)
+    *error = "cleanup reconciliation is unavailable on this platform";
+  return false;
+#endif
+}
 
 void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous) {
   auto restore_child = [](YAML::Node current_parent, YAML::Node previous_parent, const char* key) {

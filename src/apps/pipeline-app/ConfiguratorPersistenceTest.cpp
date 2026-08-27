@@ -2,6 +2,7 @@
 #include "src/apps/pipeline-app/configurator.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include <gst/gst.h>
 #include <sys/file.h>
@@ -2171,6 +2173,142 @@ play-tracker:
           !fallback_retirement_cleanup_remains,
       "Restart must finish a committed deletion interrupted after cleanup fallback quarantine");
 
+  const fs::path committed_retirement_dir = root / "archive-committed-retirement-interruption";
+  fs::create_directories(committed_retirement_dir);
+  const fs::path committed_retirement_target = committed_retirement_dir / "committed-retirement.mkv";
+  std::ofstream(committed_retirement_target, std::ios::binary) << "trusted committed-retirement video";
+  struct stat committed_retirement_stat{};
+  const bool committed_retirement_stat_ok =
+      ::lstat(committed_retirement_target.c_str(), &committed_retirement_stat) == 0;
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT", "1", TRUE);
+  const absl::Status committed_retirement_first = committed_retirement_stat_ok
+      ? hm::configurator_internal::remove_archive_entry_if_owned_for_test(
+            committed_retirement_target,
+            static_cast<uintmax_t>(committed_retirement_stat.st_dev),
+            static_cast<uintmax_t>(committed_retirement_stat.st_ino))
+      : absl::InternalError("committed-retirement fixture identity is unavailable");
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT");
+  fs::path committed_retirement_transaction;
+  for (const fs::path& entry : fs::directory_iterator(committed_retirement_dir)) {
+    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+      committed_retirement_transaction = entry;
+  }
+  const bool committed_retirement_authenticated = !committed_retirement_transaction.empty() &&
+      fs::exists(committed_retirement_transaction / "owner") &&
+      fs::exists(committed_retirement_transaction / "committed") &&
+      fs::exists(committed_retirement_transaction / "guard") &&
+      !fs::exists(committed_retirement_transaction / "fallback") &&
+      !fs::exists(committed_retirement_transaction / "entry");
+  const auto committed_retirement_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(committed_retirement_dir / "configured.mkv");
+  ok &= expect(
+      !committed_retirement_first.ok() && committed_retirement_authenticated && committed_retirement_restart.ok() &&
+          committed_retirement_restart->empty() && !fs::exists(committed_retirement_target) &&
+          !fs::exists(committed_retirement_transaction),
+      "A durable commit record must finish deletion after interruption between fallback and guard retirement");
+
+  const fs::path foreign_fallback_dir = root / "archive-foreign-private-fallback";
+  fs::create_directories(foreign_fallback_dir);
+  const fs::path foreign_fallback_target = foreign_fallback_dir / "foreign-fallback-target.mkv";
+  const fs::path foreign_fallback_transaction =
+      foreign_fallback_dir / ".hstream-cleanup-v2-12345678-90ab-4cde-8fab-1234567890ab";
+  const fs::path foreign_fallback_guard = foreign_fallback_transaction / "guard";
+  const fs::path foreign_fallback_private = foreign_fallback_transaction / "fallback";
+  const fs::path foreign_fallback_owner = foreign_fallback_transaction / "owner";
+  fs::create_directories(foreign_fallback_transaction);
+  std::ofstream(foreign_fallback_guard, std::ios::binary) << "trusted private cleanup guard";
+  std::ofstream(foreign_fallback_private, std::ios::binary) << "foreign private cleanup fallback";
+  const std::string foreign_fallback_target_name = foreign_fallback_target.filename().string();
+  gchar* foreign_fallback_encoded_target = g_base64_encode(
+      reinterpret_cast<const guchar*>(foreign_fallback_target_name.data()), foreign_fallback_target_name.size());
+  std::ofstream(foreign_fallback_owner, std::ios::binary) << "hstream-cleanup-v2\n" << foreign_fallback_encoded_target;
+  g_free(foreign_fallback_encoded_target);
+  const auto foreign_fallback_recovery =
+      hm::configurator_internal::recover_stale_archive_work_files(foreign_fallback_dir / "configured.mkv");
+  std::ifstream foreign_fallback_guard_stream(foreign_fallback_guard, std::ios::binary);
+  const std::string foreign_fallback_guard_content{
+      std::istreambuf_iterator<char>(foreign_fallback_guard_stream), std::istreambuf_iterator<char>()};
+  std::ifstream foreign_fallback_private_stream(foreign_fallback_private, std::ios::binary);
+  const std::string foreign_fallback_private_content{
+      std::istreambuf_iterator<char>(foreign_fallback_private_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !foreign_fallback_recovery.ok() && !fs::exists(foreign_fallback_target) && fs::exists(foreign_fallback_owner) &&
+          foreign_fallback_guard_content == "trusted private cleanup guard" &&
+          foreign_fallback_private_content == "foreign private cleanup fallback",
+      "An uncommitted foreign private fallback must never authorize deletion of the trusted guard");
+
+  const fs::path failed_private_unlink_dir = root / "archive-failed-private-unlink";
+  fs::create_directories(failed_private_unlink_dir);
+  const fs::path failed_private_unlink_target = failed_private_unlink_dir / "failed-private-unlink.mkv";
+  std::ofstream(failed_private_unlink_target, std::ios::binary) << "trusted failed-private-unlink video";
+  struct stat failed_private_unlink_stat{};
+  const bool failed_private_unlink_stat_ok =
+      ::lstat(failed_private_unlink_target.c_str(), &failed_private_unlink_stat) == 0;
+  g_setenv(
+      "HSTREAM_CONFIGURATOR_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE", failed_private_unlink_target.c_str(), TRUE);
+  const absl::Status failed_private_unlink = failed_private_unlink_stat_ok
+      ? hm::configurator_internal::remove_archive_entry_if_owned_for_test(
+            failed_private_unlink_target,
+            static_cast<uintmax_t>(failed_private_unlink_stat.st_dev),
+            static_cast<uintmax_t>(failed_private_unlink_stat.st_ino))
+      : absl::InternalError("failed-private-unlink fixture identity is unavailable");
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
+  fs::path failed_private_unlink_transaction;
+  for (const fs::path& entry : fs::directory_iterator(failed_private_unlink_dir)) {
+    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+      failed_private_unlink_transaction = entry;
+  }
+  const bool failed_private_unlink_authenticated = !failed_private_unlink_transaction.empty() &&
+      fs::exists(failed_private_unlink_transaction / "owner") &&
+      fs::exists(failed_private_unlink_transaction / "entry") &&
+      fs::exists(failed_private_unlink_transaction / "guard");
+  const auto failed_private_unlink_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(failed_private_unlink_dir / "configured.mkv");
+  std::ifstream failed_private_unlink_restored_stream(failed_private_unlink_target, std::ios::binary);
+  const std::string failed_private_unlink_restored{
+      std::istreambuf_iterator<char>(failed_private_unlink_restored_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !failed_private_unlink.ok() && failed_private_unlink_authenticated && failed_private_unlink_restart.ok() &&
+          failed_private_unlink_restart->empty() &&
+          failed_private_unlink_restored == "trusted failed-private-unlink video" &&
+          !fs::exists(failed_private_unlink_transaction),
+      "A failed private unlink must retain authenticated transaction ownership until restart rollback succeeds");
+
+  const fs::path concurrent_cleanup_dir = root / "archive-concurrent-cleanup";
+  fs::create_directories(concurrent_cleanup_dir);
+  const fs::path concurrent_cleanup_target = concurrent_cleanup_dir / "concurrent-cleanup.mkv";
+  std::ofstream(concurrent_cleanup_target, std::ios::binary) << "trusted concurrent-cleanup video";
+  struct stat concurrent_cleanup_stat{};
+  const bool concurrent_cleanup_stat_ok = ::lstat(concurrent_cleanup_target.c_str(), &concurrent_cleanup_stat) == 0;
+  std::atomic<bool> concurrent_cleanup_start{false};
+  absl::Status concurrent_cleanup_first = absl::UnknownError("first concurrent remover did not run");
+  absl::Status concurrent_cleanup_second = absl::UnknownError("second concurrent remover did not run");
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION", concurrent_cleanup_target.c_str(), TRUE);
+  const auto concurrent_cleanup_remove = [&](absl::Status* result) {
+    while (!concurrent_cleanup_start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    *result = hm::configurator_internal::remove_archive_entry_if_owned_for_test(
+        concurrent_cleanup_target,
+        static_cast<uintmax_t>(concurrent_cleanup_stat.st_dev),
+        static_cast<uintmax_t>(concurrent_cleanup_stat.st_ino));
+  };
+  std::thread concurrent_cleanup_thread_one(concurrent_cleanup_remove, &concurrent_cleanup_first);
+  std::thread concurrent_cleanup_thread_two(concurrent_cleanup_remove, &concurrent_cleanup_second);
+  concurrent_cleanup_start.store(true, std::memory_order_release);
+  concurrent_cleanup_thread_one.join();
+  concurrent_cleanup_thread_two.join();
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION");
+  bool concurrent_cleanup_artifacts_remain = false;
+  for (const fs::path& entry : fs::directory_iterator(concurrent_cleanup_dir)) {
+    const std::string name = entry.filename().string();
+    concurrent_cleanup_artifacts_remain |=
+        name.rfind(".hstream-cleanup-v2-", 0) == 0 || absl::EndsWith(name, ".hstream-cleanup-pin");
+  }
+  ok &= expect(
+      concurrent_cleanup_stat_ok && concurrent_cleanup_first.ok() && concurrent_cleanup_second.ok() &&
+          !fs::exists(concurrent_cleanup_target) && !concurrent_cleanup_artifacts_remain,
+      "Concurrent removers must serialize before sharing or retiring a deterministic cleanup fallback");
+
   const fs::path log_quarantine_dir = root / "archive-log-quarantine-interruption";
   fs::create_directories(log_quarantine_dir);
   const fs::path log_quarantine_configured = log_quarantine_dir / "log-quarantine.mkv";
@@ -2287,43 +2425,42 @@ play-tracker:
           !fs::exists(source_link_race_recovery.string() + ".log"),
       "Recovery publication must link the pinned source inode and leave a replacement source pathname untouched");
 
-  const auto interrupted_after_source_cleanup_is_reconciled = [&](const std::string& name,
-                                                                  bool has_log,
-                                                                  bool remove_visible_video) {
-    const fs::path interrupted_dir = root / ("archive-post-source-cleanup-" + name);
-    fs::create_directories(interrupted_dir);
-    const fs::path configured = interrupted_dir / (name + ".mkv");
-    const fs::path source = interrupted_dir / (name + ".hstream-run-99999999-dead.mkv");
-    const fs::path source_log = source.string() + ".log";
-    const fs::path recovery = interrupted_dir / (name + "-finalization-failed.mkv");
-    const fs::path recovery_log = recovery.string() + ".log";
-    std::ofstream(source, std::ios::binary) << name << " trusted video";
-    if (has_log)
-      std::ofstream(source_log, std::ios::binary) << name << " trusted log";
-    g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP", "1", TRUE);
-    const auto interrupted = hm::configurator_internal::recover_stale_archive_work_files(configured);
-    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP");
-    if (remove_visible_video)
-      fs::remove(recovery);
-    const auto resumed = hm::configurator_internal::recover_stale_archive_work_files(configured);
-    const fs::path expected_recovery =
-        remove_visible_video && !has_log ? interrupted_dir / (name + "-finalization-failed-1.mkv") : recovery;
-    const fs::path expected_recovery_log = expected_recovery.string() + ".log";
-    std::ifstream recovery_log_stream(expected_recovery_log, std::ios::binary);
-    const std::string recovery_log_content{
-        std::istreambuf_iterator<char>(recovery_log_stream), std::istreambuf_iterator<char>()};
-    const bool result = !interrupted.ok() && resumed.ok() && resumed->size() == 1 &&
-        resumed->front() == expected_recovery && fs::is_regular_file(expected_recovery) && !fs::exists(source) &&
-        !fs::exists(source_log) &&
-        (has_log ? recovery_log_content == name + " trusted log"
-                 : !fs::exists(expected_recovery_log) && (!remove_visible_video || !fs::exists(recovery_log)));
-    if (!result) {
-      std::cerr << "source-cleanup reconciliation " << name << " interrupted=" << interrupted.status()
-                << " resumed=" << resumed.status() << " size=" << (resumed.ok() ? resumed->size() : 0)
-                << " expected=" << expected_recovery << " log=" << recovery_log_content << '\n';
-    }
-    return result;
-  };
+  const auto interrupted_after_source_cleanup_is_reconciled =
+      [&](const std::string& name, bool has_log, bool remove_visible_video) {
+        const fs::path interrupted_dir = root / ("archive-post-source-cleanup-" + name);
+        fs::create_directories(interrupted_dir);
+        const fs::path configured = interrupted_dir / (name + ".mkv");
+        const fs::path source = interrupted_dir / (name + ".hstream-run-99999999-dead.mkv");
+        const fs::path source_log = source.string() + ".log";
+        const fs::path recovery = interrupted_dir / (name + "-finalization-failed.mkv");
+        const fs::path recovery_log = recovery.string() + ".log";
+        std::ofstream(source, std::ios::binary) << name << " trusted video";
+        if (has_log)
+          std::ofstream(source_log, std::ios::binary) << name << " trusted log";
+        g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP", "1", TRUE);
+        const auto interrupted = hm::configurator_internal::recover_stale_archive_work_files(configured);
+        g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_SOURCE_CLEANUP");
+        if (remove_visible_video)
+          fs::remove(recovery);
+        const auto resumed = hm::configurator_internal::recover_stale_archive_work_files(configured);
+        const fs::path expected_recovery =
+            remove_visible_video && !has_log ? interrupted_dir / (name + "-finalization-failed-1.mkv") : recovery;
+        const fs::path expected_recovery_log = expected_recovery.string() + ".log";
+        std::ifstream recovery_log_stream(expected_recovery_log, std::ios::binary);
+        const std::string recovery_log_content{
+            std::istreambuf_iterator<char>(recovery_log_stream), std::istreambuf_iterator<char>()};
+        const bool result = !interrupted.ok() && resumed.ok() && resumed->size() == 1 &&
+            resumed->front() == expected_recovery && fs::is_regular_file(expected_recovery) && !fs::exists(source) &&
+            !fs::exists(source_log) &&
+            (has_log ? recovery_log_content == name + " trusted log"
+                     : !fs::exists(expected_recovery_log) && (!remove_visible_video || !fs::exists(recovery_log)));
+        if (!result) {
+          std::cerr << "source-cleanup reconciliation " << name << " interrupted=" << interrupted.status()
+                    << " resumed=" << resumed.status() << " size=" << (resumed.ok() ? resumed->size() : 0)
+                    << " expected=" << expected_recovery << " log=" << recovery_log_content << '\n';
+        }
+        return result;
+      };
   ok &= expect(
       interrupted_after_source_cleanup_is_reconciled("with-log", true, false) &&
           interrupted_after_source_cleanup_is_reconciled("without-log", false, false) &&

@@ -5,6 +5,7 @@
 
 #include "yaml-cpp/yaml.h"
 
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <optional>
@@ -50,6 +51,10 @@ absl::Status claim_unique_archive_output_path(
     const std::string& sink_name);
 absl::StatusOr<std::vector<std::filesystem::path>> recover_stale_archive_work_files(
     const std::filesystem::path& configured_path);
+absl::Status remove_archive_entry_if_owned_for_test(
+    const std::filesystem::path& path,
+    uintmax_t expected_device,
+    uintmax_t expected_inode);
 absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config);
 bool hmstitcher_owns_stitching_cleanup(const YAML::Node& config);
 std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);

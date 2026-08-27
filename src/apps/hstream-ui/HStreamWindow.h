@@ -60,6 +60,12 @@ QString development_runtime_root_for_application(const QString& application_path
 // Returns an empty string when all artifacts needed by a Bazel development
 // runtime are present, or the missing artifact path otherwise.
 QString missing_development_runtime_artifact(const QString& bazel_bin_path);
+bool remove_owned_path_for_test(
+    const QString& path,
+    quint64 expected_device,
+    quint64 expected_inode,
+    QString* error = nullptr);
+bool reconcile_cleanup_directory_for_test(const QString& directory_path, QString* error = nullptr);
 
 } // namespace hm::ui_internal
 

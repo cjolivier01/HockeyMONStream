@@ -5309,6 +5309,16 @@ bool test_output_controls(HStreamWindow* window) {
     return write_cleanup_test_file(
         QDir(cleanup_path).filePath("owner"), QByteArray("hstream-cleanup-v2\n") + target_name.toBase64());
   };
+  const auto write_cleanup_commit = [&](const QString& cleanup_path, const QString& identity_path) {
+    struct stat identity_stat{};
+    if (::lstat(QFile::encodeName(identity_path).constData(), &identity_stat) != 0)
+      return false;
+    return write_cleanup_test_file(
+        QDir(cleanup_path).filePath("committed"),
+        QByteArray("hstream-cleanup-committed-v1\n") +
+            QByteArray::number(static_cast<qulonglong>(identity_stat.st_dev)) + "\n" +
+            QByteArray::number(static_cast<qulonglong>(identity_stat.st_ino)) + "\n");
+  };
   ui_cleanup_restart_setup = write_cleanup_test_file(interrupted_ui_target, "trusted interrupted UI target") &&
       create_hard_link(interrupted_ui_target, interrupted_ui_target_fallback) &&
       QDir().mkpath(interrupted_ui_target_cleanup) &&
@@ -5324,6 +5334,7 @@ bool test_output_controls(HStreamWindow* window) {
       write_cleanup_owner(committed_ui_cleanup, QDir(window->gameDirectoryText()).filePath("committed-deleted.mp4")) &&
       write_cleanup_test_file(QDir(committed_ui_cleanup).filePath("guard"), "committed UI cleanup inode") &&
       create_hard_link(QDir(committed_ui_cleanup).filePath("guard"), QDir(committed_ui_cleanup).filePath("fallback")) &&
+      write_cleanup_commit(committed_ui_cleanup, QDir(committed_ui_cleanup).filePath("guard")) &&
       write_cleanup_test_file(live_ui_target, "trusted live UI cleanup target") &&
       create_hard_link(live_ui_target, live_ui_fallback) && QDir().mkpath(live_ui_cleanup) &&
       write_cleanup_owner(live_ui_cleanup, live_ui_target) &&
@@ -8498,6 +8509,154 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   return expect(window->pipelineStateText() == "STOPPED", "Real UI run should stop cleanly after e2e smoke");
 }
 
+bool test_cleanup_transaction_protocol() {
+#ifndef Q_OS_UNIX
+  return true;
+#else
+  QTemporaryDir root;
+  if (!root.isValid())
+    return false;
+  const auto write_file = [](const QString& path, const QByteArray& content) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(content) == content.size();
+  };
+  const auto cleanup_transaction = [](const QString& directory) {
+    const QStringList names = QDir(directory).entryList(
+        {".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+    return names.isEmpty() ? QString() : QDir(directory).filePath(names.front());
+  };
+  const auto file_identity = [](const QString& path, struct stat* identity) {
+    return ::lstat(QFile::encodeName(path).constData(), identity) == 0;
+  };
+
+  const QString committed_dir = QDir(root.path()).filePath("committed-interruption");
+  QDir().mkpath(committed_dir);
+  const QString committed_target = QDir(committed_dir).filePath("committed.mp4");
+  struct stat committed_stat{};
+  QString committed_error;
+  const bool committed_setup =
+      write_file(committed_target, "trusted committed UI cleanup") && file_identity(committed_target, &committed_stat);
+  qputenv(
+      "HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT", (committed_target + ".hstream-cleanup-pin").toLocal8Bit());
+  const bool committed_first = committed_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+                                   committed_target,
+                                   static_cast<quint64>(committed_stat.st_dev),
+                                   static_cast<quint64>(committed_stat.st_ino),
+                                   &committed_error);
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT");
+  const QString committed_transaction = cleanup_transaction(committed_dir);
+  const bool committed_authenticated = !committed_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(committed_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(committed_transaction).filePath("committed")) &&
+      QFileInfo::exists(QDir(committed_transaction).filePath("guard")) &&
+      !QFileInfo::exists(QDir(committed_transaction).filePath("fallback")) &&
+      !QFileInfo::exists(QDir(committed_transaction).filePath("entry"));
+  QString committed_restart_error;
+  const bool committed_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(committed_dir, &committed_restart_error);
+  bool ok = expect(
+      committed_setup && !committed_first && committed_authenticated && committed_restart &&
+          !QFileInfo::exists(committed_target) && !QFileInfo::exists(committed_transaction),
+      "UI cleanup must finish a durable commit interrupted between fallback and guard retirement");
+
+  const QString foreign_dir = QDir(root.path()).filePath("foreign-fallback");
+  const QString foreign_target = QDir(foreign_dir).filePath("foreign-fallback.mp4");
+  const QString foreign_transaction =
+      QDir(foreign_dir).filePath(".hstream-cleanup-v2-12345678-90ab-4cde-8fab-1234567890ab");
+  QDir().mkpath(foreign_transaction);
+  const QByteArray foreign_target_name = QFile::encodeName(QFileInfo(foreign_target).fileName());
+  const bool foreign_setup = write_file(
+                                 QDir(foreign_transaction).filePath("owner"),
+                                 QByteArray("hstream-cleanup-v2\n") + foreign_target_name.toBase64()) &&
+      write_file(QDir(foreign_transaction).filePath("guard"), "trusted private UI cleanup guard") &&
+      write_file(QDir(foreign_transaction).filePath("fallback"), "foreign private UI cleanup fallback");
+  QString foreign_error;
+  const bool foreign_reconciled = hm::ui_internal::reconcile_cleanup_directory_for_test(foreign_dir, &foreign_error);
+  QFile foreign_guard_file(QDir(foreign_transaction).filePath("guard"));
+  QFile foreign_fallback_file(QDir(foreign_transaction).filePath("fallback"));
+  const bool foreign_guard_opened = foreign_guard_file.open(QIODevice::ReadOnly);
+  const bool foreign_fallback_opened = foreign_fallback_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      foreign_setup && !foreign_reconciled && !QFileInfo::exists(foreign_target) &&
+          QFileInfo::exists(QDir(foreign_transaction).filePath("owner")) && foreign_guard_opened &&
+          foreign_guard_file.readAll() == "trusted private UI cleanup guard" && foreign_fallback_opened &&
+          foreign_fallback_file.readAll() == "foreign private UI cleanup fallback",
+      "UI cleanup must not treat a foreign private fallback as authorization to delete its trusted guard");
+
+  const QString failed_unlink_dir = QDir(root.path()).filePath("failed-private-unlink");
+  QDir().mkpath(failed_unlink_dir);
+  const QString failed_unlink_target = QDir(failed_unlink_dir).filePath("failed-private-unlink.mp4");
+  struct stat failed_unlink_stat{};
+  QString failed_unlink_error;
+  const bool failed_unlink_setup = write_file(failed_unlink_target, "trusted failed-private-unlink UI cleanup") &&
+      file_identity(failed_unlink_target, &failed_unlink_stat);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE", failed_unlink_target.toLocal8Bit());
+  const bool failed_unlink_result = failed_unlink_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+                                        failed_unlink_target,
+                                        static_cast<quint64>(failed_unlink_stat.st_dev),
+                                        static_cast<quint64>(failed_unlink_stat.st_ino),
+                                        &failed_unlink_error);
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
+  const QString failed_unlink_transaction = cleanup_transaction(failed_unlink_dir);
+  const bool failed_unlink_authenticated = !failed_unlink_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(failed_unlink_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(failed_unlink_transaction).filePath("entry")) &&
+      QFileInfo::exists(QDir(failed_unlink_transaction).filePath("guard"));
+  QString failed_unlink_restart_error;
+  const bool failed_unlink_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(failed_unlink_dir, &failed_unlink_restart_error);
+  QFile failed_unlink_restored_file(failed_unlink_target);
+  const bool failed_unlink_restored_opened = failed_unlink_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      failed_unlink_setup && !failed_unlink_result && failed_unlink_authenticated && failed_unlink_restart &&
+          failed_unlink_restored_opened &&
+          failed_unlink_restored_file.readAll() == "trusted failed-private-unlink UI cleanup" &&
+          !QFileInfo::exists(failed_unlink_transaction),
+      "UI cleanup must retain authenticated ownership after a private unlink failure until restart rollback");
+
+  const QString concurrent_dir = QDir(root.path()).filePath("concurrent-removers");
+  QDir().mkpath(concurrent_dir);
+  const QString concurrent_target = QDir(concurrent_dir).filePath("concurrent.mp4");
+  struct stat concurrent_stat{};
+  const bool concurrent_setup = write_file(concurrent_target, "trusted concurrent UI cleanup") &&
+      file_identity(concurrent_target, &concurrent_stat);
+  std::atomic<bool> concurrent_start{false};
+  bool concurrent_first = false;
+  bool concurrent_second = false;
+  QString concurrent_first_error;
+  QString concurrent_second_error;
+  qputenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION", concurrent_target.toLocal8Bit());
+  const auto remove_concurrently = [&](bool* result, QString* error) {
+    while (!concurrent_start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    *result = hm::ui_internal::remove_owned_path_for_test(
+        concurrent_target,
+        static_cast<quint64>(concurrent_stat.st_dev),
+        static_cast<quint64>(concurrent_stat.st_ino),
+        error);
+  };
+  std::thread concurrent_thread_one(remove_concurrently, &concurrent_first, &concurrent_first_error);
+  std::thread concurrent_thread_two(remove_concurrently, &concurrent_second, &concurrent_second_error);
+  concurrent_start.store(true, std::memory_order_release);
+  concurrent_thread_one.join();
+  concurrent_thread_two.join();
+  qunsetenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION");
+  const QStringList concurrent_artifacts =
+      QDir(concurrent_dir)
+          .entryList(
+              {".hstream-cleanup-v2-*", "*.hstream-cleanup-pin"},
+              QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+              QDir::Name);
+  ok &= expect(
+      concurrent_setup && concurrent_first && concurrent_second && !QFileInfo::exists(concurrent_target) &&
+          concurrent_artifacts.isEmpty(),
+      "UI cleanup must serialize concurrent removers before they share a deterministic fallback");
+  return ok;
+#endif
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -8538,6 +8697,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (!test_cleanup_transaction_protocol()) {
+    std::cerr << "test_cleanup_transaction_protocol failed\n";
+    return 1;
+  }
   HStreamWindow window;
   window.show();
 
