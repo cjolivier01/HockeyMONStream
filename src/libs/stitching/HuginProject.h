@@ -52,6 +52,7 @@ class HuginProject {
     bool max_canvas_dimension_applied{false};
     std::optional<MappingBackend> mapping_backend;
     std::optional<StitchProjection> projection;
+    std::optional<std::vector<double>> projection_parameters;
   };
 
   struct Options {
@@ -64,6 +65,7 @@ class HuginProject {
     MappingBackend mapping_backend{MappingBackend::kOpenCvMagsac};
     bool run_autooptimizer{false};
     std::optional<StitchProjection> projection;
+    std::vector<double> projection_parameters;
     std::string expected_invalidation_id;
     std::optional<StitchingBackendChoices> expected_backend_choices;
     ProgressCallback progress;
@@ -84,6 +86,11 @@ class HuginProject {
   static absl::Status ApplyProjection(
       const std::filesystem::path& staging_directory,
       StitchProjection projection,
+      const std::function<bool()>& is_cancelled = {});
+  static absl::Status ApplyProjection(
+      const std::filesystem::path& staging_directory,
+      StitchProjection projection,
+      const std::vector<double>& projection_parameters,
       const std::function<bool()>& is_cancelled = {});
 
   // Validate a two-camera enblend seam and expand any pixel-offset crop to the

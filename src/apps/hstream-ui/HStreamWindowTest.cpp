@@ -24,6 +24,7 @@
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
+#include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
@@ -2332,6 +2333,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
+  auto* panini_compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
+  auto* panini_top_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniTopSqueezeSpin");
+  auto* panini_bottom_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniBottomSqueezeSpin");
   auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   auto* run_autooptimizer = require_child<QCheckBox>(window, "runAutooptimizerCheck");
   auto* save_preset_button = require_child<QPushButton>(window, "savePresetButton");
@@ -2386,9 +2390,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time ||
-      !control_point_matcher || !mapping_backend || !projection || !control_point_matcher_label ||
-      !mapping_backend_label || !projection_label || !stitch_max_output_width || !run_autooptimizer ||
-      !save_preset_button || !stitch_max_output_width_label ||
+      !control_point_matcher || !mapping_backend || !projection || !panini_compression || !panini_top_squeeze ||
+      !panini_bottom_squeeze || !control_point_matcher_label || !mapping_backend_label || !projection_label ||
+      !stitch_max_output_width || !run_autooptimizer || !save_preset_button || !stitch_max_output_width_label ||
       !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking ||
       !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
       !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
@@ -2484,8 +2488,42 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     all_nona_projections_enabled = projection->model()->flags(projection->model()->index(index, 0)) & Qt::ItemIsEnabled;
   }
   projection->setCurrentIndex(projection->findData("general-panini"));
+  QApplication::processEvents();
+  const bool general_panini_parameters_visible = !panini_compression->isHidden() && !panini_top_squeeze->isHidden() &&
+      !panini_bottom_squeeze->isHidden() && panini_compression->isEnabled() && panini_compression->value() == 100.0 &&
+      panini_top_squeeze->value() == 0.0 && panini_bottom_squeeze->value() == 0.0 &&
+      panini_compression->minimum() == 0.0 && panini_compression->maximum() == 150.0 &&
+      panini_top_squeeze->minimum() == -100.0 && panini_top_squeeze->maximum() == 100.0 &&
+      panini_compression->toolTip().contains("standard Panini") &&
+      panini_compression->toolTip().contains("320 degrees") && panini_top_squeeze->toolTip().contains("hard squeeze") &&
+      panini_top_squeeze->toolTip().contains("soft squeeze") &&
+      panini_bottom_squeeze->toolTip().contains("bottom half");
+  projection->setCurrentIndex(projection->findData("albers-equal-area-conic"));
+  QApplication::processEvents();
+  const bool albers_parameters_visible = !panini_compression->isHidden() && !panini_top_squeeze->isHidden() &&
+      panini_bottom_squeeze->isHidden() && panini_compression->value() == 0.0 && panini_top_squeeze->value() == 60.0 &&
+      panini_compression->property("huginParameterName") == "phi1" &&
+      panini_top_squeeze->property("huginParameterName") == "phi2";
+  projection->setCurrentIndex(projection->findData("biplane"));
+  QApplication::processEvents();
+  const bool biplane_parameters_visible = !panini_compression->isHidden() && !panini_top_squeeze->isHidden() &&
+      panini_bottom_squeeze->isHidden() && panini_compression->value() == 45.0 && panini_top_squeeze->value() == 0.0 &&
+      panini_top_squeeze->maximum() == 1.0 && panini_top_squeeze->decimals() == 0 &&
+      panini_top_squeeze->toolTip().contains("cylindrical section");
+  projection->setCurrentIndex(projection->findData("triplane"));
+  QApplication::processEvents();
+  const bool triplane_parameters_visible = !panini_compression->isHidden() && panini_top_squeeze->isHidden() &&
+      panini_bottom_squeeze->isHidden() && panini_compression->value() == 60.0 &&
+      panini_compression->maximum() == 120.0;
+  projection->setCurrentIndex(projection->findData("equirectangular-panini"));
+  QApplication::processEvents();
+  const bool fixed_panini_parameters_hidden =
+      panini_compression->isHidden() && panini_top_squeeze->isHidden() && panini_bottom_squeeze->isHidden();
+  projection->setCurrentIndex(projection->findData("general-panini"));
   mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
   QApplication::processEvents();
+  const bool parameters_hidden_for_native_backend =
+      panini_compression->isHidden() && panini_top_squeeze->isHidden() && panini_bottom_squeeze->isHidden();
   bool only_rectilinear_enabled = projection->currentData().toString() == "rectilinear";
   for (int index = 0; only_rectilinear_enabled && index < projection->count(); ++index) {
     const bool enabled = projection->model()->flags(projection->model()->index(index, 0)) & Qt::ItemIsEnabled;
@@ -2515,7 +2553,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
               mapping_backend->count() == 3 && mapping_backend->itemText(0) == "NONA" &&
               mapping_backend->itemText(1) == "MAGSAC++" && mapping_backend->itemText(2) == "RANSAC" &&
-              projection->findData("general-panini") >= 0 && all_nona_projections_enabled && only_rectilinear_enabled,
+              projection->findData("general-panini") >= 0 && all_nona_projections_enabled && only_rectilinear_enabled &&
+              general_panini_parameters_visible && albers_parameters_visible && biplane_parameters_visible &&
+              triplane_parameters_visible && fixed_panini_parameters_hidden && parameters_hidden_for_native_backend,
           "Algorithm controls must expose compatible projections in the earliest preview tab whose frames reflect "
           "their pipeline stage")) {
     return false;
@@ -6433,6 +6473,46 @@ bool test_output_controls(HStreamWindow* window) {
       retry_unblocked_after_recovery && ui_cleanup_owner_scoped;
 }
 
+bool test_projection_parameter_persistence(HStreamWindow* window) {
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* save = require_child<QPushButton>(window, "savePresetButton");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
+  auto* compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
+  auto* top_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniTopSqueezeSpin");
+  auto* bottom_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniBottomSqueezeSpin");
+  if (!game_id || !create || !save || !mapping_backend || !projection || !compression || !top_squeeze ||
+      !bottom_squeeze) {
+    return false;
+  }
+  const QString original_game_id = game_id->text();
+  game_id->setText("ui-projection-parameters-game");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData("general-panini"));
+  compression->setValue(120.0);
+  top_squeeze->setValue(15.0);
+  bottom_squeeze->setValue(-20.0);
+  QApplication::processEvents();
+  if (!expect(save->isEnabled(), "Editing General Panini parameters must dirty the game preset"))
+    return false;
+  activate(save);
+  const fs::path config_path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const YAML::Node config = YAML::LoadFile(config_path.string());
+  const YAML::Node parameters = config["stitching"]["projection_parameters"]["general-panini"];
+  const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+  const bool saved = expect(
+      parameters.IsSequence() && parameters.size() == 3 && parameters[0].as<double>() == 120.0 &&
+          parameters[1].as<double>() == 15.0 && parameters[2].as<double>() == -20.0 &&
+          calibration["status"].as<std::string>() == "pending" &&
+          calibration["stale_from"].as<std::string>() == "canvas" && !save->isEnabled(),
+      "Saving General Panini parameters must persist Hugin order and invalidate calibration from the canvas stage");
+  game_id->setText(original_game_id);
+  activate(create);
+  return saved;
+}
+
 bool test_camera_controls(HStreamWindow* window) {
   if (!expect(window->cameraTabCount() == 6, "Native-effective controls should be grouped by associated stage")) {
     return false;
@@ -9777,6 +9857,10 @@ int main(int argc, char** argv) {
   }
   if (!test_pipeline_buttons(&window)) {
     std::cerr << "test_pipeline_buttons failed\n";
+    return 1;
+  }
+  if (!test_projection_parameter_persistence(&window)) {
+    std::cerr << "test_projection_parameter_persistence failed\n";
     return 1;
   }
   if (!test_output_controls(&window)) {

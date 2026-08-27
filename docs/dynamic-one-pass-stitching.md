@@ -36,11 +36,17 @@ second projection/remap/stitch stage.
 validation, while the UI disables non-rectilinear choices whenever an OpenCV backend is selected. Older OpenCV
 overrides that did not store a projection migrate to rectilinear.
 
-General Panini uses Hugin projection `f19` with the standard unsqueezed parameters `100,0,0`. Hugin recalculates the
-projection-aware field of view, canvas, and largest all-image crop so the published remaps do not retain the black
-hourglass-shaped region produced by forcing Panini into the old rectilinear canvas. The crop is scaled down when
-necessary so it never exceeds the original calibrated canvas or configured live canvas limits. Steady-state video
-remains on the existing GPU remap and stitch path.
+Parameterized Hugin projections store their values by canonical projection name under
+`stitching.projection_parameters`, so switching the UI projection does not discard another projection's tuning.
+General Panini (`f19`) exposes `Cmpr`, `Tops`, and `Bots`, defaulting to `[100, 0, 0]`. Albers equal-area conic,
+Biplane, and Triplane expose the parameter sets reported by libpano; the other Panini variants do not advertise
+adjustable parameters. The UI shows only the controls supported by the selected projection and supplies the libpano
+range, default, and behavior description on hover.
+
+Hugin recalculates the projection-aware field of view, canvas, and largest all-image crop so the published remaps do
+not retain the black hourglass-shaped region produced by forcing Panini into the old rectilinear canvas. The crop is
+scaled down when necessary so it never exceeds the original calibrated canvas or configured live canvas limits.
+Steady-state video remains on the existing GPU remap and stitch path.
 
 ## Validation
 

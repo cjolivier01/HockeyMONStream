@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <iomanip>
+#include <limits>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
 
 namespace hm::stitching {
@@ -44,6 +49,77 @@ constexpr std::array<StitchProjectionInfo, 22> kProjections = {{
     {StitchProjection::kThoby, "thoby", "Thoby", 20},
     {StitchProjection::kHammerAitoff, "hammer-aitoff", "Hammer-Aitoff", 21},
 }};
+
+const std::vector<StitchProjectionParameterInfo> kNoProjectionParameters;
+const std::vector<StitchProjectionParameterInfo> kAlbersParameters = {
+    {"phi1",
+     "First standard parallel (phi1)",
+     -90.0,
+     90.0,
+     0.0,
+     "First standard parallel, in degrees, for the Albers equal-area conic projection. Scale is exact along this "
+     "latitude. Hugin range: -90 to 90; default: 0."},
+    {"phi2",
+     "Second standard parallel (phi2)",
+     -90.0,
+     90.0,
+     60.0,
+     "Second standard parallel, in degrees, for the Albers equal-area conic projection. Together with phi1 it "
+     "sets the cone and the latitudes with exact scale. Hugin range: -90 to 90; default: 60."},
+};
+const std::vector<StitchProjectionParameterInfo> kBiplaneParameters = {
+    {"alpha",
+     "Plane angle (alpha)",
+     1.0,
+     179.0,
+     45.0,
+     "Angle, in degrees, controlling the two planes of the Biplane projection. Smaller or larger values move the "
+     "join and change side compression. Hugin range: 1 to 179; default: 45."},
+    {"corners",
+     "Rounded corners",
+     0.0,
+     1.0,
+     0.0,
+     "Biplane rounded-corner switch. 0 keeps a sharp join between the two rectilinear planes; 1 rounds the central "
+     "join with a cylindrical section. Hugin range: 0 or 1; default: 0."},
+};
+const std::vector<StitchProjectionParameterInfo> kTriplaneParameters = {
+    {"alpha",
+     "Plane angle (alpha)",
+     1.0,
+     120.0,
+     60.0,
+     "Angle, in degrees, controlling the three planes of the Triplane projection. It changes where the side "
+     "planes meet the center plane and their compression. Hugin range: 1 to 120; default: 60."},
+};
+const std::vector<StitchProjectionParameterInfo> kGeneralPaniniParameters = {
+    {"Cmpr",
+     "Compression (Cmpr)",
+     0.0,
+     150.0,
+     100.0,
+     "Horizontal compression for General Panini. 0 is rectilinear, 100 is standard Panini, and 150 is cylindrical "
+     "orthographic. Maximum horizontal field of view varies from about 160 degrees at 0, to 320 degrees at 100, "
+     "to 180 degrees at 150. Hugin range: 0 to 150; default: 100."},
+    {"Tops",
+     "Top squeeze (Tops)",
+     -100.0,
+     100.0,
+     0.0,
+     "Vertical squeeze for the top half of a General Panini image; it controls straightening of horizontal lines. "
+     "0 applies no squeeze. Positive values use hard squeeze, which can exactly straighten lines but is limited to "
+     "roughly 160 degrees. Negative values use soft squeeze, which supports wider fields of view but cannot remove "
+     "all curvature. Hugin range: -100 to 100; default: 0."},
+    {"Bots",
+     "Bottom squeeze (Bots)",
+     -100.0,
+     100.0,
+     0.0,
+     "Vertical squeeze for the bottom half of a General Panini image; it controls straightening of horizontal "
+     "lines. 0 applies no squeeze. Positive values use hard squeeze, which can exactly straighten lines but is "
+     "limited to roughly 160 degrees. Negative values use soft squeeze, which supports wider fields of view but "
+     "cannot remove all curvature. Hugin range: -100 to 100; default: 0."},
+};
 
 } // namespace
 
@@ -103,6 +179,79 @@ absl::StatusOr<StitchProjection> ParseStitchProjection(const std::string& value)
       return info.projection;
   }
   return absl::InvalidArgumentError("Unsupported stitching projection \"" + value + "\"");
+}
+
+const std::vector<StitchProjectionParameterInfo>& StitchProjectionParameters(StitchProjection projection) {
+  switch (projection) {
+    case StitchProjection::kAlbersEqualAreaConic:
+      return kAlbersParameters;
+    case StitchProjection::kBiplane:
+      return kBiplaneParameters;
+    case StitchProjection::kTriplane:
+      return kTriplaneParameters;
+    case StitchProjection::kGeneralPanini:
+      return kGeneralPaniniParameters;
+    default:
+      return kNoProjectionParameters;
+  }
+}
+
+std::vector<double> DefaultStitchProjectionParameters(StitchProjection projection) {
+  std::vector<double> defaults;
+  for (const auto& parameter : StitchProjectionParameters(projection))
+    defaults.push_back(parameter.default_value);
+  return defaults;
+}
+
+absl::Status ValidateStitchProjectionParameters(StitchProjection projection, const std::vector<double>& parameters) {
+  const auto& definitions = StitchProjectionParameters(projection);
+  if (parameters.size() != definitions.size()) {
+    return absl::InvalidArgumentError(
+        "stitching projection \"" + std::string(StitchProjectionName(projection)) + "\" requires " +
+        std::to_string(definitions.size()) + " projection parameter" + (definitions.size() == 1 ? "" : "s") +
+        "; received " + std::to_string(parameters.size()));
+  }
+  for (size_t index = 0; index < definitions.size(); ++index) {
+    const auto& definition = definitions[index];
+    if (!std::isfinite(parameters[index]) || parameters[index] < definition.minimum ||
+        parameters[index] > definition.maximum) {
+      return absl::InvalidArgumentError(
+          "stitching projection parameter " + std::string(definition.name) + " for \"" +
+          StitchProjectionName(projection) + "\" must be finite and between " + std::to_string(definition.minimum) +
+          " and " + std::to_string(definition.maximum));
+    }
+  }
+  return absl::OkStatus();
+}
+
+std::string FormatStitchProjectionParameters(const std::vector<double>& parameters, char separator) {
+  std::ostringstream output;
+  output.imbue(std::locale::classic());
+  output << std::setprecision(std::numeric_limits<double>::max_digits10);
+  for (size_t index = 0; index < parameters.size(); ++index) {
+    if (index != 0)
+      output << separator;
+    output << parameters[index];
+  }
+  return output.str();
+}
+
+absl::StatusOr<std::vector<double>> ParseStitchProjectionParameters(
+    StitchProjection projection,
+    const std::string& value) {
+  std::string normalized = value;
+  std::replace(normalized.begin(), normalized.end(), ',', ' ');
+  std::istringstream input(normalized);
+  input.imbue(std::locale::classic());
+  std::vector<double> parameters;
+  for (double parameter = 0.0; input >> parameter;)
+    parameters.push_back(parameter);
+  if (!input.eof())
+    return absl::InvalidArgumentError("stitching projection parameters must be numeric values");
+  const absl::Status validation = ValidateStitchProjectionParameters(projection, parameters);
+  if (!validation.ok())
+    return validation;
+  return parameters;
 }
 
 bool MappingBackendSupportsProjection(MappingBackend backend, StitchProjection projection) {

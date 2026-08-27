@@ -6,10 +6,13 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "yaml-cpp/yaml.h"
+
+#include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 namespace hm::stitching {
 
@@ -18,7 +21,20 @@ struct StitchingBackendChoices {
   std::string mapping_backend;
   std::string projection;
   bool run_autooptimizer{false};
+  std::vector<double> projection_parameters;
 };
+
+// Projection parameters are stored under
+// stitching.projection_parameters.<canonical-projection-name>. Missing entries
+// use libpano/Hugin defaults. The full map is validated on every read so a
+// malformed inactive projection cannot become active later without detection.
+absl::StatusOr<std::vector<double>> read_stitch_projection_parameters(
+    const YAML::Node& config,
+    StitchProjection projection);
+void write_stitch_projection_parameters(
+    YAML::Node& config,
+    StitchProjection projection,
+    const std::vector<double>& parameters);
 
 // Serializes every read-modify-write operation on a game's config.yaml.
 class GameConfigLock final {

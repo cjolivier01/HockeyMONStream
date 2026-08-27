@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -26,6 +27,68 @@
 
 namespace hm::stitching {
 namespace {
+
+absl::StatusOr<std::vector<double>> parse_projection_parameter_sequence(
+    const YAML::Node& node,
+    StitchProjection projection) {
+  if (!node || !node.IsDefined() || node.IsNull())
+    return DefaultStitchProjectionParameters(projection);
+  if (!node.IsSequence()) {
+    return absl::InvalidArgumentError(
+        "stitching.projection_parameters." + std::string(StitchProjectionName(projection)) + " must be a sequence");
+  }
+  std::vector<double> parameters;
+  parameters.reserve(node.size());
+  try {
+    for (const YAML::Node& value : node) {
+      if (!value.IsScalar()) {
+        return absl::InvalidArgumentError("stitching projection parameters must contain only numeric scalar values");
+      }
+      parameters.push_back(value.as<double>());
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to parse stitching projection parameters: " + std::string(exception.what()));
+  }
+  const absl::Status validation = ValidateStitchProjectionParameters(projection, parameters);
+  if (!validation.ok())
+    return validation;
+  return parameters;
+}
+
+absl::Status validate_projection_parameter_map(const YAML::Node& parameters) {
+  if (!parameters || !parameters.IsDefined() || parameters.IsNull())
+    return absl::OkStatus();
+  if (!parameters.IsMap())
+    return absl::InvalidArgumentError("stitching.projection_parameters must be a map");
+  try {
+    for (const auto& entry : parameters) {
+      if (!entry.first.IsScalar())
+        return absl::InvalidArgumentError("stitching.projection_parameters keys must be projection names");
+      auto parsed_projection = ParseStitchProjection(entry.first.as<std::string>());
+      if (!parsed_projection.ok())
+        return parsed_projection.status();
+      const StitchProjection projection = *parsed_projection;
+      if (entry.first.as<std::string>() != StitchProjectionName(projection)) {
+        return absl::InvalidArgumentError(
+            "stitching.projection_parameters keys must use canonical projection names; use \"" +
+            std::string(StitchProjectionName(projection)) + "\"");
+      }
+      if (StitchProjectionParameters(projection).empty()) {
+        return absl::InvalidArgumentError(
+            "stitching projection \"" + std::string(StitchProjectionName(projection)) +
+            "\" does not accept projection parameters");
+      }
+      auto parsed = parse_projection_parameter_sequence(entry.second, projection);
+      if (!parsed.ok())
+        return parsed.status();
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate stitching projection parameters: " + std::string(exception.what()));
+  }
+  return absl::OkStatus();
+}
 
 namespace fs = std::filesystem;
 
@@ -508,6 +571,40 @@ absl::Status fsync_directory(const fs::path& path) {
 }
 
 } // namespace
+
+absl::StatusOr<std::vector<double>> read_stitch_projection_parameters(
+    const YAML::Node& config,
+    StitchProjection projection) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    if (stitching && !stitching.IsNull() && !stitching.IsMap())
+      return absl::InvalidArgumentError("stitching must be a map");
+    const YAML::Node parameters = stitching && stitching.IsMap() ? stitching["projection_parameters"] : YAML::Node();
+    const absl::Status validation = validate_projection_parameter_map(parameters);
+    if (!validation.ok())
+      return validation;
+    if (StitchProjectionParameters(projection).empty())
+      return std::vector<double>{};
+    if (!parameters || !parameters.IsDefined() || parameters.IsNull())
+      return DefaultStitchProjectionParameters(projection);
+    return parse_projection_parameter_sequence(parameters[StitchProjectionName(projection)], projection);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read stitching projection parameters: " + std::string(exception.what()));
+  }
+}
+
+void write_stitch_projection_parameters(
+    YAML::Node& config,
+    StitchProjection projection,
+    const std::vector<double>& parameters) {
+  if (StitchProjectionParameters(projection).empty())
+    return;
+  YAML::Node values(YAML::NodeType::Sequence);
+  for (double parameter : parameters)
+    values.push_back(parameter);
+  config["stitching"]["projection_parameters"][StitchProjectionName(projection)] = values;
+}
 
 GameConfigLock::~GameConfigLock() {
   if (descriptor_ >= 0) {
@@ -999,14 +1096,25 @@ absl::Status validate_backend_generation_claim(
     if (!claim || !claim.IsMap() || !claim["invalidation_id"] || !claim["invalidation_id"].IsScalar() ||
         !claim["control_point_matcher"] || !claim["control_point_matcher"].IsScalar() || !claim["mapping_backend"] ||
         !claim["mapping_backend"].IsScalar() || !claim["projection"] || !claim["projection"].IsScalar() ||
-        !claim["run_autooptimizer"] || !claim["run_autooptimizer"].IsScalar()) {
+        !claim["run_autooptimizer"] || !claim["run_autooptimizer"].IsScalar() || !claim["projection_parameters"] ||
+        !claim["projection_parameters"].IsSequence()) {
       return absl::AbortedError("Stitching backend generation claim is missing or incomplete");
     }
+    auto parsed_expected_projection = ParseStitchProjection(expected_choices.projection);
+    if (!parsed_expected_projection.ok())
+      return parsed_expected_projection.status();
+    const StitchProjection expected_projection = *parsed_expected_projection;
+    auto parsed_claim_parameters =
+        parse_projection_parameter_sequence(claim["projection_parameters"], expected_projection);
+    if (!parsed_claim_parameters.ok())
+      return parsed_claim_parameters.status();
+    const std::vector<double>& claim_parameters = *parsed_claim_parameters;
     const bool claim_matches = claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
         claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
         claim["projection"].as<std::string>() == expected_choices.projection &&
-        claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
+        claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer &&
+        claim_parameters == expected_choices.projection_parameters;
     if (!claim_matches)
       return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
     if (!validate_worker_tuple)
@@ -1019,11 +1127,16 @@ absl::Status validate_backend_generation_claim(
         !stitching["run_autooptimizer"] || !stitching["run_autooptimizer"].IsScalar()) {
       return absl::AbortedError("Worker-visible stitching backend choices are missing or incomplete");
     }
+    auto parsed_worker_parameters = read_stitch_projection_parameters(config, expected_projection);
+    if (!parsed_worker_parameters.ok())
+      return parsed_worker_parameters.status();
+    const std::vector<double>& worker_parameters = *parsed_worker_parameters;
     const bool worker_tuple_matches =
         stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
         stitching["projection"].as<std::string>() == expected_choices.projection &&
-        stitching["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
+        stitching["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer &&
+        worker_parameters == expected_choices.projection_parameters;
     if (!worker_tuple_matches)
       return absl::AbortedError("Worker-visible stitching backend choices changed during calibration");
   } catch (const YAML::Exception& exception) {
@@ -1078,22 +1191,35 @@ absl::Status reserve_stitching_backend_generation_in_config(
       claim["mapping_backend"] = expected_choices.mapping_backend;
       claim["projection"] = expected_choices.projection;
       claim["run_autooptimizer"] = expected_choices.run_autooptimizer;
+      YAML::Node projection_parameters(YAML::NodeType::Sequence);
+      for (double parameter : expected_choices.projection_parameters)
+        projection_parameters.push_back(parameter);
+      claim["projection_parameters"] = projection_parameters;
     } else {
-      // Claims created before projection-aware calibration contain the other
-      // three immutable choices. Extend only an exactly matching legacy claim;
+      // Claims created before parameter-aware calibration contain the other
+      // immutable choices. Extend only an exactly matching legacy claim;
       // malformed or competing claims must fail validation without mutation.
       const bool legacy_claim = claim["control_point_matcher"] && claim["control_point_matcher"].IsScalar() &&
           claim["mapping_backend"] && claim["mapping_backend"].IsScalar() &&
-          (!claim["projection"] || !claim["projection"].IsDefined() || claim["projection"].IsNull()) &&
+          (!claim["projection"] || !claim["projection"].IsDefined() || claim["projection"].IsNull() ||
+           claim["projection"].IsScalar()) &&
+          (!claim["projection_parameters"] || !claim["projection_parameters"].IsDefined() ||
+           claim["projection_parameters"].IsNull()) &&
           claim["run_autooptimizer"] && claim["run_autooptimizer"].IsScalar();
       if (legacy_claim) {
+        const bool legacy_projection_matches = !claim["projection"] || !claim["projection"].IsDefined() ||
+            claim["projection"].IsNull() || claim["projection"].as<std::string>() == expected_choices.projection;
         const bool legacy_matches =
             claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
             claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
-            claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
+            legacy_projection_matches && claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
         if (!legacy_matches)
           return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
+        YAML::Node projection_parameters(YAML::NodeType::Sequence);
+        for (double parameter : expected_choices.projection_parameters)
+          projection_parameters.push_back(parameter);
         claim["projection"] = expected_choices.projection;
+        claim["projection_parameters"] = projection_parameters;
       }
     }
   } catch (const YAML::Exception& exception) {

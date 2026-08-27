@@ -1772,6 +1772,7 @@ play-tracker:
   backend_partial_baseline["stitching"]["mapping_backend"] = "opencv-magsac";
   backend_partial_baseline["stitching"]["projection"] = "general-panini";
   backend_partial_baseline["stitching"]["run_autooptimizer"] = true;
+  backend_partial_baseline["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[100, 0, 0]");
   std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
   const fs::path backend_partial_dir = games / "backend-partial";
   fs::create_directories(backend_partial_dir);
@@ -1815,6 +1816,23 @@ play-tracker:
                .has_value(),
       "Restoring a partial private backend choice must keep the complete effective worker tuple materialized and its "
       "provenance intact");
+  backend_partial_baseline["stitching"]["projection_parameters"]["general-panini"][0] = 120;
+  std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
+  hm::Configurator backend_partial_parameter_changed(
+      "backend-partial", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status backend_partial_parameter_configured = backend_partial_parameter_changed.configure();
+  const absl::Status backend_partial_parameter_persisted =
+      backend_partial_parameter_changed.persist_effective_stitching_backend_choices();
+  auto backend_partial_parameter_final = hm::stitching::load_game_config_file(backend_partial_dir / "config.yaml");
+  ok &= expect(
+      backend_partial_parameter_configured.ok() && backend_partial_parameter_persisted.ok() &&
+          backend_partial_parameter_final.ok() && backend_partial_parameter_final->has_value() &&
+          (**backend_partial_parameter_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
+              120.0 &&
+          (**backend_partial_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]
+                                             ["projection_parameters"][0]
+                                                 .as<double>() == 120.0,
+      "Generated projection-parameter provenance must continue inheriting lower-layer General Panini changes");
   backend_partial_baseline["stitching"]["projection"] = "cylindrical";
   std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
   hm::Configurator backend_partial_changed(
@@ -1831,6 +1849,48 @@ play-tracker:
           (**backend_partial_changed_final)["hstream_ui"]["generated_stitching_backend_choices"]["projection"]
                   .as<std::string>() == "cylindrical",
       "Restored partial private choices must continue inheriting later lower-layer projection changes");
+
+  backend_partial_baseline["stitching"]["projection"] = "general-panini";
+  std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
+  const fs::path inherited_parameter_dir = games / "inherited-projection-private-parameters";
+  fs::create_directories(inherited_parameter_dir);
+  YAML::Node inherited_parameter_private(YAML::NodeType::Map);
+  inherited_parameter_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  inherited_parameter_private["stitching"]["mapping_backend"] = "nona";
+  inherited_parameter_private["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[110, 5, -5]");
+  ok &= expect(
+      hm::stitching::publish_game_config(inherited_parameter_dir, YAML::Dump(inherited_parameter_private) + "\n").ok(),
+      "inherited projection parameter fixture must publish");
+  hm::Configurator inherited_parameter_first(
+      "inherited-projection-private-parameters",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status inherited_parameter_first_configured = inherited_parameter_first.configure();
+  const absl::Status inherited_parameter_first_persisted =
+      inherited_parameter_first.persist_effective_stitching_backend_choices();
+  hm::Configurator inherited_parameter_reloaded(
+      "inherited-projection-private-parameters",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status inherited_parameter_reconfigured = inherited_parameter_reloaded.configure();
+  const absl::Status inherited_parameter_restored =
+      inherited_parameter_reloaded.persist_effective_stitching_backend_choices();
+  auto inherited_parameter_final = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  ok &= expect(
+      inherited_parameter_first_configured.ok() && inherited_parameter_first_persisted.ok() &&
+          inherited_parameter_reconfigured.ok() && inherited_parameter_restored.ok() &&
+          inherited_parameter_final.ok() && inherited_parameter_final->has_value() &&
+          (**inherited_parameter_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
+              110.0 &&
+          (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["projection_parameters"][0]
+                  .as<double>() == 110.0 &&
+          (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]
+                                       ["previous_projection_parameters"][0]
+                                           .as<double>() == 110.0 &&
+          !hm::get_node(
+               **inherited_parameter_final, "hstream_ui.generated_stitching_backend_choices.previous_projection")
+               .has_value(),
+      "Private parameters for an inherited projection must survive generated-choice normalization and reload");
 
   const fs::path legacy_opencv_dir = games / "legacy-opencv-no-projection";
   fs::create_directories(legacy_opencv_dir);

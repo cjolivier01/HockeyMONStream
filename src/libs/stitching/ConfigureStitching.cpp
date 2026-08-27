@@ -1643,6 +1643,7 @@ enum class SeamValidationMode {
 struct ConfiguredStitchAlgorithms {
   MappingBackend mapping_backend;
   StitchProjection projection;
+  std::vector<double> projection_parameters;
 };
 
 absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
@@ -1680,7 +1681,12 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     if (projection_present)
       HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(projection_node.as<std::string>()));
     HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(backend, projection));
-    return ConfiguredStitchAlgorithms{.mapping_backend = backend, .projection = projection};
+    std::vector<double> projection_parameters;
+    HM_ASSIGN_OR_RETURN(projection_parameters, read_stitch_projection_parameters(**loaded, projection));
+    return ConfiguredStitchAlgorithms{
+        .mapping_backend = backend,
+        .projection = projection,
+        .projection_parameters = std::move(projection_parameters)};
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching mapping choices: " + std::string(exception.what()));
   }
@@ -1702,6 +1708,11 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
   }
   if (*provenance->projection != configured->projection) {
     return CanvasProvenanceCompatibility{false, "the selected output projection changed"};
+  }
+  const std::vector<double> generated_parameters =
+      provenance->projection_parameters.value_or(DefaultStitchProjectionParameters(*provenance->projection));
+  if (generated_parameters != configured->projection_parameters) {
+    return CanvasProvenanceCompatibility{false, "the selected output projection parameters changed"};
   }
   return CanvasProvenanceCompatibility{true, {}};
 }
@@ -2417,6 +2428,7 @@ absl::Status create_control_points(
   MappingBackend mapping_backend = MappingBackend::kOpenCvMagsac;
   bool run_autooptimizer = false;
   StitchProjection projection = StitchProjection::kRectilinear;
+  std::vector<double> projection_parameters;
   const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
   try {
     if (fs::exists(game_config_path)) {
@@ -2438,6 +2450,7 @@ absl::Status create_control_points(
               {"stitching", "projection"},
               mapping_backend == MappingBackend::kNona ? StitchProjectionName(StitchProjection::kGeneralPanini)
                                                        : StitchProjectionName(StitchProjection::kRectilinear))));
+      HM_ASSIGN_OR_RETURN(projection_parameters, read_stitch_projection_parameters(config, projection));
     }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(TO_STRING(
@@ -2447,7 +2460,8 @@ absl::Status create_control_points(
       std::string(ControlPointMatcherName(control_point_matcher)),
       std::string(MappingBackendName(mapping_backend)),
       std::string(StitchProjectionName(projection)),
-      run_autooptimizer};
+      run_autooptimizer,
+      projection_parameters};
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(mapping_backend, projection));
   if (!expected_invalidation_id.empty()) {
     YAML::Node config;
@@ -2550,6 +2564,7 @@ absl::Status create_control_points(
   options.mapping_backend = mapping_backend;
   options.run_autooptimizer = run_autooptimizer;
   options.projection = projection;
+  options.projection_parameters = projection_parameters;
   options.expected_invalidation_id = expected_invalidation_id;
   options.expected_backend_choices = backend_choices;
   options.progress = report_calibration_progress;

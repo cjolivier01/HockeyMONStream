@@ -2,6 +2,7 @@
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
@@ -24,6 +25,7 @@
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 
+#include <array>
 #include <deque>
 #include <functional>
 #include <map>
@@ -336,6 +338,9 @@ class HStreamWindow : public QMainWindow {
   QString controlPointMatcher() const;
   QString mappingBackend() const;
   QString stitchProjection() const;
+  std::vector<double> stitchProjectionParameters() const;
+  void updateProjectionParameterControls();
+  void storeProjectionParameterControls();
   void updateProjectionCompatibility();
   bool prepareStitchingCalibrationRun(
       const QString& runner,
@@ -446,6 +451,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* control_point_matcher_combo_{nullptr};
   QComboBox* mapping_backend_combo_{nullptr};
   QComboBox* projection_combo_{nullptr};
+  std::array<QLabel*, 3> projection_parameter_labels_{{nullptr, nullptr, nullptr}};
+  std::array<QDoubleSpinBox*, 3> projection_parameter_spins_{{nullptr, nullptr, nullptr}};
   QTimeEdit* stitch_frame_time_edit_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
@@ -602,6 +609,7 @@ class HStreamWindow : public QMainWindow {
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
   QString active_projection_;
+  std::vector<double> active_projection_parameters_;
   QString active_calibration_start_stage_;
   QString active_calibration_invalidation_id_;
   bool calibration_restart_requested_{false};
@@ -637,6 +645,7 @@ class HStreamWindow : public QMainWindow {
   QString default_control_point_matcher_{"superpoint-lightglue"};
   QString default_mapping_backend_{"opencv-magsac"};
   QString default_projection_{"rectilinear"};
+  std::map<QString, std::vector<double>> default_projection_parameters_;
   std::map<QString, int> saved_camera_controls_;
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};
@@ -649,6 +658,9 @@ class HStreamWindow : public QMainWindow {
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
   QString saved_projection_;
+  std::map<QString, std::vector<double>> projection_parameter_values_;
+  std::map<QString, std::vector<double>> saved_projection_parameters_;
+  QString projection_parameter_controls_projection_;
   std::set<QString> preset_save_retry_game_ids_;
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;

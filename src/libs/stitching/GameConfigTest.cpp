@@ -45,6 +45,50 @@ int main() {
   fs::create_directories(root);
   std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
 
+  YAML::Node projection_config;
+  projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(100);
+  projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  auto panini_parameters = hm::stitching::read_stitch_projection_parameters(
+      projection_config, hm::stitching::StitchProjection::kGeneralPanini);
+  ok &= expect(
+      panini_parameters.ok() && *panini_parameters == std::vector<double>({100.0, 0.0, 0.0}),
+      "General Panini projection parameters must parse in Hugin order");
+  YAML::Node missing_projection_config;
+  auto default_panini_parameters = hm::stitching::read_stitch_projection_parameters(
+      missing_projection_config, hm::stitching::StitchProjection::kGeneralPanini);
+  ok &= expect(
+      default_panini_parameters.ok() && *default_panini_parameters == std::vector<double>({100.0, 0.0, 0.0}),
+      "older configs must migrate to General Panini's 100,0,0 defaults");
+  YAML::Node invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["general-panini"][0] = 151;
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "out-of-range General Panini projection parameters must be rejected");
+  invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["general-panini"].remove(2);
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "General Panini projection parameters with the wrong count must be rejected");
+  invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["panini"].push_back(1);
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "fixed Panini projections must reject unsupported adjustable parameters");
+  invalid_projection_config = YAML::Node(YAML::NodeType::Map);
+  invalid_projection_config["stitching"]["projection_parameters"]["general_panini"] = YAML::Load("[100, 0, 0]");
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "projection parameter maps must reject non-canonical keys instead of silently ignoring their values");
+
   auto first_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(first_lock.ok(), "first game-config transaction must lock");
   const auto unavailable_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(root);
@@ -618,6 +662,29 @@ int main() {
                 worker_mismatch, "backend-generation-a", magsac_choices)),
         "generation validation must reject a worker-visible projection that differs from the immutable claim");
   }
+
+  YAML::Node parameter_generation(YAML::NodeType::Map);
+  parameter_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  parameter_generation["stitching"]["mapping_backend"] = "nona";
+  parameter_generation["stitching"]["projection"] = "general-panini";
+  parameter_generation["stitching"]["run_autooptimizer"] = true;
+  parameter_generation["stitching"]["projection_parameters"]["general-panini"].push_back(100);
+  parameter_generation["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  parameter_generation["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  parameter_generation["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  parameter_generation["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "backend-generation-b";
+  const hm::stitching::StitchingBackendChoices panini_choices{
+      "superpoint-lightglue", "nona", "general-panini", true, {100.0, 0.0, 0.0}};
+  const absl::Status parameter_reserved = hm::stitching::reserve_stitching_backend_generation_in_config(
+      parameter_generation, "backend-generation-b", panini_choices);
+  YAML::Node changed_parameters = YAML::Clone(parameter_generation);
+  changed_parameters["stitching"]["projection_parameters"]["general-panini"][0] = 120;
+  ok &= expect(
+      parameter_reserved.ok() &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  changed_parameters, "backend-generation-b", panini_choices)),
+      "a projection-parameter-only worker change must be fenced by the immutable calibration generation claim");
 
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);

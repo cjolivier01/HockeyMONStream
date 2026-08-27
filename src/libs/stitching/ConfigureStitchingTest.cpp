@@ -47,22 +47,27 @@ bool write_canvas_provenance(
     bool max_output_width_applied = false,
     bool max_canvas_dimension_applied = false,
     const std::string& mapping_backend = {},
-    const std::string& projection = {}) {
+    const std::string& projection = {},
+    const std::string& projection_parameters = {}) {
   source_width = source_width == 0 ? width : source_width;
   source_height = source_height == 0 ? height : source_height;
   const bool algorithm_aware = !mapping_backend.empty() || !projection.empty();
+  const bool parameter_aware = !projection_parameters.empty();
   if (algorithm_aware && (mapping_backend.empty() || projection.empty()))
+    return false;
+  if (parameter_aware && !algorithm_aware)
     return false;
   return write_text_file(
       dir / "stitching_canvas_provenance",
-      std::string(algorithm_aware ? "version=3\n" : "version=2\n") + "max-output-width=" +
-          std::to_string(max_output_width) + "\nmax-canvas-dimension=" + std::to_string(max_canvas_dimension) +
-          "\nsource-canvas-width=" + std::to_string(source_width) +
+      std::string(parameter_aware ? "version=4\n" : (algorithm_aware ? "version=3\n" : "version=2\n")) +
+          "max-output-width=" + std::to_string(max_output_width) + "\nmax-canvas-dimension=" +
+          std::to_string(max_canvas_dimension) + "\nsource-canvas-width=" + std::to_string(source_width) +
           "\nsource-canvas-height=" + std::to_string(source_height) + "\ncanvas-width=" + std::to_string(width) +
           "\ncanvas-height=" + std::to_string(height) +
           "\nmax-output-width-applied=" + std::to_string(max_output_width_applied ? 1 : 0) +
           "\nmax-canvas-dimension-applied=" + std::to_string(max_canvas_dimension_applied ? 1 : 0) + "\n" +
-          (algorithm_aware ? "mapping-backend=" + mapping_backend + "\nprojection=" + projection + "\n" : ""));
+          (algorithm_aware ? "mapping-backend=" + mapping_backend + "\nprojection=" + projection + "\n" : "") +
+          (parameter_aware ? "projection-parameters=" + projection_parameters + "\n" : ""));
 }
 
 bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_px, float y_px) {
@@ -342,6 +347,35 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   auto projection_changed = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, previous);
   if (!projection_changed.ok() || projection_changed->artifact_lock ||
       !expect_configured(dir, false, "a direct YAML projection change must invalidate existing maps")) {
+    return false;
+  }
+
+  config["stitching"]["projection_parameters"]["general-panini"].push_back(100);
+  config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !write_canvas_provenance(
+          dir,
+          /*max_output_width=*/0,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/0,
+          /*source_height=*/0,
+          /*max_canvas_dimension=*/0,
+          /*max_output_width_applied=*/false,
+          /*max_canvas_dimension_applied=*/false,
+          "nona",
+          "general-panini",
+          "100,0,0")) {
+    return false;
+  }
+  auto parameter_baseline = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  if (!parameter_baseline.ok() || !parameter_baseline->artifact_lock)
+    return false;
+  parameter_baseline->artifact_lock.reset();
+  config["stitching"]["projection_parameters"]["general-panini"][0] = 120;
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "a direct General Panini parameter change must invalidate existing maps")) {
     return false;
   }
 

@@ -708,7 +708,8 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
     lines.push_back(std::move(line));
   const bool legacy = lines.size() == 9 && lines[0] == "version=2";
   const bool algorithm_aware = lines.size() == 11 && lines[0] == "version=3";
-  if (!input.eof() || (!legacy && !algorithm_aware))
+  const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
+  if (!input.eof() || (!legacy && !algorithm_aware && !parameter_aware))
     return absl::FailedPreconditionError("Invalid canvas provenance format");
   CanvasProvenance provenance;
   auto assign = [&](size_t* destination, size_t line, const char* key) -> absl::Status {
@@ -745,10 +746,15 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   }
   provenance.max_output_width_applied = width_applied != 0;
   provenance.max_canvas_dimension_applied = dimension_applied != 0;
-  if (algorithm_aware &&
+  if ((algorithm_aware || parameter_aware) &&
       (lines[9].rfind("mapping-backend=", 0) != 0 || lines[9].size() == std::strlen("mapping-backend=") ||
        lines[10].rfind("projection=", 0) != 0 || lines[10].size() == std::strlen("projection="))) {
     return absl::FailedPreconditionError("Invalid canvas provenance mapping algorithm fields");
+  }
+  if (parameter_aware &&
+      (lines[11].rfind("projection-parameters=", 0) != 0 ||
+       lines[11].size() == std::strlen("projection-parameters="))) {
+    return absl::FailedPreconditionError("Invalid canvas provenance projection parameter field");
   }
   return provenance;
 }

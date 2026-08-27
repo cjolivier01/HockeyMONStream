@@ -190,7 +190,8 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
     lines.push_back(std::move(line));
   const bool legacy = lines.size() == 9 && lines[0] == "version=2";
   const bool algorithm_aware = lines.size() == 11 && lines[0] == "version=3";
-  if (!legacy && !algorithm_aware)
+  const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
+  if (!legacy && !algorithm_aware && !parameter_aware)
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
   HM_ASSIGN_OR_RETURN(provenance.max_output_width, parse_canvas_provenance_value(lines[1], "max-output-width"));
@@ -216,7 +217,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   }
   provenance.max_output_width_applied = max_output_width_applied != 0;
   provenance.max_canvas_dimension_applied = max_canvas_dimension_applied != 0;
-  if (algorithm_aware) {
+  if (algorithm_aware || parameter_aware) {
     std::string mapping_backend;
     std::string projection;
     HM_ASSIGN_OR_RETURN(mapping_backend, parse_canvas_provenance_string(lines[9], "mapping-backend"));
@@ -224,6 +225,17 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
     HM_ASSIGN_OR_RETURN(provenance.mapping_backend, ParseMappingBackend(mapping_backend));
     HM_ASSIGN_OR_RETURN(provenance.projection, ParseStitchProjection(projection));
     HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(*provenance.mapping_backend, *provenance.projection));
+    if (parameter_aware) {
+      std::string parameters;
+      HM_ASSIGN_OR_RETURN(parameters, parse_canvas_provenance_string(lines[11], "projection-parameters"));
+      if (parameters == "none") {
+        provenance.projection_parameters = std::vector<double>{};
+      } else {
+        HM_ASSIGN_OR_RETURN(
+            provenance.projection_parameters, ParseStitchProjectionParameters(*provenance.projection, parameters));
+      }
+      HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*provenance.projection, *provenance.projection_parameters));
+    }
   }
   return provenance;
 }
@@ -1558,9 +1570,21 @@ absl::Status HuginProject::ApplyProjection(
     const fs::path& staging_directory,
     StitchProjection selected_projection,
     const std::function<bool()>& is_cancelled) {
+  return ApplyProjection(
+      staging_directory, selected_projection, DefaultStitchProjectionParameters(selected_projection), is_cancelled);
+}
+
+absl::Status HuginProject::ApplyProjection(
+    const fs::path& staging_directory,
+    StitchProjection selected_projection,
+    const std::vector<double>& projection_parameters,
+    const std::function<bool()>& is_cancelled) {
   const auto& projection_info = StitchProjectionDetails(selected_projection);
+  const std::vector<double> effective_projection_parameters =
+      projection_parameters.empty() ? DefaultStitchProjectionParameters(selected_projection) : projection_parameters;
   const bool general_panini = selected_projection == StitchProjection::kGeneralPanini;
   const std::string projection_name = projection_info.display_name;
+  HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(selected_projection, effective_projection_parameters));
   if (is_cancelled && is_cancelled())
     return absl::CancelledError(projection_name + " remap generation cancelled before PTO conversion");
 
@@ -1594,8 +1618,10 @@ absl::Status HuginProject::ApplyProjection(
     fs::remove(temporary_path, remove_error);
     std::vector<std::string> command = {
         *pano_modify, "--projection=" + std::to_string(projection_info.hugin_projection)};
-    if (general_panini)
-      command.emplace_back("--projection-parameter=100 0 0");
+    if (!effective_projection_parameters.empty()) {
+      command.emplace_back(
+          "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
+    }
     command.insert(
         command.end(),
         {"--fov=AUTO",
@@ -1653,8 +1679,8 @@ absl::Status HuginProject::ApplyProjection(
     static const std::regex parameter_pattern(R"(P\"([^\"]+)\")");
     std::smatch parameter_match;
     const bool has_parameters = std::regex_search(*converted_project, parameter_match, parameter_pattern);
-    if (general_panini && !has_parameters)
-      return absl::FailedPreconditionError("General Panini PTO has no projection parameters");
+    if (!effective_projection_parameters.empty() && !has_parameters)
+      return absl::FailedPreconditionError(projection_name + " PTO has no projection parameters");
     if (has_parameters) {
       std::istringstream parsed_parameters(parameter_match[1].str());
       parsed_parameters.imbue(std::locale::classic());
@@ -1666,10 +1692,14 @@ absl::Status HuginProject::ApplyProjection(
           std::any_of(values.begin(), values.end(), [](double item) { return !std::isfinite(item); })) {
         return absl::FailedPreconditionError(projection_name + " PTO contains invalid projection parameters");
       }
-      if (general_panini &&
-          (values.size() != 3 || std::abs(values[0] - 100.0) > 1e-9 || std::abs(values[1]) > 1e-9 ||
-           std::abs(values[2]) > 1e-9)) {
-        return absl::FailedPreconditionError("pano_modify did not preserve standard General Panini parameters");
+      if (!effective_projection_parameters.empty() &&
+          (values.size() != effective_projection_parameters.size() ||
+           !std::equal(
+               values.begin(), values.end(), effective_projection_parameters.begin(), [](double lhs, double rhs) {
+                 return std::abs(lhs - rhs) <= 1e-9;
+               }))) {
+        return absl::FailedPreconditionError(
+            "pano_modify did not preserve requested " + projection_name + " parameters");
       }
     }
     return effective_size;
@@ -1880,7 +1910,8 @@ absl::Status HuginProject::Configure(
           "started",
           "Applying " + std::string(StitchProjectionDetails(*options.projection).display_name) + " projection");
     }
-    HM_RETURN_IF_ERROR(ApplyProjection(staging, *options.projection, options.is_cancelled));
+    HM_RETURN_IF_ERROR(
+        ApplyProjection(staging, *options.projection, options.projection_parameters, options.is_cancelled));
     if (options.progress)
       options.progress("projection", "complete", "Projection-aware canvas and crop are ready");
   }
@@ -2104,7 +2135,11 @@ absl::Status HuginProject::Configure(
     generated_projection = projection->projection;
   }
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(options.mapping_backend, *generated_projection));
-  provenance << "version=3\n"
+  const std::vector<double> generated_projection_parameters = options.projection_parameters.empty()
+      ? DefaultStitchProjectionParameters(*generated_projection)
+      : options.projection_parameters;
+  HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
+  provenance << "version=4\n"
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -2114,7 +2149,12 @@ absl::Status HuginProject::Configure(
              << "max-output-width-applied=" << (max_output_width_applied ? 1 : 0) << '\n'
              << "max-canvas-dimension-applied=" << (max_canvas_dimension_applied ? 1 : 0) << '\n'
              << "mapping-backend=" << MappingBackendName(options.mapping_backend) << '\n'
-             << "projection=" << StitchProjectionName(*generated_projection) << '\n';
+             << "projection=" << StitchProjectionName(*generated_projection) << '\n'
+             << "projection-parameters="
+             << (generated_projection_parameters.empty()
+                     ? std::string("none")
+                     : FormatStitchProjectionParameters(generated_projection_parameters))
+             << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;

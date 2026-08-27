@@ -34,6 +34,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":stitching_algorithms",
     ":transaction_state",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",

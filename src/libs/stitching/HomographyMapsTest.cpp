@@ -105,6 +105,22 @@ bool seam_only_selects_valid_remaps(const std::filesystem::path& directory) {
 int main() {
   namespace fs = std::filesystem;
   bool ok = true;
+  const auto& general_panini_parameters =
+      hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kGeneralPanini);
+  ok &= expect(
+      general_panini_parameters.size() == 3 && std::string(general_panini_parameters[0].name) == "Cmpr" &&
+          general_panini_parameters[0].minimum == 0.0 && general_panini_parameters[0].maximum == 150.0 &&
+          general_panini_parameters[0].default_value == 100.0 &&
+          std::string(general_panini_parameters[1].name) == "Tops" && general_panini_parameters[1].minimum == -100.0 &&
+          general_panini_parameters[1].maximum == 100.0 && std::string(general_panini_parameters[2].name) == "Bots",
+      "General Panini metadata must match libpano's Cmpr,Tops,Bots contract");
+  ok &= expect(
+      hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kAlbersEqualAreaConic).size() == 2 &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kBiplane).size() == 2 &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kTriplane).size() == 1 &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kPanini).empty() &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kEquirectangularPanini).empty(),
+      "only projections with libpano parameters must advertise adjustable controls");
   const fs::path root = fs::temp_directory_path() / ("hstream-homography-maps-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
   fs::create_directories(root);

@@ -315,6 +315,7 @@ int main() {
 
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / ("hstream-hugin-test-" + std::to_string(::getpid()));
+  fs::remove_all(root);
   fs::create_directories(root / "game");
   ok &= expect(
       cv::imwrite((root / "game" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(1, 2, 3))),
@@ -641,10 +642,28 @@ int main() {
             (*provenance)->canvas_height == 32 && !(*provenance)->max_output_width_applied &&
             !(*provenance)->max_canvas_dimension_applied &&
             (*provenance)->mapping_backend == hm::stitching::MappingBackend::kNona &&
-            (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini,
-        "published Hugin provenance must record source/final canvases, generation constraints, and mapping algorithm");
+            (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini &&
+            (*provenance)->projection_parameters == std::vector<double>({100.0, 0.0, 0.0}),
+        "published Hugin provenance must record source/final canvases, mapping algorithm, and projection parameters");
     provenance_lock->reset();
   }
+
+  const fs::path custom_panini = root / "custom-panini";
+  fs::create_directories(custom_panini);
+  std::error_code custom_copy_error;
+  fs::copy_file(
+      root / "game" / "hm_project.pto",
+      custom_panini / "autooptimiser_out.pto",
+      fs::copy_options::overwrite_existing,
+      custom_copy_error);
+  ok &= expect(!custom_copy_error, "custom Panini fixture PTO must be copied");
+  const auto custom_parameters = hm::stitching::HuginProject::ApplyProjection(
+      custom_panini, hm::stitching::StitchProjection::kGeneralPanini, {120.0, 25.0, -40.0});
+  ok &= expect(custom_parameters.ok(), "custom General Panini parameters must be accepted");
+  const std::string custom_panini_pto = read_text_file(custom_panini / "autooptimiser_out.pto");
+  ok &= expect(
+      custom_panini_pto.find("P\"120 25 -40\"") != std::string::npos,
+      "pano_modify must receive and preserve the selected General Panini values");
 
   const fs::path nonfinite_panini = root / "nonfinite-panini";
   fs::create_directories(nonfinite_panini);
