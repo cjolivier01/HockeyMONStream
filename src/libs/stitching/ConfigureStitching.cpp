@@ -48,8 +48,10 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <opencv2/opencv.hpp>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
@@ -102,6 +104,27 @@ constexpr std::array<const char*, 7> kControlMaskLoadArtifacts = {
     "mapping_0001_y.tif",
     "seam_file.png",
 };
+
+struct StitchSnapshotArtifactSpec {
+  const char* name;
+  bool required;
+};
+
+constexpr std::array<StitchSnapshotArtifactSpec, 13> kStitchValidationSnapshotArtifacts = {{
+    {"left.png", true},
+    {"right.png", true},
+    {"hm_project.pto", true},
+    {"autooptimiser_out.pto", true},
+    {"mapping_0000.tif", true},
+    {"mapping_0000_x.tif", true},
+    {"mapping_0000_y.tif", true},
+    {"mapping_0001.tif", true},
+    {"mapping_0001_x.tif", true},
+    {"mapping_0001_y.tif", true},
+    {"seam_file.png", true},
+    {kStitchCanvasProvenanceArtifact, false},
+    {kStitchGenerationArtifact, false},
+}};
 
 void report_calibration_progress(const std::string& stage, const std::string& status, const std::string& message = {}) {
   std::cout << "HSTREAM_CALIBRATION stage=" << stage << " status=" << status;
@@ -426,7 +449,7 @@ struct PinnedLoadArtifact {
   struct stat metadata{};
 };
 
-absl::StatusOr<PinnedLoadArtifact> pin_control_mask_load_artifact(const fs::path& path) {
+absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& path) {
   const std::string name = path.filename().string();
   if (path.extension() == ".tif") {
     const auto ends_with = [&](std::string_view suffix) {
@@ -463,18 +486,98 @@ absl::StatusOr<PinnedLoadArtifact> pin_control_mask_load_artifact(const fs::path
     return PinnedLoadArtifact(name, descriptor, (*opened)->metadata);
   }
 
-  if (name != "seam_file.png")
-    return absl::InvalidArgumentError("Unrecognized control-mask load artifact: " + path.string());
+  uint64_t maximum_bytes = 0;
+  if (name == "left.png" || name == "right.png" || name == "seam_file.png") {
+    maximum_bytes = kMaximumParserSeamPngBytes;
+  } else if (path.extension() == ".pto") {
+    maximum_bytes = 64ULL * 1024ULL * 1024ULL;
+  } else if (name == kStitchCanvasProvenanceArtifact) {
+    maximum_bytes = 4096;
+  } else if (name == kStitchGenerationArtifact) {
+    maximum_bytes = 16ULL * 1024ULL;
+  } else {
+    return absl::InvalidArgumentError("Unrecognized stitch snapshot artifact: " + path.string());
+  }
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  if (descriptor < 0)
-    return absl::FailedPreconditionError("Unable to pin control-mask seam: " + path.string());
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return absl::NotFoundError("Stitch snapshot artifact is missing: " + path.string());
+    return absl::FailedPreconditionError("Unable to pin stitch snapshot artifact: " + path.string());
+  }
   struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
-      static_cast<uint64_t>(metadata.st_size) > kMaximumParserSeamPngBytes) {
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     ::close(descriptor);
-    return absl::FailedPreconditionError("Invalid or oversized control-mask seam: " + path.string());
+    return absl::FailedPreconditionError("Invalid or oversized stitch snapshot artifact: " + path.string());
   }
   return PinnedLoadArtifact(name, descriptor, metadata);
+}
+
+absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, const fs::path& destination) {
+  const int destination_descriptor =
+      ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, artifact->metadata.st_mode & 0777);
+  if (destination_descriptor < 0) {
+    return absl::InternalError(
+        "Unable to create private stitch validation snapshot: " + std::string(std::strerror(errno)));
+  }
+  struct DestinationCleanup {
+    int descriptor;
+    fs::path path;
+    bool complete{false};
+    ~DestinationCleanup() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+      if (!complete) {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+      }
+    }
+  } cleanup{destination_descriptor, destination};
+
+  const bool disable_clone = [] {
+    const char* value = std::getenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  if (disable_clone || ::ioctl(destination_descriptor, FICLONE, artifact->descriptor) != 0) {
+    if (::ftruncate(destination_descriptor, 0) != 0 || ::lseek(destination_descriptor, 0, SEEK_SET) != 0)
+      return absl::InternalError("Unable to prepare private stitch validation snapshot copy");
+    std::vector<unsigned char> buffer(1024 * 1024);
+    uint64_t offset = 0;
+    while (offset < static_cast<uint64_t>(artifact->metadata.st_size)) {
+      const size_t requested = static_cast<size_t>(
+          std::min<uint64_t>(buffer.size(), static_cast<uint64_t>(artifact->metadata.st_size) - offset));
+      const ssize_t count = ::pread(artifact->descriptor, buffer.data(), requested, static_cast<off_t>(offset));
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        return absl::InternalError("Unable to read pinned stitch validation artifact");
+      size_t written = 0;
+      while (written < static_cast<size_t>(count)) {
+        const ssize_t write_count =
+            ::write(destination_descriptor, buffer.data() + written, static_cast<size_t>(count) - written);
+        if (write_count < 0 && errno == EINTR)
+          continue;
+        if (write_count <= 0)
+          return absl::InternalError("Unable to copy pinned stitch validation artifact");
+        written += static_cast<size_t>(write_count);
+      }
+      offset += static_cast<uint64_t>(count);
+    }
+  }
+  struct stat verified{};
+  if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
+    return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
+  }
+  const timespec times[2] = {artifact->metadata.st_atim, artifact->metadata.st_mtim};
+  if (::futimens(destination_descriptor, times) != 0)
+    return absl::InternalError("Unable to preserve stitch validation snapshot timestamps");
+  if (::close(destination_descriptor) != 0) {
+    cleanup.descriptor = -1;
+    return absl::InternalError("Unable to close stitch validation snapshot artifact");
+  }
+  cleanup.descriptor = -1;
+  cleanup.complete = true;
+  return absl::OkStatus();
 }
 
 bool is_control_mask_load_artifact_name(const std::string& name) {
@@ -1578,10 +1681,8 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
 }
 
 struct StitchingArtifactLoadSnapshot::Impl {
-  Impl(fs::path directory, fs::path source_directory, std::string expected_revision)
-      : directory(std::move(directory)),
-        source_directory(std::move(source_directory)),
-        expected_revision(std::move(expected_revision)) {}
+  Impl(fs::path directory, fs::path source_directory)
+      : directory(std::move(directory)), source_directory(std::move(source_directory)) {}
   ~Impl() {
     std::error_code ignored;
     fs::remove_all(directory, ignored);
@@ -1589,6 +1690,7 @@ struct StitchingArtifactLoadSnapshot::Impl {
   fs::path directory;
   fs::path source_directory;
   std::string expected_revision;
+  std::string expected_generation_id;
   std::vector<PinnedLoadArtifact> artifacts;
 };
 
@@ -1604,6 +1706,14 @@ const fs::path& StitchingArtifactLoadSnapshot::directory() const {
 
 absl::Status StitchingArtifactLoadSnapshot::verify() const {
   HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(impl_->source_directory, impl_->artifacts));
+  if (!stitch_artifact_metadata_is_reliable(impl_->source_directory)) {
+    auto generation_id = stitch_artifact_generation_id_locked(impl_->source_directory);
+    if (!generation_id.ok())
+      return generation_id.status();
+    if (*generation_id != impl_->expected_generation_id) {
+      return absl::AbortedError("Control-mask artifact contents changed while their pinned generation was loaded");
+    }
+  }
   auto revision = stitch_artifact_revision_locked(impl_->source_directory);
   if (!revision.ok())
     return revision.status();
@@ -1613,6 +1723,71 @@ absl::Status StitchingArtifactLoadSnapshot::verify() const {
 }
 
 namespace {
+
+struct CreatedStitchingArtifactSnapshot {
+  std::unique_ptr<StitchingArtifactLoadSnapshot> snapshot;
+  StitchingArtifactLoadSnapshot::Impl* impl;
+};
+
+absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snapshot(
+    const fs::path& game_dir,
+    bool stable_validation_snapshot) {
+  HM_RETURN_IF_ERROR(remove_stale_control_mask_snapshots(game_dir));
+  std::string pattern = (game_dir / ".hstream-control-mask-snapshot-XXXXXX").string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  char* created = ::mkdtemp(writable.data());
+  if (created == nullptr)
+    return absl::InternalError("Unable to create a stable control-mask load snapshot");
+  auto snapshot_impl = std::make_unique<StitchingArtifactLoadSnapshot::Impl>(fs::path(created), game_dir);
+  StitchingArtifactLoadSnapshot::Impl* snapshot_impl_ptr = snapshot_impl.get();
+  auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(std::move(snapshot_impl));
+  if (::chmod(created, 0700) != 0)
+    return absl::InternalError("Unable to protect the stable control-mask load snapshot");
+  if (const char* delay = std::getenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS")) {
+    const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+  }
+
+  const auto add_artifact = [&](const char* name, bool required) -> absl::Status {
+    auto artifact = pin_stitch_snapshot_artifact(game_dir / name);
+    if (!artifact.ok()) {
+      if (!required && absl::IsNotFound(artifact.status()))
+        return absl::OkStatus();
+      return artifact.status();
+    }
+    if (stable_validation_snapshot) {
+      HM_RETURN_IF_ERROR(expose_regular_snapshot_artifact(&*artifact, snapshot->directory() / name));
+    } else {
+      std::error_code link_error;
+      fs::create_symlink(
+          fs::path("/proc/self/fd") / std::to_string(artifact->descriptor), snapshot->directory() / name, link_error);
+      if (link_error)
+        return absl::InternalError("Unable to expose pinned control-mask artifact: " + link_error.message());
+    }
+    snapshot_impl_ptr->artifacts.push_back(std::move(*artifact));
+    return absl::OkStatus();
+  };
+  if (stable_validation_snapshot) {
+    for (const StitchSnapshotArtifactSpec& artifact : kStitchValidationSnapshotArtifacts)
+      HM_RETURN_IF_ERROR(add_artifact(artifact.name, artifact.required));
+  } else {
+    for (const char* name : kControlMaskLoadArtifacts)
+      HM_RETURN_IF_ERROR(add_artifact(name, /*required=*/true));
+  }
+  HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(game_dir, snapshot_impl_ptr->artifacts));
+  return CreatedStitchingArtifactSnapshot{.snapshot = std::move(snapshot), .impl = snapshot_impl_ptr};
+}
+
+void retain_control_mask_load_artifacts(StitchingArtifactLoadSnapshot::Impl* snapshot) {
+  snapshot->artifacts.erase(
+      std::remove_if(
+          snapshot->artifacts.begin(),
+          snapshot->artifacts.end(),
+          [](const PinnedLoadArtifact& artifact) { return !is_control_mask_load_artifact_name(artifact.name); }),
+      snapshot->artifacts.end());
+}
 
 absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     const std::string& game_dir,
@@ -1626,9 +1801,10 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  if (!validate_generation_content && stitch_artifact_metadata_is_reliable(game_dir) &&
-      previously_validated.has_value() && !previously_validated->generation_id.empty() &&
-      !previously_validated->artifact_revision.empty() && previously_validated->max_output_width == max_output_width &&
+  const bool metadata_is_reliable = stitch_artifact_metadata_is_reliable(game_dir);
+  if (!validate_generation_content && metadata_is_reliable && previously_validated.has_value() &&
+      !previously_validated->generation_id.empty() && !previously_validated->artifact_revision.empty() &&
+      previously_validated->max_output_width == max_output_width &&
       previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
     auto artifact_revision = stitch_artifact_revision_locked(game_dir);
     if (artifact_revision.ok() && *artifact_revision == previously_validated->artifact_revision &&
@@ -1674,14 +1850,16 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
       return absl::AbortedError("Stitch artifacts changed repeatedly while their content was validated");
   }
   if (const char* delay = std::getenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS")) {
+    if (const char* marker = std::getenv("HM_TEST_STITCH_POST_VALIDATION_MARKER"))
+      std::ofstream(marker, std::ios::out | std::ios::trunc) << "ready\n";
     const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
     if (delay_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
   }
   std::string generation_id;
-  if (validate_generation_content) {
+  if (validate_generation_content && metadata_is_reliable) {
     HM_ASSIGN_OR_RETURN(generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
-  } else {
+  } else if (metadata_is_reliable) {
     HM_ASSIGN_OR_RETURN(generation_id, stitch_artifact_preflight_generation_id_locked(game_dir));
   }
   std::string artifact_revision;
@@ -1690,44 +1868,51 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
   HM_ASSIGN_OR_RETURN(verified_bindings, stitch_artifact_binding_revision_locked(game_dir));
   if (verified_bindings != validated_bindings)
     return absl::AbortedError("Stitch artifacts changed after their content was validated");
+  const bool stable_validation_snapshot = !metadata_is_reliable;
   std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
-  if (create_load_snapshot) {
-    HM_RETURN_IF_ERROR(remove_stale_control_mask_snapshots(game_dir));
-    std::string pattern = (fs::path(game_dir) / ".hstream-control-mask-snapshot-XXXXXX").string();
-    std::vector<char> writable(pattern.begin(), pattern.end());
-    writable.push_back('\0');
-    char* created = ::mkdtemp(writable.data());
-    if (created == nullptr)
-      return absl::InternalError("Unable to create a stable control-mask load snapshot");
-    auto snapshot_impl =
-        std::make_unique<StitchingArtifactLoadSnapshot::Impl>(fs::path(created), game_dir, artifact_revision);
-    StitchingArtifactLoadSnapshot::Impl* snapshot_impl_ptr = snapshot_impl.get();
-    auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(std::move(snapshot_impl));
-    if (::chmod(created, 0700) != 0)
-      return absl::InternalError("Unable to protect the stable control-mask load snapshot");
-    if (const char* delay = std::getenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS")) {
-      const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
-      if (delay_ms > 0)
-        std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+  if (create_load_snapshot || stable_validation_snapshot) {
+    CreatedStitchingArtifactSnapshot created_snapshot;
+    HM_ASSIGN_OR_RETURN(created_snapshot, create_stitching_artifact_snapshot(game_dir, stable_validation_snapshot));
+    std::unique_ptr<StitchingArtifactLoadSnapshot> snapshot = std::move(created_snapshot.snapshot);
+    StitchingArtifactLoadSnapshot::Impl* snapshot_impl = created_snapshot.impl;
+    if (stable_validation_snapshot) {
+      if (const char* delay = std::getenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS")) {
+        if (const char* marker = std::getenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER"))
+          std::ofstream(marker, std::ios::out | std::ios::trunc) << "ready\n";
+        const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+        if (delay_ms > 0)
+          std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+      }
+      bool snapshot_configured = false;
+      CanvasSize snapshot_canvas;
+      HM_ASSIGN_OR_RETURN(
+          snapshot_configured,
+          validate_stitching_artifacts_locked(
+              snapshot->directory(),
+              max_output_width,
+              validate_generation_content ? SeamValidationMode::kContent : SeamValidationMode::kLayoutOnly,
+              **artifact_lock,
+              &snapshot_canvas));
+      if (!snapshot_configured)
+        return LockedStitchingArtifacts{};
+      std::string snapshot_generation_id;
+      HM_ASSIGN_OR_RETURN(snapshot_generation_id, HuginProject::GenerationId(snapshot->directory(), **artifact_lock));
+      std::string current_generation_id;
+      HM_ASSIGN_OR_RETURN(current_generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
+      if (snapshot_generation_id != current_generation_id) {
+        return absl::AbortedError(
+            "Stitch artifact contents changed while their stable validation snapshot was inspected");
+      }
+      generation_id = std::move(current_generation_id);
+      canvas_size = snapshot_canvas;
+      HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
+      snapshot_impl->expected_generation_id = generation_id;
+      retain_control_mask_load_artifacts(snapshot_impl);
     }
-    for (const char* name : kControlMaskLoadArtifacts) {
-      auto artifact = pin_control_mask_load_artifact(fs::path(game_dir) / name);
-      if (!artifact.ok())
-        return artifact.status();
-      std::error_code link_error;
-      fs::create_symlink(
-          fs::path("/proc/self/fd") / std::to_string(artifact->descriptor), snapshot->directory() / name, link_error);
-      if (link_error)
-        return absl::InternalError("Unable to expose pinned control-mask artifact: " + link_error.message());
-      snapshot_impl_ptr->artifacts.push_back(std::move(*artifact));
+    snapshot_impl->expected_revision = artifact_revision;
+    if (create_load_snapshot) {
+      load_snapshot = std::move(snapshot);
     }
-    HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(game_dir, snapshot_impl_ptr->artifacts));
-    auto verified_revision = stitch_artifact_revision_locked(game_dir);
-    if (!verified_revision.ok())
-      return verified_revision.status();
-    if (*verified_revision != artifact_revision)
-      return absl::AbortedError("Stitch artifacts changed while creating their stable load snapshot");
-    load_snapshot = std::move(snapshot);
   }
   return LockedStitchingArtifacts{
       .artifact_lock = std::move(*artifact_lock),

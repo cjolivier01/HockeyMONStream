@@ -226,6 +226,15 @@ void set_write_time(const fs::path& path, int seconds_after_base) {
   fs::last_write_time(path, base + std::chrono::seconds(seconds_after_base));
 }
 
+bool wait_for_test_marker(const fs::path& marker) {
+  for (int attempt = 0; attempt < 500; ++attempt) {
+    if (fs::exists(marker))
+      return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+
 bool write_valid_stitching_artifacts(const fs::path& dir) {
   fs::create_directories(dir);
   if (!write_text_file(dir / "left.png", "left") || !write_text_file(dir / "right.png", "right") ||
@@ -1507,17 +1516,66 @@ bool expect_validation_rejects_pre_generation_replacement(const fs::path& tmpdir
     return false;
 
   absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
+  const fs::path marker = dir / ".post-validation-ready";
   ::setenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS", "3000", 1);
+  ::setenv("HM_TEST_STITCH_POST_VALIDATION_MARKER", marker.c_str(), 1);
   std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
-  std::this_thread::sleep_for(std::chrono::seconds(1));
+  const bool reached_delay = wait_for_test_marker(marker);
   std::error_code error;
-  fs::rename(replacement, mapping, error);
+  if (reached_delay)
+    fs::rename(replacement, mapping, error);
   loader.join();
+  ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_MARKER");
   ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS");
 
-  if (error || !absl::IsAborted(result.status())) {
+  if (!reached_delay || error || !absl::IsAborted(result.status())) {
     std::cerr << "validated control-mask loading must reject path replacement before generation capture: "
               << result.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "unreliable_validation_pinned_generation";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  const fs::path mapping = dir / "mapping_0001.tif";
+  const fs::path original = dir / "mapping_0001-original.tif";
+  const fs::path replacement = dir / "mapping_0001-replacement.tif";
+  if (!write_mapping_tiff(replacement, 64, 32, 200.0f, 0.0f))
+    return false;
+
+  absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
+  const fs::path marker = dir / ".stable-validation-ready";
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  ::setenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE", "1", 1);
+  ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS", "3000", 1);
+  ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER", marker.c_str(), 1);
+  std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
+  const bool reached_delay = wait_for_test_marker(marker);
+  std::error_code error;
+  if (reached_delay)
+    fs::rename(mapping, original, error);
+  if (reached_delay && !error)
+    fs::rename(replacement, mapping, error);
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  if (reached_delay && !error)
+    fs::rename(mapping, replacement, error);
+  if (reached_delay && !error)
+    fs::rename(original, mapping, error);
+  loader.join();
+  ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER");
+  ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS");
+  ::unsetenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+
+  if (!reached_delay || error || !result.ok() || !result->artifact_lock || !result->load_snapshot ||
+      result->canvas_size.width != 160 || result->canvas_size.height != 32 ||
+      fs::is_symlink(result->load_snapshot->directory() / "mapping_0001.tif")) {
+    std::cerr << "unreliable-filesystem validation must use one pinned artifact generation: " << result.status()
+              << std::endl;
     return false;
   }
   return true;
@@ -1690,6 +1748,10 @@ int main() {
 
   if (!expect_validation_rejects_pre_generation_replacement(tmpdir)) {
     finish(tmpdir, 43);
+  }
+
+  if (!expect_unreliable_validation_uses_pinned_generation(tmpdir)) {
+    finish(tmpdir, 44);
   }
 
   finish(tmpdir, 0);
