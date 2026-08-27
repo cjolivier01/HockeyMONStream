@@ -1445,6 +1445,26 @@ play-tracker:
           (**backend_choices_private)["stitching"]["run_autooptimizer"].as<bool>(),
       "Effective stitching algorithm choices from lower config layers must be materialized into game-private config "
       "with canonical spellings");
+  const fs::path backend_omitted_baseline_root = root / "backend-omitted-baseline";
+  fs::create_directories(backend_omitted_baseline_root);
+  YAML::Node backend_omitted_baseline =
+      bundled_baseline.ok() ? YAML::Clone(bundled_baseline->values) : YAML::Node(YAML::NodeType::Map);
+  backend_omitted_baseline["stitching"].remove("mapping_backend");
+  backend_omitted_baseline["stitching"].remove("run_autooptimizer");
+  std::ofstream(backend_omitted_baseline_root / "baseline.yaml") << YAML::Dump(backend_omitted_baseline) << '\n';
+  const fs::path backend_omitted_dir = games / "backend-omitted";
+  fs::create_directories(backend_omitted_dir);
+  hm::Configurator backend_omitted(
+      "backend-omitted", backend_omitted_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status backend_omitted_configured = backend_omitted.configure();
+  const absl::Status backend_omitted_persisted = backend_omitted.persist_effective_stitching_backend_choices();
+  auto backend_omitted_private = hm::stitching::load_game_config_file(backend_omitted_dir / "config.yaml");
+  ok &= expect(
+      backend_omitted_configured.ok() && backend_omitted_persisted.ok() && backend_omitted_private.ok() &&
+          backend_omitted_private->has_value() &&
+          (**backend_omitted_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          !(**backend_omitted_private)["stitching"]["run_autooptimizer"].as<bool>(),
+      "Missing backend keys in an older baseline must materialize the valid MAGSAC-without-autooptimizer defaults");
   backend_choices_baseline["stitching"]["mapping_backend"] = "affine-ransac";
   backend_choices_baseline["stitching"]["run_autooptimizer"] = false;
   std::ofstream(backend_choices_baseline_root / "baseline.yaml") << YAML::Dump(backend_choices_baseline) << '\n';

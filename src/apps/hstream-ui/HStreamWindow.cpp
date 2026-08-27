@@ -162,11 +162,11 @@ std::optional<QString> canonical_control_point_matcher_choice(QString value) {
 
 std::optional<QString> canonical_mapping_backend_choice(QString value) {
   value = value.trimmed().toLower().replace('_', '-');
-  if (value.isEmpty() || value == "nona") {
-    return QString("nona");
-  }
-  if (value == "opencv-magsac" || value == "magsac" || value == "magsac++") {
+  if (value.isEmpty() || value == "opencv-magsac" || value == "magsac" || value == "magsac++") {
     return QString("opencv-magsac");
+  }
+  if (value == "nona") {
+    return QString("nona");
   }
   if (value == "opencv-affine-ransac" || value == "affine-ransac" || value == "ransac") {
     return QString("opencv-affine-ransac");
@@ -4117,6 +4117,8 @@ void HStreamWindow::loadBaselineDefaults() {
       throw std::runtime_error("Effective baseline stitching.mapping_backend is not supported");
     default_mapping_backend_ = *canonical;
   }
+  if (default_mapping_backend_ == "nona" && !default_run_autooptimizer_)
+    default_mapping_backend_ = "opencv-magsac";
 
   checked("Stop_Direction_Change_Delay_Frames", integer("rink.camera.stop_on_dir_change_delay"), 0, 60);
   checked("Cancel_Stop_On_Opposite_Direction", boolean("rink.camera.cancel_stop_on_opposite_dir"), 0, 1);
@@ -4518,7 +4520,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       run_autooptimizer_check_,
       "Opt in to Hugin's automatic panorama alignment during stitching calibration. Required by the NONA mapping "
       "backend and disabled by default; native OpenCV mapping does not use it.");
-  connect(run_autooptimizer_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
+  connect(run_autooptimizer_check_, &QCheckBox::toggled, this, [this](bool checked) {
+    if (!checked && mapping_backend_combo_ && mappingBackend() == "nona")
+      set_combo_to_data(mapping_backend_combo_, "opencv-magsac");
+    updatePresetDirtyState();
+  });
 
   control_point_matcher_combo_ = new QComboBox();
   control_point_matcher_combo_->setObjectName("controlPointMatcherCombo");
@@ -4551,7 +4557,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   int mapping_index = mapping_backend_combo_->findData(default_mapping_backend_);
   mapping_backend_combo_->setCurrentIndex(mapping_index < 0 ? 0 : mapping_index);
   mapping_backend_combo_->setToolTip("Mapping TIFF generator used after control points are selected.");
-  connect(mapping_backend_combo_, &QComboBox::currentIndexChanged, this, [this]() { updatePresetDirtyState(); });
+  connect(mapping_backend_combo_, &QComboBox::currentIndexChanged, this, [this]() {
+    if (mappingBackend() == "nona" && run_autooptimizer_check_ && !run_autooptimizer_check_->isChecked())
+      run_autooptimizer_check_->setChecked(true);
+    updatePresetDirtyState();
+  });
 
   stitch_frame_time_edit_ = new QTimeEdit();
   stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
@@ -6644,6 +6654,15 @@ void HStreamWindow::startPipeline() {
   if (blocked_archive_enabled && !archive_finalize_blocked_source_path_.isEmpty()) {
     appendLog(QString("archive run blocked until the retained work file is moved to safety: %1")
                   .arg(archive_finalize_blocked_source_path_));
+    updateRunControls();
+    return;
+  }
+  if (mappingBackend() == "nona" && !runAutooptimizer()) {
+    const QString detail = "The NONA mapping backend requires Run panorama autooptimizer to be enabled";
+    appendLog("pipeline not started: " + detail);
+    pipeline_state_->setText("STOPPED");
+    resetPlaybackProgress(true);
+    setPlaybackProgressState(PlaybackProgressState::kError, detail);
     updateRunControls();
     return;
   }
@@ -11790,6 +11809,7 @@ void HStreamWindow::loadSavedControlConfig() {
             rounded_control("stitching.post_stitch_rotate_degrees", 90.0 - stitch_rotation.as<double>()));
       }
     }
+    bool normalized_invalid_backend_pair = false;
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
     int staged_frame_count =
@@ -11878,6 +11898,11 @@ void HStreamWindow::loadSavedControlConfig() {
           appendLog(QString("ignored unsupported stitching.mapping_backend=%1").arg(configured));
         }
       }
+    }
+    if (staged_mapping_backend == "nona" && !staged_run_autooptimizer) {
+      staged_mapping_backend = "opencv-magsac";
+      normalized_invalid_backend_pair = true;
+      appendLog("replaced invalid NONA-without-autooptimizer setting with the default MAGSAC++ backend");
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
@@ -12013,6 +12038,11 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
     captureSavedControlState();
+    if (normalized_invalid_backend_pair) {
+      saved_mapping_backend_ = "nona";
+      saved_run_autooptimizer_ = false;
+      updatePresetDirtyState();
+    }
   } catch (const std::exception& exc) {
     appendLog(QString("could not load saved camera controls: %1").arg(exc.what()));
     saved_camera_controls_.clear();
@@ -12035,6 +12065,10 @@ bool HStreamWindow::applySavedControlConfig(
   }
   if (published_playtracker_sidecar) {
     published_playtracker_sidecar->clear();
+  }
+  if (mappingBackend() == "nona" && !runAutooptimizer()) {
+    appendLog("could not save preset: the NONA mapping backend requires Run panorama autooptimizer");
+    return false;
   }
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);

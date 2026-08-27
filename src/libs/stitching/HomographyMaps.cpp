@@ -46,11 +46,15 @@ absl::Status validate_image(const cv::Mat& image, const char* name) {
   return absl::OkStatus();
 }
 
-absl::Status validate_output_size(int width, int height) {
-  if (width <= 0 || height <= 0 || width >= kUnmapped || height >= kUnmapped)
+absl::Status validate_output_size(double width, double height) {
+  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0 || height <= 0.0 ||
+      width >= static_cast<double>(kUnmapped) || height >= static_cast<double>(kUnmapped) ||
+      width > static_cast<double>(std::numeric_limits<int>::max()) ||
+      height > static_cast<double>(std::numeric_limits<int>::max())) {
     return absl::ResourceExhaustedError("OpenCV mapping canvas exceeds uint16 remap limits");
+  }
   constexpr int64_t kMaxPixels = 128LL * 1024LL * 1024LL;
-  if (static_cast<int64_t>(width) * height > kMaxPixels)
+  if (width > static_cast<double>(kMaxPixels) / height)
     return absl::ResourceExhaustedError("OpenCV mapping canvas exceeds decoded-image safety limits");
   return absl::OkStatus();
 }
@@ -156,6 +160,22 @@ absl::StatusOr<cv::Point2d> transform_point(const cv::Matx33d& matrix, const cv:
   if (!std::isfinite(x) || !std::isfinite(y))
     return absl::FailedPreconditionError("OpenCV stitching transform produced non-finite coordinates");
   return cv::Point2d{x, y};
+}
+
+absl::Status validate_projective_domain(const cv::Matx33d& matrix, const cv::Mat& image) {
+  std::optional<bool> negative_denominator;
+  for (const cv::Point2d& point : image_corners(image)) {
+    const double denominator = matrix(2, 0) * point.x + matrix(2, 1) * point.y + matrix(2, 2);
+    if (!std::isfinite(denominator) || std::abs(denominator) < kProjectivePoleEpsilon) {
+      return absl::FailedPreconditionError("OpenCV stitching transform has a projective pole in the source image");
+    }
+    const bool negative = std::signbit(denominator);
+    if (negative_denominator.has_value() && negative != *negative_denominator) {
+      return absl::FailedPreconditionError("OpenCV stitching transform has a projective pole in the source image");
+    }
+    negative_denominator = negative;
+  }
+  return absl::OkStatus();
 }
 
 cv::Matx33d to_matx33(const cv::Mat& matrix) {
@@ -306,7 +326,7 @@ const char* MappingBackendName(MappingBackend backend) {
 }
 
 absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value) {
-  const std::string normalized = normalize_choice(value.empty() ? "nona" : value);
+  const std::string normalized = normalize_choice(value.empty() ? "opencv-magsac" : value);
   if (normalized == "nona")
     return MappingBackend::kNona;
   if (normalized == "opencv-magsac" || normalized == "magsac" || normalized == "magsac++")
@@ -405,6 +425,9 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     return absl::FailedPreconditionError("OpenCV inverse stitching transform is invalid");
   cv::Matx33d rtl = to_matx33(right_to_left_64);
   cv::Matx33d ltr = to_matx33(left_to_right_64);
+  status = validate_projective_domain(rtl, right_bgr);
+  if (!status.ok())
+    return status;
 
   std::vector<cv::Point2d> canvas_points;
   for (const cv::Point2d& p : image_corners(left_bgr))

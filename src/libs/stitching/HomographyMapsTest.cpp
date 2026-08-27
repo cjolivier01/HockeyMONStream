@@ -162,6 +162,10 @@ int main() {
 
   ok &= expect(
       hm::stitching::ParseMappingBackend("opencv_magsac").ok(), "mapping backend parser should accept underscores");
+  auto default_backend = hm::stitching::ParseMappingBackend("");
+  ok &= expect(
+      default_backend.ok() && *default_backend == hm::stitching::MappingBackend::kOpenCvMagsac,
+      "an omitted mapping backend should default to MAGSAC");
   ok &= expect(hm::stitching::ParseMappingBackend("MAGSAC++").ok(), "mapping backend parser should accept UI label");
   ok &= expect(hm::stitching::ParseMappingBackend("RANSAC").ok(), "mapping backend parser should accept UI label");
   ok &= expect(
@@ -182,6 +186,41 @@ int main() {
            root / "three-point-magsac", left, right, three_point_matches, hm::stitching::MappingBackend::kOpenCvMagsac)
            .ok(),
       "MAGSAC mapping should reject fewer than four control points");
+
+  fs::path projective_pole_dir = root / "projective-pole";
+  fs::create_directories(projective_pole_dir);
+  std::vector<hm::stitching::FeatureMatch> projective_pole_matches;
+  for (const float x : {4.0f, 12.0f, 20.0f, 28.0f}) {
+    for (const float y : {4.0f, 12.0f, 20.0f}) {
+      const float denominator = 1.0f - x / 50.0f;
+      projective_pole_matches.push_back({{x / denominator, y / denominator}, {x, y}, 0.9f});
+    }
+  }
+  auto projective_pole = hm::stitching::CreateOpenCvMappingFiles(
+      projective_pole_dir, left, right, projective_pole_matches, hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !projective_pole.ok() &&
+          std::string(projective_pole.status().message()).find("projective pole") != std::string::npos,
+      "MAGSAC mapping should reject a fitted homography whose projective pole crosses the source image");
+
+  fs::path near_projective_pole_dir = root / "near-projective-pole";
+  fs::create_directories(near_projective_pole_dir);
+  std::vector<hm::stitching::FeatureMatch> near_projective_pole_matches;
+  for (const float x : {4.0f, 12.0f, 20.0f, 28.0f}) {
+    for (const float y : {4.0f, 12.0f, 20.0f}) {
+      const float denominator = 1.0f - x / 99.1f;
+      near_projective_pole_matches.push_back({{x / denominator, y / denominator}, {x, y}, 0.9f});
+    }
+  }
+  auto near_projective_pole = hm::stitching::CreateOpenCvMappingFiles(
+      near_projective_pole_dir,
+      left,
+      right,
+      near_projective_pole_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac);
+  ok &= expect(
+      !near_projective_pole.ok() && near_projective_pole.status().code() == absl::StatusCode::kResourceExhausted,
+      "MAGSAC mapping should reject near-pole canvas extents before converting them to integer dimensions");
 
   fs::path rotated_dir = root / "rotated";
   fs::create_directories(rotated_dir);

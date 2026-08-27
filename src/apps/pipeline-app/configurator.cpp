@@ -6928,12 +6928,14 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   };
   const auto canonical_backend = [](const YAML::Node& root) -> absl::StatusOr<std::string> {
     const auto node = get_node(root, "stitching.mapping_backend");
+    if (!node.has_value()) {
+      return std::string(stitching::MappingBackendName(stitching::MappingBackend::kOpenCvMagsac));
+    }
     if (node.has_value() && !node->IsScalar()) {
       return absl::InvalidArgumentError("stitching.mapping_backend must be a scalar value");
     }
-    stitching::MappingBackend backend = stitching::MappingBackend::kOpenCvMagsac;
-    HM_ASSIGN_OR_RETURN(
-        backend, stitching::ParseMappingBackend(node.has_value() ? node->as<std::string>() : std::string()));
+    stitching::MappingBackend backend;
+    HM_ASSIGN_OR_RETURN(backend, stitching::ParseMappingBackend(node->as<std::string>()));
     return std::string(stitching::MappingBackendName(backend));
   };
   const auto canonical_autooptimizer = [](const YAML::Node& root) -> absl::StatusOr<bool> {

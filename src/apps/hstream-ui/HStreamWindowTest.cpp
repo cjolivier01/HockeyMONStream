@@ -11,6 +11,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
@@ -2492,6 +2493,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
     return false;
   }
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  QApplication::processEvents();
+  if (!expect(
+          run_autooptimizer->isChecked(),
+          "Selecting the NONA mapping backend must enable its required panorama autooptimizer")) {
+    return false;
+  }
+  run_autooptimizer->setChecked(false);
+  QApplication::processEvents();
+  if (!expect(
+          mapping_backend->currentData().toString() == "opencv-magsac",
+          "Turning the autooptimizer off while NONA is selected must return to the default MAGSAC++ backend")) {
+    return false;
+  }
+
   preview_tabs->setCurrentIndex(1);
   stitched_control_tabs->setCurrentIndex(1);
   QApplication::processEvents();
@@ -2543,6 +2559,66 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     std::cerr << "minimumSizeHint=" << minimum_hint.width() << 'x' << minimum_hint.height() << '\n';
     return false;
   }
+  const QString invalid_pair_config_path = QDir(window->gameDirectoryText()).filePath("config.yaml");
+  const QString invalid_pair_artifact_path = QDir(window->gameDirectoryText()).filePath("seam_file.png");
+  QFile invalid_pair_config(invalid_pair_config_path);
+  if (!invalid_pair_config.open(QIODevice::ReadOnly))
+    return false;
+  const QByteArray invalid_pair_config_before = invalid_pair_config.readAll();
+  invalid_pair_config.close();
+  QFile existing_artifact(invalid_pair_artifact_path);
+  const bool artifact_existed = existing_artifact.exists();
+  QByteArray artifact_before;
+  if (artifact_existed) {
+    if (!existing_artifact.open(QIODevice::ReadOnly))
+      return false;
+    artifact_before = existing_artifact.readAll();
+    existing_artifact.close();
+  }
+  QFile invalid_pair_artifact(invalid_pair_artifact_path);
+  if (!invalid_pair_artifact.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+      invalid_pair_artifact.write("valid stitching artifact") < 0) {
+    return false;
+  }
+  invalid_pair_artifact.close();
+  {
+    const QSignalBlocker backend_signals(mapping_backend);
+    const QSignalBlocker optimizer_signals(run_autooptimizer);
+    mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+    run_autooptimizer->setChecked(false);
+  }
+  const int invalid_pair_clean_commands = window->logText().count("stitching calibration clean command");
+  activate(start);
+  QFile invalid_pair_config_after_file(invalid_pair_config_path);
+  QFile invalid_pair_artifact_after_file(invalid_pair_artifact_path);
+  const bool read_invalid_pair_files = invalid_pair_config_after_file.open(QIODevice::ReadOnly) &&
+      invalid_pair_artifact_after_file.open(QIODevice::ReadOnly);
+  const QByteArray invalid_pair_config_after =
+      read_invalid_pair_files ? invalid_pair_config_after_file.readAll() : QByteArray();
+  const QByteArray invalid_pair_artifact_after =
+      read_invalid_pair_files ? invalid_pair_artifact_after_file.readAll() : QByteArray();
+  invalid_pair_config_after_file.close();
+  invalid_pair_artifact_after_file.close();
+  const bool invalid_pair_rejected = expect(
+      read_invalid_pair_files && window->pipelineStateText() == "STOPPED" &&
+          window->logText().contains("NONA mapping backend requires Run panorama autooptimizer") &&
+          window->logText().count("stitching calibration clean command") == invalid_pair_clean_commands &&
+          invalid_pair_config_after == invalid_pair_config_before &&
+          invalid_pair_artifact_after == "valid stitching artifact",
+      "An invalid NONA-without-autooptimizer state must be rejected before config publication or artifact cleanup");
+  if (artifact_existed) {
+    QFile restore_artifact(invalid_pair_artifact_path);
+    if (!restore_artifact.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        restore_artifact.write(artifact_before) != artifact_before.size()) {
+      return false;
+    }
+  } else {
+    QFile::remove(invalid_pair_artifact_path);
+  }
+  mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
+  run_autooptimizer->setChecked(false);
+  if (!invalid_pair_rejected)
+    return false;
   const bool architecture_supports_x11_embedding =
 #if defined(__x86_64__)
       true;
@@ -8401,6 +8477,23 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
           mapping_backend->currentData().toString() == "opencv-affine-ransac" && run_autooptimizer->isChecked() &&
               !save->isEnabled(),
           "UI load must restore previous explicit stitching algorithm choices displaced by CLI materialization");
+
+      copied_config_node = YAML::LoadFile(copied_config.string());
+      copied_config_node["stitching"]["mapping_backend"] = "nona";
+      copied_config_node["stitching"]["run_autooptimizer"] = false;
+      copied_config_node["hstream_ui"].remove("generated_stitching_backend_choices");
+      std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+      activate(create);
+      ok &= expect(
+          mapping_backend->currentData().toString() == "opencv-magsac" && !run_autooptimizer->isChecked() &&
+              save->isEnabled(),
+          "UI load must normalize an invalid NONA-without-autooptimizer pair and offer to save the correction");
+      activate(save);
+      const YAML::Node normalized_backend = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          normalized_backend["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+              !normalized_backend["stitching"]["run_autooptimizer"].as<bool>() && !save->isEnabled(),
+          "Saving a normalized backend pair must persist MAGSAC with the autooptimizer disabled");
 
       mode->setCurrentIndex(mode->findData("program"));
       const int zero_argument_count = user_default_window.logText().count("--stitch-frame-time=00:00:00");
