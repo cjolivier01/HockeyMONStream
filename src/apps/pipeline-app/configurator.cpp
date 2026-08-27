@@ -7511,10 +7511,13 @@ absl::Status Configurator::complete_configuration(
     try {
       const YAML::Node current = YAML::LoadFile(private_config_file.string());
       if (!clean_requested && has_active_hmstitcher) {
+        bool expected_run_autooptimizer = false;
+        HM_ASSIGN_OR_RETURN(
+            expected_run_autooptimizer, get_yaml_bool_value(config_, "stitching.run_autooptimizer", false));
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
             get_node_value(config_, "stitching.mapping_backend", std::string()),
-            get_node_value(config_, "stitching.run_autooptimizer", false)};
+            expected_run_autooptimizer};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));
