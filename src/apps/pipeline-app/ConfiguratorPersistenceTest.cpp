@@ -518,6 +518,58 @@ play-tracker:
           mapped_canonical["sink0"]["width"].as<int>() == 1280 && mapped_canonical["sink0"]["height"].as<int>() == 720,
       "Explicit canonical game values must replace lower-ranked structural native values for every supported mapping");
 
+  const fs::path stale_runtime_polygon_dir = games / "mapping-stale-runtime-polygon";
+  fs::create_directories(stale_runtime_polygon_dir);
+  YAML::Node stale_runtime_polygon(YAML::NodeType::Map);
+  stale_runtime_polygon["stitching"]["enabled"] = true;
+  stale_runtime_polygon["stitching"]["post_stitch_rotate_degrees"] = 15.0;
+  stale_runtime_polygon["stitching"]["generated_field_mask_post_stitch_rotate_degrees"] = 0.0;
+  for (const auto& point : std::vector<std::pair<int, int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}}) {
+    YAML::Node coordinates(YAML::NodeType::Sequence);
+    coordinates.push_back(point.first);
+    coordinates.push_back(point.second);
+    stale_runtime_polygon["rink"]["scoreboard"]["perspective_polygon"].push_back(coordinates);
+  }
+  std::ofstream(stale_runtime_polygon_dir / "config.yaml") << YAML::Dump(stale_runtime_polygon) << '\n';
+  const fs::path stale_runtime_structure_path = root / "mapping-stale-runtime-structure.yaml";
+  YAML::Node stale_runtime_structure = YAML::Clone(structural_custom);
+  stale_runtime_structure["application"]["complete-configuration"] = 1;
+  std::ofstream(stale_runtime_structure_path) << YAML::Dump(stale_runtime_structure) << '\n';
+  hm::Configurator stale_runtime_polygon_configurator(
+      "mapping-stale-runtime-polygon", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool stale_runtime_polygon_loaded = stale_runtime_polygon_configurator.configure().ok() &&
+      stale_runtime_polygon_configurator.underlay_config("pipeline", stale_runtime_structure_path.string());
+  const absl::Status stale_runtime_polygon_status = stale_runtime_polygon_loaded
+      ? stale_runtime_polygon_configurator.complete_configuration(
+            /*force=*/false,
+            /*clean_stitching_artifacts=*/false,
+            /*clean_stitching_from_control_points=*/false,
+            /*clean_expected_invalidation_id=*/{},
+            /*show_render_sink=*/false,
+            /*show_render_scale=*/-1.0,
+            bundled_baseline.ok() ? bundled_baseline->root : fs::path())
+      : absl::InternalError("stale runtime scoreboard fixture did not load");
+  const YAML::Node stale_runtime_after = fs::is_regular_file(stale_runtime_polygon_dir / "config.yaml")
+      ? YAML::LoadFile((stale_runtime_polygon_dir / "config.yaml").string())
+      : YAML::Node();
+  const auto stale_runtime_rotation_marker =
+      hm::get_node(stale_runtime_after, "stitching.generated_field_mask_post_stitch_rotate_degrees");
+  const auto stale_runtime_native_polygon = hm::get_node(
+      stale_runtime_polygon_configurator.config(), "pipeline.hmplaycropper.scoreboard-perspective-polygon");
+  const auto stale_runtime_persisted_polygon = hm::get_node(stale_runtime_after, "rink.scoreboard.perspective_polygon");
+  const bool stale_runtime_polygon_cleared = stale_runtime_polygon_loaded &&
+      !stale_runtime_native_polygon.has_value() && !stale_runtime_persisted_polygon.has_value() &&
+      stale_runtime_rotation_marker.has_value() && stale_runtime_rotation_marker->IsScalar() &&
+      stale_runtime_rotation_marker->as<double>() == 15.0;
+  if (!stale_runtime_polygon_cleared) {
+    std::cerr << "stale runtime polygon configuration status: " << stale_runtime_polygon_status << '\n'
+              << "runtime config: " << YAML::Dump(stale_runtime_polygon_configurator.config()) << '\n'
+              << "private config: " << YAML::Dump(stale_runtime_after) << '\n';
+  }
+  ok &= expect(
+      stale_runtime_polygon_cleared,
+      "Rotation invalidation must clear a canonical polygon already materialized into the active native pipeline");
+
   const fs::path canonical_null_game_dir = games / "mapping-canonical-null";
   fs::create_directories(canonical_null_game_dir);
   YAML::Node native_width(YAML::NodeType::Map);
@@ -569,6 +621,73 @@ play-tracker:
           mapping_private_only_width.config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
                   .as<int>() == 1536,
       "Bundled baseline null max stitched width must not clear a private-only native cap");
+
+  const fs::path private_width_public_null_game_dir = games / "mapping-private-width-public-null";
+  fs::create_directories(private_width_public_null_game_dir);
+  YAML::Node private_width_public_null(YAML::NodeType::Map);
+  private_width_public_null["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
+  private_width_public_null["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1536;
+  const fs::path private_width_public_null_path = root / "mapping-private-width-public-null.yaml";
+  std::ofstream(private_width_public_null_path) << YAML::Dump(private_width_public_null) << '\n';
+  hm::Configurator mapping_private_width_public_null(
+      "mapping-private-width-public-null", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_private_width_public_null_loaded = mapping_private_width_public_null.configure().ok() &&
+      mapping_private_width_public_null.underlay_config("pipeline", private_width_public_null_path.string());
+  const absl::Status mapping_private_width_public_null_status = mapping_private_width_public_null_loaded
+      ? mapping_private_width_public_null.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping private-width/public-null fixture did not load");
+  ok &= expect(
+      mapping_private_width_public_null_status.ok() &&
+          !mapping_private_width_public_null.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"]
+               .IsDefined() &&
+          mapping_private_width_public_null
+                  .config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+                  .as<int>() == 1536,
+      "An unranked private max-width cap must remove a same-rank public null alias");
+
+  const fs::path conflicting_private_width_game_dir = games / "mapping-conflicting-private-width";
+  fs::create_directories(conflicting_private_width_game_dir);
+  YAML::Node conflicting_private_width(YAML::NodeType::Map);
+  conflicting_private_width["hmstitcher"]["private-properties"]["max-output-width"] = 1536;
+  conflicting_private_width["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 3072;
+  const fs::path conflicting_private_width_path = root / "mapping-conflicting-private-width.yaml";
+  std::ofstream(conflicting_private_width_path) << YAML::Dump(conflicting_private_width) << '\n';
+  hm::Configurator mapping_conflicting_private_width(
+      "mapping-conflicting-private-width", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_conflicting_private_width_loaded = mapping_conflicting_private_width.configure().ok() &&
+      mapping_conflicting_private_width.underlay_config("pipeline", conflicting_private_width_path.string());
+  const absl::Status mapping_conflicting_private_width_status = mapping_conflicting_private_width_loaded
+      ? mapping_conflicting_private_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping conflicting-private-width fixture did not load");
+  ok &= expect(
+      mapping_conflicting_private_width_status.ok() &&
+          mapping_conflicting_private_width.config()["pipeline"]["hmstitcher"]["private-properties"]["max-output-width"]
+                  .as<int>() == 1536 &&
+          !mapping_conflicting_private_width
+               .config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+               .IsDefined(),
+      "Conflicting unranked private max-width aliases must normalize to the deterministic winner");
+
+  const fs::path native_null_width_game_dir = games / "mapping-native-null-width";
+  fs::create_directories(native_null_width_game_dir);
+  YAML::Node native_null_width(YAML::NodeType::Map);
+  native_null_width["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
+  native_null_width["hmstitcher"]["private-properties"]["stitch_max_output_width"] = YAML::Node(YAML::NodeType::Null);
+  const fs::path native_null_width_path = root / "mapping-native-null-width.yaml";
+  std::ofstream(native_null_width_path) << YAML::Dump(native_null_width) << '\n';
+  hm::Configurator mapping_native_null_width(
+      "mapping-native-null-width", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const bool mapping_native_null_width_loaded = mapping_native_null_width.configure().ok() &&
+      mapping_native_null_width.underlay_config("pipeline", native_null_width_path.string());
+  const absl::Status mapping_native_null_width_status = mapping_native_null_width_loaded
+      ? mapping_native_null_width.apply_supported_baseline_mappings()
+      : absl::InternalError("mapping native-null-width fixture did not load");
+  ok &= expect(
+      mapping_native_null_width_status.ok() &&
+          !mapping_native_null_width.config()["pipeline"]["hmstitcher"]["properties"]["max-output-width"].IsDefined() &&
+          !mapping_native_null_width.config()["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"]
+               .IsDefined(),
+      "Unranked null native max-width aliases must normalize to an absent GObject property");
 
   const fs::path ranked_width_game_dir = games / "mapping-ranked-max-width-alias";
   fs::create_directories(ranked_width_game_dir);
@@ -964,8 +1083,10 @@ play-tracker:
           (*layered_config)["pipeline"]["user-only"].as<std::string>() == "yes" &&
           (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes" &&
           (*layered_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
-          !hm::get_node(layered.game_private_config(), "stitching.stitch_frame_time").has_value(),
-      "Config precedence must be baseline, then user overlay, then game-private YAML");
+          !hm::get_node(layered.game_private_config(), "stitching.stitch_frame_time").has_value() &&
+          !fs::exists(layered_game / ".hstream-stitch.lock"),
+      "Config precedence must be baseline, then user overlay, then game-private YAML without artifact recovery for "
+      "an ordinary config");
   ::unsetenv("HM_GAME_DIR");
   ok &= expect(
       hm::Configurator::get_game_dir("layered") == games / "layered",
@@ -997,6 +1118,26 @@ play-tracker:
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = games.string();
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
+
+  const fs::path canvas_cache_game = games / "canvas-cache-save";
+  fs::create_directories(canvas_cache_game);
+  std::ofstream(canvas_cache_game / "config.yaml") << "generation: old\n";
+  std::ofstream(canvas_cache_game / "rink_mask_0.png") << "old-mask\n";
+  std::ofstream(canvas_cache_game / "s.png") << "old-stitched-snapshot\n";
+  hm::Configurator canvas_cache_configurator(
+      "canvas-cache-save", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto canvas_cache_loaded = canvas_cache_configurator.load_config();
+  YAML::Node canvas_cache_desired(YAML::NodeType::Map);
+  canvas_cache_desired["generation"] = "new";
+  const absl::Status canvas_cache_saved = canvas_cache_loaded.ok()
+      ? canvas_cache_configurator.save_private_config(
+            canvas_cache_desired, /*expected_invalidation_id=*/{}, /*remove_canvas_artifacts=*/true)
+      : canvas_cache_loaded.status();
+  ok &= expect(
+      canvas_cache_saved.ok() && !fs::exists(canvas_cache_game / "rink_mask_0.png") &&
+          !fs::exists(canvas_cache_game / "s.png") &&
+          YAML::LoadFile((canvas_cache_game / "config.yaml").string())["generation"].as<std::string>() == "new",
+      "Configurator canvas invalidation must transactionally remove rink masks and the stitched snapshot");
 
   const fs::path tracker_base_path = root / "custom-playtracker.yaml";
   std::ofstream(tracker_base_path) << R"(play-tracker:
@@ -3188,6 +3329,49 @@ play-tracker:
   ok &= expect(
       forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
       "Forced configuration must abort before using or deleting a superseding artifact generation");
+
+  const fs::path runtime_claim_dir = games / "runtime-claim";
+  fs::create_directories(runtime_claim_dir);
+  YAML::Node runtime_claim_config(YAML::NodeType::Map);
+  runtime_claim_config["pipeline"]["application"]["complete-configuration"] = "1";
+  runtime_claim_config["pipeline"]["hmstitcher"]["enable"] = "1";
+  runtime_claim_config["pipeline"]["hmstitcher"]["one-pass-mode"] = "1";
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["frame_count"] = 4;
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  runtime_claim_config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "runtime-claim-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(runtime_claim_dir, YAML::Dump(runtime_claim_config) + "\n").ok(),
+      "runtime-discovered calibration fixture must publish");
+  hm::Configurator runtime_claim_configurator(
+      "runtime-claim", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator runtime_claim_peer("runtime-claim", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  ok &= expect(
+      runtime_claim_configurator.configure().ok() && runtime_claim_peer.configure().ok(),
+      "runtime-discovered calibration contexts must load the same completed owner");
+  const absl::Status runtime_claim_status = runtime_claim_configurator.complete_configuration(
+      /*force=*/false,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/"runtime-claim-a");
+  (void)runtime_claim_status;
+  const absl::Status runtime_peer_claim_status = runtime_claim_peer.complete_configuration(
+      /*force=*/false,
+      /*clean_stitching_artifacts=*/false,
+      /*clean_stitching_from_control_points=*/false,
+      /*clean_expected_invalidation_id=*/"runtime-claim-a");
+  const YAML::Node claimed_runtime_config = YAML::LoadFile((runtime_claim_dir / "config.yaml").string());
+  const YAML::Node claimed_runtime_calibration = claimed_runtime_config["hstream_ui"]["stitching_calibration"];
+  ok &= expect(
+      runtime_claim_configurator.stitching_calibration_required() &&
+          runtime_claim_configurator.active_stitching_invalidation_id() == "runtime-claim-a" &&
+          runtime_peer_claim_status.code() != absl::StatusCode::kAborted &&
+          runtime_claim_peer.active_stitching_invalidation_id() == "runtime-claim-a" &&
+          claimed_runtime_calibration["status"].as<std::string>() == "pending" &&
+          claimed_runtime_calibration["stale_from"].as<std::string>() == "input" &&
+          claimed_runtime_calibration["artifacts_invalidated"].as<bool>() &&
+          claimed_runtime_calibration["invalidation_id"].as<std::string>() == "runtime-claim-a",
+      "runtime-discovered missing mappings must share the reserved owner before Hugin publication can begin");
 
   const fs::path superseded_complete_dir = games / "superseded-complete";
   fs::create_directories(superseded_complete_dir);

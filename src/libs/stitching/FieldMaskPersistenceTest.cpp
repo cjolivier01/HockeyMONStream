@@ -2,6 +2,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <atomic>
 #include <chrono>
@@ -11,8 +12,11 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
+#include <fcntl.h>
 #include <opencv2/imgcodecs.hpp>
 #include <sys/stat.h>
 #include <tiffio.h>
@@ -56,6 +60,7 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
 } // namespace
 
 int main() {
+  ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / ("field-mask-persistence-test-" + std::to_string(::getpid()));
@@ -174,6 +179,117 @@ int main() {
     const YAML::Node bbox = config["rink"]["ice_contours_combined_bbox"];
     ok &= expect(bbox[0].as<double>() == 2.0 && bbox[2].as<double>() == 28.0, "bbox must persist as x1,y1,x2,y2");
 
+    auto native_dimensioned_generation =
+        hm::stitching::stitched_output_generation_id(initial_hugin_generation_id, 0.0, 32, 24);
+    const auto loaded_legacy_mask = native_dimensioned_generation.ok()
+        ? hm::stitching::load_field_mask_for_loaded_generation(
+              root.string(), *native_dimensioned_generation, initial_hugin_generation_id)
+        : absl::StatusOr<cv::Mat>(native_dimensioned_generation.status());
+    const YAML::Node config_after_loaded_legacy = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        loaded_legacy_mask.ok() &&
+            config_after_loaded_legacy["rink"]["stitched_output_generation"].as<std::string>() ==
+                initial_output_generation,
+        "a frame-loaded Hugin generation must not migrate durable field-mask metadata");
+    ok &= expect(
+        native_dimensioned_generation.ok() &&
+            hm::stitching::is_field_mask_configured_for_stitching_config(
+                root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/0.0) &&
+            hm::stitching::is_field_mask_configured(root.string(), *native_dimensioned_generation) &&
+            hm::stitching::is_field_mask_configured_for_loaded_generation(
+                root.string(), *native_dimensioned_generation, initial_hugin_generation_id) &&
+            !hm::stitching::is_field_mask_configured_for_loaded_generation(
+                root.string(), *native_dimensioned_generation, "stale-hugin-generation"),
+        "startup and dimensioned runtime checks must both accept a size-validated legacy native field mask");
+    const YAML::Node migrated_native_config = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        native_dimensioned_generation.ok() &&
+            migrated_native_config["rink"]["stitched_output_generation"].as<std::string>() ==
+                *native_dimensioned_generation,
+        "accepting a native legacy field mask must migrate its generation to the dimensioned alias");
+
+    if (native_dimensioned_generation.ok()) {
+      const fs::path mask_path = root / "rink_mask_0.png";
+      std::ifstream input(mask_path, std::ios::binary);
+      const std::vector<unsigned char> valid_mask(
+          (std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+      std::vector<unsigned char> oversized_mask = valid_mask;
+      if (oversized_mask.size() >= 24) {
+        oversized_mask[16] = 0x7f;
+        oversized_mask[17] = 0xff;
+        oversized_mask[18] = 0xff;
+        oversized_mask[19] = 0xff;
+        std::ofstream output(mask_path, std::ios::binary | std::ios::trunc);
+        output.write(
+            reinterpret_cast<const char*>(oversized_mask.data()), static_cast<std::streamsize>(oversized_mask.size()));
+      }
+      const int oversized_descriptor = ::open(mask_path.c_str(), O_WRONLY | O_CLOEXEC);
+      const bool oversized_sparse_file =
+          oversized_descriptor >= 0 && ::ftruncate(oversized_descriptor, 512LL * 1024LL * 1024LL) == 0;
+      if (oversized_descriptor >= 0)
+        ::close(oversized_descriptor);
+      const auto oversized_load = hm::stitching::load_field_mask(root.string(), *native_dimensioned_generation);
+      ok &= expect(
+          valid_mask.size() >= 24 && oversized_sparse_file && absl::IsFailedPrecondition(oversized_load.status()) &&
+              oversized_load.status().message().find("PNG dimensions") != std::string_view::npos,
+          "field-mask loading must reject oversized PNG dimensions before allocating the encoded payload");
+      std::ofstream output(mask_path, std::ios::binary | std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(valid_mask.data()), static_cast<std::streamsize>(valid_mask.size()));
+      output.close();
+
+      const fs::path symlink_target = root / "rink-mask-load-symlink-target.png";
+      std::error_code symlink_error;
+      fs::rename(mask_path, symlink_target, symlink_error);
+      const bool mask_moved = !symlink_error;
+      if (mask_moved)
+        fs::create_symlink(symlink_target, mask_path, symlink_error);
+      const bool symlink_created = !symlink_error;
+      const auto symlinked_load = hm::stitching::load_field_mask(root.string(), *native_dimensioned_generation);
+      ok &= expect(
+          symlink_created && absl::IsFailedPrecondition(symlinked_load.status()),
+          "field-mask loading must not follow a symbolic link");
+      std::error_code restore_error;
+      if (mask_moved) {
+        if (symlink_created)
+          fs::remove(mask_path, restore_error);
+        if (!restore_error)
+          fs::rename(symlink_target, mask_path, restore_error);
+      }
+      ok &= expect(mask_moved && !restore_error, "field-mask symlink fixture must restore the regular mask");
+    }
+
+    if (native_dimensioned_generation.ok()) {
+      const auto replace_legacy_mask = [&](bool corrupt_existing_mask) {
+        YAML::Node legacy_config = YAML::LoadFile((root / "config.yaml").string());
+        legacy_config["rink"]["stitched_output_generation"] = initial_output_generation;
+        legacy_config["rink"]["scoreboard"]["perspective_polygon"] =
+            std::vector<std::vector<int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}};
+        {
+          std::ofstream output(root / "config.yaml");
+          output << legacy_config << '\n';
+        }
+        if (corrupt_existing_mask) {
+          std::ofstream(root / "rink_mask_0.png", std::ios::binary | std::ios::trunc) << "corrupt-mask";
+        } else {
+          fs::remove(root / "rink_mask_0.png");
+        }
+        const cv::Mat snapshot(24, 32, CV_8UC3, cv::Scalar(1, 2, 3));
+        const absl::Status replacement = hm::stitching::save_rink_profile_with_stitched_image(
+            root.string(), profile, snapshot, {}, *native_dimensioned_generation);
+        const YAML::Node replaced_config = YAML::LoadFile((root / "config.yaml").string());
+        return replacement.ok() &&
+            replaced_config["rink"]["stitched_output_generation"].as<std::string>() == *native_dimensioned_generation &&
+            replaced_config["rink"]["scoreboard"]["perspective_polygon"].IsSequence() &&
+            !cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).empty();
+      };
+      ok &= expect(
+          replace_legacy_mask(/*corrupt_existing_mask=*/false),
+          "a missing native legacy mask must be replaceable without invalidating same-geometry scoreboard data");
+      ok &= expect(
+          replace_legacy_mask(/*corrupt_existing_mask=*/true),
+          "a corrupt native legacy mask must be replaceable without invalidating same-geometry scoreboard data");
+    }
+
     auto scaled_canvas = hm::stitching::stitching_canvas_size(root.string(), /*max_output_width=*/16);
     ok &= expect(scaled_canvas.ok(), "scaled field-mask test must identify output dimensions");
     auto scaled_generation = scaled_canvas.ok()
@@ -182,7 +298,8 @@ int main() {
         : absl::InvalidArgumentError("scaled canvas unavailable");
     ok &= expect(scaled_generation.ok(), "scaled field-mask test must identify output dimensions");
     ok &= expect(
-        !hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/16),
+        !hm::stitching::is_field_mask_configured_for_stitching_config(
+            root.string(), /*max_output_width=*/16, /*post_stitch_rotate_degrees=*/0.0),
         "capped field-mask preflight must not accept legacy native-sized masks");
     if (scaled_generation.ok()) {
       YAML::Node scaled_config = YAML::LoadFile((root / "config.yaml").string());
@@ -197,7 +314,8 @@ int main() {
               static_cast<int>(scaled_canvas->height), static_cast<int>(scaled_canvas->width), CV_8U, cv::Scalar(255)));
       ok &= expect(
           hm::stitching::is_field_mask_configured(root.string(), *scaled_generation) &&
-              hm::stitching::is_field_mask_configured_for_stitching_config(root.string(), /*max_output_width=*/16) &&
+              hm::stitching::is_field_mask_configured_for_stitching_config(
+                  root.string(), /*max_output_width=*/16, /*post_stitch_rotate_degrees=*/0.0) &&
               !hm::stitching::is_field_mask_configured(root.string(), initial_output_generation),
           "dimensioned runtime generation must validate field masks against the scaled live canvas");
       cv::imwrite((root / "rink_mask_0.png").string(), first);
@@ -307,6 +425,285 @@ int main() {
                 "rink-run-b",
         "superseded rink inference must not overwrite the committed stitched calibration snapshot");
 
+    YAML::Node rotation_owner = YAML::LoadFile((root / "config.yaml").string());
+    YAML::Node rotation_calibration = rotation_owner["hstream_ui"]["stitching_calibration"];
+    rotation_calibration["status"] = "complete";
+    rotation_calibration["invalidation_id"] = "rink-run-a";
+    rotation_calibration.remove("stale_from");
+    rotation_calibration.remove("artifacts_invalidated");
+    rotation_owner["stitching"]["post_stitch_rotate_degrees"] = 0.0;
+    {
+      std::ofstream output(root / "config.yaml");
+      output << rotation_owner << '\n';
+    }
+    const auto pre_rotation_generation =
+        hm::stitching::configured_stitched_output_generation_id(root.string(), /*max_output_width=*/0);
+    ok &= expect(pre_rotation_generation.ok(), "stale-rotation fixture must have a current output generation");
+    if (pre_rotation_generation.ok()) {
+      YAML::Node completed_rotation = YAML::LoadFile((root / "config.yaml").string());
+      completed_rotation["rink"]["stitched_output_generation"] = *pre_rotation_generation;
+      completed_rotation["rink"]["stitched_output_persisted_rotation_degrees"] = 0.0;
+      completed_rotation["rink"]["scoreboard"]["perspective_polygon"] =
+          std::vector<std::vector<int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}};
+      std::ofstream(root / "config.yaml") << completed_rotation << '\n';
+    }
+    absl::Status stale_rotation_status = absl::UnknownError("stale rotation publication did not run");
+    ::setenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS", "300", 1);
+    std::thread stale_rotation_publisher([&] {
+      stale_rotation_status = hm::stitching::save_rink_profile_with_stitched_image(
+          root.string(),
+          profile,
+          stale_snapshot,
+          "rink-run-a",
+          pre_rotation_generation.ok() ? *pre_rotation_generation : std::string());
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(75));
+    {
+      auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(root);
+      ok &= expect(config_transaction.ok(), "rotation writer must acquire the config transaction lock");
+      if (config_transaction.ok()) {
+        YAML::Node rotated = YAML::LoadFile((root / "config.yaml").string());
+        rotated["stitching"]["post_stitch_rotate_degrees"] = 7.5;
+        ok &= expect(
+            hm::stitching::publish_game_config(root, YAML::Dump(rotated) + "\n").ok(),
+            "rotation writer must publish before stale rink inference");
+      }
+    }
+    stale_rotation_publisher.join();
+    ::unsetenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS");
+    const cv::Mat after_stale_rotation = cv::imread((root / "s.png").string(), cv::IMREAD_COLOR);
+    const YAML::Node after_stale_rotation_config = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        absl::IsAborted(stale_rotation_status) && !after_stale_rotation.empty() &&
+            cv::norm(after_stale_rotation, committed_snapshot, cv::NORM_INF) == 0 &&
+            after_stale_rotation_config["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5,
+        "stale rink inference must not overwrite a newer stitched-output rotation generation");
+
+    std::string live_override_generation;
+    std::string newer_live_override_generation;
+    auto live_override_canvas_size = hm::stitching::stitching_canvas_size(root.string());
+    {
+      auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+      ok &= expect(generation_lock.ok(), "runtime-rotation override fixture must lock Hugin artifacts");
+      if (generation_lock.ok()) {
+        auto hugin_generation = hm::stitching::HuginProject::GenerationId(root, **generation_lock);
+        if (hugin_generation.ok() && live_override_canvas_size.ok()) {
+          auto generation = hm::stitching::stitched_output_generation_id(
+              *hugin_generation, 9.0, live_override_canvas_size->width, live_override_canvas_size->height);
+          if (generation.ok())
+            live_override_generation = *generation;
+          auto newer_generation = hm::stitching::stitched_output_generation_id(
+              *hugin_generation, 10.0, live_override_canvas_size->width, live_override_canvas_size->height);
+          if (newer_generation.ok())
+            newer_live_override_generation = *newer_generation;
+        }
+      }
+    }
+    const auto live_override_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0, "field-mask-live-9-a");
+    const std::string live_override_authorization_id =
+        live_override_authorization.ok() ? live_override_authorization->authorization_id : std::string();
+    const YAML::Node after_live_override_authorization = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        live_override_authorization.ok() &&
+            after_live_override_authorization["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() ==
+                "complete" &&
+            after_live_override_authorization["rink"]["stitched_output_pending_generation"].as<std::string>() ==
+                live_override_generation &&
+            after_live_override_authorization["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+        "live rotation authorization must defer scoreboard invalidation until the request is committed");
+    const auto newer_live_override_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 10.0, "field-mask-live-10");
+    const std::string newer_live_override_authorization_id =
+        newer_live_override_authorization.ok() ? newer_live_override_authorization->authorization_id : std::string();
+    const absl::Status superseded_publication_authority = hm::stitching::validate_field_mask_publication_authority(
+        root.string(), live_override_generation, live_override_authorization_id);
+    const absl::Status current_publication_authority = hm::stitching::validate_field_mask_publication_authority(
+        root.string(), newer_live_override_generation, newer_live_override_authorization_id);
+    auto held_config_lock = hm::stitching::GameConfigLock::Acquire(root);
+    const auto busy_preflight_start = std::chrono::steady_clock::now();
+    const absl::Status busy_preflight = held_config_lock.ok()
+        ? hm::stitching::validate_field_mask_publication_authority(
+              root.string(), newer_live_override_generation, newer_live_override_authorization_id)
+        : held_config_lock.status();
+    const auto busy_preflight_elapsed = std::chrono::steady_clock::now() - busy_preflight_start;
+    if (held_config_lock.ok())
+      held_config_lock->reset();
+    const auto superseded_same_owner_publication = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(),
+        profile,
+        stale_snapshot,
+        "rink-run-a",
+        pre_rotation_generation.ok() ? *pre_rotation_generation : std::string());
+    const absl::Status unauthenticated_publication =
+        hm::stitching::save_rink_profile(root.string(), profile, "rink-run-a");
+    const YAML::Node after_superseded_same_owner = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        newer_live_override_authorization.ok() &&
+            newer_live_override_authorization->pending_generation == newer_live_override_generation &&
+            absl::IsAborted(superseded_publication_authority) && current_publication_authority.ok() &&
+            absl::IsUnavailable(busy_preflight) && busy_preflight_elapsed < std::chrono::milliseconds(500) &&
+            absl::IsAborted(superseded_same_owner_publication) && absl::IsAborted(unauthenticated_publication) &&
+            after_superseded_same_owner["rink"]["stitched_output_pending_generation"].as<std::string>() ==
+                newer_live_override_generation &&
+            after_superseded_same_owner["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+        "a newer pending live generation must reject the completed same-owner producer without deleting scoreboard data");
+    const auto current_live_override_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 9.0, "field-mask-live-9-b");
+    const std::string current_live_override_authorization_id = current_live_override_authorization.ok()
+        ? current_live_override_authorization->authorization_id
+        : std::string();
+    const absl::Status current_live_override_commit = current_live_override_authorization.ok()
+        ? hm::stitching::commit_live_stitched_output_rotation(
+              root.string(),
+              current_live_override_authorization->pending_generation,
+              current_live_override_authorization->authorization_id)
+        : current_live_override_authorization.status();
+    ok &= expect(
+        current_live_override_authorization.ok() &&
+            current_live_override_authorization->pending_generation == live_override_generation &&
+            current_live_override_commit.ok() &&
+            !YAML::LoadFile((root / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"].IsDefined(),
+        "the current exact live generation must commit scoreboard invalidation after runtime acceptance");
+    NvBufSurfaceParams superseded_live_surface_params{};
+    hm::surface::Surface superseded_live_surface(&superseded_live_surface_params);
+    const absl::Status superseded_pre_inference = hm::stitching::create_field_mask(
+        root.string(),
+        superseded_live_surface,
+        live_override_generation,
+        "rink-run-a",
+        {},
+        live_override_authorization_id);
+    ok &= expect(
+        absl::IsAborted(superseded_pre_inference),
+        "field-mask inference must fence a superseded same-generation authorization before GPU readback");
+    hm::stitching::RinkProfile mismatched_profile = profile;
+    mismatched_profile.masks = {
+        cv::Mat(12, 16, CV_8U, cv::Scalar(255)),
+        cv::Mat(12, 16, CV_8U, cv::Scalar(255)),
+    };
+    const auto mismatched_masks = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(),
+        mismatched_profile,
+        stale_snapshot,
+        "rink-run-a",
+        live_override_generation,
+        current_live_override_authorization_id);
+    const auto mismatched_snapshot = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(),
+        profile,
+        cv::Mat(12, 16, CV_8UC3, cv::Scalar(1, 2, 3)),
+        "rink-run-a",
+        live_override_generation,
+        current_live_override_authorization_id);
+    const YAML::Node after_dimension_rejections = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        absl::IsAborted(mismatched_masks) && absl::IsAborted(mismatched_snapshot) &&
+            after_dimension_rejections["rink"]["stitched_output_pending_generation"].as<std::string>() ==
+                live_override_generation,
+        "rink publication must reject mask and snapshot dimensions that disagree with the producer generation");
+    const auto live_override_status = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(),
+        profile,
+        stale_snapshot,
+        "rink-run-a",
+        live_override_generation,
+        current_live_override_authorization_id);
+    const YAML::Node after_live_override = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        !live_override_generation.empty() && live_override_status.ok() &&
+            after_live_override["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5 &&
+            after_live_override["rink"]["stitched_output_generation"].as<std::string>() == live_override_generation &&
+            after_live_override["rink"]["stitched_output_persisted_rotation_degrees"].as<double>() == 7.5 &&
+            !after_live_override["rink"]["stitched_output_pending_generation"].IsDefined() &&
+            hm::stitching::is_field_mask_configured(root.string(), live_override_generation, "rink-run-a"),
+        "live runtime rotation override must publish without rewriting the persisted rotation");
+    const auto delayed_same_generation_publication = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(),
+        profile,
+        committed_snapshot,
+        "rink-run-a",
+        live_override_generation,
+        live_override_authorization_id);
+    ok &= expect(
+        absl::IsAborted(delayed_same_generation_publication),
+        "a delayed B1 producer must not consume B2 authority for the same stitched-output generation");
+
+    const auto crash_authorization =
+        hm::stitching::authorize_live_stitched_output_rotation(root.string(), 10.0, "field-mask-crash-owner");
+    if (crash_authorization.ok()) {
+      auto config_transaction = hm::stitching::GameConfigTransactionLock::Acquire(root);
+      ok &= expect(config_transaction.ok(), "crash-recovery fixture must lock the game config");
+      if (config_transaction.ok()) {
+        YAML::Node crashed = YAML::LoadFile((root / "config.yaml").string());
+        crashed["rink"]["stitched_output_pending_owner_process"] = "999999999:1";
+        ok &= expect(
+            hm::stitching::publish_game_config(root, YAML::Dump(crashed) + "\n").ok(),
+            "crash-recovery fixture must retire its owner process");
+      }
+    }
+    const absl::Status restarted_publication_authority = hm::stitching::validate_field_mask_publication_authority(
+        root.string(), live_override_generation, /*expected_output_authorization_id=*/{});
+    const auto crash_authorization_cleanup = crash_authorization.ok()
+        ? hm::stitching::rollback_live_stitched_output_rotation(
+              root.string(), crash_authorization->pending_generation, crash_authorization->authorization_id)
+        : absl::StatusOr<std::optional<hm::stitching::LiveStitchedOutputAuthorization>>(crash_authorization.status());
+    ok &= expect(
+        crash_authorization.ok() && restarted_publication_authority.ok() && crash_authorization_cleanup.ok(),
+        "a crashed live controller must not permanently block restarted field-mask publication");
+
+    std::string older_live_override_generation;
+    if (!live_override_generation.empty() && live_override_canvas_size.ok()) {
+      auto generation_lock = hm::stitching::HuginProject::RecoverAndLock(root);
+      if (generation_lock.ok()) {
+        auto hugin_generation = hm::stitching::HuginProject::GenerationId(root, **generation_lock);
+        if (hugin_generation.ok()) {
+          auto generation = hm::stitching::stitched_output_generation_id(
+              *hugin_generation, 8.0, live_override_canvas_size->width, live_override_canvas_size->height);
+          if (generation.ok())
+            older_live_override_generation = *generation;
+        }
+      }
+    }
+    const auto late_older_publication = hm::stitching::save_rink_profile_with_stitched_image(
+        root.string(), profile, committed_snapshot, "rink-run-a", older_live_override_generation);
+    const YAML::Node after_late_older_publication = YAML::LoadFile((root / "config.yaml").string());
+    ok &= expect(
+        !older_live_override_generation.empty() && absl::IsAborted(late_older_publication) &&
+            after_late_older_publication["rink"]["stitched_output_generation"].as<std::string>() ==
+                live_override_generation,
+        "a late older runtime rotation must not overwrite a completed newer generation");
+    ok &= expect(
+        hm::stitching::save_rink_profile_with_stitched_image(
+            root.string(), profile, stale_snapshot, "rink-run-a", live_override_generation)
+            .ok(),
+        "completed publication must remain idempotent for the same producer generation");
+
+    struct stat snapshot_before_rollback{};
+    ok &= expect(
+        ::stat((root / "s.png").c_str(), &snapshot_before_rollback) == 0,
+        "rink rollback identity fixture must have a committed snapshot");
+    ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
+    const auto interrupted_snapshot_publication =
+        hm::stitching::save_rink_profile_with_stitched_image(root.string(), profile, stale_snapshot);
+    ::unsetenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC");
+    ok &= expect(
+        !interrupted_snapshot_publication.ok(),
+        "injected stitched-snapshot interruption must retain a recoverable rink journal");
+    auto recovered_snapshot_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    ok &= expect(recovered_snapshot_lock.ok(), "rink snapshot rollback must recover on the next config owner");
+    if (recovered_snapshot_lock.ok())
+      recovered_snapshot_lock->reset();
+    struct stat snapshot_after_rollback{};
+    ok &= expect(
+        ::stat((root / "s.png").c_str(), &snapshot_after_rollback) == 0 &&
+            snapshot_after_rollback.st_dev == snapshot_before_rollback.st_dev &&
+            snapshot_after_rollback.st_ino != snapshot_before_rollback.st_ino &&
+            snapshot_after_rollback.st_size == snapshot_before_rollback.st_size &&
+            snapshot_after_rollback.st_mtim.tv_sec == snapshot_before_rollback.st_mtim.tv_sec &&
+            snapshot_after_rollback.st_mtim.tv_nsec == snapshot_before_rollback.st_mtim.tv_nsec,
+        "rink rollback must restore an independent stitched snapshot with the same content metadata");
+
     ::setenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC", "1", 1);
     const auto interrupted_before_publication = hm::stitching::save_rink_profile(root.string(), profile);
     ::unsetenv("HM_TEST_RINK_INTERRUPT_AFTER_PREPARE_SYNC");
@@ -337,6 +734,25 @@ int main() {
         hm::stitching::save_rink_profile(root.string(), profile).ok() &&
             hm::stitching::is_field_mask_configured(root.string()),
         "regenerating the profile must bind it to the replacement seam generation");
+    const fs::path rink_symlink_target = root / "rink-mask-symlink-target.png";
+    std::error_code rink_symlink_error;
+    fs::rename(root / "rink_mask_0.png", rink_symlink_target, rink_symlink_error);
+    fs::create_symlink(rink_symlink_target, root / "rink_mask_0.png", rink_symlink_error);
+    const auto symlinked_rink_publication = hm::stitching::save_rink_profile(root.string(), profile);
+    ok &= expect(
+        !rink_symlink_error && absl::IsFailedPrecondition(symlinked_rink_publication) &&
+            fs::is_symlink(fs::symlink_status(root / "rink_mask_0.png")) &&
+            cv::imread(rink_symlink_target.string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(32, 24),
+        "rink profile publication must reject a symlinked prior mask without mutating its target");
+    fs::remove(root / "rink_mask_0.png", rink_symlink_error);
+    fs::rename(rink_symlink_target, root / "rink_mask_0.png", rink_symlink_error);
+    ok &= expect(!rink_symlink_error, "symlinked prior-mask fixture must restore the regular mask");
+    ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
+    const auto portable_publication = hm::stitching::save_rink_profile(root.string(), profile);
+    ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
+    ok &= expect(
+        portable_publication.ok() && hm::stitching::is_field_mask_configured(root.string()),
+        "rink profile publication must fall back to copies when hard links and reflinks are unavailable");
 
     const fs::path replacement_mapping = root / "mapping_0000_x.replacement.tif";
     cv::imwrite(replacement_mapping.string(), cv::Mat(24, 32, CV_32F, cv::Scalar(1.0f)));
@@ -372,6 +788,7 @@ int main() {
     auto runtime_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(root);
     ok &= expect(runtime_hugin_lock.ok(), "runtime-override test must lock Hugin artifacts");
     std::string runtime_override_generation;
+    std::string runtime_zero_rotation_generation;
     if (runtime_hugin_lock.ok()) {
       auto runtime_hugin_generation = hm::stitching::HuginProject::GenerationId(root, **runtime_hugin_lock);
       ok &= expect(runtime_hugin_generation.ok(), "runtime-override test must identify Hugin artifacts");
@@ -380,6 +797,10 @@ int main() {
         ok &= expect(generation.ok(), "runtime-override test must identify the exact rotated output");
         if (generation.ok())
           runtime_override_generation = *generation;
+        auto zero_rotation_generation = hm::stitching::stitched_output_generation_id(*runtime_hugin_generation, 0.0);
+        ok &= expect(zero_rotation_generation.ok(), "runtime-override test must identify the unrotated output");
+        if (zero_rotation_generation.ok())
+          runtime_zero_rotation_generation = *zero_rotation_generation;
       }
       runtime_hugin_lock->reset();
     }
@@ -394,9 +815,31 @@ int main() {
         !runtime_override_generation.empty() &&
             hm::stitching::is_field_mask_configured(root.string(), runtime_override_generation),
         "runtime output generation must be authoritative when its Hugin component is current");
+    const std::string runtime_dimensioned_generation =
+        runtime_override_generation.empty() ? std::string() : runtime_override_generation + "output-size:32x24\n";
+    ok &= expect(
+        !runtime_dimensioned_generation.empty() &&
+            hm::stitching::is_field_mask_configured(root.string(), runtime_dimensioned_generation),
+        "a native-size runtime generation must accept only the dimensionless alias with the same rotation");
+    ok &= expect(
+        hm::stitching::is_field_mask_configured_for_stitching_config(
+            root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/5.123456789012345) &&
+            !hm::stitching::is_field_mask_configured_for_stitching_config(
+                root.string(), /*max_output_width=*/0, /*post_stitch_rotate_degrees=*/0.0),
+        "startup preflight must use the effective inherited or CLI rotation instead of private game YAML");
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()),
         "persisted rotation must not accidentally validate a different runtime output generation");
+    YAML::Node stale_runtime_rotation = YAML::LoadFile((root / "config.yaml").string());
+    stale_runtime_rotation["rink"]["stitched_output_generation"] = runtime_zero_rotation_generation;
+    {
+      std::ofstream output(root / "config.yaml");
+      output << stale_runtime_rotation << '\n';
+    }
+    ok &= expect(
+        !runtime_dimensioned_generation.empty() && !runtime_zero_rotation_generation.empty() &&
+            !hm::stitching::is_field_mask_configured(root.string(), runtime_dimensioned_generation),
+        "a native-size legacy alias must not replace the authoritative runtime rotation");
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string(), initial_output_generation),
         "runtime generation validation must reject a stale Hugin component independently of rotation");
@@ -419,6 +862,10 @@ int main() {
       std::ofstream(root / "config.yaml") << "interrupted: true\n";
       cv::imwrite((root / "rink_mask_0.png").string(), cv::Mat(2, 2, CV_8U, cv::Scalar(255)));
     }
+    ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
+    const fs::path rollback_state_target = root / "field-mask-rollback-state-target";
+    std::ofstream(rollback_state_target) << "preserved\n";
+    fs::create_symlink(rollback_state_target, interrupted / "state.rolled_back");
     ::setenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER", "1", 1);
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()),
@@ -436,7 +883,246 @@ int main() {
     ok &= expect(
         cv::imread((root / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(32, 24),
         "rink recovery must restore the prior mask generation");
+    ok &= expect(
+        [&]() {
+          std::ifstream input(rollback_state_target, std::ios::binary);
+          return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) == "preserved\n";
+        }(),
+        "field-mask rollback state publication must replace a journal symlink without following it");
+    ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
     ok &= expect(!fs::exists(interrupted), "recovered rink transaction must be cleaned");
+    fs::remove(rollback_state_target);
+
+    const fs::path symlinked_transaction = root / ".hstream-rink-symlinked-transaction";
+    const fs::path transaction_target = root / "rink-transaction-symlink-target";
+    fs::create_directories(transaction_target / "previous");
+    fs::copy_file(root / "config.yaml", transaction_target / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", transaction_target / "previous" / "rink_mask_0.png");
+    std::ofstream(transaction_target / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(transaction_target / "state") << "PREPARED\n";
+    fs::create_directory_symlink(transaction_target, symlinked_transaction);
+    const std::string config_before_symlinked_transaction = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) &&
+            fs::is_symlink(fs::symlink_status(symlinked_transaction)) &&
+            [&]() {
+              std::ifstream input(transaction_target / "state", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  "PREPARED\n";
+            }() &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_symlinked_transaction;
+            }(),
+        "rink recovery must reject a symlinked transaction directory without mutating either generation");
+    fs::remove(symlinked_transaction);
+    fs::remove_all(transaction_target);
+
+    const fs::path symlinked_previous = root / ".hstream-rink-symlinked-previous";
+    const fs::path previous_target = root / "rink-previous-symlink-target";
+    fs::create_directories(symlinked_previous);
+    fs::create_directories(previous_target);
+    fs::copy_file(root / "config.yaml", previous_target / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", previous_target / "rink_mask_0.png");
+    fs::create_directory_symlink(previous_target, symlinked_previous / "previous");
+    std::ofstream(symlinked_previous / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(symlinked_previous / "state") << "PREPARED\n";
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(symlinked_previous) &&
+            fs::is_symlink(fs::symlink_status(symlinked_previous / "previous")) &&
+            fs::is_regular_file(previous_target / "config.yaml"),
+        "rink recovery must reject a symlinked rollback directory without consuming its target");
+    fs::remove_all(symlinked_previous);
+    fs::remove_all(previous_target);
+
+    const auto root_config_contents = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    const fs::path missing_previous = root / ".hstream-rink-missing-previous";
+    fs::create_directories(missing_previous);
+    std::ofstream(missing_previous / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(missing_previous / "state") << "PREPARED\n";
+    const std::string config_before_missing_previous = root_config_contents();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(missing_previous) &&
+            root_config_contents() == config_before_missing_previous,
+        "field-mask recovery must reject a prepared journal without backups before root mutation");
+    fs::remove_all(missing_previous);
+
+    const fs::path unmanifested_backup = root / ".hstream-rink-unmanifested-backup";
+    fs::create_directories(unmanifested_backup / "previous");
+    fs::copy_file(root / "config.yaml", unmanifested_backup / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", unmanifested_backup / "previous" / "rink_mask_99.png");
+    std::ofstream(unmanifested_backup / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(unmanifested_backup / "state") << "PREPARED\n";
+    const std::string config_before_unmanifested_backup = root_config_contents();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(unmanifested_backup) &&
+            root_config_contents() == config_before_unmanifested_backup && !fs::exists(root / "rink_mask_99.png"),
+        "field-mask recovery must reject an unmanifested validly named backup before root mutation");
+    fs::remove_all(unmanifested_backup);
+
+    const fs::path oversized_backup = root / ".hstream-rink-oversized-backup";
+    fs::create_directories(oversized_backup / "previous");
+    fs::copy_file(root / "config.yaml", oversized_backup / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", oversized_backup / "previous" / "rink_mask_0.png");
+    const bool oversized_backup_created =
+        ::truncate((oversized_backup / "previous" / "config.yaml").c_str(), 16LL * 1024LL * 1024LL + 1) == 0;
+    std::ofstream(oversized_backup / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(oversized_backup / "state") << "PREPARED\n";
+    const std::string config_before_oversized_backup = root_config_contents();
+    ok &= expect(
+        oversized_backup_created && !hm::stitching::is_field_mask_configured(root.string()) &&
+            fs::exists(oversized_backup) && root_config_contents() == config_before_oversized_backup,
+        "field-mask recovery must reject an oversized backup before deleting the committed generation");
+    fs::remove_all(oversized_backup);
+
+    const fs::path aggregate_backup = root / ".hstream-rink-aggregate-backup";
+    fs::create_directories(aggregate_backup / "previous");
+    std::ofstream(aggregate_backup / "previous" / "config.yaml") << "old: true\n";
+    for (const char* name : {"s.png", "rink_mask_0.png", "rink_mask_1.png", "rink_mask_2.png", "rink_mask_3.png"})
+      std::ofstream(aggregate_backup / "previous" / name, std::ios::binary);
+    const bool aggregate_backup_created =
+        ::truncate((aggregate_backup / "previous" / "s.png").c_str(), 512LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_0.png").c_str(), 128LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_1.png").c_str(), 128LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_2.png").c_str(), 128LL * 1024LL * 1024LL) == 0 &&
+        ::truncate((aggregate_backup / "previous" / "rink_mask_3.png").c_str(), 128LL * 1024LL * 1024LL) == 0;
+    std::ofstream(aggregate_backup / "new-files")
+        << "config.yaml\ns.png\nrink_mask_0.png\nrink_mask_1.png\nrink_mask_2.png\nrink_mask_3.png\n";
+    std::ofstream(aggregate_backup / "state") << "PREPARED\n";
+    const std::string config_before_aggregate_backup = root_config_contents();
+    const auto aggregate_backup_read = hm::stitching::load_field_mask(root.string());
+    ok &= expect(
+        aggregate_backup_created && absl::IsResourceExhausted(aggregate_backup_read.status()) &&
+            fs::exists(aggregate_backup) && root_config_contents() == config_before_aggregate_backup,
+        "field-mask recovery must reject aggregate oversized rollback sets before staging any restore");
+    fs::remove_all(aggregate_backup);
+
+    const fs::path pinned_backup = root / ".hstream-rink-pinned-backup";
+    const fs::path pin_marker = root.parent_path() / ("hstream-rink-pin-marker-" + std::to_string(::getpid()));
+    const fs::path detached_backup =
+        root.parent_path() / ("hstream-rink-detached-backup-" + std::to_string(::getpid()) + ".yaml");
+    fs::remove(pin_marker);
+    fs::remove(detached_backup);
+    fs::create_directories(pinned_backup / "previous");
+    fs::copy_file(root / "config.yaml", pinned_backup / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", pinned_backup / "previous" / "rink_mask_0.png");
+    std::ofstream(pinned_backup / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(pinned_backup / "state") << "PREPARED\n";
+    const std::string pinned_config_contents = root_config_contents();
+    std::ofstream(root / "config.yaml", std::ios::out | std::ios::trunc) << "unrelated:\n  keep: false\n";
+    std::atomic<bool> backup_replaced{false};
+    ::setenv("HM_TEST_RINK_RECOVERY_POST_PIN_MARKER", pin_marker.c_str(), 1);
+    ::setenv("HM_TEST_RINK_RECOVERY_POST_PIN_DELAY_MS", "1000", 1);
+    std::atomic<bool> pin_marker_seen{false};
+    std::string backup_replacement_error;
+    std::thread backup_replacer([&]() {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (!fs::exists(pin_marker) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      pin_marker_seen = fs::exists(pin_marker);
+      std::error_code replacement_error;
+      fs::rename(pinned_backup / "previous" / "config.yaml", detached_backup, replacement_error);
+      if (!replacement_error) {
+        std::ofstream(pinned_backup / "previous" / "config.yaml") << "unrelated:\n  keep: replacement\n";
+        backup_replaced = true;
+      } else
+        backup_replacement_error = replacement_error.message();
+    });
+    const auto pinned_backup_read = hm::stitching::load_field_mask(root.string());
+    backup_replacer.join();
+    ::unsetenv("HM_TEST_RINK_RECOVERY_POST_PIN_DELAY_MS");
+    ::unsetenv("HM_TEST_RINK_RECOVERY_POST_PIN_MARKER");
+    if (!backup_replaced || !pinned_backup_read.ok() || fs::exists(pinned_backup) ||
+        root_config_contents() != pinned_config_contents) {
+      std::cerr << "pinned rink recovery fixture: marker_seen=" << pin_marker_seen << ", replaced=" << backup_replaced
+                << ", replace_error=" << backup_replacement_error << ", read=" << pinned_backup_read.status()
+                << ", journal_exists=" << fs::exists(pinned_backup)
+                << ", config_matches=" << (root_config_contents() == pinned_config_contents) << '\n';
+    }
+    ok &= expect(
+        backup_replaced && pinned_backup_read.ok() && !fs::exists(pinned_backup) &&
+            root_config_contents() == pinned_config_contents,
+        "rink recovery must restore the bounded backup inodes pinned before a pathname replacement");
+    fs::remove(pin_marker);
+    fs::remove(detached_backup);
+
+    const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
+    const fs::path manifest_target = root / "rink-manifest-symlink-target";
+    fs::create_directories(symlinked_manifest / "previous");
+    fs::copy_file(root / "config.yaml", symlinked_manifest / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", symlinked_manifest / "previous" / "rink_mask_0.png");
+    std::ofstream(manifest_target) << "rink_mask_0.png\nconfig.yaml\n";
+    fs::create_symlink(manifest_target, symlinked_manifest / "new-files");
+    std::ofstream(symlinked_manifest / "state") << "PREPARED\n";
+    const std::string config_before_symlinked_manifest = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(symlinked_manifest) &&
+            fs::is_symlink(fs::symlink_status(symlinked_manifest / "new-files")) &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_symlinked_manifest;
+            }(),
+        "rink recovery must reject a symlinked manifest before removing committed artifacts");
+    fs::remove_all(symlinked_manifest);
+    fs::remove(manifest_target);
+
+    const fs::path symlinked_backup = root / ".hstream-rink-symlinked-backup";
+    const fs::path symlinked_backup_target = root / "rink-backup-symlink-target.yaml";
+    fs::create_directories(symlinked_backup / "previous");
+    fs::copy_file(root / "config.yaml", symlinked_backup_target);
+    fs::create_symlink(symlinked_backup_target, symlinked_backup / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", symlinked_backup / "previous" / "rink_mask_0.png");
+    std::ofstream(symlinked_backup / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(symlinked_backup / "state") << "PREPARED\n";
+    const std::string config_before_symlinked_backup = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(symlinked_backup) &&
+            fs::is_symlink(fs::symlink_status(symlinked_backup / "previous" / "config.yaml")) &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_symlinked_backup;
+            }(),
+        "rink recovery must reject a symlinked backup before mutating the committed profile");
+    fs::remove_all(symlinked_backup);
+    fs::remove(symlinked_backup_target);
+
+    const fs::path unreadable = root / ".hstream-rink-unreadable";
+    fs::create_directories(unreadable / "previous");
+    fs::copy_file(root / "config.yaml", unreadable / "previous" / "config.yaml");
+    fs::copy_file(root / "rink_mask_0.png", unreadable / "previous" / "rink_mask_0.png");
+    std::ofstream(unreadable / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+    std::ofstream(unreadable / "state") << "PREPARED\n";
+    const std::string config_before_unreadable_recovery = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    fs::permissions(unreadable / "previous", fs::perms::owner_exec, fs::perm_options::replace);
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(unreadable) &&
+            fs::is_regular_file(root / "config.yaml") &&
+            [&]() {
+              std::ifstream input(root / "config.yaml", std::ios::binary);
+              return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
+                  config_before_unreadable_recovery;
+            }(),
+        "failed rink backup enumeration must preserve the journal and committed profile");
+    fs::permissions(unreadable / "previous", fs::perms::owner_all, fs::perm_options::replace);
+    fs::remove_all(unreadable);
 
     const fs::path malformed = root / ".hstream-rink-malformed";
     fs::create_directories(malformed);
@@ -464,6 +1150,14 @@ int main() {
         !hm::stitching::is_field_mask_configured(root.string()), "non-regular rink transaction state must fail closed");
     ok &= expect(fs::exists(nonregular), "non-regular rink transaction state must preserve its journal");
     fs::remove_all(nonregular);
+
+    const fs::path fifo_state = root / ".hstream-rink-fifo-state";
+    fs::create_directories(fifo_state);
+    ok &= expect(::mkfifo((fifo_state / "state").c_str(), 0600) == 0, "FIFO transaction-state fixture must be created");
+    ok &= expect(
+        !hm::stitching::is_field_mask_configured(root.string()) && fs::exists(fifo_state),
+        "rink recovery must reject a FIFO state without blocking");
+    fs::remove_all(fifo_state);
 
     const fs::path missing_manifest = root / ".hstream-rink-missing-manifest";
     fs::create_directories(missing_manifest / "previous");
@@ -497,6 +1191,24 @@ int main() {
     ok &= expect(
         hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(committed),
         "committed rink journal must be cleaned without rollback");
+
+    const fs::path rolled_back = root / ".hstream-rink-rolled-back";
+    fs::create_directories(rolled_back / "previous");
+    std::ofstream(rolled_back / "state") << "ROLLED_BACK\n";
+    const std::string config_before_rolled_back_cleanup = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        hm::stitching::is_field_mask_configured(root.string()) && !fs::exists(rolled_back),
+        "rolled-back rink journal must be cleanup-only");
+    const std::string config_after_rolled_back_cleanup = [&]() {
+      std::ifstream input(root / "config.yaml", std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    ok &= expect(
+        config_after_rolled_back_cleanup == config_before_rolled_back_cleanup,
+        "rolled-back rink cleanup must not remove the restored generation");
 
     hm::stitching::RinkProfile replacement_profile = profile;
     replacement_profile.masks[0] = cv::Mat(24, 32, CV_8U, cv::Scalar(255));
@@ -574,6 +1286,91 @@ int main() {
         field_mask_write_finished && field_mask_write_result,
         "field-mask publication must resume after the Hugin artifact lock is released");
   }
+  const YAML::Node monitor_baseline = YAML::LoadFile((root / "config.yaml").string());
+  const auto monitor_owner = hm::stitching::current_live_stitched_output_owner_process();
+  const auto publish_monitor_epoch = [&](const std::string& generation, const std::string& authorization) {
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    if (!lock.ok())
+      return lock.status();
+    YAML::Node config = YAML::Clone(monitor_baseline);
+    config["rink"]["stitched_output_pending_generation"] = generation;
+    config["rink"]["stitched_output_pending_authorization_id"] = authorization;
+    config["rink"]["stitched_output_pending_owner_process"] = *monitor_owner;
+    return hm::stitching::publish_game_config(root, YAML::Dump(config) + "\n");
+  };
+  const absl::Status monitor_successor_published = monitor_owner.ok()
+      ? publish_monitor_epoch("monitor-generation-b", "monitor-authorization-b")
+      : monitor_owner.status();
+  hm::stitching::FieldMaskPublicationAuthorityMonitor authority_monitor;
+  const absl::Status monitor_started =
+      authority_monitor.Watch(root.string(), "monitor-generation-a", "monitor-authorization-a");
+  const absl::Status monitor_predecessor_restored = monitor_owner.ok()
+      ? publish_monitor_epoch("monitor-generation-a", "monitor-authorization-a")
+      : monitor_owner.status();
+  const auto monitor_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!authority_monitor.status().ok() && std::chrono::steady_clock::now() < monitor_deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  const absl::Status monitor_status = authority_monitor.status();
+  absl::Status monitor_config_restored = absl::FailedPreconditionError("Monitor config lock unavailable");
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    if (lock.ok())
+      monitor_config_restored = hm::stitching::publish_game_config(root, YAML::Dump(monitor_baseline) + "\n");
+  }
+  const bool monitor_recovered = monitor_owner.ok() && monitor_successor_published.ok() && monitor_started.ok() &&
+      monitor_predecessor_restored.ok() && monitor_status.ok() && monitor_config_restored.ok();
+  if (!monitor_recovered) {
+    std::cerr << "authority monitor fixture: owner=" << monitor_owner.status()
+              << ", successor=" << monitor_successor_published << ", start=" << monitor_started
+              << ", restored=" << monitor_predecessor_restored << ", monitor=" << monitor_status
+              << ", cleanup=" << monitor_config_restored << '\n';
+  }
+  ok &= expect(
+      monitor_recovered,
+      "superseded publication authority must resume through the control-plane monitor after predecessor rollback");
+
+  const absl::Status recovery_epoch_published = monitor_owner.ok()
+      ? publish_monitor_epoch("monitor-generation-a", "monitor-authorization-a")
+      : monitor_owner.status();
+  const fs::path monitor_transaction = root / ".hstream-rink-monitor-recovery";
+  std::error_code monitor_fixture_error;
+  if (recovery_epoch_published.ok()) {
+    fs::create_directories(monitor_transaction / "previous", monitor_fixture_error);
+    if (!monitor_fixture_error)
+      fs::copy_file(root / "config.yaml", monitor_transaction / "previous" / "config.yaml", monitor_fixture_error);
+    if (!monitor_fixture_error) {
+      fs::copy_file(
+          root / "rink_mask_0.png", monitor_transaction / "previous" / "rink_mask_0.png", monitor_fixture_error);
+    }
+    if (!monitor_fixture_error) {
+      std::ofstream(monitor_transaction / "new-files") << "rink_mask_0.png\nconfig.yaml\n";
+      std::ofstream(monitor_transaction / "state") << "PREPARED\n";
+      fs::remove(root / "config.yaml", monitor_fixture_error);
+    }
+    if (!monitor_fixture_error)
+      fs::remove(root / "rink_mask_0.png", monitor_fixture_error);
+  }
+  const bool monitor_fixture_ready = recovery_epoch_published.ok() && !monitor_fixture_error;
+  const absl::Status recovery_monitor_started = monitor_fixture_ready
+      ? authority_monitor.Watch(root.string(), "monitor-generation-a", "monitor-authorization-a")
+      : absl::FailedPreconditionError("Unable to prepare authority-monitor recovery fixture");
+  const auto recovery_monitor_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!authority_monitor.status().ok() && std::chrono::steady_clock::now() < recovery_monitor_deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  const absl::Status recovery_monitor_status = authority_monitor.status();
+  const bool monitor_transaction_recovered = recovery_monitor_started.ok() && recovery_monitor_status.ok() &&
+      !fs::exists(monitor_transaction) && fs::is_regular_file(root / "config.yaml") &&
+      fs::is_regular_file(root / "rink_mask_0.png");
+  ok &= expect(
+      monitor_fixture_ready && monitor_transaction_recovered,
+      "authority monitoring must recover a prepared rink transaction before validating config");
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
+    ok &= expect(
+        lock.ok() && hm::stitching::publish_game_config(root, YAML::Dump(monitor_baseline) + "\n").ok(),
+        "authority-monitor recovery fixture must restore its baseline config");
+  }
+
   hm::stitching::RinkProfile one_mask = profile;
   one_mask.masks.resize(1);
   status = hm::stitching::save_rink_profile(root.string(), one_mask);
@@ -598,6 +1395,32 @@ int main() {
     const std::string after{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     ok &= expect(after == config_bytes, "invalid rink profiles must preserve the committed config generation");
   }
+  hm::stitching::RinkProfile maximum_profile = one_mask;
+  maximum_profile.masks.assign(hm::stitching::kMaximumRinkTransactionArtifacts - 1, one_mask.masks.front());
+  status = hm::stitching::save_rink_profile(root.string(), maximum_profile);
+  ok &= expect(status.ok(), "rink profile writer must accept masks plus config at the transaction artifact limit");
+  hm::stitching::RinkProfile oversized_profile = maximum_profile;
+  oversized_profile.masks.push_back(one_mask.masks.front());
+  status = hm::stitching::save_rink_profile(root.string(), oversized_profile);
+  ok &= expect(
+      absl::IsResourceExhausted(status),
+      "rink profile writer must reject masks plus config above the transaction artifact limit");
+  status = hm::stitching::save_rink_profile(root.string(), one_mask);
+  ok &= expect(status.ok(), "rink profile boundary fixture must compact the prior mask generation");
+  hm::stitching::RinkProfile maximum_snapshot_profile = one_mask;
+  maximum_snapshot_profile.masks.assign(hm::stitching::kMaximumRinkTransactionArtifacts - 2, one_mask.masks.front());
+  const cv::Mat stitched_boundary_image(one_mask.masks.front().size(), CV_8UC3, cv::Scalar(32, 64, 96));
+  status = hm::stitching::save_rink_profile_with_stitched_image(
+      root.string(), maximum_snapshot_profile, stitched_boundary_image);
+  ok &= expect(
+      status.ok(),
+      "rink profile writer must accept masks, config, and stitched snapshot at the transaction artifact limit");
+  maximum_snapshot_profile.masks.push_back(one_mask.masks.front());
+  status = hm::stitching::save_rink_profile_with_stitched_image(
+      root.string(), maximum_snapshot_profile, stitched_boundary_image);
+  ok &= expect(
+      absl::IsResourceExhausted(status),
+      "rink profile writer must reject masks, config, and stitched snapshot above the artifact limit");
   profile.masks[1] = cv::Mat(10, 10, CV_8U);
   ok &= expect(!hm::stitching::save_rink_profile(root.string(), profile).ok(), "mixed mask dimensions must fail");
   fs::remove_all(root);

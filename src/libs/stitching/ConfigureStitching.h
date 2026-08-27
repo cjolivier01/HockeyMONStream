@@ -1,12 +1,17 @@
 #pragma once
 
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
 /* clang-format off */
 #include "src/libs/common/Status.h"
 /* clang-format on */
 
+#include <filesystem>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include "absl/status/status.h"
@@ -32,6 +37,52 @@ struct StitchingCanvasSize {
   size_t height{0};
 };
 
+struct ValidatedStitchingArtifacts {
+  StitchingCanvasSize canvas_size;
+  std::string generation_id;
+  std::string artifact_revision;
+  bool content_validated{false};
+  size_t max_output_width{0};
+  std::optional<size_t> max_canvas_dimension;
+};
+
+class StitchingArtifactLoadSnapshot {
+ public:
+  struct Impl;
+  ~StitchingArtifactLoadSnapshot();
+  StitchingArtifactLoadSnapshot(StitchingArtifactLoadSnapshot&& other) noexcept;
+  StitchingArtifactLoadSnapshot& operator=(StitchingArtifactLoadSnapshot&& other) noexcept;
+  StitchingArtifactLoadSnapshot(const StitchingArtifactLoadSnapshot&) = delete;
+  StitchingArtifactLoadSnapshot& operator=(const StitchingArtifactLoadSnapshot&) = delete;
+
+  const std::filesystem::path& directory() const;
+  absl::Status verify() const;
+
+  explicit StitchingArtifactLoadSnapshot(std::unique_ptr<Impl> impl);
+
+ private:
+  std::unique_ptr<Impl> impl_;
+
+  friend absl::StatusOr<struct LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+      const std::string& game_dir,
+      size_t max_output_width);
+};
+
+struct LockedStitchingArtifacts {
+  std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
+  std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
+  StitchingCanvasSize canvas_size;
+  std::string generation_id;
+  std::string artifact_revision;
+  bool content_validated{false};
+};
+
+struct LockedCanvasRegenerationCheck {
+  std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
+  bool artifacts_compatible{false};
+  bool requires_regeneration{false};
+};
+
 struct StitchingCalibrationFramePair {
   surface::Surface left;
   surface::Surface right;
@@ -43,9 +94,45 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
+// Content-validates one artifact generation, normalizes its seam, and retains
+// the publication lock. This authoritative validation never accepts a cached
+// metadata snapshot.
+// A null artifact_lock denotes a valid game directory without configured artifacts.
+absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+// Performs authoritative validation and creates a private stable snapshot for
+// a loader that cannot consume the already-pinned artifact descriptors.
+absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_for_load(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+// Performs metadata/header preflight for Configurator sizing and field-mask
+// planning. The plugin must still call lock_validated_stitching_artifacts
+// immediately before loading the mapping payloads.
+absl::StatusOr<LockedStitchingArtifacts> lock_preflight_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width = 0,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt);
+
+// Validates only parser byte/type bounds needed by legacy seam repair while
+// holding the artifact lock. Missing placement TIFFs return NotFound.
+absl::Status validate_stitch_seam_repair_artifact_bounds(const std::string& game_dir);
+
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width = 0);
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+absl::StatusOr<bool> stitching_artifacts_require_canvas_regeneration(
+    const std::string& game_dir,
+    size_t max_output_width = 0);
+
+// Retains the reviewed Hugin generation while a caller transactionally clears
+// canvas-dependent cache data using Hugin -> config lock ordering.
+absl::StatusOr<LockedCanvasRegenerationCheck> lock_canvas_regeneration_check(
     const std::string& game_dir,
     size_t max_output_width = 0);
 
@@ -61,6 +148,16 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
     const std::string& game_dir,
     size_t max_output_width = 0);
 
+absl::StatusOr<std::string> current_stitched_output_generation_id(const std::string& game_dir);
+
+// Derives the complete current generation from one locked Hugin/config
+// generation and the published map dimensions. The caller must hold Hugin,
+// then GameConfigTransactionLock.
+absl::StatusOr<std::string> current_stitched_output_generation_id_locked(
+    const std::string& game_dir,
+    const YAML::Node& config,
+    const std::string& hugin_generation);
+
 // Validates that a completion event describes the current Hugin artifacts and
 // calibration owner without requiring a downstream rink mask. The rotation in
 // the reported generation is the authoritative live hmstitcher value.
@@ -69,15 +166,67 @@ absl::Status validate_stitched_output_generation(
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id = {});
 
+// Validates the Hugin component embedded in a stitched-output generation when
+// the caller already holds the corresponding Hugin artifact lock.
+absl::Status validate_stitched_output_generation_hugin(
+    const std::string& output_generation,
+    const std::string& expected_hugin_generation);
+
+absl::Status validate_stitched_output_generation_dimensions(
+    const std::string& output_generation,
+    size_t width,
+    size_t height);
+
 bool is_field_mask_configured(
     const std::string& game_dir,
     const std::string& expected_output_generation = {},
     const std::string& expected_invalidation_id = {});
 
+// Validates a field mask against a Hugin generation that the live stitcher has
+// already loaded authoritatively, avoiding a second content hash on first frame.
+bool is_field_mask_configured_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id = {});
+
 bool is_field_mask_configured_for_stitching_config(
     const std::string& game_dir,
-    size_t max_output_width = 0,
-    const std::string& expected_invalidation_id = {});
+    size_t max_output_width,
+    double post_stitch_rotate_degrees,
+    const std::string& expected_invalidation_id = {},
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt);
+
+// Nonblocking publication preflight used before retrying expensive field-mask
+// inference. A pending live rotation fences every producer except its exact
+// output generation and unique authorization epoch.
+absl::Status validate_field_mask_publication_authority(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id = {});
+
+class FieldMaskPublicationAuthorityMonitor {
+ public:
+  FieldMaskPublicationAuthorityMonitor();
+  ~FieldMaskPublicationAuthorityMonitor();
+  FieldMaskPublicationAuthorityMonitor(const FieldMaskPublicationAuthorityMonitor&) = delete;
+  FieldMaskPublicationAuthorityMonitor& operator=(const FieldMaskPublicationAuthorityMonitor&) = delete;
+
+  absl::Status Watch(
+      const std::string& game_dir,
+      const std::string& expected_output_generation,
+      const std::string& expected_output_authorization_id = {});
+  void Stop();
+
+  // Returns Unavailable while the control-plane worker is waiting for the
+  // superseding owner to retire, OK once this epoch regains authority, or the
+  // terminal validation error.
+  absl::Status status() const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 // Validates and decodes rink_mask_0.png while holding the Hugin and
 // config/rink transaction locks for one complete artifact generation.
@@ -86,12 +235,19 @@ absl::StatusOr<cv::Mat> load_field_mask(
     const std::string& expected_output_generation = {},
     const std::string& expected_invalidation_id = {});
 
+absl::StatusOr<cv::Mat> load_field_mask_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id = {});
+
 absl::Status create_field_mask(
     const std::string& game_dir,
     surface::Surface surface,
     const std::string& expected_output_generation = {},
     const std::string& expected_invalidation_id = {},
-    const std::function<bool()>& is_cancelled = {});
+    const std::function<bool()>& is_cancelled = {},
+    const std::string& expected_output_authorization_id = {});
 
 absl::Status save_rink_profile(
     const std::string& game_dir,
@@ -99,14 +255,28 @@ absl::Status save_rink_profile(
     const std::string& expected_invalidation_id = {});
 
 // Atomically publishes the stitched calibration snapshot together with the
-// rink profile after revalidating its generation owner.
+// rink profile after revalidating its generation and authorization owner.
 absl::Status save_rink_profile_with_stitched_image(
     const std::string& game_dir,
     const RinkProfile& profile,
     const cv::Mat& stitched_image,
-    const std::string& expected_invalidation_id = {});
+    const std::string& expected_invalidation_id = {},
+    const std::string& expected_output_generation = {},
+    const std::string& expected_output_authorization_id = {});
 
-absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface);
+// Publishes a scoreboard snapshot only when the generation that produced the
+// pixels still matches the current stitched output.
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    surface::Surface surface,
+    const std::string& producer_output_generation);
+
+// CPU-image overload used by the GPU download path and focused publication
+// tests. Encoding completes before generation locks are acquired.
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    const cv::Mat& image,
+    const std::string& producer_output_generation);
 
 // Revalidates a pending UI invalidation under the game-config lock and
 // returns whether its artifact cleanup has already been applied.

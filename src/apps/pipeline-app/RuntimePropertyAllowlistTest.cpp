@@ -34,14 +34,21 @@ int main() {
       !expect(
           is_allowlisted_runtime_property("hmstitcher0", "shadow-lift") &&
               is_allowlisted_runtime_property("hmstitcher0", "shadow-lift-black-point") &&
-              is_allowlisted_runtime_property("hmstitcher0", "exposure"),
-          "The FP16 stitcher must accept all live grading controls") ||
+              is_allowlisted_runtime_property("hmstitcher0", "exposure") &&
+              is_allowlisted_runtime_property("hmstitcher0", "stitched-output-epoch"),
+          "The stitcher must accept live grading controls and output authorization epochs") ||
+      !expect(
+          !is_allowlisted_runtime_property("hmstitcher0", "post-stitch-rotate-degrees"),
+          "Raw stitch rotation must not bypass stitched-output epoch authorization") ||
       !expect(
           !is_allowlisted_runtime_property("hmstitcher0", "high-bit-depth"),
           "High-bit mode must remain restart-only") ||
       !expect(
           is_allowlisted_runtime_property("playcropper0", "fixed-edge-rotation-angle"),
           "Existing playcropper runtime controls must remain allowlisted") ||
+      !expect(
+          is_allowlisted_runtime_property("playcropper0", "scoreboard-perspective-polygon"),
+          "Live geometry changes must be able to disable a stale scoreboard polygon") ||
       !expect(
           !is_allowlisted_runtime_property("playcropper0", "plugin-private-config"),
           "Unreviewed playcropper properties must remain blocked") ||

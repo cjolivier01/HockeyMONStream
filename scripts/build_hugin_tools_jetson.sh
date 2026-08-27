@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the two Hugin command-line tools required by native stitching on
+# Build the Hugin command-line tools required by native stitching on
 # JetPack 6. Ubuntu 22.04 does not publish hugin-tools for arm64, so release
 # packages bundle these pinned, source-built executables and their private
 # libraries instead of declaring an unsatisfiable Debian dependency.
@@ -11,7 +11,7 @@ HUGIN_URL="https://deb.debian.org/debian/pool/main/h/hugin/hugin_${HUGIN_VERSION
 VIGRA_VERSION=1.11.1
 VIGRA_SHA256=5ddbfb435da7bd12536c7181ce3c7825ab4bea91d0c1518a952cebba445da6c0
 VIGRA_URL="https://deb.debian.org/debian/pool/main/libv/libvigraimpex/libvigraimpex_${VIGRA_VERSION}+dfsg.orig.tar.xz"
-CACHE_FORMAT=hugin-2022-vigra-1.11.1-r1
+CACHE_FORMAT=hugin-2022-vigra-1.11.1-r2
 
 OUTPUT_DIR=""
 EXPORT_SOURCES_DIR=""
@@ -21,9 +21,10 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build_hugin_tools_jetson.sh [--output-dir=DIR] [--export-sources=DIR] [--cache-dir=DIR]
 
-Builds pinned native arm64 copies of autooptimiser and nona plus their Hugin
-and VIGRA runtime libraries. --export-sources copies the exact verified source
-archives used by the build and works on any architecture for release staging.
+Builds pinned native arm64 copies of autooptimiser, pano_modify, and nona plus
+their Hugin and VIGRA runtime libraries. --export-sources copies the exact
+verified source archives used by the build and works on any architecture for
+release staging.
 USAGE
 }
 
@@ -64,6 +65,7 @@ cache_is_valid() {
     sha256sum --check --status SHA256SUMS
   ) || return 1
   [[ -x "${cached_artifacts}/bin/autooptimiser" &&
+     -x "${cached_artifacts}/bin/pano_modify" &&
      -x "${cached_artifacts}/bin/nona" &&
      -f "${cached_artifacts}/lib/libhuginbase.so.0.0" &&
      -f "${cached_artifacts}/lib/libvigraimpex.so.11.1.11.1" &&
@@ -74,6 +76,7 @@ cache_is_valid() {
 copy_cached_artifacts() {
   cp -a "${cached_artifacts}/." "${OUTPUT_DIR}/"
   LD_LIBRARY_PATH="${OUTPUT_DIR}/lib" "${OUTPUT_DIR}/bin/autooptimiser" --help >/dev/null
+  LD_LIBRARY_PATH="${OUTPUT_DIR}/lib" "${OUTPUT_DIR}/bin/pano_modify" --help >/dev/null
   LD_LIBRARY_PATH="${OUTPUT_DIR}/lib" "${OUTPUT_DIR}/bin/nona" --help >/dev/null
 }
 
@@ -184,9 +187,10 @@ cmake -S "${hugin_source}" -B "${hugin_build}" -G Ninja \
   -DHUGIN_SHARED=ON \
   -DBUILD_HSI=OFF \
   -DDISABLE_DPKG=ON
-cmake --build "${hugin_build}" --target autooptimiser nona --parallel "$(nproc)"
+cmake --build "${hugin_build}" --target autooptimiser pano_modify nona --parallel "$(nproc)"
 
 install -m 0755 "${hugin_build}/src/tools/autooptimiser" "${artifacts}/bin/autooptimiser"
+install -m 0755 "${hugin_build}/src/tools/pano_modify" "${artifacts}/bin/pano_modify"
 install -m 0755 "${hugin_build}/src/tools/nona" "${artifacts}/bin/nona"
 install -m 0644 "${hugin_build}/src/hugin_base/libhuginbase.so.0.0" \
   "${artifacts}/lib/libhuginbase.so.0.0"
@@ -196,7 +200,7 @@ ln -s libvigraimpex.so.11.1.11.1 "${artifacts}/lib/libvigraimpex.so.11"
 install -m 0644 "${hugin_source}/COPYING.txt" "${artifacts}/licenses/hugin/COPYING.txt"
 install -m 0644 "${vigra_source}/LICENSE.txt" "${artifacts}/licenses/vigra/LICENSE.txt"
 
-for executable in "${artifacts}/bin/autooptimiser" "${artifacts}/bin/nona"; do
+for executable in "${artifacts}/bin/autooptimiser" "${artifacts}/bin/pano_modify" "${artifacts}/bin/nona"; do
   if [[ "$(file -Lb "${executable}")" != *aarch64* ]]; then
     echo "ERROR: Hugin tool is not an aarch64 ELF: ${executable}" >&2
     exit 1
@@ -210,12 +214,14 @@ if [[ "$(readelf -d "${artifacts}/lib/libhuginbase.so.0.0" | sed -n 's/.*SONAME.
   exit 1
 fi
 LD_LIBRARY_PATH="${artifacts}/lib" "${artifacts}/bin/autooptimiser" --help >/dev/null
+LD_LIBRARY_PATH="${artifacts}/lib" "${artifacts}/bin/pano_modify" --help >/dev/null
 LD_LIBRARY_PATH="${artifacts}/lib" "${artifacts}/bin/nona" --help >/dev/null
 
 (
   cd "${artifacts}"
   sha256sum \
     bin/autooptimiser \
+    bin/pano_modify \
     bin/nona \
     lib/libhuginbase.so.0.0 \
     lib/libvigraimpex.so.11.1.11.1 \

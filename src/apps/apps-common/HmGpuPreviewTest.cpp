@@ -1,5 +1,4 @@
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
-#include "hstream/src/libs/common/ApplicationPayload.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -744,7 +743,6 @@ struct GenerationProbeState {
 };
 
 GstPadProbeReturn attach_stitched_generation(GstPad*, GstPadProbeInfo* info, gpointer user_data) noexcept {
-#ifdef HAS_NVDS_CUSTOMUSERMETA
   try {
     auto* state = static_cast<GenerationProbeState*>(user_data);
     GstBuffer* input = info && (info->type & GST_PAD_PROBE_TYPE_BUFFER) ? GST_PAD_PROBE_INFO_BUFFER(info) : nullptr;
@@ -767,8 +765,10 @@ GstPadProbeReturn attach_stitched_generation(GstPad*, GstPadProbeInfo* info, gpo
     frame->source_frame_width = 320;
     frame->source_frame_height = 180;
     nvds_add_frame_meta_to_batch(batch, frame);
-    hm::stitching::StitchedOutputGenerationPayload::create_and_add<hm::stitching::StitchedOutputGenerationPayload>(
-        frame, state->generation);
+    if (!hm::stitching::add_stitched_output_generation_meta(frame, state->generation)) {
+      nvds_destroy_batch_meta(batch);
+      return GST_PAD_PROBE_OK;
+    }
     NvDsMeta* meta =
         gst_buffer_add_nvds_meta(buffer, batch, nullptr, nvds_batch_meta_copy_func, nvds_batch_meta_release_func);
     if (!meta) {
@@ -781,10 +781,6 @@ GstPadProbeReturn attach_stitched_generation(GstPad*, GstPadProbeInfo* info, gpo
   } catch (...) {
     std::cerr << "Generation probe unknown exception\n";
   }
-#else
-  (void)info;
-  (void)user_data;
-#endif
   return GST_PAD_PROBE_OK;
 }
 
@@ -800,10 +796,6 @@ bool wait_for_condition(Predicate predicate, std::chrono::seconds timeout) {
 }
 
 bool run_rink_mask_reactivation_test(Window window) {
-#ifndef HAS_NVDS_CUSTOMUSERMETA
-  (void)window;
-  return true;
-#else
   TempDirectory fixture("hstream-preview-rink-reactivation");
   std::string output_generation;
   if (!make_rink_mask_fixture(fixture.path(), &output_generation))
@@ -892,7 +884,6 @@ bool run_rink_mask_reactivation_test(Window window) {
               << " reloaded=" << reloaded << '\n';
   }
   return passed;
-#endif
 }
 
 bool run_renderer_test(Display* display, Window window) {

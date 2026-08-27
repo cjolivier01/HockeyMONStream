@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -21,6 +22,9 @@ class GameConfigLock final {
   GameConfigLock& operator=(const GameConfigLock&) = delete;
 
   static absl::StatusOr<std::unique_ptr<GameConfigLock>> Acquire(const std::filesystem::path& game_dir);
+
+  // Returns Unavailable instead of waiting when another config transaction is active.
+  static absl::StatusOr<std::unique_ptr<GameConfigLock>> TryAcquire(const std::filesystem::path& game_dir);
 
  private:
   explicit GameConfigLock(int descriptor) : descriptor_(descriptor) {}
@@ -39,6 +43,10 @@ class GameConfigTransactionLock final {
 
   static absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> Acquire(const std::filesystem::path& game_dir);
 
+  // Returns Unavailable instead of waiting when either publication lock is
+  // active. Interrupted rink transactions are recovered before success.
+  static absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> TryAcquire(const std::filesystem::path& game_dir);
+
  private:
   struct State;
   explicit GameConfigTransactionLock(std::unique_ptr<State> state);
@@ -54,12 +62,14 @@ absl::Status publish_game_config(const std::filesystem::path& game_dir, const st
 // generation to concurrent readers.
 absl::Status publish_named_file(const std::filesystem::path& path, const std::string& contents);
 
-// Durably publishes config.yaml while removing every rink_mask_*.png as one
-// recoverable generation. The caller must hold GameConfigTransactionLock.
-// Returns the number of masks removed.
+// Durably publishes config.yaml while removing every rink_mask_*.png and,
+// when requested, the stitched calibration snapshot as one recoverable
+// generation. The caller must hold GameConfigTransactionLock. Returns the
+// number of artifacts removed.
 absl::StatusOr<size_t> publish_game_config_without_rink_masks(
     const std::filesystem::path& game_dir,
-    const std::string& contents);
+    const std::string& contents,
+    bool remove_stitched_snapshot = false);
 
 // Loads one config generation while holding the config/rink transaction lock.
 // A missing file is represented by an empty optional node.
@@ -75,9 +85,7 @@ absl::Status validate_pending_stitching_invalidation(
 // Accepts the same generation while it is pending or after it has completed.
 // Long-lived runtime artifact owners use this to regenerate downstream data
 // until a newer invalidation replaces their generation ID.
-absl::Status validate_stitching_generation_owner(
-    const YAML::Node& config,
-    const std::string& expected_invalidation_id);
+absl::Status validate_stitching_generation_owner(const YAML::Node& config, const std::string& expected_invalidation_id);
 
 // Loads and validates config_path without acquiring another lock. The caller
 // must hold GameConfigTransactionLock so validation and its dependent artifact
@@ -89,6 +97,17 @@ absl::Status validate_pending_stitching_invalidation_file_locked(
 absl::Status validate_stitching_generation_owner_file_locked(
     const std::filesystem::path& config_path,
     const std::string& expected_invalidation_id);
+
+// Rejects Hugin publication while a live stitched-output generation owns the
+// current artifacts. The caller must hold GameConfigTransactionLock.
+absl::Status validate_no_pending_live_stitched_output_authorization_file_locked(
+    const std::filesystem::path& config_path);
+
+// Process-start and Linux boot identities prevent a crashed live controller
+// from retaining publication authority and fence PID reuse across reboots.
+absl::StatusOr<std::string> current_live_stitched_output_owner_process();
+absl::StatusOr<bool> live_stitched_output_owner_process_is_active(std::string_view identity);
+absl::StatusOr<bool> live_stitched_output_authorization_is_active(const YAML::Node& config);
 
 // Applies only changes made between baseline and desired to latest. This is a
 // three-way merge for independently owned config paths, not a conflict

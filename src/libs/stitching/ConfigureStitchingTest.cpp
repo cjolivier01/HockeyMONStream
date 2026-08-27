@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
@@ -33,6 +34,28 @@ bool write_text_file(const fs::path& path, const std::string& contents) {
   }
   out << contents;
   return true;
+}
+
+bool write_canvas_provenance(
+    const fs::path& dir,
+    size_t max_output_width,
+    size_t width,
+    size_t height,
+    size_t source_width = 0,
+    size_t source_height = 0,
+    size_t max_canvas_dimension = 0,
+    bool max_output_width_applied = false,
+    bool max_canvas_dimension_applied = false) {
+  source_width = source_width == 0 ? width : source_width;
+  source_height = source_height == 0 ? height : source_height;
+  return write_text_file(
+      dir / "stitching_canvas_provenance",
+      "version=2\nmax-output-width=" + std::to_string(max_output_width) + "\nmax-canvas-dimension=" +
+          std::to_string(max_canvas_dimension) + "\nsource-canvas-width=" + std::to_string(source_width) +
+          "\nsource-canvas-height=" + std::to_string(source_height) + "\ncanvas-width=" + std::to_string(width) +
+          "\ncanvas-height=" + std::to_string(height) +
+          "\nmax-output-width-applied=" + std::to_string(max_output_width_applied ? 1 : 0) +
+          "\nmax-canvas-dimension-applied=" + std::to_string(max_canvas_dimension_applied ? 1 : 0) + "\n");
 }
 
 bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_px, float y_px) {
@@ -148,6 +171,38 @@ void append_big_endian_u32(std::vector<unsigned char>* output, uint32_t value) {
   output->push_back(static_cast<unsigned char>(value));
 }
 
+void set_big_endian_u32(std::vector<unsigned char>* output, size_t offset, uint32_t value) {
+  (*output)[offset] = static_cast<unsigned char>(value >> 24);
+  (*output)[offset + 1] = static_cast<unsigned char>(value >> 16);
+  (*output)[offset + 2] = static_cast<unsigned char>(value >> 8);
+  (*output)[offset + 3] = static_cast<unsigned char>(value);
+}
+
+bool corrupt_png_idat_with_valid_crc(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  auto read_big_endian_u32 = [&](size_t offset) {
+    return (static_cast<uint32_t>(png[offset]) << 24) | (static_cast<uint32_t>(png[offset + 1]) << 16) |
+        (static_cast<uint32_t>(png[offset + 2]) << 8) | static_cast<uint32_t>(png[offset + 3]);
+  };
+  for (size_t offset = 8; offset + 12 <= png.size();) {
+    const uint32_t length = read_big_endian_u32(offset);
+    if (length > png.size() - offset - 12)
+      return false;
+    const size_t type_offset = offset + 4;
+    const size_t data_offset = offset + 8;
+    if (std::string(png.begin() + type_offset, png.begin() + type_offset + 4) == "IDAT" && length > 0) {
+      std::fill(png.begin() + data_offset, png.begin() + data_offset + length, 0);
+      set_big_endian_u32(&png, data_offset + length, png_crc32(png.data() + type_offset, length + 4));
+      std::ofstream output(path, std::ios::binary | std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+      return output.good();
+    }
+    offset += static_cast<size_t>(length) + 12;
+  }
+  return false;
+}
+
 bool add_png_pixel_offset(const fs::path& path, int32_t x, int32_t y) {
   std::ifstream input(path, std::ios::binary);
   std::vector<unsigned char> png((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
@@ -171,6 +226,15 @@ void set_write_time(const fs::path& path, int seconds_after_base) {
   fs::last_write_time(path, base + std::chrono::seconds(seconds_after_base));
 }
 
+bool wait_for_test_marker(const fs::path& marker) {
+  for (int attempt = 0; attempt < 500; ++attempt) {
+    if (fs::exists(marker))
+      return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+
 bool write_valid_stitching_artifacts(const fs::path& dir) {
   fs::create_directories(dir);
   if (!write_text_file(dir / "left.png", "left") || !write_text_file(dir / "right.png", "right") ||
@@ -191,6 +255,9 @@ bool write_valid_stitching_artifacts(const fs::path& dir) {
   cv::Mat seam(32, 160, CV_8U, cv::Scalar(0));
   seam.colRange(80, seam.cols).setTo(255);
   if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+    return false;
+  }
+  if (!write_canvas_provenance(dir, /*max_output_width=*/0, /*width=*/160, /*height=*/32)) {
     return false;
   }
 
@@ -340,6 +407,7 @@ game:
 stitching:
   control_points: [[1, 2], [3, 4]]
 rink:
+  stitched_output_generation: stale-generation
   scoreboard:
     perspective_polygon: [[0, 0], [1, 1]]
 )")) {
@@ -383,6 +451,7 @@ bool expect_control_point_clean_preserves_upstream_dependencies(const fs::path& 
 stitching:
   control_points: [[1, 2], [3, 4]]
 rink:
+  stitched_output_generation: stale-control-point-generation
   scoreboard:
     perspective_polygon: [[0, 0], [1, 1]]
 hstream_ui:
@@ -473,6 +542,43 @@ bool expect_clean_waits_for_transaction_locks(const fs::path& tmpdir) {
       hm::stitching::GameConfigTransactionLock::Acquire(dir), "clean must wait for the config/rink transaction lock");
 }
 
+bool expect_canvas_size_waits_for_hugin_lock(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "canvas_size_locking";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+    return false;
+  }
+
+  auto held_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!held_lock.ok())
+    return false;
+  std::atomic<bool> finished{false};
+  absl::Status canvas_status;
+  size_t canvas_width = 0;
+  size_t canvas_height = 0;
+  std::thread reader([&]() {
+    auto canvas = hm::stitching::stitching_canvas_size(dir.string());
+    canvas_status = canvas.status();
+    if (canvas.ok()) {
+      canvas_width = canvas->width;
+      canvas_height = canvas->height;
+    }
+    finished = true;
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const bool waited = !finished.load();
+  held_lock->reset();
+  reader.join();
+  if (!waited || !canvas_status.ok() || canvas_width != 96 || canvas_height != 32) {
+    std::cerr << "canvas sizing must hold the Hugin artifact lock: waited=" << waited << " status=" << canvas_status
+              << " size=" << canvas_width << 'x' << canvas_height << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "oversized_legacy_tiff";
   fs::remove_all(dir);
@@ -486,6 +592,54 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
   if (!absl::IsResourceExhausted(status) || fs::exists(dir / "seam_file.png")) {
     std::cerr << "oversized legacy TIFF must fail before seam allocation: " << status << std::endl;
+    return false;
+  }
+
+  const fs::path oversized_file_dir = tmpdir / "oversized_legacy_tiff_file";
+  fs::remove_all(oversized_file_dir);
+  fs::create_directories(oversized_file_dir);
+  if (!write_mapping_tiff(oversized_file_dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(oversized_file_dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f) ||
+      ::truncate((oversized_file_dir / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0) {
+    return false;
+  }
+  setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
+  const auto oversized_file_status = hm::stitching::maybe_create_default_seam_file(oversized_file_dir.string());
+  unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  if (!absl::IsResourceExhausted(oversized_file_status) || fs::exists(oversized_file_dir / "seam_file.png")) {
+    std::cerr << "oversized legacy TIFF file must fail bounded preflight before parser access: "
+              << oversized_file_status << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_canvas_constraint_checks_reject_oversized_artifacts(const fs::path& tmpdir) {
+  const auto rejects = [](const fs::path& dir) {
+    auto lock = hm::stitching::lock_canvas_constraint_artifacts(dir);
+    if (!lock.ok())
+      return false;
+    const auto metadata = hm::stitching::check_canvas_constraint_metadata_locked(dir, /*max_output_width=*/0);
+    const auto full = hm::stitching::check_canvas_constraint_locked(dir, /*max_output_width=*/0);
+    return metadata.ok() && !metadata->artifacts_compatible && metadata->requires_regeneration && full.ok() &&
+        !full->artifacts_compatible && full->requires_regeneration;
+  };
+
+  const fs::path oversized_tiff = tmpdir / "oversized_canvas_check_tiff";
+  fs::remove_all(oversized_tiff);
+  if (!write_valid_stitching_artifacts(oversized_tiff) ||
+      ::truncate((oversized_tiff / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0 ||
+      !rejects(oversized_tiff)) {
+    std::cerr << "canvas compatibility checks must reject oversized TIFFs before parser access" << std::endl;
+    return false;
+  }
+
+  const fs::path oversized_seam = tmpdir / "oversized_canvas_check_seam";
+  fs::remove_all(oversized_seam);
+  if (!write_valid_stitching_artifacts(oversized_seam) ||
+      ::truncate((oversized_seam / "seam_file.png").c_str(), 512LL * 1024LL * 1024LL + 1) != 0 ||
+      !rejects(oversized_seam)) {
+    std::cerr << "canvas compatibility checks must reject oversized seams before parser access" << std::endl;
     return false;
   }
   return true;
@@ -588,6 +742,17 @@ bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdi
       !write_remap_tiff(dir / "mapping_0001_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0001_y.tif", 40, 16)) {
     return false;
   }
+  if (!write_canvas_provenance(
+          dir,
+          /*max_output_width=*/80,
+          /*width=*/80,
+          /*height=*/16,
+          /*source_width=*/160,
+          /*source_height=*/32,
+          /*max_canvas_dimension=*/0,
+          /*max_output_width_applied=*/true)) {
+    return false;
+  }
   cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
   seam.colRange(40, seam.cols).setTo(255);
   if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
@@ -602,6 +767,377 @@ bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdi
       cv::norm(preserved, seam, cv::NORM_INF) != 0) {
     std::cerr << "effective-size capped seam with oFFs origin must not be scaled a second time: configured="
               << configured.status() << " status=" << status << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "runtime_validation_cropped_seam";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  cv::Mat seam(30, 150, CV_8U, cv::Scalar(0));
+  seam.colRange(75, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 5, 1)) {
+    return false;
+  }
+
+  auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  const cv::Mat after_preflight = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!preflight.ok() || !preflight->artifact_lock || after_preflight.size() != seam.size()) {
+    std::cerr << "artifact preflight must validate cropped seam layout without normalizing its payload: "
+              << preflight.status() << std::endl;
+    return false;
+  }
+  preflight->artifact_lock.reset();
+
+  auto artifacts = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  const cv::Mat normalized = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  if (!artifacts.ok() || !artifacts->artifact_lock || artifacts->canvas_size.width != 160 ||
+      artifacts->canvas_size.height != 32 || artifacts->load_snapshot || normalized.size() != cv::Size(160, 32)) {
+    std::cerr << "runtime artifact validation must normalize a valid cropped seam: " << artifacts.status() << std::endl;
+    return false;
+  }
+  artifacts->artifact_lock.reset();
+
+  const fs::path stale_snapshot = dir / ".hstream-control-mask-snapshot-stale";
+  fs::create_directory(stale_snapshot);
+  std::ofstream(stale_snapshot / "mapping_0000.tif", std::ios::binary) << "stale";
+  std::ofstream(stale_snapshot / "left.png", std::ios::binary) << "stale validation input";
+  auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+  if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
+      !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif") ||
+      !load->load_snapshot->verify().ok()) {
+    std::cerr << "loader validation must retain a private stable artifact snapshot: " << load.status() << std::endl;
+    return false;
+  }
+  const fs::path pinned_mapping = dir / "mapping_0000_x.tif";
+  const fs::path replacement_mapping = dir / "replacement-mapping-after-pin.tif";
+  std::error_code replacement_error;
+  fs::copy_file(pinned_mapping, replacement_mapping, fs::copy_options::overwrite_existing, replacement_error);
+  if (!replacement_error)
+    fs::remove(pinned_mapping, replacement_error);
+  if (!replacement_error)
+    fs::create_symlink(replacement_mapping, pinned_mapping, replacement_error);
+  if (replacement_error || load->load_snapshot->verify().ok()) {
+    std::cerr << "loader validation must reject a control-mask path replaced after descriptor pinning" << std::endl;
+    return false;
+  }
+  const fs::path snapshot_directory = load->load_snapshot->directory();
+  load->load_snapshot.reset();
+  if (fs::exists(snapshot_directory)) {
+    std::cerr << "stable artifact snapshot must be removed when its loader releases it" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_preflight_snapshot_is_reused_only_for_same_generation(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "validated_snapshot_generation";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+
+  auto first = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  if (!first.ok() || !first->artifact_lock) {
+    std::cerr << "validated snapshot fixture must pass initial validation: " << first.status() << std::endl;
+    return false;
+  }
+  const hm::stitching::ValidatedStitchingArtifacts snapshot{
+      .canvas_size = first->canvas_size,
+      .generation_id = first->generation_id,
+      .artifact_revision = first->artifact_revision,
+      .content_validated = first->content_validated,
+      .max_output_width = 0,
+      .max_canvas_dimension = hm::stitching::live_stitch_max_canvas_dimension(),
+  };
+  first->artifact_lock.reset();
+
+  auto reused = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
+  const bool same_generation_reused = reused.ok() && reused->artifact_lock &&
+      reused->generation_id == snapshot.generation_id && reused->canvas_size.width == snapshot.canvas_size.width &&
+      reused->canvas_size.height == snapshot.canvas_size.height;
+  if (reused.ok())
+    reused->artifact_lock.reset();
+
+  hm::stitching::ValidatedStitchingArtifacts unreliable_snapshot = snapshot;
+  ++unreliable_snapshot.canvas_size.width;
+  setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  auto unreliable = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, unreliable_snapshot);
+  unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  const bool unreliable_snapshot_rejected = unreliable.ok() && unreliable->artifact_lock &&
+      unreliable->canvas_size.width == first->canvas_size.width &&
+      unreliable->canvas_size.height == first->canvas_size.height;
+  if (unreliable.ok())
+    unreliable->artifact_lock.reset();
+
+  set_write_time(dir / "left.png", 4);
+  auto stale_inputs = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
+  const bool stale_inputs_rejected = stale_inputs.ok() && !stale_inputs->artifact_lock;
+  set_write_time(dir / "left.png", 0);
+
+  cv::Mat seam(32, 160, CV_8U, cv::Scalar(255));
+  const fs::path replacement = dir / "replacement_seam.png";
+  if (!cv::imwrite(replacement.string(), seam)) {
+    return false;
+  }
+  fs::rename(replacement, dir / "seam_file.png");
+  auto replaced = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
+  const bool replacement_revalidated = replaced.ok() && replaced->artifact_lock &&
+      replaced->generation_id != snapshot.generation_id && replaced->artifact_revision != snapshot.artifact_revision &&
+      !replaced->content_validated;
+  if (replaced.ok())
+    replaced->artifact_lock.reset();
+  if (!same_generation_reused || !unreliable_snapshot_rejected || !stale_inputs_rejected || !replacement_revalidated) {
+    std::cerr << "validated snapshots must be reused only while the exact artifact generation and dependencies are "
+                 "unchanged: "
+              << replaced.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_canvas_provenance_invalidates_cap_changes(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "canvas_provenance_cap_changes";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff(dir / "mapping_0000.tif", 40, 16, 0.0f, 0.0f) ||
+      !write_mapping_tiff(dir / "mapping_0001.tif", 40, 16, 40.0f, 0.0f) ||
+      !write_remap_tiff(dir / "mapping_0000_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0000_y.tif", 40, 16) ||
+      !write_remap_tiff(dir / "mapping_0001_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0001_y.tif", 40, 16) ||
+      !write_canvas_provenance(
+          dir,
+          /*max_output_width=*/80,
+          /*width=*/80,
+          /*height=*/16,
+          /*source_width=*/160,
+          /*source_height=*/32,
+          /*max_canvas_dimension=*/0,
+          /*max_output_width_applied=*/true)) {
+    return false;
+  }
+  cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
+  seam.colRange(40, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+    return false;
+  }
+
+  const auto configured_at_generation_cap = hm::stitching::is_stitching_configured(dir.string(), 80);
+  const auto configured_at_larger_cap = hm::stitching::is_stitching_configured(dir.string(), 160);
+  const auto configured_at_auto = hm::stitching::is_stitching_configured(dir.string(), 0);
+  if (!configured_at_generation_cap.ok() || !*configured_at_generation_cap || !configured_at_larger_cap.ok() ||
+      *configured_at_larger_cap || !configured_at_auto.ok() || *configured_at_auto) {
+    std::cerr << "canvas provenance must invalidate capped artifacts when the configured cap changes" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_nonbinding_cap_changes_reuse_artifacts(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "nonbinding_canvas_provenance_cap_changes";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) ||
+      !write_canvas_provenance(
+          dir,
+          /*max_output_width=*/8192,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/160,
+          /*source_height=*/32,
+          /*max_canvas_dimension=*/0,
+          /*max_output_width_applied=*/false)) {
+    return false;
+  }
+
+  const auto configured_at_smaller_nonbinding_cap = hm::stitching::is_stitching_configured(dir.string(), 7000);
+  const auto configured_at_auto = hm::stitching::is_stitching_configured(dir.string(), 0);
+  if (!configured_at_smaller_nonbinding_cap.ok() || !*configured_at_smaller_nonbinding_cap ||
+      !configured_at_auto.ok() || !*configured_at_auto) {
+    std::cerr << "nonbinding output-width changes must reuse the published mapping generation" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_missing_provenance_requires_migration(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "missing_canvas_provenance";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  fs::remove(dir / "stitching_canvas_provenance");
+  const auto configured = hm::stitching::is_stitching_configured(dir.string(), 0);
+  const auto regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 0);
+  if (!configured.ok() || *configured || !regeneration.ok() || !*regeneration) {
+    std::cerr << "provenance-less artifacts must receive a one-time migration regeneration" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_changed_applied_live_limit_requires_regeneration(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "changed_applied_live_limit";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) ||
+      !write_canvas_provenance(
+          dir,
+          /*max_output_width=*/0,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/320,
+          /*source_height=*/64,
+          /*max_canvas_dimension=*/160,
+          /*max_output_width_applied=*/false,
+          /*max_canvas_dimension_applied=*/true)) {
+    return false;
+  }
+  unsetenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "160", /*overwrite=*/1);
+  const auto configured_at_generation_limit = hm::stitching::is_stitching_configured(dir.string(), 0);
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "320", /*overwrite=*/1);
+  const auto configured_at_relaxed_limit = hm::stitching::is_stitching_configured(dir.string(), 0);
+  unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+  if (!configured_at_generation_limit.ok() || !*configured_at_generation_limit || !configured_at_relaxed_limit.ok() ||
+      *configured_at_relaxed_limit) {
+    std::cerr << "changing an applied live canvas limit must regenerate maps at the newly available size" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_malformed_live_limit_is_ignored() {
+  unsetenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "4096junk", /*overwrite=*/1);
+  const auto effective_limit = hm::stitching::live_stitch_max_canvas_dimension();
+  unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+  if (effective_limit.has_value() && *effective_limit == 4096) {
+    std::cerr << "a malformed live canvas limit must not be parsed as a valid numeric prefix" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_superseded_constraints_reuse_artifacts(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "superseded_canvas_constraints";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) ||
+      !write_canvas_provenance(
+          dir,
+          /*max_output_width=*/300,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/320,
+          /*source_height=*/64,
+          /*max_canvas_dimension=*/160,
+          /*max_output_width_applied=*/true,
+          /*max_canvas_dimension_applied=*/true)) {
+    return false;
+  }
+  unsetenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "160", /*overwrite=*/1);
+  const auto configured_with_smaller_superseded_cap = hm::stitching::is_stitching_configured(dir.string(), 240);
+  const auto configured_with_auto_cap = hm::stitching::is_stitching_configured(dir.string(), 0);
+  auto reusable_check = hm::stitching::lock_canvas_regeneration_check(dir.string(), 240);
+  const bool reusable_check_ok = reusable_check.ok() && reusable_check->artifacts_compatible &&
+      !reusable_check->requires_regeneration && reusable_check->artifact_lock;
+  if (reusable_check.ok())
+    reusable_check->artifact_lock.reset();
+  const fs::path committed_transaction = dir / ".hstream-stitch-committed";
+  const fs::path unprepared_transaction = dir / ".hstream-stitch-unprepared";
+  std::error_code transaction_error;
+  fs::create_directory(committed_transaction, transaction_error);
+  const bool wrote_committed_transaction =
+      !transaction_error && write_text_file(committed_transaction / "state", "COMMITTED\n");
+  transaction_error.clear();
+  fs::create_directory(unprepared_transaction, transaction_error);
+  auto lightweight_reusable_check = hm::stitching::try_lock_canvas_constraint_check(dir, 240);
+  const bool lightweight_reusable_check_ok = lightweight_reusable_check.ok() &&
+      lightweight_reusable_check->artifacts_compatible && !lightweight_reusable_check->requires_regeneration &&
+      lightweight_reusable_check->artifact_lock && wrote_committed_transaction && !transaction_error &&
+      !fs::exists(committed_transaction) && !fs::exists(unprepared_transaction);
+  if (lightweight_reusable_check.ok())
+    lightweight_reusable_check->artifact_lock.reset();
+  if (!write_canvas_provenance(
+          dir,
+          /*max_output_width=*/160,
+          /*width=*/160,
+          /*height=*/32,
+          /*source_width=*/320,
+          /*source_height=*/64,
+          /*max_canvas_dimension=*/160,
+          /*max_output_width_applied=*/true,
+          /*max_canvas_dimension_applied=*/true)) {
+    unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+    return false;
+  }
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "320", /*overwrite=*/1);
+  const auto configured_with_relaxed_tied_limit = hm::stitching::is_stitching_configured(dir.string(), 160);
+  unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+  if (!reusable_check_ok || !lightweight_reusable_check_ok || !configured_with_smaller_superseded_cap.ok() ||
+      !*configured_with_smaller_superseded_cap || !configured_with_auto_cap.ok() || !*configured_with_auto_cap ||
+      !configured_with_relaxed_tied_limit.ok() || !*configured_with_relaxed_tied_limit) {
+    std::cerr << "constraints superseded by an unchanged effective scale must reuse the published maps" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_stale_mapping_dependencies_invalidate_canvas_cache(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "stale_mapping_canvas_cache";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  set_write_time(dir / "left.png", 4);
+  const auto regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 0);
+  if (!regeneration.ok() || !*regeneration) {
+    std::cerr << "stale existing mapping dependencies must invalidate canvas-relative rink caches" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_canvas_regeneration_check_retains_generation_lock(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "canvas_regeneration_generation_lock";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  auto check = hm::stitching::lock_canvas_regeneration_check(dir.string(), /*max_output_width=*/80);
+  if (!check.ok() || check->artifacts_compatible || !check->requires_regeneration || !check->artifact_lock) {
+    return false;
+  }
+  std::atomic<bool> finished{false};
+  absl::Status lock_status;
+  std::thread publisher([&]() {
+    auto publication_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+    lock_status = publication_lock.status();
+    finished = true;
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const bool waited = !finished.load();
+  check->artifact_lock.reset();
+  publisher.join();
+  if (!waited || !lock_status.ok()) {
+    std::cerr << "canvas cache invalidation must retain its reviewed Hugin generation" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_width_cap_marks_native_canvas_for_regeneration(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "width_cap_canvas_regeneration";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir)) {
+    return false;
+  }
+  const auto requires_regeneration =
+      hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), /*max_output_width=*/80);
+  if (!requires_regeneration.ok() || !*requires_regeneration) {
+    std::cerr << "a width cap below the published canvas must invalidate canvas-relative rink data: "
+              << requires_regeneration.status() << std::endl;
     return false;
   }
   return true;
@@ -707,9 +1243,60 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
   }
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
-  if (!configured.ok() || *configured) {
-    std::cerr << "uniform same-size seam must make stitching artifacts unconfigured: " << configured.status()
-              << std::endl;
+  auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  const bool preflight_accepts_layout = preflight.ok() && preflight->artifact_lock;
+  if (preflight.ok())
+    preflight->artifact_lock.reset();
+  auto authoritative = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  const bool authoritative_rejects_content = !authoritative.ok() || !authoritative->artifact_lock;
+  if (authoritative.ok())
+    authoritative->artifact_lock.reset();
+  auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/0);
+  const bool lightweight_rejects = lightweight.ok() && !lightweight->artifacts_compatible &&
+      lightweight->requires_regeneration && lightweight->artifact_lock;
+  if (lightweight.ok())
+    lightweight->artifact_lock.reset();
+  auto metadata_lock = hm::stitching::try_lock_canvas_constraint_artifacts(dir);
+  const auto metadata = metadata_lock.ok() && *metadata_lock
+      ? hm::stitching::check_canvas_constraint_metadata_locked(dir, /*max_output_width=*/0)
+      : absl::StatusOr<hm::stitching::CanvasConstraintCompatibility>(
+            metadata_lock.ok() ? absl::UnavailableError("artifact lock unavailable") : metadata_lock.status());
+  const bool metadata_accepts_layout =
+      metadata.ok() && metadata->artifacts_compatible && !metadata->requires_regeneration;
+  if (metadata_lock.ok())
+    metadata_lock->reset();
+  if (!configured.ok() || *configured || !preflight_accepts_layout || !authoritative_rejects_content ||
+      !lightweight_rejects || !metadata_accepts_layout) {
+    std::cerr << "uniform same-size seam must be deferred by metadata preflight and rejected by authoritative checks: "
+              << configured.status() << " / " << metadata.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_corrupt_idat_is_rejected_without_crashing(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "corrupt_idat_canvas_check";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir) || !corrupt_png_idat_with_valid_crc(dir / "seam_file.png"))
+    return false;
+
+  auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
+  const bool preflight_accepts_layout = preflight.ok() && preflight->artifact_lock;
+  if (preflight.ok())
+    preflight->artifact_lock.reset();
+  auto authoritative = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  const bool authoritative_rejects_content = !authoritative.ok() || !authoritative->artifact_lock;
+  if (authoritative.ok())
+    authoritative->artifact_lock.reset();
+  auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/0);
+  const bool rejected = lightweight.ok() && !lightweight->artifacts_compatible && lightweight->requires_regeneration &&
+      lightweight->artifact_lock;
+  if (lightweight.ok())
+    lightweight->artifact_lock.reset();
+  if (!preflight_accepts_layout || !authoritative_rejects_content || !rejected) {
+    std::cerr
+        << "corrupt PNG IDAT must be deferred by preflight and rejected by authoritative checks without crashing: "
+        << lightweight.status() << std::endl;
     return false;
   }
   return true;
@@ -742,9 +1329,14 @@ bool expect_mismatched_remap_headers_are_not_configured(const fs::path& tmpdir) 
   }
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/160);
-  if (!configured.ok() || *configured) {
-    std::cerr << "mismatched remap X/Y headers must make stitching artifacts unconfigured: " << configured.status()
-              << std::endl;
+  auto lightweight = hm::stitching::try_lock_canvas_constraint_check(dir, /*max_output_width=*/160);
+  const bool lightweight_rejects = lightweight.ok() && !lightweight->artifacts_compatible &&
+      lightweight->requires_regeneration && lightweight->artifact_lock;
+  if (lightweight.ok())
+    lightweight->artifact_lock.reset();
+  if (!configured.ok() || *configured || !lightweight_rejects) {
+    std::cerr << "mismatched remap X/Y headers must invalidate runtime and lightweight stitching checks: "
+              << configured.status() << std::endl;
     return false;
   }
   return true;
@@ -766,6 +1358,325 @@ bool expect_placement_remap_size_mismatch_is_not_configured(const fs::path& tmpd
   return true;
 }
 
+bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "stale_snapshot_publisher";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+
+  auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!hugin_lock.ok())
+    return false;
+  auto first_hugin_generation = hm::stitching::HuginProject::GenerationId(dir, **hugin_lock);
+  if (!first_hugin_generation.ok())
+    return false;
+  auto first_output_generation = hm::stitching::stitched_output_generation_id(*first_hugin_generation, 0.0, 160, 32);
+  if (!first_output_generation.ok())
+    return false;
+  YAML::Node first_config(YAML::NodeType::Map);
+  first_config["rink"]["stitched_output_generation"] = *first_output_generation;
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(first_config) + "\n"))
+    return false;
+  hugin_lock->reset();
+
+  auto stale_surface_generation = hm::stitching::stitched_output_generation_id(*first_hugin_generation, 1.0, 160, 32);
+  NvBufSurfaceParams stale_surface_params{};
+  stale_surface_params.width = 160;
+  stale_surface_params.height = 32;
+  stale_surface_params.pitch = 160 * 4;
+  stale_surface_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+  hm::surface::Surface stale_surface(&stale_surface_params);
+  const auto stale_surface_status = stale_surface_generation.ok()
+      ? hm::stitching::save_stitched_image(dir.string(), stale_surface, *stale_surface_generation)
+      : stale_surface_generation.status();
+  if (!absl::IsAborted(stale_surface_status)) {
+    std::cerr << "a stale surface must be rejected before GPU readback: " << stale_surface_status << std::endl;
+    return false;
+  }
+  hugin_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!hugin_lock.ok())
+    return false;
+
+  cv::Mat stale_snapshot(32, 160, CV_8UC3, cv::Scalar(0, 0, 255));
+  absl::Status publisher_status;
+  std::thread stale_publisher([&] {
+    publisher_status = hm::stitching::save_stitched_image(dir.string(), stale_snapshot, *first_output_generation);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  {
+    std::ofstream changed(dir / "autooptimiser_out.pto", std::ios::app);
+    changed << "# replacement generation\n";
+  }
+  auto second_hugin_generation = hm::stitching::HuginProject::GenerationId(dir, **hugin_lock);
+  if (!second_hugin_generation.ok()) {
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  auto second_output_generation = hm::stitching::stitched_output_generation_id(*second_hugin_generation, 0.0, 160, 32);
+  if (!second_output_generation.ok()) {
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(dir);
+  if (!config_lock.ok()) {
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  YAML::Node second_config(YAML::NodeType::Map);
+  second_config["rink"]["stitched_output_generation"] = *second_output_generation;
+  if (!hm::stitching::publish_game_config(dir, YAML::Dump(second_config) + "\n").ok()) {
+    config_lock->reset();
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  cv::Mat current_snapshot(32, 160, CV_8UC3, cv::Scalar(0, 255, 0));
+  const fs::path current_temporary = dir / "s-current.png";
+  std::error_code rename_error;
+  if (!cv::imwrite(current_temporary.string(), current_snapshot)) {
+    config_lock->reset();
+    hugin_lock->reset();
+    stale_publisher.join();
+    return false;
+  }
+  fs::rename(current_temporary, dir / "s.png", rename_error);
+  config_lock->reset();
+  hugin_lock->reset();
+  stale_publisher.join();
+
+  const cv::Mat published = cv::imread((dir / "s.png").string(), cv::IMREAD_COLOR);
+  if (!absl::IsAborted(publisher_status) || rename_error || published.empty() ||
+      published.at<cv::Vec3b>(0, 0) != cv::Vec3b(0, 255, 0)) {
+    std::cerr << "a stale frame publisher must not overwrite the current stitched-output generation: "
+              << publisher_status << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "validated_load_snapshot_replacement";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  const fs::path mapping = dir / "mapping_0000_x.tif";
+  const fs::path replacement = dir / "replacement-mapping.tif";
+  std::error_code error;
+  fs::copy_file(mapping, replacement, fs::copy_options::overwrite_existing, error);
+  if (error)
+    return false;
+
+  absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
+  const fs::path marker = dir / ".load-snapshot-ready";
+  const fs::path release = dir / ".load-snapshot-release";
+  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS", "3000", 1);
+  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER", marker.c_str(), 1);
+  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_RELEASE", release.c_str(), 1);
+  std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
+  const bool snapshot_started = wait_for_test_marker(marker);
+  if (snapshot_started) {
+    fs::remove(mapping, error);
+    if (!error)
+      fs::create_symlink(replacement, mapping, error);
+  }
+  std::ofstream(release) << "continue\n";
+  loader.join();
+  ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_RELEASE");
+  ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER");
+  ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS");
+
+  bool snapshot_left_behind = false;
+  for (const auto& entry : fs::directory_iterator(dir)) {
+    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-control-mask-snapshot-", 0) == 0)
+      snapshot_left_behind = true;
+  }
+  if (!snapshot_started || error || result.ok() || !fs::is_symlink(fs::symlink_status(mapping)) ||
+      snapshot_left_behind) {
+    std::cerr << "validated control-mask loading must reject path replacement without leaking its private snapshot: "
+              << result.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_validation_rejects_pre_generation_replacement(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "validated_generation_replacement";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  const fs::path mapping = dir / "mapping_0000_x.tif";
+  const fs::path replacement = dir / "replacement-mapping.tif";
+  if (!write_remap_tiff(replacement, 8, 8))
+    return false;
+
+  absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
+  const fs::path marker = dir / ".post-validation-ready";
+  const fs::path release = dir / ".post-validation-release";
+  ::setenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS", "3000", 1);
+  ::setenv("HM_TEST_STITCH_POST_VALIDATION_MARKER", marker.c_str(), 1);
+  ::setenv("HM_TEST_STITCH_POST_VALIDATION_RELEASE", release.c_str(), 1);
+  std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
+  const bool reached_delay = wait_for_test_marker(marker);
+  std::error_code error;
+  if (reached_delay)
+    fs::rename(replacement, mapping, error);
+  std::ofstream(release) << "continue\n";
+  loader.join();
+  ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_RELEASE");
+  ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_MARKER");
+  ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS");
+
+  if (!reached_delay || error || !absl::IsAborted(result.status())) {
+    std::cerr << "validated control-mask loading must reject path replacement before generation capture: "
+              << result.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "unreliable_validation_pinned_generation";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  auto adopted = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  if (!adopted.ok() || !adopted->artifact_lock)
+    return false;
+  adopted->artifact_lock.reset();
+  std::ifstream expected_identity_input(dir / hm::stitching::kStitchGenerationArtifact, std::ios::binary);
+  const std::string expected_identity{
+      std::istreambuf_iterator<char>(expected_identity_input), std::istreambuf_iterator<char>()};
+  if (expected_identity.empty())
+    return false;
+  const fs::path mapping = dir / "mapping_0001.tif";
+  const fs::path original = dir / "mapping_0001-original.tif";
+  const fs::path replacement = dir / "mapping_0001-replacement.tif";
+  if (!write_mapping_tiff(replacement, 64, 32, 200.0f, 0.0f))
+    return false;
+
+  absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
+  const fs::path marker = dir / ".stable-validation-ready";
+  const fs::path release = dir / ".stable-validation-release";
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  ::setenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE", "1", 1);
+  ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS", "3000", 1);
+  ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER", marker.c_str(), 1);
+  ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE", release.c_str(), 1);
+  std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
+  const bool reached_delay = wait_for_test_marker(marker);
+  std::error_code error;
+  if (reached_delay)
+    fs::rename(mapping, original, error);
+  if (reached_delay && !error)
+    fs::rename(replacement, mapping, error);
+  if (reached_delay && !error)
+    fs::rename(mapping, replacement, error);
+  if (reached_delay && !error)
+    fs::rename(original, mapping, error);
+  std::ofstream(release) << "continue\n";
+  loader.join();
+  ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE");
+  ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER");
+  ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS");
+  ::unsetenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
+
+  std::ifstream snapshot_identity_input(
+      result.ok() && result->load_snapshot
+          ? result->load_snapshot->directory() / hm::stitching::kStitchGenerationArtifact
+          : fs::path(),
+      std::ios::binary);
+  const std::string snapshot_identity{
+      std::istreambuf_iterator<char>(snapshot_identity_input), std::istreambuf_iterator<char>()};
+  const bool transient_verified = result.ok() && result->load_snapshot && result->load_snapshot->verify().ok();
+  const fs::path persistently_changed = dir / "mapping_0001_x.tif";
+  const auto preserved_write_time = fs::last_write_time(persistently_changed);
+  std::fstream changed(persistently_changed, std::ios::binary | std::ios::in | std::ios::out);
+  changed.seekg(0, std::ios::end);
+  const std::streamoff changed_size = changed.tellg();
+  char changed_byte = 0;
+  if (changed_size > 0) {
+    changed.seekg(changed_size / 2);
+    changed.get(changed_byte);
+    changed_byte ^= 0x5a;
+    changed.seekp(changed_size / 2);
+    changed.put(changed_byte);
+    changed.flush();
+  }
+  changed.close();
+  fs::last_write_time(persistently_changed, preserved_write_time);
+  const bool persistent_change_rejected = result.ok() && result->load_snapshot && !result->load_snapshot->verify().ok();
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+
+  if (!reached_delay || error || !transient_verified || changed_size <= 0 || !persistent_change_rejected ||
+      !result.ok() || !result->artifact_lock || !result->load_snapshot || result->canvas_size.width != 160 ||
+      result->canvas_size.height != 32 || fs::is_symlink(result->load_snapshot->directory() / "mapping_0001.tif") ||
+      snapshot_identity != expected_identity) {
+    std::cerr << "unreliable-filesystem validation must use one pinned artifact generation: " << result.status()
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_validation_copy_offload_outcomes(const fs::path& tmpdir) {
+  for (const char* outcome : {"unsupported", "partial", "zero"}) {
+    const fs::path dir = tmpdir / ("validation_copy_offload_" + std::string(outcome));
+    fs::remove_all(dir);
+    if (!write_valid_stitching_artifacts(dir))
+      return false;
+    ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+    ::setenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE", "1", 1);
+    ::setenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT", outcome, 1);
+    auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+    const bool verified = load.ok() && load->artifact_lock && load->load_snapshot && load->load_snapshot->verify().ok();
+    ::unsetenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT");
+    ::unsetenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
+    ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+    if (!verified) {
+      std::cerr << "validation snapshot copy outcome must remain loadable (" << outcome << "): " << load.status()
+                << std::endl;
+      return false;
+    }
+  }
+  return true;
+}
+
+bool expect_unreliable_load_refreshes_legacy_identity_revision(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "unreliable_legacy_identity_revision";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!artifact_lock.ok())
+    return false;
+  auto bindings = hm::stitching::stitch_artifact_binding_revision_locked(dir);
+  if (!bindings.ok())
+    return false;
+  const std::string logical_id = "legacy-v2-logical-generation";
+  std::ofstream identity(dir / hm::stitching::kStitchGenerationArtifact, std::ios::binary | std::ios::trunc);
+  identity << "version=2\nlogical-size=" << logical_id.size() << "\nbindings-size=" << bindings->size() << '\n'
+           << logical_id << *bindings;
+  identity.close();
+  artifact_lock->reset();
+  if (!identity)
+    return false;
+
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+  const bool verified = load.ok() && load->artifact_lock && load->load_snapshot && load->generation_id == logical_id &&
+      load->load_snapshot->verify().ok();
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  if (!verified) {
+    std::cerr << "unreliable legacy identity migration must refresh the load revision: " << load.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -774,6 +1685,7 @@ void finish(const fs::path& tmpdir, int code) {
 } // namespace
 
 int main() {
+  ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   const fs::path tmpdir =
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
@@ -814,8 +1726,16 @@ int main() {
     finish(tmpdir, 9);
   }
 
+  if (!expect_canvas_size_waits_for_hugin_lock(tmpdir)) {
+    finish(tmpdir, 24);
+  }
+
   if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
     finish(tmpdir, 10);
+  }
+
+  if (!expect_canvas_constraint_checks_reject_oversized_artifacts(tmpdir)) {
+    finish(tmpdir, 41);
   }
 
   if (!expect_hard_seam_generation_requires_opt_in(tmpdir)) {
@@ -832,6 +1752,50 @@ int main() {
 
   if (!expect_effective_size_offset_seam_is_not_scaled_again(tmpdir)) {
     finish(tmpdir, 19);
+  }
+
+  if (!expect_runtime_validation_normalizes_cropped_seam(tmpdir)) {
+    finish(tmpdir, 25);
+  }
+
+  if (!expect_preflight_snapshot_is_reused_only_for_same_generation(tmpdir)) {
+    finish(tmpdir, 36);
+  }
+
+  if (!expect_canvas_provenance_invalidates_cap_changes(tmpdir)) {
+    finish(tmpdir, 26);
+  }
+
+  if (!expect_nonbinding_cap_changes_reuse_artifacts(tmpdir)) {
+    finish(tmpdir, 28);
+  }
+
+  if (!expect_missing_provenance_requires_migration(tmpdir)) {
+    finish(tmpdir, 29);
+  }
+
+  if (!expect_changed_applied_live_limit_requires_regeneration(tmpdir)) {
+    finish(tmpdir, 30);
+  }
+
+  if (!expect_malformed_live_limit_is_ignored()) {
+    finish(tmpdir, 34);
+  }
+
+  if (!expect_superseded_constraints_reuse_artifacts(tmpdir)) {
+    finish(tmpdir, 33);
+  }
+
+  if (!expect_stale_mapping_dependencies_invalidate_canvas_cache(tmpdir)) {
+    finish(tmpdir, 31);
+  }
+
+  if (!expect_canvas_regeneration_check_retains_generation_lock(tmpdir)) {
+    finish(tmpdir, 32);
+  }
+
+  if (!expect_width_cap_marks_native_canvas_for_regeneration(tmpdir)) {
+    finish(tmpdir, 27);
   }
 
   if (!expect_native_over_cap_mappings_are_not_configured(tmpdir)) {
@@ -854,6 +1818,10 @@ int main() {
     finish(tmpdir, 17);
   }
 
+  if (!expect_corrupt_idat_is_rejected_without_crashing(tmpdir)) {
+    finish(tmpdir, 35);
+  }
+
   if (!expect_missing_placement_tiff_is_not_configured(tmpdir)) {
     finish(tmpdir, 21);
   }
@@ -864,6 +1832,30 @@ int main() {
 
   if (!expect_placement_remap_size_mismatch_is_not_configured(tmpdir)) {
     finish(tmpdir, 23);
+  }
+
+  if (!expect_stale_snapshot_publisher_is_rejected(tmpdir)) {
+    finish(tmpdir, 34);
+  }
+
+  if (!expect_validated_load_snapshot_rejects_path_replacement(tmpdir)) {
+    finish(tmpdir, 42);
+  }
+
+  if (!expect_validation_rejects_pre_generation_replacement(tmpdir)) {
+    finish(tmpdir, 43);
+  }
+
+  if (!expect_unreliable_validation_uses_pinned_generation(tmpdir)) {
+    finish(tmpdir, 44);
+  }
+
+  if (!expect_unreliable_load_refreshes_legacy_identity_revision(tmpdir)) {
+    finish(tmpdir, 45);
+  }
+
+  if (!expect_validation_copy_offload_outcomes(tmpdir)) {
+    finish(tmpdir, 46);
   }
 
   finish(tmpdir, 0);

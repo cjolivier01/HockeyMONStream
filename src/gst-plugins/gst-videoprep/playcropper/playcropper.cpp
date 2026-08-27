@@ -35,6 +35,7 @@
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 #include "nvdsmeta.h"
 #include "yaml-cpp/yaml.h"
 
@@ -356,24 +357,11 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       return false;
     }
   } else if (key == "scoreboard-perspective-polygon") {
-    scoreboard_perspective_polygion_.clear();
-    std::vector<std::string> points = absl::StrSplit(prop.value, ',');
-    assert(points.size() == 8);
-    for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
-      const size_t index = i << 1;
-      scoreboard_perspective_polygion_.emplace_back(
-          cv::Point2f(std::atof(points[index].c_str()), std::atof(points.at(index + 1).c_str())));
-    }
-    assert(scoreboard_perspective_polygion_.size() == 4);
-    scoreboard_disabled_ = std::all_of(
-        scoreboard_perspective_polygion_.begin(), scoreboard_perspective_polygion_.end(), [](const cv::Point2f& p) {
-          return p.x == 0.0f && p.y == 0.0f;
-        });
-    if (scoreboard_disabled_)
-      scoreboard_perspective_polygion_.clear();
-    std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by configured sentinel"
-                                       : "Loaded scoreboard perspective polygon")
-              << std::endl;
+    if (!SetScoreboardPerspectiveValue(prop.value))
+      return false;
+    scoreboard_output_generation_.clear();
+    scoreboard_output_authorization_id_.clear();
+    scoreboard_output_property_value_.clear();
   } else if (key == "show-scoreboard") {
     show_scoreboard_ = !!std::atoi(prop.value.c_str());
   } else if (key == "scoreboard-projected-width") {
@@ -441,6 +429,52 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     no_crop_ = !!std::atoi(prop.value.c_str());
   }
   return true;
+}
+
+bool PlayCropperPriv::SetScoreboardPerspectiveValue(std::string_view value) {
+  std::vector<std::string> points = absl::StrSplit(value, ',');
+  if (points.size() != 8)
+    return false;
+  std::vector<cv::Point2f> parsed_polygon;
+  parsed_polygon.reserve(4);
+  for (size_t i = 0, n = points.size() >> 1; i < n; ++i) {
+    const size_t index = i << 1;
+    float x = 0.0f;
+    float y = 0.0f;
+    if (!parse_finite_float(points[index], &x) || !parse_finite_float(points[index + 1], &y))
+      return false;
+    parsed_polygon.emplace_back(x, y);
+  }
+  scoreboard_perspective_polygion_ = std::move(parsed_polygon);
+  scoreboard_.reset();
+  scoreboard_disabled_ = std::all_of(
+      scoreboard_perspective_polygion_.begin(), scoreboard_perspective_polygion_.end(), [](const cv::Point2f& point) {
+        return point.x == 0.0f && point.y == 0.0f;
+      });
+  if (scoreboard_disabled_)
+    scoreboard_perspective_polygion_.clear();
+  scoreboard_configure_attempted_ = scoreboard_disabled_;
+  std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by configured sentinel"
+                                     : "Loaded scoreboard perspective polygon")
+            << std::endl;
+  return true;
+}
+
+absl::Status PlayCropperPriv::ApplyScoreboardOutputEpoch(const NvDsFrameMeta* frame_meta) {
+  const auto* epoch = stitching::find_stitched_output_generation_meta(frame_meta);
+  if (!epoch || epoch->scoreboard_property_value().empty())
+    return absl::OkStatus();
+  if (scoreboard_output_generation_ == epoch->generation() &&
+      scoreboard_output_authorization_id_ == epoch->authorization_id() &&
+      scoreboard_output_property_value_ == epoch->scoreboard_property_value()) {
+    return absl::OkStatus();
+  }
+  if (!SetScoreboardPerspectiveValue(epoch->scoreboard_property_value()))
+    return absl::InvalidArgumentError("Invalid scoreboard geometry in stitched-output frame epoch");
+  scoreboard_output_generation_ = epoch->generation();
+  scoreboard_output_authorization_id_ = epoch->authorization_id();
+  scoreboard_output_property_value_ = epoch->scoreboard_property_value();
+  return absl::OkStatus();
 }
 
 BufferResult PlayCropperPriv::ProcessBuffer(GstBuffer* inbuf) {
@@ -567,6 +601,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
   for (size_t batch_nr = 0; batch_nr < nr_surfaces_to_process; ++batch_nr, frame_meta_list = frame_meta_list->next) {
     assert(frame_meta_list);
     NvDsFrameMeta* frame_meta = (NvDsFrameMeta*)frame_meta_list->data;
+    HM_RETURN_IF_ERROR(ApplyScoreboardOutputEpoch(frame_meta));
 
     // Get input and output surfaces
 #ifdef __aarch64__
@@ -707,7 +742,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Scoreboard
     if (show_scoreboard_) {
       completion_fence.MarkSubmitted();
-      HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, cuda_stream_));
+      HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, frame_meta, cuda_stream_));
     }
     if (show_ && !batch_nr) {
       // Render it inside the loop, but we'll display it after our cudaSynchronize
@@ -806,7 +841,9 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
   }
 }
 
-absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(surface::Surface stitched_surface) {
+absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
+    surface::Surface stitched_surface,
+    const NvDsFrameMeta* frame_meta) {
   if (scoreboard_disabled_ || !scoreboard_perspective_polygion_.empty()) {
     return absl::OkStatus();
   }
@@ -839,7 +876,13 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(surface::Sur
 
   const std::filesystem::path stitched_image = game_dir / "s.png";
   if (!std::filesystem::exists(stitched_image, ec) || ec || std::filesystem::file_size(stitched_image, ec) == 0 || ec) {
-    HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface));
+    std::string producer_output_generation;
+    if (const auto* payload = stitching::find_stitched_output_generation_meta(frame_meta)) {
+      producer_output_generation = payload->generation();
+    }
+    if (producer_output_generation.empty())
+      return absl::FailedPreconditionError("Stitched frame has no stitched-output generation metadata");
+    HM_RETURN_IF_ERROR(stitching::save_stitched_image(game_dir.string(), stitched_surface, producer_output_generation));
   }
 
   HM_RETURN_IF_ERROR(stitching::configure_scoreboard(game_dir.string()));
@@ -917,9 +960,10 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
 absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface in_surface,
     surface::Surface out_surface,
+    const NvDsFrameMeta* frame_meta,
     cudaStream_t stream) {
   if (scoreboard_perspective_polygion_.empty()) {
-    HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(in_surface));
+    HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(in_surface, frame_meta));
   }
   if (!scoreboard_ && !scoreboard_perspective_polygion_.empty()) {
     const auto resolve_dimension = [](const std::string& value, float fallback, guint extent) -> absl::StatusOr<int> {

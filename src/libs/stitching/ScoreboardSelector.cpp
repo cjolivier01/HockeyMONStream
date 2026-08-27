@@ -1,5 +1,7 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +16,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
 #include <regex>
@@ -24,6 +27,7 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <opencv2/imgcodecs.hpp>
 #include <sys/select.h>
@@ -41,8 +45,134 @@ namespace fs = std::filesystem;
 
 constexpr size_t kMaximumHeaderBytes = 16 * 1024;
 constexpr size_t kMaximumBodyBytes = 4 * 1024;
+constexpr size_t kMaximumSnapshotBytes = 256 * 1024 * 1024;
 constexpr auto kTokenLifetime = std::chrono::minutes(30);
 constexpr auto kDefaultClientLifetime = std::chrono::seconds(10);
+
+std::string snapshot_identity(const struct stat& metadata) {
+  std::ostringstream value;
+  value << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':'
+        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec;
+  return value.str();
+}
+
+absl::StatusOr<std::string> snapshot_file_identity(const fs::path& path) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      ::close(descriptor);
+    }
+  } close{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0)
+    return absl::FailedPreconditionError("Stitched snapshot is not a readable regular file: " + path.string());
+  return snapshot_identity(metadata);
+}
+
+struct OpenedSnapshotFile {
+  int descriptor{-1};
+  size_t size{0};
+  std::string identity;
+
+  OpenedSnapshotFile() = default;
+  OpenedSnapshotFile(int descriptor, size_t size, std::string identity)
+      : descriptor(descriptor), size(size), identity(std::move(identity)) {}
+  ~OpenedSnapshotFile() {
+    if (descriptor >= 0)
+      ::close(descriptor);
+  }
+  OpenedSnapshotFile(const OpenedSnapshotFile&) = delete;
+  OpenedSnapshotFile& operator=(const OpenedSnapshotFile&) = delete;
+  OpenedSnapshotFile(OpenedSnapshotFile&& other) noexcept
+      : descriptor(std::exchange(other.descriptor, -1)), size(other.size), identity(std::move(other.identity)) {}
+  OpenedSnapshotFile& operator=(OpenedSnapshotFile&& other) noexcept {
+    if (this == &other)
+      return *this;
+    if (descriptor >= 0)
+      ::close(descriptor);
+    descriptor = std::exchange(other.descriptor, -1);
+    size = other.size;
+    identity = std::move(other.identity);
+    return *this;
+  }
+};
+
+absl::StatusOr<OpenedSnapshotFile> open_snapshot_file(const fs::path& path) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::NotFoundError("Stitched snapshot is missing: " + path.string());
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      static_cast<uint64_t>(metadata.st_size) > kMaximumSnapshotBytes) {
+    ::close(descriptor);
+    return absl::FailedPreconditionError("Stitched snapshot size or type is invalid: " + path.string());
+  }
+  return OpenedSnapshotFile(descriptor, static_cast<size_t>(metadata.st_size), snapshot_identity(metadata));
+}
+
+absl::StatusOr<std::string> read_opened_snapshot_file(OpenedSnapshotFile* snapshot) {
+  if (snapshot == nullptr || snapshot->descriptor < 0 || snapshot->size == 0)
+    return absl::InvalidArgumentError("Stitched snapshot descriptor is not open");
+  std::string bytes;
+  try {
+    bytes.resize(snapshot->size);
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate the bounded stitched snapshot buffer");
+  }
+  size_t offset = 0;
+  while (offset < bytes.size()) {
+    const ssize_t count = ::read(snapshot->descriptor, bytes.data() + offset, bytes.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Stitched snapshot changed while it was being read");
+    offset += static_cast<size_t>(count);
+  }
+  struct stat after{};
+  if (::fstat(snapshot->descriptor, &after) != 0 || snapshot->identity != snapshot_identity(after))
+    return absl::AbortedError("Stitched snapshot changed while it was being read");
+  return bytes;
+}
+
+absl::StatusOr<std::pair<size_t, size_t>> png_snapshot_dimensions(const std::string& bytes) {
+  constexpr std::array<unsigned char, 8> kPngSignature = {137, 80, 78, 71, 13, 10, 26, 10};
+  if (bytes.size() < 24 ||
+      !std::equal(kPngSignature.begin(), kPngSignature.end(), bytes.begin(), [](unsigned char expected, char actual) {
+        return expected == static_cast<unsigned char>(actual);
+      })) {
+    return absl::FailedPreconditionError("Stitched snapshot has an invalid PNG header");
+  }
+  const auto big_endian_u32 = [&](size_t offset) {
+    return (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset])) << 24) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 1])) << 16) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 2])) << 8) |
+        static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 3]));
+  };
+  if (big_endian_u32(8) != 13 || bytes.compare(12, 4, "IHDR") != 0)
+    return absl::FailedPreconditionError("Stitched snapshot PNG is missing its leading IHDR chunk");
+  const uint32_t width = big_endian_u32(16);
+  const uint32_t height = big_endian_u32(20);
+  if (width == 0 || height == 0)
+    return absl::FailedPreconditionError("Stitched snapshot PNG dimensions are invalid");
+  return std::make_pair(static_cast<size_t>(width), static_cast<size_t>(height));
+}
+
+absl::StatusOr<std::string> configured_stitched_output_generation(const YAML::Node& config) {
+  try {
+    const YAML::Node generation = config["rink"]["stitched_output_generation"];
+    if (!generation || !generation.IsScalar()) {
+      return absl::FailedPreconditionError(
+          "Scoreboard selector requires a current stitched-output generation; regenerate the rink profile");
+    }
+    return generation.as<std::string>();
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read scoreboard stitched-output generation: " + std::string(exception.what()));
+  }
+}
 
 std::chrono::milliseconds client_lifetime() {
   const char* configured = std::getenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS");
@@ -376,7 +506,24 @@ absl::StatusOr<ScoreboardSelector::Polygon> ScoreboardSelector::ValidateAndOrder
   return ordered;
 }
 
-absl::Status ScoreboardSelector::Save(const fs::path& game_dir, const Polygon& polygon) {
+absl::Status ScoreboardSelector::Save(
+    const fs::path& game_dir,
+    const Polygon& polygon,
+    const std::optional<CanvasGeneration>& expected_generation) {
+  std::unique_ptr<HuginProject::ArtifactLock> hugin_lock;
+  if (expected_generation.has_value()) {
+    auto lock = HuginProject::RecoverAndLock(game_dir);
+    if (!lock.ok())
+      return lock.status();
+    auto current_generation = HuginProject::GenerationId(game_dir, **lock);
+    if (!current_generation.ok())
+      return current_generation.status();
+    if (*current_generation != expected_generation->hugin_generation) {
+      return absl::AbortedError(
+          "Stitching artifacts changed while the scoreboard selector was open; reopen it on the current canvas");
+    }
+    hugin_lock = std::move(*lock);
+  }
   auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
@@ -385,6 +532,34 @@ absl::Status ScoreboardSelector::Save(const fs::path& game_dir, const Polygon& p
   try {
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
+    if (expected_generation.has_value()) {
+      auto current_output_generation = configured_stitched_output_generation(config);
+      if (!current_output_generation.ok())
+        return current_output_generation.status();
+      HM_RETURN_IF_ERROR(
+          validate_stitched_output_generation_hugin(*current_output_generation, expected_generation->hugin_generation));
+      if (*current_output_generation != expected_generation->stitched_output_generation) {
+        return absl::AbortedError(
+            "Stitched output changed while the scoreboard selector was open; reopen it on the current canvas");
+      }
+      std::string current_generation;
+      HM_ASSIGN_OR_RETURN(
+          current_generation,
+          current_stitched_output_generation_id_locked(
+              game_dir.string(), config, expected_generation->hugin_generation));
+      if (*current_output_generation != current_generation) {
+        return absl::AbortedError(
+            "Configured stitched output no longer matches the current rotation or canvas dimensions");
+      }
+      auto current_snapshot_identity = snapshot_file_identity(game_dir / "s.png");
+      if (!current_snapshot_identity.ok())
+        return current_snapshot_identity.status();
+      if (!expected_generation->snapshot_identity.empty() &&
+          *current_snapshot_identity != expected_generation->snapshot_identity) {
+        return absl::AbortedError(
+            "Stitched snapshot changed while the scoreboard selector was open; reopen it on the current canvas");
+      }
+    }
     YAML::Node points(YAML::NodeType::Sequence);
     for (const ScoreboardPoint& point : polygon) {
       YAML::Node pair(YAML::NodeType::Sequence);
@@ -405,14 +580,66 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
   if (const char* disabled = std::getenv("HM_NO_SCOREBOARD"); disabled != nullptr && std::string(disabled) == "1") {
     return Save(game_dir, {});
   }
+  auto hugin_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto hugin_generation = HuginProject::GenerationId(game_dir, **hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
+  if (!config_lock.ok())
+    return config_lock.status();
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    const fs::path config_path = game_dir / "config.yaml";
+    if (fs::is_regular_file(config_path))
+      config = YAML::LoadFile(config_path.string());
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read scoreboard config generation: " + std::string(exception.what()));
+  }
+  auto output_generation = configured_stitched_output_generation(config);
+  if (!output_generation.ok())
+    return output_generation.status();
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_hugin(*output_generation, *hugin_generation));
+  std::string current_output_generation;
+  HM_ASSIGN_OR_RETURN(
+      current_output_generation,
+      current_stitched_output_generation_id_locked(game_dir.string(), config, *hugin_generation));
+  if (*output_generation != current_output_generation) {
+    return absl::FailedPreconditionError(
+        "Scoreboard selector requires a stitched-output generation matching the current rotation and canvas size");
+  }
   const fs::path image_path = game_dir / "s.png";
-  const cv::Mat dimensions = cv::imread(image_path.string(), cv::IMREAD_GRAYSCALE);
+  OpenedSnapshotFile snapshot;
+  HM_ASSIGN_OR_RETURN(snapshot, open_snapshot_file(image_path));
+  const CanvasGeneration canvas_generation{
+      .hugin_generation = *hugin_generation,
+      .stitched_output_generation = *output_generation,
+      .snapshot_identity = snapshot.identity,
+  };
+  config_lock->reset();
+  hugin_lock->reset();
+  std::string snapshot_bytes;
+  HM_ASSIGN_OR_RETURN(snapshot_bytes, read_opened_snapshot_file(&snapshot));
+  std::pair<size_t, size_t> header_dimensions;
+  HM_ASSIGN_OR_RETURN(header_dimensions, png_snapshot_dimensions(snapshot_bytes));
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+      *output_generation, header_dimensions.first, header_dimensions.second));
+  const cv::Mat encoded(1, static_cast<int>(snapshot_bytes.size()), CV_8U, snapshot_bytes.data());
+  cv::Mat dimensions;
+  try {
+    dimensions = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
+  } catch (const cv::Exception& exception) {
+    return absl::FailedPreconditionError("Unable to decode stitched snapshot: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate the decoded stitched snapshot");
+  }
   if (dimensions.empty())
     return absl::NotFoundError("Scoreboard selector requires " + image_path.string());
-  std::ifstream image_input(image_path, std::ios::binary);
-  const std::string image_bytes((std::istreambuf_iterator<char>(image_input)), std::istreambuf_iterator<char>());
-  if (image_bytes.empty())
-    return absl::FailedPreconditionError("Scoreboard selector image is empty");
+  if (static_cast<size_t>(dimensions.cols) != header_dimensions.first ||
+      static_cast<size_t>(dimensions.rows) != header_dimensions.second) {
+    return absl::FailedPreconditionError("Decoded stitched snapshot dimensions do not match its PNG header");
+  }
 
   std::string bind_host = "127.0.0.1";
   if (const char* configured = std::getenv("HM_SCOREBOARD_BIND_HOST"); configured != nullptr && *configured != '\0') {
@@ -527,7 +754,7 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
       continue;
     }
     if (request->method == "GET" && path == "/image") {
-      respond_best_effort(client, 200, "OK", "image/png", image_bytes, client_deadline);
+      respond_best_effort(client, 200, "OK", "image/png", snapshot_bytes, client_deadline);
       continue;
     }
     const auto origin = request->headers.find("origin");
@@ -572,7 +799,7 @@ absl::Status ScoreboardSelector::Run(const fs::path& game_dir) {
           client, 404, "Not Found", "text/plain; charset=utf-8", "Unknown selector endpoint\n", client_deadline);
       continue;
     }
-    auto saved = Save(game_dir, polygon);
+    auto saved = Save(game_dir, polygon, canvas_generation);
     if (!saved.ok()) {
       respond_best_effort(
           client,

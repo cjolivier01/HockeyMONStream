@@ -1,0 +1,180 @@
+#pragma once
+
+#include <cstddef>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+
+namespace hm::stitching {
+
+class CanvasConstraintArtifactLock {
+ public:
+  ~CanvasConstraintArtifactLock();
+  CanvasConstraintArtifactLock(const CanvasConstraintArtifactLock&) = delete;
+  CanvasConstraintArtifactLock& operator=(const CanvasConstraintArtifactLock&) = delete;
+
+ private:
+  friend absl::StatusOr<struct LightweightCanvasConstraintCheck> try_lock_canvas_constraint_check(
+      const std::filesystem::path& game_dir,
+      size_t max_output_width);
+  friend absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
+      const std::filesystem::path& game_dir);
+  friend absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constraint_artifacts(
+      const std::filesystem::path& game_dir);
+  explicit CanvasConstraintArtifactLock(int descriptor) : descriptor_(descriptor) {}
+  int descriptor_{-1};
+};
+
+struct LightweightCanvasConstraintCheck {
+  std::unique_ptr<CanvasConstraintArtifactLock> artifact_lock;
+  bool artifacts_compatible{false};
+  bool requires_regeneration{false};
+};
+
+struct CanvasConstraintCompatibility {
+  bool artifacts_compatible{false};
+  bool requires_regeneration{false};
+};
+
+inline constexpr char kStitchCanvasProvenanceArtifact[] = "stitching_canvas_provenance";
+inline constexpr char kStitchGenerationArtifact[] = "stitching_generation_id";
+
+// Returns the effective platform/runtime canvas limit. Malformed environment
+// overrides are ignored consistently by generation and validation paths.
+std::optional<size_t> live_stitch_max_canvas_dimension();
+
+// Shared by the lightweight checker and Hugin publication so crash recovery
+// and the accepted transaction manifests cannot diverge.
+const std::vector<std::string>& required_stitch_artifact_names();
+const std::vector<std::string>& stitch_artifact_names();
+// Verifies the parser-facing generation artifacts through bounded, no-follow,
+// nonblocking descriptors. The caller must hold the artifact lock.
+absl::Status validate_stitch_generation_artifact_bounds_locked(const std::filesystem::path& game_dir);
+// Bounds the parser-facing placement TIFFs and an optional seam before legacy
+// seam repair. The caller must hold the artifact lock.
+absl::Status validate_stitch_seam_repair_artifact_bounds_locked(const std::filesystem::path& game_dir);
+absl::Status recover_stitch_transactions_locked(const std::filesystem::path& game_dir);
+absl::Status fsync_stitch_path(const std::filesystem::path& path, bool directory = false);
+absl::Status clone_or_copy_stitch_rollback_file(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination);
+absl::Status write_stitch_transaction_file(const std::filesystem::path& path, const std::string& contents);
+absl::Status publish_stitch_file_atomically(const std::filesystem::path& path, const std::string& contents);
+
+class PreparedStitchGenerationPublication {
+ public:
+  ~PreparedStitchGenerationPublication();
+  PreparedStitchGenerationPublication(PreparedStitchGenerationPublication&& other) noexcept;
+  PreparedStitchGenerationPublication& operator=(PreparedStitchGenerationPublication&& other) noexcept;
+  PreparedStitchGenerationPublication(const PreparedStitchGenerationPublication&) = delete;
+  PreparedStitchGenerationPublication& operator=(const PreparedStitchGenerationPublication&) = delete;
+
+ private:
+  struct Impl;
+  explicit PreparedStitchGenerationPublication(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
+
+  friend absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_publication(
+      const std::filesystem::path& staging,
+      const std::filesystem::path& game_dir);
+  friend absl::Status rebind_published_stitch_generation_artifact(
+      const PreparedStitchGenerationPublication& prepared,
+      const std::filesystem::path& game_dir);
+  friend absl::Status validate_prepared_stitch_generation_artifact(
+      const PreparedStitchGenerationPublication& prepared,
+      const std::filesystem::path& staging,
+      const std::string& name);
+  friend absl::Status record_published_stitch_generation_artifact(
+      PreparedStitchGenerationPublication& prepared,
+      const std::filesystem::path& game_dir,
+      const std::string& name);
+};
+
+absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_publication(
+    const std::filesystem::path& staging,
+    const std::filesystem::path& game_dir);
+absl::Status rebind_published_stitch_generation_artifact(
+    const PreparedStitchGenerationPublication& prepared,
+    const std::filesystem::path& game_dir);
+absl::Status validate_prepared_stitch_generation_artifact(
+    const PreparedStitchGenerationPublication& prepared,
+    const std::filesystem::path& staging,
+    const std::string& name);
+absl::Status record_published_stitch_generation_artifact(
+    PreparedStitchGenerationPublication& prepared,
+    const std::filesystem::path& game_dir,
+    const std::string& name);
+absl::Status rebind_stitch_generation_artifact(
+    const std::filesystem::path& transaction,
+    const std::filesystem::path& game_dir);
+
+// Reviews one stable artifact generation. The caller must hold the Hugin
+// artifact lock for the complete call.
+absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
+    const std::filesystem::path& game_dir,
+    size_t max_output_width);
+
+// Performs the same provenance and artifact-layout checks without decoding
+// the seam payload. Intended for interactive preflight only; pipeline startup
+// must use check_canvas_constraint_locked for authoritative validation.
+absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_metadata_locked(
+    const std::filesystem::path& game_dir,
+    size_t max_output_width);
+
+// Attempts the artifact lock and performs transaction recovery without
+// inspecting mapping payloads. This lets callers defer TIFF/PNG I/O until they
+// have confirmed that the effective width changed.
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_artifacts(
+    const std::filesystem::path& game_dir);
+
+// Acquires the same artifact lock while waiting for an active Hugin producer.
+// Live config transactions use this before taking GameConfigTransactionLock.
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constraint_artifacts(
+    const std::filesystem::path& game_dir);
+
+// Returns the exact identity embedded in stitched-output generations. The
+// caller must hold the stitching artifact lock for the complete call.
+absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const std::filesystem::path& game_dir);
+
+struct StitchArtifactContentIdentity {
+  std::string generation_id;
+  std::string fingerprint;
+};
+
+// Resolves a stable artifact set by content without updating its generation
+// sidecar or syncing files. Returns FailedPrecondition for legacy or
+// content-mismatched sidecars.
+absl::StatusOr<StitchArtifactContentIdentity> stitch_artifact_content_identity_locked(
+    const std::filesystem::path& artifact_directory);
+
+// Resolves a version-3 identity from its sidecar and bindings without hashing
+// mapping payloads. This is advisory preflight only; loaders must call
+// stitch_artifact_generation_id_locked while holding the artifact lock.
+absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const std::filesystem::path& game_dir);
+
+// Returns inode/timestamp bindings for the complete mapping generation. Use
+// this around pathname-based validation to detect non-cooperating writers.
+absl::StatusOr<std::string> stitch_artifact_binding_revision_locked(const std::filesystem::path& game_dir);
+
+// Returns a cheap revision of the generation sidecar and current artifact
+// bindings. This does not replace content validation; it only lets one startup
+// reuse a generation that it has already validated under the artifact lock.
+absl::StatusOr<std::string> stitch_artifact_revision_locked(const std::filesystem::path& game_dir);
+
+// Reports whether inode/timestamp bindings are reliable enough for advisory
+// metadata snapshot reuse. Content validation does not depend on this result.
+bool stitch_artifact_metadata_is_reliable(const std::filesystem::path& game_dir);
+
+// Attempts the artifact lock without waiting. A missing lock means another
+// generation owns the artifacts, so callers must fail closed without blocking
+// an interactive UI.
+absl::StatusOr<LightweightCanvasConstraintCheck> try_lock_canvas_constraint_check(
+    const std::filesystem::path& game_dir,
+    size_t max_output_width);
+
+} // namespace hm::stitching

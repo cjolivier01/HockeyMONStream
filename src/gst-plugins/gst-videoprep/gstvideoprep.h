@@ -84,6 +84,9 @@ struct GstVideoPrep
   gchar* config_file;             /**< String contaning path and name of configuration file */
   gchar* plugin_type;
   gchar* plugin_private_config;
+  gchar* scoreboard_perspective_polygon;
+  gchar* stitched_output_authorization_id;
+  gchar* stitched_output_scoreboard_polygon;
   gdouble post_stitch_rotate_degrees;
   guint max_output_width;
   gdouble fixed_edge_rotation_angle;
@@ -97,6 +100,7 @@ struct GstVideoPrep
   gdouble exposure;
   gboolean last_property_set_ok;
   gboolean post_stitch_rotate_degrees_set;
+  gboolean stitched_output_epoch_set;
   gboolean max_output_width_set;
   gboolean fixed_edge_rotation_angle_set;
   gboolean fixed_edge_rotation_angle_left_set;
@@ -106,9 +110,11 @@ struct GstVideoPrep
   gboolean shadow_lift_set;
   gboolean shadow_lift_black_point_set;
   gboolean exposure_set;
+  gboolean scoreboard_perspective_polygon_set;
   guint property_set_sequence;
   guint plugin_private_config_sequence;
   guint post_stitch_rotate_degrees_sequence;
+  guint stitched_output_epoch_sequence;
   guint max_output_width_sequence;
   guint fixed_edge_rotation_angle_sequence;
   guint fixed_edge_rotation_angle_left_sequence;
@@ -118,6 +124,7 @@ struct GstVideoPrep
   guint shadow_lift_sequence;
   guint shadow_lift_black_point_sequence;
   guint exposure_sequence;
+  guint scoreboard_perspective_polygon_sequence;
 
   // GstBufferPool *pool;            /**< Internal buffer pool for output buffers  */
 

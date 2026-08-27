@@ -1,7 +1,6 @@
 #include "HmGpuPreview.h"
 
 #include "hstream/src/apps/apps-common/RinkMaskImage.h"
-#include "hstream/src/libs/common/ApplicationPayload.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
@@ -918,12 +917,9 @@ PreviewOverlays collect_preview_overlays(GstHmGpuPreviewSink* self, GstBuffer* b
   auto* frame_meta = static_cast<NvDsFrameMeta*>(batch_meta->frame_meta_list->data);
   if (!frame_meta)
     return overlays;
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-  if (const auto* generation =
-          hm::UserApplicationPayload::get_payload<hm::stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+  if (const auto* generation = hm::stitching::find_stitched_output_generation_meta(frame_meta)) {
     overlays.stitched_output_generation = generation->generation();
   }
-#endif
   const auto* snapshot = hm::preview_overlay::find_overlay_snapshot_meta(frame_meta);
   const auto* attached_transform =
       state->channel == "program" ? hm::preview_overlay::find_playcropper_transform_meta(frame_meta) : nullptr;

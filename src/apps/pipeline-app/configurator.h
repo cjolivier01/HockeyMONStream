@@ -15,6 +15,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 struct NvDsConfig;
 struct NvDsPipeline;
@@ -90,7 +91,7 @@ class Configurator {
   absl::Status save_private_config(
       const YAML::Node& private_config,
       const std::string& expected_invalidation_id = {},
-      bool remove_rink_masks = false);
+      bool remove_canvas_artifacts = false);
   absl::Status persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time);
   absl::Status persist_effective_stitching_backend_choices(const std::string& expected_invalidation_id = {});
   absl::StatusOr<bool> reconcile_stitch_frame_time_override(
@@ -168,6 +169,10 @@ class Configurator {
       const std::filesystem::path& pipeline_config_dir);
   absl::Status invalidate_rotation_dependent_cache_if_needed(const std::filesystem::path& game_dir);
   absl::Status invalidate_canvas_dependent_cache_if_needed(const std::filesystem::path& game_dir);
+  absl::StatusOr<stitching::LockedStitchingArtifacts> lock_current_stitching_artifacts(
+      const std::filesystem::path& game_dir,
+      size_t max_output_width);
+  void clear_materialized_scoreboard_perspective();
   absl::Status apply_scoreboard_perspective(YAML::Node& pipeline);
   absl::Status gather_stitching_videos(
       const std::filesystem::path& game_dir,
@@ -228,8 +233,11 @@ class Configurator {
   std::optional<std::filesystem::path> resolved_game_dir_;
   YAML::Node private_config_;
   YAML::Node persisted_private_config_;
+  std::optional<stitching::ValidatedStitchingArtifacts> validated_stitching_artifacts_;
   std::string active_stitching_invalidation_id_;
+  std::string stitching_calibration_start_stage_;
   bool stitching_calibration_required_{false};
+  bool scoreboard_perspective_materialized_from_rink_{false};
   bool loaded_generated_stitching_backend_choices_{false};
   bool restored_generated_stitching_backend_choices_{false};
   mutable std::map<std::string, int> archive_lock_fds_;

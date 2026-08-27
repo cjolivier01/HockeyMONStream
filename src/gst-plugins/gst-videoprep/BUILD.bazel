@@ -62,6 +62,7 @@ gst_cc_plugin(
         "//src/gst-plugins/gst-videoprep/playtracker",
         "//src/gst-plugins/gst-videoprep/stitcher",
         "//src/libs/common:utils",
+        "//src/libs/stitching:live_output_epoch",
         "@com_google_absl//absl/strings",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display:display",

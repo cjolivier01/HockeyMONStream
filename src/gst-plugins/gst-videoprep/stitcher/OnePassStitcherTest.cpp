@@ -6,11 +6,13 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include <gst/gst.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -24,12 +26,16 @@ struct FrameDesc {
 bool run_precaps(
     const std::string& config_dir,
     bool one_pass_mode,
+    bool calibration_classified,
     bool expect_ok,
     size_t expected_width,
     size_t expected_height) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   if (one_pass_mode) {
     stitcher.SetProperty({"one-pass-mode", "1"});
+  }
+  if (calibration_classified) {
+    stitcher.SetProperty({"calibration-run-generation", "1"});
   }
 
   hm::DSCustom_CreateParams params{};
@@ -44,7 +50,8 @@ bool run_precaps(
   }
 
   if (expect_ok != status.ok()) {
-    std::cerr << "Unexpected PreCapsInit status for one_pass_mode=" << one_pass_mode << ": " << status << std::endl;
+    std::cerr << "Unexpected PreCapsInit status for one_pass_mode=" << one_pass_mode
+              << ", calibration_classified=" << calibration_classified << ": " << status << std::endl;
     return false;
   }
 
@@ -59,6 +66,30 @@ bool run_precaps(
     return false;
   }
 
+  return true;
+}
+
+bool expect_oversized_seam_repair_artifact_rejected(const fs::path& tmpdir) {
+  const fs::path game_dir = tmpdir / "oversized-seam-repair";
+  fs::create_directories(game_dir);
+  std::ofstream(game_dir / "mapping_0000.tif", std::ios::binary) << "tiff";
+  std::ofstream(game_dir / "mapping_0001.tif", std::ios::binary) << "tiff";
+  if (::truncate((game_dir / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0)
+    return false;
+
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  stitcher.SetProperty({"one-pass-mode", "1"});
+  stitcher.SetProperty({"calibration-run-generation", "1"});
+  hm::DSCustom_CreateParams params{};
+  const std::string config_dir = game_dir.string();
+  params.config_file = const_cast<char*>(config_dir.c_str());
+  params.m_inCaps = gst_caps_from_string("video/x-raw,format=RGBA,width=1280,height=720");
+  const absl::Status status = stitcher.PreCapsInit(&params);
+  gst_caps_unref(params.m_inCaps);
+  if (!absl::IsResourceExhausted(status)) {
+    std::cerr << "Oversized seam-repair TIFF must fail plugin preflight before parser access: " << status << '\n';
+    return false;
+  }
   return true;
 }
 
@@ -95,7 +126,9 @@ bool expect_high_bit_property_contract(const std::string& config_dir) {
       stitcher.SetProperty({"shadow-lift-black-point", "yes"}) || !stitcher.SetProperty({"exposure", "0"}) ||
       !stitcher.SetProperty({"exposure", "1.3"}) || stitcher.SetProperty({"exposure", "-0.01"}) ||
       stitcher.SetProperty({"exposure", "1.31"}) || stitcher.SetProperty({"exposure", "inf"}) ||
-      !stitcher.SetProperty({"one-pass-mode", "1"})) {
+      !stitcher.SetProperty({"stitched-output-epoch", "16:authorization-b221"}) ||
+      stitcher.SetProperty({"stitched-output-epoch", "authorization-b2:21"}) ||
+      !stitcher.SetProperty({"one-pass-mode", "1"}) || !stitcher.SetProperty({"calibration-run-generation", "1"})) {
     std::cerr << "High-bit stitcher property validation failed\n";
     return false;
   }
@@ -236,6 +269,13 @@ bool expect_output_capacity_is_stable_across_batches() {
 }
 
 bool expect_resumed_calibration_progress_contract() {
+  if (!hm::stitcher::should_attempt_one_pass_field_mask(false, {}, "generation-a") ||
+      hm::stitcher::should_attempt_one_pass_field_mask(true, "generation-a", "generation-a") ||
+      !hm::stitcher::should_attempt_one_pass_field_mask(true, "generation-a", "generation-b")) {
+    std::cerr << "Superseded one-pass field-mask inference must retry only after output generation changes"
+              << std::endl;
+    return false;
+  }
   g_unsetenv("HSTREAM_CALIBRATION_PENDING");
   const auto normal_existing = hm::stitcher::one_pass_calibration_progress_plan(
       /*configured_during_run=*/false, /*mask_configured=*/true);
@@ -309,6 +349,19 @@ bool expect_resumed_calibration_progress_contract() {
     return false;
   }
   completion_latch.finish_delivery(second_scope, /*delivered=*/true);
+  return true;
+}
+
+bool expect_validated_artifact_load_failure_retries_once() {
+  if (!hm::stitcher::should_defer_validated_artifact_load_failure(
+          /*one_pass_mode=*/true, /*retry_already_failed=*/false) ||
+      hm::stitcher::should_defer_validated_artifact_load_failure(
+          /*one_pass_mode=*/true, /*retry_already_failed=*/true) ||
+      hm::stitcher::should_defer_validated_artifact_load_failure(
+          /*one_pass_mode=*/false, /*retry_already_failed=*/false)) {
+    std::cerr << "Validated artifact loading should defer exactly once for an immediate one-pass retry" << std::endl;
+    return false;
+  }
   return true;
 }
 
@@ -484,11 +537,35 @@ int main() {
   fs::create_directories(tmpdir);
 
   const std::string config_dir = tmpdir.string();
-  if (!run_precaps(config_dir, /*one_pass_mode=*/false, /*expect_ok=*/false, 0, 0)) {
+  if (!run_precaps(
+          config_dir,
+          /*one_pass_mode=*/false,
+          /*calibration_classified=*/false,
+          /*expect_ok=*/false,
+          0,
+          0)) {
     return 1;
   }
-  if (!run_precaps(config_dir, /*one_pass_mode=*/true, /*expect_ok=*/true, 0, 0)) {
+  if (!run_precaps(
+          config_dir,
+          /*one_pass_mode=*/true,
+          /*calibration_classified=*/false,
+          /*expect_ok=*/false,
+          0,
+          0)) {
     return 2;
+  }
+  if (!run_precaps(
+          config_dir,
+          /*one_pass_mode=*/true,
+          /*calibration_classified=*/true,
+          /*expect_ok=*/true,
+          0,
+          0)) {
+    return 35;
+  }
+  if (!expect_oversized_seam_repair_artifact_rejected(tmpdir)) {
+    return 36;
   }
   if (!expect_output_batch_size(/*input_batch_size=*/2, /*configured_batch_size=*/4, /*expected_batch_size=*/1)) {
     return 3;
@@ -510,6 +587,9 @@ int main() {
   }
   if (!expect_resumed_calibration_progress_contract()) {
     return 33;
+  }
+  if (!expect_validated_artifact_load_failure_retries_once()) {
+    return 35;
   }
   if (!expect_prepare_runtime_partial_fails()) {
     return 14;

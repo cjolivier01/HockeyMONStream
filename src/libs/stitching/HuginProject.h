@@ -40,6 +40,17 @@ class HuginProject {
     double yaw;
   };
 
+  struct CanvasProvenance {
+    size_t max_output_width{0};
+    size_t max_canvas_dimension{0};
+    size_t source_canvas_width{0};
+    size_t source_canvas_height{0};
+    size_t canvas_width{0};
+    size_t canvas_height{0};
+    bool max_output_width_applied{false};
+    bool max_canvas_dimension_applied{false};
+  };
+
   struct Options {
     using ProgressCallback =
         std::function<void(const std::string& stage, const std::string& status, const std::string& message)>;
@@ -123,6 +134,12 @@ class HuginProject {
   // Identifies the currently published flat Hugin generation. The supplied
   // lock must still be held so every artifact belongs to one generation.
   static absl::StatusOr<std::string> GenerationId(const std::filesystem::path& game_dir, const ArtifactLock& lock);
+
+  // Reads constraint and canvas metadata published with newer mapping generations.
+  // Callers decide the migration policy for a missing legacy provenance file.
+  static absl::StatusOr<std::optional<CanvasProvenance>> ReadCanvasProvenance(
+      const std::filesystem::path& game_dir,
+      const ArtifactLock& lock);
 };
 
 } // namespace hm::stitching

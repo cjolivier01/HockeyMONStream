@@ -1811,6 +1811,52 @@ gboolean create_second_streammux(AppCtx* appCtx) {
   return TRUE;
 }
 
+static void release_uri_playlist_generation_state(NvDsSrcParentBin* source_bin) {
+  if (!source_bin) {
+    return;
+  }
+  for (guint i = 0; i < MAX_SOURCE_BINS; ++i) {
+    NvDsSrcBin* source = &source_bin->sub_bins[i];
+    if (source->uri_list) {
+      for (guint uri_index = 0; uri_index < source->num_uri_list; ++uri_index) {
+        g_free(source->uri_list[uri_index]);
+      }
+      g_free(source->uri_list);
+      source->uri_list = nullptr;
+      source->num_uri_list = 0;
+    }
+    if (source->uri_playlist_mutex_initialized) {
+      g_mutex_clear(&source->uri_playlist_mutex);
+      source->uri_playlist_mutex_initialized = FALSE;
+    }
+    if (source->uri_decode_pad_selection_mutex_initialized) {
+      g_mutex_clear(&source->uri_decode_pad_selection_mutex);
+      source->uri_decode_pad_selection_mutex_initialized = FALSE;
+    }
+    if (source->bin_lock_initialized) {
+      g_mutex_clear(&source->bin_lock);
+      source->bin_lock_initialized = FALSE;
+    }
+  }
+  if (source_bin->uri_playlist_barrier_initialized) {
+    g_cond_clear(&source_bin->uri_playlist_barrier_cond);
+    g_mutex_clear(&source_bin->uri_playlist_barrier_mutex);
+    source_bin->uri_playlist_barrier_initialized = FALSE;
+  }
+}
+
+static void reset_pipeline_generation_state(AppCtx* appCtx) {
+  release_uri_playlist_generation_state(&appCtx->pipeline.multi_src_bin);
+  appCtx->pipeline = {};
+  for (NvDsC2DContext*& context : appCtx->c2d_ctx) {
+    context = nullptr;
+  }
+  appCtx->sensorInfoHash = nullptr;
+  appCtx->perf_struct.FPSInfoHash = nullptr;
+  appCtx->perf_struct.sink_bin_pad = nullptr;
+  appCtx->perf_struct.fps_measure_probe_id = 0;
+}
+
 /**
  * Main function to create the pipeline.
  */
@@ -1820,6 +1866,15 @@ gboolean create_pipeline(
     bbox_generated_callback all_bbox_generated_cb,
     perf_callback perf_cb,
     overlay_graphics_callback overlay_graphics_cb) {
+  if (!appCtx || !appCtx->pipeline_cleanup_complete) {
+    NVGSTDS_ERR_MSG_V("Cannot create a pipeline before its previous generation is cleaned up");
+    return FALSE;
+  }
+  reset_pipeline_generation_state(appCtx);
+  appCtx->pipeline_cleanup_complete = FALSE;
+  ++appCtx->pipeline_create_attempt_count;
+  g_mutex_init(&appCtx->latency_lock);
+  appCtx->latency_lock_initialized = TRUE;
   gboolean ret = FALSE;
   NvDsPipeline* pipeline = &appCtx->pipeline;
   NvDsConfig* config = &appCtx->config;
@@ -1953,6 +2008,11 @@ gboolean create_pipeline(
       goto done;
   }
   gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->multi_src_bin.bin);
+
+  if (appCtx->pipeline_create_attempt_count == 2 && g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_DURING_CREATE")) {
+    g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=during-create\n");
+    goto done;
+  }
 
   // if (appCtx->config.hmaudio_config.enable) {
   //   if (!create_hmaudio_bin(&appCtx->config.hmaudio_config, &pipeline->hmaudio_bin,
@@ -2287,8 +2347,6 @@ gboolean create_pipeline(
 
   GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN(appCtx->pipeline.pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ds-app-null");
 
-  g_mutex_init(&appCtx->latency_lock);
-
   bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline->pipeline));
   gst_bus_set_sync_handler(bus, bus_sync_callback, appCtx, NULL);
   gst_object_unref(bus);
@@ -2376,15 +2434,15 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
 }
 
 void destroy_pipeline(AppCtx* appCtx) {
+  if (!appCtx || appCtx->pipeline_cleanup_complete)
+    return;
+
   gint64 end_time;
   NvDsConfig* config = &appCtx->config;
   guint i;
   GstBus* bus = NULL;
 
   end_time = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
-
-  if (!appCtx)
-    return;
 
   if (g_getenv("HM_TEST_PIPELINE_DESTROY_INJECT_PENDING_PLAYLIST_CALLBACK")) {
     queue_uri_playlist_switch_callback_for_test(&appCtx->pipeline.multi_src_bin, 0, 5000);
@@ -2409,6 +2467,9 @@ void destroy_pipeline(AppCtx* appCtx) {
   g_cond_wait_until(&appCtx->app_cond, &appCtx->app_lock, end_time);
   g_mutex_unlock(&appCtx->app_lock);
 
+  destroy_secondary_gie_bin(&appCtx->pipeline.common_elements.secondary_gie_bin);
+  destroy_secondary_preprocess_bin(&appCtx->pipeline.common_elements.secondary_preprocess_bin);
+
   for (i = 0; i < appCtx->config.num_source_sub_bins; i++) {
     NvDsInstanceBin* bin = &appCtx->pipeline.instance_bins[i];
     if (config->osd_config.enable) {
@@ -2421,19 +2482,24 @@ void destroy_pipeline(AppCtx* appCtx) {
       NVGSTDS_ELEM_REMOVE_PROBE(bin->primary_bbox_buffer_probe_id, bin->primary_gie_bin.bin, "src");
     }
   }
-  if (appCtx->latency_info == NULL) {
+  if (appCtx->latency_info != NULL) {
     free(appCtx->latency_info);
     appCtx->latency_info = NULL;
   }
   if (appCtx->sensorInfoHash) {
     g_hash_table_destroy(appCtx->sensorInfoHash);
+    appCtx->sensorInfoHash = NULL;
   }
   if (appCtx->perf_struct.FPSInfoHash) {
     g_hash_table_destroy(appCtx->perf_struct.FPSInfoHash);
+    appCtx->perf_struct.FPSInfoHash = NULL;
   }
 
   destroy_sink_bin();
-  g_mutex_clear(&appCtx->latency_lock);
+  if (appCtx->latency_lock_initialized) {
+    g_mutex_clear(&appCtx->latency_lock);
+    appCtx->latency_lock_initialized = FALSE;
+  }
 
   if (appCtx->pipeline.pipeline) {
     bus = gst_pipeline_get_bus(GST_PIPELINE(appCtx->pipeline.pipeline));
@@ -2460,12 +2526,14 @@ void destroy_pipeline(AppCtx* appCtx) {
     }
   }
 
-  if (config->num_message_consumers) {
-    for (i = 0; i < config->num_message_consumers; i++) {
-      if (appCtx->c2d_ctx[i])
-        stop_cloud_to_device_messaging(appCtx->c2d_ctx[i]);
+  for (i = 0; i < MAX_MESSAGE_CONSUMERS; i++) {
+    if (appCtx->c2d_ctx[i]) {
+      stop_cloud_to_device_messaging(appCtx->c2d_ctx[i]);
+      appCtx->c2d_ctx[i] = nullptr;
     }
   }
+  reset_pipeline_generation_state(appCtx);
+  appCtx->pipeline_cleanup_complete = TRUE;
 }
 
 void destroy_pipeline_for_recreate(AppCtx* appCtx) {

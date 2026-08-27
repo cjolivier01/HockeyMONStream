@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -9,18 +10,22 @@
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <yaml-cpp/yaml.h>
 
 #include "cupano/pano/cudaMat.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -28,10 +33,12 @@
 #include <limits>
 #include <locale>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -41,8 +48,10 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <opencv2/opencv.hpp>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <tiffio.h>
 #include <unistd.h>
@@ -55,10 +64,95 @@ namespace stitching {
 
 namespace {
 
-constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
+absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
+    const fs::path& directory,
+    const std::string& description,
+    size_t maximum_entries = 4096) {
+  std::error_code error;
+  fs::directory_iterator iterator(directory, error);
+  if (error)
+    return absl::InternalError("Unable to inspect " + description + ": " + error.message());
+  std::vector<fs::directory_entry> entries;
+  const fs::directory_iterator end;
+  while (iterator != end) {
+    if (entries.size() >= maximum_entries)
+      return absl::ResourceExhaustedError("Too many entries while inspecting " + description);
+    entries.push_back(*iterator);
+    iterator.increment(error);
+    if (error)
+      return absl::InternalError("Unable to inspect " + description + ": " + error.message());
+  }
+  return entries;
+}
+
 constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 2 + 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserPlacementTiffBytes = kHardMaximumArtifactPixels * 4 + 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserSeamPngBytes = 512ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr std::string_view kControlMaskSnapshotPrefix = ".hstream-control-mask-snapshot-";
+
+constexpr std::array<const char*, 7> kControlMaskLoadArtifacts = {
+    "mapping_0000.tif",
+    "mapping_0000_x.tif",
+    "mapping_0000_y.tif",
+    "mapping_0001.tif",
+    "mapping_0001_x.tif",
+    "mapping_0001_y.tif",
+    "seam_file.png",
+};
+
+struct StitchSnapshotArtifactSpec {
+  const char* name;
+  bool required;
+};
+
+constexpr std::array<StitchSnapshotArtifactSpec, 13> kStitchValidationSnapshotArtifacts = {{
+    {"left.png", true},
+    {"right.png", true},
+    {"hm_project.pto", true},
+    {"autooptimiser_out.pto", true},
+    {"mapping_0000.tif", true},
+    {"mapping_0000_x.tif", true},
+    {"mapping_0000_y.tif", true},
+    {"mapping_0001.tif", true},
+    {"mapping_0001_x.tif", true},
+    {"mapping_0001_y.tif", true},
+    {"seam_file.png", true},
+    {kStitchCanvasProvenanceArtifact, false},
+    {kStitchGenerationArtifact, false},
+}};
+
+absl::Status wait_at_test_stitch_phase(
+    const char* delay_variable,
+    const char* marker_variable,
+    const char* release_variable) {
+  const char* delay = std::getenv(delay_variable);
+  if (delay == nullptr)
+    return absl::OkStatus();
+  if (const char* marker = std::getenv(marker_variable)) {
+    std::ofstream output(marker, std::ios::out | std::ios::trunc);
+    output << "ready\n";
+    if (!output)
+      return absl::InternalError("Unable to publish stitch test phase marker");
+  }
+  if (const char* release = std::getenv(release_variable)) {
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+      std::error_code error;
+      if (fs::exists(release, error) && !error)
+        return absl::OkStatus();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return absl::DeadlineExceededError("Timed out waiting for stitch test phase release");
+  }
+  const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+  if (delay_ms > 0)
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+  return absl::OkStatus();
+}
 
 void report_calibration_progress(const std::string& stage, const std::string& status, const std::string& message = {}) {
   std::cout << "HSTREAM_CALIBRATION stage=" << stage << " status=" << status;
@@ -68,6 +162,17 @@ void report_calibration_progress(const std::string& stage, const std::string& st
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root);
+absl::Status fsync_path(const fs::path& path, bool directory = false);
+
+absl::Status link_clone_or_copy_rink_rollback_file(
+    const PinnedRinkRollbackArtifact& source,
+    const fs::path& destination) {
+  const bool force_portable_fallback = [] {
+    const char* value = std::getenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return snapshot_rink_artifact_for_rollback(source, destination, force_portable_fallback);
+}
 
 absl::StatusOr<size_t> remove_file_if_present(const fs::path& path) {
   std::error_code ec;
@@ -251,6 +356,15 @@ void remove_control_point_dependent_cache_keys(YAML::Node& config) {
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_count"});
   remove_yaml_key_path(config, {"rink", "ice_contours_mask_centroid"});
   remove_yaml_key_path(config, {"rink", "ice_contours_combined_bbox"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_generation"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_persisted_rotation_degrees"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_generation"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_authorization_id"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_owner_process"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_generation"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_authorization_id"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_previous_owner_process"});
+  remove_yaml_key_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"});
 }
 
 void remove_cleanable_stitching_cache_keys(YAML::Node& config) {
@@ -280,35 +394,318 @@ struct ScaledCanvas {
   double scale{1.0};
 };
 
-std::optional<size_t> get_positive_env_size(const char* name) {
-  const char* value = std::getenv(name);
-  if (!value || !*value) {
-    return std::nullopt;
+struct OpenedTiff {
+  ~OpenedTiff() {
+    if (tiff != nullptr)
+      TIFFClose(tiff);
+    if (descriptor >= 0)
+      ::close(descriptor);
   }
-  try {
-    const unsigned long long parsed = std::stoull(value);
-    if (parsed > 0) {
-      return static_cast<size_t>(parsed);
-    }
-  } catch (const std::exception&) {
+  int descriptor{-1};
+  TIFF* tiff{nullptr};
+  struct stat metadata{};
+};
+
+absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
+  auto opened = std::make_unique<OpenedTiff>();
+  opened->descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (opened->descriptor < 0)
+    return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
+  if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
+      opened->metadata.st_size <= 0 || static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
+    return absl::FailedPreconditionError(TO_STRING("Invalid or oversized TIFF: " << path.string()));
   }
-  std::cerr << "Warning: ignoring invalid " << name << "=" << value << std::endl;
-  return std::nullopt;
+  const int tiff_descriptor = ::dup(opened->descriptor);
+  if (tiff_descriptor < 0)
+    return absl::InternalError(TO_STRING("Could not duplicate TIFF descriptor: " << path.string()));
+  const std::string name = path.filename().string();
+  opened->tiff = TIFFFdOpen(tiff_descriptor, name.c_str(), "r");
+  if (opened->tiff == nullptr) {
+    ::close(tiff_descriptor);
+    return absl::InvalidArgumentError(TO_STRING("Could not parse TIFF: " << path.string()));
+  }
+  return opened;
 }
 
-std::optional<size_t> live_stitch_max_canvas_dimension() {
-  const char* allow_oversized = std::getenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
-  if (allow_oversized && std::string(allow_oversized) == "1") {
-    return std::nullopt;
+absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
+  struct stat verified{};
+  if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
+      opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
+      opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
+      opened.metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
+      opened.metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec ||
+      opened.metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
+    return absl::AbortedError(TO_STRING("TIFF changed while being inspected: " << path.string()));
   }
-  if (auto from_env = get_positive_env_size("HM_MAX_LIVE_STITCH_EGL_DIMENSION"); from_env.has_value()) {
-    return from_env;
+  return absl::OkStatus();
+}
+
+bool same_load_artifact_snapshot(const struct stat& first, const struct stat& second) {
+  return first.st_dev == second.st_dev && first.st_ino == second.st_ino && first.st_mode == second.st_mode &&
+      first.st_size == second.st_size && first.st_mtim.tv_sec == second.st_mtim.tv_sec &&
+      first.st_mtim.tv_nsec == second.st_mtim.tv_nsec && first.st_ctim.tv_sec == second.st_ctim.tv_sec &&
+      first.st_ctim.tv_nsec == second.st_ctim.tv_nsec;
+}
+
+struct PinnedLoadArtifact {
+  PinnedLoadArtifact(std::string name, int descriptor, const struct stat& metadata)
+      : name(std::move(name)), descriptor(descriptor), metadata(metadata) {}
+  ~PinnedLoadArtifact() {
+    if (descriptor >= 0)
+      ::close(descriptor);
   }
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-  return kDefaultJetsonMaxLiveStitchCanvasDimension;
-#else
-  return std::nullopt;
-#endif
+  PinnedLoadArtifact(PinnedLoadArtifact&& other) noexcept
+      : name(std::move(other.name)), descriptor(other.descriptor), metadata(other.metadata) {
+    other.descriptor = -1;
+  }
+  PinnedLoadArtifact& operator=(PinnedLoadArtifact&& other) noexcept {
+    if (this == &other)
+      return *this;
+    if (descriptor >= 0)
+      ::close(descriptor);
+    name = std::move(other.name);
+    descriptor = other.descriptor;
+    metadata = other.metadata;
+    other.descriptor = -1;
+    return *this;
+  }
+  PinnedLoadArtifact(const PinnedLoadArtifact&) = delete;
+  PinnedLoadArtifact& operator=(const PinnedLoadArtifact&) = delete;
+
+  std::string name;
+  int descriptor{-1};
+  struct stat metadata{};
+};
+
+absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& path) {
+  const std::string name = path.filename().string();
+  if (path.extension() == ".tif") {
+    const auto ends_with = [&](std::string_view suffix) {
+      return name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    const bool remap = ends_with("_x.tif") || ends_with("_y.tif");
+    auto opened = open_bounded_tiff(path, remap ? kMaximumParserRemapTiffBytes : kMaximumParserPlacementTiffBytes);
+    if (!opened.ok())
+      return opened.status();
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint16_t samples = 0;
+    uint16_t bits = 0;
+    const bool dimensions_valid = TIFFGetField((*opened)->tiff, TIFFTAG_IMAGEWIDTH, &width) &&
+        TIFFGetField((*opened)->tiff, TIFFTAG_IMAGELENGTH, &height);
+    TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_SAMPLESPERPIXEL, &samples);
+    TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_BITSPERSAMPLE, &bits);
+    if (!dimensions_valid || width == 0 || height == 0 || samples == 0 || bits == 0 ||
+        width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
+        static_cast<uint64_t>(width) > kHardMaximumArtifactPixels / height) {
+      return absl::ResourceExhaustedError("Control-mask TIFF dimensions exceed safety limits: " + path.string());
+    }
+    const uint64_t pixels = static_cast<uint64_t>(width) * height;
+    if (pixels > std::numeric_limits<uint64_t>::max() / samples ||
+        pixels * samples > (std::numeric_limits<uint64_t>::max() - 7) / bits) {
+      return absl::ResourceExhaustedError("Control-mask TIFF payload size overflows: " + path.string());
+    }
+    const uint64_t payload_bytes = (pixels * samples * bits + 7) / 8;
+    if (static_cast<uint64_t>((*opened)->metadata.st_size) > payload_bytes + 16ULL * 1024ULL * 1024ULL) {
+      return absl::ResourceExhaustedError("Control-mask TIFF has an oversized encoded payload: " + path.string());
+    }
+    HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
+    const int descriptor = std::exchange((*opened)->descriptor, -1);
+    return PinnedLoadArtifact(name, descriptor, (*opened)->metadata);
+  }
+
+  uint64_t maximum_bytes = 0;
+  if (name == "left.png" || name == "right.png" || name == "seam_file.png") {
+    maximum_bytes = kMaximumParserSeamPngBytes;
+  } else if (path.extension() == ".pto") {
+    maximum_bytes = 64ULL * 1024ULL * 1024ULL;
+  } else if (name == kStitchCanvasProvenanceArtifact) {
+    maximum_bytes = 4096;
+  } else if (name == kStitchGenerationArtifact) {
+    maximum_bytes = 16ULL * 1024ULL;
+  } else {
+    return absl::InvalidArgumentError("Unrecognized stitch snapshot artifact: " + path.string());
+  }
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return absl::NotFoundError("Stitch snapshot artifact is missing: " + path.string());
+    return absl::FailedPreconditionError("Unable to pin stitch snapshot artifact: " + path.string());
+  }
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    ::close(descriptor);
+    return absl::FailedPreconditionError("Invalid or oversized stitch snapshot artifact: " + path.string());
+  }
+  return PinnedLoadArtifact(name, descriptor, metadata);
+}
+
+absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, const fs::path& destination) {
+  const int destination_descriptor =
+      ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, artifact->metadata.st_mode & 0777);
+  if (destination_descriptor < 0) {
+    return absl::InternalError(
+        "Unable to create private stitch validation snapshot: " + std::string(std::strerror(errno)));
+  }
+  struct DestinationCleanup {
+    int descriptor;
+    fs::path path;
+    bool complete{false};
+    ~DestinationCleanup() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+      if (!complete) {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+      }
+    }
+  } cleanup{destination_descriptor, destination};
+
+  const bool disable_clone = [] {
+    const char* value = std::getenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  bool copied = !disable_clone && ::ioctl(destination_descriptor, FICLONE, artifact->descriptor) == 0;
+  if (!copied) {
+    off_t source_offset = 0;
+    off_t destination_offset = 0;
+    uint64_t remaining = static_cast<uint64_t>(artifact->metadata.st_size);
+    while (remaining > 0) {
+      const size_t requested = static_cast<size_t>(std::min<uint64_t>(remaining, 16ULL * 1024ULL * 1024ULL));
+      ssize_t count = 0;
+      const char* test_result = std::getenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT");
+      if (test_result != nullptr && std::string(test_result) == "unsupported") {
+        errno = EOPNOTSUPP;
+        count = -1;
+      } else if (test_result != nullptr && std::string(test_result) == "zero") {
+        count = 0;
+      } else {
+        const size_t offload_request = test_result != nullptr && std::string(test_result) == "partial"
+            ? std::max<size_t>(1, requested / 2)
+            : requested;
+        count = ::copy_file_range(
+            artifact->descriptor, &source_offset, destination_descriptor, &destination_offset, offload_request, 0);
+      }
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        break;
+      remaining -= static_cast<uint64_t>(count);
+    }
+    copied = remaining == 0;
+  }
+  if (!copied) {
+    if (::ftruncate(destination_descriptor, 0) != 0 || ::lseek(destination_descriptor, 0, SEEK_SET) != 0)
+      return absl::InternalError("Unable to prepare private stitch validation snapshot copy");
+    std::vector<unsigned char> buffer(1024 * 1024);
+    uint64_t offset = 0;
+    while (offset < static_cast<uint64_t>(artifact->metadata.st_size)) {
+      const size_t requested = static_cast<size_t>(
+          std::min<uint64_t>(buffer.size(), static_cast<uint64_t>(artifact->metadata.st_size) - offset));
+      const ssize_t count = ::pread(artifact->descriptor, buffer.data(), requested, static_cast<off_t>(offset));
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        return absl::InternalError("Unable to read pinned stitch validation artifact");
+      size_t written = 0;
+      while (written < static_cast<size_t>(count)) {
+        const ssize_t write_count =
+            ::write(destination_descriptor, buffer.data() + written, static_cast<size_t>(count) - written);
+        if (write_count < 0 && errno == EINTR)
+          continue;
+        if (write_count <= 0)
+          return absl::InternalError("Unable to copy pinned stitch validation artifact");
+        written += static_cast<size_t>(write_count);
+      }
+      offset += static_cast<uint64_t>(count);
+    }
+  }
+  struct stat verified{};
+  if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
+    return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
+  }
+  const timespec times[2] = {artifact->metadata.st_atim, artifact->metadata.st_mtim};
+  if (::futimens(destination_descriptor, times) != 0)
+    return absl::InternalError("Unable to preserve stitch validation snapshot timestamps");
+  if (::close(destination_descriptor) != 0) {
+    cleanup.descriptor = -1;
+    return absl::InternalError("Unable to close stitch validation snapshot artifact");
+  }
+  cleanup.descriptor = -1;
+  cleanup.complete = true;
+  return absl::OkStatus();
+}
+
+bool is_control_mask_load_artifact_name(const std::string& name) {
+  return std::find_if(kControlMaskLoadArtifacts.begin(), kControlMaskLoadArtifacts.end(), [&](const char* artifact) {
+           return name == artifact || name == "." + std::string(artifact) + ".hstream-partial";
+         }) != kControlMaskLoadArtifacts.end();
+}
+
+bool is_stitch_validation_snapshot_artifact_name(const std::string& name) {
+  return std::any_of(
+      kStitchValidationSnapshotArtifacts.begin(),
+      kStitchValidationSnapshotArtifacts.end(),
+      [&](const StitchSnapshotArtifactSpec& artifact) { return name == artifact.name; });
+}
+
+absl::Status verify_pinned_load_artifacts(
+    const fs::path& source_directory,
+    const std::vector<PinnedLoadArtifact>& artifacts) {
+  auto opened_root = PinnedDirectory::Open(source_directory, "control-mask artifact root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  for (const PinnedLoadArtifact& artifact : artifacts) {
+    struct stat descriptor_metadata{};
+    struct stat path_metadata{};
+    if (::fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
+        !same_load_artifact_snapshot(artifact.metadata, descriptor_metadata)) {
+      return absl::AbortedError("Control-mask artifact changed while being loaded: " + artifact.name);
+    }
+    if (::fstatat(opened_root->descriptor(), artifact.name.c_str(), &path_metadata, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !same_load_artifact_snapshot(artifact.metadata, path_metadata)) {
+      return absl::AbortedError("Control-mask artifact path changed after it was pinned: " + artifact.name);
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
+  auto opened_root = PinnedDirectory::Open(game_dir, "control-mask snapshot root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  PinnedDirectory root = std::move(*opened_root);
+  auto entries = directory_entries(root.path(), "control-mask snapshot root");
+  if (!entries.ok())
+    return entries.status();
+  for (const auto& entry : *entries) {
+    const std::string name = entry.path().filename().string();
+    if (name.compare(0, kControlMaskSnapshotPrefix.size(), kControlMaskSnapshotPrefix) != 0)
+      continue;
+    auto opened_snapshot = root.OpenChild(name, "stale control-mask snapshot");
+    if (!opened_snapshot.ok())
+      return opened_snapshot.status();
+    if (!opened_snapshot->has_value())
+      continue;
+    PinnedDirectory snapshot = std::move(**opened_snapshot);
+    auto snapshot_entries = directory_entries(snapshot.path(), "stale control-mask snapshot", 16);
+    if (!snapshot_entries.ok())
+      return snapshot_entries.status();
+    for (const auto& artifact : *snapshot_entries) {
+      std::error_code error;
+      const fs::file_type type = artifact.symlink_status(error).type();
+      const std::string artifact_name = artifact.path().filename().string();
+      if (error ||
+          (!is_control_mask_load_artifact_name(artifact_name) &&
+           !is_stitch_validation_snapshot_artifact_name(artifact_name)) ||
+          (type != fs::file_type::regular && type != fs::file_type::symlink)) {
+        return absl::FailedPreconditionError("Invalid stale control-mask snapshot entry: " + artifact_name);
+      }
+    }
+    HM_RETURN_IF_ERROR(remove_pinned_directory(root, name, snapshot));
+  }
+  return absl::OkStatus();
 }
 
 bool canvas_exceeds_max_dimension(const CanvasSize& canvas, size_t max_dimension) {
@@ -331,10 +728,10 @@ absl::StatusOr<size_t> parse_exact_size_t(const std::string& value, const char* 
 }
 
 absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
-  TIFF* tif = TIFFOpen(path.c_str(), "r");
-  if (!tif) {
-    return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
-  }
+  auto opened = open_bounded_tiff(path, kMaximumParserPlacementTiffBytes);
+  if (!opened.ok())
+    return opened.status();
+  TIFF* tif = (*opened)->tiff;
 
   uint32_t width = 0;
   uint32_t height = 0;
@@ -348,7 +745,7 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   const bool have_res = TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres) && TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres);
   const bool have_position = TIFFGetField(tif, TIFFTAG_XPOSITION, &xpos) && TIFFGetField(tif, TIFFTAG_YPOSITION, &ypos);
 
-  TIFFClose(tif);
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
 
   if (!have_dims || !width || !height) {
     return absl::InvalidArgumentError(TO_STRING("Missing TIFF dimensions: " << path.string()));
@@ -470,10 +867,10 @@ absl::StatusOr<CanvasSize> get_effective_mapping_canvas_size(const fs::path& gam
 }
 
 absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
-  TIFF* tif = TIFFOpen(path.c_str(), "r");
-  if (!tif) {
-    return absl::NotFoundError(TO_STRING("Could not open remap TIFF: " << path.string()));
-  }
+  auto opened = open_bounded_tiff(path, kMaximumParserRemapTiffBytes);
+  if (!opened.ok())
+    return opened.status();
+  TIFF* tif = (*opened)->tiff;
   uint32_t width = 0;
   uint32_t height = 0;
   uint16_t samples = 0;
@@ -484,7 +881,7 @@ absl::StatusOr<CanvasSize> read_remap_tiff_header(const fs::path& path) {
   TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
   TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
   TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
-  TIFFClose(tif);
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
   if (!have_dims || !width || !height || width > kHardMaximumArtifactDimension ||
       height > kHardMaximumArtifactDimension || static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels ||
       samples != 1 || bits != 16 || sample_format != SAMPLEFORMAT_UINT) {
@@ -524,6 +921,60 @@ bool artifacts_exceed_live_canvas_limit(
     size_t max_dimension) {
   return canvas_exceeds_max_dimension(native_canvas, max_dimension) &&
       canvas_exceeds_max_dimension(effective_canvas, max_dimension);
+}
+
+struct CanvasProvenanceCompatibility {
+  bool compatible{false};
+  std::string reason;
+};
+
+long double constrained_canvas_scale(
+    const HuginProject::CanvasProvenance& provenance,
+    size_t max_output_width,
+    size_t max_canvas_dimension) {
+  long double scale = 1.0L;
+  if (max_output_width > 0 && provenance.source_canvas_width > max_output_width) {
+    scale = std::min(
+        scale, static_cast<long double>(max_output_width) / static_cast<long double>(provenance.source_canvas_width));
+  }
+  const size_t source_longest = std::max(provenance.source_canvas_width, provenance.source_canvas_height);
+  if (max_canvas_dimension > 0 && source_longest > max_canvas_dimension) {
+    scale = std::min(scale, static_cast<long double>(max_canvas_dimension) / static_cast<long double>(source_longest));
+  }
+  return scale;
+}
+
+CanvasProvenanceCompatibility check_canvas_provenance_compatibility(
+    const std::optional<HuginProject::CanvasProvenance>& provenance,
+    const CanvasSize& published_canvas,
+    size_t max_output_width,
+    const std::optional<size_t>& max_canvas_dimension) {
+  if (!provenance.has_value()) {
+    return {false, "canvas provenance is missing; legacy capped artifacts cannot be identified safely"};
+  }
+  if (provenance->canvas_width != published_canvas.width || provenance->canvas_height != published_canvas.height) {
+    return {false, "published canvas dimensions do not match canvas provenance"};
+  }
+  if (max_output_width > 0 && published_canvas.width > max_output_width) {
+    return {false, "the published canvas exceeds the current maximum output width"};
+  }
+
+  const size_t current_max_canvas_dimension = max_canvas_dimension.value_or(0);
+  if (current_max_canvas_dimension > 0 &&
+      canvas_exceeds_max_dimension(published_canvas, current_max_canvas_dimension)) {
+    return {false, "the published canvas exceeds the current live canvas limit"};
+  }
+  if (provenance->max_output_width_applied || provenance->max_canvas_dimension_applied) {
+    const long double generated_scale =
+        constrained_canvas_scale(*provenance, provenance->max_output_width, provenance->max_canvas_dimension);
+    const long double current_scale =
+        constrained_canvas_scale(*provenance, max_output_width, current_max_canvas_dimension);
+    constexpr long double kScaleTolerance = 1e-15L;
+    if (std::abs(generated_scale - current_scale) > kScaleTolerance) {
+      return {false, "the combined effective canvas scale changed"};
+    }
+  }
+  return {true, {}};
 }
 
 // -----------------------------------------------------------------------------
@@ -829,7 +1280,7 @@ bool test_dependency_tree(const std::string& dir_name, bool add_rink_mask) {
   return true;
 }
 
-absl::Status save_image(surface::Surface surf, const std::string& filename) {
+absl::StatusOr<cv::Mat> download_image(surface::Surface surf) {
   cv::Mat cpu_img;
   if (surf.get()->colorFormat == NVBUF_COLOR_FORMAT_RGBA) {
     CudaMat<uchar4> gpu_image(
@@ -876,6 +1327,12 @@ absl::Status save_image(surface::Surface surf, const std::string& filename) {
   if (cpu_img.empty()) {
     return absl::FailedPreconditionError("Unable to download image from GPU");
   }
+  return cpu_img;
+}
+
+absl::Status save_image(surface::Surface surf, const std::string& filename) {
+  cv::Mat cpu_img;
+  HM_ASSIGN_OR_RETURN(cpu_img, download_image(surf));
   if (!cv::imwrite(filename, cpu_img)) {
     return absl::FailedPreconditionError("Unable to write image to file");
   }
@@ -902,18 +1359,141 @@ absl::StatusOr<cv::Mat> load_feature_image(const fs::path& image_file) {
   return image;
 }
 
+absl::Status validate_stitched_snapshot_generation_locked(
+    const std::string& game_dir,
+    const fs::path& root,
+    const std::string& producer_output_generation,
+    const HuginProject::ArtifactLock& hugin_lock) {
+  auto hugin_generation = HuginProject::GenerationId(root, hugin_lock);
+  if (!hugin_generation.ok())
+    return hugin_generation.status();
+  YAML::Node config(YAML::NodeType::Map);
+  try {
+    if (fs::is_regular_file(root / "config.yaml"))
+      config = YAML::LoadFile((root / "config.yaml").string());
+    const YAML::Node configured_generation = config["rink"]["stitched_output_generation"];
+    if (!configured_generation || !configured_generation.IsScalar()) {
+      return absl::FailedPreconditionError(
+          "Cannot publish a scoreboard snapshot without a current stitched-output generation");
+    }
+    std::string current_generation;
+    HM_ASSIGN_OR_RETURN(
+        current_generation, current_stitched_output_generation_id_locked(game_dir, config, *hugin_generation));
+    if (configured_generation.as<std::string>() != current_generation) {
+      return absl::AbortedError("Cannot publish a scoreboard snapshot for stale stitched-output geometry");
+    }
+    if (producer_output_generation != current_generation) {
+      return absl::AbortedError(
+          "Cannot publish a scoreboard snapshot from a frame produced by a superseded stitched-output generation");
+    }
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate scoreboard snapshot generation: " + std::string(exception.what()));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status preflight_stitched_snapshot_generation(
+    const std::string& game_dir,
+    const std::string& producer_output_generation) {
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
+  return validate_stitched_snapshot_generation_locked(game_dir, root, producer_output_generation, **hugin_lock);
+}
+
 } // namespace
 
-absl::Status save_stitched_image(const std::string& game_dir, surface::Surface surface) {
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    surface::Surface surface,
+    const std::string& producer_output_generation) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("Cannot save stitched scoreboard image without a game directory");
+  if (producer_output_generation.empty()) {
+    return absl::FailedPreconditionError(
+        "Cannot publish a scoreboard snapshot without the stitched-output generation that produced it");
+  }
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+      producer_output_generation, static_cast<size_t>(surface.width()), static_cast<size_t>(surface.height())));
+  HM_RETURN_IF_ERROR(preflight_stitched_snapshot_generation(game_dir, producer_output_generation));
+  cv::Mat image;
+  HM_ASSIGN_OR_RETURN(image, download_image(surface));
+  return save_stitched_image(game_dir, image, producer_output_generation);
+}
+
+absl::Status save_stitched_image(
+    const std::string& game_dir,
+    const cv::Mat& image,
+    const std::string& producer_output_generation) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Cannot save stitched scoreboard image without a game directory");
   }
+  if (image.empty())
+    return absl::InvalidArgumentError("Cannot save an empty stitched scoreboard image");
+  if (producer_output_generation.empty()) {
+    return absl::FailedPreconditionError(
+        "Cannot publish a scoreboard snapshot without the stitched-output generation that produced it");
+  }
+  HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+      producer_output_generation, static_cast<size_t>(image.cols), static_cast<size_t>(image.rows)));
   std::error_code ec;
   fs::create_directories(game_dir, ec);
   if (ec) {
     return absl::InternalError(TO_STRING("Failed to create game directory \"" << game_dir << "\": " << ec.message()));
   }
-  return save_image(surface, (fs::path(game_dir) / "s.png").string());
+
+  const fs::path root(game_dir);
+  std::string pattern = (root / ".s.png-XXXXXX.png").string();
+  std::vector<char> writable_pattern(pattern.begin(), pattern.end());
+  writable_pattern.push_back('\0');
+  const int temporary_descriptor = ::mkstemps(writable_pattern.data(), 4);
+  if (temporary_descriptor < 0) {
+    return absl::InternalError(
+        "Unable to create temporary stitched scoreboard image: " + std::string(std::strerror(errno)));
+  }
+  const fs::path temporary(writable_pattern.data());
+  struct TemporaryCleanup {
+    fs::path path;
+    ~TemporaryCleanup() {
+      if (path.empty())
+        return;
+      std::error_code ignored;
+      fs::remove(path, ignored);
+    }
+  } cleanup{temporary};
+  if (::close(temporary_descriptor) != 0) {
+    return absl::InternalError(
+        "Unable to close temporary stitched scoreboard image: " + std::string(std::strerror(errno)));
+  }
+  try {
+    if (!cv::imwrite(temporary.string(), image))
+      return absl::FailedPreconditionError("Unable to encode stitched scoreboard image");
+  } catch (const cv::Exception& exception) {
+    return absl::FailedPreconditionError(
+        "Unable to encode stitched scoreboard image: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate stitched scoreboard image encoder state");
+  }
+  HM_RETURN_IF_ERROR(fsync_path(temporary));
+
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
+  HM_RETURN_IF_ERROR(
+      validate_stitched_snapshot_generation_locked(game_dir, root, producer_output_generation, **hugin_lock));
+  fs::rename(temporary, root / "s.png", ec);
+  if (ec)
+    return absl::InternalError("Unable to atomically publish stitched scoreboard image: " + ec.message());
+  cleanup.path.clear();
+  return fsync_path(root, true);
 }
 
 namespace {
@@ -997,6 +1577,8 @@ absl::Status clean_stitching_artifacts_impl(
   HM_RETURN_IF_ERROR(clean_pattern("*.pto"));
   HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tif"));
   HM_RETURN_IF_ERROR(clean_pattern("mapping_*.tiff"));
+  HM_RETURN_IF_ERROR(clean_pattern("stitching_canvas_provenance"));
+  HM_RETURN_IF_ERROR(clean_pattern(kStitchGenerationArtifact));
   HM_RETURN_IF_ERROR(clean_pattern("panorama.tif"));
   HM_RETURN_IF_ERROR(clean_pattern("seam_file.png"));
   HM_RETURN_IF_ERROR(clean_pattern("matches.png"));
@@ -1052,19 +1634,28 @@ absl::Status clean_stitching_artifacts_from_control_points(
   return clean_stitching_artifacts_impl(game_dir, /*preserve_synchronized_inputs=*/true, expected_invalidation_id);
 }
 
-absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width) {
-  std::error_code directory_error;
-  if (!fs::is_directory(game_dir, directory_error) || directory_error)
-    return false;
-  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
-  if (!artifact_lock.ok())
-    return artifact_lock.status();
+enum class SeamValidationMode {
+  kLayoutOnly,
+  kContent,
+  kNormalize,
+};
+
+static absl::StatusOr<bool> validate_stitching_artifacts_locked(
+    const std::string& game_dir,
+    size_t max_output_width,
+    SeamValidationMode seam_validation,
+    const HuginProject::ArtifactLock& artifact_lock,
+    CanvasSize* validated_canvas = nullptr) {
   bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
   }
+  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
+  if (!artifact_bounds.ok()) {
+    std::cout << "Stitching artifacts are unsafe or exceed parser byte limits: " << artifact_bounds << std::endl;
+    return false;
+  }
   CanvasSize canvas_size;
-  CanvasSize effective_canvas_size;
   TiffPlacement p0;
   TiffPlacement p1;
   auto p0_status = read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif");
@@ -1083,6 +1674,21 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
     return false;
   }
   canvas_size = *canvas_status;
+  auto provenance = HuginProject::ReadCanvasProvenance(game_dir, artifact_lock);
+  if (!provenance.ok()) {
+    if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
+        absl::IsNotFound(provenance.status())) {
+      std::cout << "Stitching canvas provenance is invalid: " << provenance.status() << std::endl;
+      return false;
+    }
+    return provenance.status();
+  }
+  const auto compatibility = check_canvas_provenance_compatibility(
+      *provenance, canvas_size, max_output_width, live_stitch_max_canvas_dimension());
+  if (!compatibility.compatible) {
+    std::cout << "Stitching artifacts require mapping regeneration because " << compatibility.reason << std::endl;
+    return false;
+  }
   const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
   if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
       absl::IsNotFound(remap_status) || absl::IsResourceExhausted(remap_status)) {
@@ -1090,39 +1696,356 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
     return false;
   }
   HM_RETURN_IF_ERROR(remap_status);
-  if (max_output_width > 0 && canvas_size.width > max_output_width) {
-    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
-              << " exceeds requested max output width " << max_output_width << "; regenerating capped mapping artifacts"
-              << std::endl;
-    return false;
+  const fs::path seam_path = fs::path(game_dir) / "seam_file.png";
+  absl::Status seam_status;
+  switch (seam_validation) {
+    case SeamValidationMode::kLayoutOnly:
+      seam_status = HuginProject::ValidateSeamLayout(
+          seam_path,
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height));
+      break;
+    case SeamValidationMode::kContent:
+      seam_status = HuginProject::ValidateSeamForConfiguredArtifacts(
+          seam_path,
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height));
+      break;
+    case SeamValidationMode::kNormalize:
+      seam_status = HuginProject::ValidateAndNormalizeSeam(
+          seam_path,
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          static_cast<int>(canvas_size.width),
+          static_cast<int>(canvas_size.height),
+          1.0);
+      break;
   }
-  effective_canvas_size = canvas_size;
-  if (max_output_width > 0) {
-    const ScaledCanvas scaled = scale_canvas_to_max_output_width(p0, p1, canvas_size, max_output_width);
-    effective_canvas_size = scaled.size;
-  }
-  const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
-  if (max_canvas_dimension.has_value() &&
-      artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension)) {
-    std::cout << "Stitching artifacts canvas " << canvas_size.width << "x" << canvas_size.height
-              << " exceeds live-stitch max dimension " << *max_canvas_dimension << " even after width cap "
-              << max_output_width << " produces " << effective_canvas_size.width << "x" << effective_canvas_size.height
-              << "; regenerating at a smaller scale" << std::endl;
-    return false;
-  }
-  const absl::Status seam_status = HuginProject::ValidateSeamForConfiguredArtifacts(
-      fs::path(game_dir) / "seam_file.png",
-      static_cast<int>(canvas_size.width),
-      static_cast<int>(canvas_size.height),
-      static_cast<int>(effective_canvas_size.width),
-      static_cast<int>(effective_canvas_size.height));
   if (absl::IsFailedPrecondition(seam_status)) {
     std::cout << "Stitching artifacts exist but seam_file.png does not match the requested canvas: " << seam_status
               << std::endl;
     return false;
   }
   HM_RETURN_IF_ERROR(seam_status);
+  if (validated_canvas != nullptr)
+    *validated_canvas = canvas_size;
   return true;
+}
+
+absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width) {
+  std::error_code directory_error;
+  if (!fs::is_directory(game_dir, directory_error) || directory_error)
+    return false;
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  return validate_stitching_artifacts_locked(game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
+}
+
+struct StitchingArtifactLoadSnapshot::Impl {
+  Impl(fs::path directory, fs::path source_directory)
+      : directory(std::move(directory)), source_directory(std::move(source_directory)) {}
+  ~Impl() {
+    std::error_code ignored;
+    fs::remove_all(directory, ignored);
+  }
+  fs::path directory;
+  fs::path source_directory;
+  std::string expected_revision;
+  std::string expected_generation_id;
+  std::string expected_fingerprint;
+  std::vector<PinnedLoadArtifact> artifacts;
+};
+
+StitchingArtifactLoadSnapshot::StitchingArtifactLoadSnapshot(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+StitchingArtifactLoadSnapshot::~StitchingArtifactLoadSnapshot() = default;
+StitchingArtifactLoadSnapshot::StitchingArtifactLoadSnapshot(StitchingArtifactLoadSnapshot&& other) noexcept = default;
+StitchingArtifactLoadSnapshot& StitchingArtifactLoadSnapshot::operator=(
+    StitchingArtifactLoadSnapshot&& other) noexcept = default;
+
+const fs::path& StitchingArtifactLoadSnapshot::directory() const {
+  return impl_->directory;
+}
+
+absl::Status StitchingArtifactLoadSnapshot::verify() const {
+  const bool metadata_is_reliable = stitch_artifact_metadata_is_reliable(impl_->source_directory);
+  if (metadata_is_reliable) {
+    HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(impl_->source_directory, impl_->artifacts));
+    auto revision = stitch_artifact_revision_locked(impl_->source_directory);
+    if (!revision.ok())
+      return revision.status();
+    if (*revision != impl_->expected_revision)
+      return absl::AbortedError("Control-mask artifact paths changed while their pinned generation was loaded");
+  } else {
+    auto identity = stitch_artifact_content_identity_locked(impl_->source_directory);
+    if (!identity.ok())
+      return identity.status();
+    if (identity->generation_id != impl_->expected_generation_id ||
+        identity->fingerprint != impl_->expected_fingerprint) {
+      return absl::AbortedError("Control-mask artifact contents changed while their pinned generation was loaded");
+    }
+  }
+  return absl::OkStatus();
+}
+
+namespace {
+
+struct CreatedStitchingArtifactSnapshot {
+  std::unique_ptr<StitchingArtifactLoadSnapshot> snapshot;
+  StitchingArtifactLoadSnapshot::Impl* impl;
+};
+
+absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snapshot(
+    const fs::path& game_dir,
+    bool stable_validation_snapshot) {
+  HM_RETURN_IF_ERROR(remove_stale_control_mask_snapshots(game_dir));
+  std::string pattern = (game_dir / ".hstream-control-mask-snapshot-XXXXXX").string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  char* created = ::mkdtemp(writable.data());
+  if (created == nullptr)
+    return absl::InternalError("Unable to create a stable control-mask load snapshot");
+  auto snapshot_impl = std::make_unique<StitchingArtifactLoadSnapshot::Impl>(fs::path(created), game_dir);
+  StitchingArtifactLoadSnapshot::Impl* snapshot_impl_ptr = snapshot_impl.get();
+  auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(std::move(snapshot_impl));
+  if (::chmod(created, 0700) != 0)
+    return absl::InternalError("Unable to protect the stable control-mask load snapshot");
+  HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
+      "HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS",
+      "HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER",
+      "HM_TEST_STITCH_LOAD_SNAPSHOT_RELEASE"));
+
+  const auto add_artifact = [&](const char* name, bool required) -> absl::Status {
+    auto artifact = pin_stitch_snapshot_artifact(game_dir / name);
+    if (!artifact.ok()) {
+      if (!required && absl::IsNotFound(artifact.status()))
+        return absl::OkStatus();
+      return artifact.status();
+    }
+    if (stable_validation_snapshot) {
+      HM_RETURN_IF_ERROR(expose_regular_snapshot_artifact(&*artifact, snapshot->directory() / name));
+    } else {
+      std::error_code link_error;
+      fs::create_symlink(
+          fs::path("/proc/self/fd") / std::to_string(artifact->descriptor), snapshot->directory() / name, link_error);
+      if (link_error)
+        return absl::InternalError("Unable to expose pinned control-mask artifact: " + link_error.message());
+    }
+    snapshot_impl_ptr->artifacts.push_back(std::move(*artifact));
+    return absl::OkStatus();
+  };
+  if (stable_validation_snapshot) {
+    for (const StitchSnapshotArtifactSpec& artifact : kStitchValidationSnapshotArtifacts)
+      HM_RETURN_IF_ERROR(add_artifact(artifact.name, artifact.required));
+  } else {
+    for (const char* name : kControlMaskLoadArtifacts)
+      HM_RETURN_IF_ERROR(add_artifact(name, /*required=*/true));
+  }
+  HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(game_dir, snapshot_impl_ptr->artifacts));
+  return CreatedStitchingArtifactSnapshot{.snapshot = std::move(snapshot), .impl = snapshot_impl_ptr};
+}
+
+void retain_control_mask_load_artifacts(StitchingArtifactLoadSnapshot::Impl* snapshot) {
+  snapshot->artifacts.erase(
+      std::remove_if(
+          snapshot->artifacts.begin(),
+          snapshot->artifacts.end(),
+          [](const PinnedLoadArtifact& artifact) { return !is_control_mask_load_artifact_name(artifact.name); }),
+      snapshot->artifacts.end());
+}
+
+absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
+    const std::string& game_dir,
+    size_t max_output_width,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated,
+    bool validate_generation_content,
+    bool create_load_snapshot) {
+  std::error_code directory_error;
+  if (!fs::is_directory(game_dir, directory_error) || directory_error)
+    return LockedStitchingArtifacts{};
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  const bool metadata_is_reliable = stitch_artifact_metadata_is_reliable(game_dir);
+  if (!validate_generation_content && metadata_is_reliable && previously_validated.has_value() &&
+      !previously_validated->generation_id.empty() && !previously_validated->artifact_revision.empty() &&
+      previously_validated->max_output_width == max_output_width &&
+      previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
+    auto artifact_revision = stitch_artifact_revision_locked(game_dir);
+    if (artifact_revision.ok() && *artifact_revision == previously_validated->artifact_revision &&
+        test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
+      return LockedStitchingArtifacts{
+          .artifact_lock = std::move(*artifact_lock),
+          .canvas_size = previously_validated->canvas_size,
+          .generation_id = previously_validated->generation_id,
+          .artifact_revision = std::move(*artifact_revision),
+          .content_validated = previously_validated->content_validated,
+      };
+    }
+    if (!artifact_revision.ok() && !absl::IsNotFound(artifact_revision.status()))
+      return artifact_revision.status();
+  }
+  CanvasSize canvas_size;
+  std::string validated_bindings;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto bindings_before_validation = stitch_artifact_binding_revision_locked(game_dir);
+    if (!bindings_before_validation.ok()) {
+      if (absl::IsNotFound(bindings_before_validation.status()))
+        return LockedStitchingArtifacts{};
+      return bindings_before_validation.status();
+    }
+    bool configured = false;
+    HM_ASSIGN_OR_RETURN(
+        configured,
+        validate_stitching_artifacts_locked(
+            game_dir,
+            max_output_width,
+            validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
+            **artifact_lock,
+            &canvas_size));
+    if (!configured)
+      return LockedStitchingArtifacts{};
+    std::string bindings_after_validation;
+    HM_ASSIGN_OR_RETURN(bindings_after_validation, stitch_artifact_binding_revision_locked(game_dir));
+    if (*bindings_before_validation == bindings_after_validation) {
+      validated_bindings = std::move(bindings_after_validation);
+      break;
+    }
+    if (attempt == 1)
+      return absl::AbortedError("Stitch artifacts changed repeatedly while their content was validated");
+  }
+  HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
+      "HM_TEST_STITCH_POST_VALIDATION_DELAY_MS",
+      "HM_TEST_STITCH_POST_VALIDATION_MARKER",
+      "HM_TEST_STITCH_POST_VALIDATION_RELEASE"));
+  std::string generation_id;
+  const bool stable_load_snapshot = create_load_snapshot && !metadata_is_reliable;
+  if (!stable_load_snapshot && validate_generation_content) {
+    HM_ASSIGN_OR_RETURN(generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
+  } else if (!stable_load_snapshot) {
+    HM_ASSIGN_OR_RETURN(generation_id, stitch_artifact_preflight_generation_id_locked(game_dir));
+  }
+  std::string artifact_revision;
+  HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
+  std::string verified_bindings;
+  HM_ASSIGN_OR_RETURN(verified_bindings, stitch_artifact_binding_revision_locked(game_dir));
+  if (verified_bindings != validated_bindings)
+    return absl::AbortedError("Stitch artifacts changed after their content was validated");
+  std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
+  if (create_load_snapshot) {
+    CreatedStitchingArtifactSnapshot created_snapshot;
+    HM_ASSIGN_OR_RETURN(created_snapshot, create_stitching_artifact_snapshot(game_dir, stable_load_snapshot));
+    std::unique_ptr<StitchingArtifactLoadSnapshot> snapshot = std::move(created_snapshot.snapshot);
+    StitchingArtifactLoadSnapshot::Impl* snapshot_impl = created_snapshot.impl;
+    if (stable_load_snapshot) {
+      HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
+          "HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS",
+          "HM_TEST_STITCH_STABLE_VALIDATION_MARKER",
+          "HM_TEST_STITCH_STABLE_VALIDATION_RELEASE"));
+      bool snapshot_configured = false;
+      CanvasSize snapshot_canvas;
+      HM_ASSIGN_OR_RETURN(
+          snapshot_configured,
+          validate_stitching_artifacts_locked(
+              snapshot->directory(),
+              max_output_width,
+              validate_generation_content ? SeamValidationMode::kContent : SeamValidationMode::kLayoutOnly,
+              **artifact_lock,
+              &snapshot_canvas));
+      if (!snapshot_configured)
+        return LockedStitchingArtifacts{};
+      auto snapshot_identity = stitch_artifact_content_identity_locked(snapshot->directory());
+      if (!snapshot_identity.ok() && absl::IsFailedPrecondition(snapshot_identity.status())) {
+        std::string current_generation_id;
+        HM_ASSIGN_OR_RETURN(current_generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
+        std::error_code remove_error;
+        fs::remove(snapshot->directory() / kStitchGenerationArtifact, remove_error);
+        if (remove_error) {
+          return absl::InternalError(
+              "Unable to replace a legacy private snapshot generation identity: " + remove_error.message());
+        }
+        auto current_identity = pin_stitch_snapshot_artifact(fs::path(game_dir) / kStitchGenerationArtifact);
+        if (!current_identity.ok())
+          return current_identity.status();
+        HM_RETURN_IF_ERROR(
+            expose_regular_snapshot_artifact(&*current_identity, snapshot->directory() / kStitchGenerationArtifact));
+        HM_ASSIGN_OR_RETURN(snapshot_identity, stitch_artifact_content_identity_locked(snapshot->directory()));
+        if (snapshot_identity->generation_id != current_generation_id) {
+          return absl::AbortedError(
+              "Stitch artifact contents changed while their stable validation snapshot was inspected");
+        }
+        HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
+      }
+      if (!snapshot_identity.ok())
+        return snapshot_identity.status();
+      generation_id = snapshot_identity->generation_id;
+      canvas_size = snapshot_canvas;
+      snapshot_impl->expected_generation_id = generation_id;
+      snapshot_impl->expected_fingerprint = std::move(snapshot_identity->fingerprint);
+      retain_control_mask_load_artifacts(snapshot_impl);
+    }
+    snapshot_impl->expected_revision = artifact_revision;
+    if (create_load_snapshot) {
+      load_snapshot = std::move(snapshot);
+    }
+  }
+  return LockedStitchingArtifacts{
+      .artifact_lock = std::move(*artifact_lock),
+      .load_snapshot = std::move(load_snapshot),
+      .canvas_size = {.width = canvas_size.width, .height = canvas_size.height},
+      .generation_id = std::move(generation_id),
+      .artifact_revision = std::move(artifact_revision),
+      .content_validated = validate_generation_content,
+  };
+}
+
+} // namespace
+
+absl::StatusOr<LockedStitchingArtifacts> lock_validated_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  return lock_stitching_artifacts_impl(
+      game_dir,
+      max_output_width,
+      std::nullopt,
+      /*validate_generation_content=*/true,
+      /*create_load_snapshot=*/false);
+}
+
+absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_for_load(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  return lock_stitching_artifacts_impl(
+      game_dir,
+      max_output_width,
+      std::nullopt,
+      /*validate_generation_content=*/true,
+      /*create_load_snapshot=*/true);
+}
+
+absl::StatusOr<LockedStitchingArtifacts> lock_preflight_stitching_artifacts(
+    const std::string& game_dir,
+    size_t max_output_width,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
+  return lock_stitching_artifacts_impl(
+      game_dir,
+      max_output_width,
+      previously_validated,
+      /*validate_generation_content=*/false,
+      /*create_load_snapshot=*/false);
+}
+
+absl::Status validate_stitch_seam_repair_artifact_bounds(const std::string& game_dir) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  return validate_stitch_seam_repair_artifact_bounds_locked(game_dir);
 }
 
 absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
@@ -1135,6 +2058,7 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
   if (!up_to_date) {
     return false;
   }
+  HM_RETURN_IF_ERROR(validate_stitch_seam_repair_artifact_bounds_locked(game_dir));
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   if (!max_canvas_dimension.has_value()) {
     return false;
@@ -1148,9 +2072,37 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
   return artifacts_exceed_live_canvas_limit(canvas_size, effective_canvas_size, *max_canvas_dimension);
 }
 
+absl::StatusOr<LockedCanvasRegenerationCheck> lock_canvas_regeneration_check(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  auto compatibility = check_canvas_constraint_locked(game_dir, max_output_width);
+  if (!compatibility.ok())
+    return compatibility.status();
+  return LockedCanvasRegenerationCheck{
+      .artifact_lock = std::move(*artifact_lock),
+      .artifacts_compatible = compatibility->artifacts_compatible,
+      .requires_regeneration = compatibility->requires_regeneration,
+  };
+}
+
+absl::StatusOr<bool> stitching_artifacts_require_canvas_regeneration(
+    const std::string& game_dir,
+    size_t max_output_width) {
+  LockedCanvasRegenerationCheck check;
+  HM_ASSIGN_OR_RETURN(check, lock_canvas_regeneration_check(game_dir, max_output_width));
+  return check.requires_regeneration;
+}
+
 absl::StatusOr<StitchingCanvasSize> stitching_canvas_size(const std::string& game_dir, size_t max_output_width) {
   if (game_dir.empty())
     return absl::InvalidArgumentError("A game directory is required");
+  auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
+  if (!artifact_lock.ok())
+    return artifact_lock.status();
+  HM_RETURN_IF_ERROR(validate_stitch_seam_repair_artifact_bounds_locked(game_dir));
   CanvasSize canvas_size;
   if (max_output_width > 0) {
     HM_ASSIGN_OR_RETURN(canvas_size, get_effective_mapping_canvas_size(fs::path(game_dir), max_output_width));
@@ -1169,6 +2121,7 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t 
   auto artifact_lock = HuginProject::RecoverAndLock(root);
   if (!artifact_lock.ok())
     return artifact_lock.status();
+  HM_RETURN_IF_ERROR(validate_stitch_seam_repair_artifact_bounds_locked(root));
   const fs::path seam_path = root / "seam_file.png";
 
   const fs::path mapping0_path = root / "mapping_0000.tif";
@@ -1518,7 +2471,7 @@ namespace {
 
 constexpr const char* kRinkTransactionPrefix = ".hstream-rink-";
 
-absl::Status fsync_path(const fs::path& path, bool directory = false) {
+absl::Status fsync_path(const fs::path& path, bool directory) {
   const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
   const int descriptor = ::open(path.c_str(), flags);
   if (descriptor < 0)
@@ -1543,6 +2496,10 @@ absl::Status write_transaction_file(const fs::path& path, const std::string& con
   return fsync_path(path);
 }
 
+absl::Status mark_rink_transaction_rolled_back(const fs::path& transaction) {
+  return publish_transaction_state(transaction, "ROLLED_BACK\n");
+}
+
 bool is_rink_artifact_name(const std::string& name) {
   static const std::regex mask_pattern(R"(^rink_mask_(0|[1-9][0-9]*)[.]png$)");
   return name == "config.yaml" || name == "s.png" || std::regex_match(name, mask_pattern);
@@ -1551,12 +2508,14 @@ bool is_rink_artifact_name(const std::string& name) {
 absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transaction) {
   const fs::path state_path = transaction / "state";
   std::error_code error;
-  const bool exists = fs::exists(state_path, error);
-  if (error)
+  const fs::file_status state_status = fs::symlink_status(state_path, error);
+  if (error == std::errc::no_such_file_or_directory)
+    error.clear();
+  else if (error)
     return absl::InternalError("Unable to inspect rink transaction state: " + error.message());
-  if (!exists)
+  if (state_status.type() == fs::file_type::not_found)
     return std::string("UNPREPARED");
-  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor = ::open(state_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0)
     return absl::FailedPreconditionError("Unable to open durable rink transaction state");
   struct StateFileCleanup {
@@ -1567,7 +2526,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
   } cleanup{descriptor};
   struct stat metadata{};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
-      metadata.st_size > 10) {
+      metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
   }
   std::string contents(static_cast<size_t>(metadata.st_size), '\0');
@@ -1584,24 +2543,24 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
     return std::string("PREPARED");
   if (contents == "COMMITTED\n")
     return std::string("COMMITTED");
+  if (contents == "ROLLED_BACK\n")
+    return std::string("ROLLED_BACK");
   return absl::FailedPreconditionError("Invalid durable rink transaction state contents");
 }
 
 absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transaction) {
   const fs::path path = transaction / "new-files";
-  std::error_code error;
-  if (!fs::is_regular_file(path, error) || error)
-    return absl::FailedPreconditionError("Prepared rink transaction has no readable new-files manifest");
-  if (fs::file_size(path, error) > 64 * 1024 || error)
-    return absl::FailedPreconditionError("Prepared rink transaction manifest is too large");
-  std::ifstream input(path);
-  if (!input)
-    return absl::FailedPreconditionError("Unable to open prepared rink transaction manifest");
+  auto contents = read_bounded_regular_file_no_follow(path, 64 * 1024, "prepared rink transaction manifest");
+  if (!contents.ok())
+    return contents.status();
+  std::istringstream input(*contents);
   std::set<std::string> names;
   std::string name;
   while (input >> name) {
     if (fs::path(name).filename() != name || !is_rink_artifact_name(name) || !names.insert(name).second)
       return absl::InvalidArgumentError("Invalid rink transaction filename: " + name);
+    if (names.size() > kMaximumRinkTransactionArtifacts)
+      return absl::ResourceExhaustedError("Rink transaction manifest contains too many artifacts");
   }
   if (!input.eof() || !names.count("config.yaml") || names.size() < 2)
     return absl::FailedPreconditionError("Prepared rink transaction manifest is incomplete");
@@ -1609,16 +2568,31 @@ absl::StatusOr<std::set<std::string>> read_rink_manifest(const fs::path& transac
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root) {
+  auto scan_required = transaction_recovery_scan_required(root, TransactionJournalKind::kRink);
+  if (!scan_required.ok())
+    return scan_required.status();
+  if (!*scan_required)
+    return absl::OkStatus();
   std::error_code error;
-  for (const auto& entry : fs::directory_iterator(root, error)) {
-    if (error)
-      return absl::InternalError("Unable to inspect rink transactions: " + error.message());
+  auto opened_root = PinnedDirectory::Open(root, "rink transaction root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  PinnedDirectory root_directory = std::move(*opened_root);
+  auto root_entries = directory_entries(root_directory.path(), "rink transactions");
+  if (!root_entries.ok())
+    return root_entries.status();
+  for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (!entry.is_directory(error) || error || directory_name.rfind(kRinkTransactionPrefix, 0) != 0) {
-      error.clear();
+    if (directory_name.rfind(kRinkTransactionPrefix, 0) != 0 || directory_name == ".hstream-rink-journal-v1" ||
+        directory_name == ".hstream-rink-recovery-pending")
       continue;
-    }
-    const fs::path transaction = entry.path();
+    auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
+    if (!opened_transaction.ok())
+      return opened_transaction.status();
+    if (!opened_transaction->has_value())
+      continue;
+    PinnedDirectory transaction_directory = std::move(**opened_transaction);
+    const fs::path transaction = transaction_directory.path();
     auto state = read_rink_transaction_state(transaction);
     if (!state.ok())
       return state.status();
@@ -1626,37 +2600,67 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       auto manifest = read_rink_manifest(transaction);
       if (!manifest.ok())
         return manifest.status();
-      const fs::path previous = transaction / "previous";
-      std::vector<fs::path> backups;
-      const bool previous_exists = fs::exists(previous, error);
-      if (error)
-        return absl::InternalError("Unable to inspect rink transaction backup directory: " + error.message());
-      if (previous_exists) {
-        if (!fs::is_directory(previous, error) || error)
-          return absl::FailedPreconditionError("Rink transaction backup is not a directory");
-        for (const auto& old : fs::directory_iterator(previous, error)) {
-          if (error)
-            return absl::InternalError("Unable to inspect rink transaction backup: " + error.message());
-          const std::string old_name = old.path().filename().string();
-          if (!old.is_regular_file(error) || error || !is_rink_artifact_name(old_name))
-            return absl::InvalidArgumentError("Invalid rink transaction backup: " + old_name);
-          backups.push_back(old.path());
+      std::vector<std::string> backup_artifact_names;
+      std::set<std::string> backup_names;
+      std::optional<PinnedDirectory> previous_directory;
+      auto opened_previous = transaction_directory.OpenChild("previous", "rink transaction backup directory");
+      if (!opened_previous.ok())
+        return opened_previous.status();
+      if (!opened_previous->has_value())
+        return absl::FailedPreconditionError("Prepared rink transaction has no backup directory");
+      previous_directory.emplace(std::move(**opened_previous));
+      const fs::path previous = previous_directory->path();
+      auto previous_entries = directory_entries(previous, "rink transaction backup", kMaximumRinkTransactionArtifacts);
+      if (!previous_entries.ok())
+        return previous_entries.status();
+      for (const auto& old : *previous_entries) {
+        const std::string old_name = old.path().filename().string();
+        if (!is_rink_artifact_name(old_name) || manifest->count(old_name) == 0 ||
+            !backup_names.insert(old_name).second) {
+          return absl::InvalidArgumentError("Invalid or unmanifested rink transaction backup: " + old_name);
         }
+        backup_artifact_names.push_back(old_name);
       }
+      auto pinned_backups = pin_rink_rollback_artifacts(*previous_directory, backup_artifact_names);
+      if (!pinned_backups.ok())
+        return pinned_backups.status();
+      if (const char* marker = std::getenv("HM_TEST_RINK_RECOVERY_POST_PIN_MARKER"))
+        std::ofstream(marker, std::ios::out | std::ios::trunc) << "pinned\n";
+      if (const char* delay = std::getenv("HM_TEST_RINK_RECOVERY_POST_PIN_DELAY_MS")) {
+        const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+        if (delay_ms > 0)
+          std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+      }
+
+      std::vector<std::pair<fs::path, fs::path>> staged_restores;
+      for (const PinnedRinkRollbackArtifact& old : *pinned_backups) {
+        const fs::path staged = transaction / (".restore-" + old.name());
+        fs::remove(staged, error);
+        if (error)
+          return absl::InternalError("Unable to remove stale rink restore staging file: " + error.message());
+        auto restore = link_clone_or_copy_rink_rollback_file(old, staged);
+        if (!restore.ok())
+          return restore;
+        auto status = fsync_path(staged);
+        if (!status.ok())
+          return status;
+        staged_restores.emplace_back(staged, root_directory.path() / old.name());
+      }
+      auto status = fsync_path(transaction, true);
+      if (!status.ok())
+        return status;
       for (const std::string& name : *manifest) {
-        fs::remove(root / name, error);
+        if (backup_names.count(name) != 0)
+          continue;
+        fs::remove(root_directory.path() / name, error);
         if (error)
           return absl::InternalError("Unable to remove interrupted rink artifact: " + error.message());
       }
       size_t restored = 0;
-      for (const fs::path& old : backups) {
-        const fs::path destination = root / old.filename();
-        fs::copy_file(old, destination, fs::copy_options::overwrite_existing, error);
+      for (const auto& [staged, destination] : staged_restores) {
+        fs::rename(staged, destination, error);
         if (error)
-          return absl::InternalError("Unable to restore interrupted rink artifact: " + error.message());
-        auto status = fsync_path(destination);
-        if (!status.ok())
-          return status;
+          return absl::InternalError("Unable to atomically restore interrupted rink artifact: " + error.message());
         ++restored;
         if (const char* fail_after = std::getenv("HM_TEST_RINK_ROLLBACK_FAIL_AFTER");
             fail_after != nullptr && restored == static_cast<size_t>(std::strtoull(fail_after, nullptr, 10))) {
@@ -1664,18 +2668,24 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         }
       }
       error.clear();
-      auto status = fsync_path(root, true);
+      status = fsync_path(root_directory.path(), true);
+      if (!status.ok())
+        return status;
+      status = mark_rink_transaction_rolled_back(transaction);
       if (!status.ok())
         return status;
     }
     // COMMITTED transactions already have a durable new generation. An
     // UNPREPARED directory has no publication metadata and never changed a
     // root artifact.
-    fs::remove_all(transaction, error);
-    if (error)
-      return absl::InternalError("Unable to clean rink transaction: " + error.message());
+    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    if (!cleanup.ok())
+      return cleanup;
   }
-  return fsync_path(root, true);
+  auto status = fsync_path(root_directory.path(), true);
+  if (!status.ok())
+    return status;
+  return complete_transaction_recovery(root, TransactionJournalKind::kRink);
 }
 
 } // namespace
@@ -1737,6 +2747,45 @@ absl::StatusOr<double> configured_post_stitch_rotation(const YAML::Node& config)
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(
         "Unable to read configured post-stitch rotation: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<std::optional<double>> stitched_output_persisted_rotation_marker(const YAML::Node& config) {
+  try {
+    if (!config || !config.IsMap())
+      return std::nullopt;
+    const std::optional<YAML::Node> rink = map_child(config, "rink");
+    if (!rink.has_value() || !rink->IsMap())
+      return std::nullopt;
+    const std::optional<YAML::Node> marker = map_child(*rink, "stitched_output_persisted_rotation_degrees");
+    if (!marker.has_value() || !marker->IsDefined())
+      return std::nullopt;
+    if (!marker->IsScalar())
+      return absl::InvalidArgumentError("Stitched-output persisted-rotation marker must be a scalar");
+    const double rotation = marker->as<double>();
+    if (!std::isfinite(rotation))
+      return absl::InvalidArgumentError("Stitched-output persisted-rotation marker must be finite");
+    return rotation;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read stitched-output persisted-rotation marker: " + std::string(exception.what()));
+  }
+}
+
+bool stitching_calibration_is_pending(const YAML::Node& config) {
+  try {
+    if (!config || !config.IsMap())
+      return false;
+    const std::optional<YAML::Node> ui = map_child(config, "hstream_ui");
+    if (!ui.has_value() || !ui->IsMap())
+      return false;
+    const std::optional<YAML::Node> calibration = map_child(*ui, "stitching_calibration");
+    if (!calibration.has_value() || !calibration->IsMap())
+      return false;
+    const std::optional<YAML::Node> status = map_child(*calibration, "status");
+    return status.has_value() && status->IsScalar() && status->as<std::string>() == "pending";
+  } catch (const YAML::Exception&) {
+    return false;
   }
 }
 
@@ -1839,6 +2888,16 @@ absl::StatusOr<std::optional<CanvasSize>> stitched_output_size_from_generation(c
   return CanvasSize{.width = width, .height = height};
 }
 
+absl::StatusOr<std::string> stitched_output_generation_without_dimensions(const std::string& output_generation) {
+  constexpr std::string_view output_size_marker = "\noutput-size:";
+  const size_t marker = output_generation.rfind(output_size_marker);
+  if (marker == std::string::npos)
+    return output_generation;
+  if (output_generation.empty() || output_generation.back() != '\n')
+    return absl::InvalidArgumentError("Invalid stitched-output dimensions");
+  return output_generation.substr(0, marker + 1);
+}
+
 absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
   try {
     if (fs::is_regular_file(config_path))
@@ -1850,6 +2909,71 @@ absl::StatusOr<YAML::Node> load_config_or_empty(const fs::path& config_path) {
 }
 
 } // namespace
+
+absl::Status validate_stitched_output_generation_hugin(
+    const std::string& output_generation,
+    const std::string& expected_hugin_generation) {
+  return validate_output_generation_hugin(output_generation, expected_hugin_generation);
+}
+
+absl::Status validate_stitched_output_generation_dimensions(
+    const std::string& output_generation,
+    size_t width,
+    size_t height) {
+  if (output_generation.empty() || width == 0 || height == 0)
+    return absl::InvalidArgumentError("A stitched-output generation and positive image dimensions are required");
+  std::optional<CanvasSize> expected_size;
+  HM_ASSIGN_OR_RETURN(expected_size, stitched_output_size_from_generation(output_generation));
+  if (!expected_size.has_value())
+    return absl::FailedPreconditionError("Stitched-output generation is missing output dimensions");
+  if (expected_size->width != width || expected_size->height != height) {
+    return absl::AbortedError("Image dimensions do not match the stitched-output generation");
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::string> current_stitched_output_generation_id_locked(
+    const std::string& game_dir,
+    const YAML::Node& config,
+    const std::string& hugin_generation) {
+  if (game_dir.empty() || hugin_generation.empty())
+    return absl::InvalidArgumentError("A game directory and Hugin generation are required");
+  CanvasSize output_size;
+  HM_ASSIGN_OR_RETURN(output_size, get_mapping_canvas_size(fs::path(game_dir)));
+  std::optional<double> persisted_rotation_marker;
+  HM_ASSIGN_OR_RETURN(persisted_rotation_marker, stitched_output_persisted_rotation_marker(config));
+  if (persisted_rotation_marker.has_value()) {
+    double persisted_rotation = 0.0;
+    HM_ASSIGN_OR_RETURN(persisted_rotation, configured_post_stitch_rotation(config));
+    if (persisted_rotation != *persisted_rotation_marker) {
+      return absl::AbortedError(
+          "Persisted stitched-output rotation changed after the current output generation was published");
+    }
+    try {
+      const YAML::Node generation = config["rink"]["stitched_output_generation"];
+      if (!generation || !generation.IsScalar()) {
+        return absl::FailedPreconditionError(
+            "Stitched-output persisted-rotation marker requires an authoritative producer generation");
+      }
+      const std::string authoritative_generation = generation.as<std::string>();
+      HM_RETURN_IF_ERROR(validate_output_generation_hugin(authoritative_generation, hugin_generation));
+      std::optional<CanvasSize> authoritative_size;
+      HM_ASSIGN_OR_RETURN(authoritative_size, stitched_output_size_from_generation(authoritative_generation));
+      if (!authoritative_size.has_value()) {
+        return absl::FailedPreconditionError("Authoritative stitched-output generation is missing output dimensions");
+      }
+      if (authoritative_size->width != output_size.width || authoritative_size->height != output_size.height) {
+        return absl::AbortedError(
+            "Authoritative stitched-output generation does not match the current canvas dimensions");
+      }
+      return authoritative_generation;
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(
+          "Unable to read authoritative stitched-output generation: " + std::string(exception.what()));
+    }
+  }
+  return configured_output_generation(config, hugin_generation, output_size);
+}
 
 absl::Status validate_stitched_output_generation(
     const std::string& game_dir,
@@ -1887,6 +3011,9 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
+  auto config_lock = GameConfigTransactionLock::Acquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();
@@ -1899,17 +3026,9 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
   return configured_output_generation(*config, *hugin_generation, output_size);
 }
 
-absl::Status visit_current_field_mask(
-    const std::string& game_dir,
-    const std::string& expected_output_generation,
-    const std::string& expected_invalidation_id,
-    const std::function<absl::Status(const std::string& mask_path)>& consumer) {
-  if (game_dir.empty()) {
-    return absl::InvalidArgumentError("A game directory is required to load the field mask");
-  }
-  if (!consumer)
-    return absl::InvalidArgumentError("A field-mask consumer is required");
-
+absl::StatusOr<std::string> current_stitched_output_generation_id(const std::string& game_dir) {
+  if (game_dir.empty())
+    return absl::InvalidArgumentError("A game directory is required");
   const fs::path root(game_dir);
   auto hugin_lock = HuginProject::RecoverAndLock(root);
   if (!hugin_lock.ok())
@@ -1923,23 +3042,236 @@ absl::Status visit_current_field_mask(
   auto config = load_config_or_empty(root / "config.yaml");
   if (!config.ok())
     return config.status();
+  return current_stitched_output_generation_id_locked(game_dir, *config, *hugin_generation);
+}
+
+namespace {
+
+using FieldMaskConsumer =
+    std::function<absl::Status(const std::string& mask_path, const std::optional<CanvasSize>& expected_size)>;
+
+struct FieldMaskPng {
+  CanvasSize canvas_size;
+  std::string encoded;
+};
+
+absl::StatusOr<FieldMaskPng> read_field_mask_png(
+    const std::string& path,
+    const std::optional<CanvasSize>& expected_canvas_size) {
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0)
+    return absl::FailedPreconditionError("Unable to open field-mask PNG: " + path + ": " + std::strerror(errno));
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
+    return absl::FailedPreconditionError("Invalid field-mask PNG: " + path);
+
+  std::array<unsigned char, 29> header_bytes{};
+  size_t header_offset = 0;
+  while (header_offset < header_bytes.size()) {
+    const ssize_t count = ::pread(
+        descriptor,
+        header_bytes.data() + header_offset,
+        header_bytes.size() - header_offset,
+        static_cast<off_t>(header_offset));
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Field mask has a truncated PNG header: " + path);
+    header_offset += static_cast<size_t>(count);
+  }
+  const auto* header = header_bytes.data();
+  const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
+  if (!std::equal(signature.begin(), signature.end(), header))
+    return absl::FailedPreconditionError("Field mask is not a PNG image: " + path);
+  const auto big_endian_u32 = [](const unsigned char* bytes) {
+    return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
+        (static_cast<uint32_t>(bytes[2]) << 8) | static_cast<uint32_t>(bytes[3]);
+  };
+  if (big_endian_u32(header + 8) != 13 || std::memcmp(header + 12, "IHDR", 4) != 0 || header[26] != 0 ||
+      header[27] != 0 || header[28] > 1) {
+    return absl::FailedPreconditionError("Field mask has an invalid PNG header: " + path);
+  }
+  const size_t width = big_endian_u32(header + 16);
+  const size_t height = big_endian_u32(header + 20);
+  if (width == 0 || height == 0 || width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
+      static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels) {
+    return absl::FailedPreconditionError("Field mask has invalid PNG dimensions: " + path);
+  }
+  const CanvasSize canvas_size{.width = width, .height = height};
+  if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
+      max_canvas_dimension.has_value() && canvas_exceeds_max_dimension(canvas_size, *max_canvas_dimension)) {
+    return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
+  }
+  if (expected_canvas_size.has_value() &&
+      (width != expected_canvas_size->width || height != expected_canvas_size->height)) {
+    return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
+  }
+
+  const uint64_t pixels = static_cast<uint64_t>(width) * height;
+  const uint64_t canvas_budget = std::min(
+      kMaximumFieldMaskPngBudgetBytes,
+      std::max(kMinimumFieldMaskPngBudgetBytes, pixels * 4 + kMinimumFieldMaskPngBudgetBytes));
+  if (metadata.st_size < 0 || static_cast<uint64_t>(metadata.st_size) > canvas_budget) {
+    return absl::FailedPreconditionError("Field-mask PNG exceeds its stitched-canvas resource budget: " + path);
+  }
+  std::string encoded;
+  try {
+    encoded.resize(static_cast<size_t>(metadata.st_size));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate the compressed field-mask PNG");
+  } catch (const std::length_error&) {
+    return absl::ResourceExhaustedError("Compressed field-mask PNG size exceeds the host container limit");
+  }
+  size_t offset = 0;
+  while (offset < encoded.size()) {
+    const ssize_t count =
+        ::pread(descriptor, encoded.data() + offset, encoded.size() - offset, static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read field-mask PNG: " + path);
+    offset += static_cast<size_t>(count);
+  }
+  struct stat verified_metadata{};
+  if (::fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
+      metadata.st_ino != verified_metadata.st_ino || metadata.st_mode != verified_metadata.st_mode ||
+      metadata.st_size != verified_metadata.st_size || metadata.st_mtim.tv_sec != verified_metadata.st_mtim.tv_sec ||
+      metadata.st_mtim.tv_nsec != verified_metadata.st_mtim.tv_nsec ||
+      metadata.st_ctim.tv_sec != verified_metadata.st_ctim.tv_sec ||
+      metadata.st_ctim.tv_nsec != verified_metadata.st_ctim.tv_nsec ||
+      !std::equal(header_bytes.begin(), header_bytes.end(), reinterpret_cast<const unsigned char*>(encoded.data()))) {
+    return absl::AbortedError("Field-mask PNG changed while it was being read: " + path);
+  }
+  return FieldMaskPng{
+      .canvas_size = canvas_size,
+      .encoded = std::move(encoded),
+  };
+}
+
+absl::Status visit_current_field_mask_impl(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id,
+    const std::optional<size_t>& max_output_width,
+    const std::optional<double>& post_stitch_rotate_degrees,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated,
+    const std::optional<std::string>& loaded_hugin_generation,
+    const FieldMaskConsumer& consumer) {
+  if (game_dir.empty()) {
+    return absl::InvalidArgumentError("A game directory is required to load the field mask");
+  }
+  if (!consumer)
+    return absl::InvalidArgumentError("A field-mask consumer is required");
+
+  const fs::path root(game_dir);
+  auto hugin_lock = HuginProject::RecoverAndLock(root);
+  if (!hugin_lock.ok())
+    return hugin_lock.status();
+  auto config_transaction = GameConfigTransactionLock::Acquire(root);
+  if (!config_transaction.ok())
+    return config_transaction.status();
+  std::string hugin_generation;
+  bool reused_generation = false;
+  bool generation_content_validated = false;
+  if (loaded_hugin_generation.has_value()) {
+    if (expected_output_generation.empty() || loaded_hugin_generation->empty()) {
+      return absl::InvalidArgumentError("A loaded Hugin generation requires a nonempty stitched-output generation");
+    }
+    hugin_generation = *loaded_hugin_generation;
+    reused_generation = true;
+    // The generation came from the frame-producing stitcher, not the current
+    // disk artifacts. It can validate this frame but must not migrate durable
+    // generation metadata after an external artifact replacement.
+    generation_content_validated = false;
+  } else if (
+      max_output_width.has_value() && stitch_artifact_metadata_is_reliable(root) && previously_validated.has_value() &&
+      !previously_validated->generation_id.empty() && !previously_validated->artifact_revision.empty() &&
+      previously_validated->max_output_width == *max_output_width &&
+      previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
+    auto artifact_revision = stitch_artifact_revision_locked(root);
+    if (!artifact_revision.ok())
+      return artifact_revision.status();
+    if (*artifact_revision == previously_validated->artifact_revision &&
+        test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
+      hugin_generation = previously_validated->generation_id;
+      reused_generation = true;
+      generation_content_validated = previously_validated->content_validated;
+    }
+  }
+  if (!reused_generation) {
+    if (max_output_width.has_value() && !stitch_artifact_metadata_is_reliable(root)) {
+      HM_ASSIGN_OR_RETURN(hugin_generation, stitch_artifact_preflight_generation_id_locked(root));
+    } else {
+      HM_ASSIGN_OR_RETURN(hugin_generation, HuginProject::GenerationId(root, **hugin_lock));
+      generation_content_validated = true;
+    }
+  }
+  auto config = load_config_or_empty(root / "config.yaml");
+  if (!config.ok())
+    return config.status();
   HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
   std::string current_output_generation;
+  std::optional<std::string> compatible_legacy_generation;
+  std::optional<CanvasSize> expected_canvas_size;
   if (!expected_output_generation.empty()) {
-    HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
+    HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
     current_output_generation = expected_output_generation;
+    HM_ASSIGN_OR_RETURN(expected_canvas_size, stitched_output_size_from_generation(expected_output_generation));
+    CanvasSize native_size;
+    HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
+    if (!expected_canvas_size.has_value()) {
+      expected_canvas_size = native_size;
+    } else if (expected_canvas_size->width == native_size.width && expected_canvas_size->height == native_size.height) {
+      HM_ASSIGN_OR_RETURN(
+          compatible_legacy_generation, stitched_output_generation_without_dimensions(expected_output_generation));
+    }
+  } else if (max_output_width.has_value()) {
+    CanvasSize native_size;
+    HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
+    CanvasSize effective_size = native_size;
+    if (*max_output_width > 0)
+      HM_ASSIGN_OR_RETURN(effective_size, get_effective_mapping_canvas_size(root, *max_output_width));
+    if (!post_stitch_rotate_degrees.has_value())
+      return absl::InvalidArgumentError("An effective post-stitch rotation is required for stitching preflight");
+    HM_ASSIGN_OR_RETURN(
+        current_output_generation,
+        stitched_output_generation_id(
+            hugin_generation, *post_stitch_rotate_degrees, effective_size.width, effective_size.height));
+    expected_canvas_size = effective_size;
+    if (effective_size.width == native_size.width && effective_size.height == native_size.height) {
+      HM_ASSIGN_OR_RETURN(
+          compatible_legacy_generation, stitched_output_generation_id(hugin_generation, *post_stitch_rotate_degrees));
+    }
   } else {
-    auto configured_generation = configured_output_generation(*config, *hugin_generation);
-    if (!configured_generation.ok())
-      return configured_generation.status();
-    current_output_generation = *configured_generation;
+    std::optional<double> persisted_rotation_marker;
+    HM_ASSIGN_OR_RETURN(persisted_rotation_marker, stitched_output_persisted_rotation_marker(*config));
+    if (persisted_rotation_marker.has_value()) {
+      HM_ASSIGN_OR_RETURN(
+          current_output_generation, current_stitched_output_generation_id_locked(game_dir, *config, hugin_generation));
+    } else {
+      HM_ASSIGN_OR_RETURN(current_output_generation, configured_output_generation(*config, hugin_generation));
+    }
+    CanvasSize native_size;
+    HM_ASSIGN_OR_RETURN(native_size, get_mapping_canvas_size(root));
+    expected_canvas_size = native_size;
   }
+  bool migrate_legacy_generation = false;
   try {
     const YAML::Node saved_generation = (*config)["rink"]["stitched_output_generation"];
-    if (!saved_generation || !saved_generation.IsScalar() ||
-        saved_generation.as<std::string>() != current_output_generation) {
+    const bool current_matches = saved_generation && saved_generation.IsScalar() &&
+        saved_generation.as<std::string>() == current_output_generation;
+    const bool legacy_matches = compatible_legacy_generation.has_value() && saved_generation &&
+        saved_generation.IsScalar() && saved_generation.as<std::string>() == *compatible_legacy_generation;
+    if (!current_matches && !legacy_matches) {
       return absl::FailedPreconditionError("Field mask does not match the current stitched-output generation");
     }
+    migrate_legacy_generation = legacy_matches;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Invalid field-mask generation metadata: " + std::string(exception.what()));
   }
@@ -1953,22 +3285,43 @@ absl::Status visit_current_field_mask(
     return absl::FailedPreconditionError("Field mask is empty or unreadable: " + mask_path.string());
   }
 
-  return consumer(mask_path.string());
+  const absl::Status consumed = consumer(mask_path.string(), expected_canvas_size);
+  if (!consumed.ok())
+    return consumed;
+  if (migrate_legacy_generation && generation_content_validated) {
+    (*config)["rink"]["stitched_output_generation"] = current_output_generation;
+    return publish_game_config(root, YAML::Dump(*config) + "\n");
+  }
+  return absl::OkStatus();
 }
 
-absl::StatusOr<cv::Mat> load_field_mask(
+absl::StatusOr<cv::Mat> load_field_mask_impl(
     const std::string& game_dir,
     const std::string& expected_output_generation,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::optional<size_t>& max_output_width,
+    const std::optional<double>& post_stitch_rotate_degrees = std::nullopt,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt,
+    const std::optional<std::string>& loaded_hugin_generation = std::nullopt) {
   cv::Mat mask;
-  const absl::Status visit_status = visit_current_field_mask(
-      game_dir, expected_output_generation, expected_invalidation_id, [&](const std::string& mask_path) {
+  const absl::Status visit_status = visit_current_field_mask_impl(
+      game_dir,
+      expected_output_generation,
+      expected_invalidation_id,
+      max_output_width,
+      post_stitch_rotate_degrees,
+      previously_validated,
+      loaded_hugin_generation,
+      [&](const std::string& mask_path, const std::optional<CanvasSize>& expected_canvas_size) {
+        FieldMaskPng encoded_mask;
+        HM_ASSIGN_OR_RETURN(encoded_mask, read_field_mask_png(mask_path, expected_canvas_size));
         if (const char* delay = std::getenv("HM_TEST_FIELD_MASK_PRE_DECODE_DELAY_MS")) {
           const long delay_ms = std::strtol(delay, nullptr, 10);
           if (delay_ms > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
         }
-        mask = cv::imread(mask_path, cv::IMREAD_GRAYSCALE);
+        const cv::Mat encoded(1, static_cast<int>(encoded_mask.encoded.size()), CV_8UC1, encoded_mask.encoded.data());
+        mask = cv::imdecode(encoded, cv::IMREAD_GRAYSCALE);
         if (mask.empty())
           return absl::InvalidArgumentError("Field mask could not be decoded: " + mask_path);
         if (const auto max_canvas_dimension = live_stitch_max_canvas_dimension(); max_canvas_dimension.has_value()) {
@@ -1982,14 +3335,6 @@ absl::StatusOr<cv::Mat> load_field_mask(
                       << std::endl;
             return absl::FailedPreconditionError("Field mask exceeds the live-stitch canvas limit");
           }
-        }
-        std::optional<CanvasSize> expected_canvas_size;
-        if (!expected_output_generation.empty()) {
-          HM_ASSIGN_OR_RETURN(expected_canvas_size, stitched_output_size_from_generation(expected_output_generation));
-        }
-        absl::StatusOr<CanvasSize> mapping_canvas_size = get_mapping_canvas_size(fs::path(game_dir));
-        if (!expected_canvas_size.has_value() && mapping_canvas_size.ok()) {
-          expected_canvas_size = *mapping_canvas_size;
         }
         if (expected_canvas_size.has_value() &&
             (mask.cols != static_cast<int>(expected_canvas_size->width) ||
@@ -2006,6 +3351,49 @@ absl::StatusOr<cv::Mat> load_field_mask(
   return mask;
 }
 
+} // namespace
+
+absl::Status visit_current_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id,
+    const std::function<absl::Status(const std::string& mask_path)>& consumer) {
+  if (!consumer)
+    return absl::InvalidArgumentError("A field-mask consumer is required");
+  return visit_current_field_mask_impl(
+      game_dir,
+      expected_output_generation,
+      expected_invalidation_id,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      [&](const std::string& mask_path, const std::optional<CanvasSize>&) { return consumer(mask_path); });
+}
+
+absl::StatusOr<cv::Mat> load_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask_impl(
+      game_dir, expected_output_generation, expected_invalidation_id, std::nullopt, std::nullopt);
+}
+
+absl::StatusOr<cv::Mat> load_field_mask_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask_impl(
+      game_dir,
+      expected_output_generation,
+      expected_invalidation_id,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      loaded_hugin_generation);
+}
+
 bool is_field_mask_configured(
     const std::string& game_dir,
     const std::string& expected_output_generation,
@@ -2013,31 +3401,227 @@ bool is_field_mask_configured(
   return load_field_mask(game_dir, expected_output_generation, expected_invalidation_id).ok();
 }
 
+bool is_field_mask_configured_for_loaded_generation(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& loaded_hugin_generation,
+    const std::string& expected_invalidation_id) {
+  return load_field_mask_for_loaded_generation(
+             game_dir, expected_output_generation, loaded_hugin_generation, expected_invalidation_id)
+      .ok();
+}
+
 bool is_field_mask_configured_for_stitching_config(
     const std::string& game_dir,
     size_t max_output_width,
-    const std::string& expected_invalidation_id) {
-  auto output_generation = configured_stitched_output_generation_id(game_dir, max_output_width);
-  if (output_generation.ok() && is_field_mask_configured(game_dir, *output_generation, expected_invalidation_id)) {
-    return true;
-  }
-  if (max_output_width > 0) {
-    auto native_size = stitching_canvas_size(game_dir);
-    auto effective_size = stitching_canvas_size(game_dir, max_output_width);
-    if (!native_size.ok() || !effective_size.ok() || native_size->width != effective_size->width ||
-        native_size->height != effective_size->height) {
-      return false;
+    double post_stitch_rotate_degrees,
+    const std::string& expected_invalidation_id,
+    const std::optional<ValidatedStitchingArtifacts>& previously_validated) {
+  return load_field_mask_impl(
+             game_dir, {}, expected_invalidation_id, max_output_width, post_stitch_rotate_degrees, previously_validated)
+      .ok();
+}
+
+namespace {
+
+absl::Status validate_live_output_publication_authority(
+    const YAML::Node& config,
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id) {
+  std::optional<std::string> pending_generation;
+  std::optional<std::string> pending_authorization_id;
+  if (config && config.IsDefined()) {
+    if (!config.IsMap())
+      return absl::InvalidArgumentError("Game config must be a map");
+    const YAML::Node rink = config["rink"];
+    if (rink && rink.IsDefined()) {
+      if (!rink.IsMap())
+        return absl::InvalidArgumentError("Rink config must be a map");
+      const YAML::Node generation_node = rink["stitched_output_pending_generation"];
+      if (generation_node && generation_node.IsDefined()) {
+        if (!generation_node.IsScalar())
+          return absl::InvalidArgumentError("Pending stitched-output generation must be a scalar");
+        pending_generation = generation_node.as<std::string>();
+      }
+      const YAML::Node authorization_node = rink["stitched_output_pending_authorization_id"];
+      if (authorization_node && authorization_node.IsDefined()) {
+        if (!authorization_node.IsScalar())
+          return absl::InvalidArgumentError("Pending stitched-output authorization ID must be a scalar");
+        pending_authorization_id = authorization_node.as<std::string>();
+      }
     }
   }
-  return is_field_mask_configured(game_dir, {}, expected_invalidation_id);
+  if (pending_generation.has_value() != pending_authorization_id.has_value())
+    return absl::InvalidArgumentError("Pending stitched-output authorization is incomplete");
+  bool pending_authorization_is_active = false;
+  HM_ASSIGN_OR_RETURN(pending_authorization_is_active, live_stitched_output_authorization_is_active(config));
+  if (!pending_authorization_is_active) {
+    pending_generation.reset();
+    pending_authorization_id.reset();
+  }
+  if (expected_output_generation.empty()) {
+    if (!expected_output_authorization_id.empty())
+      return absl::InvalidArgumentError("A live output authorization requires a stitched-output generation");
+    return pending_generation.has_value()
+        ? absl::AbortedError("A live stitched-output authorization owns artifact publication")
+        : absl::OkStatus();
+  }
+  if (expected_output_authorization_id.empty()) {
+    return pending_generation.has_value()
+        ? absl::AbortedError("A live stitched-output authorization owns artifact publication")
+        : absl::OkStatus();
+  }
+  if (!pending_generation.has_value() || *pending_generation != expected_output_generation ||
+      *pending_authorization_id != expected_output_authorization_id) {
+    return absl::AbortedError("A newer live stitched-output authorization owns artifact publication");
+  }
+  return absl::OkStatus();
 }
+
+} // namespace
+
+absl::Status validate_field_mask_publication_authority(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id) {
+  if (game_dir.empty() || expected_output_generation.empty())
+    return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
+  const fs::path root(game_dir);
+  auto config_lock = GameConfigTransactionLock::TryAcquire(root);
+  if (!config_lock.ok())
+    return config_lock.status();
+  try {
+    std::error_code error;
+    if (!fs::is_regular_file(root / "config.yaml", error)) {
+      if (error)
+        return absl::InternalError("Unable to inspect game config: " + error.message());
+      return absl::NotFoundError("Game config is missing");
+    }
+    const YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
+    return validate_live_output_publication_authority(
+        config, expected_output_generation, expected_output_authorization_id);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate field-mask publication authority: " + std::string(exception.what()));
+  }
+}
+
+struct FieldMaskPublicationAuthorityMonitor::Impl {
+  mutable std::mutex mutex;
+  std::condition_variable wake;
+  std::thread worker;
+  bool stop{false};
+  absl::Status status = absl::FailedPreconditionError("Publication authority monitor is idle");
+};
+
+FieldMaskPublicationAuthorityMonitor::FieldMaskPublicationAuthorityMonitor() : impl_(std::make_unique<Impl>()) {}
+
+FieldMaskPublicationAuthorityMonitor::~FieldMaskPublicationAuthorityMonitor() {
+  Stop();
+}
+
+absl::Status FieldMaskPublicationAuthorityMonitor::Watch(
+    const std::string& game_dir,
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id) {
+  if (game_dir.empty() || expected_output_generation.empty())
+    return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
+  Stop();
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->stop = false;
+    impl_->status = absl::UnavailableError("Waiting for field-mask publication authority");
+  }
+  try {
+    impl_->worker = std::thread([this, game_dir, expected_output_generation, expected_output_authorization_id]() {
+      try {
+        while (true) {
+          {
+            std::unique_lock<std::mutex> lock(impl_->mutex);
+            if (impl_->wake.wait_for(lock, std::chrono::seconds(1), [this] { return impl_->stop; }))
+              return;
+          }
+          const absl::Status authority = validate_field_mask_publication_authority(
+              game_dir, expected_output_generation, expected_output_authorization_id);
+          std::lock_guard<std::mutex> lock(impl_->mutex);
+          if (impl_->stop)
+            return;
+          if (authority.ok() || (!absl::IsAborted(authority) && !absl::IsUnavailable(authority))) {
+            impl_->status = authority;
+            return;
+          }
+        }
+      } catch (const std::exception& exception) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->stop)
+          impl_->status = absl::InternalError("Publication authority monitor failed: " + std::string(exception.what()));
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->stop)
+          impl_->status = absl::InternalError("Publication authority monitor failed with an unknown exception");
+      }
+    });
+  } catch (const std::system_error& exception) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->stop = true;
+    impl_->status =
+        absl::InternalError("Unable to start publication authority monitor: " + std::string(exception.what()));
+    return impl_->status;
+  }
+  return absl::OkStatus();
+}
+
+void FieldMaskPublicationAuthorityMonitor::Stop() {
+  std::thread worker;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->stop = true;
+    impl_->wake.notify_all();
+    worker = std::move(impl_->worker);
+  }
+  if (worker.joinable())
+    worker.join();
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->status = absl::FailedPreconditionError("Publication authority monitor is idle");
+}
+
+absl::Status FieldMaskPublicationAuthorityMonitor::status() const {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->status;
+}
+
+namespace {
+
+bool scoreboard_polygon_is_disabled(const YAML::Node& polygon) {
+  if (!polygon || !polygon.IsSequence() || polygon.size() != 4)
+    return false;
+  try {
+    for (const YAML::Node& point : polygon) {
+      if (!point.IsSequence() || point.size() != 2 || point[0].as<double>() != 0.0 || point[1].as<double>() != 0.0)
+        return false;
+    }
+    return true;
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+void remove_active_scoreboard_polygon(YAML::Node& config) {
+  const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+  if (polygon && polygon.IsDefined() && !scoreboard_polygon_is_disabled(polygon))
+    config["rink"]["scoreboard"].remove("perspective_polygon");
+}
+
+} // namespace
 
 absl::Status save_rink_profile_locked(
     const std::string& game_dir,
     const RinkProfile& profile,
     const std::string& hugin_generation,
     const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id,
     const std::string& expected_invalidation_id,
+    const std::optional<double>& expected_persisted_rotation,
     const cv::Mat* stitched_image = nullptr) {
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
@@ -2051,12 +3635,67 @@ absl::Status save_rink_profile_locked(
       })) {
     return absl::InvalidArgumentError("Rink profile geometry and scores must be finite and valid");
   }
+  const cv::Size expected_size = profile.masks.front().size();
+  const size_t non_mask_artifact_count = stitched_image == nullptr ? 1 : 2;
+  if (profile.masks.size() > kMaximumRinkTransactionArtifacts - non_mask_artifact_count)
+    return absl::ResourceExhaustedError("Rink profile contains too many transaction artifacts");
+  for (const cv::Mat& mask : profile.masks) {
+    if (mask.empty() || mask.type() != CV_8U || mask.size() != expected_size)
+      return absl::InvalidArgumentError("Rink masks must be equally sized, non-empty CV_8U images");
+  }
+  if (stitched_image != nullptr && stitched_image->empty())
+    return absl::InvalidArgumentError("A non-empty stitched calibration image is required");
+  if (!expected_output_generation.empty()) {
+    HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+        expected_output_generation,
+        static_cast<size_t>(expected_size.width),
+        static_cast<size_t>(expected_size.height)));
+    if (stitched_image != nullptr) {
+      HM_RETURN_IF_ERROR(validate_stitched_output_generation_dimensions(
+          expected_output_generation,
+          static_cast<size_t>(stitched_image->cols),
+          static_cast<size_t>(stitched_image->rows)));
+    }
+  }
   const fs::path root(game_dir);
   std::error_code error;
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
 
+  std::vector<fs::path> old_files;
+  auto old_entries = directory_entries(root, "old rink masks");
+  if (!old_entries.ok())
+    return old_entries.status();
+  for (const auto& entry : *old_entries) {
+    const std::string name = entry.path().filename().string();
+    if (is_rink_artifact_name(name) && (name != "s.png" || stitched_image != nullptr))
+      old_files.push_back(entry.path());
+  }
+  auto opened_root = PinnedDirectory::Open(root, "rink profile root");
+  if (!opened_root.ok())
+    return opened_root.status();
+  std::vector<std::string> old_names;
+  old_names.reserve(old_files.size());
+  for (const fs::path& old : old_files)
+    old_names.push_back(old.filename().string());
+  auto pinned_old_files = pin_rink_rollback_artifacts(*opened_root, old_names);
+  if (!pinned_old_files.ok())
+    return pinned_old_files.status();
+  std::set<std::string> bounded_published_names;
+  for (const fs::path& old : old_files)
+    bounded_published_names.insert(old.filename().string());
+  for (size_t index = 0; index < profile.masks.size(); ++index)
+    bounded_published_names.insert("rink_mask_" + std::to_string(index) + ".png");
+  if (stitched_image != nullptr)
+    bounded_published_names.insert("s.png");
+  bounded_published_names.insert("config.yaml");
+  if (bounded_published_names.size() > kMaximumRinkTransactionArtifacts)
+    return absl::ResourceExhaustedError("Rink profile transaction contains too many artifacts");
+
+  auto pending_status = mark_transaction_recovery_pending(root, TransactionJournalKind::kRink);
+  if (!pending_status.ok())
+    return pending_status;
   std::string pattern = (root / ".hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
@@ -2077,12 +3716,8 @@ absl::Status save_rink_profile_locked(
   if (::chmod(staging.c_str(), 0700) != 0)
     return absl::InternalError("Unable to protect rink staging directory");
 
-  const cv::Size expected_size = profile.masks.front().size();
   for (size_t index = 0; index < profile.masks.size(); ++index) {
     const cv::Mat& mask = profile.masks[index];
-    if (mask.empty() || mask.type() != CV_8U || mask.size() != expected_size) {
-      return absl::InvalidArgumentError("Rink masks must be equally sized, non-empty CV_8U images");
-    }
     const fs::path path = staging / ("rink_mask_" + std::to_string(index) + ".png");
     if (!cv::imwrite(path.string(), mask))
       return absl::InternalError("Unable to stage rink mask " + path.string());
@@ -2095,8 +3730,6 @@ absl::Status save_rink_profile_locked(
       return sync_status;
   }
   if (stitched_image != nullptr) {
-    if (stitched_image->empty())
-      return absl::InvalidArgumentError("A non-empty stitched calibration image is required");
     const fs::path path = staging / "s.png";
     if (!cv::imwrite(path.string(), *stitched_image))
       return absl::InternalError("Unable to stage stitched calibration image " + path.string());
@@ -2114,9 +3747,55 @@ absl::Status save_rink_profile_locked(
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(config, expected_invalidation_id));
+    HM_RETURN_IF_ERROR(validate_live_output_publication_authority(
+        config, expected_output_generation, expected_output_authorization_id));
     std::string current_output_generation;
     if (!expected_output_generation.empty()) {
       HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, hugin_generation));
+      if (!expected_persisted_rotation.has_value()) {
+        return absl::InvalidArgumentError(
+            "Expected stitched-output generation requires a persisted-rotation publication guard");
+      }
+      double current_persisted_rotation = 0.0;
+      HM_ASSIGN_OR_RETURN(current_persisted_rotation, configured_post_stitch_rotation(config));
+      if (current_persisted_rotation != *expected_persisted_rotation) {
+        return absl::AbortedError("Cannot publish a rink profile after the persisted stitched-output rotation changed");
+      }
+      auto expected_size = stitched_output_size_from_generation(expected_output_generation);
+      if (!expected_size.ok())
+        return expected_size.status();
+      if (!expected_size->has_value()) {
+        return absl::InvalidArgumentError("Authoritative stitched-output generation must include output dimensions");
+      }
+      CanvasSize current_size;
+      HM_ASSIGN_OR_RETURN(current_size, get_mapping_canvas_size(root));
+      if (current_size.width != (*expected_size)->width || current_size.height != (*expected_size)->height) {
+        return absl::AbortedError("Cannot publish a rink profile after the stitched-output canvas size changed");
+      }
+      std::string compatible_legacy_generation;
+      HM_ASSIGN_OR_RETURN(
+          compatible_legacy_generation, stitched_output_generation_without_dimensions(expected_output_generation));
+      const YAML::Node saved_generation = config["rink"]["stitched_output_generation"];
+      const bool has_pending_generation = config["rink"]["stitched_output_pending_generation"] &&
+          config["rink"]["stitched_output_pending_generation"].IsDefined();
+      if (saved_generation && saved_generation.IsDefined()) {
+        if (!saved_generation.IsScalar())
+          return absl::InvalidArgumentError("Persisted stitched-output generation must be a scalar");
+        const bool generation_matches = saved_generation.as<std::string>() == expected_output_generation;
+        const bool compatible_legacy_matches = saved_generation.as<std::string>() == compatible_legacy_generation;
+        if (!generation_matches && !compatible_legacy_matches && !has_pending_generation &&
+            !stitching_calibration_is_pending(config)) {
+          return absl::AbortedError(
+              "Cannot replace a completed stitched-output generation outside a pending calibration epoch");
+        }
+        if (!generation_matches && !compatible_legacy_matches)
+          remove_active_scoreboard_polygon(config);
+      }
+      if (!saved_generation || !saved_generation.IsDefined())
+        remove_active_scoreboard_polygon(config);
+      // Runtime rotation may be an in-memory CLI/property override and is
+      // therefore authoritative even when it intentionally differs from the
+      // persisted YAML rotation guarded above.
       current_output_generation = expected_output_generation;
     } else {
       auto configured_generation = configured_output_generation(config, hugin_generation);
@@ -2132,6 +3811,29 @@ absl::Status save_rink_profile_locked(
         profile.combined_bbox.x + profile.combined_bbox.width,
         profile.combined_bbox.y + profile.combined_bbox.height};
     config["rink"]["stitched_output_generation"] = current_output_generation;
+    if (expected_output_generation.empty()) {
+      config["rink"].remove("stitched_output_persisted_rotation_degrees");
+      config["rink"].remove("stitched_output_pending_generation");
+      config["rink"].remove("stitched_output_pending_authorization_id");
+      config["rink"].remove("stitched_output_pending_owner_process");
+      config["rink"].remove("stitched_output_pending_previous_generation");
+      config["rink"].remove("stitched_output_pending_previous_authorization_id");
+      config["rink"].remove("stitched_output_pending_previous_owner_process");
+      config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
+    } else {
+      config["rink"]["stitched_output_persisted_rotation_degrees"] = *expected_persisted_rotation;
+      bool pending_authorization_is_active = false;
+      HM_ASSIGN_OR_RETURN(pending_authorization_is_active, live_stitched_output_authorization_is_active(config));
+      if (!expected_output_authorization_id.empty() || !pending_authorization_is_active) {
+        config["rink"].remove("stitched_output_pending_generation");
+        config["rink"].remove("stitched_output_pending_authorization_id");
+        config["rink"].remove("stitched_output_pending_owner_process");
+        config["rink"].remove("stitched_output_pending_previous_generation");
+        config["rink"].remove("stitched_output_pending_previous_authorization_id");
+        config["rink"].remove("stitched_output_pending_previous_owner_process");
+        config["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
+      }
+    }
     if (!expected_invalidation_id.empty()) {
       YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
       calibration["status"] = "complete";
@@ -2162,23 +3864,6 @@ absl::Status save_rink_profile_locked(
   fs::create_directory(previous, error);
   if (error)
     return absl::InternalError("Unable to create rink rollback directory: " + error.message());
-  std::vector<fs::path> old_files;
-  for (const auto& entry : fs::directory_iterator(root, error)) {
-    if (error)
-      return absl::InternalError("Unable to inspect old rink masks: " + error.message());
-    const std::string name = entry.path().filename().string();
-    if (is_rink_artifact_name(name) && (name != "s.png" || stitched_image != nullptr)) {
-      old_files.push_back(entry.path());
-    }
-  }
-  for (const fs::path& old : old_files) {
-    fs::copy_file(old, previous / old.filename(), fs::copy_options::overwrite_existing, error);
-    if (error)
-      return absl::InternalError("Unable to preserve old rink artifact: " + error.message());
-    sync_status = fsync_path(previous / old.filename());
-    if (!sync_status.ok())
-      return sync_status;
-  }
   std::vector<fs::path> new_files;
   for (size_t index = 0; index < profile.masks.size(); ++index)
     new_files.push_back(staging / ("rink_mask_" + std::to_string(index) + ".png"));
@@ -2190,6 +3875,14 @@ absl::Status save_rink_profile_locked(
     published_names.insert(old.filename().string());
   for (const fs::path& source : new_files)
     published_names.insert(source.filename().string());
+  for (const PinnedRinkRollbackArtifact& old : *pinned_old_files) {
+    auto preserve = link_clone_or_copy_rink_rollback_file(old, previous / old.name());
+    if (!preserve.ok())
+      return preserve;
+    sync_status = fsync_path(previous / old.name());
+    if (!sync_status.ok())
+      return sync_status;
+  }
   std::ostringstream manifest;
   for (const std::string& name : published_names)
     manifest << name << '\n';
@@ -2202,10 +3895,7 @@ absl::Status save_rink_profile_locked(
   sync_status = fsync_path(staging, true);
   if (!sync_status.ok())
     return sync_status;
-  sync_status = write_transaction_file(staging / "state", "PREPARED\n");
-  if (!sync_status.ok())
-    return sync_status;
-  sync_status = fsync_path(staging, true);
+  sync_status = publish_transaction_state(staging, "PREPARED\n");
   if (!sync_status.ok())
     return sync_status;
   // Persist the PREPARED transaction directory entry before deleting or
@@ -2257,6 +3947,9 @@ absl::Status save_rink_profile_locked(
   sync_status = fsync_path(root, true);
   if (!sync_status.ok())
     return sync_status;
+  sync_status = complete_transaction_recovery(root, TransactionJournalKind::kRink);
+  if (!sync_status.ok())
+    return sync_status;
   return absl::OkStatus();
 }
 
@@ -2277,14 +3970,16 @@ absl::Status save_rink_profile(
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
-  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id);
+  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, {}, expected_invalidation_id, std::nullopt);
 }
 
 absl::Status save_rink_profile_with_stitched_image(
     const std::string& game_dir,
     const RinkProfile& profile,
     const cv::Mat& stitched_image,
-    const std::string& expected_invalidation_id) {
+    const std::string& expected_invalidation_id,
+    const std::string& expected_output_generation,
+    const std::string& expected_output_authorization_id) {
   if (game_dir.empty())
     return absl::InvalidArgumentError("A game directory is required");
   const fs::path root(game_dir);
@@ -2298,12 +3993,31 @@ absl::Status save_rink_profile_with_stitched_image(
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
+  std::optional<double> expected_persisted_rotation;
+  if (!expected_output_generation.empty()) {
+    auto config_transaction = GameConfigTransactionLock::Acquire(root);
+    if (!config_transaction.ok())
+      return config_transaction.status();
+    auto config = load_config_or_empty(root / "config.yaml");
+    if (!config.ok())
+      return config.status();
+    HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+    HM_ASSIGN_OR_RETURN(expected_persisted_rotation, configured_post_stitch_rotation(*config));
+  }
   if (const char* delay = std::getenv("HM_TEST_RINK_PRE_PUBLICATION_DELAY_MS")) {
     const long delay_ms = std::strtol(delay, nullptr, 10);
     if (delay_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
   }
-  return save_rink_profile_locked(game_dir, profile, *hugin_generation, {}, expected_invalidation_id, &stitched_image);
+  return save_rink_profile_locked(
+      game_dir,
+      profile,
+      *hugin_generation,
+      expected_output_generation,
+      expected_output_authorization_id,
+      expected_invalidation_id,
+      expected_persisted_rotation,
+      &stitched_image);
 }
 
 absl::Status create_field_mask(
@@ -2311,7 +4025,8 @@ absl::Status create_field_mask(
     surface::Surface surface,
     const std::string& expected_output_generation,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    const std::string& expected_output_authorization_id) {
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("Rink-mask calibration cancelled before inference");
   const fs::path root(game_dir);
@@ -2328,7 +4043,8 @@ absl::Status create_field_mask(
   // has already been superseded. Publication validates again under the config
   // transaction lock because a newer invalidation can still arrive while the
   // expensive inference is running.
-  if (!expected_invalidation_id.empty()) {
+  std::optional<double> expected_persisted_rotation;
+  if (!expected_invalidation_id.empty() || !expected_output_generation.empty()) {
     auto config_transaction = GameConfigTransactionLock::Acquire(root);
     if (!config_transaction.ok())
       return config_transaction.status();
@@ -2336,6 +4052,10 @@ absl::Status create_field_mask(
     if (!config.ok())
       return config.status();
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
+    HM_RETURN_IF_ERROR(validate_live_output_publication_authority(
+        *config, expected_output_generation, expected_output_authorization_id));
+    if (!expected_output_generation.empty())
+      HM_ASSIGN_OR_RETURN(expected_persisted_rotation, configured_post_stitch_rotation(*config));
   }
   if (const char* delay = std::getenv("HM_TEST_RINK_INFERENCE_DELAY_MS")) {
     const long delay_ms = std::strtol(delay, nullptr, 10);
@@ -2374,7 +4094,14 @@ absl::Status create_field_mask(
   RinkProfile profile;
   HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled));
   return save_rink_profile_locked(
-      game_dir, profile, *hugin_generation, expected_output_generation, expected_invalidation_id, &stitched);
+      game_dir,
+      profile,
+      *hugin_generation,
+      expected_output_generation,
+      expected_output_authorization_id,
+      expected_invalidation_id,
+      expected_persisted_rotation,
+      &stitched);
 }
 
 absl::Status configure_orientation(

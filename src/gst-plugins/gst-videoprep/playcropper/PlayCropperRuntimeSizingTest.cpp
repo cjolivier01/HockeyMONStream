@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include <cmath>
 #include <iostream>
@@ -8,6 +9,24 @@
 #include "nvbufsurface.h"
 
 namespace {
+
+class TestPlayCropperPriv : public hm::playcropper::PlayCropperPriv {
+ public:
+  using PlayCropperPriv::PlayCropperPriv;
+
+  bool ApplyScoreboardEpoch(const NvDsFrameMeta* frame_meta) {
+    return ApplyScoreboardOutputEpoch(frame_meta).ok();
+  }
+  bool scoreboard_disabled() const {
+    return scoreboard_disabled_;
+  }
+  size_t scoreboard_point_count() const {
+    return scoreboard_perspective_polygion_.size();
+  }
+  cv::Point2f scoreboard_first_point() const {
+    return scoreboard_perspective_polygion_.empty() ? cv::Point2f{} : scoreboard_perspective_polygion_.front();
+  }
+};
 
 int synchronize_calls = 0;
 int synchronize_failures_remaining = 0;
@@ -92,7 +111,7 @@ int main() {
     return 1;
   }
 
-  hm::playcropper::PlayCropperPriv cropper(/*gpu_id=*/0, /*batch_size=*/1);
+  TestPlayCropperPriv cropper(/*gpu_id=*/0, /*batch_size=*/1);
   if (!expect_size(
           cropper,
           /*input_width=*/12102,
@@ -108,6 +127,14 @@ int main() {
     return 1;
   }
   if (!cropper.SetProperty({"runtime-output-max-height", "2160"})) {
+    return 1;
+  }
+  if (!cropper.SetProperty({"scoreboard-perspective-polygon", "1,2,3,4,5,6,7,8"}) ||
+      cropper.SetProperty({"scoreboard-perspective-polygon", "1,2,3"}) ||
+      cropper.SetProperty({"scoreboard-perspective-polygon", "1,2,3,4,5,6,7,nan"}) ||
+      !cropper.SetProperty({"scoreboard-perspective-polygon", "0,0,0,0,0,0,0,0"})) {
+    std::cerr << "Scoreboard runtime geometry must require four finite points and accept the disabled sentinel"
+              << std::endl;
     return 1;
   }
   if (!cropper.SetProperty({"shadow-lift", "75"}) || cropper.SetProperty({"shadow-lift", "-1"}) ||
@@ -204,6 +231,36 @@ int main() {
     return 1;
   }
   frame_meta->base_meta.batch_meta = batch_meta;
+  if (!hm::stitching::add_stitched_output_generation_meta(
+          frame_meta, "generation-b", "authorization-b", "0,0,0,0,0,0,0,0") ||
+      !cropper.ApplyScoreboardEpoch(frame_meta) || !cropper.scoreboard_disabled() ||
+      cropper.scoreboard_point_count() != 0) {
+    std::cerr << "A disabled scoreboard epoch must apply only with its stitched frame metadata\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  NvDsFrameMeta* restored_frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
+  if (!restored_frame_meta) {
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  restored_frame_meta->base_meta.batch_meta = batch_meta;
+  if (!hm::stitching::add_stitched_output_generation_meta(
+          restored_frame_meta, "generation-a", "authorization-a", "1,2,3,4,5,6,7,8") ||
+      !cropper.ApplyScoreboardEpoch(restored_frame_meta) || cropper.scoreboard_disabled() ||
+      cropper.scoreboard_point_count() != 4 || cropper.scoreboard_first_point() != cv::Point2f(1.0f, 2.0f)) {
+    std::cerr << "A restored scoreboard epoch must apply only with its stitched frame metadata\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+  if (!cropper.SetProperty({"scoreboard-perspective-polygon", "9,10,11,12,13,14,15,16"}) ||
+      cropper.scoreboard_first_point() != cv::Point2f(9.0f, 10.0f) ||
+      !cropper.ApplyScoreboardEpoch(restored_frame_meta) ||
+      cropper.scoreboard_first_point() != cv::Point2f(1.0f, 2.0f)) {
+    std::cerr << "A direct scoreboard update must not suppress the authoritative frame epoch\n";
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
   const hm::preview_overlay::PlayCropperTransform preview_transform{};
   const cudaStream_t fake_stream = reinterpret_cast<cudaStream_t>(0x1234);
   synchronize_calls = 0;

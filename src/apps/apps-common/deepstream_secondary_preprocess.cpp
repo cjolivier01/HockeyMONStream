@@ -263,6 +263,7 @@ gboolean create_secondary_preprocess_bin(
 
   g_mutex_init(&bin->wait_lock);
   g_cond_init(&bin->wait_cond);
+  bin->wait_primitives_initialized = TRUE;
 
   ret = TRUE;
 
@@ -279,5 +280,10 @@ void destroy_secondary_preprocess_bin(NvDsSecondaryPreProcessBin* bin) {
     GstPad* pad = gst_element_get_static_pad(bin->queue, "src");
     gst_pad_remove_probe(pad, bin->wait_for_secondary_preprocess_process_buf_probe_id);
     gst_object_unref(pad);
+  }
+  if (bin->wait_primitives_initialized) {
+    g_cond_clear(&bin->wait_cond);
+    g_mutex_clear(&bin->wait_lock);
+    bin->wait_primitives_initialized = FALSE;
   }
 }

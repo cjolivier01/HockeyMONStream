@@ -7,6 +7,7 @@
 #include "cupano/pano/cudaPano.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 
 #include <atomic>
 #include <memory>
@@ -21,8 +22,9 @@ namespace hm {
 template <typename T>
 class CudaMat;
 namespace stitching {
+class FieldMaskPublicationAuthorityMonitor;
 struct StitchingCalibrationFramePair;
-}
+} // namespace stitching
 namespace stitcher {
 
 struct RuntimeFrameKey {
@@ -76,13 +78,20 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool report_latched = false,
     bool process_completion_latched = false);
 
+bool should_attempt_one_pass_field_mask(
+    bool already_attempted,
+    const std::string& attempted_generation,
+    const std::string& current_generation);
+
+bool should_defer_validated_artifact_load_failure(bool one_pass_mode, bool retry_already_failed);
+
 using STITCH_PRIV_BASE = CustomAlgorithmBase;
 
 class StitcherPriv : public STITCH_PRIV_BASE {
   using Super = STITCH_PRIV_BASE;
 
  public:
-  StitcherPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
+  StitcherPriv(int gpu_id, size_t batch_size);
   ~StitcherPriv();
 
   bool render(const std::string& name, hm::surface::Surface surface, cudaStream_t stream) {
@@ -135,7 +144,6 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     CalibrationSurfaceSnapshot left;
     CalibrationSurfaceSnapshot right;
   };
-
   absl::Status ensure_stitcher();
   absl::Status reload_stitcher();
   absl::Status configure_one_pass_from_surfaces(
@@ -172,12 +180,17 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   void release_high_bit_calibration_surfaces();
   void release_captured_calibration_surfaces();
   void release_high_bit_field_mask_canvas();
+  void update_live_output_epoch(
+      std::optional<double> post_stitch_rotate_degrees,
+      std::optional<std::string> authorization_id,
+      std::optional<std::string> scoreboard_property_value);
 
   absl::Mutex stitcher_mu_;
   std::unique_ptr<STITCHER_FP32> stitcher_fp32_ ABSL_GUARDED_BY(stitcher_mu_);
   std::unique_ptr<STITCHER_FP16> stitcher_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::unique_ptr<STITCHER_RGB10_FP16> stitcher_rgb10_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
+  bool validated_artifact_load_failed_{false} ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;
   std::string calibration_invalidation_id_;
   std::string calibration_run_generation_;
@@ -194,6 +207,10 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool logged_missing_masks_{false};
   bool orientation_ran_{false};
   bool field_mask_attempted_{false};
+  std::string field_mask_attempted_generation_;
+  std::string field_mask_attempted_authorization_id_;
+  bool field_mask_publication_superseded_{false};
+  std::unique_ptr<stitching::FieldMaskPublicationAuthorityMonitor> field_mask_authority_monitor_;
   bool calibration_completion_reported_{false};
   bool calibration_completion_ready_{false};
   std::atomic_bool calibration_cancelled_{false};
@@ -217,7 +234,9 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unordered_map<NvBufSurface*, EosSnapshot> eos_snapshot_by_surface_;
   std::optional<gint> last_stitched_frame_num_;
   bool dropped_runtime_calibration_batches_before_output_{false};
-  std::atomic<double> post_stitch_rotate_degrees_{0.0};
+  std::mutex live_output_epoch_update_mu_;
+  std::shared_ptr<const stitching::LiveOutputEpoch> live_output_epoch_{
+      std::make_shared<const stitching::LiveOutputEpoch>()};
   void* rotation_scratch_data_{nullptr};
   size_t rotation_scratch_pitch_{0};
   size_t rotation_scratch_width_{0};

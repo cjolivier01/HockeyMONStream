@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <memory>
+#include <optional>
 
 #include <opencv2/core/types.hpp>
 #include <stdio.h>
@@ -36,6 +38,10 @@ struct DsFieldMaskCtx {
   cv::Rect2i field_box;
   bool logged_mask_size_mismatch{false};
   std::string loaded_output_generation;
+  std::string loaded_output_authorization_id;
+  std::optional<std::string> superseded_output_generation;
+  std::string superseded_output_authorization_id;
+  std::unique_ptr<hm::stitching::FieldMaskPublicationAuthorityMonitor> superseded_authority_monitor;
   std::string calibration_invalidation_id;
 };
 
@@ -267,12 +273,13 @@ absl::Status DsFieldMaskProcessFrame(
   }
 
   std::string output_generation;
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-  if (const auto* payload =
-          hm::UserApplicationPayload::get_payload<hm::stitching::StitchedOutputGenerationPayload>(frame_meta)) {
+  std::string output_authorization_id;
+  std::string loaded_hugin_generation;
+  if (const auto* payload = hm::stitching::find_stitched_output_generation_meta(frame_meta)) {
     output_generation = payload->generation();
+    output_authorization_id = payload->authorization_id();
+    loaded_hugin_generation = payload->hugin_generation();
   }
-#endif
   if (ctx->total_frame_count > 0 && !ctx->loaded_output_generation.empty() && output_generation.empty()) {
     return absl::FailedPreconditionError("Stitched-output generation metadata disappeared after mask loading");
   }
@@ -287,10 +294,36 @@ absl::Status DsFieldMaskProcessFrame(
     is_obsolete_detection_mask = true;
   }
 
-  const bool output_generation_changed = output_generation != ctx->loaded_output_generation;
+  const bool output_generation_changed = output_generation != ctx->loaded_output_generation ||
+      output_authorization_id != ctx->loaded_output_authorization_id;
+  if (ctx->superseded_output_generation.has_value() &&
+      (*ctx->superseded_output_generation != output_generation ||
+       ctx->superseded_output_authorization_id != output_authorization_id)) {
+    ctx->superseded_output_generation.reset();
+    ctx->superseded_output_authorization_id.clear();
+    ctx->superseded_authority_monitor.reset();
+  }
   if (ctx->detection_u8_mask.empty() || is_obsolete_detection_mask || output_generation_changed) {
     fs::path mask_path = ctx->initParams.detection_mask_file;
-    auto loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+    const auto load_current_mask = [&]() {
+      if (!output_generation.empty() && !loaded_hugin_generation.empty()) {
+        return hm::stitching::load_field_mask_for_loaded_generation(
+            mask_path.parent_path().string(), output_generation, loaded_hugin_generation);
+      }
+      return hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+    };
+    if (ctx->superseded_output_generation.has_value()) {
+      if (!ctx->superseded_authority_monitor)
+        return absl::InternalError("Publication authority monitor is unavailable");
+      const absl::Status authority = ctx->superseded_authority_monitor->status();
+      if (absl::IsUnavailable(authority))
+        return absl::OkStatus();
+      HM_RETURN_IF_ERROR(authority);
+      ctx->superseded_output_generation.reset();
+      ctx->superseded_output_authorization_id.clear();
+      ctx->superseded_authority_monitor.reset();
+    }
+    auto loaded_mask = load_current_mask();
     if (is_obsolete_detection_mask || !loaded_mask.ok()) {
       if (!surface) {
         return absl::FailedPreconditionError("Cannot create field mask without an input surface");
@@ -303,15 +336,30 @@ absl::Status DsFieldMaskProcessFrame(
 #else
       hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
-      HM_RETURN_IF_ERROR(
-          hm::stitching::create_field_mask(
-              mask_path.parent_path().string(), this_surface, output_generation, ctx->calibration_invalidation_id));
-      loaded_mask = hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+      const absl::Status created = hm::stitching::create_field_mask(
+          mask_path.parent_path().string(),
+          this_surface,
+          output_generation,
+          ctx->calibration_invalidation_id,
+          {},
+          output_authorization_id);
+      if (absl::IsAborted(created)) {
+        ctx->superseded_output_generation = output_generation;
+        ctx->superseded_output_authorization_id = output_authorization_id;
+        if (!ctx->superseded_authority_monitor)
+          ctx->superseded_authority_monitor = std::make_unique<hm::stitching::FieldMaskPublicationAuthorityMonitor>();
+        HM_RETURN_IF_ERROR(ctx->superseded_authority_monitor->Watch(
+            mask_path.parent_path().string(), output_generation, output_authorization_id));
+        return absl::OkStatus();
+      }
+      HM_RETURN_IF_ERROR(created);
+      loaded_mask = load_current_mask();
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
     ctx->loaded_output_generation = output_generation;
+    ctx->loaded_output_authorization_id = output_authorization_id;
   }
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA

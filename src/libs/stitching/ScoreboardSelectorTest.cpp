@@ -1,19 +1,26 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <regex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <opencv2/imgcodecs.hpp>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <tiffio.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
@@ -23,6 +30,71 @@ bool expect(bool condition, const char* message) {
   if (!condition)
     std::cerr << "FAIL: " << message << '\n';
   return condition;
+}
+
+std::string file_identity(const std::filesystem::path& path) {
+  struct stat metadata{};
+  if (::stat(path.c_str(), &metadata) != 0)
+    return {};
+  std::ostringstream value;
+  value << static_cast<uint64_t>(metadata.st_dev) << ':' << static_cast<uint64_t>(metadata.st_ino) << ':'
+        << static_cast<uint64_t>(metadata.st_size) << ':' << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec;
+  return value.str();
+}
+
+bool write_mapping_tiff(
+    const std::filesystem::path& path,
+    uint32_t width,
+    uint32_t height,
+    float x_position,
+    uint8_t pixel_value = 0) {
+  TIFF* tiff = TIFFOpen(path.c_str(), "w");
+  if (!tiff)
+    return false;
+  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 8);
+  TIFFSetField(tiff, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tiff, TIFFTAG_ROWSPERSTRIP, height);
+  TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_XPOSITION, x_position);
+  TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
+  std::vector<uint8_t> row(width, pixel_value);
+  bool ok = true;
+  for (uint32_t y = 0; y < height; ++y)
+    ok = ok && TIFFWriteScanline(tiff, row.data(), y, 0) >= 0;
+  TIFFClose(tiff);
+  return ok;
+}
+
+bool write_hugin_generation_fixture(const std::filesystem::path& directory) {
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
+    std::ofstream output(directory / name, std::ios::binary | std::ios::trunc);
+    output << name << '\n';
+    if (!output)
+      return false;
+  }
+  if (!write_mapping_tiff(directory / "mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(directory / "mapping_0001.tif", 64, 32, 32.0f)) {
+    return false;
+  }
+  const cv::Mat remap(32, 64, CV_16U, cv::Scalar(0));
+  for (const char* name : {
+           "mapping_0000_x.tif",
+           "mapping_0000_y.tif",
+           "mapping_0001_x.tif",
+           "mapping_0001_y.tif",
+       }) {
+    if (!cv::imwrite((directory / name).string(), remap))
+      return false;
+  }
+  cv::Mat seam(32, 96, CV_8U, cv::Scalar(0));
+  seam.colRange(48, seam.cols).setTo(255);
+  return cv::imwrite((directory / "seam_file.png").string(), seam);
 }
 
 bool write_all(int fd, const std::string& value) {
@@ -87,7 +159,7 @@ std::string http_request(
 
 bool exercise_http_selector(const std::filesystem::path& directory, bool remote = false) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
-  cv::Mat image(24, 32, CV_8UC3, cv::Scalar(255, 255, 255));
+  cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
     return false;
   int output_pipe[2]{};
@@ -225,6 +297,26 @@ int main() {
       std::filesystem::temp_directory_path() / ("scoreboard-selector-test-" + std::to_string(::getpid()));
   std::filesystem::remove_all(directory);
   std::filesystem::create_directories(directory);
+  ok &= expect(write_hugin_generation_fixture(directory), "scoreboard generation fixture must be created");
+  auto fixture_hugin_lock = hm::stitching::HuginProject::RecoverAndLock(directory);
+  std::string fixture_hugin_generation;
+  std::string fixture_output_generation;
+  ok &= expect(fixture_hugin_lock.ok(), "scoreboard fixture must lock Hugin artifacts");
+  if (fixture_hugin_lock.ok()) {
+    const auto generation = hm::stitching::HuginProject::GenerationId(directory, **fixture_hugin_lock);
+    ok &= expect(generation.ok(), "scoreboard fixture must identify Hugin artifacts");
+    if (generation.ok()) {
+      fixture_hugin_generation = *generation;
+      const auto output_generation = hm::stitching::stitched_output_generation_id(*generation, 0.0, 96, 32);
+      ok &= expect(output_generation.ok(), "scoreboard fixture must identify the stitched output");
+      if (output_generation.ok())
+        fixture_output_generation = *output_generation;
+    }
+    fixture_hugin_lock->reset();
+  }
+  YAML::Node fixture_config(YAML::NodeType::Map);
+  fixture_config["rink"]["stitched_output_generation"] = fixture_output_generation;
+  std::ofstream(directory / "config.yaml") << fixture_config << '\n';
   auto status = Selector::Save(directory, disabled);
   ok &= expect(status.ok(), "disabled sentinel must save");
   if (status.ok()) {
@@ -233,7 +325,23 @@ int main() {
     ok &= expect(polygon.IsSequence() && polygon.size() == 4, "saved sentinel must contain four points");
     ok &= expect(polygon[3][0].as<int>() == 0 && polygon[3][1].as<int>() == 0, "saved sentinel must stay zero");
   }
-  std::filesystem::remove(directory / "config.yaml");
+  fixture_config["rink"].remove("scoreboard");
+  std::ofstream(directory / "config.yaml") << fixture_config << '\n';
+  cv::imwrite((directory / "s.png").string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(255, 255, 255)));
+  ok &= expect(
+      absl::IsAborted(Selector::Run(directory)),
+      "scoreboard selector must reject a snapshot whose dimensions do not match its output generation");
+  cv::imwrite((directory / "s.png").string(), cv::Mat(32, 96, CV_8UC3, cv::Scalar(255, 255, 255)));
+  {
+    std::fstream image(directory / "s.png", std::ios::in | std::ios::out | std::ios::binary);
+    const std::array<unsigned char, 4> oversized_width = {0, 0, 128, 0};
+    image.seekp(16);
+    image.write(
+        reinterpret_cast<const char*>(oversized_width.data()), static_cast<std::streamsize>(oversized_width.size()));
+  }
+  ok &= expect(
+      absl::IsAborted(Selector::Run(directory)),
+      "scoreboard selector must reject oversized PNG header dimensions before invoking the decoder");
   ok &= expect(exercise_http_selector(directory), "native HTTP selector must enforce its token and save a choice");
   if (std::filesystem::is_regular_file(directory / "config.yaml")) {
     const YAML::Node polygon =
@@ -244,7 +352,9 @@ int main() {
   } else {
     ok &= expect(false, "HTTP selector must publish config.yaml");
   }
-  std::filesystem::remove(directory / "config.yaml");
+  YAML::Node remote_fixture_config = YAML::LoadFile((directory / "config.yaml").string());
+  remote_fixture_config["rink"].remove("scoreboard");
+  std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
   ok &= expect(
       exercise_http_selector(directory, true),
       "remote scoreboard mode must accept its explicit public authority and matching origin");
@@ -256,6 +366,103 @@ int main() {
       "remote scoreboard mode must require an explicit public host before listening");
   ::unsetenv("HM_SCOREBOARD_BIND_HOST");
   ::unsetenv("HM_SCOREBOARD_ALLOW_REMOTE");
+  const auto live_rotation_generation =
+      hm::stitching::stitched_output_generation_id(fixture_hugin_generation, 9.0, 96, 32);
+  if (live_rotation_generation.ok()) {
+    YAML::Node live_rotation_config = YAML::LoadFile((directory / "config.yaml").string());
+    live_rotation_config["stitching"]["post_stitch_rotate_degrees"] = 7.5;
+    live_rotation_config["rink"]["stitched_output_generation"] = *live_rotation_generation;
+    live_rotation_config["rink"]["stitched_output_persisted_rotation_degrees"] = 7.5;
+    live_rotation_config["rink"].remove("scoreboard");
+    std::ofstream(directory / "config.yaml") << live_rotation_config << '\n';
+  }
+  const cv::Mat mismatched_live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
+  ok &= expect(
+      live_rotation_generation.ok() &&
+          absl::IsAborted(
+              hm::stitching::save_stitched_image(
+                  directory.string(),
+                  mismatched_live_rotation_snapshot,
+                  live_rotation_generation.ok() ? *live_rotation_generation : "")),
+      "snapshot publication must reject image dimensions that disagree with the producer generation");
+  const cv::Mat live_rotation_snapshot(32, 96, CV_8UC3, cv::Scalar(32, 64, 96));
+  ok &= expect(
+      live_rotation_generation.ok() &&
+          hm::stitching::save_stitched_image(
+              directory.string(),
+              live_rotation_snapshot,
+              live_rotation_generation.ok() ? *live_rotation_generation : "")
+              .ok() &&
+          exercise_http_selector(directory),
+      "snapshot publication and scoreboard selection must accept an authoritative live rotation override");
+  if (live_rotation_generation.ok()) {
+    YAML::Node changed_persisted_rotation = YAML::LoadFile((directory / "config.yaml").string());
+    changed_persisted_rotation["stitching"]["post_stitch_rotate_degrees"] = 8.0;
+    std::ofstream(directory / "config.yaml") << changed_persisted_rotation << '\n';
+  }
+  ok &= expect(
+      live_rotation_generation.ok() && absl::IsAborted(Selector::Run(directory)),
+      "scoreboard selection must reject a persisted rotation changed after producer publication");
+  YAML::Node restored_fixture_config = YAML::LoadFile((directory / "config.yaml").string());
+  restored_fixture_config["stitching"]["post_stitch_rotate_degrees"] = 0.0;
+  restored_fixture_config["rink"]["stitched_output_generation"] = fixture_output_generation;
+  restored_fixture_config["rink"].remove("stitched_output_persisted_rotation_degrees");
+  std::ofstream(directory / "config.yaml") << restored_fixture_config << '\n';
+  auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(directory);
+  ok &= expect(hugin_lock.ok(), "scoreboard generation race test must lock Hugin artifacts");
+  std::string stale_generation;
+  if (hugin_lock.ok()) {
+    const auto generation = hm::stitching::HuginProject::GenerationId(directory, **hugin_lock);
+    ok &= expect(generation.ok(), "scoreboard generation race test must identify Hugin artifacts");
+    if (generation.ok())
+      stale_generation = *generation;
+    hugin_lock->reset();
+  }
+  const Selector::CanvasGeneration stale_canvas_generation{
+      .hugin_generation = stale_generation,
+      .stitched_output_generation = fixture_output_generation,
+      .snapshot_identity = {},
+  };
+  const Selector::CanvasGeneration stale_snapshot_generation{
+      .hugin_generation = stale_generation,
+      .stitched_output_generation = fixture_output_generation,
+      .snapshot_identity = file_identity(directory / "s.png"),
+  };
+  const std::filesystem::path rollback_link = directory / "s-rollback-link.png";
+  std::error_code rollback_link_error;
+  std::filesystem::create_hard_link(directory / "s.png", rollback_link, rollback_link_error);
+  if (!rollback_link_error)
+    std::filesystem::remove(rollback_link, rollback_link_error);
+  ok &= expect(
+      !rollback_link_error && Selector::Save(directory, disabled, stale_snapshot_generation).ok(),
+      "snapshot rollback link-count changes must not invalidate an unchanged selector image");
+  cv::Mat replacement_snapshot(32, 96, CV_8UC3, cv::Scalar(0, 0, 0));
+  const std::filesystem::path replacement_snapshot_path = directory / "s-replacement.png";
+  const bool wrote_replacement_snapshot = cv::imwrite(replacement_snapshot_path.string(), replacement_snapshot);
+  std::error_code replacement_error;
+  if (wrote_replacement_snapshot)
+    std::filesystem::rename(replacement_snapshot_path, directory / "s.png", replacement_error);
+  ok &= expect(
+      wrote_replacement_snapshot && !replacement_error && !stale_snapshot_generation.snapshot_identity.empty() &&
+          absl::IsAborted(Selector::Save(directory, disabled, stale_snapshot_generation)),
+      "a selector opened on replaced snapshot bytes must not publish stale coordinates");
+  auto rotated_generation = hm::stitching::stitched_output_generation_id(stale_generation, 1.0, 96, 32);
+  if (rotated_generation.ok()) {
+    YAML::Node rotated_config = YAML::LoadFile((directory / "config.yaml").string());
+    rotated_config["rink"]["stitched_output_generation"] = *rotated_generation;
+    std::ofstream(directory / "config.yaml") << rotated_config << '\n';
+  }
+  ok &= expect(
+      rotated_generation.ok() && absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
+      "a selector opened on a different output rotation must not publish stale coordinates");
+  const std::filesystem::path replacement_mapping = directory / "mapping_0000.tif.replacement";
+  const bool wrote_replacement_mapping = write_mapping_tiff(replacement_mapping, 64, 32, 0.0f, 1);
+  if (wrote_replacement_mapping)
+    std::filesystem::rename(replacement_mapping, directory / "mapping_0000.tif");
+  ok &= expect(
+      wrote_replacement_mapping && !stale_generation.empty() &&
+          absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
+      "a selector opened on a replaced stitched canvas must not publish stale coordinates");
   std::filesystem::remove_all(directory);
   return ok ? 0 : 1;
 }

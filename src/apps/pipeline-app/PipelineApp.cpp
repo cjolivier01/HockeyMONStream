@@ -1273,10 +1273,15 @@ absl::Status PipelineApplication::configureInstances(
           return absl::InternalError("Unable to publish the saved stitching invalidation ID to runtime plugins");
         }
       }
+      constexpr const char* kCalibrationRunGenerationPath =
+          "pipeline.hmstitcher.private-properties.calibration-run-generation";
+      // This capability is app-issued and applies only to the first plugin
+      // instance created for a classified calibration run. Override any value
+      // supplied by YAML before issuing the current run's generation.
+      HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kCalibrationRunGenerationPath, ""));
       if (app_ctx->configurator().stitching_calibration_required()) {
         HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(
-            "pipeline.hmstitcher.private-properties.calibration-run-generation",
-            std::to_string(main_loop_generation_ + 1)));
+            kCalibrationRunGenerationPath, std::to_string(main_loop_generation_ + 1)));
       }
       YAML::Node config = app_ctx->configurator().config();
       if (!stitch_frame_time_set_) {
@@ -1348,6 +1353,13 @@ absl::Status PipelineApplication::createPipelines(
       NVGSTDS_ERR_MSG_V("Failed to create pipeline");
       return absl::InternalError("Failed to create pipeline");
     }
+    auto& stitcher_private_properties = app_contexts[i]->config.hmsticher_config.private_properties;
+    stitcher_private_properties.erase(
+        std::remove_if(
+            stitcher_private_properties.begin(),
+            stitcher_private_properties.end(),
+            [](const hm::gst::PluginProperty& property) { return property.name == "calibration-run-generation"; }),
+        stitcher_private_properties.end());
     const uint64_t initial_position_ns = initial_pipeline_position_ns(app_contexts[i].get());
     if (app_contexts[i]->configurator().stitching_calibration_required() && initial_position_ns != 0 &&
         !app_contexts[i]->pipeline.multi_src_bin.uri_playlist_exact_pairing_enabled) {
@@ -2307,7 +2319,7 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
       g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
     }
     app_context->eos_received = TRUE;
-    cancel_uri_playlist_frame_barrier(&app_context->pipeline.multi_src_bin);
+    stop_uri_playlist_sources_gracefully(&app_context->pipeline.multi_src_bin);
     if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
       return absl::InternalError("Interrupted calibration pipeline could not be stopped");
     }
@@ -7154,6 +7166,15 @@ gboolean PipelineApplication::recreate_pipeline_thread_func_static(gpointer arg)
   const gboolean keep = instance_ && app_ctx ? instance_->recreate_pipeline_thread_func(app_ctx) : FALSE;
   if (!keep && app_ctx) {
     app_ctx->pipeline_recreate_source_id = 0;
+    if (instance_) {
+      g_printerr("HSTREAM_PIPELINE_RECREATE status=failed reason=periodic-reconstruction\n");
+      std::fflush(stderr);
+      app_ctx->return_value = -1;
+      app_ctx->quit = TRUE;
+      instance_->quit_ = TRUE;
+      if (instance_->main_loop_)
+        g_main_loop_quit(instance_->main_loop_);
+    }
   }
   return keep;
 }
@@ -7296,10 +7317,6 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   g_print("Recreate pipeline\n");
   if (!create_pipeline(app_ctx_ptr, nullptr, all_bbox_generated, perf_cb_static, overlay_graphics_static)) {
     NVGSTDS_ERR_MSG_V("Failed to create pipeline");
-    return FALSE;
-  }
-  if (g_getenv("HM_TEST_PIPELINE_RECREATE_FAIL_AFTER_CREATE")) {
-    g_print("HSTREAM_PIPELINE_RECREATE status=injected-failure phase=after-create\n");
     return FALSE;
   }
   if (runtime_seek_restart && !defer_uri_playlist_main_context_callbacks(&app_ctx_ptr->pipeline.multi_src_bin)) {

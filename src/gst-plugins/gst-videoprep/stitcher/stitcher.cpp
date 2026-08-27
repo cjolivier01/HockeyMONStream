@@ -181,6 +181,17 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
   };
 }
 
+bool should_attempt_one_pass_field_mask(
+    bool already_attempted,
+    const std::string& attempted_generation,
+    const std::string& current_generation) {
+  return !already_attempted || attempted_generation != current_generation;
+}
+
+bool should_defer_validated_artifact_load_failure(bool one_pass_mode, bool retry_already_failed) {
+  return one_pass_mode && !retry_already_failed;
+}
+
 bool OnePassCalibrationCompletionLatch::delivered(const std::string& calibration_scope) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto state = state_by_scope_.find(calibration_scope);
@@ -205,8 +216,28 @@ void OnePassCalibrationCompletionLatch::finish_delivery(const std::string& calib
   }
 }
 
+StitcherPriv::StitcherPriv(int gpu_id, size_t batch_size) : STITCH_PRIV_BASE(gpu_id, batch_size) {}
+
 StitcherPriv::~StitcherPriv() {
   Shutdown();
+}
+
+void StitcherPriv::update_live_output_epoch(
+    std::optional<double> post_stitch_rotate_degrees,
+    std::optional<std::string> authorization_id,
+    std::optional<std::string> scoreboard_property_value) {
+  std::lock_guard<std::mutex> lock(live_output_epoch_update_mu_);
+  const std::shared_ptr<const stitching::LiveOutputEpoch> current =
+      std::atomic_load_explicit(&live_output_epoch_, std::memory_order_acquire);
+  auto updated = std::make_shared<stitching::LiveOutputEpoch>(current ? *current : stitching::LiveOutputEpoch{});
+  if (post_stitch_rotate_degrees.has_value())
+    updated->post_stitch_rotate_degrees = *post_stitch_rotate_degrees;
+  if (authorization_id.has_value())
+    updated->authorization_id = std::move(*authorization_id);
+  if (scoreboard_property_value.has_value())
+    updated->scoreboard_property_value = std::move(*scoreboard_property_value);
+  std::shared_ptr<const stitching::LiveOutputEpoch> published = std::move(updated);
+  std::atomic_store_explicit(&live_output_epoch_, std::move(published), std::memory_order_release);
 }
 
 void StitcherPriv::Shutdown() {
@@ -221,6 +252,7 @@ void StitcherPriv::Shutdown() {
     stitcher_fp16_.reset();
     stitcher_rgb10_fp16_.reset();
     hugin_generation_id_.clear();
+    validated_artifact_load_failed_ = false;
   }
   high_bit_left_.reset();
   high_bit_right_.reset();
@@ -229,6 +261,8 @@ void StitcherPriv::Shutdown() {
   release_high_bit_field_mask_canvas();
   calibration_invalidation_id_.clear();
   calibration_run_generation_.clear();
+  field_mask_authority_monitor_.reset();
+  update_live_output_epoch(std::nullopt, std::string(), std::string());
   release_rotation_scratch();
 }
 
@@ -561,13 +595,17 @@ absl::Status StitcherPriv::ensure_stitcher() {
     return absl::NotFoundError("No control masks to load");
   }
 
-  // Validate artifacts before seam normalization or hm-cupano loading so stale
-  // native-over-cap maps are regenerated instead of decoded and resized here.
-  auto is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
-  if (!is_configured.ok()) {
-    return is_configured.status();
+  // Validate artifacts and normalize the seam in one pass before hm-cupano
+  // loading so stale native-over-cap maps are regenerated instead of resized here.
+  auto artifacts = hm::stitching::lock_stitching_artifacts_for_load(config_file_, max_output_width_);
+  if (!artifacts.ok()) {
+    return artifacts.status();
   }
-  if (!is_configured.value()) {
+  if (!artifacts->artifact_lock) {
+    const absl::Status repair_bounds = hm::stitching::validate_stitch_seam_repair_artifact_bounds(config_file_);
+    if (!repair_bounds.ok() && !absl::IsNotFound(repair_bounds)) {
+      return repair_bounds;
+    }
     bool try_seam_repair = true;
     if (max_output_width_ > 0) {
       const auto native_canvas = hm::stitching::stitching_canvas_size(config_file_);
@@ -581,58 +619,71 @@ absl::Status StitcherPriv::ensure_stitcher() {
     if (try_seam_repair) {
       const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
       if (seam_status.ok()) {
-        is_configured = hm::stitching::is_stitching_configured(config_file_, max_output_width_);
-        if (!is_configured.ok()) {
-          return is_configured.status();
+        artifacts = hm::stitching::lock_stitching_artifacts_for_load(config_file_, max_output_width_);
+        if (!artifacts.ok()) {
+          return artifacts.status();
         }
       }
     }
-    if (!is_configured.value()) {
+    if (!artifacts->artifact_lock) {
+      {
+        absl::MutexLock lk(&stitcher_mu_);
+        validated_artifact_load_failed_ = false;
+      }
       if (!logged_missing_masks_) {
         g_print("hmstitcher: control masks in %s are missing or need regeneration\n", config_file_.c_str());
         logged_missing_masks_ = true;
       }
-      if (one_pass_mode_) {
+      if (one_pass_mode_ && !calibration_run_generation_.empty()) {
         return absl::OkStatus();
       } else {
-        config_file_.clear();
+        if (!one_pass_mode_)
+          config_file_.clear();
         return absl::NotFoundError("Stitching control masks are missing or need regeneration");
       }
     }
   }
 
-  const absl::Status seam_status = hm::stitching::maybe_create_default_seam_file(config_file_, max_output_width_);
-  if (!seam_status.ok())
-    return seam_status;
-
-  auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(config_file_);
-  if (!artifact_lock.ok()) {
-    return artifact_lock.status();
-  }
   absl::MutexLock lk(&stitcher_mu_);
   if (!has_stitcher()) {
     hm::pano::ControlMasks control_masks;
-    if (!control_masks.load(config_file_, max_output_width_)) {
+    const std::string load_directory =
+        artifacts->load_snapshot ? artifacts->load_snapshot->directory().string() : config_file_;
+    const bool loaded = control_masks.load(load_directory, max_output_width_);
+    if (loaded && artifacts->load_snapshot) {
+      const absl::Status snapshot_status = artifacts->load_snapshot->verify();
+      if (!snapshot_status.ok())
+        return snapshot_status;
+    }
+    if (!loaded) {
       std::string config_file_dir = config_file_;
+      artifacts->artifact_lock.reset();
       if (one_pass_mode_) {
-        // In one-pass mode, allow the pipeline to bootstrap without masks.
+        const bool retry_failed = validated_artifact_load_failed_;
+        validated_artifact_load_failed_ = true;
         if (!logged_missing_masks_) {
-          g_print("hmstitcher: missing control masks in %s\n", config_file_dir.c_str());
+          g_print("hmstitcher: validated control masks could not be loaded from %s\n", config_file_dir.c_str());
           logged_missing_masks_ = true;
         }
-        return absl::OkStatus();
+        if (!calibration_run_generation_.empty() &&
+            should_defer_validated_artifact_load_failure(one_pass_mode_, retry_failed))
+          return absl::OkStatus();
+        return absl::FailedPreconditionError(
+            TO_STRING("Validated control masks could not be loaded after retry from " << config_file_dir));
       } else {
         // Don't try again unless one-pass mode wants to re-attempt after configure.
         config_file_.clear();
         return absl::NotFoundError(TO_STRING("Could not load control masks from " << config_file_dir));
       }
     }
-    auto generation = hm::stitching::HuginProject::GenerationId(config_file_, **artifact_lock);
-    if (!generation.ok()) {
-      return generation.status();
+    validated_artifact_load_failed_ = false;
+    if (control_masks.canvas_width() != artifacts->canvas_size.width ||
+        control_masks.canvas_height() != artifacts->canvas_size.height) {
+      return absl::FailedPreconditionError("Control-mask loading changed the validated stitched canvas dimensions");
     }
-    hugin_generation_id_ = std::move(*generation);
+    hugin_generation_id_ = std::move(artifacts->generation_id);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
+    artifacts->artifact_lock.reset();
     if (high_bit_depth_) {
       g_print("hmstitcher: using RGB10A2 input with fp16 stitch compute\n");
       stitcher_rgb10_fp16_ = std::make_unique<STITCHER_RGB10_FP16>(
@@ -700,7 +751,7 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   calibration_invalidation_id_ = calibration_invalidation_id ? calibration_invalidation_id : "";
   absl::Status status = ensure_stitcher();
   if (!status.ok()) {
-    if (one_pass_mode_ && absl::IsNotFound(status)) {
+    if (one_pass_mode_ && !calibration_run_generation_.empty() && absl::IsNotFound(status)) {
       if (!logged_missing_masks_) {
         g_print(
             "hmstitcher: control masks not found in %s; enabling one-pass configure on first batch\n",
@@ -1011,6 +1062,14 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
         }
         return report_calibration_failure(configure_status);
       }
+      {
+        absl::MutexLock lk(&stitcher_mu_);
+        stitcher_fp32_.reset();
+        stitcher_fp16_.reset();
+        stitcher_rgb10_fp16_.reset();
+        hugin_generation_id_.clear();
+        update_canvas_hints(0, 0);
+      }
       configured_during_run_ = true;
     }
   }
@@ -1051,6 +1110,20 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   }
   if (!batch_meta || !in_surface) {
     return absl::InvalidArgumentError("Cannot determine stitched canvas size without batch metadata and input surface");
+  }
+  bool retry_validated_artifacts = false;
+  {
+    absl::MutexLock lk(&stitcher_mu_);
+    retry_validated_artifacts = validated_artifact_load_failed_;
+  }
+  if (retry_validated_artifacts) {
+    HM_RETURN_IF_ERROR(reload_stitcher());
+    absl::MutexLock lk(&stitcher_mu_);
+    if (!has_stitcher() || !canvas_width_hint_ || !canvas_height_hint_) {
+      return absl::FailedPreconditionError("Validated control masks did not produce a usable stitcher after retry");
+    }
+    return videoprep::RuntimeOutputSize{
+        canvas_width_hint_, canvas_height_hint_, GetOutputBatchSize(in_surface->batchSize, 0)};
   }
   if (in_surface->batchSize == 0 || in_surface->batchSize % 2 != 0 || in_surface->numFilled > in_surface->batchSize) {
     return absl::FailedPreconditionError(
@@ -1333,7 +1406,17 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       std::cerr << "Invalid post-stitch rotation value: " << prop.value << std::endl;
       return false;
     }
-    post_stitch_rotate_degrees_.store(parsed_rotation, std::memory_order_relaxed);
+    update_live_output_epoch(parsed_rotation, std::nullopt, std::nullopt);
+  } else if (prop.key == "stitched-output-epoch" || prop.key == "stitched_output_epoch") {
+    auto epoch = stitching::parse_live_output_epoch(prop.value);
+    if (!epoch.ok()) {
+      std::cerr << "Invalid stitched-output epoch value: " << epoch.status() << std::endl;
+      return false;
+    }
+    update_live_output_epoch(
+        epoch->post_stitch_rotate_degrees,
+        std::move(epoch->authorization_id),
+        std::move(epoch->scoreboard_property_value));
   }
   return true;
 }
@@ -1669,13 +1752,14 @@ absl::Status StitcherPriv::GenerateOutput(
   std::vector<std::unique_ptr<hm::surface::EglSurfaceMapper>> calibration_egl_surface_mappers;
 #endif
   std::vector<hm::stitching::StitchingCalibrationFramePair> batch_calibration_frame_pairs;
-  bool first_pass_is_configured = false;
-  bool first_pass_configuration_state_known = false;
+  bool first_pass_stitcher_ready = false;
   bool first_pass_will_configure_stitching = false;
   if (process_pass_ == 0) {
-    HM_ASSIGN_OR_RETURN(first_pass_is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
-    first_pass_configuration_state_known = true;
-    first_pass_will_configure_stitching = configure_only_ || (!first_pass_is_configured && one_pass_mode_);
+    {
+      absl::MutexLock lk(&stitcher_mu_);
+      first_pass_stitcher_ready = has_stitcher();
+    }
+    first_pass_will_configure_stitching = configure_only_ || (!first_pass_stitcher_ready && one_pass_mode_);
   }
   if (first_pass_will_configure_stitching) {
     const size_t required_frame_count = calibration_frame_count_;
@@ -1814,12 +1898,13 @@ absl::Status StitcherPriv::GenerateOutput(
 
     // Maybe configure stitching with these frames
     if (!process_pass_++) {
-      bool is_configured = first_pass_is_configured;
-      if (!first_pass_configuration_state_known) {
-        HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
+      bool stitcher_ready = false;
+      {
+        absl::MutexLock lk(&stitcher_mu_);
+        stitcher_ready = has_stitcher();
       }
-      if (!is_configured || configure_only_) {
-        if (one_pass_mode_ && !is_configured) {
+      if (!stitcher_ready || configure_only_) {
+        if (one_pass_mode_ && !stitcher_ready) {
           HM_RETURN_IF_ERROR(configure_one_pass_from_frame_pairs(batch_calibration_frame_pairs));
         } else if (!configure_only_) {
           return absl::FailedPreconditionError("Stitching is not configured");
@@ -1852,25 +1937,6 @@ absl::Status StitcherPriv::GenerateOutput(
           if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
             std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
             return absl::CancelledError("Stitching has been configured");
-          }
-        }
-      } else if (one_pass_mode_) {
-        // Masks existed but we had no stitcher due to earlier failure; retry once in one-pass mode.
-        bool needs_reload = false;
-        {
-          absl::MutexLock lk(&stitcher_mu_);
-          needs_reload = !has_stitcher();
-        }
-        if (needs_reload) {
-          absl::Status reload_status = reload_stitcher();
-          if (!reload_status.ok()) {
-            return reload_status;
-          }
-        }
-        {
-          absl::MutexLock lk(&stitcher_mu_);
-          if (configured_during_run_ && !has_stitcher()) {
-            return absl::FailedPreconditionError("One-pass stitching configured but control masks could not be loaded");
           }
         }
       }
@@ -1919,7 +1985,13 @@ absl::Status StitcherPriv::GenerateOutput(
 
     assert(cuda_stream_);
 
-    const double applied_post_stitch_rotation = post_stitch_rotate_degrees_.load(std::memory_order_relaxed);
+    const std::shared_ptr<const stitching::LiveOutputEpoch> output_epoch =
+        std::atomic_load_explicit(&live_output_epoch_, std::memory_order_acquire);
+    if (!output_epoch)
+      return absl::InternalError("Stitched-output epoch state is unavailable");
+    const double applied_post_stitch_rotation = output_epoch->post_stitch_rotate_degrees;
+    const std::string& output_authorization_id = output_epoch->authorization_id;
+    const std::string& output_scoreboard_property_value = output_epoch->scoreboard_property_value;
     if (stitcher_rgb10_fp16_) {
       HM_RETURN_IF_ERROR(prepare_high_bit_inputs(incoming_surface_left, incoming_surface_right));
       if (!high_bit_canvas_ || high_bit_canvas_->width() != canvas->width() ||
@@ -1994,14 +2066,44 @@ absl::Status StitcherPriv::GenerateOutput(
     const std::string completion_scope = stitching::calibration_completion_scope(
         output_generation, calibration_invalidation_id_, calibration_run_generation_);
 
-    if (one_pass_mode_ && !field_mask_attempted_) {
+    bool attempt_field_mask = should_attempt_one_pass_field_mask(
+                                  field_mask_attempted_, field_mask_attempted_generation_, output_generation) ||
+        field_mask_attempted_authorization_id_ != output_authorization_id;
+    if (attempt_field_mask &&
+        (field_mask_attempted_generation_ != output_generation ||
+         field_mask_attempted_authorization_id_ != output_authorization_id)) {
+      field_mask_publication_superseded_ = false;
+      field_mask_authority_monitor_.reset();
+    } else if (!attempt_field_mask && field_mask_publication_superseded_) {
+      if (!field_mask_authority_monitor_) {
+        return report_calibration_failure(absl::InternalError("Publication authority monitor is unavailable"));
+      }
+      const absl::Status authority = field_mask_authority_monitor_->status();
+      if (absl::IsUnavailable(authority)) {
+        // The control-plane worker is waiting for the superseding epoch to
+        // retire; frame processing remains filesystem-free while it waits.
+      } else if (authority.ok()) {
+        field_mask_publication_superseded_ = false;
+        field_mask_authority_monitor_.reset();
+        attempt_field_mask = true;
+      } else {
+        return report_calibration_failure(authority);
+      }
+    }
+
+    if (one_pass_mode_ && attempt_field_mask) {
+      if (field_mask_attempted_)
+        calibration_completion_ready_ = false;
       field_mask_attempted_ = true;
+      field_mask_attempted_generation_ = output_generation;
+      field_mask_attempted_authorization_id_ = output_authorization_id;
       bool mask_configured = !calibrate_field_mask_ ||
-          stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
+          stitching::is_field_mask_configured_for_loaded_generation(
+              config_file_, output_generation, hugin_generation, calibration_invalidation_id_);
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
           configured_during_run_,
           mask_configured,
-          /*report_latched=*/false,
+          /*report_latched=*/!calibration_run_generation_.empty(),
           process_calibration_completion_latch.delivered(completion_scope));
       if (progress.create_mask) {
         report_calibration_progress("rink-mask", "started", "Looking for the ice surface in the stitched panorama");
@@ -2009,7 +2111,8 @@ absl::Status StitcherPriv::GenerateOutput(
       if (progress.create_mask) {
         std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
         mask_configured = !calibrate_field_mask_ ||
-            stitching::is_field_mask_configured(config_file_, output_generation, calibration_invalidation_id_);
+            stitching::is_field_mask_configured_for_loaded_generation(
+                config_file_, output_generation, hugin_generation, calibration_invalidation_id_);
         if (!mask_configured) {
           hm::surface::Surface field_mask_surface = logical_output_surface;
           if (stitcher_rgb10_fp16_) {
@@ -2040,18 +2143,37 @@ absl::Status StitcherPriv::GenerateOutput(
             field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
           }
           absl::Status mask_status = stitching::create_field_mask(
-              config_file_, field_mask_surface, output_generation, calibration_invalidation_id_, [this] {
-                return calibration_cancelled_.load(std::memory_order_acquire);
-              });
+              config_file_,
+              field_mask_surface,
+              output_generation,
+              calibration_invalidation_id_,
+              [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+              output_authorization_id);
           release_high_bit_field_mask_canvas();
           if (!mask_status.ok()) {
-            std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
-            calibration_completion_reported_ = true;
-            if (absl::IsCancelled(mask_status)) {
-              return mask_status;
+            if (absl::IsAborted(mask_status)) {
+              // A newer live output generation owns publication. Keep this
+              // generation latched while a control-plane worker waits for an
+              // epoch change or rollback before retrying expensive inference.
+              std::cout << "Field-mask publication superseded: " << mask_status << "\n" << std::flush;
+              field_mask_publication_superseded_ = true;
+              if (!field_mask_authority_monitor_)
+                field_mask_authority_monitor_ = std::make_unique<stitching::FieldMaskPublicationAuthorityMonitor>();
+              const absl::Status monitor_status =
+                  field_mask_authority_monitor_->Watch(config_file_, output_generation, output_authorization_id);
+              if (!monitor_status.ok())
+                return report_calibration_failure(monitor_status);
+            } else {
+              std::cerr << "Failed to create field mask: " << mask_status << "\n" << std::flush;
+              if (absl::IsCancelled(mask_status)) {
+                return mask_status;
+              }
+              calibration_completion_reported_ = true;
+              return report_calibration_failure(mask_status);
             }
-            return report_calibration_failure(mask_status);
           } else {
+            field_mask_publication_superseded_ = false;
+            field_mask_authority_monitor_.reset();
             mask_configured = true;
           }
         }
@@ -2077,6 +2199,9 @@ absl::Status StitcherPriv::GenerateOutput(
                     "output-generation",
                     G_TYPE_STRING,
                     output_generation.c_str(),
+                    "hugin-generation",
+                    G_TYPE_STRING,
+                    hugin_generation.c_str(),
                     "calibration-scope",
                     G_TYPE_STRING,
                     completion_scope.c_str(),
@@ -2095,10 +2220,14 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
 
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-    stitching::StitchedOutputGenerationPayload::create_and_add<stitching::StitchedOutputGenerationPayload>(
-        reuse_frame_meta, output_generation);
-#endif
+    if (!stitching::add_stitched_output_generation_meta(
+            reuse_frame_meta,
+            output_generation,
+            output_authorization_id,
+            output_scoreboard_property_value,
+            hugin_generation)) {
+      return absl::ResourceExhaustedError("Could not attach the stitched-output generation to the output frame");
+    }
 
     if (show_) {
       render("HM Stitcher (LEFT)", incoming_surface_left, cuda_stream_);

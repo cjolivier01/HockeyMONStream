@@ -22,7 +22,12 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+
+#include <deque>
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -35,12 +40,23 @@ class QEvent;
 class QIcon;
 class QProgressBar;
 class QSplitter;
+class QThread;
 class QTimer;
 class QToolButton;
 class PipelineInspectorWidget;
 class ScoreboardSelectionDialog;
 
 namespace hm::ui_internal {
+
+struct StitchingCanvasConstraintDecision {
+  bool calibration_required{false};
+  bool cleanup_required{false};
+};
+
+struct LockedStitchingCanvasConstraintCheck {
+  StitchingCanvasConstraintDecision decision;
+  std::unique_ptr<hm::stitching::CanvasConstraintArtifactLock> artifact_lock;
+};
 
 // Establishes the desktop identity used by WM_CLASS, desktop-file matching,
 // taskbar grouping, and human-readable application labels. Call before the
@@ -66,6 +82,10 @@ bool remove_owned_path_for_test(
     quint64 expected_inode,
     QString* error = nullptr);
 bool reconcile_cleanup_directory_for_test(const QString& directory_path, QString* error = nullptr);
+StitchingCanvasConstraintDecision decide_stitching_canvas_constraint_change(
+    bool width_changed,
+    const std::optional<bool>& artifacts_compatible,
+    const std::optional<bool>& requires_regeneration);
 
 } // namespace hm::ui_internal
 
@@ -105,10 +125,25 @@ class HStreamWindow : public QMainWindow {
     quint64 batch_id;
   };
 
+  struct LiveRotationAuthorization {
+    QString game_id;
+    std::string game_dir;
+    std::string pending_generation;
+    std::string authorization_id;
+    bool invalidate_scoreboard{false};
+    QString scoreboard_property_value;
+  };
+
+  struct LiveRotationConfigTask {
+    std::function<void()> work;
+    std::function<void()> complete;
+  };
+
   struct RuntimeControlBatch {
     std::map<QString, int> controls;
     size_t pending_commands;
     bool failed;
+    std::optional<LiveRotationAuthorization> live_rotation_authorization;
   };
 
   struct RuntimePropertyCommand {
@@ -230,6 +265,7 @@ class HStreamWindow : public QMainWindow {
   void togglePreviewFocus(int tab_index);
   void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
+  void maybeStartDeferredRestart();
   void savePreset();
   void resetCameraControls();
   void captureSavedControlState();
@@ -303,6 +339,13 @@ class HStreamWindow : public QMainWindow {
       const QString& working_dir,
       const QProcessEnvironment& env,
       bool* calibration_required);
+  std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> lockStitchingCanvasConstraint(
+      const QString& game_id);
+  bool evaluateStitchingCanvasConstraint(
+      const QString& game_id,
+      int max_output_width,
+      bool width_changed,
+      hm::ui_internal::LockedStitchingCanvasConstraintCheck* check);
   bool runStitchingClean(
       const QString& runner,
       const QString& working_dir,
@@ -325,12 +368,45 @@ class HStreamWindow : public QMainWindow {
       YAML::Node& config,
       bool* invalidate_rink_masks,
       int* invalidated_config_artifacts,
-      QString* published_playtracker_sidecar);
+      QString* published_playtracker_sidecar,
+      int selected_max_output_width,
+      const std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>& max_width_decision = std::nullopt);
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
   bool publishRuntimeControlBatch(
       const std::map<QString, int>& controls,
-      const std::vector<RuntimePropertyCommand>& commands);
+      const std::vector<RuntimePropertyCommand>& commands,
+      const std::optional<LiveRotationAuthorization>& live_rotation_authorization = std::nullopt);
+  bool publishRotationRuntimeControls(
+      std::map<QString, int> controls,
+      const std::optional<int>& authorized_stitch_rotation,
+      const std::optional<LiveRotationAuthorization>& live_rotation_authorization);
+  void enqueueLiveRotationConfigTask(std::function<void()> work, std::function<void()> complete);
+  void startNextLiveRotationConfigTask();
+  void rollbackLiveRotationAuthorization(
+      const LiveRotationAuthorization& authorization,
+      const QString& reason,
+      std::function<void(bool, const std::optional<LiveRotationAuthorization>&, const QString&)> complete = {});
+  void adoptRestoredLiveRotationAuthorization(
+      const std::optional<LiveRotationAuthorization>& restored,
+      const QString& reason);
+  void rollbackActiveLiveRotationAuthorization(const QString& reason);
+  void resolveLiveRotationRuntimeBatch(quint64 batch_id);
+  void finishRuntimeControlBatch(quint64 batch_id, bool failed, const QString& reason = {});
+  void startLiveRotationAuthorization(std::map<QString, int> controls, int rotation);
+  void completeLiveRotationAuthorization(
+      std::map<QString, int> controls,
+      quint64 generation,
+      quint64 pipeline_run_generation,
+      const QString& game_id,
+      int rotation,
+      bool authorized,
+      const std::string& pending_generation,
+      const std::string& authorization_id,
+      bool invalidate_scoreboard,
+      const QString& scoreboard_property_value,
+      const std::string& game_dir,
+      const QString& error);
   void flushScheduledRuntimeControls();
   void timeoutRuntimeControlBatch(quint64 batch_id);
   int runtimeControlAckTimeoutMs() const;
@@ -569,12 +645,21 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> scheduled_playtracker_controls_;
   std::map<QString, int> scheduled_playcropper_controls_;
   bool scheduled_rotation_controls_ready_{false};
+  bool live_rotation_authorization_pending_{false};
+  bool deferred_restart_requested_{false};
+  quint64 deferred_restart_pipeline_generation_{0};
+  QString deferred_restart_game_id_;
+  std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
+  QThread* live_rotation_authorization_worker_{nullptr};
+  std::deque<LiveRotationConfigTask> live_rotation_config_tasks_;
+  bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};
   std::optional<std::map<QString, int>> publishing_playtracker_controls_;
   bool scheduled_playtracker_force_all_targets_{false};
   bool publishing_playtracker_force_all_targets_{false};
   quint64 next_runtime_control_batch_id_{0};
+  quint64 pipeline_run_generation_{0};
   quint64 scheduled_rotation_control_generation_{0};
   quint64 scheduled_playtracker_control_generation_{0};
   quint64 scheduled_playcropper_control_generation_{0};

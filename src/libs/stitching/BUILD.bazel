@@ -10,13 +10,60 @@ filegroup(
 )
 
 cc_library(
+  name = "transaction_state",
+  srcs = ["TransactionState.cpp"],
+  hdrs = ["TransactionState.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:private"],
+  deps = [
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "transaction_state_test",
+  srcs = ["TransactionStateTest.cpp"],
+  deps = [":transaction_state"],
+)
+
+cc_library(
   name = "game_config",
   srcs = ["GameConfig.cpp"],
   hdrs = ["GameConfig.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    ":transaction_state",
     "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
+  name = "live_stitching_generation",
+  srcs = ["LiveStitchingGeneration.cpp"],
+  hdrs = ["LiveStitchingGeneration.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":canvas_constraint_check",
+    ":game_config",
+    "//src/libs/common:status",
+    "@yaml-cpp",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_library(
+  name = "live_output_epoch",
+  srcs = ["LiveOutputEpoch.cpp"],
+  hdrs = ["LiveOutputEpoch.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ],
@@ -44,6 +91,7 @@ cc_library(
     "CalibrationModels.h",
     "ConfigureStitching.h",
     "FieldMaskArtifact.h",
+    "LiveStitchingGeneration.h",
     "Orientation.h",
     "ScoreboardSelector.h",
     "StitchedOutputGenerationPayload.h",
@@ -60,11 +108,14 @@ cc_library(
   visibility = ["//visibility:public"],
   implementation_deps = [":orientation_internal"],
   deps = [
+    ":canvas_constraint_check",
     ":game_config",
     ":correlation",
     ":feature_matcher",
     ":hugin_project",
+    ":live_stitching_generation",
     ":rink_segmentation",
+    ":transaction_state",
     "//src/libs/common:utils",
     "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",
@@ -74,6 +125,38 @@ cc_library(
   ],
   data = [
     "@hm-cupano//scripts:all_scripts",
+  ],
+)
+
+cc_binary(
+  name = "stitching-canvas-check",
+  srcs = ["CanvasConstraintCheckMain.cpp"],
+  visibility = ["//visibility:public"],
+  deps = [":canvas_constraint_check"],
+)
+
+sh_test(
+  name = "canvas_constraint_check_cli_test",
+  srcs = ["CanvasConstraintCheckCliTest.sh"],
+  args = ["$(location :stitching-canvas-check)"],
+  data = [":stitching-canvas-check"],
+)
+
+cc_library(
+  name = "canvas_constraint_check",
+  srcs = ["CanvasConstraintCheck.cpp"],
+  hdrs = ["CanvasConstraintCheck.h"],
+  include_prefix = INCLUDE_PREFIX,
+  linkopts = [
+    "-lcrypto",
+    "-lpng",
+    "-ltiff",
+  ],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":transaction_state",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
   ],
 )
 
@@ -106,6 +189,7 @@ cc_test(
   srcs = ["FieldMaskPersistenceTest.cpp"],
   deps = [
     ":stitching",
+    ":transaction_state",
     "@opencv_linux//:opencv",
     "@yaml-cpp",
   ],
@@ -121,11 +205,30 @@ cc_test(
 )
 
 cc_test(
+    name = "live_output_epoch_test",
+    srcs = ["LiveOutputEpochTest.cpp"],
+    deps = [":live_output_epoch"],
+)
+
+cc_test(
     name = "game_config_test",
     srcs = ["GameConfigTest.cpp"],
     deps = [
         ":game_config",
+        ":transaction_state",
         "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "live_stitching_generation_test",
+    srcs = ["LiveStitchingGenerationTest.cpp"],
+    deps = [
+        ":canvas_constraint_check",
+        ":live_stitching_generation",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
+        "@com_google_absl//absl/status:status",
     ],
 )
 
@@ -153,6 +256,7 @@ cc_library(
   ],
   visibility = ["//visibility:public"],
   deps = [
+    ":canvas_constraint_check",
     ":feature_matcher",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
@@ -168,9 +272,12 @@ cc_library(
   linkopts = ["-ltiff"],
   visibility = ["//visibility:public"],
   deps = [
+    ":canvas_constraint_check",
     ":feature_matcher",
     ":game_config",
     ":homography_maps",
+    ":transaction_state",
+    "//src/libs/common:status",
     "//src/libs/common:utils",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
@@ -191,6 +298,7 @@ cc_test(
   name = "hugin_project_test",
   srcs = ["HuginProjectTest.cpp"],
   deps = [
+    ":game_config",
     ":hugin_project",
     "@opencv_linux//:opencv",
   ],
@@ -361,6 +469,7 @@ cc_test(
     "-ltiff",
   ],
   deps = [
+    ":canvas_constraint_check",
     ":stitching",
     "@opencv_linux//:opencv",
   ],

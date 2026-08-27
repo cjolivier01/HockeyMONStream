@@ -39,6 +39,7 @@ typedef struct {
   NvDsSecondaryGieBinSubBin sub_bins[MAX_SECONDARY_GIE_BINS];
   GMutex wait_lock;
   GCond wait_cond;
+  gboolean wait_primitives_initialized;
 } NvDsSecondaryGieBin;
 
 /**
