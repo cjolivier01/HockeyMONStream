@@ -1265,8 +1265,15 @@ bool retire_durable_ui_removal_fallback(
       *error = QString("public cleanup fallback was replaced at %1: %2").arg(fallback.path, restore_error);
     return false;
   }
-  if (commit_deletion && !create_ui_cleanup_committed(cleanup_fd, expected_stat, error))
-    return false;
+  if (commit_deletion) {
+    if (::fsync(cleanup_fd) != 0 || ::fsync(parent_fd) != 0) {
+      if (error)
+        *error = QString::fromLocal8Bit(std::strerror(errno));
+      return false;
+    }
+    if (!create_ui_cleanup_committed(cleanup_fd, expected_stat, error))
+      return false;
+  }
   if (::unlinkat(cleanup_fd, "fallback", 0) != 0 || ::fsync(cleanup_fd) != 0) {
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(errno));

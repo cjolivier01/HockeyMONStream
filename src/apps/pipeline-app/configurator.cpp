@@ -1861,6 +1861,10 @@ absl::Status retire_durable_archive_removal_fallback(
         << fallback.name << "\"" << (restored.ok() ? "" : TO_STRING("; " << restored.status().message()))));
   }
   if (commit_deletion) {
+    if (::fsync(cleanup_fd) != 0 || ::fsync(parent_fd) != 0) {
+      return absl::InternalError(
+          TO_STRING("Failed to make archive cleanup deletion durable before commit: " << std::strerror(errno)));
+    }
     const absl::Status committed_status = create_archive_cleanup_committed(cleanup_fd, expected_stat);
     if (!committed_status.ok())
       return committed_status;
