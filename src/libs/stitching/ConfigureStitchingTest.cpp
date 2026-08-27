@@ -1471,25 +1471,22 @@ bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmp
     return false;
 
   absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
-  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS", "500", 1);
+  const fs::path marker = dir / ".load-snapshot-ready";
+  const fs::path release = dir / ".load-snapshot-release";
+  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS", "3000", 1);
+  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER", marker.c_str(), 1);
+  ::setenv("HM_TEST_STITCH_LOAD_SNAPSHOT_RELEASE", release.c_str(), 1);
   std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
-  bool snapshot_started = false;
-  for (int attempt = 0; attempt < 100 && !snapshot_started; ++attempt) {
-    for (const auto& entry : fs::directory_iterator(dir)) {
-      if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-control-mask-snapshot-", 0) == 0) {
-        snapshot_started = true;
-        break;
-      }
-    }
-    if (!snapshot_started)
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  const bool snapshot_started = wait_for_test_marker(marker);
   if (snapshot_started) {
     fs::remove(mapping, error);
     if (!error)
       fs::create_symlink(replacement, mapping, error);
   }
+  std::ofstream(release) << "continue\n";
   loader.join();
+  ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_RELEASE");
+  ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER");
   ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS");
 
   bool snapshot_left_behind = false;

@@ -1814,11 +1814,10 @@ absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snaps
   auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(std::move(snapshot_impl));
   if (::chmod(created, 0700) != 0)
     return absl::InternalError("Unable to protect the stable control-mask load snapshot");
-  if (const char* delay = std::getenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS")) {
-    const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
-    if (delay_ms > 0)
-      std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
-  }
+  HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
+      "HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS",
+      "HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER",
+      "HM_TEST_STITCH_LOAD_SNAPSHOT_RELEASE"));
 
   const auto add_artifact = [&](const char* name, bool required) -> absl::Status {
     auto artifact = pin_stitch_snapshot_artifact(game_dir / name);
