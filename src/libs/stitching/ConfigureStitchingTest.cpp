@@ -1606,6 +1606,38 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
   return true;
 }
 
+bool expect_unreliable_load_refreshes_legacy_identity_revision(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "unreliable_legacy_identity_revision";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  auto artifact_lock = hm::stitching::HuginProject::RecoverAndLock(dir);
+  if (!artifact_lock.ok())
+    return false;
+  auto bindings = hm::stitching::stitch_artifact_binding_revision_locked(dir);
+  if (!bindings.ok())
+    return false;
+  const std::string logical_id = "legacy-v2-logical-generation";
+  std::ofstream identity(dir / hm::stitching::kStitchGenerationArtifact, std::ios::binary | std::ios::trunc);
+  identity << "version=2\nlogical-size=" << logical_id.size() << "\nbindings-size=" << bindings->size() << '\n'
+           << logical_id << *bindings;
+  identity.close();
+  artifact_lock->reset();
+  if (!identity)
+    return false;
+
+  ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
+  auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+  const bool verified = load.ok() && load->artifact_lock && load->load_snapshot && load->generation_id == logical_id &&
+      load->load_snapshot->verify().ok();
+  ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
+  if (!verified) {
+    std::cerr << "unreliable legacy identity migration must refresh the load revision: " << load.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -1777,6 +1809,10 @@ int main() {
 
   if (!expect_unreliable_validation_uses_pinned_generation(tmpdir)) {
     finish(tmpdir, 44);
+  }
+
+  if (!expect_unreliable_load_refreshes_legacy_identity_revision(tmpdir)) {
+    finish(tmpdir, 45);
   }
 
   finish(tmpdir, 0);

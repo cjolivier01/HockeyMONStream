@@ -1957,6 +1957,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
           return absl::AbortedError(
               "Stitch artifact contents changed while their stable validation snapshot was inspected");
         }
+        HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
       }
       if (!snapshot_identity.ok())
         return snapshot_identity.status();
