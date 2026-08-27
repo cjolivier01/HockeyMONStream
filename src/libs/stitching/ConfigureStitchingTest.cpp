@@ -805,6 +805,7 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   const fs::path stale_snapshot = dir / ".hstream-control-mask-snapshot-stale";
   fs::create_directory(stale_snapshot);
   std::ofstream(stale_snapshot / "mapping_0000.tif", std::ios::binary) << "stale";
+  std::ofstream(stale_snapshot / "left.png", std::ios::binary) << "stale validation input";
   auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
   if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
       !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif") ||
@@ -1517,14 +1518,18 @@ bool expect_validation_rejects_pre_generation_replacement(const fs::path& tmpdir
 
   absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
   const fs::path marker = dir / ".post-validation-ready";
+  const fs::path release = dir / ".post-validation-release";
   ::setenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS", "3000", 1);
   ::setenv("HM_TEST_STITCH_POST_VALIDATION_MARKER", marker.c_str(), 1);
+  ::setenv("HM_TEST_STITCH_POST_VALIDATION_RELEASE", release.c_str(), 1);
   std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
   const bool reached_delay = wait_for_test_marker(marker);
   std::error_code error;
   if (reached_delay)
     fs::rename(replacement, mapping, error);
+  std::ofstream(release) << "continue\n";
   loader.join();
+  ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_RELEASE");
   ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_MARKER");
   ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS");
 
@@ -1541,6 +1546,15 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
   fs::remove_all(dir);
   if (!write_valid_stitching_artifacts(dir))
     return false;
+  auto adopted = hm::stitching::lock_validated_stitching_artifacts(dir.string());
+  if (!adopted.ok() || !adopted->artifact_lock)
+    return false;
+  adopted->artifact_lock.reset();
+  std::ifstream expected_identity_input(dir / hm::stitching::kStitchGenerationArtifact, std::ios::binary);
+  const std::string expected_identity{
+      std::istreambuf_iterator<char>(expected_identity_input), std::istreambuf_iterator<char>()};
+  if (expected_identity.empty())
+    return false;
   const fs::path mapping = dir / "mapping_0001.tif";
   const fs::path original = dir / "mapping_0001-original.tif";
   const fs::path replacement = dir / "mapping_0001-replacement.tif";
@@ -1549,10 +1563,12 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
 
   absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
   const fs::path marker = dir / ".stable-validation-ready";
+  const fs::path release = dir / ".stable-validation-release";
   ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
   ::setenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE", "1", 1);
   ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS", "3000", 1);
   ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER", marker.c_str(), 1);
+  ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE", release.c_str(), 1);
   std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
   const bool reached_delay = wait_for_test_marker(marker);
   std::error_code error;
@@ -1560,20 +1576,29 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
     fs::rename(mapping, original, error);
   if (reached_delay && !error)
     fs::rename(replacement, mapping, error);
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
   if (reached_delay && !error)
     fs::rename(mapping, replacement, error);
   if (reached_delay && !error)
     fs::rename(original, mapping, error);
+  std::ofstream(release) << "continue\n";
   loader.join();
+  ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE");
   ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_MARKER");
   ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_DELAY_MS");
   ::unsetenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
   ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
 
+  std::ifstream snapshot_identity_input(
+      result.ok() && result->load_snapshot
+          ? result->load_snapshot->directory() / hm::stitching::kStitchGenerationArtifact
+          : fs::path(),
+      std::ios::binary);
+  const std::string snapshot_identity{
+      std::istreambuf_iterator<char>(snapshot_identity_input), std::istreambuf_iterator<char>()};
   if (!reached_delay || error || !result.ok() || !result->artifact_lock || !result->load_snapshot ||
       result->canvas_size.width != 160 || result->canvas_size.height != 32 ||
-      fs::is_symlink(result->load_snapshot->directory() / "mapping_0001.tif")) {
+      fs::is_symlink(result->load_snapshot->directory() / "mapping_0001.tif") ||
+      snapshot_identity != expected_identity) {
     std::cerr << "unreliable-filesystem validation must use one pinned artifact generation: " << result.status()
               << std::endl;
     return false;

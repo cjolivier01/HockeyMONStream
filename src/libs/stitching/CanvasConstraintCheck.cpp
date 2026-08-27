@@ -2105,6 +2105,32 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path&
   return logical_id;
 }
 
+absl::StatusOr<StitchArtifactContentIdentity> stitch_artifact_content_identity_locked(
+    const fs::path& artifact_directory) {
+  auto fingerprint = stitch_artifact_fingerprint(artifact_directory);
+  if (!fingerprint.ok())
+    return fingerprint.status();
+  auto identity = read_stitch_generation_artifact(artifact_directory / kStitchGenerationArtifact);
+  if (!identity.ok()) {
+    if (absl::IsNotFound(identity.status())) {
+      return StitchArtifactContentIdentity{
+          .generation_id = content_scoped_stitch_generation_id(*fingerprint),
+          .fingerprint = std::move(*fingerprint),
+      };
+    }
+    return identity.status();
+  }
+  auto parsed = parse_stitch_generation_identity(*identity);
+  if (!parsed.ok() || parsed->version != 3 || parsed->fingerprint != *fingerprint) {
+    return absl::FailedPreconditionError(
+        "Hugin artifact contents do not have a matching version-3 generation identity");
+  }
+  return StitchArtifactContentIdentity{
+      .generation_id = std::move(parsed->logical_id),
+      .fingerprint = std::move(*fingerprint),
+  };
+}
+
 absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const fs::path& game_dir) {
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (!identity.ok()) {

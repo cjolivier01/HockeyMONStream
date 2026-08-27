@@ -141,6 +141,17 @@ absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constr
 // caller must hold the stitching artifact lock for the complete call.
 absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const std::filesystem::path& game_dir);
 
+struct StitchArtifactContentIdentity {
+  std::string generation_id;
+  std::string fingerprint;
+};
+
+// Resolves a stable artifact set by content without updating its generation
+// sidecar or syncing files. Returns FailedPrecondition for legacy or
+// content-mismatched sidecars.
+absl::StatusOr<StitchArtifactContentIdentity> stitch_artifact_content_identity_locked(
+    const std::filesystem::path& artifact_directory);
+
 // Resolves a version-3 identity from its sidecar and bindings without hashing
 // mapping payloads. This is advisory preflight only; loaders must call
 // stitch_artifact_generation_id_locked while holding the artifact lock.
