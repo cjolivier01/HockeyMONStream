@@ -16,6 +16,7 @@
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
+#include <QtCore/QFile>
 #include <QtCore/QList>
 #include <QtCore/QProcess>
 
@@ -59,6 +60,12 @@ QString development_runtime_root_for_application(const QString& application_path
 // Returns an empty string when all artifacts needed by a Bazel development
 // runtime are present, or the missing artifact path otherwise.
 QString missing_development_runtime_artifact(const QString& bazel_bin_path);
+bool remove_owned_path_for_test(
+    const QString& path,
+    quint64 expected_device,
+    quint64 expected_inode,
+    QString* error = nullptr);
+bool reconcile_cleanup_directory_for_test(const QString& directory_path, QString* error = nullptr);
 
 } // namespace hm::ui_internal
 
@@ -165,6 +172,15 @@ class HStreamWindow : public QMainWindow {
   int playbackProgressResetTimeoutMs() const;
   void handleArchiveOutputStatus(const QString& line);
   void updateArchiveOutputPathLabel();
+  void beginArchiveJobLog(const QString& configured_output_path, const QString& run_id);
+  void resolveArchiveJobLogPath(const QString& resolved_output_path);
+  bool reopenArchiveJobLog(
+      const QString& path,
+      QString* error,
+      quint64 expected_device = 0,
+      quint64 expected_inode = 0);
+  void finishArchiveJobLog(bool retire_identity_guard = true);
+  void finishArchiveJobLogAfterFinalizationFailure();
   void startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video);
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
@@ -174,6 +190,8 @@ class HStreamWindow : public QMainWindow {
   void failArchiveFinalization(const QString& message);
   bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
   void releaseArchiveFinalizerOwnership(bool remove_lock_file);
+  bool releaseArchiveFinalizeSource(bool remove_guard, bool require_target_identity = false);
+  bool releaseArchiveFinalizeTarget(bool remove_guard);
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -452,6 +470,12 @@ class HStreamWindow : public QMainWindow {
   QString active_run_game_id_;
   QString active_archive_output_path_;
   QString active_archive_recovery_path_;
+  QFile archive_job_log_;
+  QString archive_job_log_path_;
+  QString archive_job_log_guard_path_;
+  quint64 archive_job_log_device_{0};
+  quint64 archive_job_log_inode_{0};
+  bool archive_job_log_enabled_{false};
   qint64 active_archive_initial_size_{-1};
   qint64 active_archive_initial_mtime_ms_{-1};
   bool active_archive_video_is_hevc_{false};
@@ -463,8 +487,10 @@ class HStreamWindow : public QMainWindow {
   QProgressBar* archive_finalize_progress_{nullptr};
   QPushButton* archive_finalize_ok_button_{nullptr};
   QString archive_finalize_source_path_;
+  QString archive_finalize_source_guard_path_;
   QString archive_finalize_game_id_;
   QString archive_finalize_target_path_;
+  QString archive_finalize_target_guard_path_;
   QString archive_finalize_partial_path_;
   QString archive_finalize_temporary_dir_;
   QString archive_finalize_blocked_source_path_;
@@ -474,6 +500,15 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_owner_lock_path_;
   qint64 archive_finalize_duration_us_{-1};
   int archive_finalize_owner_lock_fd_{-1};
+  int archive_finalize_source_fd_{-1};
+  int archive_finalize_target_fd_{-1};
+  int archive_finalize_recovery_log_fd_{-1};
+  quint64 archive_finalize_source_device_{0};
+  quint64 archive_finalize_source_inode_{0};
+  quint64 archive_finalize_target_device_{0};
+  quint64 archive_finalize_target_inode_{0};
+  quint64 archive_finalize_recovery_log_device_{0};
+  quint64 archive_finalize_recovery_log_inode_{0};
   ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
   bool archive_finalize_failed_{false};
   bool active_run_is_calibration_{false};

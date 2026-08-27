@@ -61,6 +61,7 @@
 #include <X11/Xutil.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -95,6 +96,23 @@ struct HStreamWindowTestAccess {
 
   static QStringList pipelineArguments(HStreamWindow* window) {
     return window->pipelineArguments();
+  }
+
+  static void finishArchiveJobLogAfterFinalizationFailure(
+      HStreamWindow* window,
+      const QString& configured_output_path,
+      const QString& resolved_output_path,
+      const QString& run_id,
+      QString* log_path,
+      QString* guard_path) {
+    window->beginArchiveJobLog(configured_output_path, run_id);
+    window->resolveArchiveJobLogPath(resolved_output_path);
+    window->archive_finalize_source_path_ = resolved_output_path;
+    if (log_path)
+      *log_path = window->archive_job_log_path_;
+    if (guard_path)
+      *guard_path = window->archive_job_log_guard_path_;
+    window->finishArchiveJobLogAfterFinalizationFailure();
   }
 };
 
@@ -1002,9 +1020,14 @@ bool write_fake_ffmpeg(const QString& path) {
   file.write("print('progress=continue', flush=True)\n");
   file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_FAIL') == '1':\n");
   file.write("    if os.environ.get('HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY') == '1':\n");
-  file.write("        os.chmod(os.path.dirname(source), 0o500)\n");
+  file.write("        os.chmod(os.path.dirname(os.environ['HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH']), 0o500)\n");
   file.write("    print('intentional remux failure', file=sys.stderr, flush=True)\n");
   file.write("    sys.exit(17)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT') == '1':\n");
+  file.write("    original = os.environ['HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH']\n");
+  file.write("    os.unlink(original)\n");
+  file.write("    with open(original, 'wb') as replacement:\n");
+  file.write("        replacement.write(b'injected foreign source before ffmpeg input')\n");
   file.write("time.sleep(0.15)\n");
   file.write("shutil.copyfile(source, target)\n");
   file.write("print('out_time=00:10:00.000000', flush=True)\n");
@@ -1025,7 +1048,8 @@ bool write_fake_sync(const QString& path) {
   file.write("import sys\n");
   file.write("import time\n");
   file.write("time.sleep(float(os.environ.get('HSTREAM_UI_TEST_SYNC_DELAY', '0')))\n");
-  file.write("if len(sys.argv) != 3 or sys.argv[1] != '-f' or not os.path.exists(sys.argv[2]):\n");
+  file.write(
+      "if len(sys.argv) < 3 or sys.argv[1] != '-f' or not all(os.path.exists(path) for path in sys.argv[2:]):\n");
   file.write("    sys.exit(19)\n");
   file.close();
   return QFile::setPermissions(
@@ -4798,10 +4822,12 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("tracking_output-with-audio.mkv");
   const QString expected_path =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("custom-archive.mkv");
+  const QString expected_job_log = expected_path + ".log";
   const QString restarted_recovery_path =
       QDir(QFileInfo(expected_path).absolutePath()).filePath("custom-archive-finalization-failed.mkv");
   QDir().mkpath(QFileInfo(expected_path).absolutePath());
   QFile::remove(planned_path);
+  QFile::remove(expected_job_log);
   QFile::remove(restarted_recovery_path);
   QFile interrupted_archive(planned_path);
   if (!interrupted_archive.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
@@ -4862,25 +4888,299 @@ bool test_output_controls(HStreamWindow* window) {
   const bool missing_new_output_reported = expect(
       window->logText().contains(QString("archive output was not created; expected: %1").arg(expected_path)),
       "Archive playback must not claim that the safely recovered prior file came from the current run");
+  QFile persisted_job_log(expected_job_log);
+  const bool persisted_job_log_opened = persisted_job_log.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString persisted_job_log_text =
+      persisted_job_log_opened ? QString::fromUtf8(persisted_job_log.readAll()) : QString();
+  const QFileDevice::Permissions persisted_job_log_permissions = QFileInfo(expected_job_log).permissions();
+  const QFileDevice::Permissions non_owner_permissions = QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+      QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+  const bool job_log_persisted = expect(
+      persisted_job_log_opened &&
+          (persisted_job_log_permissions & (QFileDevice::ReadOwner | QFileDevice::WriteOwner)) ==
+              (QFileDevice::ReadOwner | QFileDevice::WriteOwner) &&
+          (persisted_job_log_permissions & non_owner_permissions) == 0 &&
+          persisted_job_log_text.contains("pipeline command") &&
+          persisted_job_log_text.contains(QString("archive backend resolved output: %1").arg(expected_path)) &&
+          persisted_job_log_text.contains("pipeline finished") &&
+          persisted_job_log_text.contains(QString("archive output was not created; expected: %1").arg(expected_path)),
+      "Each archive job must persist the UI log beside its resolved work video with owner-only permissions");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVER_EXISTING");
+
+  const QString incomplete_exit_path = QDir(QFileInfo(expected_path).absolutePath()).filePath("incomplete-exit.mkv");
+  const QString incomplete_exit_log = incomplete_exit_path + ".log";
+  const QString incomplete_exit_log_guard = incomplete_exit_log + ".hstream-pin";
+  QFile::remove(incomplete_exit_path);
+  QFile::remove(incomplete_exit_log);
+  QFile::remove(incomplete_exit_log_guard);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", incomplete_exit_path.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
+  qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "9");
+  activate(start);
+  for (int i = 0; i < 400 && window->pipelineStateText() != "STOPPED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
+  qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
+  QFile incomplete_exit_log_file(incomplete_exit_log);
+  const bool incomplete_exit_log_opened = incomplete_exit_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QByteArray incomplete_exit_log_content =
+      incomplete_exit_log_opened ? incomplete_exit_log_file.readAll() : QByteArray();
+  const bool incomplete_exit_log_guarded = expect(
+      window->outputStateText("archive-file") == "INCOMPLETE" && QFileInfo(incomplete_exit_path).size() > 0 &&
+          incomplete_exit_log_content.contains("pipeline finished exit=9") &&
+          QFileInfo::exists(incomplete_exit_log_guard),
+      "An unsuccessful run with a nonempty work video must retain the log identity guard for next-start recovery");
+
+  bool same_filesystem_log_rollback = true;
+#ifdef Q_OS_UNIX
+  const auto guarded_same_filesystem_fallback = [&](const QString& basename,
+                                                    const char* failure_environment,
+                                                    bool expect_foreign_guard,
+                                                    bool expect_foreign_log) {
+    const QString resolved_source = QDir(output_root.path()).filePath(basename + ".mkv");
+    const QString resolved_log = resolved_source + ".log";
+    const QString resolved_guard = resolved_log + ".hstream-pin";
+    QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
+    const QStringList provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QFile::remove(resolved_log);
+    QFile::remove(resolved_guard);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", resolved_source.toLocal8Bit());
+    qputenv(failure_environment, "1");
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    qunsetenv(failure_environment);
+    const QStringList provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString fallback_log_text;
+    for (const QString& provisional_log : provisional_logs_after) {
+      if (provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    QFile guard_file(resolved_guard);
+    const bool guard_opened = guard_file.open(QIODevice::ReadOnly);
+    const QByteArray guard_text = guard_opened ? guard_file.readAll() : QByteArray();
+    QFile resolved_log_file(resolved_log);
+    const bool resolved_log_opened = resolved_log_file.open(QIODevice::ReadOnly);
+    const QByteArray resolved_log_text = resolved_log_opened ? resolved_log_file.readAll() : QByteArray();
+    const bool result = (expect_foreign_log ? resolved_log_text == "injected foreign resolved log after rename"
+                                            : !QFileInfo::exists(resolved_log)) &&
+        fallback_log_text.contains(QString("archive backend resolved output: %1").arg(resolved_source)) &&
+        fallback_log_text.contains("pipeline finished") &&
+        (expect_foreign_guard ? guard_text == "injected foreign resolved log guard"
+                              : !QFileInfo::exists(resolved_guard));
+    QFile::remove(resolved_log);
+    QFile::remove(resolved_guard);
+    return result;
+  };
+  same_filesystem_log_rollback = expect(
+      guarded_same_filesystem_fallback(
+          "same-filesystem-guard-collision", "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_COLLISION", true, false) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-guard-sync-failure",
+              "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_GUARD_SYNC_FAILURE",
+              false,
+              false) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-sync-failure", "HSTREAM_UI_TEST_ARCHIVE_SAME_FILESYSTEM_SYNC_FAILURE", false, false) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-post-rename-replacement",
+              "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_REPLACEMENT_AFTER_RENAME",
+              false,
+              true),
+      "Same-filesystem log publication must retain the guarded provisional log across guard, sync, and rename races");
+#endif
+
+  bool cross_filesystem_log_persisted = true;
+#ifdef Q_OS_UNIX
+  QTemporaryDir cross_filesystem_root("/dev/shm/hstream-ui-cross-filesystem-XXXXXX");
+  struct stat output_root_stat{};
+  struct stat cross_root_stat{};
+  const QByteArray encoded_output_root = QFile::encodeName(output_root.path());
+  const QByteArray encoded_cross_root = QFile::encodeName(cross_filesystem_root.path());
+  const bool distinct_cross_filesystem = cross_filesystem_root.isValid() &&
+      ::stat(encoded_output_root.constData(), &output_root_stat) == 0 &&
+      ::stat(encoded_cross_root.constData(), &cross_root_stat) == 0 &&
+      output_root_stat.st_dev != cross_root_stat.st_dev;
+  if (distinct_cross_filesystem) {
+    const QString cross_filesystem_source = QDir(cross_filesystem_root.path()).filePath("cross-filesystem-output.mkv");
+    const QString cross_filesystem_log = cross_filesystem_source + ".log";
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_source.toLocal8Bit());
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    QFile cross_log_file(cross_filesystem_log);
+    const bool cross_log_opened = cross_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+    const QString cross_log_text = cross_log_opened ? QString::fromUtf8(cross_log_file.readAll()) : QString();
+    cross_filesystem_log_persisted = expect(
+        cross_log_opened &&
+            cross_log_text.contains(QString("archive backend resolved output: %1").arg(cross_filesystem_source)) &&
+            cross_log_text.contains("pipeline finished"),
+        "A backend-resolved archive on another filesystem must receive a secure copied-and-continued UI log");
+
+    const QString cross_filesystem_sync_failure_source =
+        QDir(cross_filesystem_root.path()).filePath("cross-filesystem-sync-failure.mkv");
+    const QString cross_filesystem_sync_failure_log = cross_filesystem_sync_failure_source + ".log";
+    QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
+    const QStringList provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_sync_failure_source.toLocal8Bit());
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_SYNC_FAILURE", "1");
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const QStringList provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString fallback_log_text;
+    for (const QString& provisional_log : provisional_logs_after) {
+      if (provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    cross_filesystem_log_persisted &= expect(
+        !QFileInfo::exists(cross_filesystem_sync_failure_log) &&
+            fallback_log_text.contains(
+                QString("archive backend resolved output: %1").arg(cross_filesystem_sync_failure_source)) &&
+            fallback_log_text.contains("pipeline finished"),
+        "A cross-filesystem destination-sync failure must retain and continue the durable provisional UI log");
+
+    const QString cross_filesystem_copy_replacement_source =
+        QDir(cross_filesystem_root.path()).filePath("cross-filesystem-copy-replacement.mkv");
+    const QString cross_filesystem_copy_replacement_log = cross_filesystem_copy_replacement_source + ".log";
+    const QStringList replacement_provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_copy_replacement_source.toLocal8Bit());
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_COPY_REPLACEMENT", "1");
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const QStringList replacement_provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString replacement_fallback_log_text;
+    for (const QString& provisional_log : replacement_provisional_logs_after) {
+      if (replacement_provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        replacement_fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    QFile foreign_cross_filesystem_log(cross_filesystem_copy_replacement_log);
+    const bool foreign_cross_filesystem_log_opened = foreign_cross_filesystem_log.open(QIODevice::ReadOnly);
+    const QByteArray foreign_cross_filesystem_log_text =
+        foreign_cross_filesystem_log_opened ? foreign_cross_filesystem_log.readAll() : QByteArray();
+    cross_filesystem_log_persisted &= expect(
+        foreign_cross_filesystem_log_text == "injected foreign cross-filesystem log" &&
+            replacement_fallback_log_text.contains(
+                QString("archive backend resolved output: %1").arg(cross_filesystem_copy_replacement_source)) &&
+            replacement_fallback_log_text.contains("pipeline finished"),
+        "Cross-filesystem copy error cleanup must preserve a replacement pathname and continue the pinned provisional log");
+
+    const QString cross_filesystem_reopen_failure_source =
+        QDir(cross_filesystem_root.path()).filePath("cross-filesystem-reopen-failure.mkv");
+    const QString cross_filesystem_reopen_failure_log = cross_filesystem_reopen_failure_source + ".log";
+    const QStringList reopen_provisional_logs_before =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_reopen_failure_source.toLocal8Bit());
+    qputenv(
+        "HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_REOPEN_FAILURE", cross_filesystem_reopen_failure_log.toLocal8Bit());
+    activate(start);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    const QStringList reopen_provisional_logs_after =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString reopen_fallback_log_text;
+    for (const QString& provisional_log : reopen_provisional_logs_after) {
+      if (reopen_provisional_logs_before.contains(provisional_log))
+        continue;
+      QFile fallback_log(provisional_log_dir.filePath(provisional_log));
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
+        reopen_fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+    }
+    cross_filesystem_log_persisted &= expect(
+        !QFileInfo::exists(cross_filesystem_reopen_failure_log) &&
+            reopen_fallback_log_text.contains(
+                QString("archive backend resolved output: %1").arg(cross_filesystem_reopen_failure_source)) &&
+            reopen_fallback_log_text.contains("pipeline finished"),
+        "A cross-filesystem copied-log reopen failure must fall back to the original pinned identity and keep logging");
+  }
+#endif
 
   const QString completed_source =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("completed-source.mkv");
+  const QString completed_job_log = completed_source + ".log";
   const QString concurrent_completed_target =
       QDir(window->gameDirectoryText())
           .filePath(QString("%1-tracking_output-with-audio.mp4").arg(window->gameIdText()));
   const QString completed_target =
       QDir(window->gameDirectoryText())
+          .filePath(QString("%1-tracking_output-with-audio-2.mp4").arg(window->gameIdText()));
+  const QString replaced_completed_target =
+      QDir(window->gameDirectoryText())
+          .filePath(QString("%1-tracking_output-with-audio-3.mp4").arg(window->gameIdText()));
+  const QString dangling_completed_target =
+      QDir(window->gameDirectoryText())
           .filePath(QString("%1-tracking_output-with-audio-1.mp4").arg(window->gameIdText()));
+  const QString missing_completed_target = QDir(window->gameDirectoryText()).filePath("missing-completed-target");
   const QString ffmpeg_arguments = QDir(output_root.path()).filePath("ffmpeg-arguments.txt");
   QFile::remove(completed_source);
+  QFile::remove(completed_job_log);
   QFile::remove(concurrent_completed_target);
   QFile::remove(completed_target);
+  QFile::remove(replaced_completed_target);
+  QFile::remove(dangling_completed_target);
+  QFile::remove(missing_completed_target);
+  const bool dangling_completed_target_created = QFile::link(missing_completed_target, dangling_completed_target);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", completed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
   qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
   qputenv("HSTREAM_UI_TEST_FFMPEG_ARGS", ffmpeg_arguments.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.25");
+  qputenv("HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT", "1");
   activate(start);
   QDialog* finalize_dialog = nullptr;
   QProgressBar* finalize_progress = nullptr;
@@ -4931,40 +5231,471 @@ bool test_output_controls(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  qunsetenv("HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
   QFile argument_file(ffmpeg_arguments);
   const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
   const QString argument_text = opened_arguments ? QString::fromUtf8(argument_file.readAll()) : QString();
+  QFile completed_log_file(completed_job_log);
+  const bool completed_log_opened = completed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString completed_log_text = completed_log_opened ? QString::fromUtf8(completed_log_file.readAll()) : QString();
+  QFile completed_video_file(replaced_completed_target);
+  const bool completed_video_opened = completed_video_file.open(QIODevice::ReadOnly);
+  const QByteArray completed_video_text = completed_video_opened ? completed_video_file.readAll() : QByteArray();
+  QFile foreign_source_file(completed_source);
+  const bool foreign_source_opened = foreign_source_file.open(QIODevice::ReadOnly);
+  const QByteArray foreign_source_text = foreign_source_opened ? foreign_source_file.readAll() : QByteArray();
+  QFile replaced_target_file(completed_target);
+  const bool replaced_target_opened = replaced_target_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_target_text = replaced_target_opened ? replaced_target_file.readAll() : QByteArray();
+  QFile replaced_owner_lock_file(finalizer_owner_lock_path);
+  const bool replaced_owner_lock_opened = replaced_owner_lock_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_owner_lock_text =
+      replaced_owner_lock_opened ? replaced_owner_lock_file.readAll() : QByteArray();
+  const bool completed_log_persisted = expect(
+      completed_log_opened && !QFileInfo::exists(completed_job_log + ".hstream-pin") &&
+          completed_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(completed_source)) &&
+          completed_log_text.contains(QString("completed archive published: %1").arg(replaced_completed_target)),
+      "A completed job log must remain beside the work artifacts and include asynchronous MP4 finalization output");
   const bool archive_deployed = expect(
-      finalizer_owner_lock_held && concurrent_completed_archive_created &&
-          window->outputStateText("archive-file") == "SAVED" && QFileInfo(completed_target).size() > 0 &&
-          QFileInfo(concurrent_completed_target).size() > 0 && !QFileInfo::exists(completed_source) &&
-          !QFileInfo::exists(finalizer_owner_lock_path) && argument_text.contains("-n\n") &&
+      finalizer_owner_lock_held && concurrent_completed_archive_created && dangling_completed_target_created &&
+          QFileInfo(dangling_completed_target).isSymLink() && window->outputStateText("archive-file") == "SAVED" &&
+          completed_video_text == "completed lossless archive" &&
+          !QFileInfo::exists(replaced_completed_target + ".hstream-pin") &&
+          replaced_target_text == "injected foreign completed target" &&
+          foreign_source_text == "injected foreign source before ffmpeg input" &&
+          replaced_owner_lock_text == "injected foreign owner lock" &&
+          QFileInfo(concurrent_completed_target).size() > 0 && argument_text.contains("-n\n") &&
           !argument_text.contains("-y\n") &&
+          argument_text.contains(QRegularExpression(R"(-i\n/proc/self/fd/[0-9]+\n)")) &&
+          !argument_text.contains("/proc/self/fd/197") && !argument_text.contains("/proc/self/fd/198") &&
           argument_text.contains(
               QString("/.%1-tracking_output-with-audio.hstream-finalize-").arg(window->gameIdText())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
           argument_text.contains("-tag:v\nhvc1") &&
-          window->logText().contains(QString("completed archive published: %1").arg(completed_target)),
-      "Concurrent completion must retain finalizer ownership, keep the first MP4, publish a suffixed lossless "
-      "faststart MP4, and remove only its own work file");
+          window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),
+      "Finalization must remux the pinned source FD, skip dangling names, republish a target replaced during sync, "
+      "and leave replacement source, target, and ownership-lock paths untouched");
 
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+
+  bool ui_cleanup_restart_setup = true;
+  const QString interrupted_ui_target = QDir(window->gameDirectoryText()).filePath("interrupted-ui-target.mp4");
+  const QString interrupted_ui_target_fallback = interrupted_ui_target + ".hstream-cleanup-pin";
+  const QString interrupted_ui_target_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-11111111-2222-4333-8444-555555555555");
+  const QString interrupted_ui_guard_target =
+      QDir(window->gameDirectoryText()).filePath("interrupted-ui-guard-target.mp4");
+  const QString interrupted_ui_guard = interrupted_ui_guard_target + ".hstream-pin";
+  const QString interrupted_ui_guard_fallback = interrupted_ui_guard + ".hstream-cleanup-pin";
+  const QString interrupted_ui_guard_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-66666666-7777-4888-8999-aaaaaaaaaaaa");
+  const QString committed_ui_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-00000000-0000-4000-8000-000000000000");
+  const QString live_ui_target = QDir(window->gameDirectoryText()).filePath("live-ui-cleanup-target.mp4");
+  const QString live_ui_fallback = live_ui_target + ".hstream-cleanup-pin";
+  const QString live_ui_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-00000000-0000-4000-8000-000000000001");
+  const QString unrelated_ui_cleanup_file = QDir(window->gameDirectoryText()).filePath("notes.hstream-cleanup-pin");
+  const QString unrelated_ui_cleanup_directory =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb");
+  const QString unrelated_ui_cleanup_sibling_owner = unrelated_ui_cleanup_directory + ".hstream-owner";
+  const QString reconciliation_race_target =
+      QDir(window->gameDirectoryText()).filePath("interrupted-ui-reconciliation-race.mp4");
+  const QString reconciliation_race_fallback = reconciliation_race_target + ".hstream-cleanup-pin";
+  const QString reconciliation_race_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-01234567-89ab-4cde-8fab-0123456789ab");
+#ifdef Q_OS_UNIX
+  int live_ui_cleanup_fd = -1;
+  const auto write_cleanup_test_file = [](const QString& path, const QByteArray& content) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(content) == content.size();
+  };
+  const auto create_hard_link = [](const QString& source, const QString& destination) {
+    const QByteArray encoded_source = QFile::encodeName(source);
+    const QByteArray encoded_destination = QFile::encodeName(destination);
+    return ::link(encoded_source.constData(), encoded_destination.constData()) == 0;
+  };
+  const auto write_cleanup_owner = [&](const QString& cleanup_path, const QString& target_path) {
+    const QByteArray target_name = QFile::encodeName(QFileInfo(target_path).fileName());
+    return write_cleanup_test_file(
+        QDir(cleanup_path).filePath("owner"), QByteArray("hstream-cleanup-v2\n") + target_name.toBase64());
+  };
+  const auto write_cleanup_commit = [&](const QString& cleanup_path, const QString& identity_path) {
+    struct stat identity_stat{};
+    if (::lstat(QFile::encodeName(identity_path).constData(), &identity_stat) != 0)
+      return false;
+    return write_cleanup_test_file(
+        QDir(cleanup_path).filePath("committed"),
+        QByteArray("hstream-cleanup-committed-v1\n") +
+            QByteArray::number(static_cast<qulonglong>(identity_stat.st_dev)) + "\n" +
+            QByteArray::number(static_cast<qulonglong>(identity_stat.st_ino)) + "\n");
+  };
+  ui_cleanup_restart_setup = write_cleanup_test_file(interrupted_ui_target, "trusted interrupted UI target") &&
+      create_hard_link(interrupted_ui_target, interrupted_ui_target_fallback) &&
+      QDir().mkpath(interrupted_ui_target_cleanup) &&
+      write_cleanup_owner(interrupted_ui_target_cleanup, interrupted_ui_target) &&
+      QFile::rename(interrupted_ui_target, QDir(interrupted_ui_target_cleanup).filePath("entry")) &&
+      write_cleanup_test_file(interrupted_ui_guard_target, "trusted interrupted UI target guard") &&
+      create_hard_link(interrupted_ui_guard_target, interrupted_ui_guard) &&
+      create_hard_link(interrupted_ui_guard_target, interrupted_ui_guard_fallback) &&
+      QDir().mkpath(interrupted_ui_guard_cleanup) &&
+      write_cleanup_owner(interrupted_ui_guard_cleanup, interrupted_ui_guard) &&
+      QFile::rename(interrupted_ui_guard, QDir(interrupted_ui_guard_cleanup).filePath("entry")) &&
+      QDir().mkpath(committed_ui_cleanup) &&
+      write_cleanup_owner(committed_ui_cleanup, QDir(window->gameDirectoryText()).filePath("committed-deleted.mp4")) &&
+      write_cleanup_test_file(QDir(committed_ui_cleanup).filePath("guard"), "committed UI cleanup inode") &&
+      create_hard_link(QDir(committed_ui_cleanup).filePath("guard"), QDir(committed_ui_cleanup).filePath("fallback")) &&
+      write_cleanup_commit(committed_ui_cleanup, QDir(committed_ui_cleanup).filePath("guard")) &&
+      write_cleanup_test_file(live_ui_target, "trusted live UI cleanup target") &&
+      create_hard_link(live_ui_target, live_ui_fallback) && QDir().mkpath(live_ui_cleanup) &&
+      write_cleanup_owner(live_ui_cleanup, live_ui_target) &&
+      QFile::rename(live_ui_target, QDir(live_ui_cleanup).filePath("entry")) &&
+      write_cleanup_test_file(unrelated_ui_cleanup_file, "unrelated UI cleanup-looking notes") &&
+      QDir().mkpath(unrelated_ui_cleanup_directory) &&
+      write_cleanup_test_file(QDir(unrelated_ui_cleanup_directory).filePath("guard"),
+                              "unrelated exact cleanup guard") &&
+      create_hard_link(QDir(unrelated_ui_cleanup_directory).filePath("guard"),
+                       QDir(unrelated_ui_cleanup_directory).filePath("fallback")) &&
+      write_cleanup_test_file(unrelated_ui_cleanup_sibling_owner, "hstream-cleanup-v2\ndW5yZWxhdGVkLm1rdg==") &&
+      write_cleanup_test_file(reconciliation_race_target, "trusted UI reconciliation-race target") &&
+      create_hard_link(reconciliation_race_target, reconciliation_race_fallback) &&
+      QDir().mkpath(reconciliation_race_cleanup) &&
+      write_cleanup_owner(reconciliation_race_cleanup, reconciliation_race_target) &&
+      QFile::rename(reconciliation_race_target, QDir(reconciliation_race_cleanup).filePath("entry"));
+  if (ui_cleanup_restart_setup) {
+    live_ui_cleanup_fd =
+        ::open(QFile::encodeName(live_ui_cleanup).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    ui_cleanup_restart_setup = live_ui_cleanup_fd >= 0 && ::flock(live_ui_cleanup_fd, LOCK_EX | LOCK_NB) == 0;
+  }
+#endif
+
+  const QString reconciliation_trigger_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("reconciliation-trigger.mkv");
+  QFile::remove(reconciliation_trigger_source);
+  QFile::remove(reconciliation_trigger_source + ".log");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", reconciliation_trigger_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION", reconciliation_race_target.toLocal8Bit());
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  auto* reconciliation_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  QString reconciliation_rescue_path;
+  QByteArray reconciliation_rescue_content;
+  const QString reconciliation_guard_prefix = ".hstream-reconcile-";
+  const QDir reconciliation_game_dir(window->gameDirectoryText());
+  for (const QString& name : reconciliation_game_dir.entryList(QDir::Files | QDir::Hidden | QDir::System, QDir::Name)) {
+    if (!name.startsWith(reconciliation_guard_prefix) || name.endsWith(".hstream-cleanup-pin"))
+      continue;
+    reconciliation_rescue_path = reconciliation_game_dir.filePath(name);
+    QFile rescue_file(reconciliation_rescue_path);
+    if (rescue_file.open(QIODevice::ReadOnly))
+      reconciliation_rescue_content = rescue_file.readAll();
+  }
+  QFile reconciliation_foreign_file(reconciliation_race_target);
+  const bool reconciliation_foreign_opened = reconciliation_foreign_file.open(QIODevice::ReadOnly);
+  const QByteArray reconciliation_foreign_content =
+      reconciliation_foreign_opened ? reconciliation_foreign_file.readAll() : QByteArray();
+  QFile unrelated_ui_cleanup_file_handle(unrelated_ui_cleanup_file);
+  const bool unrelated_ui_cleanup_file_opened = unrelated_ui_cleanup_file_handle.open(QIODevice::ReadOnly);
+  const QByteArray unrelated_ui_cleanup_content =
+      unrelated_ui_cleanup_file_opened ? unrelated_ui_cleanup_file_handle.readAll() : QByteArray();
+  const bool ui_cleanup_reconciliation_race_safe = expect(
+      window->outputStateText("archive-file") == "ERROR" &&
+          reconciliation_rescue_content == "trusted UI reconciliation-race target" &&
+          reconciliation_foreign_content == "foreign public cleanup identity" &&
+          QFileInfo::exists(reconciliation_race_cleanup) &&
+          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("entry")) &&
+          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("guard")) &&
+          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("fallback")) &&
+          !QFileInfo::exists(committed_ui_cleanup) &&
+          !QFileInfo::exists(QDir(committed_ui_cleanup).filePath("owner")) &&
+          QFileInfo::exists(QDir(live_ui_cleanup).filePath("entry")) && QFileInfo::exists(live_ui_fallback) &&
+          unrelated_ui_cleanup_content == "unrelated UI cleanup-looking notes" &&
+          QFileInfo::exists(unrelated_ui_cleanup_directory) &&
+          QFileInfo::exists(QDir(unrelated_ui_cleanup_directory).filePath("guard")) &&
+          QFileInfo::exists(QDir(unrelated_ui_cleanup_directory).filePath("fallback")) &&
+          QFileInfo::exists(unrelated_ui_cleanup_sibling_owner) &&
+          !QFileInfo::exists(QDir(window->gameDirectoryText()).filePath("notes")),
+      "UI cleanup reconciliation must keep its dedicated guard through private-link retirement and leave unrelated entries untouched");
+  if (reconciliation_failure_ok)
+    activate(reconciliation_failure_ok);
+#ifdef Q_OS_UNIX
+  if (live_ui_cleanup_fd >= 0)
+    ::close(live_ui_cleanup_fd);
+#endif
+  reconciliation_foreign_file.close();
+  QFile::remove(reconciliation_race_target);
+  qputenv(
+      "HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE",
+      (reconciliation_rescue_path + ".hstream-cleanup-pin").toLocal8Bit());
+  QString reconciliation_guard_retirement_error;
+  const bool reconciliation_guard_retirement_interrupted = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      window->gameDirectoryText(), &reconciliation_guard_retirement_error);
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE");
+  const bool reconciliation_outer_owner_only = QFileInfo::exists(reconciliation_race_cleanup) &&
+      QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("owner")) &&
+      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("entry")) &&
+      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("guard")) &&
+      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("fallback"));
+  const bool reconciliation_guard_public_fallback =
+      QFileInfo::exists(reconciliation_rescue_path + ".hstream-cleanup-pin");
+  QString reconciliation_stable_pass_error;
+  const bool reconciliation_stable_pass = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      window->gameDirectoryText(), &reconciliation_stable_pass_error);
+  QFile reconciliation_restored_target(reconciliation_race_target);
+  const bool reconciliation_rescue_restored = !reconciliation_guard_retirement_interrupted &&
+      reconciliation_outer_owner_only && !reconciliation_guard_public_fallback && reconciliation_stable_pass &&
+      reconciliation_restored_target.open(QIODevice::ReadOnly) &&
+      reconciliation_restored_target.readAll() == "trusted UI reconciliation-race target" &&
+      !QFileInfo::exists(reconciliation_race_cleanup) && !QFileInfo::exists(reconciliation_rescue_path) &&
+      !QFileInfo::exists(reconciliation_rescue_path + ".hstream-cleanup-pin");
+  QFile::remove(reconciliation_trigger_source);
+  QFile::remove(reconciliation_trigger_source + ".log");
+  archive->setChecked(false);
+  archive->setChecked(true);
+
+  const QString target_cleanup_race_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("target-cleanup-race.mkv");
+  const QString target_cleanup_race_recovery = QDir(QFileInfo(target_cleanup_race_source).absolutePath())
+                                                   .filePath("target-cleanup-race-finalization-failed.mkv");
+  QFile::remove(target_cleanup_race_source);
+  QFile::remove(target_cleanup_race_source + ".log");
+  QFile::remove(target_cleanup_race_recovery);
+  const QStringList finalized_before_target_cleanup_race =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", target_cleanup_race_source.toLocal8Bit());
+  qputenv(
+      "HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", (target_cleanup_race_source + ".hstream-pin").toLocal8Bit());
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
+  auto* target_cleanup_race_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* target_cleanup_race_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  QFile target_cleanup_race_recovery_file(target_cleanup_race_recovery);
+  const bool target_cleanup_race_recovery_opened = target_cleanup_race_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray target_cleanup_race_recovery_text =
+      target_cleanup_race_recovery_opened ? target_cleanup_race_recovery_file.readAll() : QByteArray();
+  const QStringList finalized_after_target_cleanup_race =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  bool foreign_target_retained =
+      finalized_after_target_cleanup_race.size() == finalized_before_target_cleanup_race.size() + 1;
+  for (const QString& target_name : finalized_after_target_cleanup_race) {
+    if (finalized_before_target_cleanup_race.contains(target_name))
+      continue;
+    QFile target_file(QDir(window->gameDirectoryText()).filePath(target_name));
+    foreign_target_retained = foreign_target_retained && target_file.open(QIODevice::ReadOnly) &&
+        target_file.readAll() == "injected foreign publication after quarantine";
+  }
+  const bool target_cleanup_race_recovered = expect(
+      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+          finalize_headline && finalize_headline->text() == "Video finalization failed" && target_cleanup_race_detail &&
+          target_cleanup_race_detail->text().contains(target_cleanup_race_recovery) &&
+          target_cleanup_race_recovery_text == "completed lossless archive" && foreign_target_retained,
+      "A target replaced during source-guard retirement must fail into trusted MKV recovery and leave the foreign MP4 untouched");
+  QFile interrupted_ui_target_file(interrupted_ui_target);
+  const bool interrupted_ui_target_opened = interrupted_ui_target_file.open(QIODevice::ReadOnly);
+  const QByteArray interrupted_ui_target_content =
+      interrupted_ui_target_opened ? interrupted_ui_target_file.readAll() : QByteArray();
+  QFile live_ui_target_file(live_ui_target);
+  const bool live_ui_target_opened = live_ui_target_file.open(QIODevice::ReadOnly);
+  const QByteArray live_ui_target_content = live_ui_target_opened ? live_ui_target_file.readAll() : QByteArray();
+  bool ui_cleanup_restart_reconciled = true;
+  ui_cleanup_restart_reconciled &= expect(ui_cleanup_restart_setup, "UI cleanup restart fixture must be created");
+  ui_cleanup_restart_reconciled &=
+      expect(reconciliation_rescue_restored, "The reconciliation race rescue must be restored for later tests");
+  ui_cleanup_restart_reconciled &= expect(
+      interrupted_ui_target_content == "trusted interrupted UI target",
+      "A subsequent archive start must restore an interrupted UI target");
+  ui_cleanup_restart_reconciled &= expect(
+      !QFileInfo::exists(interrupted_ui_guard),
+      "A subsequent archive start must finish retiring an interrupted UI target guard");
+  ui_cleanup_restart_reconciled &= expect(
+      !QFileInfo::exists(interrupted_ui_target_fallback) && !QFileInfo::exists(interrupted_ui_guard_fallback) &&
+          !QFileInfo::exists(interrupted_ui_target_cleanup) && !QFileInfo::exists(interrupted_ui_guard_cleanup) &&
+          !QFileInfo::exists(reconciliation_race_cleanup) &&
+          !QFileInfo::exists(QDir(interrupted_ui_target_cleanup).filePath("owner")) &&
+          !QFileInfo::exists(QDir(interrupted_ui_guard_cleanup).filePath("owner")) &&
+          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("owner")) &&
+          !QFileInfo::exists(reconciliation_rescue_path),
+      "A subsequent archive start must retire interrupted UI cleanup artifacts");
+  ui_cleanup_restart_reconciled &= expect(
+      live_ui_target_content == "trusted live UI cleanup target" && !QFileInfo::exists(live_ui_cleanup) &&
+          !QFileInfo::exists(QDir(live_ui_cleanup).filePath("owner")) && !QFileInfo::exists(live_ui_fallback),
+      "UI cleanup reconciliation must skip a live locked transaction and resume it after ownership is released");
+  if (target_cleanup_race_ok)
+    activate(target_cleanup_race_ok);
+  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+
+  const QString guard_sync_failure_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("guard-sync-failure.mkv");
+  QFile::remove(guard_sync_failure_source);
+  QFile::remove(guard_sync_failure_source + ".log");
+  const QStringList finalized_before_guard_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", guard_sync_failure_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE", "mp4-guard");
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE");
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  auto* guard_sync_failure_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* guard_sync_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  const QStringList finalized_after_guard_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  QString guard_sync_failure_target;
+  for (const QString& target_name : finalized_after_guard_sync_failure) {
+    if (!finalized_before_guard_sync_failure.contains(target_name)) {
+      guard_sync_failure_target = QDir(window->gameDirectoryText()).filePath(target_name);
+      break;
+    }
+  }
+  QFile guard_sync_failure_target_file(guard_sync_failure_target);
+  const bool guard_sync_failure_target_opened = guard_sync_failure_target_file.open(QIODevice::ReadOnly);
+  const QByteArray guard_sync_failure_target_text =
+      guard_sync_failure_target_opened ? guard_sync_failure_target_file.readAll() : QByteArray();
+  const bool cleanup_directory_sync_failure_safe = expect(
+      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+          guard_sync_failure_detail &&
+          guard_sync_failure_detail->text().contains("identity guard could not be retired safely") &&
+          guard_sync_failure_target_text == "completed lossless archive" &&
+          QFileInfo::exists(guard_sync_failure_target + ".hstream-pin"),
+      "A cleanup-directory sync failure must retain the trusted MP4 and report its restored identity guard");
+  if (guard_sync_failure_ok)
+    activate(guard_sync_failure_ok);
+  const QString guard_sync_failure_manual = guard_sync_failure_target + ".manually-retained";
+  QFile::remove(guard_sync_failure_manual);
+  const bool guard_sync_failure_moved =
+      !guard_sync_failure_target.isEmpty() && QFile::rename(guard_sync_failure_target, guard_sync_failure_manual);
+  archive->setChecked(false);
+  archive->setChecked(true);
+
+  const QString source_sync_failure =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("source-sync-failure.mkv");
+  const QString source_sync_failure_recovery =
+      QDir(QFileInfo(source_sync_failure).absolutePath()).filePath("source-sync-failure-finalization-failed.mkv");
+  QFile::remove(source_sync_failure);
+  QFile::remove(source_sync_failure + ".log");
+  QFile::remove(source_sync_failure_recovery);
+  const QStringList finalized_before_source_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", source_sync_failure.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_PARENT_SYNC_FAILURE", "1");
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
+  auto* source_sync_failure_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* source_sync_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  QFile source_sync_failure_recovery_file(source_sync_failure_recovery);
+  const bool source_sync_failure_recovery_opened = source_sync_failure_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray source_sync_failure_recovery_text =
+      source_sync_failure_recovery_opened ? source_sync_failure_recovery_file.readAll() : QByteArray();
+  const QStringList finalized_after_source_sync_failure =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  const bool source_cleanup_sync_failure_recovered = expect(
+      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+          finalize_headline && finalize_headline->text() == "Video finalization failed" && source_sync_failure_detail &&
+          source_sync_failure_detail->text().contains(source_sync_failure_recovery) &&
+          source_sync_failure_recovery_text == "completed lossless archive" &&
+          finalized_after_source_sync_failure == finalized_before_source_sync_failure,
+      "A source-parent sync failure must withdraw the MP4 and durably recover the pinned MKV instead of reporting success");
+  if (source_sync_failure_ok)
+    activate(source_sync_failure_ok);
+  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
   const QString failed_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("failed-finalization-source.mkv");
+      QDir(QDir(output_root.path()).filePath(window->gameIdText()))
+          .filePath(
+              "tracking_output-with-audio.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-"
+              "aabbccddeeff.mkv");
+  const QString dangling_log_video =
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed.mkv");
+  const QString dangling_log_path = dangling_log_video + ".log";
+  const QString injected_collision_video =
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-1.mkv");
+  const QString injected_collision_log = injected_collision_video + ".log";
+  const QString replaced_log_video =
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-2.mkv");
+  const QString replaced_log_path = replaced_log_video + ".log";
   const QString failed_recovery =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("failed-finalization-source-finalization-failed.mkv");
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-3.mkv");
+  const QString failed_source_log = failed_source + ".log";
+  const QString failed_recovery_log = failed_recovery + ".log";
+  const QString failed_recovery_rescue = failed_recovery + ".hstream-rescue";
+  const QString failed_recovery_log_rescue = failed_recovery_log + ".hstream-rescue";
   const QStringList finalized_before_failure =
       QDir(window->gameDirectoryText())
           .entryList(
               {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
   QFile::remove(failed_source);
+  QFile::remove(dangling_log_video);
+  QFile::remove(dangling_log_path);
+  QFile::remove(injected_collision_video);
+  QFile::remove(injected_collision_log);
+  QFile::remove(replaced_log_video);
+  QFile::remove(replaced_log_path);
   QFile::remove(failed_recovery);
+  QFile::remove(failed_source_log);
+  QFile::remove(failed_recovery_log);
+  QFile::remove(failed_recovery_rescue);
+  QFile::remove(failed_recovery_log_rescue);
+  const QString dangling_resolved_log_target =
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("missing-resolved-log-target");
+  QFile::remove(dangling_resolved_log_target);
+  const bool dangling_resolved_log_created = QFile::link(dangling_resolved_log_target, failed_source_log);
+  const bool dangling_log_created =
+      QFile::link(QDir(QFileInfo(failed_source).absolutePath()).filePath("missing-log-target"), dangling_log_path);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_GUARD_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_GUARD_REPLACEMENT_DURING_SYNC", "1");
+  qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.1");
   activate(start);
   for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
     QApplication::processEvents();
@@ -4976,17 +5707,204 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(window->gameDirectoryText())
           .entryList(
               {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  QFile failed_log_file(failed_recovery_log_rescue);
+  const bool failed_log_opened = failed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString failed_log_text = failed_log_opened ? QString::fromUtf8(failed_log_file.readAll()) : QString();
+  QFile replaced_log_file(replaced_log_path);
+  const bool replaced_log_opened = replaced_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString replaced_log_text = replaced_log_opened ? QString::fromUtf8(replaced_log_file.readAll()) : QString();
+  QFile replaced_source_file(failed_source);
+  const bool replaced_source_opened = replaced_source_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_source_text = replaced_source_opened ? replaced_source_file.readAll() : QByteArray();
+  QFile replaced_recovery_file(failed_recovery);
+  const bool replaced_recovery_opened = replaced_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_recovery_text = replaced_recovery_opened ? replaced_recovery_file.readAll() : QByteArray();
+  QFile trusted_recovery_guard_file(failed_recovery + ".hstream-pin");
+  const bool trusted_recovery_guard_opened = trusted_recovery_guard_file.open(QIODevice::ReadOnly);
+  const QByteArray trusted_recovery_guard_text =
+      trusted_recovery_guard_opened ? trusted_recovery_guard_file.readAll() : QByteArray();
+  QFile replaced_recovery_log_file(failed_recovery_log);
+  const bool replaced_recovery_log_opened = replaced_recovery_log_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_recovery_log_text =
+      replaced_recovery_log_opened ? replaced_recovery_log_file.readAll() : QByteArray();
+  QFile replaced_recovery_log_guard_file(failed_recovery_log + ".hstream-pin");
+  const bool replaced_recovery_log_guard_opened = replaced_recovery_log_guard_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_recovery_log_guard_text =
+      replaced_recovery_log_guard_opened ? replaced_recovery_log_guard_file.readAll() : QByteArray();
+  QFile trusted_recovery_file(failed_recovery_rescue);
+  const bool trusted_recovery_opened = trusted_recovery_file.open(QIODevice::ReadOnly);
+  const QByteArray trusted_recovery_text = trusted_recovery_opened ? trusted_recovery_file.readAll() : QByteArray();
+  QString replaced_open_log_text;
+  const QStringList provisional_logs =
+      QDir(QFileInfo(failed_source).absolutePath())
+          .entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+  for (const QString& provisional_log : provisional_logs) {
+    QFile provisional_log_file(QDir(QFileInfo(failed_source).absolutePath()).filePath(provisional_log));
+    if (provisional_log_file.open(QIODevice::ReadOnly)) {
+      const QString contents = QString::fromUtf8(provisional_log_file.readAll());
+      if (contents == "injected foreign open log pathname")
+        replaced_open_log_text = contents;
+    }
+  }
   const bool failed_archive_retained = expect(
-      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
+      dangling_resolved_log_created && QFileInfo(failed_source_log).isSymLink() &&
+          !QFileInfo::exists(dangling_resolved_log_target) && dangling_log_created &&
+          QFileInfo(dangling_log_path).isSymLink() && QFileInfo(injected_collision_video).size() > 0 &&
+          !QFileInfo::exists(injected_collision_log) && !QFileInfo::exists(replaced_log_video) &&
+          replaced_log_text == "injected recovery log replacement" &&
+          window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
           finalize_headline && finalize_headline->text() == "Video finalization failed" &&
           finalize_headline->property("finalizationState").toString() == "failed" && finalize_detail &&
-          finalize_detail->text().contains(failed_recovery) && finalize_ok && finalize_ok->isVisible() &&
+          finalize_detail->text().contains(failed_recovery_rescue) && finalize_ok && finalize_ok->isVisible() &&
           finalize_ok->toolTip().contains("Close the finalization result") &&
-          finalize_ok->statusTip() == finalize_ok->toolTip() && !QFileInfo::exists(failed_source) &&
-          QFileInfo(failed_recovery).size() > 0 && finalized_after_failure == finalized_before_failure,
-      "A failed remux must show a red dismissible error, preserve a uniquely named recovery MKV, and publish no MP4");
+          finalize_ok->statusTip() == finalize_ok->toolTip() && replaced_source_opened &&
+          replaced_source_text == "injected foreign archive source" &&
+          replaced_open_log_text == "injected foreign open log pathname" &&
+          replaced_recovery_text == "injected foreign recovery during sync" && trusted_recovery_guard_opened &&
+          trusted_recovery_guard_text == "injected foreign recovery guard during sync" &&
+          replaced_recovery_log_text == "injected foreign recovery log during sync" &&
+          replaced_recovery_log_guard_text == "injected foreign recovery log guard during sync" &&
+          trusted_recovery_opened && trusted_recovery_text == "completed lossless archive" &&
+          !QFileInfo::exists(failed_source_log) && failed_log_opened &&
+          failed_log_text.contains("archive finalization failed") && !failed_recovery.contains(".hstream-run-") &&
+          finalized_after_failure == finalized_before_failure,
+      "A failed remux must durably rescue the trusted recovery pair if both visible names and guards are replaced");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_REPLACEMENT");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_GUARD_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_GUARD_REPLACEMENT_DURING_SYNC");
+  qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
   if (finalize_ok)
     activate(finalize_ok);
+
+  const QString no_log_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText()))
+          .filePath("no-log.hstream-run-v3-99999998-77777777-00112233-4455-6677-8899-aabbccddeeff.mkv");
+  const QString no_log_replaced_marker =
+      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed.mkv.log");
+  const QString no_log_recovery =
+      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed-1.mkv");
+  QFile::remove(no_log_source);
+  QFile::remove(no_log_source + ".log");
+  QFile::remove(no_log_replaced_marker);
+  QFile::remove(no_log_recovery);
+  QFile::remove(no_log_recovery + ".log");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", no_log_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_DROP_LOG_BEFORE_RECOVERY", "1");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT", "1");
+  activate(start);
+  for (int i = 0; i < 300 && (!finalize_detail || !finalize_detail->text().contains(no_log_recovery)); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QFile replaced_marker_file(no_log_replaced_marker);
+  const bool replaced_marker_opened = replaced_marker_file.open(QIODevice::ReadOnly);
+  const QByteArray replaced_marker_text = replaced_marker_opened ? replaced_marker_file.readAll() : QByteArray();
+  const bool no_log_recovery_reserved = expect(
+      replaced_marker_text == "injected recovery marker replacement" && QFileInfo(no_log_recovery).size() > 0 &&
+          !QFileInfo::exists(no_log_recovery + ".log") && !QFileInfo::exists(no_log_source) && finalize_detail &&
+          finalize_detail->text().contains(no_log_recovery),
+      "Recovery without a UI log must atomically reserve the sidecar name, roll back a replaced reservation, and retry a clean basename");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_DROP_LOG_BEFORE_RECOVERY");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT");
+  if (finalize_ok) {
+    activate(finalize_ok);
+    QApplication::processEvents();
+    QTest::qWait(20);
+  }
+
+  const QString cleanup_race_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText()))
+          .filePath("cleanup-race.hstream-run-v3-99999997-66666666-00112233-4455-6677-8899-aabbccddeeff.mkv");
+  const QString cleanup_race_replaced =
+      QDir(QFileInfo(cleanup_race_source).absolutePath()).filePath("cleanup-race-finalization-failed.mkv");
+  const QString cleanup_race_recovery =
+      QDir(QFileInfo(cleanup_race_source).absolutePath()).filePath("cleanup-race-finalization-failed-1.mkv");
+  QFile::remove(cleanup_race_source);
+  QFile::remove(cleanup_race_source + ".log");
+  QFile::remove(cleanup_race_replaced);
+  QFile::remove(cleanup_race_replaced + ".log");
+  QFile::remove(cleanup_race_recovery);
+  QFile::remove(cleanup_race_recovery + ".log");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cleanup_race_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", cleanup_race_source.toLocal8Bit());
+  activate(start);
+  for (int i = 0; i < 300 &&
+       (window->outputStateText("archive-file") != "ERROR" || !finalize_detail ||
+        !finalize_detail->text().contains(cleanup_race_recovery));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QFile cleanup_race_replaced_file(cleanup_race_replaced);
+  const bool cleanup_race_replaced_opened = cleanup_race_replaced_file.open(QIODevice::ReadOnly);
+  const QByteArray cleanup_race_replaced_text =
+      cleanup_race_replaced_opened ? cleanup_race_replaced_file.readAll() : QByteArray();
+  QFile cleanup_race_log_file(cleanup_race_recovery + ".log");
+  const bool cleanup_race_log_opened = cleanup_race_log_file.open(QIODevice::ReadOnly);
+  const QString cleanup_race_log_text =
+      cleanup_race_log_opened ? QString::fromUtf8(cleanup_race_log_file.readAll()) : QString();
+  const bool post_quarantine_recovery_safe = expect(
+      cleanup_race_replaced_text == "injected foreign publication after quarantine" &&
+          !QFileInfo::exists(cleanup_race_replaced + ".log") && QFileInfo(cleanup_race_recovery).size() > 0 &&
+          cleanup_race_log_text.contains("archive finalization failed") && !QFileInfo::exists(cleanup_race_source) &&
+          finalize_detail && finalize_detail->text().contains(cleanup_race_recovery),
+      "UI protected cleanup must restore its pinned source and retry the pair if publication is replaced after quarantine unlink");
+  qunsetenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
+  if (finalize_ok)
+    activate(finalize_ok);
+
+  const QString publication_sync_failure_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("recovery-publication-sync-failure.mkv");
+  const QString publication_sync_failure_log = publication_sync_failure_source + ".log";
+  const QString publication_sync_failure_recovery =
+      QDir(QFileInfo(publication_sync_failure_source).absolutePath())
+          .filePath("recovery-publication-sync-failure-finalization-failed.mkv");
+  const QString publication_sync_failure_manual = publication_sync_failure_source + ".manually-retained";
+  QFile::remove(publication_sync_failure_source);
+  QFile::remove(publication_sync_failure_log);
+  QFile::remove(publication_sync_failure_source + ".hstream-pin");
+  QFile::remove(publication_sync_failure_log + ".hstream-pin");
+  QFile::remove(publication_sync_failure_recovery);
+  QFile::remove(publication_sync_failure_recovery + ".log");
+  QFile::remove(publication_sync_failure_manual);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", publication_sync_failure_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE", "1");
+  activate(start);
+  for (int i = 0; i < 300 &&
+       (window->outputStateText("archive-file") != "ERROR" || !finalize_detail ||
+        !finalize_detail->text().contains("could not make the recovery pair durable"));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QFile publication_sync_failure_log_file(publication_sync_failure_log);
+  const bool publication_sync_failure_log_opened =
+      publication_sync_failure_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString publication_sync_failure_log_text =
+      publication_sync_failure_log_opened ? QString::fromUtf8(publication_sync_failure_log_file.readAll()) : QString();
+  const bool recovery_publication_sync_failure_safe = expect(
+      QFileInfo(publication_sync_failure_source).size() > 0 && publication_sync_failure_log_opened &&
+          publication_sync_failure_log_text.contains("archive finalization failed") &&
+          QFileInfo::exists(publication_sync_failure_source + ".hstream-pin") &&
+          !QFileInfo::exists(publication_sync_failure_recovery) &&
+          !QFileInfo::exists(publication_sync_failure_recovery + ".log") && finalize_detail &&
+          finalize_detail->text().contains(publication_sync_failure_source) &&
+          finalize_detail->text().contains("could not make the recovery pair durable"),
+      "A recovery-publication sync failure must retain the original video and log before source cleanup");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE");
+  if (finalize_ok)
+    activate(finalize_ok);
+  const bool publication_sync_failure_moved =
+      QFile::rename(publication_sync_failure_source, publication_sync_failure_manual);
+  archive->setChecked(false);
+  archive->setChecked(true);
 
   const QString blocked_directory =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("blocked-recovery");
@@ -5016,6 +5934,44 @@ bool test_output_controls(HStreamWindow* window) {
   const bool retry_unblocked_after_recovery = expect(
       manually_moved && start->isEnabled(),
       "Moving the retained MKV to safety must re-enable archive Play on the next route refresh");
+  bool ui_cleanup_owner_scoped = true;
+#ifdef Q_OS_UNIX
+  const QString scoped_ui_target = QDir(window->gameDirectoryText()).filePath("scoped-ui-cleanup-target.mp4");
+  const QString scoped_ui_unrelated = QDir(window->gameDirectoryText()).filePath("scoped-ui-unrelated-hardlink.mp4");
+  const QString scoped_ui_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff");
+  const QString scoped_ui_entry = QDir(scoped_ui_cleanup).filePath("entry");
+  const QString scoped_ui_owner = QDir(scoped_ui_cleanup).filePath("owner");
+  QFile::remove(scoped_ui_target);
+  QFile::remove(scoped_ui_target + ".hstream-cleanup-pin");
+  QFile::remove(scoped_ui_unrelated);
+  QDir().mkpath(scoped_ui_cleanup);
+  const bool scoped_ui_setup = write_cleanup_test_file(scoped_ui_entry, "trusted scoped UI cleanup inode") &&
+      create_hard_link(scoped_ui_entry, scoped_ui_unrelated) &&
+      write_cleanup_owner(scoped_ui_cleanup, scoped_ui_target);
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  QFile scoped_ui_unrelated_file(scoped_ui_unrelated);
+  const bool scoped_ui_unrelated_opened = scoped_ui_unrelated_file.open(QIODevice::ReadOnly);
+  const QByteArray scoped_ui_unrelated_content =
+      scoped_ui_unrelated_opened ? scoped_ui_unrelated_file.readAll() : QByteArray();
+  ui_cleanup_owner_scoped = expect(
+      scoped_ui_setup && window->outputStateText("archive-file") == "ERROR" && !QFileInfo::exists(scoped_ui_target) &&
+          !QFileInfo::exists(scoped_ui_target + ".hstream-cleanup-pin") && QFileInfo::exists(scoped_ui_entry) &&
+          QFileInfo::exists(scoped_ui_owner) && scoped_ui_unrelated_content == "trusted scoped UI cleanup inode",
+      "UI cleanup reconciliation must retain private evidence instead of claiming a hardlink outside its owner target");
+  auto* scoped_ui_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  if (scoped_ui_ok)
+    activate(scoped_ui_ok);
+  scoped_ui_unrelated_file.close();
+  QFile::remove(scoped_ui_unrelated);
+  QFile::remove(scoped_ui_entry);
+  QFile::remove(scoped_ui_owner);
+  QDir().rmdir(scoped_ui_cleanup);
+#endif
   qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
   qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
@@ -5028,9 +5984,14 @@ bool test_output_controls(HStreamWindow* window) {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
   return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
-      nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && finalization_visible &&
-      archive_deployed && durability_sync_responsive && failed_archive_retained && unsafe_retry_blocked &&
-      retry_unblocked_after_recovery;
+      nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
+      incomplete_exit_log_guarded && same_filesystem_log_rollback && cross_filesystem_log_persisted &&
+      finalization_visible && completed_log_persisted && archive_deployed && durability_sync_responsive &&
+      target_cleanup_race_recovered && ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe &&
+      source_cleanup_sync_failure_recovered && cleanup_directory_sync_failure_safe && guard_sync_failure_moved &&
+      failed_archive_retained && no_log_recovery_reserved && post_quarantine_recovery_safe &&
+      recovery_publication_sync_failure_safe && publication_sync_failure_moved && unsafe_retry_blocked &&
+      retry_unblocked_after_recovery && ui_cleanup_owner_scoped;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
@@ -7583,6 +8544,376 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   return expect(window->pipelineStateText() == "STOPPED", "Real UI run should stop cleanly after e2e smoke");
 }
 
+bool test_cleanup_transaction_protocol() {
+#ifndef Q_OS_UNIX
+  return true;
+#else
+  QTemporaryDir root;
+  if (!root.isValid())
+    return false;
+  const auto write_file = [](const QString& path, const QByteArray& content) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(content) == content.size();
+  };
+  const auto cleanup_transaction = [](const QString& directory) {
+    const QStringList names = QDir(directory).entryList(
+        {".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+    return names.isEmpty() ? QString() : QDir(directory).filePath(names.front());
+  };
+  const auto file_identity = [](const QString& path, struct stat* identity) {
+    return ::lstat(QFile::encodeName(path).constData(), identity) == 0;
+  };
+
+  const QString committed_dir = QDir(root.path()).filePath("committed-interruption");
+  QDir().mkpath(committed_dir);
+  const QString committed_target = QDir(committed_dir).filePath("committed.mp4");
+  struct stat committed_stat{};
+  QString committed_error;
+  const bool committed_setup =
+      write_file(committed_target, "trusted committed UI cleanup") && file_identity(committed_target, &committed_stat);
+  qputenv(
+      "HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT", (committed_target + ".hstream-cleanup-pin").toLocal8Bit());
+  const bool committed_first = committed_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+                                   committed_target,
+                                   static_cast<quint64>(committed_stat.st_dev),
+                                   static_cast<quint64>(committed_stat.st_ino),
+                                   &committed_error);
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT");
+  const QString committed_transaction = cleanup_transaction(committed_dir);
+  const bool committed_authenticated = !committed_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(committed_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(committed_transaction).filePath("committed")) &&
+      QFileInfo::exists(QDir(committed_transaction).filePath("guard")) &&
+      !QFileInfo::exists(QDir(committed_transaction).filePath("fallback")) &&
+      !QFileInfo::exists(QDir(committed_transaction).filePath("entry"));
+  QString committed_restart_error;
+  const bool committed_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(committed_dir, &committed_restart_error);
+  bool ok = expect(
+      committed_setup && !committed_first && committed_authenticated && committed_restart &&
+          !QFileInfo::exists(committed_target) && !QFileInfo::exists(committed_transaction),
+      "UI cleanup must finish a durable commit interrupted between fallback and guard retirement");
+
+  const QString pending_commit_dir = QDir(root.path()).filePath("pending-commit-publication");
+  QDir().mkpath(pending_commit_dir);
+  const QString pending_commit_target = QDir(pending_commit_dir).filePath("pending-commit.mp4");
+  struct stat pending_commit_stat{};
+  QString pending_commit_error;
+  const bool pending_commit_setup =
+      write_file(pending_commit_target, "trusted pending-commit UI cleanup") &&
+      file_identity(pending_commit_target, &pending_commit_stat);
+  qputenv("HSTREAM_UI_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH", "1");
+  const bool pending_commit_first = pending_commit_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+          pending_commit_target,
+          static_cast<quint64>(pending_commit_stat.st_dev),
+          static_cast<quint64>(pending_commit_stat.st_ino),
+          &pending_commit_error);
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH");
+  const QString pending_commit_transaction = cleanup_transaction(pending_commit_dir);
+  const bool pending_commit_unpublished = !pending_commit_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("committed.pending")) &&
+      !QFileInfo::exists(QDir(pending_commit_transaction).filePath("committed")) &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("guard")) &&
+      QFileInfo::exists(QDir(pending_commit_transaction).filePath("fallback")) &&
+      !QFileInfo::exists(pending_commit_target);
+  QString pending_commit_restart_error;
+  const bool pending_commit_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(pending_commit_dir, &pending_commit_restart_error);
+  QFile pending_commit_restored_file(pending_commit_target);
+  const bool pending_commit_restored_opened = pending_commit_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      pending_commit_setup && !pending_commit_first && pending_commit_unpublished && pending_commit_restart &&
+          pending_commit_restored_opened &&
+          pending_commit_restored_file.readAll() == "trusted pending-commit UI cleanup" &&
+          !QFileInfo::exists(pending_commit_transaction),
+      "UI interruption before atomic commit publication must roll deletion back without exposing a partial marker");
+
+  const QString missing_fallback_dir = QDir(root.path()).filePath("missing-fallback-before-commit");
+  QDir().mkpath(missing_fallback_dir);
+  const QString missing_fallback_target = QDir(missing_fallback_dir).filePath("missing-fallback.mp4");
+  struct stat missing_fallback_stat{};
+  QString missing_fallback_error;
+  const bool missing_fallback_setup =
+      write_file(missing_fallback_target, "trusted missing-fallback UI cleanup") &&
+      file_identity(missing_fallback_target, &missing_fallback_stat);
+  qputenv(
+      "HSTREAM_UI_TEST_REMOVE_FALLBACK_BEFORE_QUARANTINE",
+      (missing_fallback_target + ".hstream-cleanup-pin").toLocal8Bit());
+  const bool missing_fallback_first = missing_fallback_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+          missing_fallback_target,
+          static_cast<quint64>(missing_fallback_stat.st_dev),
+          static_cast<quint64>(missing_fallback_stat.st_ino),
+          &missing_fallback_error);
+  qunsetenv("HSTREAM_UI_TEST_REMOVE_FALLBACK_BEFORE_QUARANTINE");
+  const QString missing_fallback_transaction = cleanup_transaction(missing_fallback_dir);
+  const bool missing_fallback_uncommitted = !missing_fallback_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(missing_fallback_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(missing_fallback_transaction).filePath("guard")) &&
+      !QFileInfo::exists(QDir(missing_fallback_transaction).filePath("committed")) &&
+      !QFileInfo::exists(missing_fallback_target) &&
+      !QFileInfo::exists(missing_fallback_target + ".hstream-cleanup-pin");
+  QString missing_fallback_restart_error;
+  const bool missing_fallback_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(missing_fallback_dir, &missing_fallback_restart_error);
+  QFile missing_fallback_restored_file(missing_fallback_target);
+  const bool missing_fallback_restored_opened = missing_fallback_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      missing_fallback_setup && !missing_fallback_first && missing_fallback_uncommitted && missing_fallback_restart &&
+          missing_fallback_restored_opened &&
+          missing_fallback_restored_file.readAll() == "trusted missing-fallback UI cleanup" &&
+          !QFileInfo::exists(missing_fallback_transaction),
+      "A missing public fallback must not bypass the UI commit protocol or lose its private guard");
+
+  const QString foreign_dir = QDir(root.path()).filePath("foreign-fallback");
+  const QString foreign_target = QDir(foreign_dir).filePath("foreign-fallback.mp4");
+  const QString foreign_transaction =
+      QDir(foreign_dir).filePath(".hstream-cleanup-v2-12345678-90ab-4cde-8fab-1234567890ab");
+  QDir().mkpath(foreign_transaction);
+  const QByteArray foreign_target_name = QFile::encodeName(QFileInfo(foreign_target).fileName());
+  const bool foreign_setup = write_file(
+                                 QDir(foreign_transaction).filePath("owner"),
+                                 QByteArray("hstream-cleanup-v2\n") + foreign_target_name.toBase64()) &&
+      write_file(QDir(foreign_transaction).filePath("guard"), "trusted private UI cleanup guard") &&
+      write_file(QDir(foreign_transaction).filePath("fallback"), "foreign private UI cleanup fallback");
+  QString foreign_error;
+  const bool foreign_reconciled = hm::ui_internal::reconcile_cleanup_directory_for_test(foreign_dir, &foreign_error);
+  QFile foreign_guard_file(QDir(foreign_transaction).filePath("guard"));
+  QFile foreign_fallback_file(QDir(foreign_transaction).filePath("fallback"));
+  const bool foreign_guard_opened = foreign_guard_file.open(QIODevice::ReadOnly);
+  const bool foreign_fallback_opened = foreign_fallback_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      foreign_setup && !foreign_reconciled && !QFileInfo::exists(foreign_target) &&
+          QFileInfo::exists(QDir(foreign_transaction).filePath("owner")) && foreign_guard_opened &&
+          foreign_guard_file.readAll() == "trusted private UI cleanup guard" && foreign_fallback_opened &&
+          foreign_fallback_file.readAll() == "foreign private UI cleanup fallback",
+      "UI cleanup must not treat a foreign private fallback as authorization to delete its trusted guard");
+
+  const QString failed_unlink_dir = QDir(root.path()).filePath("failed-private-unlink");
+  QDir().mkpath(failed_unlink_dir);
+  const QString failed_unlink_target = QDir(failed_unlink_dir).filePath("failed-private-unlink.mp4");
+  struct stat failed_unlink_stat{};
+  QString failed_unlink_error;
+  const bool failed_unlink_setup = write_file(failed_unlink_target, "trusted failed-private-unlink UI cleanup") &&
+      file_identity(failed_unlink_target, &failed_unlink_stat);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE", failed_unlink_target.toLocal8Bit());
+  const bool failed_unlink_result = failed_unlink_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+                                        failed_unlink_target,
+                                        static_cast<quint64>(failed_unlink_stat.st_dev),
+                                        static_cast<quint64>(failed_unlink_stat.st_ino),
+                                        &failed_unlink_error);
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
+  const QString failed_unlink_transaction = cleanup_transaction(failed_unlink_dir);
+  const bool failed_unlink_authenticated = !failed_unlink_transaction.isEmpty() &&
+      QFileInfo::exists(QDir(failed_unlink_transaction).filePath("owner")) &&
+      QFileInfo::exists(QDir(failed_unlink_transaction).filePath("entry")) &&
+      QFileInfo::exists(QDir(failed_unlink_transaction).filePath("guard"));
+  QString failed_unlink_restart_error;
+  const bool failed_unlink_restart =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(failed_unlink_dir, &failed_unlink_restart_error);
+  QFile failed_unlink_restored_file(failed_unlink_target);
+  const bool failed_unlink_restored_opened = failed_unlink_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      failed_unlink_setup && !failed_unlink_result && failed_unlink_authenticated && failed_unlink_restart &&
+          failed_unlink_restored_opened &&
+          failed_unlink_restored_file.readAll() == "trusted failed-private-unlink UI cleanup" &&
+          !QFileInfo::exists(failed_unlink_transaction),
+      "UI cleanup must retain authenticated ownership after a private unlink failure until restart rollback");
+
+  const QString deep_cleanup_chain_dir = QDir(root.path()).filePath("deep-cleanup-chain");
+  QDir().mkpath(deep_cleanup_chain_dir);
+  const QStringList deep_cleanup_ids = {
+      "00000000-0000-4000-8000-000000000010",
+      "00000000-0000-4000-8000-000000000020",
+      "00000000-0000-4000-8000-000000000030",
+      "00000000-0000-4000-8000-000000000040",
+      "00000000-0000-4000-8000-000000000050",
+      "00000000-0000-4000-8000-000000000060",
+  };
+  bool deep_cleanup_chain_setup = true;
+  for (qsizetype index = 0; index < deep_cleanup_ids.size(); ++index) {
+    const QString transaction =
+        QDir(deep_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + deep_cleanup_ids[index]);
+    const QString target_name = index == 0
+        ? "deep-cleanup-root.mp4"
+        : ".hstream-reconcile-" + deep_cleanup_ids[index - 1] +
+            "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+    deep_cleanup_chain_setup = deep_cleanup_chain_setup && QDir().mkpath(transaction) &&
+        write_file(
+            QDir(transaction).filePath("owner"),
+            QByteArray("hstream-cleanup-v2\n") + target_name.toLocal8Bit().toBase64());
+  }
+  QString deep_cleanup_chain_error;
+  const bool deep_cleanup_chain_reconciled =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(deep_cleanup_chain_dir, &deep_cleanup_chain_error);
+  const bool deep_cleanup_chain_retired =
+      QDir(deep_cleanup_chain_dir)
+          .entryList(
+              {".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name)
+          .isEmpty();
+  ok &= expect(
+      deep_cleanup_chain_setup && deep_cleanup_chain_reconciled && deep_cleanup_chain_retired,
+      "UI cleanup reconciliation must reach a fixed point beyond the former five-pass dependency limit");
+
+  const QString blocked_cleanup_chain_dir = QDir(root.path()).filePath("blocked-cleanup-chain");
+  const QString blocked_outer_id = "00000000-0000-4000-8000-000000000070";
+  const QString blocked_nested_id = "00000000-0000-4000-8000-000000000080";
+  const QString blocked_outer =
+      QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_outer_id);
+  const QString blocked_nested =
+      QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_nested_id);
+  const QString blocked_nested_target =
+      ".hstream-reconcile-" + blocked_outer_id + "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const bool blocked_cleanup_chain_setup = QDir().mkpath(blocked_outer) && QDir().mkpath(blocked_nested) &&
+      write_file(
+          QDir(blocked_outer).filePath("owner"),
+          QByteArray("hstream-cleanup-v2\n") + QByteArray("blocked-cleanup-root.mp4").toBase64()) &&
+      write_file(
+          QDir(blocked_nested).filePath("owner"),
+          QByteArray("hstream-cleanup-v2\n") + blocked_nested_target.toLocal8Bit().toBase64());
+  const int blocked_nested_fd =
+      ::open(QFile::encodeName(blocked_nested).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const bool blocked_cleanup_chain_locked =
+      blocked_nested_fd >= 0 && ::flock(blocked_nested_fd, LOCK_EX | LOCK_NB) == 0;
+  QString blocked_cleanup_chain_error;
+  const bool blocked_cleanup_chain_reconciled = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      blocked_cleanup_chain_dir, &blocked_cleanup_chain_error);
+  const bool blocked_cleanup_chain_retained =
+      QFileInfo::exists(blocked_outer) && QFileInfo::exists(blocked_nested);
+  if (blocked_nested_fd >= 0)
+    ::close(blocked_nested_fd);
+  QString blocked_cleanup_chain_resume_error;
+  const bool blocked_cleanup_chain_resumed = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      blocked_cleanup_chain_dir, &blocked_cleanup_chain_resume_error);
+  ok &= expect(
+      blocked_cleanup_chain_setup && blocked_cleanup_chain_locked && !blocked_cleanup_chain_reconciled &&
+          blocked_cleanup_chain_retained && blocked_cleanup_chain_resumed && !QFileInfo::exists(blocked_outer) &&
+          !QFileInfo::exists(blocked_nested),
+      "UI cleanup reconciliation must fail closed at a blocked fixed point and resume after the blocker releases");
+
+  const QString concurrent_dir = QDir(root.path()).filePath("concurrent-removers");
+  QDir().mkpath(concurrent_dir);
+  const QString concurrent_target = QDir(concurrent_dir).filePath("concurrent.mp4");
+  struct stat concurrent_stat{};
+  const bool concurrent_setup = write_file(concurrent_target, "trusted concurrent UI cleanup") &&
+      file_identity(concurrent_target, &concurrent_stat);
+  std::atomic<bool> concurrent_start{false};
+  bool concurrent_first = false;
+  bool concurrent_second = false;
+  QString concurrent_first_error;
+  QString concurrent_second_error;
+  qputenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION", concurrent_target.toLocal8Bit());
+  const auto remove_concurrently = [&](bool* result, QString* error) {
+    while (!concurrent_start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    *result = hm::ui_internal::remove_owned_path_for_test(
+        concurrent_target,
+        static_cast<quint64>(concurrent_stat.st_dev),
+        static_cast<quint64>(concurrent_stat.st_ino),
+        error);
+  };
+  std::thread concurrent_thread_one(remove_concurrently, &concurrent_first, &concurrent_first_error);
+  std::thread concurrent_thread_two(remove_concurrently, &concurrent_second, &concurrent_second_error);
+  concurrent_start.store(true, std::memory_order_release);
+  concurrent_thread_one.join();
+  concurrent_thread_two.join();
+  qunsetenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION");
+  const QStringList concurrent_artifacts =
+      QDir(concurrent_dir)
+          .entryList(
+              {".hstream-cleanup-v2-*", "*.hstream-cleanup-pin"},
+              QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+              QDir::Name);
+  ok &= expect(
+      concurrent_setup && concurrent_first && concurrent_second && !QFileInfo::exists(concurrent_target) &&
+          concurrent_artifacts.isEmpty(),
+      "UI cleanup must serialize concurrent removers before they share a deterministic fallback");
+
+  const QString interrupted_concurrent_dir = QDir(root.path()).filePath("interrupted-concurrent-removers");
+  QDir().mkpath(interrupted_concurrent_dir);
+  const QString interrupted_concurrent_target = QDir(interrupted_concurrent_dir).filePath("interrupted-concurrent.mp4");
+  struct stat interrupted_concurrent_stat{};
+  const bool interrupted_concurrent_setup =
+      write_file(interrupted_concurrent_target, "trusted interrupted concurrent UI cleanup") &&
+      file_identity(interrupted_concurrent_target, &interrupted_concurrent_stat);
+  std::atomic<bool> interrupted_concurrent_start{false};
+  bool interrupted_concurrent_first = true;
+  bool interrupted_concurrent_second = true;
+  QString interrupted_concurrent_first_error;
+  QString interrupted_concurrent_second_error;
+  qputenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION", interrupted_concurrent_target.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", interrupted_concurrent_target.toLocal8Bit());
+  const auto remove_with_interruption = [&](bool* result, QString* error) {
+    while (!interrupted_concurrent_start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    *result = hm::ui_internal::remove_owned_path_for_test(
+        interrupted_concurrent_target,
+        static_cast<quint64>(interrupted_concurrent_stat.st_dev),
+        static_cast<quint64>(interrupted_concurrent_stat.st_ino),
+        error);
+  };
+  std::thread interrupted_concurrent_thread_one(
+      remove_with_interruption, &interrupted_concurrent_first, &interrupted_concurrent_first_error);
+  std::thread interrupted_concurrent_thread_two(
+      remove_with_interruption, &interrupted_concurrent_second, &interrupted_concurrent_second_error);
+  interrupted_concurrent_start.store(true, std::memory_order_release);
+  interrupted_concurrent_thread_one.join();
+  interrupted_concurrent_thread_two.join();
+  qunsetenv("HSTREAM_UI_TEST_DELAY_BEFORE_CLEANUP_SERIALIZATION");
+  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+  const QString interrupted_concurrent_transaction = cleanup_transaction(interrupted_concurrent_dir);
+  QString interrupted_concurrent_restart_error;
+  const bool interrupted_concurrent_restart = hm::ui_internal::reconcile_cleanup_directory_for_test(
+      interrupted_concurrent_dir, &interrupted_concurrent_restart_error);
+  QFile interrupted_concurrent_restored_file(interrupted_concurrent_target);
+  const bool interrupted_concurrent_restored_opened = interrupted_concurrent_restored_file.open(QIODevice::ReadOnly);
+  ok &= expect(
+      interrupted_concurrent_setup && !interrupted_concurrent_first && !interrupted_concurrent_second &&
+          !interrupted_concurrent_transaction.isEmpty() && interrupted_concurrent_restart &&
+          interrupted_concurrent_restored_opened &&
+          interrupted_concurrent_restored_file.readAll() == "trusted interrupted concurrent UI cleanup" &&
+          !QFileInfo::exists(interrupted_concurrent_transaction),
+      "A second UI remover must not report success while an interrupted concurrent transaction can restore the target");
+  return ok;
+#endif
+}
+
+bool test_early_finalization_failure_retains_log_guard(HStreamWindow* window, const QString& root) {
+#ifndef Q_OS_UNIX
+  Q_UNUSED(window);
+  Q_UNUSED(root);
+  return true;
+#else
+  const QString configured_path = QDir(root).filePath("early-failure-configured.mkv");
+  const QString versioned_source =
+      QDir(root).filePath("early-failure.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-aabbccddeeff.mkv");
+  QString versioned_log;
+  QString versioned_guard;
+  HStreamWindowTestAccess::finishArchiveJobLogAfterFinalizationFailure(
+      window, configured_path, versioned_source, "early-failure", &versioned_log, &versioned_guard);
+  const bool versioned_pair_guarded = QFileInfo::exists(versioned_log) && QFileInfo::exists(versioned_guard);
+
+  const QString recovered_source = QDir(root).filePath("early-failure-finalization-failed.mkv");
+  QString recovered_log;
+  QString recovered_guard;
+  HStreamWindowTestAccess::finishArchiveJobLogAfterFinalizationFailure(
+      window, configured_path, recovered_source, "recovered-failure", &recovered_log, &recovered_guard);
+  const bool recovered_guard_retired = QFileInfo::exists(recovered_log) && !QFileInfo::exists(recovered_guard);
+
+  QFile::remove(versioned_guard);
+  QFile::remove(versioned_log);
+  QFile::remove(recovered_guard);
+  QFile::remove(recovered_log);
+  return expect(
+      versioned_pair_guarded && recovered_guard_retired,
+      "An early finalization failure must retain the versioned log guard until backend recovery can move the pair");
+#endif
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -7623,8 +8954,17 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (!test_cleanup_transaction_protocol()) {
+    std::cerr << "test_cleanup_transaction_protocol failed\n";
+    return 1;
+  }
   HStreamWindow window;
   window.show();
+
+  if (!test_early_finalization_failure_retains_log_guard(&window, source_root.path())) {
+    std::cerr << "test_early_finalization_failure_retains_log_guard failed\n";
+    return 1;
+  }
 
   if (!test_game_setup(&window, source_root.path())) {
     std::cerr << "test_game_setup failed\n";
