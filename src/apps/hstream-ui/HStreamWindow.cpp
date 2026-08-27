@@ -1480,6 +1480,221 @@ bool rename_entry_no_replace(
 #endif
 }
 
+bool reconcile_ui_cleanup_directory(const QString& directory_path, QString* error) {
+  const QByteArray encoded_directory = QFile::encodeName(QFileInfo(directory_path).absoluteFilePath());
+  const int parent_fd = ::open(encoded_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (parent_fd < 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return false;
+  }
+  const auto directory_names = [&]() {
+    return QDir(directory_path)
+        .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+  };
+  QStringList names = directory_names();
+  for (const QString& cleanup_name : names) {
+    if (!cleanup_name.startsWith(".hstream-cleanup-"))
+      continue;
+    const QByteArray encoded_cleanup_name = QFile::encodeName(cleanup_name);
+    const int cleanup_fd =
+        ::openat(parent_fd, encoded_cleanup_name.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (cleanup_fd < 0) {
+      const int saved_errno = errno;
+      ::close(parent_fd);
+      if (error) {
+        *error =
+            QString("could not open abandoned cleanup directory %1: %2")
+                .arg(QDir(directory_path).filePath(cleanup_name), QString::fromLocal8Bit(std::strerror(saved_errno)));
+      }
+      return false;
+    }
+    for (const char* private_name : {"entry", "guard", "fallback"}) {
+      struct stat private_stat{};
+      if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT)
+          continue;
+        const int saved_errno = errno;
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        if (error)
+          *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+        return false;
+      }
+      bool has_public_identity = false;
+      for (const QString& public_name : names) {
+        if (public_name.startsWith(".hstream-cleanup-"))
+          continue;
+        const QByteArray encoded_public_name = QFile::encodeName(public_name);
+        struct stat public_stat{};
+        if (::fstatat(parent_fd, encoded_public_name.constData(), &public_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
+            same_file_identity(public_stat, private_stat)) {
+          has_public_identity = true;
+          break;
+        }
+      }
+      if (!has_public_identity) {
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        if (error) {
+          *error = QString("abandoned cleanup entry has no public fallback at %1/%2")
+                       .arg(QDir(directory_path).filePath(cleanup_name), private_name);
+        }
+        return false;
+      }
+      struct stat current_private_stat{};
+      if (::fstatat(cleanup_fd, private_name, &current_private_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+          !same_file_identity(current_private_stat, private_stat) || ::unlinkat(cleanup_fd, private_name, 0) != 0) {
+        const int saved_errno = errno;
+        ::close(cleanup_fd);
+        ::close(parent_fd);
+        if (error)
+          *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+        return false;
+      }
+    }
+    if (::fsync(cleanup_fd) != 0) {
+      const int saved_errno = errno;
+      ::close(cleanup_fd);
+      ::close(parent_fd);
+      if (error)
+        *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+      return false;
+    }
+    ::close(cleanup_fd);
+    if (::unlinkat(parent_fd, encoded_cleanup_name.constData(), AT_REMOVEDIR) != 0 || ::fsync(parent_fd) != 0) {
+      const int saved_errno = errno;
+      ::close(parent_fd);
+      if (error)
+        *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+      return false;
+    }
+  }
+
+  names = directory_names();
+  constexpr const char* kCleanupFallbackSuffix = ".hstream-cleanup-pin";
+  for (const QString& fallback_name : names) {
+    if (!fallback_name.endsWith(kCleanupFallbackSuffix))
+      continue;
+    const QString original_name = fallback_name.left(fallback_name.size() - std::strlen(kCleanupFallbackSuffix));
+    const QString fallback_path = QDir(directory_path).filePath(fallback_name);
+    const QString original_path = QDir(directory_path).filePath(original_name);
+    const QByteArray encoded_fallback_name = QFile::encodeName(fallback_name);
+    const QByteArray encoded_original_name = QFile::encodeName(original_name);
+    struct stat fallback_stat{};
+    if (::fstatat(parent_fd, encoded_fallback_name.constData(), &fallback_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(fallback_stat.st_mode)) {
+      const int saved_errno = errno;
+      ::close(parent_fd);
+      if (error) {
+        *error = QString("public cleanup fallback is invalid at %1: %2")
+                     .arg(fallback_path, QString::fromLocal8Bit(std::strerror(saved_errno)));
+      }
+      return false;
+    }
+    struct stat original_stat{};
+    if (::fstatat(parent_fd, encoded_original_name.constData(), &original_stat, AT_SYMLINK_NOFOLLOW) == 0) {
+      if (!same_file_identity(original_stat, fallback_stat)) {
+        ::close(parent_fd);
+        if (error)
+          *error = QString("public cleanup fallback conflicts with %1").arg(original_path);
+        return false;
+      }
+      continue;
+    }
+    if (errno != ENOENT) {
+      const int saved_errno = errno;
+      ::close(parent_fd);
+      if (error)
+        *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+      return false;
+    }
+    const int fallback_fd =
+        ::openat(parent_fd, encoded_fallback_name.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    struct stat pinned_fallback_stat{};
+    if (fallback_fd < 0 || ::fstat(fallback_fd, &pinned_fallback_stat) != 0 ||
+        !same_file_identity(pinned_fallback_stat, fallback_stat)) {
+      const int saved_errno = fallback_fd < 0 ? errno : ESTALE;
+      if (fallback_fd >= 0)
+        ::close(fallback_fd);
+      ::close(parent_fd);
+      if (error)
+        *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+      return false;
+    }
+    QString restoration_guard_path = original_path + ".hstream-pin";
+    int guard_errno = 0;
+    bool restoration_guard_created = link_open_file_no_replace(fallback_fd, restoration_guard_path, &guard_errno);
+    if (!restoration_guard_created && guard_errno == EEXIST &&
+        path_has_file_identity(restoration_guard_path, pinned_fallback_stat)) {
+      restoration_guard_created = true;
+    }
+    QString restoration_guard_error;
+    if (restoration_guard_created) {
+      restoration_guard_created = sync_parent_directory(restoration_guard_path, &restoration_guard_error) &&
+          path_has_file_identity(restoration_guard_path, pinned_fallback_stat);
+    }
+    if (!restoration_guard_created) {
+      struct stat rescued_stat{};
+      restoration_guard_path = rescue_open_file_no_replace(
+          fallback_fd, pinned_fallback_stat, original_path, &restoration_guard_error, &rescued_stat);
+    }
+    if (restoration_guard_path.isEmpty()) {
+      ::close(fallback_fd);
+      ::close(parent_fd);
+      if (error) {
+        *error = QString("could not protect cleanup fallback restoration for %1: %2")
+                     .arg(original_path, restoration_guard_error);
+      }
+      return false;
+    }
+    int rename_errno = 0;
+    const bool renamed = rename_entry_no_replace(
+        parent_fd, encoded_fallback_name.constData(), parent_fd, encoded_original_name.constData(), &rename_errno);
+    struct stat restored_stat{};
+    const bool restored = renamed &&
+        ::fstatat(parent_fd, encoded_original_name.constData(), &restored_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
+        same_file_identity(restored_stat, pinned_fallback_stat);
+    if (!restored) {
+      ::close(fallback_fd);
+      ::close(parent_fd);
+      if (error) {
+        *error = QString("could not restore public cleanup fallback %1 to %2: %3")
+                     .arg(
+                         fallback_path,
+                         original_path,
+                         renamed ? "identity changed" : QString::fromLocal8Bit(std::strerror(rename_errno)));
+        *error += QString("; retained the trusted inode at %1").arg(restoration_guard_path);
+      }
+      return false;
+    }
+    ::close(fallback_fd);
+    if (::fsync(parent_fd) != 0) {
+      const int saved_errno = errno;
+      ::close(parent_fd);
+      if (error)
+        *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+      return false;
+    }
+    QString guard_cleanup_error;
+    if (!remove_path_if_same_identity(
+            restoration_guard_path, pinned_fallback_stat, &guard_cleanup_error, original_path, &pinned_fallback_stat)) {
+      ::close(parent_fd);
+      if (error) {
+        *error = QString("restored cleanup fallback at %1 but could not retire restoration guard %2: %3")
+                     .arg(original_path, restoration_guard_path, guard_cleanup_error);
+      }
+      return false;
+    }
+  }
+  if (::close(parent_fd) != 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return false;
+  }
+  return true;
+}
+
 bool remove_path_if_same_identity(
     const QString& path,
     const struct stat& expected_stat,
@@ -7323,7 +7538,24 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
   archive_finalize_recovery_log_inode_ = 0;
   archive_finalize_source_path_ = QFileInfo(source_path).absoluteFilePath();
   archive_finalize_game_id_ = game_id;
-  archive_finalize_target_path_ = available_final_archive_path(gameDirectory(game_id), game_id);
+  const QString archive_game_directory = gameDirectory(game_id);
+#ifdef Q_OS_UNIX
+  QSet<QString> cleanup_directories = {
+      QFileInfo(archive_finalize_source_path_).absolutePath(), QFileInfo(archive_game_directory).absoluteFilePath()};
+  for (const QString& cleanup_directory : cleanup_directories) {
+    QString cleanup_error;
+    if (!reconcile_ui_cleanup_directory(cleanup_directory, &cleanup_error)) {
+      archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+      showArchiveFinalizationFailure(
+          QString(
+              "Could not reconcile an interrupted archive cleanup in %1: %2\n\nDo not start another archive "
+              "run until the retained files have been copied to safety.")
+              .arg(cleanup_directory, cleanup_error));
+      return;
+    }
+  }
+#endif
+  archive_finalize_target_path_ = available_final_archive_path(archive_game_directory, game_id);
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
   archive_finalize_pending_failure_detail_.clear();

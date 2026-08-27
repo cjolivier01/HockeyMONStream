@@ -2059,6 +2059,33 @@ play-tracker:
           !fs::exists(interrupted_quarantine_source.string() + ".hstream-cleanup-pin"),
       "Restart must reconcile a crash immediately after quarantine from its durable public guard");
 
+  const fs::path fallback_restore_race_dir = root / "archive-cleanup-fallback-restore-race";
+  fs::create_directories(fallback_restore_race_dir);
+  const fs::path fallback_restore_race_configured = fallback_restore_race_dir / "restore-race.mkv";
+  const fs::path fallback_restore_race_source =
+      fallback_restore_race_dir / "restore-race.hstream-run-99999999-dead.mkv";
+  const fs::path fallback_restore_race_public = fallback_restore_race_source.string() + ".hstream-cleanup-pin";
+  const fs::path fallback_restore_race_guard = fallback_restore_race_source.string() + ".hstream-pin";
+  std::ofstream(fallback_restore_race_public, std::ios::binary) << "trusted cleanup fallback restore inode";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_CLEANUP_FALLBACK_DURING_RESTORE", "1", TRUE);
+  const auto fallback_restore_race =
+      hm::configurator_internal::recover_stale_archive_work_files(fallback_restore_race_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_CLEANUP_FALLBACK_DURING_RESTORE");
+  std::ifstream fallback_restore_race_source_stream(fallback_restore_race_source, std::ios::binary);
+  const std::string fallback_restore_race_source_content{
+      std::istreambuf_iterator<char>(fallback_restore_race_source_stream), std::istreambuf_iterator<char>()};
+  std::ifstream fallback_restore_race_public_stream(fallback_restore_race_public, std::ios::binary);
+  const std::string fallback_restore_race_public_content{
+      std::istreambuf_iterator<char>(fallback_restore_race_public_stream), std::istreambuf_iterator<char>()};
+  std::ifstream fallback_restore_race_guard_stream(fallback_restore_race_guard, std::ios::binary);
+  const std::string fallback_restore_race_guard_content{
+      std::istreambuf_iterator<char>(fallback_restore_race_guard_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !fallback_restore_race.ok() && fallback_restore_race_source_content == "foreign restored original" &&
+          fallback_restore_race_public_content == "foreign cleanup fallback" &&
+          fallback_restore_race_guard_content == "trusted cleanup fallback restore inode",
+      "Cleanup fallback restoration must durably rescue the trusted inode if both public names are replaced");
+
   const fs::path source_link_race_dir = root / "archive-source-link-race";
   fs::create_directories(source_link_race_dir);
   const fs::path source_link_race_source = source_link_race_dir / "source-link-race.mkv";
