@@ -1153,16 +1153,13 @@ absl::Status scale_optimized_canvas(
     return resized_projection.status();
   if (*resized_projection != *projection)
     return absl::FailedPreconditionError("pano_modify changed the optimized Hugin projection");
-  status = fsync_stitch_path(temporary_path);
-  if (!status.ok())
-    return status;
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("Hugin canvas scaling cancelled before publication");
   std::error_code error;
   fs::rename(temporary_path, project_path, error);
   if (error)
     return absl::InternalError("Unable to atomically publish resized Hugin project: " + error.message());
-  return fsync_stitch_path(directory, true);
+  return absl::OkStatus();
 }
 
 absl::Status run_nona(

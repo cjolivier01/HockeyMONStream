@@ -146,6 +146,10 @@ absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const std::file
 // stitch_artifact_generation_id_locked while holding the artifact lock.
 absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const std::filesystem::path& game_dir);
 
+// Returns inode/timestamp bindings for the complete mapping generation. Use
+// this around pathname-based validation to detect non-cooperating writers.
+absl::StatusOr<std::string> stitch_artifact_binding_revision_locked(const std::filesystem::path& game_dir);
+
 // Returns a cheap revision of the generation sidecar and current artifact
 // bindings. This does not replace content validation; it only lets one startup
 // reuse a generation that it has already validated under the artifact lock.

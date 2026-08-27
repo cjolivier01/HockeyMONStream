@@ -1496,6 +1496,33 @@ bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmp
   return true;
 }
 
+bool expect_validation_rejects_pre_generation_replacement(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "validated_generation_replacement";
+  fs::remove_all(dir);
+  if (!write_valid_stitching_artifacts(dir))
+    return false;
+  const fs::path mapping = dir / "mapping_0000_x.tif";
+  const fs::path replacement = dir / "replacement-mapping.tif";
+  if (!write_remap_tiff(replacement, 8, 8))
+    return false;
+
+  absl::StatusOr<hm::stitching::LockedStitchingArtifacts> result = absl::UnknownError("not started");
+  ::setenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS", "3000", 1);
+  std::thread loader([&] { result = hm::stitching::lock_stitching_artifacts_for_load(dir.string()); });
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::error_code error;
+  fs::rename(replacement, mapping, error);
+  loader.join();
+  ::unsetenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS");
+
+  if (error || !absl::IsAborted(result.status())) {
+    std::cerr << "validated control-mask loading must reject path replacement before generation capture: "
+              << result.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -1659,6 +1686,10 @@ int main() {
 
   if (!expect_validated_load_snapshot_rejects_path_replacement(tmpdir)) {
     finish(tmpdir, 42);
+  }
+
+  if (!expect_validation_rejects_pre_generation_replacement(tmpdir)) {
+    finish(tmpdir, 43);
   }
 
   finish(tmpdir, 0);

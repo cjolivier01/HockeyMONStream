@@ -2123,6 +2123,10 @@ absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const
   return parsed->logical_id;
 }
 
+absl::StatusOr<std::string> stitch_artifact_binding_revision_locked(const fs::path& game_dir) {
+  return stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+}
+
 absl::StatusOr<std::string> stitch_artifact_revision_locked(const fs::path& game_dir) {
   std::string identity;
   auto current_identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);

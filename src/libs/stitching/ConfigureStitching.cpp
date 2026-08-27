@@ -1644,18 +1644,40 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     if (!artifact_revision.ok() && !absl::IsNotFound(artifact_revision.status()))
       return artifact_revision.status();
   }
-  bool configured = false;
   CanvasSize canvas_size;
-  HM_ASSIGN_OR_RETURN(
-      configured,
-      validate_stitching_artifacts_locked(
-          game_dir,
-          max_output_width,
-          validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
-          **artifact_lock,
-          &canvas_size));
-  if (!configured)
-    return LockedStitchingArtifacts{};
+  std::string validated_bindings;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto bindings_before_validation = stitch_artifact_binding_revision_locked(game_dir);
+    if (!bindings_before_validation.ok()) {
+      if (absl::IsNotFound(bindings_before_validation.status()))
+        return LockedStitchingArtifacts{};
+      return bindings_before_validation.status();
+    }
+    bool configured = false;
+    HM_ASSIGN_OR_RETURN(
+        configured,
+        validate_stitching_artifacts_locked(
+            game_dir,
+            max_output_width,
+            validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
+            **artifact_lock,
+            &canvas_size));
+    if (!configured)
+      return LockedStitchingArtifacts{};
+    std::string bindings_after_validation;
+    HM_ASSIGN_OR_RETURN(bindings_after_validation, stitch_artifact_binding_revision_locked(game_dir));
+    if (*bindings_before_validation == bindings_after_validation) {
+      validated_bindings = std::move(bindings_after_validation);
+      break;
+    }
+    if (attempt == 1)
+      return absl::AbortedError("Stitch artifacts changed repeatedly while their content was validated");
+  }
+  if (const char* delay = std::getenv("HM_TEST_STITCH_POST_VALIDATION_DELAY_MS")) {
+    const uint64_t delay_ms = std::strtoull(delay, nullptr, 10);
+    if (delay_ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint64_t>(delay_ms, 10'000)));
+  }
   std::string generation_id;
   if (validate_generation_content) {
     HM_ASSIGN_OR_RETURN(generation_id, HuginProject::GenerationId(game_dir, **artifact_lock));
@@ -1664,6 +1686,10 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
   }
   std::string artifact_revision;
   HM_ASSIGN_OR_RETURN(artifact_revision, stitch_artifact_revision_locked(game_dir));
+  std::string verified_bindings;
+  HM_ASSIGN_OR_RETURN(verified_bindings, stitch_artifact_binding_revision_locked(game_dir));
+  if (verified_bindings != validated_bindings)
+    return absl::AbortedError("Stitch artifacts changed after their content was validated");
   std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
   if (create_load_snapshot) {
     HM_RETURN_IF_ERROR(remove_stale_control_mask_snapshots(game_dir));
