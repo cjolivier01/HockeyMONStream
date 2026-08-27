@@ -2031,11 +2031,16 @@ play-tracker:
   const fs::path interrupted_quarantine_recovery =
       interrupted_quarantine_dir / "interrupted-quarantine-finalization-failed.mkv";
   const fs::path unrelated_cleanup_lookalike = interrupted_quarantine_dir / "notes.hstream-cleanup-pin";
-  const fs::path unrelated_cleanup_directory = interrupted_quarantine_dir / ".hstream-cleanup-user-notes";
+  const fs::path unrelated_cleanup_directory =
+      interrupted_quarantine_dir / ".hstream-cleanup-v1-dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb";
+  const fs::path unrelated_cleanup_guard = unrelated_cleanup_directory / "guard";
+  const fs::path unrelated_cleanup_fallback = unrelated_cleanup_directory / "fallback";
   std::ofstream(interrupted_quarantine_source, std::ios::binary) << "trusted interrupted-quarantine video";
   std::ofstream(interrupted_quarantine_source_log, std::ios::binary) << "trusted interrupted-quarantine log";
   std::ofstream(unrelated_cleanup_lookalike, std::ios::binary) << "unrelated cleanup-looking notes";
   fs::create_directories(unrelated_cleanup_directory);
+  std::ofstream(unrelated_cleanup_guard, std::ios::binary) << "unrelated exact cleanup guard";
+  fs::create_hard_link(unrelated_cleanup_guard, unrelated_cleanup_fallback);
   g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", "1", TRUE);
   const auto interrupted_quarantine_first =
       hm::configurator_internal::recover_stale_archive_work_files(interrupted_quarantine_configured);
@@ -2065,8 +2070,47 @@ play-tracker:
           !interrupted_quarantine_cleanup_remains &&
           !fs::exists(interrupted_quarantine_source.string() + ".hstream-cleanup-pin") &&
           unrelated_cleanup_lookalike_content == "unrelated cleanup-looking notes" &&
-          fs::is_directory(unrelated_cleanup_directory) && !fs::exists(interrupted_quarantine_dir / "notes"),
+          fs::is_directory(unrelated_cleanup_directory) && fs::exists(unrelated_cleanup_guard) &&
+          fs::exists(unrelated_cleanup_fallback) && !fs::exists(interrupted_quarantine_dir / "notes"),
       "Restart must reconcile a crash after quarantine without claiming unrelated cleanup-looking user entries");
+
+  const fs::path live_cleanup_dir = root / "archive-live-cleanup-lock";
+  fs::create_directories(live_cleanup_dir);
+  const fs::path live_cleanup_configured = live_cleanup_dir / "live-cleanup.mkv";
+  const fs::path live_cleanup_source = live_cleanup_dir / "live-cleanup.hstream-run-99999999-dead.mkv";
+  const fs::path live_cleanup_fallback = live_cleanup_source.string() + ".hstream-cleanup-pin";
+  const fs::path live_cleanup_transaction =
+      live_cleanup_dir / ".hstream-cleanup-v1-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const fs::path live_cleanup_owner = live_cleanup_transaction.string() + ".hstream-owner";
+  std::ofstream(live_cleanup_source, std::ios::binary) << "trusted live cleanup video";
+  fs::create_hard_link(live_cleanup_source, live_cleanup_fallback);
+  fs::create_directories(live_cleanup_transaction);
+  fs::rename(live_cleanup_source, live_cleanup_transaction / "entry");
+  const std::string live_cleanup_target_name = live_cleanup_source.filename().string();
+  gchar* live_cleanup_encoded_target = g_base64_encode(
+      reinterpret_cast<const guchar*>(live_cleanup_target_name.data()), live_cleanup_target_name.size());
+  std::ofstream(live_cleanup_owner, std::ios::binary) << "hstream-cleanup-v1\n" << live_cleanup_encoded_target;
+  g_free(live_cleanup_encoded_target);
+  const int live_cleanup_fd = ::open(live_cleanup_transaction.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  const bool live_cleanup_locked = live_cleanup_fd >= 0 && ::flock(live_cleanup_fd, LOCK_EX | LOCK_NB) == 0;
+  const auto live_cleanup_skipped =
+      hm::configurator_internal::recover_stale_archive_work_files(live_cleanup_configured);
+  const bool live_cleanup_unchanged = live_cleanup_skipped.ok() && live_cleanup_skipped->empty() &&
+      fs::exists(live_cleanup_transaction / "entry") && fs::exists(live_cleanup_fallback) &&
+      fs::exists(live_cleanup_owner);
+  if (live_cleanup_fd >= 0)
+    ::close(live_cleanup_fd);
+  const auto live_cleanup_resumed =
+      hm::configurator_internal::recover_stale_archive_work_files(live_cleanup_configured);
+  std::ifstream live_cleanup_recovery_stream(
+      live_cleanup_dir / "live-cleanup-finalization-failed.mkv", std::ios::binary);
+  const std::string live_cleanup_recovery_content{
+      std::istreambuf_iterator<char>(live_cleanup_recovery_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      live_cleanup_locked && live_cleanup_unchanged && live_cleanup_resumed.ok() && live_cleanup_resumed->size() == 1 &&
+          live_cleanup_recovery_content == "trusted live cleanup video" && !fs::exists(live_cleanup_transaction) &&
+          !fs::exists(live_cleanup_owner) && !fs::exists(live_cleanup_fallback),
+      "Cleanup reconciliation must skip a live locked transaction and resume it only after ownership is released");
 
   const fs::path fallback_retirement_dir = root / "archive-fallback-retirement-interruption";
   fs::create_directories(fallback_retirement_dir);
@@ -2181,30 +2225,15 @@ play-tracker:
       fallback_restore_race_dir / "restore-race.hstream-run-99999999-dead.mkv";
   const fs::path fallback_restore_race_public = fallback_restore_race_source.string() + ".hstream-cleanup-pin";
   std::ofstream(fallback_restore_race_public, std::ios::binary) << "trusted cleanup fallback restore inode";
-  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_CLEANUP_FALLBACK_DURING_RESTORE", "1", TRUE);
   const auto fallback_restore_race =
       hm::configurator_internal::recover_stale_archive_work_files(fallback_restore_race_configured);
-  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_CLEANUP_FALLBACK_DURING_RESTORE");
-  std::ifstream fallback_restore_race_source_stream(fallback_restore_race_source, std::ios::binary);
-  const std::string fallback_restore_race_source_content{
-      std::istreambuf_iterator<char>(fallback_restore_race_source_stream), std::istreambuf_iterator<char>()};
   std::ifstream fallback_restore_race_public_stream(fallback_restore_race_public, std::ios::binary);
   const std::string fallback_restore_race_public_content{
       std::istreambuf_iterator<char>(fallback_restore_race_public_stream), std::istreambuf_iterator<char>()};
-  bool fallback_restore_race_rescued = false;
-  const std::string fallback_restore_rescue_prefix =
-      fallback_restore_race_source.filename().string() + ".hstream-restore.hstream-rescue-";
-  for (const fs::path& entry : fs::directory_iterator(fallback_restore_race_dir)) {
-    if (entry.filename().string().rfind(fallback_restore_rescue_prefix, 0) != 0)
-      continue;
-    std::ifstream rescue_stream(entry, std::ios::binary);
-    const std::string rescue_content{std::istreambuf_iterator<char>(rescue_stream), std::istreambuf_iterator<char>()};
-    fallback_restore_race_rescued = rescue_content == "trusted cleanup fallback restore inode";
-  }
   ok &= expect(
-      !fallback_restore_race.ok() && fallback_restore_race_source_content == "foreign restored original" &&
-          fallback_restore_race_public_content == "foreign cleanup fallback" && fallback_restore_race_rescued,
-      "Cleanup fallback restoration must durably rescue the trusted inode if both public names are replaced");
+      fallback_restore_race.ok() && fallback_restore_race->empty() && !fs::exists(fallback_restore_race_source) &&
+          fallback_restore_race_public_content == "trusted cleanup fallback restore inode",
+      "Recovery must not claim a cleanup-suffix lookalike without an authenticated cleanup owner record");
 
   const fs::path source_link_race_dir = root / "archive-source-link-race";
   fs::create_directories(source_link_race_dir);
