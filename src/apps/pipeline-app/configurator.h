@@ -21,6 +21,9 @@ struct NvDsConfig;
 struct NvDsPipeline;
 
 namespace hm {
+namespace stitching {
+struct StitchingBackendChoices;
+}
 namespace configurator_internal {
 
 struct ExplicitStitchingVideoSelection {
@@ -150,6 +153,15 @@ class Configurator {
       const std::string& config_path);
 
  private:
+  absl::Status save_private_config_with_backend_claim(
+      const YAML::Node& private_config,
+      const std::string& expected_invalidation_id,
+      const stitching::StitchingBackendChoices& backend_choices);
+  absl::Status save_private_config_with_backend_claim_impl(
+      const YAML::Node& private_config,
+      const std::string& expected_invalidation_id,
+      bool remove_canvas_artifacts,
+      const stitching::StitchingBackendChoices* backend_choices);
   absl::Status ensure_user_config_snapshot();
   std::filesystem::path resolved_game_dir();
   void record_explicit_overlay(const YAML::Node& overlay, const std::string& prefix, int rank);

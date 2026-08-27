@@ -6853,6 +6853,23 @@ absl::Status Configurator::save_private_config(
     const YAML::Node& private_config,
     const std::string& expected_invalidation_id,
     bool remove_canvas_artifacts) {
+  return save_private_config_with_backend_claim_impl(
+      private_config, expected_invalidation_id, remove_canvas_artifacts, nullptr);
+}
+
+absl::Status Configurator::save_private_config_with_backend_claim(
+    const YAML::Node& private_config,
+    const std::string& expected_invalidation_id,
+    const stitching::StitchingBackendChoices& backend_choices) {
+  return save_private_config_with_backend_claim_impl(
+      private_config, expected_invalidation_id, /*remove_rink_masks=*/false, &backend_choices);
+}
+
+absl::Status Configurator::save_private_config_with_backend_claim_impl(
+    const YAML::Node& private_config,
+    const std::string& expected_invalidation_id,
+    bool remove_canvas_artifacts,
+    const stitching::StitchingBackendChoices* backend_choices) {
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const fs::path game_dir = resolved_game_dir();
   auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
@@ -6867,7 +6884,11 @@ absl::Status Configurator::save_private_config(
     return absl::InvalidArgumentError("Failed to merge private config: " + std::string(error.what()));
   }
   HM_RETURN_IF_ERROR(stitching::validate_stitching_generation_owner(latest, expected_invalidation_id));
-  const YAML::Node merged = stitching::apply_game_config_diff(persisted_private_config_, private_config, latest);
+  YAML::Node merged = stitching::apply_game_config_diff(persisted_private_config_, private_config, latest);
+  if (backend_choices != nullptr) {
+    HM_RETURN_IF_ERROR(
+        stitching::reserve_stitching_backend_generation_in_config(merged, expected_invalidation_id, *backend_choices));
+  }
   std::string contents;
   if (!is_empty_yaml_document(merged))
     contents = YAML::Dump(merged) + "\n";
@@ -7004,13 +7025,25 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const bool persisted_autooptimizer_present = persisted_autooptimizer_value.has_value();
   const bool persisted_values_present =
       persisted_matcher_present && persisted_backend_present && persisted_autooptimizer_present;
-  const bool persisted_values_are_generated = persisted_generated_matcher.has_value() &&
+  const bool persisted_current_values_are_generated = persisted_generated_matcher.has_value() &&
       persisted_generated_matcher->IsScalar() && persisted_generated_backend.has_value() &&
       persisted_generated_backend->IsScalar() && persisted_generated_autooptimizer_value.has_value() &&
       persisted_values_present &&
       persisted_matcher->as<std::string>() == persisted_generated_matcher->as<std::string>() &&
       persisted_backend->as<std::string>() == persisted_generated_backend->as<std::string>() &&
       *persisted_autooptimizer_value == *persisted_generated_autooptimizer_value;
+  // Older hstream versions generated only matcher/backend provenance. Treat
+  // that matching two-field tuple as generated too; otherwise migration can
+  // preserve generated NONA as user intent and later restore it without the
+  // newly required optimizer opt-in.
+  const bool persisted_legacy_values_are_generated = persisted_generated_matcher.has_value() &&
+      persisted_generated_matcher->IsScalar() && persisted_generated_backend.has_value() &&
+      persisted_generated_backend->IsScalar() && !persisted_generated_autooptimizer.has_value() &&
+      persisted_matcher_present && persisted_backend_present &&
+      persisted_matcher->as<std::string>() == persisted_generated_matcher->as<std::string>() &&
+      persisted_backend->as<std::string>() == persisted_generated_backend->as<std::string>();
+  const bool persisted_values_are_generated =
+      persisted_current_values_are_generated || persisted_legacy_values_are_generated;
   const bool generated_private_values = generated_matcher.has_value() && generated_matcher->IsScalar() &&
       generated_backend.has_value() && generated_backend->IsScalar() && generated_autooptimizer_value.has_value() &&
       private_values_present && private_matcher->as<std::string>() == generated_matcher->as<std::string>() &&
@@ -7034,19 +7067,15 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   config_["stitching"]["run_autooptimizer"] = run_autooptimizer;
 
   const stitching::StitchingBackendChoices backend_choices{matcher_name, backend_name, run_autooptimizer};
-  if (!expected_invalidation_id.empty()) {
-    HM_RETURN_IF_ERROR(
-        stitching::reserve_stitching_backend_generation(
-            resolved_game_dir(), expected_invalidation_id, backend_choices));
-  }
 
   const bool private_matches = private_matcher.has_value() && private_matcher->IsScalar() &&
       private_matcher->as<std::string>() == matcher_name && private_backend.has_value() &&
       private_backend->IsScalar() && private_backend->as<std::string>() == backend_name &&
       private_autooptimizer_value.has_value() && *private_autooptimizer_value == run_autooptimizer;
   if (private_matches) {
-    if (loaded_generated_stitching_backend_choices_) {
-      HM_RETURN_IF_ERROR(save_private_config(private_config_, expected_invalidation_id));
+    if (loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
+      HM_RETURN_IF_ERROR(
+          save_private_config_with_backend_claim(private_config_, expected_invalidation_id, backend_choices));
       loaded_generated_stitching_backend_choices_ = false;
     }
     return absl::OkStatus();
@@ -7085,10 +7114,10 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       remove_yaml_key_path(
           private_config_, {"hstream_ui", "generated_stitching_backend_choices", "previous_mapping_backend"});
     }
-    if (persisted_values_are_generated && persisted_previous_autooptimizer_value.has_value()) {
+    if (persisted_current_values_are_generated && persisted_previous_autooptimizer_value.has_value()) {
       private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"] =
           *persisted_previous_autooptimizer_value;
-    } else if (persisted_autooptimizer_present && !persisted_values_are_generated) {
+    } else if (persisted_autooptimizer_present && !persisted_current_values_are_generated) {
       private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"] =
           *persisted_autooptimizer_value;
     } else {
@@ -7096,7 +7125,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
           private_config_, {"hstream_ui", "generated_stitching_backend_choices", "previous_run_autooptimizer"});
     }
   }
-  HM_RETURN_IF_ERROR(save_private_config(private_config_, expected_invalidation_id));
+  HM_RETURN_IF_ERROR(
+      save_private_config_with_backend_claim(private_config_, expected_invalidation_id, backend_choices));
   loaded_generated_stitching_backend_choices_ = false;
   return absl::OkStatus();
 }

@@ -123,6 +123,15 @@ absl::Status reserve_stitching_backend_generation(
     const std::string& expected_invalidation_id,
     const StitchingBackendChoices& expected_choices);
 
+// Adds or validates the immutable backend claim in a document that already
+// contains the matching worker-visible tuple. The caller must hold
+// GameConfigTransactionLock and publish this document before releasing it so
+// the claim and tuple can never become separate config generations.
+absl::Status reserve_stitching_backend_generation_in_config(
+    YAML::Node& config,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices);
+
 // Validates both the immutable generation claim and the worker-visible
 // stitching tuple. The file variant requires GameConfigTransactionLock.
 absl::Status validate_stitching_backend_generation(
