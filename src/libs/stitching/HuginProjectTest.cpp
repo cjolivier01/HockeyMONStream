@@ -323,6 +323,8 @@ int main() {
   const fs::path pto_gen_args = root / "pto_gen.args";
   const fs::path autooptimiser = root / "autooptimiser";
   const fs::path autooptimiser_args = root / "autooptimiser.args";
+  const fs::path pano_modify = root / "pano_modify";
+  const fs::path pano_modify_args = root / "pano_modify.args";
   const fs::path nona = root / "nona";
   const fs::path nona_invocations = root / "nona.invocations";
   const fs::path enblend = root / "enblend";
@@ -416,19 +418,34 @@ int main() {
   ok &= expect(
       write_tool(
           autooptimiser,
-          "args=\"$*\"; align=0; level=0; select=0; quiet=0; scale=1; output=; input=\n"
+          "args=\"$*\"; align=0; level=0; select=0; quiet=0; output=; input=\n"
           "while [ \"$#\" -gt 0 ]; do case \"$1\" in -a) align=1 ;; -l) level=1 ;; -s) select=1 ;; "
-          "-q) quiet=1 ;; -x) shift; scale=$1 ;; -o) shift; output=$1 ;; -n) exit 91 ;; *) input=$1 ;; "
+          "-q) quiet=1 ;; -x|-n) exit 91 ;; -o) shift; output=$1 ;; *) input=$1 ;; "
           "esac; shift; done\n"
           "test \"$align:$level:$select:$quiet:$output:$input\" = "
           "'1:1:1:1:autooptimiser_out.pto:hm_project.pto'\n"
-          "awk -v scale=\"$scale\" '/^p / { w=int(100 * scale + 0.5); h=int(50 * scale + 0.5); "
-          "sub(/w[0-9]+/, \"w\" w); sub(/h[0-9]+/, \"h\" h) } { print }' \"$input\" > \"$output\"\n"
+          "awk '/^p / { sub(/w[0-9]+/, \"w100\"); sub(/h[0-9]+/, \"h50\") } { print }' "
+          "\"$input\" > \"$output\"\n"
           "printf '%s\\n' \"$args\" >> '" +
               autooptimiser_args.string() +
               "'\n"
               "printf '%s\\n' 'Average (rms) distance between Controlpoints' 'after 1 iteration(s): 1.25 units'\n"),
       "fake autooptimiser must be created");
+  ok &= expect(
+      write_tool(
+          pano_modify,
+          "args=\"$*\"; canvas=; output=; input=\n"
+          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --canvas=*) canvas=${1#--canvas=} ;; "
+          "-o) shift; output=$1 ;; *) input=$1 ;; esac; shift; done\n"
+          "test -n \"$canvas\"; test \"$output\" = .autooptimiser_out.resize.pto; "
+          "test \"$input\" = autooptimiser_out.pto\n"
+          "width=${canvas%x*}; height=${canvas#*x}\n"
+          "awk -v width=\"$width\" -v height=\"$height\" "
+          "'/^p / { sub(/w[0-9]+/, \"w\" width); sub(/h[0-9]+/, \"h\" height) } { print }' "
+          "\"$input\" > \"$output\"\n"
+          "printf '%s\\n' \"$args\" >> '" +
+              pano_modify_args.string() + "'\n"),
+      "fake pano_modify must be created");
   ok &= expect(
       write_tool(
           nona,
@@ -453,6 +470,7 @@ int main() {
       "fake enblend must be created");
   ::setenv("HM_PTO_GEN", pto_gen.c_str(), 1);
   ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
+  ::setenv("HM_PANO_MODIFY", pano_modify.c_str(), 1);
   ::setenv("HM_NONA", nona.c_str(), 1);
   ::setenv("HM_ENBLEND", enblend.c_str(), 1);
   matches.clear();
@@ -526,10 +544,10 @@ int main() {
     const auto scaled = hm::stitching::HuginProject::ParseCanvasSize(contents);
     ok &= expect(
         scaled.ok() && scaled->first == 63 && scaled->second == 32,
-        "autooptimiser -x scaling must leave one pixel of Nona placement headroom");
+        "pre-Nona PTO scaling must leave one pixel of Nona placement headroom");
     ok &= expect(
         contents.find("p f2 ") != std::string::npos,
-        "the projection selected by autooptimiser must not be replaced by a pano_modify pass");
+        "pano_modify must preserve the projection selected by autooptimiser");
     std::ifstream optimizer_invocations(autooptimiser_args);
     const std::string optimizer_args(
         (std::istreambuf_iterator<char>(optimizer_invocations)), std::istreambuf_iterator<char>());
@@ -537,11 +555,14 @@ int main() {
         optimizer_args.find("-a -l -s -q -o autooptimiser_out.pto hm_project.pto") != std::string::npos,
         "Hugin orchestration must request automatic alignment and projection selection");
     ok &= expect(
-        optimizer_args.find("-a -l -s -q -x 0.63 -o autooptimiser_out.pto hm_project.pto") != std::string::npos,
-        "oversized Hugin canvases must reserve placement-rounding headroom through autooptimiser -x");
+        std::count(optimizer_args.begin(), optimizer_args.end(), '\n') == 1 &&
+            optimizer_args.find("-x") == std::string::npos && optimizer_args.find("-n") == std::string::npos,
+        "Hugin orchestration must optimize once without requesting unsupported output scaling");
+    const std::string pano_modify_invocations = read_text_file(pano_modify_args);
     ok &= expect(
-        optimizer_args.find("-n") == std::string::npos,
-        "Hugin orchestration must not request script-only optimization");
+        pano_modify_invocations.find("--canvas=63x32 -o .autooptimiser_out.resize.pto autooptimiser_out.pto") !=
+            std::string::npos,
+        "oversized Hugin canvases must reserve placement-rounding headroom through pano_modify");
     const std::string nona_runs = read_text_file(nona_invocations);
     ok &= expect(
         std::count(nona_runs.begin(), nona_runs.end(), '\n') == 1,

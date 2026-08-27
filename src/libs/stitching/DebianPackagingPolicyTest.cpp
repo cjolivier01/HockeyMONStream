@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
           contains(packager, "jetson_opencv_upper_version") && contains(packager, "HSTREAM_HUGIN_TOOLS_DIR") &&
           contains(hugin_builder, "HUGIN_SHA256=") && contains(hugin_builder, "VIGRA_SHA256=") &&
           contains(hugin_builder, "--export-sources") && contains(hugin_builder, "autooptimiser") &&
-          contains(hugin_builder, "nona"),
+          contains(hugin_builder, "pano_modify") && contains(hugin_builder, "nona"),
       "Jetson packages must use L4T/OpenCV dependencies and pinned source-built Hugin calibration tools");
   ok &= expect(
       contains(publisher, "X-HStream-Source-Commit") && contains(publisher, "--repo \"${repository}\"") &&

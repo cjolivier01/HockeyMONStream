@@ -1069,21 +1069,10 @@ void remove_mapping_outputs(const fs::path& directory) {
 absl::Status run_autooptimiser(
     const std::string& autooptimiser,
     const fs::path& directory,
-    const std::optional<double>& output_scale = std::nullopt,
     const std::function<bool()>& is_cancelled = {}) {
   // Match HockeyMOM's automatic alignment path: let Hugin choose the
-  // optimization stages, projection, field of view, and canvas. When the
-  // resulting canvas exceeds the configured GPU limit, -x scales that same
-  // automatic result without requiring a separate pano_modify pass.
+  // optimization stages, projection, field of view, and canvas.
   std::vector<std::string> command = {autooptimiser, "-a", "-l", "-s", "-q"};
-  if (output_scale.has_value()) {
-    if (!std::isfinite(*output_scale) || *output_scale <= 0.0)
-      return absl::InvalidArgumentError("Autooptimiser output scale must be positive and finite");
-    std::ostringstream scale;
-    scale.imbue(std::locale::classic());
-    scale << std::setprecision(12) << *output_scale;
-    command.insert(command.end(), {"-x", scale.str()});
-  }
   command.insert(command.end(), {"-o", "autooptimiser_out.pto", "hm_project.pto"});
   std::string output;
   auto status = run_checked(command, directory, &output, is_cancelled);
@@ -1100,6 +1089,80 @@ absl::Status run_autooptimiser(
         "Hugin control-point optimization RMS is too large: " + std::to_string(rms) + " pixels");
   }
   return absl::OkStatus();
+}
+
+absl::Status scale_optimized_canvas(
+    const std::string& pano_modify,
+    const fs::path& directory,
+    double scale,
+    const std::function<bool()>& is_cancelled = {}) {
+  if (!std::isfinite(scale) || scale <= 0.0 || scale >= 1.0)
+    return absl::InvalidArgumentError("Hugin canvas scale must be finite and between zero and one");
+
+  const fs::path project_path = directory / "autooptimiser_out.pto";
+  auto project = read_file(project_path);
+  if (!project.ok())
+    return project.status();
+  auto dimensions = HuginProject::ParseCanvasSize(*project);
+  if (!dimensions.ok())
+    return dimensions.status();
+  auto projection = HuginProject::ParseProjection(*project);
+  if (!projection.ok())
+    return projection.status();
+
+  const auto scaled_dimension = [scale](size_t value) -> absl::StatusOr<size_t> {
+    const long double scaled = static_cast<long double>(value) * static_cast<long double>(scale);
+    if (!std::isfinite(static_cast<double>(scaled)) || scaled > std::numeric_limits<size_t>::max())
+      return absl::InvalidArgumentError("Scaled Hugin canvas dimension is invalid");
+    return std::max<size_t>(1, static_cast<size_t>(std::floor(scaled + 0.5L)));
+  };
+  auto target_width = scaled_dimension(dimensions->first);
+  if (!target_width.ok())
+    return target_width.status();
+  auto target_height = scaled_dimension(dimensions->second);
+  if (!target_height.ok())
+    return target_height.status();
+  *target_width = std::min(*target_width, dimensions->first);
+  *target_height = std::min(*target_height, dimensions->second);
+  if (*target_width == dimensions->first && *target_height == dimensions->second)
+    return absl::FailedPreconditionError("Hugin canvas constraint did not reduce the optimized canvas");
+
+  const fs::path temporary_path = directory / ".autooptimiser_out.resize.pto";
+  const std::string canvas = std::to_string(*target_width) + "x" + std::to_string(*target_height);
+  auto status = run_checked(
+      {pano_modify, "--canvas=" + canvas, "-o", temporary_path.filename().string(), project_path.filename().string()},
+      directory,
+      nullptr,
+      is_cancelled);
+  if (!status.ok())
+    return status;
+
+  auto resized_project = read_file(temporary_path);
+  if (!resized_project.ok())
+    return resized_project.status();
+  auto resized_dimensions = HuginProject::ParseCanvasSize(*resized_project);
+  if (!resized_dimensions.ok())
+    return resized_dimensions.status();
+  if (resized_dimensions->first != *target_width || resized_dimensions->second != *target_height) {
+    return absl::FailedPreconditionError(
+        "pano_modify produced an unexpected Hugin canvas size: " + std::to_string(resized_dimensions->first) + "x" +
+        std::to_string(resized_dimensions->second));
+  }
+  auto resized_projection = HuginProject::ParseProjection(*resized_project);
+  if (!resized_projection.ok())
+    return resized_projection.status();
+  if (*resized_projection != *projection)
+    return absl::FailedPreconditionError("pano_modify changed the optimized Hugin projection");
+  status = fsync_stitch_path(temporary_path);
+  if (!status.ok())
+    return status;
+  if (is_cancelled && is_cancelled())
+    return absl::CancelledError("Hugin canvas scaling cancelled before publication");
+  std::error_code error;
+  fs::rename(temporary_path, project_path, error);
+  if (error)
+    return absl::InternalError("Unable to atomically publish resized Hugin project: " + error.message());
+  return fsync_stitch_path(directory, true);
 }
 
 absl::Status run_nona(
@@ -1589,7 +1652,7 @@ absl::Status HuginProject::Configure(
     if (!autooptimiser.ok())
       return autooptimiser.status();
     autooptimiser_path = *autooptimiser;
-    status = run_autooptimiser(*autooptimiser_path, staging, std::nullopt, options.is_cancelled);
+    status = run_autooptimiser(*autooptimiser_path, staging, options.is_cancelled);
     if (!status.ok())
       return status;
     if (options.progress)
@@ -1608,11 +1671,22 @@ absl::Status HuginProject::Configure(
   std::pair<size_t, size_t> source_canvas{0, 0};
   bool max_output_width_applied = false;
   bool max_canvas_dimension_applied = false;
+  std::optional<std::string> pano_modify_path;
   auto fit_canvas = [&](size_t width, size_t height, double factor, double rounding_guard) -> absl::Status {
     (void)width;
     (void)height;
-    output_scale = output_scale.value_or(1.0) * factor * rounding_guard;
-    return run_autooptimiser(*autooptimiser_path, staging, output_scale, options.is_cancelled);
+    const double incremental_scale = factor * rounding_guard;
+    if (!pano_modify_path.has_value()) {
+      auto pano_modify = executable("HM_PANO_MODIFY", "pano_modify");
+      if (!pano_modify.ok())
+        return pano_modify.status();
+      pano_modify_path = *pano_modify;
+    }
+    auto scale_status = scale_optimized_canvas(*pano_modify_path, staging, incremental_scale, options.is_cancelled);
+    if (!scale_status.ok())
+      return scale_status;
+    output_scale = output_scale.value_or(1.0) * incremental_scale;
+    return absl::OkStatus();
   };
   auto fit_canvas_longest = [&](size_t width, size_t height, double rounding_guard) -> absl::Status {
     const size_t longest = std::max(width, height);

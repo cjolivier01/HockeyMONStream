@@ -161,6 +161,7 @@ fi
 if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
   for required_hugin_file in \
     bin/autooptimiser \
+    bin/pano_modify \
     bin/nona \
     lib/libhuginbase.so.0.0 \
     lib/libvigraimpex.so.11.1.11.1 \
@@ -351,11 +352,11 @@ fi
 ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 
 # Ubuntu 22.04 arm64 publishes no hugin-tools package. Jetson releases include
-# pinned source-built copies of the two required commands and their private
+# pinned source-built copies of the required commands and their private
 # Hugin/VIGRA libraries, with upstream licenses, so clean-state calibration is
 # available without an unsatisfiable package dependency.
 if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
-  for hugin_tool in autooptimiser nona; do
+  for hugin_tool in autooptimiser pano_modify nona; do
     hugin_source="${HSTREAM_HUGIN_TOOLS_DIR}/bin/${hugin_tool}"
     hugin_destination="${STAGING}${INSTALL_PREFIX}/bin/${hugin_tool}"
     validate_elf_arch "${hugin_source}"
@@ -371,6 +372,7 @@ if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
     "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra/LICENSE.txt"
   LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/autooptimiser" \
     --help >/dev/null
+  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/pano_modify" --help >/dev/null
   LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/nona" --help >/dev/null
 fi
 
