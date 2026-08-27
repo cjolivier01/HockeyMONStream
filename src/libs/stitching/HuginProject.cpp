@@ -1902,8 +1902,10 @@ absl::Status HuginProject::Configure(
   if (!status.ok())
     return status;
   if (!options.expected_invalidation_id.empty()) {
-    auto validation =
-        validate_pending_stitching_invalidation_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
+    const auto validation = options.expected_backend_choices.has_value()
+        ? validate_stitching_backend_generation_file_locked(
+              game_dir / "config.yaml", options.expected_invalidation_id, *options.expected_backend_choices)
+        : validate_stitching_generation_owner_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
     if (!validation.ok())
       return validation;
   }

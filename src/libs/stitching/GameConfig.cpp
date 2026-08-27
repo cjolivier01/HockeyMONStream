@@ -978,6 +978,114 @@ absl::Status validate_no_pending_live_stitched_output_authorization_file_locked(
   }
 }
 
+namespace {
+
+absl::Status validate_backend_generation_claim(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices,
+    bool validate_worker_tuple) {
+  const absl::Status generation_status = validate_stitching_generation_owner(config, expected_invalidation_id);
+  if (!generation_status.ok())
+    return generation_status;
+  try {
+    const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    const YAML::Node claim = calibration["backend_generation"];
+    if (!claim || !claim.IsMap() || !claim["invalidation_id"] || !claim["invalidation_id"].IsScalar() ||
+        !claim["control_point_matcher"] || !claim["control_point_matcher"].IsScalar() || !claim["mapping_backend"] ||
+        !claim["mapping_backend"].IsScalar() || !claim["run_autooptimizer"] || !claim["run_autooptimizer"].IsScalar()) {
+      return absl::AbortedError("Stitching backend generation claim is missing or incomplete");
+    }
+    const bool claim_matches = claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
+        claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
+        claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
+        claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
+    if (!claim_matches)
+      return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
+    if (!validate_worker_tuple)
+      return absl::OkStatus();
+
+    const YAML::Node stitching = config["stitching"];
+    if (!stitching || !stitching.IsMap() || !stitching["control_point_matcher"] ||
+        !stitching["control_point_matcher"].IsScalar() || !stitching["mapping_backend"] ||
+        !stitching["mapping_backend"].IsScalar() || !stitching["run_autooptimizer"] ||
+        !stitching["run_autooptimizer"].IsScalar()) {
+      return absl::AbortedError("Worker-visible stitching backend choices are missing or incomplete");
+    }
+    const bool worker_tuple_matches =
+        stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
+        stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
+        stitching["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer;
+    if (!worker_tuple_matches)
+      return absl::AbortedError("Worker-visible stitching backend choices changed during calibration");
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to validate stitching backend generation: " + std::string(exception.what()));
+  }
+  return absl::OkStatus();
+}
+
+} // namespace
+
+absl::Status reserve_stitching_backend_generation(
+    const fs::path& game_dir,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices) {
+  if (expected_invalidation_id.empty())
+    return absl::OkStatus();
+  auto transaction = GameConfigTransactionLock::Acquire(game_dir);
+  if (!transaction.ok())
+    return transaction.status();
+  const fs::path config_path = game_dir / "config.yaml";
+  YAML::Node config;
+  try {
+    config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    const absl::Status generation_status = validate_stitching_generation_owner(config, expected_invalidation_id);
+    if (!generation_status.ok())
+      return generation_status;
+    YAML::Node claim = config["hstream_ui"]["stitching_calibration"]["backend_generation"];
+    const bool claim_is_current = claim && claim.IsMap() && claim["invalidation_id"] &&
+        claim["invalidation_id"].IsScalar() && claim["invalidation_id"].as<std::string>() == expected_invalidation_id;
+    if (claim_is_current) {
+      return validate_backend_generation_claim(
+          config, expected_invalidation_id, expected_choices, /*validate_worker_tuple=*/false);
+    }
+    claim["invalidation_id"] = expected_invalidation_id;
+    claim["control_point_matcher"] = expected_choices.control_point_matcher;
+    claim["mapping_backend"] = expected_choices.mapping_backend;
+    claim["run_autooptimizer"] = expected_choices.run_autooptimizer;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to reserve stitching backend generation: " + std::string(exception.what()));
+  }
+  return publish_game_config(game_dir, YAML::Dump(config) + "\n");
+}
+
+absl::Status validate_stitching_backend_generation(
+    const YAML::Node& config,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices) {
+  if (expected_invalidation_id.empty())
+    return absl::OkStatus();
+  return validate_backend_generation_claim(
+      config, expected_invalidation_id, expected_choices, /*validate_worker_tuple=*/true);
+}
+
+absl::Status validate_stitching_backend_generation_file_locked(
+    const fs::path& config_path,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices) {
+  if (expected_invalidation_id.empty())
+    return absl::OkStatus();
+  try {
+    const YAML::Node config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    return validate_stitching_backend_generation(config, expected_invalidation_id, expected_choices);
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to load stitching backend generation for validation: " + std::string(exception.what()));
+  }
+}
+
 YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
   const bool empty_map_baseline = !baseline.IsDefined() || baseline.IsNull();
   if ((baseline.IsMap() || empty_map_baseline) && desired.IsMap()) {

@@ -2354,6 +2354,21 @@ absl::Status create_control_points(
     return absl::InvalidArgumentError(TO_STRING(
         "Failed to read stitching backend choices from " << game_config_path.string() << ": " << exception.what()));
   }
+  const StitchingBackendChoices backend_choices{
+      std::string(ControlPointMatcherName(control_point_matcher)),
+      std::string(MappingBackendName(mapping_backend)),
+      run_autooptimizer};
+  if (!expected_invalidation_id.empty()) {
+    YAML::Node config;
+    try {
+      config = YAML::LoadFile(game_config_path.string());
+    } catch (const YAML::Exception& exception) {
+      return absl::InvalidArgumentError(TO_STRING(
+          "Failed to validate stitching backend generation from " << game_config_path.string() << ": "
+                                                                  << exception.what()));
+    }
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, backend_choices));
+  }
 
   report_calibration_progress(
       "features",
@@ -2445,6 +2460,7 @@ absl::Status create_control_points(
   options.mapping_backend = mapping_backend;
   options.run_autooptimizer = run_autooptimizer;
   options.expected_invalidation_id = expected_invalidation_id;
+  options.expected_backend_choices = backend_choices;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
   absl::Status last_candidate_status =

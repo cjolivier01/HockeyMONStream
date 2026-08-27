@@ -1530,6 +1530,75 @@ play-tracker:
           !(**backend_cli_final)["stitching"]["run_autooptimizer"].as<bool>() &&
           !hm::get_node(**backend_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "CLI materialization must preserve and restore an existing explicit game-private stitching backend choice");
+
+  const fs::path malformed_backend_dir = games / "malformed-backend-cli";
+  fs::create_directories(malformed_backend_dir);
+  YAML::Node malformed_backend_private(YAML::NodeType::Map);
+  malformed_backend_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  malformed_backend_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+  malformed_backend_private["stitching"]["run_autooptimizer"] = "invalid";
+  malformed_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
+      "superpoint-lightglue";
+  malformed_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] =
+      "opencv-affine-ransac";
+  malformed_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["run_autooptimizer"] = "invalid";
+  ok &= expect(
+      hm::stitching::publish_game_config(malformed_backend_dir, YAML::Dump(malformed_backend_private) + "\n").ok(),
+      "malformed private backend fixture must publish");
+  hm::Configurator malformed_backend_cli(
+      "malformed-backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status malformed_backend_configured = malformed_backend_cli.configure();
+  const absl::Status malformed_backend_mapping =
+      malformed_backend_cli.apply_config_item("stitching.mapping_backend", "opencv-magsac");
+  const absl::Status malformed_backend_autooptimizer =
+      malformed_backend_cli.apply_config_item("stitching.run_autooptimizer", "false");
+  const absl::Status malformed_backend_repaired = malformed_backend_cli.persist_effective_stitching_backend_choices();
+  auto malformed_backend_final = hm::stitching::load_game_config_file(malformed_backend_dir / "config.yaml");
+  ok &= expect(
+      malformed_backend_configured.ok() && malformed_backend_mapping.ok() && malformed_backend_autooptimizer.ok() &&
+          malformed_backend_repaired.ok() && malformed_backend_final.ok() && malformed_backend_final->has_value() &&
+          (**malformed_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          !(**malformed_backend_final)["stitching"]["run_autooptimizer"].as<bool>(),
+      "A valid CLI override must repair malformed private optimizer provenance without throwing");
+
+  const fs::path backend_generation_dir = games / "backend-generation";
+  fs::create_directories(backend_generation_dir);
+  YAML::Node backend_generation_private(YAML::NodeType::Map);
+  backend_generation_private["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  backend_generation_private["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "shared-generation-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(backend_generation_dir, YAML::Dump(backend_generation_private) + "\n").ok(),
+      "shared backend-generation fixture must publish");
+  hm::Configurator first_backend_generation(
+      "backend-generation", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator second_backend_generation(
+      "backend-generation", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status first_generation_configured = first_backend_generation.configure();
+  const absl::Status second_generation_configured = second_backend_generation.configure();
+  const absl::Status first_generation_backend =
+      first_backend_generation.apply_config_item("stitching.mapping_backend", "opencv-magsac");
+  const absl::Status first_generation_autooptimizer =
+      first_backend_generation.apply_config_item("stitching.run_autooptimizer", "false");
+  const absl::Status second_generation_backend =
+      second_backend_generation.apply_config_item("stitching.mapping_backend", "opencv-affine-ransac");
+  const absl::Status second_generation_autooptimizer =
+      second_backend_generation.apply_config_item("stitching.run_autooptimizer", "false");
+  const absl::Status first_generation_reserved =
+      first_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
+  const absl::Status second_generation_rejected =
+      second_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
+  auto backend_generation_final = hm::stitching::load_game_config_file(backend_generation_dir / "config.yaml");
+  ok &= expect(
+      first_generation_configured.ok() && second_generation_configured.ok() && first_generation_backend.ok() &&
+          first_generation_autooptimizer.ok() && second_generation_backend.ok() &&
+          second_generation_autooptimizer.ok() && first_generation_reserved.ok() &&
+          absl::IsAborted(second_generation_rejected) && backend_generation_final.ok() &&
+          backend_generation_final->has_value() &&
+          (**backend_generation_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          (**backend_generation_final)["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"]
+                  .as<std::string>() == "opencv-magsac",
+      "Preloaded configurators must not share one invalidation ID with different backend tuples");
+
   const fs::path invalid_backend_dir = games / "invalid-backend-cli";
   fs::create_directories(invalid_backend_dir);
   std::ofstream(invalid_backend_dir / "seam_file.png") << "preserved seam\n";

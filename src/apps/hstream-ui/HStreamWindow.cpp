@@ -4119,6 +4119,8 @@ void HStreamWindow::loadBaselineDefaults() {
   }
   if (default_mapping_backend_ == "nona" && !default_run_autooptimizer_)
     default_mapping_backend_ = "opencv-magsac";
+  if (default_mapping_backend_ != "nona")
+    default_run_autooptimizer_ = false;
 
   checked("Stop_Direction_Change_Delay_Frames", integer("rink.camera.stop_on_dir_change_delay"), 0, 60);
   checked("Cancel_Stop_On_Opposite_Direction", boolean("rink.camera.cancel_stop_on_opposite_dir"), 0, 1);
@@ -4451,7 +4453,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     }
     if (run_autooptimizer_check_) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-      run_autooptimizer_check_->setEnabled(!running);
+      run_autooptimizer_check_->setEnabled(!running && mappingBackend() == "nona");
     }
     if (stitch_frame_time_edit_) {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
@@ -4523,6 +4525,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(run_autooptimizer_check_, &QCheckBox::toggled, this, [this](bool checked) {
     if (!checked && mapping_backend_combo_ && mappingBackend() == "nona")
       set_combo_to_data(mapping_backend_combo_, "opencv-magsac");
+    if (checked && mapping_backend_combo_ && mappingBackend() != "nona") {
+      const QSignalBlocker blocker(run_autooptimizer_check_);
+      run_autooptimizer_check_->setChecked(false);
+    }
     updatePresetDirtyState();
   });
 
@@ -4558,10 +4564,20 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   mapping_backend_combo_->setCurrentIndex(mapping_index < 0 ? 0 : mapping_index);
   mapping_backend_combo_->setToolTip("Mapping TIFF generator used after control points are selected.");
   connect(mapping_backend_combo_, &QComboBox::currentIndexChanged, this, [this]() {
-    if (mappingBackend() == "nona" && run_autooptimizer_check_ && !run_autooptimizer_check_->isChecked())
-      run_autooptimizer_check_->setChecked(true);
+    if (run_autooptimizer_check_) {
+      const bool nona = mappingBackend() == "nona";
+      if (run_autooptimizer_check_->isChecked() != nona)
+        run_autooptimizer_check_->setChecked(nona);
+      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+      run_autooptimizer_check_->setEnabled(nona && !running);
+    }
     updatePresetDirtyState();
   });
+  if (run_autooptimizer_check_) {
+    const bool nona = mappingBackend() == "nona";
+    run_autooptimizer_check_->setChecked(nona);
+    run_autooptimizer_check_->setEnabled(nona);
+  }
 
   stitch_frame_time_edit_ = new QTimeEdit();
   stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
@@ -5914,7 +5930,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         : hm::ui_internal::StitchingCanvasConstraintDecision{};
     const bool control_point_matcher_changed = saved_control_point_matcher != active_control_point_matcher_;
     const bool mapping_backend_changed = saved_mapping_backend != active_mapping_backend_;
-    const bool run_autooptimizer_changed = saved_run_autooptimizer != active_run_autooptimizer_;
+    const bool run_autooptimizer_changed = (saved_mapping_backend == "nona" ? saved_run_autooptimizer : false) !=
+        (active_mapping_backend_ == "nona" ? active_run_autooptimizer_ : false);
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
@@ -11273,7 +11290,7 @@ void HStreamWindow::updateRunControls() {
     stitch_max_output_width_spin_->setEnabled(!running && !finalizing);
   }
   if (run_autooptimizer_check_) {
-    run_autooptimizer_check_->setEnabled(!running && !finalizing);
+    run_autooptimizer_check_->setEnabled(!running && !finalizing && mappingBackend() == "nona");
   }
   if (stitch_frame_time_edit_) {
     stitch_frame_time_edit_->setEnabled(!running && !finalizing);
@@ -11809,7 +11826,8 @@ void HStreamWindow::loadSavedControlConfig() {
             rounded_control("stitching.post_stitch_rotate_degrees", 90.0 - stitch_rotation.as<double>()));
       }
     }
-    bool normalized_invalid_backend_pair = false;
+    bool normalized_nona_without_autooptimizer = false;
+    bool normalized_inactive_autooptimizer = false;
     int staged_control_points =
         control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
     int staged_frame_count =
@@ -11901,8 +11919,12 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     if (staged_mapping_backend == "nona" && !staged_run_autooptimizer) {
       staged_mapping_backend = "opencv-magsac";
-      normalized_invalid_backend_pair = true;
+      normalized_nona_without_autooptimizer = true;
       appendLog("replaced invalid NONA-without-autooptimizer setting with the default MAGSAC++ backend");
+    } else if (staged_mapping_backend != "nona" && staged_run_autooptimizer) {
+      staged_run_autooptimizer = false;
+      normalized_inactive_autooptimizer = true;
+      appendLog("disabled the inactive panorama autooptimizer for the selected native mapping backend");
     }
     YAML::Node fixed_edge_rotation;
     if (lookup_yaml_path(config, "rink.camera.fixed_edge_rotation_angle", &fixed_edge_rotation)) {
@@ -12038,9 +12060,13 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
     captureSavedControlState();
-    if (normalized_invalid_backend_pair) {
+    if (normalized_nona_without_autooptimizer) {
       saved_mapping_backend_ = "nona";
       saved_run_autooptimizer_ = false;
+      updatePresetDirtyState();
+    } else if (normalized_inactive_autooptimizer) {
+      saved_mapping_backend_ = staged_mapping_backend;
+      saved_run_autooptimizer_ = true;
       updatePresetDirtyState();
     }
   } catch (const std::exception& exc) {
@@ -12233,7 +12259,8 @@ bool HStreamWindow::applySavedControlConfig(
       saved_mapping_backend_.isEmpty() ? default_mapping_backend_ : saved_mapping_backend_;
   const bool control_point_matcher_changed = previous_control_point_matcher != selected_control_point_matcher;
   const bool mapping_backend_changed = previous_mapping_backend != selected_mapping_backend;
-  const bool run_autooptimizer_changed = previous_run_autooptimizer != selected_run_autooptimizer;
+  const bool run_autooptimizer_changed = (previous_mapping_backend == "nona" ? previous_run_autooptimizer : false) !=
+      (selected_mapping_backend == "nona" ? selected_run_autooptimizer : false);
   remove_yaml_path(config, {"stitching", "stitch_frame_time"});
   remove_yaml_path(config, {"stitching", "calibration_frame_count"});
   if (stitch_frame_time != default_stitch_frame_time_) {

@@ -570,6 +570,44 @@ int main() {
         hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml").ok(),
         "a dead owner process must not permanently fence artifact publication");
   }
+  if (invalidation_lock.ok())
+    invalidation_lock->reset();
+
+  YAML::Node backend_generation(YAML::NodeType::Map);
+  backend_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  backend_generation["stitching"]["mapping_backend"] = "opencv-magsac";
+  backend_generation["stitching"]["run_autooptimizer"] = false;
+  backend_generation["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  backend_generation["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "backend-generation-a";
+  ok &= expect(
+      hm::stitching::publish_game_config(root, YAML::Dump(backend_generation) + "\n").ok(),
+      "backend-generation fixture must publish");
+  const hm::stitching::StitchingBackendChoices magsac_choices{"superpoint-lightglue", "opencv-magsac", false};
+  const hm::stitching::StitchingBackendChoices affine_choices{"superpoint-lightglue", "opencv-affine-ransac", false};
+  const absl::Status reserved =
+      hm::stitching::reserve_stitching_backend_generation(root, "backend-generation-a", magsac_choices);
+  auto claimed = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      reserved.ok() && claimed.ok() && claimed->has_value() &&
+          hm::stitching::validate_stitching_backend_generation(**claimed, "backend-generation-a", magsac_choices).ok(),
+      "a calibration generation must reserve and validate one immutable worker backend tuple");
+  const absl::Status conflicting_reservation =
+      hm::stitching::reserve_stitching_backend_generation(root, "backend-generation-a", affine_choices);
+  auto after_conflict = hm::stitching::load_game_config_file(root / "config.yaml");
+  ok &= expect(
+      absl::IsAborted(conflicting_reservation) && after_conflict.ok() && after_conflict->has_value() &&
+          (**after_conflict)["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"]
+                  .as<std::string>() == "opencv-magsac",
+      "a competing backend tuple must not replace the generation's first reservation");
+  if (after_conflict.ok() && after_conflict->has_value()) {
+    YAML::Node worker_mismatch = YAML::Clone(**after_conflict);
+    worker_mismatch["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::validate_stitching_backend_generation(
+                worker_mismatch, "backend-generation-a", magsac_choices)),
+        "generation validation must reject worker-visible choices that differ from the immutable claim");
+  }
 
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);

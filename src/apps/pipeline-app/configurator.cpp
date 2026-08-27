@@ -6983,31 +6983,42 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend");
   const auto persisted_previous_autooptimizer =
       get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer");
+  const auto parsed_boolean = [](const std::optional<YAML::Node>& node) -> std::optional<bool> {
+    if (!node.has_value() || !node->IsScalar())
+      return std::nullopt;
+    try {
+      return node->as<bool>();
+    } catch (const YAML::Exception&) {
+      return std::nullopt;
+    }
+  };
+  const std::optional<bool> generated_autooptimizer_value = parsed_boolean(generated_autooptimizer);
+  const std::optional<bool> private_autooptimizer_value = parsed_boolean(private_autooptimizer);
+  const std::optional<bool> persisted_autooptimizer_value = parsed_boolean(persisted_autooptimizer);
+  const std::optional<bool> persisted_generated_autooptimizer_value = parsed_boolean(persisted_generated_autooptimizer);
+  const std::optional<bool> persisted_previous_autooptimizer_value = parsed_boolean(persisted_previous_autooptimizer);
   const bool private_values_present = private_matcher.has_value() && private_matcher->IsScalar() &&
-      private_backend.has_value() && private_backend->IsScalar() && private_autooptimizer.has_value() &&
-      private_autooptimizer->IsScalar();
+      private_backend.has_value() && private_backend->IsScalar() && private_autooptimizer_value.has_value();
   const bool persisted_matcher_present = persisted_matcher.has_value() && persisted_matcher->IsScalar();
   const bool persisted_backend_present = persisted_backend.has_value() && persisted_backend->IsScalar();
-  const bool persisted_autooptimizer_present =
-      persisted_autooptimizer.has_value() && persisted_autooptimizer->IsScalar();
+  const bool persisted_autooptimizer_present = persisted_autooptimizer_value.has_value();
   const bool persisted_values_present =
       persisted_matcher_present && persisted_backend_present && persisted_autooptimizer_present;
   const bool persisted_values_are_generated = persisted_generated_matcher.has_value() &&
       persisted_generated_matcher->IsScalar() && persisted_generated_backend.has_value() &&
-      persisted_generated_backend->IsScalar() && persisted_generated_autooptimizer.has_value() &&
-      persisted_generated_autooptimizer->IsScalar() && persisted_values_present &&
+      persisted_generated_backend->IsScalar() && persisted_generated_autooptimizer_value.has_value() &&
+      persisted_values_present &&
       persisted_matcher->as<std::string>() == persisted_generated_matcher->as<std::string>() &&
       persisted_backend->as<std::string>() == persisted_generated_backend->as<std::string>() &&
-      persisted_autooptimizer->as<bool>() == persisted_generated_autooptimizer->as<bool>();
+      *persisted_autooptimizer_value == *persisted_generated_autooptimizer_value;
   const bool generated_private_values = generated_matcher.has_value() && generated_matcher->IsScalar() &&
-      generated_backend.has_value() && generated_backend->IsScalar() && generated_autooptimizer.has_value() &&
-      generated_autooptimizer->IsScalar() && private_values_present &&
-      private_matcher->as<std::string>() == generated_matcher->as<std::string>() &&
+      generated_backend.has_value() && generated_backend->IsScalar() && generated_autooptimizer_value.has_value() &&
+      private_values_present && private_matcher->as<std::string>() == generated_matcher->as<std::string>() &&
       private_backend->as<std::string>() == generated_backend->as<std::string>() &&
-      private_autooptimizer->as<bool>() == generated_autooptimizer->as<bool>();
+      *private_autooptimizer_value == *generated_autooptimizer_value;
   const bool effective_values_are_generated_private = generated_private_values &&
       matcher_name == private_matcher->as<std::string>() && backend_name == private_backend->as<std::string>() &&
-      run_autooptimizer == private_autooptimizer->as<bool>();
+      run_autooptimizer == *private_autooptimizer_value;
   if (effective_values_are_generated_private) {
     HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(lower_layer_config_));
     HM_ASSIGN_OR_RETURN(backend_name, canonical_backend(lower_layer_config_));
@@ -7022,11 +7033,17 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   config_["stitching"]["mapping_backend"] = backend_name;
   config_["stitching"]["run_autooptimizer"] = run_autooptimizer;
 
+  const stitching::StitchingBackendChoices backend_choices{matcher_name, backend_name, run_autooptimizer};
+  if (!expected_invalidation_id.empty()) {
+    HM_RETURN_IF_ERROR(
+        stitching::reserve_stitching_backend_generation(
+            resolved_game_dir(), expected_invalidation_id, backend_choices));
+  }
+
   const bool private_matches = private_matcher.has_value() && private_matcher->IsScalar() &&
       private_matcher->as<std::string>() == matcher_name && private_backend.has_value() &&
       private_backend->IsScalar() && private_backend->as<std::string>() == backend_name &&
-      private_autooptimizer.has_value() && private_autooptimizer->IsScalar() &&
-      private_autooptimizer->as<bool>() == run_autooptimizer;
+      private_autooptimizer_value.has_value() && *private_autooptimizer_value == run_autooptimizer;
   if (private_matches) {
     if (loaded_generated_stitching_backend_choices_) {
       HM_RETURN_IF_ERROR(save_private_config(private_config_, expected_invalidation_id));
@@ -7068,13 +7085,12 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       remove_yaml_key_path(
           private_config_, {"hstream_ui", "generated_stitching_backend_choices", "previous_mapping_backend"});
     }
-    if (persisted_values_are_generated && persisted_previous_autooptimizer.has_value() &&
-        persisted_previous_autooptimizer->IsScalar()) {
+    if (persisted_values_are_generated && persisted_previous_autooptimizer_value.has_value()) {
       private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"] =
-          persisted_previous_autooptimizer->as<bool>();
+          *persisted_previous_autooptimizer_value;
     } else if (persisted_autooptimizer_present && !persisted_values_are_generated) {
       private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"] =
-          persisted_autooptimizer->as<bool>();
+          *persisted_autooptimizer_value;
     } else {
       remove_yaml_key_path(
           private_config_, {"hstream_ui", "generated_stitching_backend_choices", "previous_run_autooptimizer"});
@@ -7464,6 +7480,15 @@ absl::Status Configurator::complete_configuration(
         stitching::validate_stitching_generation_owner_file_locked(private_config_file, effective_invalidation_id));
     try {
       const YAML::Node current = YAML::LoadFile(private_config_file.string());
+      if (!clean_requested && has_active_hmstitcher) {
+        const stitching::StitchingBackendChoices expected_backend_choices{
+            get_node_value(config_, "stitching.control_point_matcher", std::string()),
+            get_node_value(config_, "stitching.mapping_backend", std::string()),
+            get_node_value(config_, "stitching.run_autooptimizer", false)};
+        HM_RETURN_IF_ERROR(
+            stitching::validate_stitching_backend_generation(
+                current, effective_invalidation_id, expected_backend_choices));
+      }
       const std::string current_status =
           get_node_value(current, "hstream_ui.stitching_calibration.status", std::string());
       if (current_status != loaded_status) {

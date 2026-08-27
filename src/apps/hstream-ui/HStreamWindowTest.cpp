@@ -2333,6 +2333,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   auto* run_autooptimizer = require_child<QCheckBox>(window, "runAutooptimizerCheck");
+  auto* save_preset_button = require_child<QPushButton>(window, "savePresetButton");
   auto* control_point_matcher_label = require_child<QLabel>(window, "controlPointMatcherLabel");
   auto* mapping_backend_label = require_child<QLabel>(window, "mappingBackendLabel");
   auto* stitch_max_output_width_label = require_child<QLabel>(window, "stitchMaxOutputWidthLabel");
@@ -2384,15 +2385,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time ||
       !control_point_matcher || !mapping_backend || !control_point_matcher_label || !mapping_backend_label ||
-      !stitch_max_output_width || !run_autooptimizer || !stitch_max_output_width_label || !game_id || !rotate ||
-      !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking || !show_play_tracking ||
-      !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter || !setup_preview_splitter ||
-      !output_routing || !preview_tabs || !pipeline_inspector || !program_host || !preview_surface || !preview_target ||
-      !stitched_surface || !stitched_target || !camera1_host || !camera1_surface || !camera1_target || !camera1_focus ||
-      !camera2_surface || !camera3_surface || !external_notice || !camera1_notice || !stitched_status ||
-      !preview_status || !program_controls || !program_controls_toggle || !stitched_controls || !program_control_tabs ||
-      !stitched_control_tabs || !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress ||
-      !seek_slider || !seek_back || !seek_forward || !seek_position || !pipeline_process) {
+      !stitch_max_output_width || !run_autooptimizer || !save_preset_button || !stitch_max_output_width_label ||
+      !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking ||
+      !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
+      !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
+      !preview_surface || !preview_target || !stitched_surface || !stitched_target || !camera1_host ||
+      !camera1_surface || !camera1_target || !camera1_focus || !camera2_surface || !camera3_surface ||
+      !external_notice || !camera1_notice || !stitched_status || !preview_status || !program_controls ||
+      !program_controls_toggle || !stitched_controls || !program_control_tabs || !stitched_control_tabs ||
+      !program_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back ||
+      !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2483,8 +2485,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               mapping_backend_label->text() == "Mapping backend" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
-              !run_autooptimizer->isChecked() && mapping_backend->currentData().toString() == "opencv-magsac" &&
-              control_point_matcher->count() == 3 &&
+              !run_autooptimizer->isChecked() && !run_autooptimizer->isEnabled() &&
+              mapping_backend->currentData().toString() == "opencv-magsac" && control_point_matcher->count() == 3 &&
               control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
               control_point_matcher->itemText(1) == "DeDoDe + LightGlue" &&
               control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
@@ -2493,10 +2495,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Controls must live in the earliest preview tab whose frames reflect their pipeline stage")) {
     return false;
   }
+  const bool save_enabled_before_inactive_optimizer_toggle = save_preset_button->isEnabled();
+  run_autooptimizer->setChecked(true);
+  QApplication::processEvents();
+  if (!expect(
+          !run_autooptimizer->isChecked() && !run_autooptimizer->isEnabled() &&
+              save_preset_button->isEnabled() == save_enabled_before_inactive_optimizer_toggle,
+          "The inactive optimizer control must reject changes under OpenCV backends without dirtying the preset")) {
+    return false;
+  }
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
-          run_autooptimizer->isChecked(),
+          run_autooptimizer->isChecked() && run_autooptimizer->isEnabled(),
           "Selecting the NONA mapping backend must enable its required panorama autooptimizer")) {
     return false;
   }
@@ -8396,15 +8407,25 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   copied_config_node["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
   copied_config_node["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   copied_config_node["stitching"]["mapping_backend"] = "nona";
-  copied_config_node["stitching"].remove("run_autooptimizer");
+  copied_config_node["stitching"]["run_autooptimizer"] = true;
+  copied_config_node["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  copied_config_node["hstream_ui"]["stitching_calibration"].remove("stale_from");
+  copied_config_node["hstream_ui"]["stitching_calibration"].remove("artifacts_invalidated");
   copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
       "superpoint-lightglue";
   copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
+  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["run_autooptimizer"] = true;
+  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
+      "superpoint-lightglue";
+  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"] =
+      "opencv-affine-ransac";
+  copied_config_node["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"] = true;
   if (copied_config_node["rink"] && copied_config_node["rink"].IsMap() && copied_config_node["rink"]["camera"] &&
       copied_config_node["rink"]["camera"].IsMap()) {
     copied_config_node["rink"]["camera"].remove("fixed_edge_rotation_angle");
   }
   std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
+  std::ofstream(copied_game / "seam_file.png") << "preserved optimizer-normalization artifact\n";
 
   qputenv("HOME", user_home.path().toLocal8Bit());
   qputenv("HM_CONFIG_ROOT", baseline_root.path().toLocal8Bit());
@@ -8438,11 +8459,20 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
           stitch_frame_time->time() == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
               stitch_max_output_width->value() == 0 &&
               control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
-              mapping_backend->currentData().toString() == "opencv-affine-ransac" &&
-              run_autooptimizer->isChecked() && fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 &&
-              !save->isEnabled(),
+              mapping_backend->currentData().toString() == "opencv-affine-ransac" && !run_autooptimizer->isChecked() &&
+              !run_autooptimizer->isEnabled() && fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 &&
+              save->isEnabled(),
           "User-level defaults must initialize the UI, reject unimplemented matchers, accept mapping aliases, and "
           "generated private backend choices and lower-layer max-width aliases must not mask them");
+      activate(save);
+      const YAML::Node normalized_inactive_optimizer = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          normalized_inactive_optimizer["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
+              !normalized_inactive_optimizer["stitching"]["run_autooptimizer"].as<bool>() &&
+              normalized_inactive_optimizer["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() ==
+                  "complete" &&
+              fs::is_regular_file(copied_game / "seam_file.png") && !save->isEnabled(),
+          "Normalizing an inactive OpenCV optimizer flag must preserve completed calibration artifacts");
       stitch_frame_time->setTime(QTime(0, 0, 0));
       QApplication::processEvents();
       ok &= expect(save->isEnabled(), "Zero must remain an explicit edit against a nonzero user-level default");
@@ -8453,7 +8483,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
               saved_zero["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
               saved_zero["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
               !lookup_yaml_path(saved_zero, {"stitching", "max_output_width"}, nullptr) &&
-              saved_zero["stitching"]["run_autooptimizer"].as<bool>() &&
+              !saved_zero["stitching"]["run_autooptimizer"].as<bool>() &&
               !lookup_yaml_path(saved_zero, {"hstream_ui", "generated_stitching_backend_choices"}, nullptr) &&
               !lookup_yaml_path(saved_zero, {"rink", "camera", "fixed_edge_rotation_angle"}, nullptr) &&
               !save->isEnabled(),
@@ -8474,8 +8504,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
       activate(create);
       ok &= expect(
-          mapping_backend->currentData().toString() == "opencv-affine-ransac" && run_autooptimizer->isChecked() &&
-              !save->isEnabled(),
+          mapping_backend->currentData().toString() == "opencv-affine-ransac" && !run_autooptimizer->isChecked() &&
+              !run_autooptimizer->isEnabled() && save->isEnabled(),
           "UI load must restore previous explicit stitching algorithm choices displaced by CLI materialization");
 
       copied_config_node = YAML::LoadFile(copied_config.string());

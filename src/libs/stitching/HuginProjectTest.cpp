@@ -909,6 +909,45 @@ int main() {
       project_after_superseded_hugin == previous_project &&
           config_after_superseded_hugin.find("invalidation_id: hugin-run-b") != std::string::npos,
       "superseded Hugin publication must preserve both the prior artifacts and the newer invalidation");
+
+  YAML::Node backend_claim(YAML::NodeType::Map);
+  backend_claim["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  backend_claim["stitching"]["mapping_backend"] = "nona";
+  backend_claim["stitching"]["run_autooptimizer"] = true;
+  backend_claim["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  backend_claim["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+  backend_claim["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "hugin-backend-a";
+  const hm::stitching::StitchingBackendChoices expected_backend_choices{"superpoint-lightglue", "nona", true};
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["invalidation_id"] = "hugin-backend-a";
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["control_point_matcher"] =
+      expected_backend_choices.control_point_matcher;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"] =
+      expected_backend_choices.mapping_backend;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["run_autooptimizer"] =
+      expected_backend_choices.run_autooptimizer;
+  std::ofstream(root / "game" / "config.yaml") << YAML::Dump(backend_claim) << '\n';
+  options.expected_invalidation_id = "hugin-backend-a";
+  options.expected_backend_choices = expected_backend_choices;
+  bool backend_changed_during_hugin = false;
+  options.progress = [&](const std::string& stage, const std::string& status, const std::string&) {
+    if (stage != "canvas" || status != "started" || backend_changed_during_hugin)
+      return;
+    backend_changed_during_hugin = true;
+    YAML::Node changed = YAML::LoadFile((root / "game" / "config.yaml").string());
+    changed["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+    std::ofstream(root / "game" / "config.yaml") << YAML::Dump(changed) << '\n';
+  };
+  const auto mismatched_backend_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
+  const auto project_after_mismatched_backend = [&]() {
+    std::ifstream input(root / "game" / "autooptimiser_out.pto", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }();
+  ok &= expect(
+      backend_changed_during_hugin && absl::IsAborted(mismatched_backend_hugin) &&
+          project_after_mismatched_backend == previous_project,
+      "Hugin publication must abort when the worker-visible backend tuple changes under its generation claim");
+  options.expected_invalidation_id.clear();
+  options.expected_backend_choices.reset();
   {
     std::ofstream config(root / "game" / "config.yaml");
     config << "hstream_ui:\n"
@@ -916,6 +955,7 @@ int main() {
               "    status: complete\n"
               "    invalidation_id: hugin-run-a\n";
   }
+  options.expected_invalidation_id = "hugin-run-a";
   options.progress = {};
   const auto completed_owner_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
   const auto project_after_completed_owner = [&]() {
