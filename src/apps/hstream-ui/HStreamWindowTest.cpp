@@ -5245,13 +5245,23 @@ bool test_output_controls(HStreamWindow* window) {
   const QString interrupted_ui_target = QDir(window->gameDirectoryText()).filePath("interrupted-ui-target.mp4");
   const QString interrupted_ui_target_fallback = interrupted_ui_target + ".hstream-cleanup-pin";
   const QString interrupted_ui_target_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-ui-target-test");
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-11111111-2222-4333-8444-555555555555");
   const QString interrupted_ui_guard_target =
       QDir(window->gameDirectoryText()).filePath("interrupted-ui-guard-target.mp4");
   const QString interrupted_ui_guard = interrupted_ui_guard_target + ".hstream-pin";
   const QString interrupted_ui_guard_fallback = interrupted_ui_guard + ".hstream-cleanup-pin";
   const QString interrupted_ui_guard_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-ui-guard-test");
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-66666666-7777-4888-8999-aaaaaaaaaaaa");
+  const QString committed_ui_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-00000000-0000-4000-8000-000000000000");
+  const QString unrelated_ui_cleanup_file = QDir(window->gameDirectoryText()).filePath("notes.hstream-cleanup-pin");
+  const QString unrelated_ui_cleanup_directory =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-user-notes");
+  const QString reconciliation_race_target =
+      QDir(window->gameDirectoryText()).filePath("interrupted-ui-reconciliation-race.mp4");
+  const QString reconciliation_race_fallback = reconciliation_race_target + ".hstream-cleanup-pin";
+  const QString reconciliation_race_cleanup =
+      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-01234567-89ab-4cde-8fab-0123456789ab");
 #ifdef Q_OS_UNIX
   const auto write_cleanup_test_file = [](const QString& path, const QByteArray& content) {
     QFile file(path);
@@ -5270,8 +5280,79 @@ bool test_output_controls(HStreamWindow* window) {
       create_hard_link(interrupted_ui_guard_target, interrupted_ui_guard) &&
       create_hard_link(interrupted_ui_guard_target, interrupted_ui_guard_fallback) &&
       QDir().mkpath(interrupted_ui_guard_cleanup) &&
-      QFile::rename(interrupted_ui_guard, QDir(interrupted_ui_guard_cleanup).filePath("entry"));
+      QFile::rename(interrupted_ui_guard, QDir(interrupted_ui_guard_cleanup).filePath("entry")) &&
+      QDir().mkpath(committed_ui_cleanup) &&
+      write_cleanup_test_file(QDir(committed_ui_cleanup).filePath("guard"), "committed UI cleanup inode") &&
+      create_hard_link(QDir(committed_ui_cleanup).filePath("guard"), QDir(committed_ui_cleanup).filePath("fallback")) &&
+      write_cleanup_test_file(unrelated_ui_cleanup_file, "unrelated UI cleanup-looking notes") &&
+      QDir().mkpath(unrelated_ui_cleanup_directory) &&
+      write_cleanup_test_file(reconciliation_race_target, "trusted UI reconciliation-race target") &&
+      create_hard_link(reconciliation_race_target, reconciliation_race_fallback) &&
+      QDir().mkpath(reconciliation_race_cleanup) &&
+      QFile::rename(reconciliation_race_target, QDir(reconciliation_race_cleanup).filePath("entry"));
 #endif
+
+  const QString reconciliation_trigger_source =
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("reconciliation-trigger.mkv");
+  QFile::remove(reconciliation_trigger_source);
+  QFile::remove(reconciliation_trigger_source + ".log");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", reconciliation_trigger_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION", reconciliation_race_fallback.toLocal8Bit());
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
+  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  auto* reconciliation_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  QString reconciliation_rescue_path;
+  QByteArray reconciliation_rescue_content;
+  const QString reconciliation_guard_prefix =
+      QFileInfo(reconciliation_race_fallback).fileName() + ".hstream-reconcile-";
+  const QDir reconciliation_game_dir(window->gameDirectoryText());
+  for (const QString& name : reconciliation_game_dir.entryList(QDir::Files | QDir::Hidden | QDir::System, QDir::Name)) {
+    if (!name.startsWith(reconciliation_guard_prefix))
+      continue;
+    reconciliation_rescue_path = reconciliation_game_dir.filePath(name);
+    QFile rescue_file(reconciliation_rescue_path);
+    if (rescue_file.open(QIODevice::ReadOnly))
+      reconciliation_rescue_content = rescue_file.readAll();
+  }
+  QFile reconciliation_foreign_file(reconciliation_race_fallback);
+  const bool reconciliation_foreign_opened = reconciliation_foreign_file.open(QIODevice::ReadOnly);
+  const QByteArray reconciliation_foreign_content =
+      reconciliation_foreign_opened ? reconciliation_foreign_file.readAll() : QByteArray();
+  QFile unrelated_ui_cleanup_file_handle(unrelated_ui_cleanup_file);
+  const bool unrelated_ui_cleanup_file_opened = unrelated_ui_cleanup_file_handle.open(QIODevice::ReadOnly);
+  const QByteArray unrelated_ui_cleanup_content =
+      unrelated_ui_cleanup_file_opened ? unrelated_ui_cleanup_file_handle.readAll() : QByteArray();
+  const bool ui_cleanup_reconciliation_race_safe = expect(
+      window->outputStateText("archive-file") == "ERROR" &&
+          reconciliation_rescue_content == "trusted UI reconciliation-race target" &&
+          reconciliation_foreign_content == "foreign public cleanup identity" &&
+          QFileInfo::exists(reconciliation_race_cleanup) && !QFileInfo::exists(committed_ui_cleanup) &&
+          unrelated_ui_cleanup_content == "unrelated UI cleanup-looking notes" &&
+          QFileInfo::exists(unrelated_ui_cleanup_directory) &&
+          !QFileInfo::exists(QDir(window->gameDirectoryText()).filePath("notes")),
+      "UI cleanup reconciliation must use a dedicated guard and leave unrelated cleanup-looking entries untouched");
+  if (reconciliation_failure_ok)
+    activate(reconciliation_failure_ok);
+  reconciliation_foreign_file.close();
+  QFile::remove(reconciliation_race_fallback);
+  bool reconciliation_rescue_restored = false;
+  QFile reconciliation_restored_target(reconciliation_race_target);
+  if (reconciliation_restored_target.open(QIODevice::ReadOnly)) {
+    reconciliation_rescue_restored =
+        reconciliation_restored_target.readAll() == "trusted UI reconciliation-race target";
+  } else {
+    reconciliation_rescue_restored =
+        !reconciliation_rescue_path.isEmpty() && QFile::rename(reconciliation_rescue_path, reconciliation_race_target);
+  }
+  QFile::remove(reconciliation_trigger_source);
+  QFile::remove(reconciliation_trigger_source + ".log");
+  archive->setChecked(false);
+  archive->setChecked(true);
 
   const QString target_cleanup_race_source =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("target-cleanup-race.mkv");
@@ -5324,16 +5405,21 @@ bool test_output_controls(HStreamWindow* window) {
   const bool interrupted_ui_target_opened = interrupted_ui_target_file.open(QIODevice::ReadOnly);
   const QByteArray interrupted_ui_target_content =
       interrupted_ui_target_opened ? interrupted_ui_target_file.readAll() : QByteArray();
-  QFile interrupted_ui_guard_file(interrupted_ui_guard);
-  const bool interrupted_ui_guard_opened = interrupted_ui_guard_file.open(QIODevice::ReadOnly);
-  const QByteArray interrupted_ui_guard_content =
-      interrupted_ui_guard_opened ? interrupted_ui_guard_file.readAll() : QByteArray();
-  const bool ui_cleanup_restart_reconciled = expect(
-      ui_cleanup_restart_setup && interrupted_ui_target_content == "trusted interrupted UI target" &&
-          interrupted_ui_guard_content == "trusted interrupted UI target guard" &&
-          !QFileInfo::exists(interrupted_ui_target_fallback) && !QFileInfo::exists(interrupted_ui_guard_fallback) &&
-          !QFileInfo::exists(interrupted_ui_target_cleanup) && !QFileInfo::exists(interrupted_ui_guard_cleanup),
-      "A subsequent archive start must reconcile interrupted UI target and target-guard cleanup quarantines");
+  bool ui_cleanup_restart_reconciled = true;
+  ui_cleanup_restart_reconciled &= expect(ui_cleanup_restart_setup, "UI cleanup restart fixture must be created");
+  ui_cleanup_restart_reconciled &=
+      expect(reconciliation_rescue_restored, "The reconciliation race rescue must be restored for later tests");
+  ui_cleanup_restart_reconciled &= expect(
+      interrupted_ui_target_content == "trusted interrupted UI target",
+      "A subsequent archive start must restore an interrupted UI target");
+  ui_cleanup_restart_reconciled &= expect(
+      !QFileInfo::exists(interrupted_ui_guard),
+      "A subsequent archive start must finish retiring an interrupted UI target guard");
+  ui_cleanup_restart_reconciled &= expect(
+      !QFileInfo::exists(interrupted_ui_target_fallback) && !QFileInfo::exists(interrupted_ui_guard_fallback) &&
+          !QFileInfo::exists(interrupted_ui_target_cleanup) && !QFileInfo::exists(interrupted_ui_guard_cleanup) &&
+          !QFileInfo::exists(reconciliation_race_cleanup) && !QFileInfo::exists(reconciliation_rescue_path),
+      "A subsequent archive start must retire interrupted UI cleanup artifacts");
   if (target_cleanup_race_ok)
     activate(target_cleanup_race_ok);
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
@@ -5742,10 +5828,10 @@ bool test_output_controls(HStreamWindow* window) {
       nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
       same_filesystem_log_rollback && cross_filesystem_log_persisted && finalization_visible &&
       completed_log_persisted && archive_deployed && durability_sync_responsive && target_cleanup_race_recovered &&
-      ui_cleanup_restart_reconciled && source_cleanup_sync_failure_recovered && cleanup_directory_sync_failure_safe &&
-      guard_sync_failure_moved && failed_archive_retained && no_log_recovery_reserved &&
-      post_quarantine_recovery_safe && recovery_publication_sync_failure_safe && publication_sync_failure_moved &&
-      unsafe_retry_blocked && retry_unblocked_after_recovery;
+      ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe && source_cleanup_sync_failure_recovered &&
+      cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
+      no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
+      publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery;
 }
 
 bool test_camera_controls(HStreamWindow* window) {

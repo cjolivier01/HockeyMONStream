@@ -2030,8 +2030,12 @@ play-tracker:
   const fs::path interrupted_quarantine_source_log = interrupted_quarantine_source.string() + ".log";
   const fs::path interrupted_quarantine_recovery =
       interrupted_quarantine_dir / "interrupted-quarantine-finalization-failed.mkv";
+  const fs::path unrelated_cleanup_lookalike = interrupted_quarantine_dir / "notes.hstream-cleanup-pin";
+  const fs::path unrelated_cleanup_directory = interrupted_quarantine_dir / ".hstream-cleanup-user-notes";
   std::ofstream(interrupted_quarantine_source, std::ios::binary) << "trusted interrupted-quarantine video";
   std::ofstream(interrupted_quarantine_source_log, std::ios::binary) << "trusted interrupted-quarantine log";
+  std::ofstream(unrelated_cleanup_lookalike, std::ios::binary) << "unrelated cleanup-looking notes";
+  fs::create_directories(unrelated_cleanup_directory);
   g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", "1", TRUE);
   const auto interrupted_quarantine_first =
       hm::configurator_internal::recover_stale_archive_work_files(interrupted_quarantine_configured);
@@ -2044,9 +2048,12 @@ play-tracker:
   std::ifstream interrupted_quarantine_log_stream(interrupted_quarantine_recovery.string() + ".log", std::ios::binary);
   const std::string interrupted_quarantine_log{
       std::istreambuf_iterator<char>(interrupted_quarantine_log_stream), std::istreambuf_iterator<char>()};
+  std::ifstream unrelated_cleanup_lookalike_stream(unrelated_cleanup_lookalike, std::ios::binary);
+  const std::string unrelated_cleanup_lookalike_content{
+      std::istreambuf_iterator<char>(unrelated_cleanup_lookalike_stream), std::istreambuf_iterator<char>()};
   bool interrupted_quarantine_cleanup_remains = false;
   for (const auto& entry : fs::directory_iterator(interrupted_quarantine_dir)) {
-    if (entry.path().filename().string().find(".hstream-cleanup-") == 0)
+    if (entry.path() != unrelated_cleanup_directory && entry.path().filename().string().find(".hstream-cleanup-") == 0)
       interrupted_quarantine_cleanup_remains = true;
   }
   ok &= expect(
@@ -2056,8 +2063,116 @@ play-tracker:
           interrupted_quarantine_video == "trusted interrupted-quarantine video" &&
           interrupted_quarantine_log == "trusted interrupted-quarantine log" &&
           !interrupted_quarantine_cleanup_remains &&
-          !fs::exists(interrupted_quarantine_source.string() + ".hstream-cleanup-pin"),
-      "Restart must reconcile a crash immediately after quarantine from its durable public guard");
+          !fs::exists(interrupted_quarantine_source.string() + ".hstream-cleanup-pin") &&
+          unrelated_cleanup_lookalike_content == "unrelated cleanup-looking notes" &&
+          fs::is_directory(unrelated_cleanup_directory) && !fs::exists(interrupted_quarantine_dir / "notes"),
+      "Restart must reconcile a crash after quarantine without claiming unrelated cleanup-looking user entries");
+
+  const fs::path fallback_retirement_dir = root / "archive-fallback-retirement-interruption";
+  fs::create_directories(fallback_retirement_dir);
+  const fs::path fallback_retirement_configured = fallback_retirement_dir / "fallback-retirement.mkv";
+  const fs::path fallback_retirement_source =
+      fallback_retirement_dir / "fallback-retirement.hstream-run-99999999-dead.mkv";
+  const fs::path fallback_retirement_recovery = fallback_retirement_dir / "fallback-retirement-finalization-failed.mkv";
+  std::ofstream(fallback_retirement_source, std::ios::binary) << "trusted fallback-retirement video";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE", "1", TRUE);
+  const auto fallback_retirement_first =
+      hm::configurator_internal::recover_stale_archive_work_files(fallback_retirement_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE");
+  const auto fallback_retirement_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(fallback_retirement_configured);
+  std::ifstream fallback_retirement_recovery_stream(fallback_retirement_recovery, std::ios::binary);
+  const std::string fallback_retirement_recovery_content{
+      std::istreambuf_iterator<char>(fallback_retirement_recovery_stream), std::istreambuf_iterator<char>()};
+  bool fallback_retirement_cleanup_remains = false;
+  for (const fs::path& entry : fs::directory_iterator(fallback_retirement_dir)) {
+    if (entry.filename().string().rfind(".hstream-cleanup-", 0) == 0)
+      fallback_retirement_cleanup_remains = true;
+  }
+  ok &= expect(
+      !fallback_retirement_first.ok() && fallback_retirement_restart.ok() && fallback_retirement_restart->size() == 1 &&
+          fallback_retirement_recovery_content == "trusted fallback-retirement video" &&
+          !fallback_retirement_cleanup_remains,
+      "Restart must finish a committed deletion interrupted after cleanup fallback quarantine");
+
+  const fs::path log_quarantine_dir = root / "archive-log-quarantine-interruption";
+  fs::create_directories(log_quarantine_dir);
+  const fs::path log_quarantine_configured = log_quarantine_dir / "log-quarantine.mkv";
+  const fs::path log_quarantine_source = log_quarantine_dir / "log-quarantine.hstream-run-99999999-dead.mkv";
+  const fs::path log_quarantine_source_log = log_quarantine_source.string() + ".log";
+  const fs::path log_quarantine_recovery = log_quarantine_dir / "log-quarantine-finalization-failed.mkv";
+  std::ofstream(log_quarantine_source, std::ios::binary) << "trusted log-quarantine video";
+  std::ofstream(log_quarantine_source_log, std::ios::binary) << "trusted log-quarantine log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", log_quarantine_source_log.c_str(), TRUE);
+  const auto log_quarantine_first =
+      hm::configurator_internal::recover_stale_archive_work_files(log_quarantine_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+  const auto log_quarantine_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(log_quarantine_configured);
+  std::ifstream log_quarantine_recovery_stream(log_quarantine_recovery, std::ios::binary);
+  const std::string log_quarantine_recovery_content{
+      std::istreambuf_iterator<char>(log_quarantine_recovery_stream), std::istreambuf_iterator<char>()};
+  std::ifstream log_quarantine_recovery_log_stream(log_quarantine_recovery.string() + ".log", std::ios::binary);
+  const std::string log_quarantine_recovery_log_content{
+      std::istreambuf_iterator<char>(log_quarantine_recovery_log_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      !log_quarantine_first.ok() && log_quarantine_restart.ok() && log_quarantine_restart->size() == 1 &&
+          log_quarantine_recovery_content == "trusted log-quarantine video" &&
+          log_quarantine_recovery_log_content == "trusted log-quarantine log",
+      "Restart after log-sidecar quarantine must preserve authoritative video/log guards and finish recovery");
+
+  const fs::path reconciliation_race_dir = root / "archive-cleanup-reconciliation-race";
+  fs::create_directories(reconciliation_race_dir);
+  const fs::path reconciliation_race_configured = reconciliation_race_dir / "reconcile-race.mkv";
+  const fs::path reconciliation_race_source = reconciliation_race_dir / "reconcile-race.hstream-run-99999999-dead.mkv";
+  std::ofstream(reconciliation_race_source, std::ios::binary) << "trusted reconciliation-race video";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", "1", TRUE);
+  const auto reconciliation_race_first =
+      hm::configurator_internal::recover_stale_archive_work_files(reconciliation_race_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION", "1", TRUE);
+  const auto reconciliation_race_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(reconciliation_race_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
+  bool reconciliation_race_rescued = false;
+  bool reconciliation_race_foreign_retained = false;
+  fs::path reconciliation_race_foreign_path;
+  for (const fs::path& entry : fs::directory_iterator(reconciliation_race_dir)) {
+    if (!fs::is_regular_file(entry))
+      continue;
+    std::ifstream entry_stream(entry, std::ios::binary);
+    const std::string content{std::istreambuf_iterator<char>(entry_stream), std::istreambuf_iterator<char>()};
+    reconciliation_race_rescued |= entry.filename().string().find(".hstream-reconcile-") != std::string::npos &&
+        content == "trusted reconciliation-race video";
+    if (content == "foreign public cleanup identity") {
+      reconciliation_race_foreign_retained = true;
+      reconciliation_race_foreign_path = entry;
+    }
+  }
+  ok &= expect(
+      !reconciliation_race_first.ok() && !reconciliation_race_restart.ok() && reconciliation_race_rescued &&
+          reconciliation_race_foreign_retained,
+      "Cleanup reconciliation must retain a dedicated trusted guard if its observed public pathname is replaced");
+  const bool reconciliation_race_foreign_removed =
+      !reconciliation_race_foreign_path.empty() && fs::remove(reconciliation_race_foreign_path);
+  const auto reconciliation_race_resumed =
+      hm::configurator_internal::recover_stale_archive_work_files(reconciliation_race_configured);
+  bool reconciliation_race_artifacts_remain = false;
+  for (const fs::path& entry : fs::directory_iterator(reconciliation_race_dir)) {
+    const std::string name = entry.filename().string();
+    reconciliation_race_artifacts_remain |=
+        name.rfind(".hstream-cleanup-", 0) == 0 || name.find(".hstream-reconcile-") != std::string::npos;
+  }
+  std::ifstream reconciliation_race_recovery_stream(
+      reconciliation_race_dir / "reconcile-race-finalization-failed.mkv", std::ios::binary);
+  const std::string reconciliation_race_recovery_content{
+      std::istreambuf_iterator<char>(reconciliation_race_recovery_stream), std::istreambuf_iterator<char>()};
+  ok &= expect(
+      reconciliation_race_foreign_removed && reconciliation_race_resumed.ok() &&
+          reconciliation_race_resumed->size() == 1 &&
+          reconciliation_race_recovery_content == "trusted reconciliation-race video" &&
+          !reconciliation_race_artifacts_remain,
+      "Cleanup reconciliation must resume after a pathname conflict is removed and retire its durable guards");
 
   const fs::path fallback_restore_race_dir = root / "archive-cleanup-fallback-restore-race";
   fs::create_directories(fallback_restore_race_dir);
@@ -2065,7 +2180,6 @@ play-tracker:
   const fs::path fallback_restore_race_source =
       fallback_restore_race_dir / "restore-race.hstream-run-99999999-dead.mkv";
   const fs::path fallback_restore_race_public = fallback_restore_race_source.string() + ".hstream-cleanup-pin";
-  const fs::path fallback_restore_race_guard = fallback_restore_race_source.string() + ".hstream-pin";
   std::ofstream(fallback_restore_race_public, std::ios::binary) << "trusted cleanup fallback restore inode";
   g_setenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_CLEANUP_FALLBACK_DURING_RESTORE", "1", TRUE);
   const auto fallback_restore_race =
@@ -2077,13 +2191,19 @@ play-tracker:
   std::ifstream fallback_restore_race_public_stream(fallback_restore_race_public, std::ios::binary);
   const std::string fallback_restore_race_public_content{
       std::istreambuf_iterator<char>(fallback_restore_race_public_stream), std::istreambuf_iterator<char>()};
-  std::ifstream fallback_restore_race_guard_stream(fallback_restore_race_guard, std::ios::binary);
-  const std::string fallback_restore_race_guard_content{
-      std::istreambuf_iterator<char>(fallback_restore_race_guard_stream), std::istreambuf_iterator<char>()};
+  bool fallback_restore_race_rescued = false;
+  const std::string fallback_restore_rescue_prefix =
+      fallback_restore_race_source.filename().string() + ".hstream-restore.hstream-rescue-";
+  for (const fs::path& entry : fs::directory_iterator(fallback_restore_race_dir)) {
+    if (entry.filename().string().rfind(fallback_restore_rescue_prefix, 0) != 0)
+      continue;
+    std::ifstream rescue_stream(entry, std::ios::binary);
+    const std::string rescue_content{std::istreambuf_iterator<char>(rescue_stream), std::istreambuf_iterator<char>()};
+    fallback_restore_race_rescued = rescue_content == "trusted cleanup fallback restore inode";
+  }
   ok &= expect(
       !fallback_restore_race.ok() && fallback_restore_race_source_content == "foreign restored original" &&
-          fallback_restore_race_public_content == "foreign cleanup fallback" &&
-          fallback_restore_race_guard_content == "trusted cleanup fallback restore inode",
+          fallback_restore_race_public_content == "foreign cleanup fallback" && fallback_restore_race_rescued,
       "Cleanup fallback restoration must durably rescue the trusted inode if both public names are replaced");
 
   const fs::path source_link_race_dir = root / "archive-source-link-race";
