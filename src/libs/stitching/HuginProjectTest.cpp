@@ -479,6 +479,7 @@ int main() {
   }
   hm::stitching::HuginProject::Options options;
   options.max_canvas_dimension = 64;
+  options.run_autooptimizer = true;
   fs::create_directories(root / "private-inputs");
   ok &= expect(
       cv::imwrite((root / "private-inputs" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(11, 12, 13))),
@@ -702,6 +703,42 @@ int main() {
                   "cp '" +
                   fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "working fake Nona and enblend tools must be restored after retry provenance validation");
+
+  const auto optimizer_args_size = fs::file_size(autooptimiser_args);
+  hm::stitching::HuginProject::Options optimizer_disabled_options;
+  std::string optimizer_disabled_message;
+  fs::create_directories(root / "optimizer-disabled-game");
+  optimizer_disabled_options.progress =
+      [&](const std::string& stage, const std::string& status, const std::string& message) {
+        if (stage == "optimizer" && status == "complete")
+          optimizer_disabled_message = message;
+      };
+  ::setenv("HM_AUTOOPTIMISER", (root / "missing-autooptimiser-disabled-by-default").c_str(), 1);
+  const auto optimizer_disabled = hm::stitching::HuginProject::Configure(
+      root / "optimizer-disabled-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      optimizer_disabled_options);
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
+  if (!optimizer_disabled.ok())
+    std::cerr << optimizer_disabled << '\n';
+  ok &= expect(optimizer_disabled.ok(), "Hugin calibration must succeed with its default optimizer setting disabled");
+  ok &= expect(
+      fs::file_size(autooptimiser_args) == optimizer_args_size,
+      "Hugin calibration must skip autooptimiser unless explicitly enabled");
+  ok &= expect(
+      optimizer_disabled_message.find("disabled") != std::string::npos,
+      "Optimizer-disabled calibration progress must explain that the stage was skipped");
+  if (optimizer_disabled.ok()) {
+    std::ifstream generated(root / "optimizer-disabled-game" / "hm_project.pto", std::ios::binary);
+    std::ifstream published(root / "optimizer-disabled-game" / "autooptimiser_out.pto", std::ios::binary);
+    const std::string generated_project((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
+    const std::string published_project((std::istreambuf_iterator<char>(published)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        generated_project == published_project,
+        "optimizer-disabled calibration must publish the generated Hugin project without modifying its geometry");
+  }
 
   const fs::path fallback_game = root / "fallback-game";
   fs::create_directories(fallback_game);

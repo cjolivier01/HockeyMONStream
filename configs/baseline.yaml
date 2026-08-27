@@ -108,6 +108,8 @@ stitching:
     m_kpts1: null
   control_point_matcher: "superpoint-lightglue"
   mapping_backend: "nona"
+  # Opt in to Hugin's automatic alignment pass during stitching calibration.
+  run_autooptimizer: false
   max_output_dimension: null
   offsets: null
   dir_name: null

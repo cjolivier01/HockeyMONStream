@@ -1585,8 +1585,14 @@ absl::Status HuginProject::Configure(
     if (!status.ok())
       return status;
   }
-  if (options.progress)
-    options.progress("optimizer", "started", "Preparing and running panorama optimizer (autooptimiser)");
+  if (options.progress) {
+    options.progress(
+        "optimizer",
+        "started",
+        options.mapping_backend == MappingBackend::kNona && options.run_autooptimizer
+            ? "Preparing and running panorama optimizer (autooptimiser)"
+            : "Preparing Hugin project without panorama optimization");
+  }
   auto transaction_lock = RecoverAndLock(game_dir);
   if (!transaction_lock.ok())
     return transaction_lock.status();
@@ -1644,7 +1650,7 @@ absl::Status HuginProject::Configure(
     return status;
 
   std::optional<std::string> autooptimiser_path;
-  if (options.mapping_backend == MappingBackend::kNona) {
+  if (options.mapping_backend == MappingBackend::kNona && options.run_autooptimizer) {
     auto autooptimiser = executable("HM_AUTOOPTIMISER", "autooptimiser");
     if (!autooptimiser.ok())
       return autooptimiser.status();
@@ -1659,8 +1665,14 @@ absl::Status HuginProject::Configure(
         staging / "hm_project.pto", staging / "autooptimiser_out.pto", fs::copy_options::overwrite_existing, error);
     if (error)
       return absl::InternalError("Unable to copy native OpenCV project file: " + error.message());
-    if (options.progress)
-      options.progress("optimizer", "complete", "Native OpenCV mapping does not require Hugin optimization");
+    if (options.progress) {
+      options.progress(
+          "optimizer",
+          "complete",
+          options.mapping_backend == MappingBackend::kNona
+              ? "Panorama optimizer disabled; using the generated Hugin project"
+              : "Native OpenCV mapping does not require Hugin optimization");
+    }
   }
   if (options.progress)
     options.progress("canvas", "started", "Building stitch maps and panorama preview");

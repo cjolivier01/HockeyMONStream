@@ -59,6 +59,7 @@ class HuginProject {
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
     MappingBackend mapping_backend{MappingBackend::kNona};
+    bool run_autooptimizer{false};
     std::string expected_invalidation_id;
     ProgressCallback progress;
     std::function<bool()> is_cancelled;
