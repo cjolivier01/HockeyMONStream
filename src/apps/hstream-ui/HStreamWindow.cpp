@@ -1173,6 +1173,96 @@ bool durably_publish_cleanup_fallback(
   return false;
 }
 
+struct DurableUiRemovalFallback {
+  QString path;
+  bool retire_on_success = false;
+};
+
+bool rename_entry_no_replace(
+    int source_directory_fd,
+    const char* source_name,
+    int destination_directory_fd,
+    const char* destination_name,
+    int* saved_errno);
+
+bool ensure_durable_ui_removal_fallback(
+    int pinned_fd,
+    const QString& path,
+    const struct stat& expected_stat,
+    DurableUiRemovalFallback* fallback,
+    QString* error) {
+  const QString fallback_path = path + ".hstream-cleanup-pin";
+  int link_errno = 0;
+  const bool created = link_open_file_no_replace(pinned_fd, fallback_path, &link_errno);
+  if (!created && (link_errno != EEXIST || !path_has_file_identity(fallback_path, expected_stat))) {
+    if (error) {
+      *error = QString("could not establish public cleanup fallback at %1: %2")
+                   .arg(fallback_path, QString::fromLocal8Bit(std::strerror(link_errno)));
+    }
+    return false;
+  }
+  QString sync_error;
+  if (!sync_parent_directory(fallback_path, &sync_error) || !path_has_file_identity(fallback_path, expected_stat)) {
+    if (error)
+      *error = QString("could not make public cleanup fallback durable at %1: %2").arg(fallback_path, sync_error);
+    return false;
+  }
+  if (fallback) {
+    fallback->path = fallback_path;
+    fallback->retire_on_success = true;
+  }
+  return true;
+}
+
+bool retire_durable_ui_removal_fallback(
+    int cleanup_fd,
+    int parent_fd,
+    const DurableUiRemovalFallback& fallback,
+    const struct stat& expected_stat,
+    QString* error) {
+  if (!fallback.retire_on_success)
+    return true;
+  const QByteArray fallback_name = QFile::encodeName(QFileInfo(fallback.path).fileName());
+  int move_errno = 0;
+  if (!rename_entry_no_replace(parent_fd, fallback_name.constData(), cleanup_fd, "fallback", &move_errno)) {
+    if (move_errno == ENOENT)
+      return true;
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(move_errno));
+    return false;
+  }
+  struct stat quarantined_stat{};
+  if (::fstatat(cleanup_fd, "fallback", &quarantined_stat, AT_SYMLINK_NOFOLLOW) != 0) {
+    const int inspect_errno = errno;
+    int restore_errno = 0;
+    if (rename_entry_no_replace(cleanup_fd, "fallback", parent_fd, fallback_name.constData(), &restore_errno))
+      ::fsync(parent_fd);
+    if (error)
+      *error = QString("could not inspect quarantined public cleanup fallback: %1")
+                   .arg(QString::fromLocal8Bit(std::strerror(inspect_errno)));
+    return false;
+  }
+  if (!same_file_identity(quarantined_stat, expected_stat)) {
+    QByteArray restored_name;
+    QString restore_error;
+    const bool restored = durably_publish_cleanup_fallback(
+        cleanup_fd, "fallback", parent_fd, fallback_name, quarantined_stat, &restored_name, &restore_error);
+    if (restored) {
+      ::unlinkat(cleanup_fd, "fallback", 0);
+      ::fsync(cleanup_fd);
+    }
+    if (error)
+      *error = QString("public cleanup fallback was replaced at %1: %2").arg(fallback.path, restore_error);
+    return false;
+  }
+  if (::unlinkat(cleanup_fd, "fallback", 0) != 0 || ::fsync(cleanup_fd) != 0) {
+    if (error)
+      *error = QString::fromLocal8Bit(std::strerror(errno));
+    return false;
+  }
+  return true;
+}
+
 bool create_open_file_guard(int source_fd, const QString& protected_path, QString* guard_path, QString* error) {
   const QString candidate = protected_path + ".hstream-pin";
   int saved_errno = 0;
@@ -1444,16 +1534,45 @@ bool remove_path_if_same_identity(
     return false;
   }
 
-  int move_errno = 0;
-  if (!rename_entry_no_replace(parent_fd, encoded_filename.constData(), cleanup_fd, "entry", &move_errno)) {
+  DurableUiRemovalFallback durable_removal_fallback;
+  QString durable_fallback_error;
+  if (!ensure_durable_ui_removal_fallback(
+          pinned_fd, path, pinned_stat, &durable_removal_fallback, &durable_fallback_error)) {
     ::close(cleanup_fd);
     ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+    ::fsync(parent_fd);
     ::close(pinned_fd);
     ::close(parent_fd);
-    if (move_errno == ENOENT)
+    if (error)
+      *error = durable_fallback_error;
+    return false;
+  }
+
+  int move_errno = 0;
+  if (!rename_entry_no_replace(parent_fd, encoded_filename.constData(), cleanup_fd, "entry", &move_errno)) {
+    QString fallback_retirement_error;
+    const bool fallback_retired = retire_durable_ui_removal_fallback(
+        cleanup_fd, parent_fd, durable_removal_fallback, pinned_stat, &fallback_retirement_error);
+    ::close(cleanup_fd);
+    if (fallback_retired) {
+      ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+      ::fsync(parent_fd);
+    }
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    if (move_errno == ENOENT && fallback_retired)
       return true;
     if (error)
-      *error = QString::fromLocal8Bit(std::strerror(move_errno));
+      *error = fallback_retired ? QString::fromLocal8Bit(std::strerror(move_errno)) : fallback_retirement_error;
+    return false;
+  }
+  if (qEnvironmentVariable("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE") == path) {
+    qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+    ::close(cleanup_fd);
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    if (error)
+      *error = "archive cleanup interruption requested after quarantine";
     return false;
   }
 
@@ -1509,14 +1628,29 @@ bool remove_path_if_same_identity(
   // identity check after the quarantined pathname is removed.
   if (::linkat(cleanup_fd, "entry", cleanup_fd, "guard", 0) != 0) {
     const int saved_errno = errno;
-    int restore_errno = 0;
-    rename_entry_no_replace(cleanup_fd, "entry", parent_fd, encoded_filename.constData(), &restore_errno);
+    QByteArray retained_name;
+    QString retention_error;
+    const bool retained = durably_publish_cleanup_fallback(
+        cleanup_fd, "entry", parent_fd, encoded_filename, pinned_stat, &retained_name, &retention_error);
+    int cleanup_result = -1;
+    if (retained) {
+      cleanup_result = ::unlinkat(cleanup_fd, "entry", 0);
+      if (cleanup_result == 0)
+        cleanup_result = ::fsync(cleanup_fd);
+    }
     ::close(cleanup_fd);
-    ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+    if (cleanup_result == 0) {
+      cleanup_result = ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+      if (cleanup_result == 0)
+        cleanup_result = ::fsync(parent_fd);
+    }
     ::close(pinned_fd);
     ::close(parent_fd);
-    if (error)
+    if (error) {
       *error = QString::fromLocal8Bit(std::strerror(saved_errno));
+      if (!retained)
+        *error += QString("; source retention failed: %1").arg(retention_error);
+    }
     return false;
   }
 
@@ -1579,12 +1713,17 @@ bool remove_path_if_same_identity(
   }
   const int guard_unlink_result = ::unlinkat(cleanup_fd, "guard", 0);
   const int guard_unlink_errno = errno;
+  QString fallback_retirement_error;
+  const bool fallback_retired =
+      guard_unlink_result == 0 &&
+      retire_durable_ui_removal_fallback(
+          cleanup_fd, parent_fd, durable_removal_fallback, pinned_stat, &fallback_retirement_error);
   ::close(cleanup_fd);
-  const int cleanup_result = ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
+  const int cleanup_result = fallback_retired ? ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR) : -1;
   const int cleanup_errno = errno;
   int directory_sync_result = 0;
   int directory_sync_errno = 0;
-  if (unlink_result == 0 && guard_unlink_result == 0 && cleanup_result == 0) {
+  if (unlink_result == 0 && guard_unlink_result == 0 && fallback_retired && cleanup_result == 0) {
     const QString forced_sync_failure = qEnvironmentVariable("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE");
     const bool force_directory_sync_failure =
         forced_sync_failure == path || (forced_sync_failure == "mp4-guard" && path.endsWith(".mp4.hstream-pin"));
@@ -1620,12 +1759,16 @@ bool remove_path_if_same_identity(
   }
   ::close(pinned_fd);
   ::close(parent_fd);
-  if (unlink_result == 0 && guard_unlink_result == 0 && cleanup_result == 0 && directory_sync_result == 0)
+  if (unlink_result == 0 && guard_unlink_result == 0 && fallback_retired && cleanup_result == 0 &&
+      directory_sync_result == 0) {
     return true;
+  }
   if (error && directory_sync_result == 0) {
-    *error = QString::fromLocal8Bit(
-        std::strerror(
-            unlink_result != 0 ? unlink_errno : (guard_unlink_result != 0 ? guard_unlink_errno : cleanup_errno)));
+    *error = !fallback_retired && guard_unlink_result == 0
+        ? fallback_retirement_error
+        : QString::fromLocal8Bit(
+              std::strerror(
+                  unlink_result != 0 ? unlink_errno : (guard_unlink_result != 0 ? guard_unlink_errno : cleanup_errno)));
   }
   return false;
 }
@@ -8351,19 +8494,6 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           archive_job_log_enabled_ = true;
           appendLog(QString("archive job log moved with recovery archive: %1").arg(candidate_log));
         }
-        if (!archive_job_log_guard_path_.isEmpty()) {
-          const QString old_guard_path = archive_job_log_guard_path_;
-          QString guard_cleanup_error;
-          if (remove_path_if_same_identity(
-                  old_guard_path, original_log_stat, &guard_cleanup_error, candidate_log, &original_log_stat)) {
-          } else {
-            failure_detail += QString(
-                                  "\n\nThe recovery log is paired at %1, but its identity guard was retained at "
-                                  "%2: %3")
-                                  .arg(candidate_log, old_guard_path, guard_cleanup_error);
-          }
-        }
-        archive_job_log_guard_path_ = candidate_log_guard_path;
       }
 
       QString old_video_cleanup_error;
@@ -8427,6 +8557,20 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         }
       }
       archive_finalize_source_guard_path_ = candidate_source_guard_path;
+      if (has_job_log && !archive_job_log_guard_path_.isEmpty()) {
+        const QString old_guard_path = archive_job_log_guard_path_;
+        QString guard_cleanup_error;
+        if (remove_path_if_same_identity(
+                old_guard_path, original_log_stat, &guard_cleanup_error, candidate_log, &original_log_stat)) {
+        } else {
+          failure_detail += QString(
+                                "\n\nThe recovery log is paired at %1, but its identity guard was retained at "
+                                "%2: %3")
+                                .arg(candidate_log, old_guard_path, guard_cleanup_error);
+        }
+      }
+      if (has_job_log)
+        archive_job_log_guard_path_ = candidate_log_guard_path;
       failed_archive_path = candidate;
       break;
     }

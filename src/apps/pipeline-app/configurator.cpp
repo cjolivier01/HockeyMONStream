@@ -1517,6 +1517,174 @@ absl::StatusOr<std::string> durably_publish_archive_cleanup_fallback(
       TO_STRING("Failed to retain " << description << " pathname: " << std::strerror(saved_errno)));
 }
 
+struct DurableArchiveRemovalFallback {
+  std::string name;
+  bool retire_on_success = false;
+};
+
+absl::StatusOr<DurableArchiveRemovalFallback> ensure_durable_archive_removal_fallback(
+    int pinned_fd,
+    int parent_fd,
+    const std::string& filename,
+    const struct stat& expected_stat,
+    const char* description) {
+  const std::string fallback_name = filename + ".hstream-cleanup-pin";
+  bool created = ::linkat(pinned_fd, "", parent_fd, fallback_name.c_str(), AT_EMPTY_PATH) == 0;
+  if (!created) {
+    const int link_errno = errno;
+    struct stat fallback_stat{};
+    if (link_errno != EEXIST || ::fstatat(parent_fd, fallback_name.c_str(), &fallback_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !same_file_identity(fallback_stat, expected_stat)) {
+      return absl::FailedPreconditionError(TO_STRING(
+          "Could not establish a public fallback for " << description << " at \"" << fallback_name
+                                                       << "\": " << std::strerror(link_errno)));
+    }
+  }
+  if (::fsync(parent_fd) != 0) {
+    return absl::InternalError(TO_STRING(
+        "Could not make the public fallback for " << description << " durable at \"" << fallback_name
+                                                  << "\": " << std::strerror(errno)));
+  }
+  struct stat durable_fallback_stat{};
+  if (::fstatat(parent_fd, fallback_name.c_str(), &durable_fallback_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !same_file_identity(durable_fallback_stat, expected_stat)) {
+    return absl::FailedPreconditionError(
+        TO_STRING("Public fallback for " << description << " changed at \"" << fallback_name << "\""));
+  }
+  return DurableArchiveRemovalFallback{fallback_name, true};
+}
+
+absl::Status retire_durable_archive_removal_fallback(
+    int cleanup_fd,
+    int parent_fd,
+    const DurableArchiveRemovalFallback& fallback,
+    const struct stat& expected_stat) {
+  if (!fallback.retire_on_success)
+    return absl::OkStatus();
+  if (rename_archive_entry_no_replace(parent_fd, fallback.name.c_str(), cleanup_fd, "fallback") != 0) {
+    const int saved_errno = errno;
+    if (saved_errno == ENOENT)
+      return absl::OkStatus();
+    return absl::InternalError(TO_STRING(
+        "Failed to quarantine redundant archive cleanup fallback \"" << fallback.name
+                                                                     << "\": " << std::strerror(saved_errno)));
+  }
+  struct stat quarantined_stat{};
+  if (::fstatat(cleanup_fd, "fallback", &quarantined_stat, AT_SYMLINK_NOFOLLOW) != 0) {
+    const int inspect_errno = errno;
+    const int restore_result =
+        rename_archive_entry_no_replace(cleanup_fd, "fallback", parent_fd, fallback.name.c_str());
+    const int restore_errno = errno;
+    if (restore_result == 0)
+      ::fsync(parent_fd);
+    return absl::InternalError(TO_STRING(
+        "Failed to inspect redundant archive cleanup fallback \""
+        << fallback.name << "\": " << std::strerror(inspect_errno)
+        << (restore_result == 0 ? "" : TO_STRING("; restore failed: " << std::strerror(restore_errno)))));
+  }
+  if (!same_file_identity(quarantined_stat, expected_stat)) {
+    const auto restored = durably_publish_archive_cleanup_fallback(
+        cleanup_fd, "fallback", parent_fd, fallback.name, quarantined_stat, "replaced archive cleanup fallback");
+    if (restored.ok()) {
+      ::unlinkat(cleanup_fd, "fallback", 0);
+      ::fsync(cleanup_fd);
+    }
+    return absl::FailedPreconditionError(TO_STRING(
+        "Redundant archive cleanup fallback was replaced at \""
+        << fallback.name << "\"" << (restored.ok() ? "" : TO_STRING("; " << restored.status().message()))));
+  }
+  if (::unlinkat(cleanup_fd, "fallback", 0) != 0 || ::fsync(cleanup_fd) != 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to retire redundant archive cleanup fallback \"" << fallback.name << "\": " << std::strerror(errno)));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status reconcile_archive_cleanup_directories(const fs::path& parent_path) {
+  const int parent_fd = ::open(parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (parent_fd < 0) {
+    return absl::InternalError(TO_STRING(
+        "Failed to open archive directory for cleanup reconciliation \"" << parent_path.string()
+                                                                         << "\": " << std::strerror(errno)));
+  }
+  absl::Cleanup close_parent = [parent_fd]() { ::close(parent_fd); };
+  std::error_code iterator_error;
+  std::vector<fs::path> entries;
+  for (fs::directory_iterator it(parent_path, iterator_error), end; it != end; it.increment(iterator_error)) {
+    if (iterator_error) {
+      return absl::InternalError(TO_STRING(
+          "Failed to inspect archive cleanup directory \"" << parent_path.string()
+                                                           << "\": " << iterator_error.message()));
+    }
+    entries.push_back(it->path());
+  }
+  for (const fs::path& cleanup_path : entries) {
+    const std::string cleanup_name = cleanup_path.filename().string();
+    if (!absl::StartsWith(cleanup_name, ".hstream-cleanup-"))
+      continue;
+    const int cleanup_fd = ::openat(parent_fd, cleanup_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (cleanup_fd < 0) {
+      return absl::InternalError(TO_STRING(
+          "Failed to open abandoned archive cleanup directory \"" << cleanup_path.string()
+                                                                  << "\": " << std::strerror(errno)));
+    }
+    bool cleanup_failed = false;
+    std::string cleanup_error;
+    for (const char* private_name : {"entry", "guard", "fallback"}) {
+      struct stat private_stat{};
+      if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT)
+          continue;
+        cleanup_failed = true;
+        cleanup_error = std::strerror(errno);
+        break;
+      }
+      bool has_public_identity = false;
+      for (const fs::path& public_path : entries) {
+        if (absl::StartsWith(public_path.filename().string(), ".hstream-cleanup-"))
+          continue;
+        struct stat public_stat{};
+        if (::lstat(public_path.c_str(), &public_stat) == 0 && same_file_identity(public_stat, private_stat)) {
+          has_public_identity = true;
+          break;
+        }
+      }
+      if (!has_public_identity) {
+        ::close(cleanup_fd);
+        return absl::FailedPreconditionError(TO_STRING(
+            "Abandoned archive cleanup entry has no public fallback at \"" << cleanup_path.string() << "/"
+                                                                           << private_name << "\""));
+      }
+      struct stat current_private_stat{};
+      if (::fstatat(cleanup_fd, private_name, &current_private_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+          !same_file_identity(current_private_stat, private_stat) || ::unlinkat(cleanup_fd, private_name, 0) != 0) {
+        cleanup_failed = true;
+        cleanup_error = std::strerror(errno);
+        break;
+      }
+    }
+    if (!cleanup_failed && ::fsync(cleanup_fd) != 0) {
+      cleanup_failed = true;
+      cleanup_error = std::strerror(errno);
+    }
+    ::close(cleanup_fd);
+    if (!cleanup_failed && ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR) != 0) {
+      cleanup_failed = true;
+      cleanup_error = std::strerror(errno);
+    }
+    if (!cleanup_failed && ::fsync(parent_fd) != 0) {
+      cleanup_failed = true;
+      cleanup_error = std::strerror(errno);
+    }
+    if (cleanup_failed) {
+      return absl::InternalError(TO_STRING(
+          "Failed to reconcile abandoned archive cleanup directory \"" << cleanup_path.string()
+                                                                       << "\": " << cleanup_error));
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status remove_archive_entry_if_owned(
     const fs::path& path,
     const struct stat& expected_stat,
@@ -1608,33 +1776,79 @@ absl::Status remove_archive_entry_if_owned(
                                                           << "\": " << std::strerror(saved_errno)));
   }
 
-  if (rename_archive_entry_no_replace(parent_fd, filename.c_str(), cleanup_fd, "entry") != 0) {
-    const int saved_errno = errno;
+  const auto durable_removal_fallback =
+      ensure_durable_archive_removal_fallback(pinned_fd, parent_fd, filename, pinned_stat, description);
+  if (!durable_removal_fallback.ok()) {
     ::close(cleanup_fd);
     ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+    ::fsync(parent_fd);
     ::close(pinned_fd);
     ::close(parent_fd);
-    if (saved_errno == ENOENT)
+    return durable_removal_fallback.status();
+  }
+
+  if (rename_archive_entry_no_replace(parent_fd, filename.c_str(), cleanup_fd, "entry") != 0) {
+    const int saved_errno = errno;
+    const absl::Status fallback_retirement =
+        retire_durable_archive_removal_fallback(cleanup_fd, parent_fd, *durable_removal_fallback, pinned_stat);
+    ::close(cleanup_fd);
+    if (fallback_retirement.ok()) {
+      ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+      ::fsync(parent_fd);
+    }
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    if (saved_errno == ENOENT && fallback_retirement.ok())
       return absl::OkStatus();
     return absl::InternalError(TO_STRING(
-        "Failed to quarantine " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)));
+        "Failed to quarantine " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)
+                                << (fallback_retirement.ok() ? "" : TO_STRING("; " << fallback_retirement.message()))));
+  }
+  if (std::strcmp(description, "archive work file") == 0 &&
+      g_getenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE")) {
+    g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+    ::close(cleanup_fd);
+    ::close(pinned_fd);
+    ::close(parent_fd);
+    return absl::UnavailableError("archive cleanup interruption requested after quarantine");
   }
 
   struct stat quarantined_stat{};
   const int inspect_result = ::fstatat(cleanup_fd, "entry", &quarantined_stat, AT_SYMLINK_NOFOLLOW);
   if (inspect_result != 0 || !same_file_identity(quarantined_stat, expected_stat)) {
     const int inspect_errno = inspect_result != 0 ? errno : 0;
-    const int restore_result = rename_archive_entry_no_replace(cleanup_fd, "entry", parent_fd, filename.c_str());
-    const int restore_errno = errno;
+    absl::Status restore_status = absl::OkStatus();
+    if (inspect_result == 0) {
+      auto restored = durably_publish_archive_cleanup_fallback(
+          cleanup_fd, "entry", parent_fd, filename, quarantined_stat, "replaced quarantined archive entry");
+      restore_status = restored.status();
+      if (restored.ok()) {
+        if (::unlinkat(cleanup_fd, "entry", 0) != 0 || ::fsync(cleanup_fd) != 0) {
+          restore_status =
+              absl::InternalError(TO_STRING("Failed to retire restored quarantine entry: " << std::strerror(errno)));
+        }
+      }
+    } else {
+      const int restore_result = rename_archive_entry_no_replace(cleanup_fd, "entry", parent_fd, filename.c_str());
+      const int restore_errno = errno;
+      if (restore_result != 0 || ::fsync(parent_fd) != 0 || ::fsync(cleanup_fd) != 0) {
+        restore_status = absl::InternalError(TO_STRING(
+            "Could not restore uninspectable quarantine entry: "
+            << std::strerror(restore_result != 0 ? restore_errno : errno)));
+      }
+    }
     ::close(cleanup_fd);
-    if (restore_result == 0)
+    if (restore_status.ok()) {
       ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+      ::fsync(parent_fd);
+    }
     ::close(pinned_fd);
     ::close(parent_fd);
-    if (restore_result != 0) {
+    if (!restore_status.ok()) {
       return absl::FailedPreconditionError(TO_STRING(
-          "Quarantined a replaced " << description << " from \"" << path.string()
-                                    << "\" and could not restore it: " << std::strerror(restore_errno)));
+          "Quarantined a replaced " << description << " from \"" << path.string() << "\" and could not restore it: "
+                                    << restore_status.message() << "; trusted fallback retained at \""
+                                    << (parent_path / durable_removal_fallback->name).string() << "\""));
     }
     return absl::FailedPreconditionError(
         inspect_errno != 0
@@ -1709,15 +1923,25 @@ absl::Status remove_archive_entry_if_owned(
 
   if (::linkat(cleanup_fd, "entry", cleanup_fd, "guard", 0) != 0) {
     const int saved_errno = errno;
-    const int restore_result = rename_archive_entry_no_replace(cleanup_fd, "entry", parent_fd, filename.c_str());
+    const auto restored =
+        durably_publish_archive_cleanup_fallback(cleanup_fd, "entry", parent_fd, filename, pinned_stat, description);
+    int cleanup_result = -1;
+    if (restored.ok()) {
+      cleanup_result = ::unlinkat(cleanup_fd, "entry", 0);
+      if (cleanup_result == 0)
+        cleanup_result = ::fsync(cleanup_fd);
+    }
     ::close(cleanup_fd);
-    if (restore_result == 0)
-      ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+    if (cleanup_result == 0) {
+      cleanup_result = ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+      if (cleanup_result == 0)
+        cleanup_result = ::fsync(parent_fd);
+    }
     ::close(pinned_fd);
     ::close(parent_fd);
     return absl::InternalError(TO_STRING(
-        "Failed to guard quarantined " << description << " \"" << path.string()
-                                       << "\": " << std::strerror(saved_errno)));
+        "Failed to guard quarantined " << description << " \"" << path.string() << "\": " << std::strerror(saved_errno)
+                                       << (restored.ok() ? "" : TO_STRING("; " << restored.status().message()))));
   }
 
   if (::unlinkat(cleanup_fd, "entry", 0) != 0) {
@@ -1784,15 +2008,19 @@ absl::Status remove_archive_entry_if_owned(
   }
   const int remove_guard_result = ::unlinkat(cleanup_fd, "guard", 0);
   const int remove_guard_errno = errno;
+  const absl::Status fallback_retirement = remove_guard_result == 0
+      ? retire_durable_archive_removal_fallback(cleanup_fd, parent_fd, *durable_removal_fallback, pinned_stat)
+      : absl::OkStatus();
   const int close_cleanup_result = ::close(cleanup_fd);
   const int close_cleanup_errno = errno;
-  const int remove_cleanup_result = ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+  const int remove_cleanup_result =
+      fallback_retirement.ok() ? ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR) : -1;
   const int remove_cleanup_errno = errno;
   int directory_sync_result = 0;
   int directory_sync_errno = 0;
   int restore_after_sync_result = 0;
   int restore_after_sync_errno = 0;
-  if (remove_guard_result == 0 && close_cleanup_result == 0 && remove_cleanup_result == 0) {
+  if (remove_guard_result == 0 && fallback_retirement.ok() && close_cleanup_result == 0 && remove_cleanup_result == 0) {
     directory_sync_result = ::fsync(parent_fd);
     directory_sync_errno = errno;
     if (directory_sync_result != 0) {
@@ -1806,20 +2034,23 @@ absl::Status remove_archive_entry_if_owned(
   const int close_parent_errno = errno;
   const int close_pinned_result = ::close(pinned_fd);
   const int close_pinned_errno = errno;
-  if (remove_guard_result != 0 || close_cleanup_result != 0 || remove_cleanup_result != 0 ||
-      directory_sync_result != 0 || close_parent_result != 0 || close_pinned_result != 0) {
+  if (remove_guard_result != 0 || !fallback_retirement.ok() || close_cleanup_result != 0 ||
+      remove_cleanup_result != 0 || directory_sync_result != 0 || close_parent_result != 0 ||
+      close_pinned_result != 0) {
     const int saved_errno = remove_guard_result != 0
         ? remove_guard_errno
-        : (close_cleanup_result != 0
-               ? close_cleanup_errno
-               : (remove_cleanup_result != 0
-                      ? remove_cleanup_errno
-                      : (directory_sync_result != 0
-                             ? directory_sync_errno
-                             : (close_parent_result != 0 ? close_parent_errno : close_pinned_errno))));
+        : (!fallback_retirement.ok()
+               ? 0
+               : (close_cleanup_result != 0
+                      ? close_cleanup_errno
+                      : (remove_cleanup_result != 0
+                             ? remove_cleanup_errno
+                             : (directory_sync_result != 0
+                                    ? directory_sync_errno
+                                    : (close_parent_result != 0 ? close_parent_errno : close_pinned_errno)))));
     return absl::InternalError(TO_STRING(
-        "Removed " << description << " \"" << path.string()
-                   << "\" but failed to make cleanup durable: " << std::strerror(saved_errno)
+        "Removed " << description << " \"" << path.string() << "\" but failed to make cleanup durable: "
+                   << (fallback_retirement.ok() ? std::strerror(saved_errno) : fallback_retirement.message())
                    << (directory_sync_result != 0
                            ? (restore_after_sync_result == 0
                                   ? "; the original pathname was restored"
@@ -2638,6 +2869,7 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
   std::vector<fs::path> recovered;
   const std::string prefix = configured_path.stem().string() + ".hstream-run-";
   const std::string extension = configured_path.extension().string();
+  HM_RETURN_IF_ERROR(reconcile_archive_cleanup_directories(configured_path.parent_path()));
   std::vector<fs::path> directory_entries;
   std::error_code iterator_error;
   for (fs::directory_iterator it(configured_path.parent_path(), iterator_error), end; it != end;
@@ -2648,6 +2880,80 @@ absl::StatusOr<std::vector<fs::path>> configurator_internal::recover_stale_archi
                                                         << "\": " << iterator_error.message()));
     }
     directory_entries.push_back(it->path());
+  }
+
+  // Restore the original name of a public cleanup fallback after a crash so
+  // normal transaction recovery can resume without interpreting a temporary
+  // log link as an archive-log identity guard.
+  constexpr absl::string_view kCleanupFallbackSuffix = ".hstream-cleanup-pin";
+  bool restored_cleanup_fallback = false;
+  for (const fs::path& cleanup_fallback_path : directory_entries) {
+    const std::string cleanup_fallback_string = cleanup_fallback_path.string();
+    if (!absl::EndsWith(cleanup_fallback_string, kCleanupFallbackSuffix))
+      continue;
+    const fs::path original_path =
+        cleanup_fallback_string.substr(0, cleanup_fallback_string.size() - std::strlen(".hstream-cleanup-pin"));
+    auto cleanup_fallback_stat = inspect_archive_entry(cleanup_fallback_path, "public archive cleanup fallback");
+    auto original_stat = inspect_archive_entry(original_path, "restored archive cleanup entry");
+    if (!cleanup_fallback_stat.ok())
+      return cleanup_fallback_stat.status();
+    if (!original_stat.ok())
+      return original_stat.status();
+    if (!cleanup_fallback_stat->has_value() || !S_ISREG(cleanup_fallback_stat->value().st_mode)) {
+      return absl::FailedPreconditionError(TO_STRING(
+          "Public archive cleanup fallback is not a regular file: \"" << cleanup_fallback_path.string() << "\""));
+    }
+    if (original_stat->has_value()) {
+      if (!same_file_identity(original_stat->value(), cleanup_fallback_stat->value())) {
+        return absl::FailedPreconditionError(
+            TO_STRING("Public archive cleanup fallback conflicts with \"" << original_path.string() << "\""));
+      }
+      continue;
+    }
+    const int cleanup_fallback_fd =
+        ::open(cleanup_fallback_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    struct stat pinned_cleanup_fallback_stat{};
+    if (cleanup_fallback_fd < 0 || ::fstat(cleanup_fallback_fd, &pinned_cleanup_fallback_stat) != 0 ||
+        !same_file_identity(pinned_cleanup_fallback_stat, cleanup_fallback_stat->value())) {
+      if (cleanup_fallback_fd >= 0)
+        ::close(cleanup_fallback_fd);
+      return absl::FailedPreconditionError(
+          TO_STRING("Public archive cleanup fallback changed at \"" << cleanup_fallback_path.string() << "\""));
+    }
+    const int rename_result =
+        rename_archive_entry_no_replace(AT_FDCWD, cleanup_fallback_path.c_str(), AT_FDCWD, original_path.c_str());
+    const int rename_errno = errno;
+    auto restored_original_stat = inspect_archive_entry(original_path, "restored archive cleanup entry");
+    if (rename_result != 0 || !restored_original_stat.ok() || !restored_original_stat->has_value() ||
+        !same_file_identity(restored_original_stat->value(), pinned_cleanup_fallback_stat)) {
+      if (::linkat(cleanup_fallback_fd, "", AT_FDCWD, cleanup_fallback_path.c_str(), AT_EMPTY_PATH) == 0) {
+        const absl::Status fallback_sync = sync_parent_directory(cleanup_fallback_path);
+        (void)fallback_sync;
+      }
+      ::close(cleanup_fallback_fd);
+      if (!restored_original_stat.ok())
+        return restored_original_stat.status();
+      return absl::FailedPreconditionError(TO_STRING(
+          "Could not restore public archive cleanup fallback \""
+          << cleanup_fallback_path.string() << "\" to \"" << original_path.string()
+          << "\": " << (rename_result != 0 ? std::strerror(rename_errno) : "identity changed")));
+    }
+    ::close(cleanup_fallback_fd);
+    HM_RETURN_IF_ERROR(sync_parent_directory(original_path));
+    restored_cleanup_fallback = true;
+  }
+  if (restored_cleanup_fallback) {
+    directory_entries.clear();
+    iterator_error.clear();
+    for (fs::directory_iterator it(configured_path.parent_path(), iterator_error), end; it != end;
+         it.increment(iterator_error)) {
+      if (iterator_error) {
+        return absl::InternalError(TO_STRING(
+            "Failed to refresh archive work directory \"" << configured_path.parent_path().string()
+                                                          << "\": " << iterator_error.message()));
+      }
+      directory_entries.push_back(it->path());
+    }
   }
 
   // Recovery guards normally remain authoritative until the older source

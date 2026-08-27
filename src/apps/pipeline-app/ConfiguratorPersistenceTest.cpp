@@ -2022,6 +2022,43 @@ play-tracker:
           early_quarantine_guard_content == "trusted early-quarantine video" && !early_quarantine_hidden_entry,
       "Early quarantine rollback must retain the pinned inode at a durable guard when both original and published names are replaced");
 
+  const fs::path interrupted_quarantine_dir = root / "archive-interrupted-quarantine";
+  fs::create_directories(interrupted_quarantine_dir);
+  const fs::path interrupted_quarantine_configured = interrupted_quarantine_dir / "interrupted-quarantine.mkv";
+  const fs::path interrupted_quarantine_source =
+      interrupted_quarantine_dir / "interrupted-quarantine.hstream-run-99999999-dead.mkv";
+  const fs::path interrupted_quarantine_source_log = interrupted_quarantine_source.string() + ".log";
+  const fs::path interrupted_quarantine_recovery =
+      interrupted_quarantine_dir / "interrupted-quarantine-finalization-failed.mkv";
+  std::ofstream(interrupted_quarantine_source, std::ios::binary) << "trusted interrupted-quarantine video";
+  std::ofstream(interrupted_quarantine_source_log, std::ios::binary) << "trusted interrupted-quarantine log";
+  g_setenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE", "1", TRUE);
+  const auto interrupted_quarantine_first =
+      hm::configurator_internal::recover_stale_archive_work_files(interrupted_quarantine_configured);
+  g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
+  const auto interrupted_quarantine_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(interrupted_quarantine_configured);
+  std::ifstream interrupted_quarantine_video_stream(interrupted_quarantine_recovery, std::ios::binary);
+  const std::string interrupted_quarantine_video{
+      std::istreambuf_iterator<char>(interrupted_quarantine_video_stream), std::istreambuf_iterator<char>()};
+  std::ifstream interrupted_quarantine_log_stream(interrupted_quarantine_recovery.string() + ".log", std::ios::binary);
+  const std::string interrupted_quarantine_log{
+      std::istreambuf_iterator<char>(interrupted_quarantine_log_stream), std::istreambuf_iterator<char>()};
+  bool interrupted_quarantine_cleanup_remains = false;
+  for (const auto& entry : fs::directory_iterator(interrupted_quarantine_dir)) {
+    if (entry.path().filename().string().find(".hstream-cleanup-") == 0)
+      interrupted_quarantine_cleanup_remains = true;
+  }
+  ok &= expect(
+      !interrupted_quarantine_first.ok() && interrupted_quarantine_restart.ok() &&
+          interrupted_quarantine_restart->size() == 1 &&
+          interrupted_quarantine_restart->front() == interrupted_quarantine_recovery &&
+          interrupted_quarantine_video == "trusted interrupted-quarantine video" &&
+          interrupted_quarantine_log == "trusted interrupted-quarantine log" &&
+          !interrupted_quarantine_cleanup_remains &&
+          !fs::exists(interrupted_quarantine_source.string() + ".hstream-cleanup-pin"),
+      "Restart must reconcile a crash immediately after quarantine from its durable public guard");
+
   const fs::path source_link_race_dir = root / "archive-source-link-race";
   fs::create_directories(source_link_race_dir);
   const fs::path source_link_race_source = source_link_race_dir / "source-link-race.mkv";
@@ -2163,6 +2200,33 @@ play-tracker:
           fs::exists(replaced_recovery_log_guard_source_log.string() + ".hstream-pin") &&
           !fs::exists(replaced_recovery_log_guard_dir / "replaced-log-guard-finalization-failed-1.mkv"),
       "Restart must reject a replaced recovery log guard instead of pairing it with the trusted source video");
+
+  const fs::path ui_guard_boundary_dir = root / "archive-ui-guard-retirement-boundary";
+  fs::create_directories(ui_guard_boundary_dir);
+  const fs::path ui_guard_boundary_configured = ui_guard_boundary_dir / "ui-boundary.mkv";
+  const fs::path ui_guard_boundary_source = ui_guard_boundary_dir / "ui-boundary.hstream-run-99999999-dead.mkv";
+  const fs::path ui_guard_boundary_source_log = ui_guard_boundary_source.string() + ".log";
+  const fs::path ui_guard_boundary_recovery = ui_guard_boundary_dir / "ui-boundary-finalization-failed.mkv";
+  const fs::path ui_guard_boundary_recovery_log = ui_guard_boundary_recovery.string() + ".log";
+  const fs::path ui_guard_boundary_video_backing = ui_guard_boundary_dir / "ui-boundary-video-backing";
+  const fs::path ui_guard_boundary_log_backing = ui_guard_boundary_dir / "ui-boundary-log-backing";
+  std::ofstream(ui_guard_boundary_video_backing, std::ios::binary) << "trusted UI-boundary video";
+  std::ofstream(ui_guard_boundary_log_backing, std::ios::binary) << "trusted UI-boundary log";
+  fs::create_hard_link(ui_guard_boundary_video_backing, ui_guard_boundary_recovery);
+  fs::create_hard_link(ui_guard_boundary_log_backing, ui_guard_boundary_recovery_log);
+  fs::create_hard_link(ui_guard_boundary_video_backing, ui_guard_boundary_recovery.string() + ".hstream-pin");
+  fs::create_hard_link(ui_guard_boundary_log_backing, ui_guard_boundary_recovery_log.string() + ".hstream-pin");
+  fs::create_hard_link(ui_guard_boundary_log_backing, ui_guard_boundary_source_log.string() + ".hstream-pin");
+  const auto ui_guard_boundary_restart =
+      hm::configurator_internal::recover_stale_archive_work_files(ui_guard_boundary_configured);
+  ok &= expect(
+      ui_guard_boundary_restart.ok() && ui_guard_boundary_restart->size() == 1 &&
+          ui_guard_boundary_restart->front() == ui_guard_boundary_recovery &&
+          !fs::exists(ui_guard_boundary_source.string() + ".hstream-pin") &&
+          !fs::exists(ui_guard_boundary_source_log.string() + ".hstream-pin") &&
+          !fs::exists(ui_guard_boundary_recovery.string() + ".hstream-pin") &&
+          !fs::exists(ui_guard_boundary_recovery_log.string() + ".hstream-pin"),
+      "Restart must finish the UI boundary after its source video guard retires before its source log guard");
 
   const auto late_interrupted_recovery_is_reconciled =
       [&](const std::string& name, bool has_log, const char* interruption_env, bool expect_reported = true) {
