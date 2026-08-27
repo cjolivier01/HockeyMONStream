@@ -1486,22 +1486,13 @@ bool rename_entry_no_replace(
 #endif
 }
 
-constexpr char kUiCleanupDirectoryPrefix[] = ".hstream-cleanup-v1-";
-constexpr char kUiCleanupOwnerSuffix[] = ".hstream-owner";
-constexpr char kUiCleanupOwnerMagic[] = "hstream-cleanup-v1\n";
+constexpr char kUiCleanupDirectoryPrefix[] = ".hstream-cleanup-v2-";
+constexpr char kUiCleanupOwnerName[] = "owner";
+constexpr char kUiCleanupOwnerMagic[] = "hstream-cleanup-v2\n";
 
-QByteArray ui_cleanup_owner_name(const QByteArray& cleanup_name) {
-  return cleanup_name + kUiCleanupOwnerSuffix;
-}
-
-bool create_ui_cleanup_owner(
-    int parent_fd,
-    const QByteArray& cleanup_name,
-    const QByteArray& target_name,
-    QString* error) {
-  const QByteArray owner_name = ui_cleanup_owner_name(cleanup_name);
+bool create_ui_cleanup_owner(int cleanup_fd, int parent_fd, const QByteArray& target_name, QString* error) {
   const int owner_fd = ::openat(
-      parent_fd, owner_name.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+      cleanup_fd, kUiCleanupOwnerName, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
   if (owner_fd < 0) {
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(errno));
@@ -1524,20 +1515,22 @@ bool create_ui_cleanup_owner(
     saved_errno = errno;
   if (::close(owner_fd) != 0 && saved_errno == 0)
     saved_errno = errno;
+  if (saved_errno == 0 && ::fsync(cleanup_fd) != 0)
+    saved_errno = errno;
   if (saved_errno == 0 && ::fsync(parent_fd) != 0)
     saved_errno = errno;
   if (saved_errno == 0)
     return true;
-  ::unlinkat(parent_fd, owner_name.constData(), 0);
+  ::unlinkat(cleanup_fd, kUiCleanupOwnerName, 0);
+  ::fsync(cleanup_fd);
   ::fsync(parent_fd);
   if (error)
     *error = QString::fromLocal8Bit(std::strerror(saved_errno));
   return false;
 }
 
-bool read_ui_cleanup_owner(int parent_fd, const QByteArray& cleanup_name, QByteArray* target_name, QString* error) {
-  const QByteArray owner_name = ui_cleanup_owner_name(cleanup_name);
-  const int owner_fd = ::openat(parent_fd, owner_name.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+bool read_ui_cleanup_owner(int cleanup_fd, QByteArray* target_name, QString* error) {
+  const int owner_fd = ::openat(cleanup_fd, kUiCleanupOwnerName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (owner_fd < 0) {
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(errno));
@@ -1586,13 +1579,30 @@ bool read_ui_cleanup_owner(int parent_fd, const QByteArray& cleanup_name, QByteA
   return false;
 }
 
-bool retire_ui_cleanup_directory(int parent_fd, const QByteArray& cleanup_name) {
-  if (::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR) != 0)
+bool ui_cleanup_name_matches_fd(int cleanup_fd, int parent_fd, const QByteArray& cleanup_name) {
+  struct stat cleanup_stat{};
+  struct stat named_stat{};
+  return ::fstat(cleanup_fd, &cleanup_stat) == 0 && S_ISDIR(cleanup_stat.st_mode) &&
+      ::fstatat(parent_fd, cleanup_name.constData(), &named_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
+      S_ISDIR(named_stat.st_mode) && same_file_identity(cleanup_stat, named_stat);
+}
+
+bool remove_named_ui_cleanup_directory(int cleanup_fd, int parent_fd, const QByteArray& cleanup_name) {
+  if (!ui_cleanup_name_matches_fd(cleanup_fd, parent_fd, cleanup_name)) {
+    errno = ESTALE;
     return false;
-  const QByteArray owner_name = ui_cleanup_owner_name(cleanup_name);
-  if (::unlinkat(parent_fd, owner_name.constData(), 0) != 0 && errno != ENOENT)
+  }
+  return ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR) == 0;
+}
+
+bool retire_ui_cleanup_directory(int cleanup_fd, int parent_fd, const QByteArray& cleanup_name) {
+  if (!ui_cleanup_name_matches_fd(cleanup_fd, parent_fd, cleanup_name)) {
+    errno = ESTALE;
     return false;
-  return true;
+  }
+  if (::unlinkat(cleanup_fd, kUiCleanupOwnerName, 0) != 0 || ::fsync(cleanup_fd) != 0)
+    return false;
+  return remove_named_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
 }
 
 QString publish_unique_ui_reconciliation_guard(
@@ -1720,7 +1730,7 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
     return false;
   }
   static const QRegularExpression cleanup_name_pattern(
-      R"(^\.hstream-cleanup-v1-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)",
+      R"(^\.hstream-cleanup-v2-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)",
       QRegularExpression::CaseInsensitiveOption);
   static const QRegularExpression reconciliation_guard_name_pattern(
       R"(^.+\.hstream-reconcile-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)",
@@ -1754,10 +1764,12 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
     }
     QByteArray owned_target_name;
     QString owner_error;
-    if (!read_ui_cleanup_owner(parent_fd, encoded_cleanup, &owned_target_name, &owner_error)) {
+    if (!read_ui_cleanup_owner(cleanup_fd, &owned_target_name, &owner_error)) {
       ::close(cleanup_fd);
       continue;
     }
+    const QString owned_target_path = QDir(directory_path).filePath(QFile::decodeName(owned_target_name));
+    const std::array<QString, 2> owned_public_paths = {owned_target_path + ".hstream-cleanup-pin", owned_target_path};
     std::vector<ReconciledEntry> reconciled;
     struct PrivateEntry {
       const char* name;
@@ -1842,7 +1854,7 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
           *error = QString::fromLocal8Bit(std::strerror(saved_errno));
         return false;
       }
-      if (!retire_ui_cleanup_directory(parent_fd, encoded_cleanup) || ::fsync(parent_fd) != 0) {
+      if (!retire_ui_cleanup_directory(cleanup_fd, parent_fd, encoded_cleanup) || ::fsync(parent_fd) != 0) {
         const int saved_errno = errno;
         ::close(cleanup_fd);
         ::close(parent_fd);
@@ -1853,20 +1865,21 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
       ::close(cleanup_fd);
       continue;
     }
-    const bool committed_delete = std::none_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
-      return std::strcmp(entry.name, "entry") == 0;
-    });
+    const bool has_quarantined_entry =
+        std::any_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
+          return std::strcmp(entry.name, "entry") == 0;
+        });
+    const bool has_quarantined_fallback =
+        std::any_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
+          return std::strcmp(entry.name, "fallback") == 0;
+        });
+    const bool committed_delete = !has_quarantined_entry && has_quarantined_fallback;
     for (const PrivateEntry& private_entry : private_entries) {
       QString public_path;
-      for (const QString& public_name : names) {
-        if (cleanup_name_pattern.match(public_name).hasMatch() ||
-            reconciliation_guard_name_pattern.match(public_name).hasMatch())
-          continue;
-        const QString candidate = QDir(directory_path).filePath(public_name);
+      for (const QString& candidate : owned_public_paths) {
         if (path_has_file_identity(candidate, private_entry.identity)) {
           public_path = candidate;
-          if (public_name.endsWith(".hstream-cleanup-pin"))
-            break;
+          break;
         }
       }
       QString guard_path;
@@ -1957,16 +1970,9 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
       if (reconciled_identity == reconciled.end())
         continue;
       QString required_path;
-      const QStringList current_names =
-          QDir(directory_path)
-              .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
-      for (const QString& current_name : current_names) {
-        if (cleanup_name_pattern.match(current_name).hasMatch() ||
-            reconciliation_guard_name_pattern.match(current_name).hasMatch())
-          continue;
-        const QString current_path = QDir(directory_path).filePath(current_name);
-        if (path_has_file_identity(current_path, candidate_stat)) {
-          required_path = current_path;
+      for (const QString& owned_path : owned_public_paths) {
+        if (path_has_file_identity(owned_path, candidate_stat)) {
+          required_path = owned_path;
           break;
         }
       }
@@ -2008,7 +2014,7 @@ bool reconcile_scoped_ui_cleanup_directory(const QString& directory_path, QStrin
         *error = QString::fromLocal8Bit(std::strerror(saved_errno));
       return false;
     }
-    if (!retire_ui_cleanup_directory(parent_fd, encoded_cleanup) || ::fsync(parent_fd) != 0) {
+    if (!retire_ui_cleanup_directory(cleanup_fd, parent_fd, encoded_cleanup) || ::fsync(parent_fd) != 0) {
       const int saved_errno = errno;
       ::close(cleanup_fd);
       ::close(parent_fd);
@@ -2070,17 +2076,16 @@ bool remove_path_if_same_identity(
   if (cleanup_fd < 0) {
     if (error)
       *error = QString::fromLocal8Bit(std::strerror(errno));
-    ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
     ::close(pinned_fd);
     ::close(parent_fd);
     return false;
   }
   QString cleanup_owner_error;
   if (::flock(cleanup_fd, LOCK_EX | LOCK_NB) != 0 ||
-      !create_ui_cleanup_owner(parent_fd, cleanup_name, encoded_filename, &cleanup_owner_error)) {
+      !create_ui_cleanup_owner(cleanup_fd, parent_fd, encoded_filename, &cleanup_owner_error)) {
     const int saved_errno = cleanup_owner_error.isEmpty() ? errno : 0;
+    remove_named_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
     ::close(cleanup_fd);
-    ::unlinkat(parent_fd, cleanup_name.constData(), AT_REMOVEDIR);
     ::fsync(parent_fd);
     ::close(pinned_fd);
     ::close(parent_fd);
@@ -2094,7 +2099,7 @@ bool remove_path_if_same_identity(
   QString durable_fallback_error;
   if (!ensure_durable_ui_removal_fallback(
           pinned_fd, path, pinned_stat, &durable_removal_fallback, &durable_fallback_error)) {
-    retire_ui_cleanup_directory(parent_fd, cleanup_name);
+    retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
     ::close(cleanup_fd);
     ::fsync(parent_fd);
     ::close(pinned_fd);
@@ -2110,7 +2115,7 @@ bool remove_path_if_same_identity(
     const bool fallback_retired = retire_durable_ui_removal_fallback(
         cleanup_fd, parent_fd, durable_removal_fallback, pinned_stat, &fallback_retirement_error);
     if (fallback_retired) {
-      retire_ui_cleanup_directory(parent_fd, cleanup_name);
+      retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
       ::fsync(parent_fd);
     }
     ::close(cleanup_fd);
@@ -2158,7 +2163,7 @@ bool remove_path_if_same_identity(
       }
     }
     if (cleanup_result == 0) {
-      cleanup_result = retire_ui_cleanup_directory(parent_fd, cleanup_name) ? 0 : -1;
+      cleanup_result = retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) ? 0 : -1;
       cleanup_errno = errno;
       if (cleanup_result == 0) {
         cleanup_result = ::fsync(parent_fd);
@@ -2195,7 +2200,7 @@ bool remove_path_if_same_identity(
         cleanup_result = ::fsync(cleanup_fd);
     }
     if (cleanup_result == 0) {
-      cleanup_result = retire_ui_cleanup_directory(parent_fd, cleanup_name) ? 0 : -1;
+      cleanup_result = retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) ? 0 : -1;
       if (cleanup_result == 0)
         cleanup_result = ::fsync(parent_fd);
     }
@@ -2244,7 +2249,7 @@ bool remove_path_if_same_identity(
         }
       }
       if (cleanup_result == 0) {
-        cleanup_result = retire_ui_cleanup_directory(parent_fd, cleanup_name) ? 0 : -1;
+        cleanup_result = retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) ? 0 : -1;
         cleanup_errno = errno;
         if (cleanup_result == 0) {
           cleanup_result = ::fsync(parent_fd);
@@ -2272,7 +2277,8 @@ bool remove_path_if_same_identity(
       cleanup_fd, parent_fd, durable_removal_fallback, pinned_stat, &fallback_retirement_error);
   const int guard_unlink_result = fallback_retired ? ::unlinkat(cleanup_fd, "guard", 0) : -1;
   const int guard_unlink_errno = errno;
-  const int cleanup_result = fallback_retired && retire_ui_cleanup_directory(parent_fd, cleanup_name) ? 0 : -1;
+  const int cleanup_result =
+      fallback_retired && retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) ? 0 : -1;
   const int cleanup_errno = errno;
   ::close(cleanup_fd);
   int directory_sync_result = 0;

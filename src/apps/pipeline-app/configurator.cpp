@@ -1479,21 +1479,13 @@ int rename_archive_entry_no_replace(
       SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name, kRenameNoReplace));
 }
 
-constexpr char kArchiveCleanupDirectoryPrefix[] = ".hstream-cleanup-v1-";
-constexpr char kArchiveCleanupOwnerSuffix[] = ".hstream-owner";
-constexpr char kArchiveCleanupOwnerMagic[] = "hstream-cleanup-v1\n";
+constexpr char kArchiveCleanupDirectoryPrefix[] = ".hstream-cleanup-v2-";
+constexpr char kArchiveCleanupOwnerName[] = "owner";
+constexpr char kArchiveCleanupOwnerMagic[] = "hstream-cleanup-v2\n";
 
-std::string archive_cleanup_owner_name(const std::string& cleanup_name) {
-  return cleanup_name + kArchiveCleanupOwnerSuffix;
-}
-
-absl::Status create_archive_cleanup_owner(
-    int parent_fd,
-    const std::string& cleanup_name,
-    const std::string& target_name) {
-  const std::string owner_name = archive_cleanup_owner_name(cleanup_name);
-  const int owner_fd =
-      ::openat(parent_fd, owner_name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+absl::Status create_archive_cleanup_owner(int cleanup_fd, int parent_fd, const std::string& target_name) {
+  const int owner_fd = ::openat(
+      cleanup_fd, kArchiveCleanupOwnerName, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
   if (owner_fd < 0)
     return absl::InternalError(TO_STRING("Failed to create archive cleanup owner: " << std::strerror(errno)));
   gchar* encoded_target =
@@ -1516,18 +1508,20 @@ absl::Status create_archive_cleanup_owner(
     saved_errno = errno;
   if (::close(owner_fd) != 0 && saved_errno == 0)
     saved_errno = errno;
+  if (saved_errno == 0 && ::fsync(cleanup_fd) != 0)
+    saved_errno = errno;
   if (saved_errno == 0 && ::fsync(parent_fd) != 0)
     saved_errno = errno;
   if (saved_errno == 0)
     return absl::OkStatus();
-  ::unlinkat(parent_fd, owner_name.c_str(), 0);
+  ::unlinkat(cleanup_fd, kArchiveCleanupOwnerName, 0);
+  ::fsync(cleanup_fd);
   ::fsync(parent_fd);
   return absl::InternalError(TO_STRING("Failed to persist archive cleanup owner: " << std::strerror(saved_errno)));
 }
 
-absl::StatusOr<std::string> read_archive_cleanup_owner(int parent_fd, const std::string& cleanup_name) {
-  const std::string owner_name = archive_cleanup_owner_name(cleanup_name);
-  const int owner_fd = ::openat(parent_fd, owner_name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+absl::StatusOr<std::string> read_archive_cleanup_owner(int cleanup_fd) {
+  const int owner_fd = ::openat(cleanup_fd, kArchiveCleanupOwnerName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (owner_fd < 0)
     return absl::NotFoundError("archive cleanup owner is unavailable");
   struct stat owner_stat{};
@@ -1571,13 +1565,30 @@ absl::StatusOr<std::string> read_archive_cleanup_owner(int parent_fd, const std:
   return decoded_target;
 }
 
-int retire_archive_cleanup_directory(int parent_fd, const std::string& cleanup_name) {
-  if (::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR) != 0)
+bool archive_cleanup_name_matches_fd(int cleanup_fd, int parent_fd, const std::string& cleanup_name) {
+  struct stat cleanup_stat{};
+  struct stat named_stat{};
+  return ::fstat(cleanup_fd, &cleanup_stat) == 0 && S_ISDIR(cleanup_stat.st_mode) &&
+      ::fstatat(parent_fd, cleanup_name.c_str(), &named_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
+      S_ISDIR(named_stat.st_mode) && same_file_identity(cleanup_stat, named_stat);
+}
+
+int remove_named_archive_cleanup_directory(int cleanup_fd, int parent_fd, const std::string& cleanup_name) {
+  if (!archive_cleanup_name_matches_fd(cleanup_fd, parent_fd, cleanup_name)) {
+    errno = ESTALE;
     return -1;
-  const std::string owner_name = archive_cleanup_owner_name(cleanup_name);
-  if (::unlinkat(parent_fd, owner_name.c_str(), 0) != 0 && errno != ENOENT)
+  }
+  return ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
+}
+
+int retire_archive_cleanup_directory(int cleanup_fd, int parent_fd, const std::string& cleanup_name) {
+  if (!archive_cleanup_name_matches_fd(cleanup_fd, parent_fd, cleanup_name)) {
+    errno = ESTALE;
     return -1;
-  return 0;
+  }
+  if (::unlinkat(cleanup_fd, kArchiveCleanupOwnerName, 0) != 0 || ::fsync(cleanup_fd) != 0)
+    return -1;
+  return remove_named_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
 }
 
 absl::StatusOr<std::string> durably_publish_archive_cleanup_fallback(
@@ -1788,7 +1799,6 @@ absl::Status remove_archive_entry_if_owned(
   const int cleanup_fd = ::openat(parent_fd, cleanup_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (cleanup_fd < 0) {
     const int saved_errno = errno;
-    ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
     ::close(pinned_fd);
     ::close(parent_fd);
     return absl::InternalError(TO_STRING(
@@ -1797,16 +1807,16 @@ absl::Status remove_archive_entry_if_owned(
   }
   if (::flock(cleanup_fd, LOCK_EX | LOCK_NB) != 0) {
     const int saved_errno = errno;
+    remove_named_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
     ::close(cleanup_fd);
-    ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
     ::close(pinned_fd);
     ::close(parent_fd);
     return absl::InternalError(TO_STRING("Failed to lock protected cleanup directory: " << std::strerror(saved_errno)));
   }
-  const absl::Status cleanup_owner_status = create_archive_cleanup_owner(parent_fd, cleanup_name, filename);
+  const absl::Status cleanup_owner_status = create_archive_cleanup_owner(cleanup_fd, parent_fd, filename);
   if (!cleanup_owner_status.ok()) {
+    remove_named_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
     ::close(cleanup_fd);
-    ::unlinkat(parent_fd, cleanup_name.c_str(), AT_REMOVEDIR);
     ::fsync(parent_fd);
     ::close(pinned_fd);
     ::close(parent_fd);
@@ -1816,7 +1826,7 @@ absl::Status remove_archive_entry_if_owned(
   const auto durable_removal_fallback =
       ensure_durable_archive_removal_fallback(pinned_fd, parent_fd, filename, pinned_stat, description);
   if (!durable_removal_fallback.ok()) {
-    retire_archive_cleanup_directory(parent_fd, cleanup_name);
+    retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
     ::close(cleanup_fd);
     ::fsync(parent_fd);
     ::close(pinned_fd);
@@ -1829,7 +1839,7 @@ absl::Status remove_archive_entry_if_owned(
     const absl::Status fallback_retirement =
         retire_durable_archive_removal_fallback(cleanup_fd, parent_fd, *durable_removal_fallback, pinned_stat);
     if (fallback_retirement.ok()) {
-      retire_archive_cleanup_directory(parent_fd, cleanup_name);
+      retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
       ::fsync(parent_fd);
     }
     ::close(cleanup_fd);
@@ -1875,7 +1885,7 @@ absl::Status remove_archive_entry_if_owned(
       }
     }
     if (restore_status.ok()) {
-      retire_archive_cleanup_directory(parent_fd, cleanup_name);
+      retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
       ::fsync(parent_fd);
     }
     ::close(cleanup_fd);
@@ -1934,7 +1944,7 @@ absl::Status remove_archive_entry_if_owned(
         }
       }
       if (cleanup_result == 0) {
-        cleanup_result = retire_archive_cleanup_directory(parent_fd, cleanup_name);
+        cleanup_result = retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
         cleanup_errno = errno;
         if (cleanup_result == 0) {
           cleanup_result = ::fsync(parent_fd);
@@ -1969,7 +1979,7 @@ absl::Status remove_archive_entry_if_owned(
         cleanup_result = ::fsync(cleanup_fd);
     }
     if (cleanup_result == 0) {
-      cleanup_result = retire_archive_cleanup_directory(parent_fd, cleanup_name);
+      cleanup_result = retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
       if (cleanup_result == 0)
         cleanup_result = ::fsync(parent_fd);
     }
@@ -2020,7 +2030,7 @@ absl::Status remove_archive_entry_if_owned(
         }
       }
       if (cleanup_result == 0) {
-        cleanup_result = retire_archive_cleanup_directory(parent_fd, cleanup_name);
+        cleanup_result = retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
         cleanup_errno = errno;
         if (cleanup_result == 0) {
           cleanup_result = ::fsync(parent_fd);
@@ -2048,7 +2058,7 @@ absl::Status remove_archive_entry_if_owned(
   const int remove_guard_result = fallback_retirement.ok() ? ::unlinkat(cleanup_fd, "guard", 0) : -1;
   const int remove_guard_errno = errno;
   const int remove_cleanup_result =
-      fallback_retirement.ok() ? retire_archive_cleanup_directory(parent_fd, cleanup_name) : -1;
+      fallback_retirement.ok() ? retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) : -1;
   const int remove_cleanup_errno = errno;
   const int close_cleanup_result = ::close(cleanup_fd);
   const int close_cleanup_errno = errno;
@@ -2243,7 +2253,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
     entries.push_back(it->path());
   }
   static const std::regex cleanup_name_pattern(
-      R"(^\.hstream-cleanup-v1-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   static const std::regex reconciliation_guard_name_pattern(
       R"(^.+\.hstream-reconcile-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   const auto is_cleanup_directory_name = [&](const std::string& name) {
@@ -2274,11 +2284,13 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       ::close(parent_fd);
       return absl::InternalError(TO_STRING("Failed to lock archive cleanup directory: " << std::strerror(saved_errno)));
     }
-    const auto owned_target_name = read_archive_cleanup_owner(parent_fd, cleanup_name);
+    const auto owned_target_name = read_archive_cleanup_owner(cleanup_fd);
     if (!owned_target_name.ok()) {
       ::close(cleanup_fd);
       continue;
     }
+    const std::array<fs::path, 2> owned_public_paths = {
+        parent_path / (*owned_target_name + ".hstream-cleanup-pin"), parent_path / *owned_target_name};
     std::vector<ReconciledEntry> reconciled;
     struct PrivateEntry {
       const char* name;
@@ -2358,7 +2370,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
           return fallback_cleanup;
         }
       }
-      if (retire_archive_cleanup_directory(parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
+      if (retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
         const int saved_errno = errno;
         ::close(cleanup_fd);
         ::close(parent_fd);
@@ -2368,21 +2380,27 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       ::close(cleanup_fd);
       continue;
     }
-    const bool committed_delete = std::none_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
-      return std::strcmp(entry.name, "entry") == 0;
-    });
+    const bool has_quarantined_entry =
+        std::any_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
+          return std::strcmp(entry.name, "entry") == 0;
+        });
+    const bool has_quarantined_fallback =
+        std::any_of(private_entries.begin(), private_entries.end(), [](const auto& entry) {
+          return std::strcmp(entry.name, "fallback") == 0;
+        });
+    const bool committed_delete = !has_quarantined_entry && has_quarantined_fallback;
     for (const PrivateEntry& private_entry : private_entries) {
       fs::path public_path;
-      for (const fs::path& candidate : entries) {
-        if (is_cleanup_directory_name(candidate.filename().string()) ||
-            is_reconciliation_guard_name(candidate.filename().string()))
-          continue;
-        struct stat candidate_stat{};
-        if (::lstat(candidate.c_str(), &candidate_stat) == 0 &&
-            same_file_identity(candidate_stat, private_entry.identity)) {
+      for (const fs::path& candidate : owned_public_paths) {
+        auto candidate_stat = inspect_archive_entry(candidate, "owned archive cleanup publication");
+        if (!candidate_stat.ok()) {
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          return candidate_stat.status();
+        }
+        if (candidate_stat->has_value() && same_file_identity(candidate_stat->value(), private_entry.identity)) {
           public_path = candidate;
-          if (absl::EndsWith(candidate.string(), ".hstream-cleanup-pin"))
-            break;
+          break;
         }
       }
       fs::path guard_path;
@@ -2466,27 +2484,17 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
       if (reconciled_identity == reconciled.end())
         continue;
       fs::path required_path;
-      std::error_code current_iterator_error;
-      for (fs::directory_iterator current_it(parent_path, current_iterator_error), end; current_it != end;
-           current_it.increment(current_iterator_error)) {
-        if (current_iterator_error)
-          break;
-        const std::string current_name = current_it->path().filename().string();
-        if (is_cleanup_directory_name(current_name) || is_reconciliation_guard_name(current_name))
-          continue;
-        struct stat current_stat{};
-        if (::lstat(current_it->path().c_str(), &current_stat) == 0 &&
-            same_file_identity(current_stat, candidate_stat->value())) {
-          required_path = current_it->path();
+      for (const fs::path& owned_path : owned_public_paths) {
+        auto owned_stat = inspect_archive_entry(owned_path, "owned archive cleanup publication");
+        if (!owned_stat.ok()) {
+          ::close(cleanup_fd);
+          ::close(parent_fd);
+          return owned_stat.status();
+        }
+        if (owned_stat->has_value() && same_file_identity(owned_stat->value(), candidate_stat->value())) {
+          required_path = owned_path;
           break;
         }
-      }
-      if (current_iterator_error) {
-        ::close(cleanup_fd);
-        ::close(parent_fd);
-        return absl::InternalError(TO_STRING(
-            "Failed to inspect archive directory while retiring reconciliation guards: "
-            << current_iterator_error.message()));
       }
       if (required_path.empty()) {
         ::close(cleanup_fd);
@@ -2527,7 +2535,7 @@ absl::Status reconcile_scoped_archive_cleanup_directories(const fs::path& parent
           "Failed to sync reconciled cleanup directory \"" << cleanup_path.string()
                                                            << "\": " << std::strerror(saved_errno)));
     }
-    if (retire_archive_cleanup_directory(parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
+    if (retire_archive_cleanup_directory(cleanup_fd, parent_fd, cleanup_name) != 0 || ::fsync(parent_fd) != 0) {
       const int saved_errno = errno;
       ::close(cleanup_fd);
       ::close(parent_fd);
