@@ -4597,7 +4597,9 @@ void HStreamWindow::buildUi() {
 
   auto* central = new QWidget(this);
   auto* root = new QVBoxLayout(central);
-  root->setContentsMargins(12, 10, 12, 10);
+  // Keep the normal minimum within the supported 1440x900 desktop while the
+  // configuration panes retain their 15%-taller allocation.
+  root->setContentsMargins(10, 6, 10, 6);
   root->setSpacing(10);
 
   top_bar_ = new QWidget(central);

@@ -2820,6 +2820,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           minimum_hint.width() <= 1440 && minimum_hint.height() <= 900,
           "The normal UI minimum size must fit the supported 1440x900 viewport")) {
     std::cerr << "minimumSizeHint=" << minimum_hint.width() << 'x' << minimum_hint.height() << '\n';
+    const std::array<QWidget*, 8> diagnostic_widgets = {
+        window->centralWidget(),
+        top_bar,
+        main_log_splitter,
+        setup_row,
+        preview_tabs,
+        program_control_tabs,
+        stitched_control_tabs,
+        log_panel,
+    };
+    for (QWidget* widget : diagnostic_widgets) {
+      const QSize child_hint = widget->minimumSizeHint();
+      std::cerr << widget->objectName().toStdString() << " minimumSizeHint=" << child_hint.width() << 'x'
+                << child_hint.height() << " minimumSize=" << widget->minimumWidth() << 'x' << widget->minimumHeight()
+                << " size=" << widget->width() << 'x' << widget->height() << '\n';
+    }
     return false;
   }
   const QString invalid_pair_config_path = QDir(window->gameDirectoryText()).filePath("config.yaml");
