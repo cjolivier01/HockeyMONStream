@@ -16,12 +16,26 @@
 
 namespace hm::stitching {
 
+struct StitchProjectionFraming {
+  bool auto_fov{false};
+  double horizontal_fov{180.0};
+  bool auto_canvas{true};
+  bool auto_crop{false};
+
+  bool operator==(const StitchProjectionFraming& other) const {
+    return auto_fov == other.auto_fov && horizontal_fov == other.horizontal_fov &&
+        auto_canvas == other.auto_canvas && auto_crop == other.auto_crop;
+  }
+  bool operator!=(const StitchProjectionFraming& other) const { return !(*this == other); }
+};
+
 struct StitchingBackendChoices {
   std::string control_point_matcher;
   std::string mapping_backend;
   std::string projection;
   bool run_autooptimizer{false};
   std::vector<double> projection_parameters;
+  StitchProjectionFraming projection_framing;
 };
 
 // Projection parameters are stored under
@@ -35,6 +49,16 @@ void write_stitch_projection_parameters(
     YAML::Node& config,
     StitchProjection projection,
     const std::vector<double>& parameters);
+
+// Controls how pano_modify frames the selected projection. AUTO options ask
+// Hugin to recompute that property; disabled options preserve the optimizer's
+// corresponding PTO setting. horizontal_fov is used only when auto_fov=false.
+absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAML::Node& config);
+void write_stitch_projection_framing(YAML::Node& config, const StitchProjectionFraming& framing);
+absl::Status ValidateStitchProjectionFraming(
+    StitchProjection projection,
+    const std::vector<double>& projection_parameters,
+    const StitchProjectionFraming& framing);
 
 // Serializes every read-modify-write operation on a game's config.yaml.
 class GameConfigLock final {

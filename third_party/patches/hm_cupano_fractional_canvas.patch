@@ -1,0 +1,45 @@
+diff --git a/src/pano/controlMasks.cpp b/src/pano/controlMasks.cpp
+index c2dd7ba..ff1eb75 100644
+--- a/src/pano/controlMasks.cpp
++++ b/src/pano/controlMasks.cpp
+@@ -147,8 +147,8 @@ cv::Size canvas_size(const std::vector<ScaledPlacement>& placements) {
+   int width = 1;
+   int height = 1;
+   for (const ScaledPlacement& placement : placements) {
+-    width = std::max(width, static_cast<int>(placement.position.xpos) + placement.size.width);
+-    height = std::max(height, static_cast<int>(placement.position.ypos) + placement.size.height);
++    width = std::max(width, static_cast<int>(placement.position.xpos + placement.size.width));
++    height = std::max(height, static_cast<int>(placement.position.ypos + placement.size.height));
+   }
+   return cv::Size(width, height);
+ }
+diff --git a/src/pano/controlMasks3.cpp b/src/pano/controlMasks3.cpp
+index 750a116..ae89e57 100644
+--- a/src/pano/controlMasks3.cpp
++++ b/src/pano/controlMasks3.cpp
+@@ -351,8 +351,8 @@ cv::Size canvas_size3(const std::vector<ScaledPlacement3>& placements) {
+   int width = 1;
+   int height = 1;
+   for (const ScaledPlacement3& placement : placements) {
+-    width = std::max(width, static_cast<int>(placement.position.xpos) + placement.size.width);
+-    height = std::max(height, static_cast<int>(placement.position.ypos) + placement.size.height);
++    width = std::max(width, static_cast<int>(placement.position.xpos + placement.size.width));
++    height = std::max(height, static_cast<int>(placement.position.ypos + placement.size.height));
+   }
+   return cv::Size(width, height);
+ }
+diff --git a/src/pano/controlMasksN.cpp b/src/pano/controlMasksN.cpp
+index b6058fd..d8215f8 100644
+--- a/src/pano/controlMasksN.cpp
++++ b/src/pano/controlMasksN.cpp
+@@ -271,8 +271,8 @@ cv::Size canvas_sizeN(const std::vector<ScaledPlacementN>& placements) {
+   int width = 1;
+   int height = 1;
+   for (const ScaledPlacementN& placement : placements) {
+-    width = std::max(width, static_cast<int>(placement.position.xpos) + placement.size.width);
+-    height = std::max(height, static_cast<int>(placement.position.ypos) + placement.size.height);
++    width = std::max(width, static_cast<int>(placement.position.xpos + placement.size.width));
++    height = std::max(height, static_cast<int>(placement.position.ypos + placement.size.height));
+   }
+   return cv::Size(width, height);
+ }

@@ -224,6 +224,87 @@ absl::Status ValidateStitchProjectionParameters(StitchProjection projection, con
   return absl::OkStatus();
 }
 
+absl::StatusOr<double> MaximumStitchProjectionHorizontalFov(
+    StitchProjection projection,
+    const std::vector<double>& parameters) {
+  const absl::Status parameter_status = ValidateStitchProjectionParameters(projection, parameters);
+  if (!parameter_status.ok())
+    return parameter_status;
+
+  switch (projection) {
+    case StitchProjection::kRectilinear:
+    case StitchProjection::kTransverseMercator:
+      return 179.0;
+    case StitchProjection::kStereographic:
+    case StitchProjection::kPanini:
+    case StitchProjection::kEquirectangularPanini:
+      return 359.0;
+    case StitchProjection::kOrthographic:
+      return 180.0;
+    case StitchProjection::kBiplane:
+      // libpano queryFOVLimits(): alpha + the 179-degree center plane.
+      return std::min(360.0, parameters[0] + 179.0);
+    case StitchProjection::kTriplane:
+      // libpano queryFOVLimits(): two side-plane angles plus the
+      // 179-degree center plane.
+      return std::min(360.0, 2.0 * parameters[0] + 179.0);
+    case StitchProjection::kGeneralPanini: {
+      // This is the dynamic libpano General Panini limit. Cmpr is converted
+      // to the projection's working compression and constrained by its
+      // hard-coded 80-degree maximum projection angle. Tops and Bots affect
+      // vertical squeeze but not libpano's horizontal FOV limit.
+      constexpr double kPi = 3.141592653589793238462643383279502884;
+      constexpr double kMaximumProjectionAngle = 80.0 * kPi / 180.0;
+      const double compression_scale = (150.0 - parameters[0]) / 50.0;
+      const double compression = 1.5 / (compression_scale + 0.0001) - 1.5 / 3.0001;
+      const double theoretical = std::acos(compression > 1.0 ? -1.0 / compression : -compression);
+      const double projection_argument = compression * std::sin(kMaximumProjectionAngle);
+      double half_fov = theoretical;
+      if (projection_argument <= 1.0) {
+        half_fov = std::min(
+            half_fov,
+            std::asin(std::max(-1.0, projection_argument)) + kMaximumProjectionAngle);
+      }
+      return 2.0 * half_fov * 180.0 / kPi;
+    }
+    case StitchProjection::kCylindrical:
+    case StitchProjection::kEquirectangular:
+    case StitchProjection::kFullFrameFisheye:
+    case StitchProjection::kMercator:
+    case StitchProjection::kSinusoidal:
+    case StitchProjection::kLambertCylindricalEqualArea:
+    case StitchProjection::kLambertAzimuthalEqualArea:
+    case StitchProjection::kAlbersEqualAreaConic:
+    case StitchProjection::kMillerCylindrical:
+    case StitchProjection::kArchitectural:
+    case StitchProjection::kEquisolid:
+    case StitchProjection::kThoby:
+    case StitchProjection::kHammerAitoff:
+      return 360.0;
+  }
+  return absl::InvalidArgumentError("Unknown stitching projection");
+}
+
+absl::Status ValidateStitchProjectionHorizontalFov(
+    StitchProjection projection,
+    const std::vector<double>& parameters,
+    double horizontal_fov) {
+  double maximum_fov = 0.0;
+  auto maximum = MaximumStitchProjectionHorizontalFov(projection, parameters);
+  if (!maximum.ok())
+    return maximum.status();
+  maximum_fov = *maximum;
+  if (!std::isfinite(horizontal_fov) || horizontal_fov <= 0.0 || horizontal_fov > maximum_fov + 1e-9) {
+    std::ostringstream maximum_text;
+    maximum_text.imbue(std::locale::classic());
+    maximum_text << std::setprecision(12) << maximum_fov;
+    return absl::InvalidArgumentError(
+        "stitching projection \"" + std::string(StitchProjectionName(projection)) +
+        "\" horizontal FOV must be finite, greater than 0, and at most " + maximum_text.str() + " degrees");
+  }
+  return absl::OkStatus();
+}
+
 std::string FormatStitchProjectionParameters(const std::vector<double>& parameters, char separator) {
   std::ostringstream output;
   output.imbue(std::locale::classic());

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
@@ -137,6 +138,10 @@ absl::StatusOr<LockedCanvasRegenerationCheck> lock_canvas_regeneration_check(
     size_t max_output_width = 0);
 
 bool can_configure_stitching(const YAML::Node& config);
+
+// Resolves the immutable backend tuple consumed by a calibration worker. This
+// reader must not mutate the shared yaml-cpp document while traversing it.
+absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAML::Node& config);
 
 absl::StatusOr<std::string> stitched_output_generation_id(
     const std::string& hugin_generation,

@@ -1575,6 +1575,101 @@ play-tracker:
           !hm::get_node(**backend_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "CLI materialization must preserve and restore an existing explicit game-private stitching backend choice");
 
+  const fs::path framing_cli_dir = games / "framing-cli";
+  fs::create_directories(framing_cli_dir);
+  YAML::Node framing_cli_private(YAML::NodeType::Map);
+  framing_cli_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  framing_cli_private["stitching"]["mapping_backend"] = "opencv-magsac";
+  framing_cli_private["stitching"]["projection"] = "rectilinear";
+  framing_cli_private["stitching"]["run_autooptimizer"] = false;
+  framing_cli_private["stitching"]["projection_framing"] =
+      YAML::Load("{auto_fov: true, horizontal_fov: 185, auto_canvas: false, auto_crop: true}");
+  const absl::Status framing_cli_published =
+      hm::stitching::publish_game_config(framing_cli_dir, YAML::Dump(framing_cli_private) + "\n");
+  hm::Configurator framing_cli("framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status framing_cli_configured = framing_cli.configure();
+  const std::vector<absl::Status> framing_cli_options = {
+      framing_cli.apply_config_item("stitching.projection_framing.auto_fov", "false"),
+      framing_cli.apply_config_item("stitching.projection_framing.horizontal_fov", "180"),
+      framing_cli.apply_config_item("stitching.projection_framing.auto_canvas", "true"),
+      framing_cli.apply_config_item("stitching.projection_framing.auto_crop", "false"),
+  };
+  const absl::Status framing_cli_persisted = framing_cli.persist_effective_stitching_backend_choices();
+  auto framing_cli_generated = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
+  hm::Configurator framing_cli_reloaded(
+      "framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status framing_cli_reconfigured = framing_cli_reloaded.configure();
+  const absl::Status framing_cli_restored = framing_cli_reloaded.persist_effective_stitching_backend_choices();
+  auto framing_cli_final = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
+  const bool framing_options_ok = std::all_of(
+      framing_cli_options.begin(), framing_cli_options.end(), [](const absl::Status& status) { return status.ok(); });
+  ok &= expect(
+      framing_cli_published.ok() && framing_cli_configured.ok() && framing_options_ok && framing_cli_persisted.ok() &&
+          framing_cli_generated.ok() && framing_cli_generated->has_value() &&
+          !(**framing_cli_generated)["stitching"]["projection_framing"]["auto_fov"].as<bool>() &&
+          (**framing_cli_generated)["stitching"]["projection_framing"]["horizontal_fov"].as<double>() == 180.0 &&
+          (**framing_cli_generated)["stitching"]["projection_framing"]["auto_canvas"].as<bool>() &&
+          !(**framing_cli_generated)["stitching"]["projection_framing"]["auto_crop"].as<bool>() &&
+          (**framing_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["projection_framing"]
+                                   ["horizontal_fov"]
+                                       .as<double>() == 180.0 &&
+          (**framing_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]
+                                   ["previous_projection_framing"]["horizontal_fov"]
+                                       .as<double>() == 185.0 &&
+          framing_cli_reconfigured.ok() && framing_cli_restored.ok() && framing_cli_final.ok() &&
+          framing_cli_final->has_value() &&
+          (**framing_cli_final)["stitching"]["projection_framing"]["auto_fov"].as<bool>() &&
+          (**framing_cli_final)["stitching"]["projection_framing"]["horizontal_fov"].as<double>() == 185.0 &&
+          !(**framing_cli_final)["stitching"]["projection_framing"]["auto_canvas"].as<bool>() &&
+          (**framing_cli_final)["stitching"]["projection_framing"]["auto_crop"].as<bool>() &&
+          !hm::get_node(**framing_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "CLI projection-framing overrides must be tracked as one generated tuple and restore prior private values");
+
+  const fs::path partial_framing_cli_dir = games / "partial-framing-cli";
+  fs::create_directories(partial_framing_cli_dir);
+  YAML::Node partial_framing_private(YAML::NodeType::Map);
+  partial_framing_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  partial_framing_private["stitching"]["mapping_backend"] = "opencv-magsac";
+  partial_framing_private["stitching"]["projection"] = "rectilinear";
+  partial_framing_private["stitching"]["run_autooptimizer"] = false;
+  partial_framing_private["stitching"]["projection_framing"]["auto_crop"] = true;
+  const absl::Status partial_framing_published =
+      hm::stitching::publish_game_config(partial_framing_cli_dir, YAML::Dump(partial_framing_private) + "\n");
+  hm::Configurator partial_framing_cli(
+      "partial-framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status partial_framing_configured = partial_framing_cli.configure();
+  const absl::Status partial_framing_option =
+      partial_framing_cli.apply_config_item("stitching.projection_framing.auto_crop", "false");
+  const absl::Status partial_framing_persisted =
+      partial_framing_cli.persist_effective_stitching_backend_choices();
+  auto partial_framing_generated =
+      hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  hm::Configurator partial_framing_reloaded(
+      "partial-framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status partial_framing_reconfigured = partial_framing_reloaded.configure();
+  const absl::Status partial_framing_restored =
+      partial_framing_reloaded.persist_effective_stitching_backend_choices();
+  auto partial_framing_final =
+      hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  const auto partial_previous_framing = partial_framing_generated.ok() && partial_framing_generated->has_value()
+      ? hm::get_node(
+            **partial_framing_generated,
+            "hstream_ui.generated_stitching_backend_choices.previous_projection_framing")
+      : std::nullopt;
+  const auto restored_partial_framing = partial_framing_final.ok() && partial_framing_final->has_value()
+      ? hm::get_node(**partial_framing_final, "stitching.projection_framing")
+      : std::nullopt;
+  ok &= expect(
+      partial_framing_published.ok() && partial_framing_configured.ok() && partial_framing_option.ok() &&
+          partial_framing_persisted.ok() && partial_previous_framing.has_value() &&
+          partial_previous_framing->IsMap() && partial_previous_framing->size() == 1 &&
+          (*partial_previous_framing)["auto_crop"].as<bool>() && partial_framing_reconfigured.ok() &&
+          partial_framing_restored.ok() && restored_partial_framing.has_value() &&
+          restored_partial_framing->IsMap() && restored_partial_framing->size() == 1 &&
+          (*restored_partial_framing)["auto_crop"].as<bool>() &&
+          !hm::get_node(**partial_framing_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "Generated framing restoration must preserve a partial private map so omitted fields continue inheriting");
+
   const fs::path malformed_backend_dir = games / "malformed-backend-cli";
   fs::create_directories(malformed_backend_dir);
   YAML::Node malformed_backend_private(YAML::NodeType::Map);
@@ -2036,7 +2131,9 @@ play-tracker:
   ok &= expect(
       invalid_previous_choice_is_retained("invalid-previous-control-point-matcher", "previous_control_point_matcher") &&
           invalid_previous_choice_is_retained("invalid-previous-mapping-backend", "previous_mapping_backend") &&
-          invalid_previous_choice_is_retained("invalid-previous-projection", "previous_projection"),
+          invalid_previous_choice_is_retained("invalid-previous-projection", "previous_projection") &&
+          invalid_previous_choice_is_retained(
+              "invalid-previous-projection-framing", "previous_projection_framing"),
       "Any present invalid previous algorithm choice must distrust the complete generated marker without partially "
       "restoring its other fields");
 

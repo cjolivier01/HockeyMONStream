@@ -66,6 +66,16 @@ absl::StatusOr<StitchProjection> ParseStitchProjection(const std::string& value)
 const std::vector<StitchProjectionParameterInfo>& StitchProjectionParameters(StitchProjection projection);
 std::vector<double> DefaultStitchProjectionParameters(StitchProjection projection);
 absl::Status ValidateStitchProjectionParameters(StitchProjection projection, const std::vector<double>& parameters);
+// Mirrors the horizontal FOV limits reported by Hugin/libpano for the
+// selected projection. Parameterized projections such as Biplane, Triplane,
+// and General Panini derive their limit from the active parameter values.
+absl::StatusOr<double> MaximumStitchProjectionHorizontalFov(
+    StitchProjection projection,
+    const std::vector<double>& parameters);
+absl::Status ValidateStitchProjectionHorizontalFov(
+    StitchProjection projection,
+    const std::vector<double>& parameters,
+    double horizontal_fov);
 std::string FormatStitchProjectionParameters(const std::vector<double>& parameters, char separator = ',');
 absl::StatusOr<std::vector<double>> ParseStitchProjectionParameters(
     StitchProjection projection,

@@ -48,7 +48,8 @@ bool write_canvas_provenance(
     bool max_canvas_dimension_applied = false,
     const std::string& mapping_backend = {},
     const std::string& projection = {},
-    const std::string& projection_parameters = {}) {
+    const std::string& projection_parameters = {},
+    const hm::stitching::StitchProjectionFraming& projection_framing = {}) {
   source_width = source_width == 0 ? width : source_width;
   source_height = source_height == 0 ? height : source_height;
   const bool algorithm_aware = !mapping_backend.empty() || !projection.empty();
@@ -59,15 +60,20 @@ bool write_canvas_provenance(
     return false;
   return write_text_file(
       dir / "stitching_canvas_provenance",
-      std::string(parameter_aware ? "version=4\n" : (algorithm_aware ? "version=3\n" : "version=2\n")) +
+      std::string(algorithm_aware ? "version=5\n" : "version=2\n") +
           "max-output-width=" + std::to_string(max_output_width) + "\nmax-canvas-dimension=" +
           std::to_string(max_canvas_dimension) + "\nsource-canvas-width=" + std::to_string(source_width) +
           "\nsource-canvas-height=" + std::to_string(source_height) + "\ncanvas-width=" + std::to_string(width) +
           "\ncanvas-height=" + std::to_string(height) +
           "\nmax-output-width-applied=" + std::to_string(max_output_width_applied ? 1 : 0) +
           "\nmax-canvas-dimension-applied=" + std::to_string(max_canvas_dimension_applied ? 1 : 0) + "\n" +
-          (algorithm_aware ? "mapping-backend=" + mapping_backend + "\nprojection=" + projection + "\n" : "") +
-          (parameter_aware ? "projection-parameters=" + projection_parameters + "\n" : ""));
+          (algorithm_aware ? "mapping-backend=" + mapping_backend + "\nprojection=" + projection +
+                  "\nprojection-parameters=" + (parameter_aware ? projection_parameters : "none") +
+                  "\nprojection-auto-fov=" + (projection_framing.auto_fov ? "1" : "0") +
+                  "\nprojection-horizontal-fov=" + std::to_string(projection_framing.horizontal_fov) +
+                  "\nprojection-auto-canvas=" + (projection_framing.auto_canvas ? "1" : "0") +
+                  "\nprojection-auto-crop=" + (projection_framing.auto_crop ? "1" : "0") + "\n"
+                           : ""));
 }
 
 bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_px, float y_px) {
@@ -373,6 +379,12 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   if (!parameter_baseline.ok() || !parameter_baseline->artifact_lock)
     return false;
   parameter_baseline->artifact_lock.reset();
+  config["stitching"]["projection_framing"]["auto_crop"] = true;
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "a direct projection framing change must invalidate existing maps")) {
+    return false;
+  }
+  config["stitching"]["projection_framing"]["auto_crop"] = false;
   config["stitching"]["projection_parameters"]["general-panini"][0] = 120;
   if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "a direct General Panini parameter change must invalidate existing maps")) {
@@ -384,6 +396,29 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
     return false;
   return expect_configured(dir, false, "a direct YAML mapping backend change must invalidate existing maps");
+}
+
+bool expect_backend_choice_reader_preserves_document() {
+  YAML::Node config(YAML::NodeType::Map);
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  config["stitching"]["mapping_backend"] = "nona";
+  config["stitching"]["projection"] = "general-panini";
+  config["stitching"]["run_autooptimizer"] = true;
+  config["stitching"]["projection_parameters"]["general-panini"].push_back(100);
+  config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  config["unrelated"]["preserved"] = "value";
+  const std::string before = YAML::Dump(config);
+  auto choices = hm::stitching::read_stitching_backend_choices(config);
+  const bool matches = choices.ok() && choices->control_point_matcher == "superpoint-lightglue" &&
+      choices->mapping_backend == "nona" && choices->projection == "general-panini" &&
+      choices->run_autooptimizer && choices->projection_parameters == std::vector<double>({100.0, 0.0, 0.0});
+  if (!matches || YAML::Dump(config) != before) {
+    std::cerr << "backend choice reader must resolve the complete tuple without mutating its YAML document: "
+              << choices.status() << std::endl;
+    return false;
+  }
+  return true;
 }
 
 bool run_configured_child(
@@ -1810,6 +1845,10 @@ int main() {
 
   if (!expect_mapping_algorithm_changes_require_regeneration(tmpdir)) {
     finish(tmpdir, 48);
+  }
+
+  if (!expect_backend_choice_reader_preserves_document()) {
+    finish(tmpdir, 49);
   }
 
   if (!expect_clean_preserves_unrelated_config(tmpdir)) {

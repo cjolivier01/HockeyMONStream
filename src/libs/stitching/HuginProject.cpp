@@ -183,6 +183,17 @@ absl::StatusOr<std::string> parse_canvas_provenance_string(const std::string& li
   return line.substr(prefix.size());
 }
 
+absl::StatusOr<double> parse_canvas_provenance_double(const std::string& line, const std::string& key) {
+  std::string value;
+  HM_ASSIGN_OR_RETURN(value, parse_canvas_provenance_string(line, key));
+  std::istringstream input(value);
+  input.imbue(std::locale::classic());
+  double parsed = 0.0;
+  if (!(input >> parsed) || !input.eof() || !std::isfinite(parsed))
+    return absl::FailedPreconditionError("Invalid stitching canvas provenance value: " + key);
+  return parsed;
+}
+
 absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std::string& contents) {
   std::istringstream input(contents);
   std::vector<std::string> lines;
@@ -191,7 +202,8 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   const bool legacy = lines.size() == 9 && lines[0] == "version=2";
   const bool algorithm_aware = lines.size() == 11 && lines[0] == "version=3";
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
-  if (!legacy && !algorithm_aware && !parameter_aware)
+  const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
+  if (!legacy && !algorithm_aware && !parameter_aware && !framing_aware)
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
   HM_ASSIGN_OR_RETURN(provenance.max_output_width, parse_canvas_provenance_value(lines[1], "max-output-width"));
@@ -217,7 +229,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   }
   provenance.max_output_width_applied = max_output_width_applied != 0;
   provenance.max_canvas_dimension_applied = max_canvas_dimension_applied != 0;
-  if (algorithm_aware || parameter_aware) {
+  if (algorithm_aware || parameter_aware || framing_aware) {
     std::string mapping_backend;
     std::string projection;
     HM_ASSIGN_OR_RETURN(mapping_backend, parse_canvas_provenance_string(lines[9], "mapping-backend"));
@@ -225,7 +237,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
     HM_ASSIGN_OR_RETURN(provenance.mapping_backend, ParseMappingBackend(mapping_backend));
     HM_ASSIGN_OR_RETURN(provenance.projection, ParseStitchProjection(projection));
     HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(*provenance.mapping_backend, *provenance.projection));
-    if (parameter_aware) {
+    if (parameter_aware || framing_aware) {
       std::string parameters;
       HM_ASSIGN_OR_RETURN(parameters, parse_canvas_provenance_string(lines[11], "projection-parameters"));
       if (parameters == "none") {
@@ -235,6 +247,29 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
             provenance.projection_parameters, ParseStitchProjectionParameters(*provenance.projection, parameters));
       }
       HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*provenance.projection, *provenance.projection_parameters));
+    }
+    if (framing_aware) {
+      size_t auto_fov = 0;
+      size_t auto_canvas = 0;
+      size_t auto_crop = 0;
+      StitchProjectionFraming framing;
+      HM_ASSIGN_OR_RETURN(auto_fov, parse_canvas_provenance_value(lines[12], "projection-auto-fov"));
+      HM_ASSIGN_OR_RETURN(
+          framing.horizontal_fov, parse_canvas_provenance_double(lines[13], "projection-horizontal-fov"));
+      HM_ASSIGN_OR_RETURN(auto_canvas, parse_canvas_provenance_value(lines[14], "projection-auto-canvas"));
+      HM_ASSIGN_OR_RETURN(auto_crop, parse_canvas_provenance_value(lines[15], "projection-auto-crop"));
+      if (auto_fov > 1 || auto_canvas > 1 || auto_crop > 1 || framing.horizontal_fov <= 0.0 ||
+          framing.horizontal_fov > 360.0) {
+        return absl::FailedPreconditionError("Invalid stitching canvas provenance projection framing");
+      }
+      framing.auto_fov = auto_fov != 0;
+      framing.auto_canvas = auto_canvas != 0;
+      framing.auto_crop = auto_crop != 0;
+      if (*provenance.mapping_backend == MappingBackend::kNona) {
+        HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(
+            *provenance.projection, *provenance.projection_parameters, framing));
+      }
+      provenance.projection_framing = framing;
     }
   }
   return provenance;
@@ -1172,7 +1207,14 @@ absl::Status scale_optimized_canvas(
   auto resized_dimensions = HuginProject::ParseCanvasSize(*resized_project);
   if (!resized_dimensions.ok())
     return resized_dimensions.status();
-  if (resized_dimensions->first != *target_width || resized_dimensions->second != *target_height) {
+  const auto matches_hugin_dimension = [](size_t actual, size_t requested) {
+    // pano_modify normalizes some odd requested canvas dimensions to the next
+    // even pixel. The caller reserves one pixel of cap headroom and the
+    // decoded TIFF placement is validated against the real limit afterward.
+    return actual == requested || (requested < std::numeric_limits<size_t>::max() && actual == requested + 1);
+  };
+  if (!matches_hugin_dimension(resized_dimensions->first, *target_width) ||
+      !matches_hugin_dimension(resized_dimensions->second, *target_height)) {
     return absl::FailedPreconditionError(
         "pano_modify produced an unexpected Hugin canvas size: " + std::to_string(resized_dimensions->first) + "x" +
         std::to_string(resized_dimensions->second));
@@ -1579,12 +1621,26 @@ absl::Status HuginProject::ApplyProjection(
     StitchProjection selected_projection,
     const std::vector<double>& projection_parameters,
     const std::function<bool()>& is_cancelled) {
+  StitchProjectionFraming framing;
+  framing.auto_fov = true;
+  framing.auto_canvas = true;
+  framing.auto_crop = true;
+  return ApplyProjection(staging_directory, selected_projection, projection_parameters, framing, is_cancelled);
+}
+
+absl::Status HuginProject::ApplyProjection(
+    const fs::path& staging_directory,
+    StitchProjection selected_projection,
+    const std::vector<double>& projection_parameters,
+    const StitchProjectionFraming& projection_framing,
+    const std::function<bool()>& is_cancelled) {
   const auto& projection_info = StitchProjectionDetails(selected_projection);
   const std::vector<double> effective_projection_parameters =
       projection_parameters.empty() ? DefaultStitchProjectionParameters(selected_projection) : projection_parameters;
-  const bool general_panini = selected_projection == StitchProjection::kGeneralPanini;
   const std::string projection_name = projection_info.display_name;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(selected_projection, effective_projection_parameters));
+  HM_RETURN_IF_ERROR(
+      ValidateStitchProjectionFraming(selected_projection, effective_projection_parameters, projection_framing));
   if (is_cancelled && is_cancelled())
     return absl::CancelledError(projection_name + " remap generation cancelled before PTO conversion");
 
@@ -1597,7 +1653,6 @@ absl::Status HuginProject::ApplyProjection(
     return original_canvas.status();
   if (!ParseHorizontalFov(*original_project).ok())
     return absl::InvalidArgumentError("Optimized Hugin project has no valid horizontal field of view");
-
   auto pano_modify = executable("HM_PANO_MODIFY", "pano_modify");
   if (!pano_modify.ok())
     return pano_modify.status();
@@ -1613,7 +1668,11 @@ absl::Status HuginProject::ApplyProjection(
     }
   } cleanup{temporary_path};
 
-  auto convert_project = [&](const std::string& canvas) -> absl::Status {
+  std::ostringstream configured_fov;
+  configured_fov.imbue(std::locale::classic());
+  configured_fov << std::setprecision(std::numeric_limits<double>::max_digits10)
+                 << projection_framing.horizontal_fov;
+  auto convert_project = [&](const std::optional<std::string>& canvas) -> absl::Status {
     std::error_code remove_error;
     fs::remove(temporary_path, remove_error);
     std::vector<std::string> command = {
@@ -1622,13 +1681,13 @@ absl::Status HuginProject::ApplyProjection(
       command.emplace_back(
           "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
     }
-    command.insert(
-        command.end(),
-        {"--fov=AUTO",
-         "--canvas=" + canvas,
-         "--crop=AUTO",
-         "--output=" + temporary_path.filename().string(),
-         project_path.filename().string()});
+    command.emplace_back(
+        projection_framing.auto_fov ? "--fov=AUTO" : "--fov=" + configured_fov.str());
+    if (canvas.has_value())
+      command.emplace_back("--canvas=" + *canvas);
+    command.emplace_back(projection_framing.auto_crop ? "--crop=AUTO" : "--crop=0,100,0,100%");
+    command.emplace_back("--output=" + temporary_path.filename().string());
+    command.emplace_back(project_path.filename().string());
     return run_checked(command, staging_directory, nullptr, is_cancelled);
   };
   auto validate_converted_project = [&]() -> absl::StatusOr<std::pair<size_t, size_t>> {
@@ -1643,10 +1702,17 @@ absl::Status HuginProject::ApplyProjection(
                           : projection.status().ToString());
     }
     auto horizontal_fov = ParseHorizontalFov(*converted_project);
-    if (!horizontal_fov.ok() || (general_panini && *horizontal_fov > 320.0)) {
-      return absl::FailedPreconditionError(
-          horizontal_fov.ok() ? projection_name + " output exceeds its 320-degree horizontal FOV limit"
-                              : horizontal_fov.status().ToString());
+    if (!horizontal_fov.ok())
+      return horizontal_fov.status();
+    // pano_modify serializes panorama FOV values to three decimal places.
+    // Accept only that representational rounding; larger differences still
+    // indicate that Hugin clamped or otherwise changed the requested view.
+    constexpr double kPtoFovRoundingTolerance = 0.000500001;
+    if (!projection_framing.auto_fov &&
+        std::abs(*horizontal_fov - projection_framing.horizontal_fov) > kPtoFovRoundingTolerance) {
+      return absl::InvalidArgumentError(
+          projection_name + " does not support the requested " + configured_fov.str() +
+          "-degree horizontal FOV; Hugin selected " + std::to_string(*horizontal_fov) + " degrees instead");
     }
     auto canvas = ParseCanvasSize(*converted_project);
     if (!canvas.ok())
@@ -1656,9 +1722,11 @@ absl::Status HuginProject::ApplyProjection(
     static const std::regex crop_pattern(R"((?:^|[[:space:]])S([0-9]+),([0-9]+),([0-9]+),([0-9]+))");
     std::istringstream lines(*converted_project);
     std::string line;
+    std::string panorama_line;
     while (std::getline(lines, line)) {
       if (line.rfind("p ", 0) != 0)
         continue;
+      panorama_line = line;
       std::smatch crop_match;
       if (std::regex_search(line, crop_match, crop_pattern)) {
         try {
@@ -1676,9 +1744,13 @@ absl::Status HuginProject::ApplyProjection(
       break;
     }
 
-    static const std::regex parameter_pattern(R"(P\"([^\"]+)\")");
+    // Projection parameters are a standalone token on the panorama line.
+    // Searching the full PTO for an unanchored `P"` also matches the end of
+    // Hugin's common `r:CROP"` output-format token and consumes subsequent
+    // lines as a bogus numeric parameter payload.
+    static const std::regex parameter_pattern(R"((?:^|[[:space:]])P\"([^\"]*)\"(?:[[:space:]]|$))");
     std::smatch parameter_match;
-    const bool has_parameters = std::regex_search(*converted_project, parameter_match, parameter_pattern);
+    const bool has_parameters = std::regex_search(panorama_line, parameter_match, parameter_pattern);
     if (!effective_projection_parameters.empty() && !has_parameters)
       return absl::FailedPreconditionError(projection_name + " PTO has no projection parameters");
     if (has_parameters) {
@@ -1705,7 +1777,8 @@ absl::Status HuginProject::ApplyProjection(
     return effective_size;
   };
 
-  HM_RETURN_IF_ERROR(convert_project("AUTO"));
+  HM_RETURN_IF_ERROR(convert_project(projection_framing.auto_canvas ? std::optional<std::string>("AUTO")
+                                                                    : std::nullopt));
   std::pair<size_t, size_t> effective_size;
   HM_ASSIGN_OR_RETURN(effective_size, validate_converted_project());
   const size_t width_limit = original_canvas->first;
@@ -1718,11 +1791,37 @@ absl::Status HuginProject::ApplyProjection(
     std::ostringstream percentage;
     percentage.imbue(std::locale::classic());
     percentage << std::setprecision(12) << scale * 99.5 << '%';
-    HM_RETURN_IF_ERROR(convert_project(percentage.str()));
+    if (scale * 99.5 >= 1.0) {
+      HM_RETURN_IF_ERROR(convert_project(percentage.str()));
+    } else {
+      // Hugin rejects percentage canvases below 1%, which projections such
+      // as Stereographic can require after AUTO geometry creates a very large
+      // intermediate canvas. Preserve the same guarded scale with explicit
+      // dimensions instead of allowing the later Nona render to allocate the
+      // AUTO-sized image.
+      auto auto_project = read_file(temporary_path);
+      if (!auto_project.ok())
+        return auto_project.status();
+      auto auto_canvas = ParseCanvasSize(*auto_project);
+      if (!auto_canvas.ok())
+        return auto_canvas.status();
+      const long double guarded_scale = static_cast<long double>(scale) * 0.995L;
+      const auto scaled_dimension = [guarded_scale](size_t value) -> absl::StatusOr<size_t> {
+        const long double scaled = static_cast<long double>(value) * guarded_scale;
+        if (!std::isfinite(static_cast<double>(scaled)) || scaled > std::numeric_limits<size_t>::max())
+          return absl::InvalidArgumentError("Scaled Hugin projection canvas dimension is invalid");
+        return std::max<size_t>(1, static_cast<size_t>(std::floor(scaled)));
+      };
+      size_t scaled_width = 0;
+      size_t scaled_height = 0;
+      HM_ASSIGN_OR_RETURN(scaled_width, scaled_dimension(auto_canvas->first));
+      HM_ASSIGN_OR_RETURN(scaled_height, scaled_dimension(auto_canvas->second));
+      HM_RETURN_IF_ERROR(convert_project(std::to_string(scaled_width) + "x" + std::to_string(scaled_height)));
+    }
     HM_ASSIGN_OR_RETURN(effective_size, validate_converted_project());
   }
   if (effective_size.first > width_limit || effective_size.second > height_limit) {
-    return absl::FailedPreconditionError(projection_name + " automatic crop exceeds the calibrated canvas limits");
+    return absl::FailedPreconditionError(projection_name + " output extent exceeds the calibrated canvas limits");
   }
   if (is_cancelled && is_cancelled())
     return absl::CancelledError(projection_name + " remap generation cancelled before PTO publication");
@@ -1911,7 +2010,12 @@ absl::Status HuginProject::Configure(
           "Applying " + std::string(StitchProjectionDetails(*options.projection).display_name) + " projection");
     }
     HM_RETURN_IF_ERROR(
-        ApplyProjection(staging, *options.projection, options.projection_parameters, options.is_cancelled));
+        ApplyProjection(
+            staging,
+            *options.projection,
+            options.projection_parameters,
+            options.projection_framing,
+            options.is_cancelled));
     if (options.progress)
       options.progress("projection", "complete", "Projection-aware canvas and crop are ready");
   }
@@ -2139,7 +2243,9 @@ absl::Status HuginProject::Configure(
       ? DefaultStitchProjectionParameters(*generated_projection)
       : options.projection_parameters;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
-  provenance << "version=4\n"
+  provenance.imbue(std::locale::classic());
+  provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
+             << "version=5\n"
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -2154,7 +2260,11 @@ absl::Status HuginProject::Configure(
              << (generated_projection_parameters.empty()
                      ? std::string("none")
                      : FormatStitchProjectionParameters(generated_projection_parameters))
-             << '\n';
+             << '\n'
+             << "projection-auto-fov=" << (options.projection_framing.auto_fov ? 1 : 0) << '\n'
+             << "projection-horizontal-fov=" << options.projection_framing.horizontal_fov << '\n'
+             << "projection-auto-canvas=" << (options.projection_framing.auto_canvas ? 1 : 0) << '\n'
+             << "projection-auto-crop=" << (options.projection_framing.auto_crop ? 1 : 0) << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;

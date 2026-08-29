@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -88,6 +89,51 @@ int main() {
            invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
            .ok(),
       "projection parameter maps must reject non-canonical keys instead of silently ignoring their values");
+
+  auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
+  ok &= expect(
+      default_framing.ok() && !default_framing->auto_fov && default_framing->horizontal_fov == 180.0 &&
+          default_framing->auto_canvas && !default_framing->auto_crop,
+      "older configs must default to fixed 180-degree FOV, automatic canvas, and uncropped projection bounds");
+  for (unsigned mask = 0; mask < 8; ++mask) {
+    const hm::stitching::StitchProjectionFraming expected{
+        (mask & 1U) != 0, mask & 1U ? 185.0 : 180.0, (mask & 2U) != 0, (mask & 4U) != 0};
+    YAML::Node framing_config(YAML::NodeType::Map);
+    hm::stitching::write_stitch_projection_framing(framing_config, expected);
+    const auto parsed = hm::stitching::read_stitch_projection_framing(framing_config);
+    ok &= expect(
+        parsed.ok() && *parsed == expected,
+        "every Auto FOV/Canvas/Crop checkbox permutation must round-trip with 180/185-degree values");
+  }
+  for (const YAML::Node& invalid_framing : {
+           YAML::Load("stitching: {projection_framing: invalid}"),
+           YAML::Load("stitching: {projection_framing: {unknown: true}}"),
+           YAML::Load("stitching: {projection_framing: {auto_fov: maybe}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: invalid}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: 0}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: 361}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: .nan}}"),
+       }) {
+    ok &= expect(
+        !hm::stitching::read_stitch_projection_framing(invalid_framing).ok(),
+        "malformed projection framing values and unknown keys must be rejected");
+  }
+  const auto panini_zero_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kGeneralPanini, {0.0, 0.0, 0.0});
+  const auto panini_standard_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kGeneralPanini, {100.0, 0.0, 0.0});
+  const auto panini_cylindrical_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kGeneralPanini, {150.0, 0.0, 0.0});
+  const auto biplane_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kBiplane, {45.0, 0.0});
+  const auto triplane_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kTriplane, {60.0});
+  ok &= expect(
+      panini_zero_limit.ok() && std::abs(*panini_zero_limit - 160.0) < 1e-9 &&
+          panini_standard_limit.ok() && std::abs(*panini_standard_limit - 319.9135435412871) < 1e-9 &&
+          panini_cylindrical_limit.ok() && std::abs(*panini_cylindrical_limit - 180.00763969192198) < 1e-9 &&
+          biplane_limit.ok() && *biplane_limit == 224.0 && triplane_limit.ok() && *triplane_limit == 299.0,
+      "parameterized projection FOV limits must match libpano's dynamic formulas");
 
   auto first_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(first_lock.ok(), "first game-config transaction must lock");
@@ -656,11 +702,22 @@ int main() {
   if (after_conflict.ok() && after_conflict->has_value()) {
     YAML::Node worker_mismatch = YAML::Clone(**after_conflict);
     worker_mismatch["stitching"]["projection"] = "general-panini";
+    YAML::Node inactive_worker_framing = YAML::Clone(**after_conflict);
+    inactive_worker_framing["stitching"]["projection_framing"]["auto_crop"] = true;
+    YAML::Node inactive_claim_framing = YAML::Clone(**after_conflict);
+    inactive_claim_framing["hstream_ui"]["stitching_calibration"]["backend_generation"]
+                           ["projection_framing"]["auto_crop"] = true;
     ok &= expect(
         absl::IsAborted(
             hm::stitching::validate_stitching_backend_generation(
-                worker_mismatch, "backend-generation-a", magsac_choices)),
-        "generation validation must reject a worker-visible projection that differs from the immutable claim");
+                worker_mismatch, "backend-generation-a", magsac_choices)) &&
+            hm::stitching::validate_stitching_backend_generation(
+                inactive_worker_framing, "backend-generation-a", magsac_choices)
+                .ok() &&
+            hm::stitching::validate_stitching_backend_generation(
+                inactive_claim_framing, "backend-generation-a", magsac_choices)
+                .ok(),
+        "generation validation must fence an active projection but ignore framing unused by OpenCV backends");
   }
 
   YAML::Node parameter_generation(YAML::NodeType::Map);
@@ -679,12 +736,20 @@ int main() {
       parameter_generation, "backend-generation-b", panini_choices);
   YAML::Node changed_parameters = YAML::Clone(parameter_generation);
   changed_parameters["stitching"]["projection_parameters"]["general-panini"][0] = 120;
+  YAML::Node changed_framing = YAML::Clone(parameter_generation);
+  changed_framing["stitching"]["projection_framing"]["auto_crop"] = true;
   ok &= expect(
       parameter_reserved.ok() &&
+          parameter_generation["hstream_ui"]["stitching_calibration"]["backend_generation"]
+                              ["projection_framing"]["horizontal_fov"]
+                                  .as<double>() == 180.0 &&
           absl::IsAborted(
               hm::stitching::validate_stitching_backend_generation(
-                  changed_parameters, "backend-generation-b", panini_choices)),
-      "a projection-parameter-only worker change must be fenced by the immutable calibration generation claim");
+                  changed_parameters, "backend-generation-b", panini_choices)) &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  changed_framing, "backend-generation-b", panini_choices)),
+      "projection parameter and framing changes must be fenced by the immutable calibration generation claim");
 
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);
