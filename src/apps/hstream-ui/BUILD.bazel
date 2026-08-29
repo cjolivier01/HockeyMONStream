@@ -62,6 +62,7 @@ cc_library(
     srcs = ["HStreamWindow.cpp"],
     hdrs = ["HStreamWindow.h"],
     copts = COMMON_COPTS,
+    linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [

@@ -35,6 +35,10 @@
 #include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
+#if QT_CONFIG(xcb)
+#include <QtGui/qguiapplication_platform.h>
+#include <xcb/xcb.h>
+#endif
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
 #include <QtWidgets/QComboBox>
@@ -364,6 +368,24 @@ class NativeVideoTarget : public QWidget {
     focus_available_ = available;
   }
 
+  void clearNativeArea(const QRect& area) {
+#if QT_CONFIG(xcb)
+    if (area.isEmpty() || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
+      return;
+    auto* x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    xcb_connection_t* connection = x11 ? x11->connection() : nullptr;
+    if (!connection)
+      return;
+    const xcb_window_t target = static_cast<xcb_window_t>(winId());
+    const uint32_t black = 0;
+    xcb_change_window_attributes(connection, target, XCB_CW_BACK_PIXEL, &black);
+    xcb_clear_area(connection, 0, target, area.x(), area.y(), area.width(), area.height());
+    xcb_flush(connection);
+#else
+    Q_UNUSED(area);
+#endif
+  }
+
  protected:
   void mouseDoubleClickEvent(QMouseEvent* event) override {
     if (event->button() == Qt::LeftButton && focus_available_ && focus_toggle_callback_) {
@@ -481,7 +503,11 @@ class LetterboxRenderHost : public QWidget {
     // embedded rendering. A mapped, unpainted X11 child is an opaque black
     // window and can obscure Qt siblings while the initial layout settles.
     render_target_->hide();
-    focus_button_ = new QPushButton(this);
+    // Parent the native control to the native video target. A native sibling
+    // owned by the letterbox host can still be covered when Qt restacks the
+    // target's native ancestor after a layout change; a child X11 window is
+    // always composited above the renderer-owned target pixels.
+    focus_button_ = new QPushButton(render_target_);
     focus_button_->setFixedSize(24, 24);
     focus_button_->setIconSize(QSize(14, 14));
     set_control_help(
@@ -575,10 +601,34 @@ class LetterboxRenderHost : public QWidget {
     }
     const int x = (available.width() - width) / 2;
     const int y = (available.height() - height) / 2;
+    const bool xcb = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
+    const bool remap_target = xcb && !render_target_->isHidden();
+    const bool remap_focus_button = xcb && !focus_button_->isHidden();
+    const QRect old_focus_button_geometry = focus_button_->geometry();
+    // Moving mapped native X11 children can leave their previous pixels in
+    // Qt's backing store. Unmap the overlay hierarchy while geometry changes
+    // so the old button/video regions can be cleared before it is restacked.
+    if (remap_focus_button)
+      focus_button_->hide();
+    if (remap_target)
+      render_target_->hide();
     render_surface_->setGeometry(x, y, width, height);
     render_target_->setGeometry(0, 0, width, height);
     constexpr int kButtonMargin = 6;
-    focus_button_->move(available.width() - focus_button_->width() - kButtonMargin, kButtonMargin);
+    focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    if (remap_target) {
+      render_target_->show();
+      render_target_->raise();
+    }
+    if (remap_focus_button && old_focus_button_geometry.topLeft() != focus_button_->pos()) {
+      // The renderer owns the target's pixels, so unmapping a native child
+      // does not cause Qt to repaint its former rectangle. Clear only that
+      // tiny overlay area; the next GPU frame replaces it normally.
+      QGuiApplication::sync();
+      render_target_->clearNativeArea(old_focus_button_geometry);
+    }
+    if (remap_focus_button)
+      focus_button_->show();
     focus_button_->raise();
   }
 
@@ -12301,6 +12351,7 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(mapping_backend_combo_, default_mapping_backend_);
   }
   if (!pipeline_running && projection_combo_) {
+    projection_parameter_controls_projection_.clear();
     projection_parameter_values_ = default_projection_parameters_;
     projection_fov_values_.clear();
     projection_fov_controls_projection_.clear();
@@ -12436,6 +12487,7 @@ void HStreamWindow::loadSavedControlConfig() {
     mapping_backend_combo_->blockSignals(blocked);
   }
   if (projection_combo_) {
+    projection_parameter_controls_projection_.clear();
     projection_parameter_values_ = default_projection_parameters_;
     projection_fov_values_.clear();
     projection_fov_controls_projection_.clear();
@@ -12940,6 +12992,7 @@ void HStreamWindow::loadSavedControlConfig() {
       set_combo_to_data(mapping_backend_combo_, staged_mapping_backend);
       mapping_backend_combo_->blockSignals(blocked);
     }
+    projection_parameter_controls_projection_.clear();
     projection_parameter_values_ = std::move(staged_projection_parameters);
     if (projection_combo_) {
       updateProjectionCompatibility();

@@ -393,6 +393,43 @@ bool capture_interaction_artifact(HStreamWindow* window, const QString& name) {
       !composed.isNull() && composed.save(path), "Could not save composed X11 screenshot: " + path.toStdString());
 }
 
+bool expect_composed_focus_control(
+    HStreamWindow* window,
+    QPushButton* button,
+    const std::optional<QPoint>& stale_center,
+    const std::string& description) {
+  if (!window || !button || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
+    return true;
+  QApplication::processEvents();
+  const QPixmap composed = window->screen()->grabWindow(window->winId());
+  if (composed.isNull())
+    return expect(false, description + ": could not capture the composed X11 window");
+  const QImage image = composed.toImage().convertToFormat(QImage::Format_RGB32);
+  const qreal scale = composed.devicePixelRatio();
+  auto light_pixels = [&image, scale](const QPoint& center) {
+    const QPoint scaled(qRound(center.x() * scale), qRound(center.y() * scale));
+    const int radius = std::max(1, qRound(12 * scale));
+    int count = 0;
+    for (int y = std::max(0, scaled.y() - radius); y < std::min(image.height(), scaled.y() + radius); ++y) {
+      for (int x = std::max(0, scaled.x() - radius); x < std::min(image.width(), scaled.x() + radius); ++x) {
+        const QColor pixel = image.pixelColor(x, y);
+        if (pixel.red() + pixel.green() + pixel.blue() >= 600)
+          ++count;
+      }
+    }
+    return count;
+  };
+  const QPoint current_center = button->mapTo(window, button->rect().center());
+  const int current_light_pixels = light_pixels(current_center);
+  const int stale_light_pixels = stale_center.has_value() && *stale_center != current_center
+      ? light_pixels(*stale_center)
+      : 0;
+  return expect(
+      current_light_pixels >= 8 && stale_light_pixels <= 2,
+      description + ": composed maximize glyph pixels current=" + std::to_string(current_light_pixels) +
+          " stale=" + std::to_string(stale_light_pixels));
+}
+
 bool capture_widget_artifact(QWidget* widget, const QString& name) {
   const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR");
   if (artifact_dir.isEmpty())
@@ -2766,11 +2803,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   preview_tabs->setCurrentIndex(0);
   QApplication::processEvents();
   const std::array<std::pair<QWidget*, QPushButton*>, 5> stopped_focus_controls = {{
-      {program_host, program_focus},
-      {stitched_host, stitched_focus},
-      {camera1_host, camera1_focus},
-      {camera2_host, camera2_focus},
-      {camera3_host, camera3_focus},
+      {preview_target, program_focus},
+      {stitched_target, stitched_focus},
+      {camera1_target, camera1_focus},
+      {camera2_target, camera2_focus},
+      {camera3_target, camera3_focus},
   }};
   const bool all_stopped_focus_controls_ready =
       std::all_of(stopped_focus_controls.begin(), stopped_focus_controls.end(), [](const auto& item) {
@@ -2778,9 +2815,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             item.second->isHidden() && !item.second->isEnabled();
       });
   if (!expect(
-          all_stopped_focus_controls_ready && program_focus->parentWidget() == program_host &&
+          all_stopped_focus_controls_ready && program_focus->parentWidget() == preview_target &&
               program_focus->size() == QSize(24, 24) &&
-              program_focus->x() == program_host->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
+              program_focus->x() == preview_target->width() - program_focus->width() - 6 && program_focus->y() == 6 &&
               program_focus->toolTip().contains("Expand the Program preview") &&
               program_focus->accessibleName() == "Focus video" && program_focus->isHidden() &&
               !program_focus->isEnabled(),
@@ -2788,7 +2825,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !expect_x11_widget_state(
           program_focus,
           false,
-          "The stopped focus control must remain an unmapped native child of the video host",
+          "The stopped focus control must remain an unmapped native child of the video target",
           false)) {
     return false;
   }
@@ -4178,17 +4215,28 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "A real double-click on a ready GPU preview should focus it across the HStream app area")) {
     return false;
   }
+  const QPoint focused_button_center_before_resize =
+      program_focus->mapTo(window, program_focus->rect().center());
   window->resize(1500, 920);
   QApplication::processEvents();
   if (!expect_x11_widget_state(
           preview_target, true, "A focused playing target must preserve its native parent and geometry after resize") ||
+      !expect_x11_widget_state(
+          program_focus, true, "A focused resize must remap exactly one native restore control at its new geometry") ||
       !expect(
           program_host->width() >= program_normal_host_size.width() &&
               program_host->height() >= program_normal_host_size.height() &&
               std::abs(preview_target->width() * 9 - preview_target->height() * 16) <= 16 &&
-              program_focus->x() == program_host->width() - program_focus->width() - 6 &&
+              program_focus->x() == preview_target->width() - program_focus->width() - 6 &&
               program_focus->y() == 6,
           "Focused Program video must grow at 16:9 with its restore control pinned to the top-right")) {
+    return false;
+  }
+  if (!expect_composed_focus_control(
+          window,
+          program_focus,
+          focused_button_center_before_resize,
+          "A focused resize must clear the old native maximize glyph and paint exactly one at the new position")) {
     return false;
   }
   if (!capture_interaction_artifact(window, "playing-focused-resized.png"))
@@ -4245,8 +4293,16 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           top_bar->isVisible() && setup_row->isVisible() && log_panel->isVisible() &&
               preview_tabs->tabBar()->isVisible() && program_controls->isHidden() &&
-              program_controls_toggle->isVisible(),
+              program_controls_toggle->isVisible() && program_focus->isVisible(),
           "A real click on the high-contrast restore control should restore the normal UI")) {
+    return false;
+  }
+  if (!expect_x11_widget_state(
+          program_focus, true, "Restoring the normal UI must keep its native focus control mapped and stacked")) {
+    return false;
+  }
+  if (!expect_composed_focus_control(
+          window, program_focus, std::nullopt, "Restoring the normal UI must leave a visible maximize glyph")) {
     return false;
   }
   if (!capture_interaction_artifact(window, "playing-restored.png"))
@@ -4299,7 +4355,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         !expect_x11_widget_state(focus_case.target, true, "Each selected preview target must map inside its Qt host") ||
         !expect(
             focus_case.button->isVisible() && focus_case.button->isEnabled() &&
-                focus_case.button->x() == focus_case.host->width() - focus_case.button->width() - 6 &&
+                focus_case.button->x() == focus_case.target->width() - focus_case.button->width() - 6 &&
                 focus_case.button->y() == 6,
             "Every ready preview must expose an enabled top-right maximize control")) {
       return false;
@@ -4311,7 +4367,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
                 focus_case.button->isVisible() && focus_case.host->width() >= normal_host_size.width() &&
                 focus_case.host->height() >= normal_host_size.height() &&
                 std::abs(focus_case.target->width() * 9 - focus_case.target->height() * 16) <= 16 &&
-                focus_case.button->x() == focus_case.host->width() - focus_case.button->width() - 6 &&
+                focus_case.button->x() == focus_case.target->width() - focus_case.button->width() - 6 &&
                 focus_case.button->y() == 6,
             "Every ready Stitched/camera preview must maximize at 16:9 without displacing its restore control")) {
       return false;
@@ -7003,6 +7059,35 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const bool projection_fov_reset_clears_cache =
       expect(horizontal_fov->value() == 180.0, "Reset Camera must clear inactive per-projection FOV values");
 
+  game_id->setText("ui-projection-parameter-cache-game-a");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData("general-panini"));
+  compression->setValue(135.0);
+  top_squeeze->setValue(25.0);
+  bottom_squeeze->setValue(-30.0);
+  QApplication::processEvents();
+  game_id->setText("ui-projection-parameter-cache-game-b");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData("general-panini"));
+  QApplication::processEvents();
+  const bool projection_parameters_do_not_leak_between_games = expect(
+      compression->value() == 100.0 && top_squeeze->value() == 0.0 && bottom_squeeze->value() == 0.0,
+      "Visible projection parameters must not leak from one game into a newly created game");
+
+  compression->setValue(140.0);
+  top_squeeze->setValue(35.0);
+  bottom_squeeze->setValue(-40.0);
+  QApplication::processEvents();
+  activate(reset);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData("general-panini"));
+  QApplication::processEvents();
+  const bool projection_parameter_reset_clears_cache = expect(
+      compression->value() == 100.0 && top_squeeze->value() == 0.0 && bottom_squeeze->value() == 0.0,
+      "Reset Camera must discard the visible projection parameter cache");
+
   game_id->setText(original_game_id);
   activate(create);
   return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
@@ -7014,7 +7099,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       malformed_previous_autooptimizer_rejects_marker && unselectable_stale_state_selected &&
       unselectable_previous_matcher_is_ignored && opencv_framing_starts_clean && nona_rectilinear_clamps_fov &&
       inactive_opencv_framing_is_clean && projection_fov_does_not_leak_between_games &&
-      projection_fov_reset_clears_cache;
+      projection_fov_reset_clears_cache && projection_parameters_do_not_leak_between_games &&
+      projection_parameter_reset_clears_cache;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
