@@ -14,11 +14,27 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 
 import yaml
+
+
+PROCESS_GROUP_INTERRUPT_GRACE_SECONDS = 10.0
+PROCESS_GROUP_FINAL_GRACE_SECONDS = 1.0
+PROCESS_GROUP_KILL_WAIT_SECONDS = 2.0
+
+VIDEO_EXTENSIONS = frozenset((".mp4", ".mkv", ".m4v", ".mov", ".avi"))
+GOPRO_CHAPTER_PATTERN = re.compile(r"^G[HX][0-9]{6}\.(?:MP4|mp4)$")
+INSTA360_CHAPTER_PATTERN = re.compile(r"^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\.(?:MP4|mp4)$")
+LEFT_RIGHT_CHAPTER_PATTERN = re.compile(r"^(left|right)(?:-([0-9]+))?\.(mp4|mkv|m4v)$", re.IGNORECASE)
+CAMERA_DIRECTORY_PATTERN = re.compile(r"^cam([0-9]+)$", re.IGNORECASE)
+CALIBRATION_ASSET_PATTERN = re.compile(
+    r"^(?:.*[-_])?calibration(?:[-_].*)?\.(?:json|ya?ml)$",
+    re.IGNORECASE,
+)
 
 
 PARAMETERLESS_PROJECTIONS = (
@@ -355,26 +371,56 @@ def configure_game(
   os.replace(temporary, config_path)
 
 
-def interrupt_process(process: subprocess.Popen[str]) -> threading.Timer | None:
-  if process.poll() is not None:
-    return None
+def process_group_exists(process_group_id: int) -> bool:
   try:
-    os.killpg(process.pid, signal.SIGINT)
+    os.killpg(process_group_id, 0)
   except ProcessLookupError:
+    return False
+  except PermissionError:
+    return True
+  return True
+
+
+def signal_process_group(process_group_id: int, signal_number: int) -> bool:
+  try:
+    os.killpg(process_group_id, signal_number)
+  except ProcessLookupError:
+    return False
+  return True
+
+
+def wait_for_process_group_exit(process_group_id: int, timeout: float) -> bool:
+  deadline = time.monotonic() + timeout
+  while process_group_exists(process_group_id):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+      return False
+    time.sleep(min(0.02, remaining))
+  return True
+
+
+def interrupt_process_group(process_group_id: int) -> threading.Timer | None:
+  if not signal_process_group(process_group_id, signal.SIGINT):
     return None
 
   def force_kill_process_group() -> None:
-    if process.poll() is not None:
-      return
-    try:
-      os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-      pass
+    if process_group_exists(process_group_id):
+      signal_process_group(process_group_id, signal.SIGKILL)
 
-  force_kill = threading.Timer(10, force_kill_process_group)
+  force_kill = threading.Timer(PROCESS_GROUP_INTERRUPT_GRACE_SECONDS, force_kill_process_group)
   force_kill.daemon = True
   force_kill.start()
   return force_kill
+
+
+def cleanup_process_group(process_group_id: int) -> bool:
+  if not process_group_exists(process_group_id):
+    return True
+  signal_process_group(process_group_id, signal.SIGINT)
+  if wait_for_process_group_exit(process_group_id, PROCESS_GROUP_FINAL_GRACE_SECONDS):
+    return True
+  signal_process_group(process_group_id, signal.SIGKILL)
+  return wait_for_process_group_exit(process_group_id, PROCESS_GROUP_KILL_WAIT_SECONDS)
 
 
 def read_canvas_provenance(path: Path) -> dict[str, str]:
@@ -537,7 +583,13 @@ def run_state(
   resource_watchdog_triggered = threading.Event()
   resource_failure: list[str] = []
   process_finished = threading.Event()
-  termination_lock = threading.Lock()
+  # Python delivers external signals on the main thread at arbitrary bytecode
+  # boundaries, including while this lock is owned. Recursive acquisition keeps
+  # exception cleanup from self-deadlocking when a forwarded signal unwinds
+  # through a termination path.
+  termination_lock = threading.RLock()
+  force_kill_timers: list[threading.Timer] = []
+  external_signal_received = threading.Event()
   process = subprocess.Popen(
       command,
       cwd=args.workspace,
@@ -549,22 +601,35 @@ def run_state(
       start_new_session=True,
       bufsize=1,
   )
+  process_group_id = process.pid
+  previous_signal_handlers: dict[int, object] = {}
+
+  def forward_external_signal(signal_number: int, _frame: object) -> None:
+    external_signal_received.set()
+    signal_process_group(process_group_id, signal_number)
+    if signal_number == signal.SIGINT:
+      raise KeyboardInterrupt
+    raise SystemExit(128 + signal_number)
+
+  if threading.current_thread() is threading.main_thread():
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+      previous_signal_handlers[signal_number] = signal.getsignal(signal_number)
+      signal.signal(signal_number, forward_external_signal)
 
   def terminate_running(marker: threading.Event | None = None, failure: str = "") -> bool:
     with termination_lock:
       if process_finished.is_set():
         return False
-      if process.poll() is not None:
-        process_finished.set()
-        return False
       # Mark a timeout/resource failure only after SIGINT was actually sent.
-      # The process can exit between poll() above and killpg(); treating that
-      # ProcessLookupError window as a timeout makes successful boundary-time
-      # exits nondeterministically fail the CSV result.
-      if interrupt_process(process) is None:
-        if process.poll() is not None:
+      # A pipeline leader may already have exited while a descendant still owns
+      # stdout or GPU resources, so group existence—not process.poll()—is the
+      # authority for interruption and cleanup.
+      force_kill = interrupt_process_group(process_group_id)
+      if force_kill is None:
+        if not process_group_exists(process_group_id):
           process_finished.set()
         return False
+      force_kill_timers.append(force_kill)
       if marker is not None:
         marker.set()
       if failure:
@@ -603,7 +668,8 @@ def run_state(
     with termination_lock:
       process_finished.set()
   except BaseException:
-    terminate_running()
+    if not external_signal_received.is_set():
+      terminate_running()
     try:
       process.wait(timeout=12)
     except subprocess.TimeoutExpired:
@@ -614,12 +680,27 @@ def run_state(
       process.wait()
     raise
   finally:
+    cleaning_during_exception = sys.exc_info()[0] is not None
     with termination_lock:
       process_finished.set()
+      pending_force_kills = list(force_kill_timers)
+      for force_kill in pending_force_kills:
+        force_kill.cancel()
     if process.stdout is not None:
       process.stdout.close()
     timeout_thread.join(timeout=1)
     resource_thread.join(timeout=12)
+    for force_kill in pending_force_kills:
+      force_kill.join(timeout=1)
+    process_group_clean = cleanup_process_group(process_group_id)
+    for signal_number, previous_handler in previous_signal_handlers.items():
+      signal.signal(signal_number, previous_handler)
+    if not process_group_clean:
+      message = f"process group {process_group_id} still exists after SIGKILL cleanup"
+      if cleaning_during_exception:
+        print(f"Warning: {message}", file=sys.stderr, flush=True)
+      else:
+        raise RuntimeError(message)
   duration = time.monotonic() - started
   provenance: dict[str, str] = {}
   pto: dict[str, str] = {}
@@ -833,17 +914,223 @@ def wait_for_resource_headroom(args: argparse.Namespace) -> None:
     time.sleep(min(args.resource_check_interval, remaining))
 
 
+def is_supported_auto_video(path: Path) -> bool:
+  name = path.name
+  return bool(
+      GOPRO_CHAPTER_PATTERN.fullmatch(name)
+      or INSTA360_CHAPTER_PATTERN.fullmatch(name)
+      or LEFT_RIGHT_CHAPTER_PATTERN.fullmatch(name)
+  )
+
+
+def video_sort_key(path: Path) -> tuple[object, ...]:
+  name = path.name
+  gopro = GOPRO_CHAPTER_PATTERN.fullmatch(name)
+  if gopro:
+    return ("gopro", int(name[4:8]), int(name[2:4]), name)
+  insta360 = INSTA360_CHAPTER_PATTERN.fullmatch(name)
+  if insta360:
+    stem = path.stem.split("_")
+    return ("insta360", int(stem[1] + stem[2]), int(stem[3]), name)
+  left_right = LEFT_RIGHT_CHAPTER_PATTERN.fullmatch(name)
+  if left_right:
+    return ("left-right", left_right.group(1).lower(), int(left_right.group(2) or "1"), name.lower())
+  return ("other", name.lower())
+
+
+def auto_camera_video_sets(game_dir: Path) -> list[list[Path]]:
+  camera_dirs: list[tuple[int, Path]] = []
+  for entry in game_dir.iterdir():
+    match = CAMERA_DIRECTORY_PATTERN.fullmatch(entry.name)
+    if match and entry.is_dir() and not entry.is_symlink():
+      camera_dirs.append((int(match.group(1)), entry))
+  camera_dirs.sort(key=lambda item: item[0])
+  directory_sets: list[list[Path]] = []
+  for _, camera_dir in camera_dirs:
+    videos = sorted(
+        (path for path in camera_dir.iterdir() if path.is_file() and is_supported_auto_video(path)),
+        key=video_sort_key,
+    )
+    if videos:
+      directory_sets.append(videos)
+  # Orientation prefers any populated camN directory over root discovery.
+  if directory_sets:
+    return directory_sets
+
+  root_videos = [path for path in game_dir.iterdir() if path.is_file() and is_supported_auto_video(path)]
+  grouped: dict[tuple[str, object], list[Path]] = {}
+  for path in root_videos:
+    name = path.name
+    if GOPRO_CHAPTER_PATTERN.fullmatch(name):
+      key: tuple[str, object] = ("gopro", int(name[4:8]))
+    elif INSTA360_CHAPTER_PATTERN.fullmatch(name):
+      stem = path.stem.split("_")
+      key = ("insta360", int(stem[1] + stem[2]))
+    else:
+      match = LEFT_RIGHT_CHAPTER_PATTERN.fullmatch(name)
+      assert match is not None
+      key = ("left-right", match.group(1).lower())
+    grouped.setdefault(key, []).append(path)
+  return [sorted(grouped[key], key=video_sort_key) for key in sorted(grouped)]
+
+
+def normalized_source_video_path(source_game_dir: Path, configured_path: object) -> tuple[Path, Path]:
+  if not isinstance(configured_path, str) or not configured_path:
+    raise ValueError("configured video paths must be non-empty strings")
+  raw_path = Path(configured_path)
+  if raw_path.is_absolute():
+    try:
+      relative = raw_path.relative_to(source_game_dir)
+    except ValueError as exception:
+      raise ValueError(f"configured video path is outside the source game: {configured_path}") from exception
+  else:
+    relative = raw_path
+  if relative == Path(".") or any(part in ("", ".", "..") for part in relative.parts):
+    raise ValueError(f"configured video path must be a normalized game-relative path: {configured_path}")
+  source = source_game_dir / relative
+  if source.suffix.lower() not in VIDEO_EXTENSIONS:
+    raise ValueError(f"configured input has an unsupported video extension: {configured_path}")
+  if not source.is_file():
+    raise ValueError(f"configured input video does not exist: {configured_path}")
+  return source, relative
+
+
+def configured_video_lists(config: dict[str, object]) -> list[tuple[dict[str, object], str, list[object]]]:
+  lists: list[tuple[dict[str, object], str, list[object]]] = []
+  sections = (
+      (config.get("game"), "videos", ("left", "right")),
+      (config.get("hstream_ui"), "video_roles", ("left", "center", "right")),
+  )
+  for parent, section_name, roles in sections:
+    if parent is None:
+      continue
+    if not isinstance(parent, dict):
+      raise ValueError(f"{section_name} parent must be a map")
+    section = parent.get(section_name)
+    if section is None:
+      continue
+    if not isinstance(section, dict):
+      raise ValueError(f"{section_name} must be a map")
+    for role in roles:
+      values = section.get(role)
+      if values is None:
+        continue
+      if not isinstance(values, list):
+        raise ValueError(f"{section_name}.{role} must be a list")
+      lists.append((section, role, values))
+  return lists
+
+
+def link_readonly_input(source: Path, destination: Path) -> None:
+  destination.parent.mkdir(parents=True, exist_ok=True)
+  resolved_source = source.resolve(strict=True)
+  if destination.is_symlink():
+    if destination.resolve(strict=True) == resolved_source:
+      return
+    raise ValueError(f"isolated input destination has conflicting links: {destination}")
+  if destination.exists():
+    raise ValueError(f"isolated input destination already exists: {destination}")
+  destination.symlink_to(resolved_source)
+
+
+def configured_role_paths(config: dict[str, object], section_path: tuple[str, str], role: str) -> list[Path]:
+  parent = config.get(section_path[0])
+  if not isinstance(parent, dict):
+    return []
+  section = parent.get(section_path[1])
+  if not isinstance(section, dict):
+    return []
+  values = section.get(role)
+  if not isinstance(values, list):
+    return []
+  return [Path(value) for value in values if isinstance(value, str)]
+
+
+def validate_isolated_camera_inputs(game_dir: Path, config: dict[str, object]) -> None:
+  ui_left = configured_role_paths(config, ("hstream_ui", "video_roles"), "left")
+  ui_right = configured_role_paths(config, ("hstream_ui", "video_roles"), "right")
+  game_left = configured_role_paths(config, ("game", "videos"), "left")
+  game_right = configured_role_paths(config, ("game", "videos"), "right")
+  if ui_left or ui_right:
+    configured_left, configured_right = ui_left, ui_right
+  else:
+    configured_left, configured_right = game_left, game_right
+
+  def checked_resolved(paths: list[Path], label: str) -> set[Path]:
+    resolved: set[Path] = set()
+    for relative in paths:
+      if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"isolated {label} input is not game-relative: {relative}")
+      path = game_dir / relative
+      if path.suffix.lower() not in VIDEO_EXTENSIONS or not path.is_file():
+        raise ValueError(f"isolated {label} input is missing or unsupported: {relative}")
+      resolved.add(path.resolve(strict=True))
+    return resolved
+
+  left_sources = checked_resolved(configured_left, "left")
+  right_sources = checked_resolved(configured_right, "right")
+  if left_sources and right_sources:
+    if left_sources & right_sources:
+      raise ValueError("left and right configured input playlists must be disjoint")
+    return
+
+  auto_sets = auto_camera_video_sets(game_dir)
+  if left_sources or right_sources:
+    configured_sources = left_sources or right_sources
+    if any({path.resolve(strict=True) for path in video_set} - configured_sources for video_set in auto_sets):
+      return
+    raise ValueError("one configured camera input has no distinct Auto-discovered peer camera")
+  if len(auto_sets) < 2:
+    raise ValueError("isolated game must contain at least two discoverable camera inputs")
+  first_sources = {path.resolve(strict=True) for path in auto_sets[0]}
+  if not any({path.resolve(strict=True) for path in video_set} != first_sources for video_set in auto_sets[1:]):
+    raise ValueError("Auto-discovered camera inputs do not identify two distinct cameras")
+
+
 def create_isolated_game(source_game_dir: Path, source_config: Path) -> tuple[Path, str]:
+  source_game_dir = source_game_dir.resolve(strict=True)
   work_root = Path(tempfile.mkdtemp(prefix="hstream-stitching-matrix-work-"))
   game_id = f"{source_game_dir.name}-matrix"
   game_dir = work_root / game_id
   try:
     game_dir.mkdir()
-    shutil.copy2(source_config, game_dir / "config.yaml")
-    for name in ("left.mp4", "right.mp4", "left_calibration.json"):
-      source = source_game_dir / name
-      if source.exists():
-        (game_dir / name).symlink_to(source.resolve())
+    with source_config.open("r", encoding="utf-8") as stream:
+      loaded_config = yaml.safe_load(stream) or {}
+    if not isinstance(loaded_config, dict):
+      raise ValueError("source game config must contain a YAML map")
+
+    configured_sources: list[tuple[Path, Path]] = []
+    calibration_directories = {source_game_dir}
+    for section, role, values in configured_video_lists(loaded_config):
+      normalized_values: list[str] = []
+      for value in values:
+        source, relative = normalized_source_video_path(source_game_dir, value)
+        configured_sources.append((source, relative))
+        calibration_directories.add(source.parent)
+        normalized_values.append(relative.as_posix())
+      section[role] = normalized_values
+
+    auto_sets = auto_camera_video_sets(source_game_dir)
+    auto_sources: list[tuple[Path, Path]] = []
+    for video_set in auto_sets:
+      for source in video_set:
+        relative = source.relative_to(source_game_dir)
+        auto_sources.append((source, relative))
+        calibration_directories.add(source.parent)
+
+    for source, relative in configured_sources + auto_sources:
+      link_readonly_input(source, game_dir / relative)
+    for directory in calibration_directories:
+      for source in directory.iterdir():
+        if source.is_file() and CALIBRATION_ASSET_PATTERN.fullmatch(source.name):
+          link_readonly_input(source, game_dir / source.relative_to(source_game_dir))
+
+    config_path = game_dir / "config.yaml"
+    with config_path.open("w", encoding="utf-8") as stream:
+      yaml.safe_dump(loaded_config, stream, sort_keys=False)
+      stream.flush()
+      os.fsync(stream.fileno())
+    validate_isolated_camera_inputs(game_dir, loaded_config)
   except BaseException:
     shutil.rmtree(work_root, ignore_errors=True)
     raise
