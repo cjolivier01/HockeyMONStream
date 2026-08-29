@@ -5724,7 +5724,9 @@ bool test_output_controls(HStreamWindow* window) {
   const auto guarded_same_filesystem_fallback = [&](const QString& basename,
                                                     const char* failure_environment,
                                                     bool expect_foreign_guard,
-                                                    bool expect_foreign_log) {
+                                                    bool expect_foreign_log,
+                                                    bool force_unsupported_rename = false,
+                                                    bool force_rollback_failure = false) {
     const QString resolved_source = QDir(output_root.path()).filePath(basename + ".mkv");
     const QString resolved_log = resolved_source + ".log";
     const QString resolved_guard = resolved_log + ".hstream-pin";
@@ -5735,10 +5737,29 @@ bool test_output_controls(HStreamWindow* window) {
     QFile::remove(resolved_guard);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", resolved_source.toLocal8Bit());
     qputenv(failure_environment, "1");
+    if (QByteArray(failure_environment) == "HSTREAM_UI_TEST_RENAME_PATH_DESTINATION_REPLACEMENT")
+      qputenv("HSTREAM_UI_TEST_RENAME_PATH_SOURCE_REPLACEMENT", "1");
+    if (force_unsupported_rename)
+      qputenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", "1");
+    if (force_rollback_failure)
+      qputenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE", resolved_log.toLocal8Bit());
     activate(start);
     for (int i = 0; i < 200 && window->pipelineStateText() != "RUNNING"; ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
+    }
+    const QStringList provisional_logs_running =
+        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    QString active_provisional_guard;
+    struct stat active_provisional_guard_stat{};
+    bool active_provisional_guard_pinned = false;
+    for (const QString& provisional_log : provisional_logs_running) {
+      if (provisional_logs_before.contains(provisional_log))
+        continue;
+      active_provisional_guard = provisional_log_dir.filePath(provisional_log + ".hstream-pin");
+      active_provisional_guard_pinned =
+          ::lstat(QFile::encodeName(active_provisional_guard).constData(), &active_provisional_guard_stat) == 0;
+      break;
     }
     activate(stop);
     for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -5746,28 +5767,90 @@ bool test_output_controls(HStreamWindow* window) {
       QTest::qWait(10);
     }
     qunsetenv(failure_environment);
+    qunsetenv("HSTREAM_UI_TEST_RENAME_PATH_SOURCE_REPLACEMENT");
+    qunsetenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
+    qunsetenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
     const QStringList provisional_logs_after =
         provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
-    QString fallback_log_text;
+    bool fallback_log_retained = false;
+    bool foreign_source_retained = false;
     for (const QString& provisional_log : provisional_logs_after) {
       if (provisional_logs_before.contains(provisional_log))
         continue;
       QFile fallback_log(provisional_log_dir.filePath(provisional_log));
-      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text))
-        fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+      if (fallback_log.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QString fallback_log_text = QString::fromUtf8(fallback_log.readAll());
+        fallback_log_retained |=
+            fallback_log_text.contains(QString("archive backend resolved output: %1").arg(resolved_source)) &&
+            fallback_log_text.contains("pipeline finished");
+        foreign_source_retained |= fallback_log_text == "injected foreign provisional log before source retirement";
+      }
+    }
+    const bool source_replacement =
+        QByteArray(failure_environment) == "HSTREAM_UI_TEST_RENAME_PATH_SOURCE_REPLACEMENT" ||
+        QByteArray(failure_environment) == "HSTREAM_UI_TEST_RENAME_PATH_DESTINATION_REPLACEMENT";
+    if (source_replacement) {
+      for (const QString& provisional_guard :
+           provisional_log_dir.entryList({"*.log.hstream-pin"}, QDir::Files, QDir::Name)) {
+        QFile fallback_guard(provisional_log_dir.filePath(provisional_guard));
+        if (!fallback_guard.open(QIODevice::ReadOnly | QIODevice::Text))
+          continue;
+        const QString fallback_guard_text = QString::fromUtf8(fallback_guard.readAll());
+        fallback_log_retained |=
+            fallback_guard_text.contains(QString("archive backend resolved output: %1").arg(resolved_source));
+      }
     }
     QFile guard_file(resolved_guard);
     const bool guard_opened = guard_file.open(QIODevice::ReadOnly);
     const QByteArray guard_text = guard_opened ? guard_file.readAll() : QByteArray();
+    struct stat resolved_guard_stat{};
+    const bool trusted_resolved_guard_retained = active_provisional_guard_pinned &&
+        ::lstat(QFile::encodeName(resolved_guard).constData(), &resolved_guard_stat) == 0 &&
+        resolved_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
+        resolved_guard_stat.st_ino == active_provisional_guard_stat.st_ino;
     QFile resolved_log_file(resolved_log);
     const bool resolved_log_opened = resolved_log_file.open(QIODevice::ReadOnly);
     const QByteArray resolved_log_text = resolved_log_opened ? resolved_log_file.readAll() : QByteArray();
+    const bool cleanup_transactions_absent =
+        QDir(output_root.path())
+            .entryList({".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
+            .isEmpty();
+    struct stat retained_provisional_guard_stat{};
+    const bool trusted_source_retained = active_provisional_guard_pinned &&
+        ::lstat(QFile::encodeName(active_provisional_guard).constData(), &retained_provisional_guard_stat) == 0 &&
+        retained_provisional_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
+        retained_provisional_guard_stat.st_ino == active_provisional_guard_stat.st_ino;
+    const bool destination_replacement =
+        QByteArray(failure_environment) == "HSTREAM_UI_TEST_RENAME_PATH_DESTINATION_REPLACEMENT";
     const bool result = (expect_foreign_log ? resolved_log_text == "injected foreign resolved log after rename"
                                             : !QFileInfo::exists(resolved_log)) &&
-        fallback_log_text.contains(QString("archive backend resolved output: %1").arg(resolved_source)) &&
-        fallback_log_text.contains("pipeline finished") &&
-        (expect_foreign_guard ? guard_text == "injected foreign resolved log guard"
-                              : !QFileInfo::exists(resolved_guard));
+        (source_replacement ? (foreign_source_retained && trusted_source_retained) : fallback_log_retained) &&
+        (expect_foreign_guard
+             ? guard_text == "injected foreign resolved log guard"
+             : (destination_replacement ? trusted_resolved_guard_retained : !QFileInfo::exists(resolved_guard))) &&
+        (!force_rollback_failure || cleanup_transactions_absent);
+    if (!result) {
+      std::cerr << "same-filesystem fallback failed for " << basename.toStdString()
+                << " resolved-log-exists=" << QFileInfo::exists(resolved_log)
+                << " resolved-guard-exists=" << QFileInfo::exists(resolved_guard)
+                << " cleanup-transactions-absent=" << cleanup_transactions_absent
+                << " fallback-log-retained=" << fallback_log_retained
+                << " foreign-source-retained=" << foreign_source_retained
+                << " trusted-source-retained=" << trusted_source_retained << '\n';
+    }
+    if (source_replacement) {
+      QFile::remove(active_provisional_guard);
+      for (const QString& provisional_log : provisional_logs_after) {
+        if (provisional_logs_before.contains(provisional_log))
+          continue;
+        QFile provisional_file(provisional_log_dir.filePath(provisional_log));
+        if (provisional_file.open(QIODevice::ReadOnly) &&
+            provisional_file.readAll() == "injected foreign provisional log before source retirement") {
+          provisional_file.close();
+          QFile::remove(provisional_file.fileName());
+        }
+      }
+    }
     QFile::remove(resolved_log);
     QFile::remove(resolved_guard);
     return result;
@@ -5786,6 +5869,25 @@ bool test_output_controls(HStreamWindow* window) {
               "same-filesystem-post-rename-replacement",
               "HSTREAM_UI_TEST_ARCHIVE_RESOLVED_LOG_REPLACEMENT_AFTER_RENAME",
               false,
+              true) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-nfs-destination-replacement",
+              "HSTREAM_UI_TEST_RENAME_PATH_DESTINATION_REPLACEMENT",
+              false,
+              true,
+              true) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-nfs-unlink-failure",
+              "HSTREAM_UI_TEST_RENAME_PATH_SOURCE_UNLINK_FAILURE",
+              false,
+              false,
+              true) &&
+          guarded_same_filesystem_fallback(
+              "same-filesystem-nfs-rollback-failure",
+              "HSTREAM_UI_TEST_RENAME_PATH_SOURCE_UNLINK_FAILURE",
+              false,
+              false,
+              true,
               true),
       "Same-filesystem log publication must retain the guarded provisional log across guard, sync, and rename races");
 #endif
@@ -10048,6 +10150,98 @@ bool test_cleanup_transaction_protocol() {
     return ::lstat(QFile::encodeName(path).constData(), identity) == 0;
   };
 
+  bool unsupported_rename_fallback = true;
+  for (const QByteArray& unsupported_errno : {QByteArray("EINVAL"), QByteArray("EOPNOTSUPP"), QByteArray("ENOSYS")}) {
+    const QString unsupported_rename_dir =
+        QDir(root.path()).filePath(QString("unsupported-rename-flags-%1").arg(QString::fromLatin1(unsupported_errno)));
+    QDir().mkpath(unsupported_rename_dir);
+    const QString unsupported_rename_target = QDir(unsupported_rename_dir).filePath("completed.mp4");
+    struct stat unsupported_rename_stat{};
+    QString unsupported_rename_error;
+    const bool unsupported_rename_setup = write_file(unsupported_rename_target, "trusted NFS cleanup") &&
+        file_identity(unsupported_rename_target, &unsupported_rename_stat);
+    qputenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", unsupported_errno);
+    const bool unsupported_rename_removed = unsupported_rename_setup &&
+        hm::ui_internal::remove_owned_path_for_test(
+                                                unsupported_rename_target,
+                                                static_cast<quint64>(unsupported_rename_stat.st_dev),
+                                                static_cast<quint64>(unsupported_rename_stat.st_ino),
+                                                &unsupported_rename_error);
+    qunsetenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
+    unsupported_rename_fallback &= unsupported_rename_removed && !QFileInfo::exists(unsupported_rename_target) &&
+        !QFileInfo::exists(unsupported_rename_target + ".hstream-cleanup-pin") &&
+        cleanup_transaction(unsupported_rename_dir).isEmpty();
+    if (!unsupported_rename_removed) {
+      std::cerr << "unsupported rename fallback failed for " << unsupported_errno.constData() << ": "
+                << unsupported_rename_error.toStdString() << '\n';
+    }
+  }
+  unsupported_rename_fallback = expect(
+      unsupported_rename_fallback, "UI cleanup must atomically fall back when no-replace rename flags are unsupported");
+
+  const QString unsupported_race_dir = QDir(root.path()).filePath("unsupported-rename-source-race");
+  QDir().mkpath(unsupported_race_dir);
+  const QString unsupported_race_target = QDir(unsupported_race_dir).filePath("completed.mp4");
+  struct stat unsupported_race_stat{};
+  QString unsupported_race_error;
+  const bool unsupported_race_setup = write_file(unsupported_race_target, "trusted cleanup race source") &&
+      file_identity(unsupported_race_target, &unsupported_race_stat);
+  qputenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED", "EOPNOTSUPP");
+  qputenv("HSTREAM_UI_TEST_REPLACE_SOURCE_BEFORE_PRIVATE_RENAME_FALLBACK", "1");
+  const bool unsupported_race_removed = unsupported_race_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+                                            unsupported_race_target,
+                                            static_cast<quint64>(unsupported_race_stat.st_dev),
+                                            static_cast<quint64>(unsupported_race_stat.st_ino),
+                                            &unsupported_race_error);
+  qunsetenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
+  qunsetenv("HSTREAM_UI_TEST_REPLACE_SOURCE_BEFORE_PRIVATE_RENAME_FALLBACK");
+  QFile unsupported_race_file(unsupported_race_target);
+  QFile unsupported_race_guard(unsupported_race_target + ".hstream-cleanup-pin");
+  const bool unsupported_race_file_opened = unsupported_race_file.open(QIODevice::ReadOnly);
+  const bool unsupported_race_guard_opened = unsupported_race_guard.open(QIODevice::ReadOnly);
+  const bool unsupported_rename_race = expect(
+      unsupported_race_setup && !unsupported_race_removed && unsupported_race_file_opened &&
+          unsupported_race_file.readAll() == "injected foreign source before private rename fallback" &&
+          unsupported_race_guard_opened && unsupported_race_guard.readAll() == "trusted cleanup race source",
+      "Unsupported-flag cleanup fallback must atomically quarantine and retain a concurrent source replacement");
+
+  const QString preclose_sync_dir = QDir(root.path()).filePath("nfs-preclose-sync-failure");
+  QDir().mkpath(preclose_sync_dir);
+  const QString preclose_sync_target = QDir(preclose_sync_dir).filePath("completed.mp4");
+  struct stat preclose_sync_stat{};
+  QString preclose_sync_error;
+  const bool preclose_sync_setup = write_file(preclose_sync_target, "trusted NFS preclose recovery") &&
+      file_identity(preclose_sync_target, &preclose_sync_stat);
+  qputenv("HSTREAM_UI_TEST_FORCE_NFS_SILLY_RENAME_RETIREMENT", preclose_sync_target.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_NFS_PRECLOSE_PARENT_SYNC_FAILURE", preclose_sync_target.toLocal8Bit());
+  const bool preclose_sync_removed = preclose_sync_setup &&
+      hm::ui_internal::remove_owned_path_for_test(
+                                         preclose_sync_target,
+                                         static_cast<quint64>(preclose_sync_stat.st_dev),
+                                         static_cast<quint64>(preclose_sync_stat.st_ino),
+                                         &preclose_sync_error);
+  qunsetenv("HSTREAM_UI_TEST_FORCE_NFS_SILLY_RENAME_RETIREMENT");
+  qunsetenv("HSTREAM_UI_TEST_NFS_PRECLOSE_PARENT_SYNC_FAILURE");
+  QString preclose_reconciliation_error;
+  const bool preclose_reconciled =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(preclose_sync_dir, &preclose_reconciliation_error);
+  QFile preclose_recovered_file(preclose_sync_target);
+  const bool preclose_recovered_opened = preclose_recovered_file.open(QIODevice::ReadOnly);
+  const bool preclose_sync_recovery = expect(
+      preclose_sync_setup && !preclose_sync_removed && preclose_reconciled && preclose_recovered_opened &&
+          preclose_recovered_file.readAll() == "trusted NFS preclose recovery" &&
+          cleanup_transaction(preclose_sync_dir).isEmpty(),
+      "NFS cleanup must restore the pinned identity if durability sync fails before releasing a silly-rename pin");
+  if (!preclose_sync_recovery) {
+    std::cerr << "preclose recovery result=" << preclose_sync_removed
+              << " remove-error=" << preclose_sync_error.toStdString()
+              << " reconciled=" << preclose_reconciled
+              << " reconcile-error=" << preclose_reconciliation_error.toStdString()
+              << " recovered-open=" << preclose_recovered_opened
+              << " transaction=" << cleanup_transaction(preclose_sync_dir).toStdString() << '\n';
+  }
+
   const QString committed_dir = QDir(root.path()).filePath("committed-interruption");
   QDir().mkpath(committed_dir);
   const QString committed_target = QDir(committed_dir).filePath("committed.mp4");
@@ -10074,10 +10268,10 @@ bool test_cleanup_transaction_protocol() {
   QString committed_restart_error;
   const bool committed_restart =
       hm::ui_internal::reconcile_cleanup_directory_for_test(committed_dir, &committed_restart_error);
-  bool ok = expect(
-      committed_setup && !committed_first && committed_authenticated && committed_restart &&
-          !QFileInfo::exists(committed_target) && !QFileInfo::exists(committed_transaction),
-      "UI cleanup must finish a durable commit interrupted between fallback and guard retirement");
+  bool ok = unsupported_rename_fallback && unsupported_rename_race && preclose_sync_recovery &&
+      expect(committed_setup && !committed_first && committed_authenticated && committed_restart &&
+                 !QFileInfo::exists(committed_target) && !QFileInfo::exists(committed_transaction),
+             "UI cleanup must finish a durable commit interrupted between fallback and guard retirement");
 
   const QString pending_commit_dir = QDir(root.path()).filePath("pending-commit-publication");
   QDir().mkpath(pending_commit_dir);
