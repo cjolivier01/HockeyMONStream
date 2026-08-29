@@ -27,7 +27,7 @@ PROCESS_GROUP_FINAL_GRACE_SECONDS = 1.0
 PROCESS_GROUP_KILL_WAIT_SECONDS = 2.0
 
 VIDEO_EXTENSIONS = frozenset((".mp4", ".mkv", ".m4v", ".mov", ".avi"))
-GOPRO_CHAPTER_PATTERN = re.compile(r"^G[HX][0-9]{6}\.(?:MP4|mp4)$")
+GOPRO_CHAPTER_PATTERN = re.compile(r"^G[A-Z][0-9]{6}\.(?:MP4|mp4)$")
 INSTA360_CHAPTER_PATTERN = re.compile(r"^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\.(?:MP4|mp4)$")
 LEFT_RIGHT_CHAPTER_PATTERN = re.compile(r"^(left|right)(?:-([0-9]+))?\.(mp4|mkv|m4v)$", re.IGNORECASE)
 CAMERA_DIRECTORY_PATTERN = re.compile(r"^cam([0-9]+)$", re.IGNORECASE)
@@ -1046,6 +1046,56 @@ def configured_role_paths(config: dict[str, object], section_path: tuple[str, st
   return [Path(value) for value in values if isinstance(value, str)]
 
 
+def prepare_force_mode_camera_roles(game_dir: Path, config: dict[str, object]) -> None:
+  ui_left = configured_role_paths(config, ("hstream_ui", "video_roles"), "left")
+  ui_right = configured_role_paths(config, ("hstream_ui", "video_roles"), "right")
+  game_left = configured_role_paths(config, ("game", "videos"), "left")
+  game_right = configured_role_paths(config, ("game", "videos"), "right")
+
+  # --force-reconfigure intentionally ignores generated game.videos. Promote a
+  # complete saved pair to authoritative UI roles so the matrix launches the
+  # exact inputs it validated instead of silently falling back to Auto.
+  if not ui_left and not ui_right and (game_left or game_right):
+    ui_left, ui_right = game_left, game_right
+
+  if bool(ui_left) != bool(ui_right):
+    if not ui_left and game_left:
+      ui_left = game_left
+    if not ui_right and game_right:
+      ui_right = game_right
+
+  if bool(ui_left) != bool(ui_right):
+    auto_sets = auto_camera_video_sets(game_dir)
+    has_cam_auto = any(CAMERA_DIRECTORY_PATTERN.fullmatch(path.parent.name) for paths in auto_sets for path in paths)
+    if has_cam_auto:
+      raise ValueError(
+          "partial explicit camera roles cannot infer a side from camN Auto inputs; configure both left and right"
+      )
+    auto_by_role: dict[str, list[Path]] = {"left": [], "right": []}
+    for paths in auto_sets:
+      for path in paths:
+        match = LEFT_RIGHT_CHAPTER_PATTERN.fullmatch(path.name)
+        if match:
+          auto_by_role[match.group(1).lower()].append(path.relative_to(game_dir))
+    if not ui_left:
+      ui_left = sorted(auto_by_role["left"], key=video_sort_key)
+    if not ui_right:
+      ui_right = sorted(auto_by_role["right"], key=video_sort_key)
+
+  if bool(ui_left) != bool(ui_right):
+    raise ValueError(
+        "partial explicit camera roles could not resolve both sides; configure both left and right"
+    )
+  if ui_left and ui_right:
+    ui_config = config.setdefault("hstream_ui", {})
+    roles = ui_config.get("video_roles")
+    if not isinstance(roles, dict):
+      roles = {}
+      ui_config["video_roles"] = roles
+    roles["left"] = [path.as_posix() for path in ui_left]
+    roles["right"] = [path.as_posix() for path in ui_right]
+
+
 def validate_isolated_camera_inputs(game_dir: Path, config: dict[str, object]) -> None:
   ui_left = configured_role_paths(config, ("hstream_ui", "video_roles"), "left")
   ui_right = configured_role_paths(config, ("hstream_ui", "video_roles"), "right")
@@ -1065,6 +1115,8 @@ def validate_isolated_camera_inputs(game_dir: Path, config: dict[str, object]) -
       if path.suffix.lower() not in VIDEO_EXTENSIONS or not path.is_file():
         raise ValueError(f"isolated {label} input is missing or unsupported: {relative}")
       resolved.add(path.resolve(strict=True))
+    if len(resolved) != len(paths):
+      raise ValueError(f"isolated {label} input playlist contains duplicate files")
     return resolved
 
   left_sources = checked_resolved(configured_left, "left")
@@ -1126,6 +1178,7 @@ def create_isolated_game(source_game_dir: Path, source_config: Path) -> tuple[Pa
           link_readonly_input(source, game_dir / source.relative_to(source_game_dir))
 
     config_path = game_dir / "config.yaml"
+    prepare_force_mode_camera_roles(game_dir, loaded_config)
     with config_path.open("w", encoding="utf-8") as stream:
       yaml.safe_dump(loaded_config, stream, sort_keys=False)
       stream.flush()

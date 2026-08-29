@@ -89,6 +89,19 @@ int main() {
            invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
            .ok(),
       "projection parameter maps must reject non-canonical keys instead of silently ignoring their values");
+  YAML::Node biplane_config;
+  biplane_config["stitching"]["projection_parameters"]["biplane"] = YAML::Load("[45, 0]");
+  const auto biplane_sharp =
+      hm::stitching::read_stitch_projection_parameters(biplane_config, hm::stitching::StitchProjection::kBiplane);
+  biplane_config["stitching"]["projection_parameters"]["biplane"] = YAML::Load("[45, 1]");
+  const auto biplane_rounded =
+      hm::stitching::read_stitch_projection_parameters(biplane_config, hm::stitching::StitchProjection::kBiplane);
+  biplane_config["stitching"]["projection_parameters"]["biplane"] = YAML::Load("[45, 0.5]");
+  const auto biplane_fractional =
+      hm::stitching::read_stitch_projection_parameters(biplane_config, hm::stitching::StitchProjection::kBiplane);
+  ok &= expect(
+      biplane_sharp.ok() && biplane_rounded.ok() && !biplane_fractional.ok(),
+      "Biplane corners must accept only the exact Hugin boolean values 0 and 1");
 
   auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
   ok &= expect(

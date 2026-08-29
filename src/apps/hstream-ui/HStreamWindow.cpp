@@ -6602,7 +6602,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         (active_mapping_backend_ == "nona" ? active_run_autooptimizer_ : false);
     const bool projection_changed = saved_projection != active_projection_;
     const bool projection_parameters_changed = saved_projection_parameters != active_projection_parameters_;
-    const bool projection_framing_changed = saved_projection_framing != active_projection_framing_;
+    const bool projection_framing_changed = (saved_mapping_backend == "nona" || active_mapping_backend_ == "nona") &&
+        saved_projection_framing != active_projection_framing_;
     const bool stitch_frame_time_changed =
         !saved_stitch_frame_time_valid || saved_stitch_frame_time != active_stitch_frame_time_;
     remove_yaml_path(config, {"stitching", "stitch_frame_time"});
@@ -12299,6 +12300,8 @@ void HStreamWindow::resetCameraControls() {
   }
   if (!pipeline_running && projection_combo_) {
     projection_parameter_values_ = default_projection_parameters_;
+    projection_fov_values_.clear();
+    projection_fov_controls_projection_.clear();
     set_combo_to_data(projection_combo_, default_projection_);
     updateProjectionCompatibility();
     updateProjectionParameterControls();
@@ -12373,6 +12376,8 @@ void HStreamWindow::updatePresetDirtyState() {
     return;
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
+  const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
+      saved_projection_framing_ != stitchProjectionFraming();
   bool dirty = retry_required || saved_camera_controls_.size() != camera_defaults_.size() ||
       saved_stitch_frame_time_ != stitchFrameTime() ||
       saved_stitching_control_points_ != stitchingCalibrationControlPoints() ||
@@ -12380,7 +12385,7 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_stitch_max_output_width_ != stitchingMaxOutputWidth() || saved_run_autooptimizer_ != runAutooptimizer() ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
       saved_projection_ != stitchProjection() || saved_projection_parameters_ != projection_parameter_values_ ||
-      saved_projection_framing_ != stitchProjectionFraming();
+      projection_framing_dirty;
   if (!dirty) {
     for (const auto& [id, default_value] : camera_defaults_) {
       Q_UNUSED(default_value);
@@ -12430,6 +12435,8 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   if (projection_combo_) {
     projection_parameter_values_ = default_projection_parameters_;
+    projection_fov_values_.clear();
+    projection_fov_controls_projection_.clear();
     const bool blocked = projection_combo_->blockSignals(true);
     set_combo_to_data(projection_combo_, default_projection_);
     projection_combo_->blockSignals(blocked);
@@ -13231,7 +13238,8 @@ bool HStreamWindow::applySavedControlConfig(
       previous_projection_parameters = hm::stitching::DefaultStitchProjectionParameters(*parsed_projection);
   }
   const bool projection_parameters_changed = previous_projection_parameters != selected_projection_parameters;
-  const bool projection_framing_changed = saved_projection_framing_ != selected_projection_framing;
+  const bool projection_framing_changed = (previous_mapping_backend == "nona" || selected_mapping_backend == "nona") &&
+      saved_projection_framing_ != selected_projection_framing;
   remove_yaml_path(config, {"stitching", "stitch_frame_time"});
   remove_yaml_path(config, {"stitching", "calibration_frame_count"});
   if (stitch_frame_time != default_stitch_frame_time_) {

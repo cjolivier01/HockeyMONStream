@@ -83,7 +83,7 @@ constexpr const char* STITCHED_FILE_PATTERN = R"(stitched_output-with-audio\.(mp
  *
  * The GoPro file pattern is assumed to be of the form "GXzzxxxx.mp4" where:
  * - 'G' is the first character.
- * - The second character is either 'H' or 'X'.
+ * - The second character is an uppercase GoPro file-type code.
  * - Characters at positions 2-3 (zero-indexed) represent the chapter number.
  * - Characters at positions 4-7 represent the video number.
  *
@@ -95,7 +95,7 @@ std::pair<int, int> gopro_get_video_and_chapter(const fs::path& filename) {
   std::string name = filename.stem().string();
   // Validate the pattern assumptions.
   assert(!name.empty() && name[0] == 'G');
-  assert(name.size() >= 8 && (name[1] == 'H' || name[1] == 'X'));
+  assert(name.size() >= 8 && std::isupper(static_cast<unsigned char>(name[1])));
   // Extract video number from characters at positions 4 to 7.
   int video = std::stoi(name.substr(4, 4));
   // Extract chapter number from characters at positions 2 to 3.

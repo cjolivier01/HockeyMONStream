@@ -220,6 +220,11 @@ absl::Status ValidateStitchProjectionParameters(StitchProjection projection, con
           StitchProjectionName(projection) + "\" must be finite and between " + std::to_string(definition.minimum) +
           " and " + std::to_string(definition.maximum));
     }
+    if (std::string_view(definition.name) == "corners" && parameters[index] != 0.0 && parameters[index] != 1.0) {
+      return absl::InvalidArgumentError(
+          "stitching projection parameter corners for \"" + std::string(StitchProjectionName(projection)) +
+          "\" must be exactly 0 or 1");
+    }
   }
   return absl::OkStatus();
 }

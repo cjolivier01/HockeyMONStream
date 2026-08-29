@@ -92,13 +92,13 @@ class IsolatedGameTest(unittest.TestCase):
 
     source = self.root / "vendor-game"
     source.mkdir()
-    for name in ("GX010001.MP4", "GX020001.MP4", "GX010002.MP4"):
+    for name in ("GX010001.MP4", "GA020001.MP4", "GX010002.MP4"):
       (source / name).write_bytes(b"video")
     config = source / "config.yaml"
     config.write_text("{}\n", encoding="utf-8")
     work_root, game_id = matrix.create_isolated_game(source, config)
     self.addCleanup(lambda: matrix.remove_work_root(work_root) if work_root.exists() else None)
-    self.assertTrue((work_root / game_id / "GX020001.MP4").is_symlink())
+    self.assertTrue((work_root / game_id / "GA020001.MP4").is_symlink())
 
   def test_relative_configured_paths_and_contained_absolute_paths_are_normalized(self) -> None:
     left = self.touch(".hstream-ui/left/left-camera.mov")
@@ -124,6 +124,39 @@ class IsolatedGameTest(unittest.TestCase):
     self.assertFalse((game / ".hstream-ui").is_symlink())
     self.assertTrue((game / ".hstream-ui/left/left-camera.mov").is_symlink())
     self.assertTrue((game / ".hstream-ui/right/right-camera.avi").is_symlink())
+
+  def test_game_only_custom_paths_are_promoted_for_force_mode(self) -> None:
+    self.touch("recordings/camera-a.mov")
+    self.touch("recordings/camera-b.mov")
+    _, game = self.isolate(
+        {"game": {"videos": {"left": ["recordings/camera-a.mov"], "right": ["recordings/camera-b.mov"]}}}
+    )
+    isolated_config = yaml.safe_load((game / "config.yaml").read_text(encoding="utf-8"))
+    self.assertEqual(isolated_config["hstream_ui"]["video_roles"]["left"], ["recordings/camera-a.mov"])
+    self.assertEqual(isolated_config["hstream_ui"]["video_roles"]["right"], ["recordings/camera-b.mov"])
+
+  def test_partial_roles_resolve_only_unambiguous_root_peer(self) -> None:
+    self.touch("left-1.mp4")
+    self.touch("left-2.mp4")
+    self.touch("right-1.mp4")
+    _, game = self.isolate({"hstream_ui": {"video_roles": {"left": ["left-1.mp4", "left-2.mp4"]}}})
+    isolated_config = yaml.safe_load((game / "config.yaml").read_text(encoding="utf-8"))
+    self.assertEqual(isolated_config["hstream_ui"]["video_roles"]["right"], ["right-1.mp4"])
+
+    self.config.write_text(
+        yaml.safe_dump({"hstream_ui": {"video_roles": {"left": ["right-1.mp4"]}}}), encoding="utf-8"
+    )
+    with self.assertRaisesRegex(ValueError, "playlists must be disjoint"):
+      matrix.create_isolated_game(self.source, self.config)
+
+  def test_partial_roles_with_cam_directories_are_rejected(self) -> None:
+    self.touch("cam1/GX010123.MP4")
+    self.touch("cam2/GX010124.MP4")
+    self.config.write_text(
+        yaml.safe_dump({"hstream_ui": {"video_roles": {"left": ["cam1/GX010123.MP4"]}}}), encoding="utf-8"
+    )
+    with self.assertRaisesRegex(ValueError, "cannot infer a side from camN"):
+      matrix.create_isolated_game(self.source, self.config)
 
   def test_missing_peer_and_path_escape_are_rejected(self) -> None:
     self.touch("left.mp4")

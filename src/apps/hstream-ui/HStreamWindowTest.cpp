@@ -6702,6 +6702,7 @@ bool test_output_controls(HStreamWindow* window) {
 bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
@@ -6714,8 +6715,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* horizontal_fov = require_child<QDoubleSpinBox>(window, "projectionHorizontalFovSpin");
   auto* auto_canvas = require_child<QCheckBox>(window, "projectionAutoCanvasCheck");
   auto* auto_crop = require_child<QCheckBox>(window, "projectionAutoCropCheck");
-  if (!game_id || !create || !save || !control_point_matcher || !mapping_backend || !projection || !run_autooptimizer ||
-      !compression || !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov || !auto_canvas || !auto_crop) {
+  if (!game_id || !create || !reset || !save || !control_point_matcher || !mapping_backend || !projection ||
+      !run_autooptimizer || !compression || !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov ||
+      !auto_canvas || !auto_crop) {
     return false;
   }
   const QString original_game_id = game_id->text();
@@ -6940,6 +6942,51 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           mapping_backend->currentData().toString() == "nona" &&
           projection->currentData().toString() == "general-panini",
       "UI load must trust valid generated provenance while ignoring a previous matcher disabled in this UI");
+
+  game_id->setText("ui-opencv-framing-roundtrip-game");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
+  projection->setCurrentIndex(projection->findData("rectilinear"));
+  QApplication::processEvents();
+  const bool opencv_framing_starts_clean = expect(
+      horizontal_fov->value() == 180.0 && !save->isEnabled(),
+      "A fresh OpenCV preset must keep the inherited 180-degree framing as clean state");
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  QApplication::processEvents();
+  const bool nona_rectilinear_clamps_fov = expect(
+      horizontal_fov->value() == 179.0,
+      "NONA Rectilinear must constrain the fixed horizontal FOV to Hugin's 179-degree limit");
+  mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
+  QApplication::processEvents();
+  const bool inactive_opencv_framing_is_clean = expect(
+      !save->isEnabled(),
+      "OpenCV to NONA to OpenCV must not dirty the preset because OpenCV does not use projection framing");
+
+  game_id->setText("ui-projection-fov-cache-game-a");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData("stereographic"));
+  auto_fov->setChecked(false);
+  horizontal_fov->setValue(250.0);
+  projection->setCurrentIndex(projection->findData("rectilinear"));
+  QApplication::processEvents();
+  game_id->setText("ui-projection-fov-cache-game-b");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData("stereographic"));
+  QApplication::processEvents();
+  const bool projection_fov_does_not_leak_between_games = expect(
+      horizontal_fov->value() == 180.0, "Inactive per-projection FOV values must not leak from one game into another");
+
+  horizontal_fov->setValue(250.0);
+  projection->setCurrentIndex(projection->findData("rectilinear"));
+  activate(reset);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  projection->setCurrentIndex(projection->findData("stereographic"));
+  QApplication::processEvents();
+  const bool projection_fov_reset_clears_cache =
+      expect(horizontal_fov->value() == 180.0, "Reset Camera must clear inactive per-projection FOV values");
+
   game_id->setText(original_game_id);
   activate(create);
   return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
@@ -6949,7 +6996,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       invalid_previous_matcher_rejects_marker && invalid_previous_backend_rejects_marker &&
       invalid_previous_projection_rejects_marker && incompatible_previous_tuple_rejects_marker &&
       malformed_previous_autooptimizer_rejects_marker && unselectable_stale_state_selected &&
-      unselectable_previous_matcher_is_ignored;
+      unselectable_previous_matcher_is_ignored && opencv_framing_starts_clean && nona_rectilinear_clamps_fov &&
+      inactive_opencv_framing_is_clean && projection_fov_does_not_leak_between_games &&
+      projection_fov_reset_clears_cache;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
