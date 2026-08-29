@@ -225,6 +225,18 @@ absl::Status ValidateStitchProjectionParameters(StitchProjection projection, con
           "stitching projection parameter corners for \"" + std::string(StitchProjectionName(projection)) +
           "\" must be exactly 0 or 1");
     }
+    // The UI exposes hundredths, and every supported value at that precision
+    // round-trips through Hugin's roughly six-significant-digit PTO format.
+    // Reject finer YAML/CLI values before a generation claim can record a
+    // tuple that pano_modify will silently round to different semantics.
+    constexpr double kHundredthsScale = 100.0;
+    constexpr double kHundredthsTolerance = 1e-7;
+    const double hundredths = parameters[index] * kHundredthsScale;
+    if (std::abs(hundredths - std::round(hundredths)) > kHundredthsTolerance) {
+      return absl::InvalidArgumentError(
+          "stitching projection parameter " + std::string(definition.name) + " for \"" +
+          StitchProjectionName(projection) + "\" must use increments of 0.01");
+    }
   }
   return absl::OkStatus();
 }

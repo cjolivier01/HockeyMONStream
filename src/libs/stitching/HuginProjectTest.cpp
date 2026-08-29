@@ -682,6 +682,12 @@ int main() {
   ok &= expect(
       custom_panini_pto.find("P\"120 25 -40\"") != std::string::npos,
       "pano_modify must receive and preserve the selected General Panini values");
+  const auto unsupported_parameter_precision = hm::stitching::HuginProject::ApplyProjection(
+      custom_panini, hm::stitching::StitchProjection::kGeneralPanini, {100.123456789, 0.0, 0.0});
+  ok &= expect(
+      absl::IsInvalidArgument(unsupported_parameter_precision) &&
+          unsupported_parameter_precision.message().find("increments of 0.01") != std::string::npos,
+      "projection conversion must reject precision that pano_modify cannot preserve before invoking Hugin");
 
   std::ofstream(pano_modify_args, std::ios::trunc).close();
   for (unsigned mask = 0; mask < 8; ++mask) {

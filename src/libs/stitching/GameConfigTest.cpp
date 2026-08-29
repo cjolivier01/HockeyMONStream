@@ -102,6 +102,34 @@ int main() {
   ok &= expect(
       biplane_sharp.ok() && biplane_rounded.ok() && !biplane_fractional.ok(),
       "Biplane corners must accept only the exact Hugin boolean values 0 and 1");
+  const bool projection_parameter_precision_valid =
+      hm::stitching::ValidateStitchProjectionParameters(
+          hm::stitching::StitchProjection::kAlbersEqualAreaConic, {0.01, 60.02})
+          .ok() &&
+      hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kBiplane, {45.12, 1.0}).ok() &&
+      hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kTriplane, {60.12}).ok() &&
+      hm::stitching::ValidateStitchProjectionParameters(
+          hm::stitching::StitchProjection::kGeneralPanini, {100.12, 0.01, -0.01})
+          .ok();
+  const bool projection_parameter_precision_invalid =
+      !hm::stitching::ValidateStitchProjectionParameters(
+           hm::stitching::StitchProjection::kAlbersEqualAreaConic, {0.001, 60.0})
+           .ok() &&
+      !hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kBiplane, {45.001, 0.0})
+           .ok() &&
+      !hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kTriplane, {60.001}).ok() &&
+      !hm::stitching::ValidateStitchProjectionParameters(
+           hm::stitching::StitchProjection::kGeneralPanini, {100.001, 0.0, 0.0})
+           .ok();
+  invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["general-panini"][0] = 100.123456789;
+  const bool high_precision_yaml_rejected =
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok();
+  ok &= expect(
+      projection_parameter_precision_valid && projection_parameter_precision_invalid && high_precision_yaml_rejected,
+      "adjustable projection parameters must reject precision that Hugin cannot round-trip");
 
   auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
   ok &= expect(
