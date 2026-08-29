@@ -6,6 +6,7 @@
 
 #include "jetson-utils/cuda/cudaOverlay.h"
 #include "jetson-utils/cuda/cudaResizeRoi.h"
+#include "jetson-utils/cuda/cudaWarp.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -17,20 +18,9 @@
 
 #include <cuda_runtime.h>
 
-// OpenCV's CUDA warp path can abort in createTextureObject on large stitched
-// scoreboard inputs. Prefer the jetson-utils raw CUDA warp path for runtime.
-#if 0 && __has_include(<opencv2/cudawarping.hpp>)
-#define HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP 1
-#include <opencv2/cudawarping.hpp>
-#else
-#define HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP 0
-#include "jetson-utils/cuda/cudaWarp.h"
-#endif
-
 namespace hm {
 namespace scoreboard {
 
-#if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
 namespace {
 
 cv::Mat inversePerspectiveMatrix(const cv::Mat& perspective_matrix) {
@@ -49,7 +39,6 @@ int cvDepth(CudaPixelType pixel_type) {
 }
 
 } // namespace
-#endif
 
 /**
  * @brief Computes the Euclidean distance between two points.
@@ -256,7 +245,6 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
       return absl::InternalError(TO_STRING("Scoreboard cudaResizeROI failed: " << cudaGetErrorString(cuerr)));
     }
 
-#if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
     static const float border[] = {0, 0, 0, 0};
     assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
     cv::Mat inverse_matrix = inversePerspectiveMatrix(perspectiveMatrix_);
@@ -279,31 +267,6 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     if (cuerr != cudaSuccess) {
       return absl::InternalError(TO_STRING("Scoreboard warpPerspectiveCudaRaw failed: " << cudaGetErrorString(cuerr)));
     }
-#else
-    try {
-      cv::cuda::GpuMat gpu_mat(
-          working_image_->height(),
-          working_image_->width(),
-          cudaPixelTypeToCvType(working_image_->cuda_pixel_type()),
-          working_image_->data_raw(),
-          working_image_->pitch());
-
-      cv::cuda::GpuMat cv_warped_image(
-          warped_image_->height(),
-          warped_image_->width(),
-          cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
-          warped_image_->data_raw(),
-          warped_image_->pitch());
-      cv::cuda::warpPerspective(
-          gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-    } catch (const cv::Exception& ex) {
-      return absl::InternalError(TO_STRING("Scoreboard cv::cuda::warpPerspective failed: " << ex.what()));
-    }
-#endif
-    // cv::Mat showimg;
-    // cv_warped_image.download(showimg);
-    // cv::imshow("showimg", showimg);
-    // cv::waitKey(0);
   }
 
   assert(dest_surface.bytes_per_pixel() == sizeof(T_pixel));
@@ -342,7 +305,6 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
     warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
   }
 
-#if !HSTREAM_SCOREBOARD_USE_OPENCV_CUDA_WARP
   static const float border[] = {0, 0, 0, 0};
   assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
   cv::Mat inverse_matrix = inversePerspectiveMatrix(perspectiveMatrix_);
@@ -363,30 +325,6 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
       &border[0],
       stream);
   (void)cuErr;
-
-#else
-  cv::cuda::GpuMat gpu_mat(
-      full_image.height(),
-      full_image.width(),
-      cudaPixelTypeToCvType(full_image.cuda_pixel_type()),
-      full_image.data_raw(),
-      full_image.pitch());
-
-  cv::cuda::GpuMat cv_warped_image(
-      warped_image_->height(),
-      warped_image_->width(),
-      cudaPixelTypeToCvType(warped_image_->cuda_pixel_type()),
-      warped_image_->data_raw(),
-      warped_image_->pitch());
-
-  cv::cuda::warpPerspective(gpu_mat, cv_warped_image, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-#endif
-  // cv::Mat showimg;
-  // cv_warped_image.download(showimg);
-
-  // cv::imshow("showimg", showimg);
-  // cv::waitKey(0);
-
   cuErr = cudaOverlayPitch<T_pixel>(
       warped_image_->data(),
       warped_image_->width(),

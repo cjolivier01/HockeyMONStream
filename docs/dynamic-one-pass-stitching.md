@@ -21,6 +21,37 @@ Remove the guessed one-pass `hmstitcher` dimensions. Let the first input batch d
 5. Audit downstream components (`ds-fieldmask`, `ds-playtracker`, `hmplaycropper`, sinks) for cached dimensions or scratch allocations that assume the initial caps are final. Move any such allocations to `set_caps` or make them reallocate on caps changes.
 6. Remove the configurator one-pass fallback dimensions and update `AGENTS.md` once the dynamic path is verified.
 
+## Projection-aware calibration
+
+Fresh calibration selects `stitching.mapping_backend` and `stitching.projection` before mapping TIFF generation. With
+`nona`, Hugin optimizes the camera alignment, converts the unpublished PTO directly to the selected output projection,
+generates both camera remap sets in one mapping phase, and runs `enblend` once. The existing bounds-safety logic may
+rerender that same selected projection at a smaller scale when TIFF placement rounding exceeds the canvas; it does not
+create or consume an intermediate stitched video frame. The normal downstream rink inference therefore sees the final
+projected stitch; calibration no longer creates an ordinary panorama for a separate first rink detection or performs a
+second projection/remap/stitch stage.
+
+`nona` supports every Hugin projection exposed by the UI. The native `opencv-magsac` and
+`opencv-affine-ransac` mapping backends currently support rectilinear output only. Incompatible YAML pairs fail
+validation, while the UI disables non-rectilinear choices whenever an OpenCV backend is selected. Older OpenCV
+overrides that did not store a projection migrate to rectilinear.
+
+Parameterized Hugin projections store their values by canonical projection name under
+`stitching.projection_parameters`, so switching the UI projection does not discard another projection's tuning.
+General Panini (`f19`) exposes `Cmpr`, `Tops`, and `Bots`, defaulting to `[100, 0, 0]`. Albers equal-area conic,
+Biplane, and Triplane expose the parameter sets reported by libpano; the other Panini variants do not advertise
+adjustable parameters. The UI shows only the controls supported by the selected projection and supplies the libpano
+range, default, and behavior description on hover. Adjustable numeric values use 0.01 increments so the configured
+tuple round-trips through Hugin's PTO serialization; Biplane's `corners` switch accepts exactly `0` or `1`.
+
+Projection framing is configurable. Auto FOV asks Hugin to derive the field of view from camera coverage; otherwise
+it uses the selected fixed horizontal FOV. Auto canvas asks Hugin to recalculate projection-aware canvas dimensions;
+otherwise it retains the optimized PTO canvas. Auto crop selects Hugin's largest valid-image rectangle, removing the
+black hourglass-shaped boundary, and is scaled down when necessary so it never exceeds the original calibrated canvas
+or configured live canvas limits. The baseline intentionally uses fixed 180-degree FOV, automatic canvas, and crop
+off, so its full projection canvas can retain the rounded/black dual-camera boundary. Steady-state video remains on
+the existing GPU remap and stitch path for every framing combination.
+
 ## Validation
 
 - Build `//src/apps/pipeline-app:pipeline-app` and relevant `gst-videoprep` tests.

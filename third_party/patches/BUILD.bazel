@@ -1,1 +1,4 @@
-exports_files(["rules_cuda_sm120.patch"])
+exports_files([
+    "hm_cupano_fractional_canvas.patch",
+    "rules_cuda_sm120.patch",
+])

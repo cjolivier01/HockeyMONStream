@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -44,6 +45,136 @@ int main() {
   fs::remove_all(root);
   fs::create_directories(root);
   std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
+
+  YAML::Node projection_config;
+  projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(100);
+  projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  auto panini_parameters = hm::stitching::read_stitch_projection_parameters(
+      projection_config, hm::stitching::StitchProjection::kGeneralPanini);
+  ok &= expect(
+      panini_parameters.ok() && *panini_parameters == std::vector<double>({100.0, 0.0, 0.0}),
+      "General Panini projection parameters must parse in Hugin order");
+  YAML::Node missing_projection_config;
+  auto default_panini_parameters = hm::stitching::read_stitch_projection_parameters(
+      missing_projection_config, hm::stitching::StitchProjection::kGeneralPanini);
+  ok &= expect(
+      default_panini_parameters.ok() && *default_panini_parameters == std::vector<double>({100.0, 0.0, 0.0}),
+      "older configs must migrate to General Panini's 100,0,0 defaults");
+  YAML::Node invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["general-panini"][0] = 151;
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "out-of-range General Panini projection parameters must be rejected");
+  invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["general-panini"].remove(2);
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "General Panini projection parameters with the wrong count must be rejected");
+  invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["panini"].push_back(1);
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "fixed Panini projections must reject unsupported adjustable parameters");
+  invalid_projection_config = YAML::Node(YAML::NodeType::Map);
+  invalid_projection_config["stitching"]["projection_parameters"]["general_panini"] = YAML::Load("[100, 0, 0]");
+  ok &= expect(
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok(),
+      "projection parameter maps must reject non-canonical keys instead of silently ignoring their values");
+  YAML::Node biplane_config;
+  biplane_config["stitching"]["projection_parameters"]["biplane"] = YAML::Load("[45, 0]");
+  const auto biplane_sharp =
+      hm::stitching::read_stitch_projection_parameters(biplane_config, hm::stitching::StitchProjection::kBiplane);
+  biplane_config["stitching"]["projection_parameters"]["biplane"] = YAML::Load("[45, 1]");
+  const auto biplane_rounded =
+      hm::stitching::read_stitch_projection_parameters(biplane_config, hm::stitching::StitchProjection::kBiplane);
+  biplane_config["stitching"]["projection_parameters"]["biplane"] = YAML::Load("[45, 0.5]");
+  const auto biplane_fractional =
+      hm::stitching::read_stitch_projection_parameters(biplane_config, hm::stitching::StitchProjection::kBiplane);
+  ok &= expect(
+      biplane_sharp.ok() && biplane_rounded.ok() && !biplane_fractional.ok(),
+      "Biplane corners must accept only the exact Hugin boolean values 0 and 1");
+  const bool projection_parameter_precision_valid =
+      hm::stitching::ValidateStitchProjectionParameters(
+          hm::stitching::StitchProjection::kAlbersEqualAreaConic, {0.01, 60.02})
+          .ok() &&
+      hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kBiplane, {45.12, 1.0}).ok() &&
+      hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kTriplane, {60.12}).ok() &&
+      hm::stitching::ValidateStitchProjectionParameters(
+          hm::stitching::StitchProjection::kGeneralPanini, {100.12, 0.01, -0.01})
+          .ok();
+  const bool projection_parameter_precision_invalid =
+      !hm::stitching::ValidateStitchProjectionParameters(
+           hm::stitching::StitchProjection::kAlbersEqualAreaConic, {0.001, 60.0})
+           .ok() &&
+      !hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kBiplane, {45.001, 0.0})
+           .ok() &&
+      !hm::stitching::ValidateStitchProjectionParameters(hm::stitching::StitchProjection::kTriplane, {60.001}).ok() &&
+      !hm::stitching::ValidateStitchProjectionParameters(
+           hm::stitching::StitchProjection::kGeneralPanini, {100.001, 0.0, 0.0})
+           .ok();
+  invalid_projection_config = YAML::Clone(projection_config);
+  invalid_projection_config["stitching"]["projection_parameters"]["general-panini"][0] = 100.123456789;
+  const bool high_precision_yaml_rejected =
+      !hm::stitching::read_stitch_projection_parameters(
+           invalid_projection_config, hm::stitching::StitchProjection::kGeneralPanini)
+           .ok();
+  ok &= expect(
+      projection_parameter_precision_valid && projection_parameter_precision_invalid && high_precision_yaml_rejected,
+      "adjustable projection parameters must reject precision that Hugin cannot round-trip");
+
+  auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
+  ok &= expect(
+      default_framing.ok() && !default_framing->auto_fov && default_framing->horizontal_fov == 180.0 &&
+          default_framing->auto_canvas && !default_framing->auto_crop,
+      "older configs must default to fixed 180-degree FOV, automatic canvas, and uncropped projection bounds");
+  for (unsigned mask = 0; mask < 8; ++mask) {
+    const hm::stitching::StitchProjectionFraming expected{
+        (mask & 1U) != 0, mask & 1U ? 185.0 : 180.0, (mask & 2U) != 0, (mask & 4U) != 0};
+    YAML::Node framing_config(YAML::NodeType::Map);
+    hm::stitching::write_stitch_projection_framing(framing_config, expected);
+    const auto parsed = hm::stitching::read_stitch_projection_framing(framing_config);
+    ok &= expect(
+        parsed.ok() && *parsed == expected,
+        "every Auto FOV/Canvas/Crop checkbox permutation must round-trip with 180/185-degree values");
+  }
+  for (const YAML::Node& invalid_framing : {
+           YAML::Load("stitching: {projection_framing: invalid}"),
+           YAML::Load("stitching: {projection_framing: {unknown: true}}"),
+           YAML::Load("stitching: {projection_framing: {auto_fov: maybe}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: invalid}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: 0}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: 361}}"),
+           YAML::Load("stitching: {projection_framing: {horizontal_fov: .nan}}"),
+       }) {
+    ok &= expect(
+        !hm::stitching::read_stitch_projection_framing(invalid_framing).ok(),
+        "malformed projection framing values and unknown keys must be rejected");
+  }
+  const auto panini_zero_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kGeneralPanini, {0.0, 0.0, 0.0});
+  const auto panini_standard_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kGeneralPanini, {100.0, 0.0, 0.0});
+  const auto panini_cylindrical_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kGeneralPanini, {150.0, 0.0, 0.0});
+  const auto biplane_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kBiplane, {45.0, 0.0});
+  const auto triplane_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
+      hm::stitching::StitchProjection::kTriplane, {60.0});
+  ok &= expect(
+      panini_zero_limit.ok() && std::abs(*panini_zero_limit - 160.0) < 1e-9 &&
+          panini_standard_limit.ok() && std::abs(*panini_standard_limit - 319.9135435412871) < 1e-9 &&
+          panini_cylindrical_limit.ok() && std::abs(*panini_cylindrical_limit - 180.00763969192198) < 1e-9 &&
+          biplane_limit.ok() && *biplane_limit == 224.0 && triplane_limit.ok() && *triplane_limit == 299.0,
+      "parameterized projection FOV limits must match libpano's dynamic formulas");
 
   auto first_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(first_lock.ok(), "first game-config transaction must lock");
@@ -576,21 +707,31 @@ int main() {
   YAML::Node backend_generation(YAML::NodeType::Map);
   backend_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_generation["stitching"]["mapping_backend"] = "opencv-magsac";
+  backend_generation["stitching"]["projection"] = "rectilinear";
   backend_generation["stitching"]["run_autooptimizer"] = false;
   backend_generation["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   backend_generation["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "backend-generation-a";
+  YAML::Node legacy_backend_claim = backend_generation["hstream_ui"]["stitching_calibration"]["backend_generation"];
+  legacy_backend_claim["invalidation_id"] = "backend-generation-a";
+  legacy_backend_claim["control_point_matcher"] = "superpoint-lightglue";
+  legacy_backend_claim["mapping_backend"] = "opencv-magsac";
+  legacy_backend_claim["run_autooptimizer"] = false;
   ok &= expect(
       hm::stitching::publish_game_config(root, YAML::Dump(backend_generation) + "\n").ok(),
       "backend-generation fixture must publish");
-  const hm::stitching::StitchingBackendChoices magsac_choices{"superpoint-lightglue", "opencv-magsac", false};
-  const hm::stitching::StitchingBackendChoices affine_choices{"superpoint-lightglue", "opencv-affine-ransac", false};
+  const hm::stitching::StitchingBackendChoices magsac_choices{
+      "superpoint-lightglue", "opencv-magsac", "rectilinear", false};
+  const hm::stitching::StitchingBackendChoices affine_choices{
+      "superpoint-lightglue", "opencv-affine-ransac", "rectilinear", false};
   const absl::Status reserved =
       hm::stitching::reserve_stitching_backend_generation(root, "backend-generation-a", magsac_choices);
   auto claimed = hm::stitching::load_game_config_file(root / "config.yaml");
   ok &= expect(
       reserved.ok() && claimed.ok() && claimed->has_value() &&
+          (**claimed)["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection"].as<std::string>() ==
+              "rectilinear" &&
           hm::stitching::validate_stitching_backend_generation(**claimed, "backend-generation-a", magsac_choices).ok(),
-      "a calibration generation must reserve and validate one immutable worker backend tuple");
+      "a calibration generation must migrate, reserve, and validate one immutable worker backend tuple");
   const absl::Status conflicting_reservation =
       hm::stitching::reserve_stitching_backend_generation(root, "backend-generation-a", affine_choices);
   auto after_conflict = hm::stitching::load_game_config_file(root / "config.yaml");
@@ -601,13 +742,55 @@ int main() {
       "a competing backend tuple must not replace the generation's first reservation");
   if (after_conflict.ok() && after_conflict->has_value()) {
     YAML::Node worker_mismatch = YAML::Clone(**after_conflict);
-    worker_mismatch["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+    worker_mismatch["stitching"]["projection"] = "general-panini";
+    YAML::Node inactive_worker_framing = YAML::Clone(**after_conflict);
+    inactive_worker_framing["stitching"]["projection_framing"]["auto_crop"] = true;
+    YAML::Node inactive_claim_framing = YAML::Clone(**after_conflict);
+    inactive_claim_framing["hstream_ui"]["stitching_calibration"]["backend_generation"]
+                           ["projection_framing"]["auto_crop"] = true;
     ok &= expect(
         absl::IsAborted(
             hm::stitching::validate_stitching_backend_generation(
-                worker_mismatch, "backend-generation-a", magsac_choices)),
-        "generation validation must reject worker-visible choices that differ from the immutable claim");
+                worker_mismatch, "backend-generation-a", magsac_choices)) &&
+            hm::stitching::validate_stitching_backend_generation(
+                inactive_worker_framing, "backend-generation-a", magsac_choices)
+                .ok() &&
+            hm::stitching::validate_stitching_backend_generation(
+                inactive_claim_framing, "backend-generation-a", magsac_choices)
+                .ok(),
+        "generation validation must fence an active projection but ignore framing unused by OpenCV backends");
   }
+
+  YAML::Node parameter_generation(YAML::NodeType::Map);
+  parameter_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  parameter_generation["stitching"]["mapping_backend"] = "nona";
+  parameter_generation["stitching"]["projection"] = "general-panini";
+  parameter_generation["stitching"]["run_autooptimizer"] = true;
+  parameter_generation["stitching"]["projection_parameters"]["general-panini"].push_back(100);
+  parameter_generation["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  parameter_generation["stitching"]["projection_parameters"]["general-panini"].push_back(0);
+  parameter_generation["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  parameter_generation["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "backend-generation-b";
+  const hm::stitching::StitchingBackendChoices panini_choices{
+      "superpoint-lightglue", "nona", "general-panini", true, {100.0, 0.0, 0.0}};
+  const absl::Status parameter_reserved = hm::stitching::reserve_stitching_backend_generation_in_config(
+      parameter_generation, "backend-generation-b", panini_choices);
+  YAML::Node changed_parameters = YAML::Clone(parameter_generation);
+  changed_parameters["stitching"]["projection_parameters"]["general-panini"][0] = 120;
+  YAML::Node changed_framing = YAML::Clone(parameter_generation);
+  changed_framing["stitching"]["projection_framing"]["auto_crop"] = true;
+  ok &= expect(
+      parameter_reserved.ok() &&
+          parameter_generation["hstream_ui"]["stitching_calibration"]["backend_generation"]
+                              ["projection_framing"]["horizontal_fov"]
+                                  .as<double>() == 180.0 &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  changed_parameters, "backend-generation-b", panini_choices)) &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  changed_framing, "backend-generation-b", panini_choices)),
+      "projection parameter and framing changes must be fenced by the immutable calibration generation claim");
 
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);

@@ -36,13 +36,6 @@ constexpr double kMinimumMagsacInlierRatio = 0.5;
 constexpr double kMinimumMagsacSourceSpanRatio = 0.1;
 constexpr double kMinimumMagsacSourceAreaRatio = 0.01;
 
-std::string normalize_choice(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-    return c == '_' ? '-' : static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
-
 absl::Status validate_image(const cv::Mat& image, const char* name) {
   if (image.empty() || image.type() != CV_8UC3)
     return absl::InvalidArgumentError(std::string(name) + " image must be non-empty CV_8UC3");
@@ -383,31 +376,6 @@ absl::Status write_validity_seam(
 }
 
 } // namespace
-
-const char* MappingBackendName(MappingBackend backend) {
-  switch (backend) {
-    case MappingBackend::kNona:
-      return "nona";
-    case MappingBackend::kOpenCvMagsac:
-      return "opencv-magsac";
-    case MappingBackend::kOpenCvAffineRansac:
-      return "opencv-affine-ransac";
-  }
-  return "nona";
-}
-
-absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value) {
-  const std::string normalized = normalize_choice(value.empty() ? "opencv-magsac" : value);
-  if (normalized == "nona")
-    return MappingBackend::kNona;
-  if (normalized == "opencv-magsac" || normalized == "magsac" || normalized == "magsac++")
-    return MappingBackend::kOpenCvMagsac;
-  if (normalized == "opencv-affine-ransac" || normalized == "affine-ransac" || normalized == "ransac")
-    return MappingBackend::kOpenCvAffineRansac;
-  return absl::InvalidArgumentError(
-      "Unsupported stitching mapping backend \"" + value +
-      "\"; choose nona, opencv-magsac/MAGSAC++, or opencv-affine-ransac/RANSAC");
-}
 
 absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     const fs::path& directory,

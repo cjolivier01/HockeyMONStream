@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/HomographyMaps.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -104,6 +105,22 @@ bool seam_only_selects_valid_remaps(const std::filesystem::path& directory) {
 int main() {
   namespace fs = std::filesystem;
   bool ok = true;
+  const auto& general_panini_parameters =
+      hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kGeneralPanini);
+  ok &= expect(
+      general_panini_parameters.size() == 3 && std::string(general_panini_parameters[0].name) == "Cmpr" &&
+          general_panini_parameters[0].minimum == 0.0 && general_panini_parameters[0].maximum == 150.0 &&
+          general_panini_parameters[0].default_value == 100.0 &&
+          std::string(general_panini_parameters[1].name) == "Tops" && general_panini_parameters[1].minimum == -100.0 &&
+          general_panini_parameters[1].maximum == 100.0 && std::string(general_panini_parameters[2].name) == "Bots",
+      "General Panini metadata must match libpano's Cmpr,Tops,Bots contract");
+  ok &= expect(
+      hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kAlbersEqualAreaConic).size() == 2 &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kBiplane).size() == 2 &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kTriplane).size() == 1 &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kPanini).empty() &&
+          hm::stitching::StitchProjectionParameters(hm::stitching::StitchProjection::kEquirectangularPanini).empty(),
+      "only projections with libpano parameters must advertise adjustable controls");
   const fs::path root = fs::temp_directory_path() / ("hstream-homography-maps-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
   fs::create_directories(root);
@@ -170,6 +187,58 @@ int main() {
   ok &= expect(hm::stitching::ParseMappingBackend("RANSAC").ok(), "mapping backend parser should accept UI label");
   ok &= expect(
       !hm::stitching::ParseMappingBackend("unknown").ok(), "mapping backend parser should reject unknown choices");
+  const auto& projections = hm::stitching::SupportedStitchProjections();
+  ok &= expect(projections.size() == 22, "all Hugin projection choices must be exposed");
+  constexpr std::array<const char*, 22> expected_projection_names = {
+      "rectilinear",
+      "cylindrical",
+      "equirectangular",
+      "full-frame-fisheye",
+      "stereographic",
+      "mercator",
+      "transverse-mercator",
+      "sinusoidal",
+      "lambert-cylindrical-equal-area",
+      "lambert-azimuthal-equal-area",
+      "albers-equal-area-conic",
+      "miller-cylindrical",
+      "panini",
+      "architectural",
+      "orthographic",
+      "equisolid",
+      "equirectangular-panini",
+      "biplane",
+      "triplane",
+      "general-panini",
+      "thoby",
+      "hammer-aitoff",
+  };
+  for (size_t index = 0; index < projections.size(); ++index) {
+    const auto parsed = hm::stitching::ParseStitchProjection(projections[index].name);
+    ok &= expect(
+        parsed.ok() && *parsed == projections[index].projection &&
+            std::string(projections[index].name) == expected_projection_names[index] &&
+            projections[index].hugin_projection == static_cast<int>(index),
+        "projection names must match their explicit Hugin identifiers and round-trip");
+  }
+  ok &= expect(
+      hm::stitching::ParseStitchProjection("panini_general").ok(),
+      "projection parser should accept the General Panini alias");
+  ok &=
+      expect(!hm::stitching::ParseStitchProjection("unknown").ok(), "projection parser should reject unknown choices");
+  ok &= expect(
+      hm::stitching::ValidateMappingBackendProjection(
+          hm::stitching::MappingBackend::kNona, hm::stitching::StitchProjection::kGeneralPanini)
+          .ok(),
+      "Nona must accept General Panini");
+  ok &= expect(
+      !hm::stitching::ValidateMappingBackendProjection(
+           hm::stitching::MappingBackend::kOpenCvMagsac, hm::stitching::StitchProjection::kGeneralPanini)
+              .ok() &&
+          hm::stitching::ValidateMappingBackendProjection(
+              hm::stitching::MappingBackend::kOpenCvAffineRansac, hm::stitching::StitchProjection::kRectilinear)
+              .ok(),
+      "OpenCV mapping backends must reject non-rectilinear projections");
 
   fs::path three_point_affine_dir = root / "three-point-affine";
   fs::create_directories(three_point_affine_dir);

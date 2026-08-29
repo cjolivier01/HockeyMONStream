@@ -1428,6 +1428,7 @@ play-tracker:
   backend_choices_baseline["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
   backend_choices_baseline["stitching"]["mapping_backend"] = "magsac";
   backend_choices_baseline["stitching"]["run_autooptimizer"] = true;
+  backend_choices_baseline["stitching"]["projection"] = "planar";
   std::ofstream(backend_choices_baseline_root / "baseline.yaml") << YAML::Dump(backend_choices_baseline) << '\n';
   const fs::path backend_choices_dir = games / "backend-choices";
   fs::create_directories(backend_choices_dir);
@@ -1442,14 +1443,16 @@ play-tracker:
           (**backend_choices_private)["stitching"]["control_point_matcher"].as<std::string>() ==
               "superpoint-lightglue" &&
           (**backend_choices_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          (**backend_choices_private)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
           (**backend_choices_private)["stitching"]["run_autooptimizer"].as<bool>(),
-      "Effective stitching algorithm choices from lower config layers must be materialized into game-private config "
-      "with canonical spellings");
+      "Effective stitching algorithm/projection choices from lower config layers must be materialized into "
+      "game-private config with canonical spellings");
   const fs::path backend_omitted_baseline_root = root / "backend-omitted-baseline";
   fs::create_directories(backend_omitted_baseline_root);
   YAML::Node backend_omitted_baseline =
       bundled_baseline.ok() ? YAML::Clone(bundled_baseline->values) : YAML::Node(YAML::NodeType::Map);
   backend_omitted_baseline["stitching"].remove("mapping_backend");
+  backend_omitted_baseline["stitching"].remove("projection");
   backend_omitted_baseline["stitching"].remove("run_autooptimizer");
   std::ofstream(backend_omitted_baseline_root / "baseline.yaml") << YAML::Dump(backend_omitted_baseline) << '\n';
   const fs::path backend_omitted_dir = games / "backend-omitted";
@@ -1463,8 +1466,10 @@ play-tracker:
       backend_omitted_configured.ok() && backend_omitted_persisted.ok() && backend_omitted_private.ok() &&
           backend_omitted_private->has_value() &&
           (**backend_omitted_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          (**backend_omitted_private)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
           !(**backend_omitted_private)["stitching"]["run_autooptimizer"].as<bool>(),
-      "Missing backend keys in an older baseline must materialize the valid MAGSAC-without-autooptimizer defaults");
+      "Missing algorithm keys in an older baseline must materialize valid rectilinear "
+      "MAGSAC-without-autooptimizer defaults");
   backend_choices_baseline["stitching"]["mapping_backend"] = "affine-ransac";
   backend_choices_baseline["stitching"]["run_autooptimizer"] = false;
   std::ofstream(backend_choices_baseline_root / "baseline.yaml") << YAML::Dump(backend_choices_baseline) << '\n';
@@ -1479,8 +1484,44 @@ play-tracker:
           backend_choices_changed_private.ok() && backend_choices_changed_private->has_value() &&
           (**backend_choices_changed_private)["stitching"]["mapping_backend"].as<std::string>() ==
               "opencv-affine-ransac" &&
+          (**backend_choices_changed_private)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
           !(**backend_choices_changed_private)["stitching"]["run_autooptimizer"].as<bool>(),
-      "Generated game-private stitching algorithm choices must not mask later lower-layer config changes");
+      "Generated game-private stitching algorithm/projection choices must not mask later lower-layer config changes");
+
+  const fs::path incompatible_projection_root = root / "incompatible-projection-baseline";
+  fs::create_directories(incompatible_projection_root);
+  YAML::Node incompatible_projection_baseline = YAML::Clone(backend_choices_baseline);
+  incompatible_projection_baseline["stitching"]["mapping_backend"] = "opencv-magsac";
+  incompatible_projection_baseline["stitching"]["projection"] = "cylindrical";
+  std::ofstream(incompatible_projection_root / "baseline.yaml") << YAML::Dump(incompatible_projection_baseline) << '\n';
+  fs::create_directories(games / "incompatible-projection");
+  hm::Configurator incompatible_projection(
+      "incompatible-projection", incompatible_projection_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status incompatible_projection_configured = incompatible_projection.configure();
+  const absl::Status incompatible_projection_status = incompatible_projection_configured.ok()
+      ? incompatible_projection.persist_effective_stitching_backend_choices()
+      : incompatible_projection_configured;
+  ok &= expect(
+      absl::IsInvalidArgument(incompatible_projection_status) &&
+          std::string(incompatible_projection_status.message()).find("supports only rectilinear output") !=
+              std::string::npos,
+      "An explicitly incompatible YAML mapping backend/projection pair must fail configuration");
+
+  const fs::path nona_projection_root = root / "nona-projection-baseline";
+  fs::create_directories(nona_projection_root);
+  YAML::Node nona_projection_baseline = YAML::Clone(backend_choices_baseline);
+  nona_projection_baseline["stitching"]["mapping_backend"] = "nona";
+  nona_projection_baseline["stitching"]["projection"] = "cylindrical";
+  nona_projection_baseline["stitching"]["run_autooptimizer"] = true;
+  std::ofstream(nona_projection_root / "baseline.yaml") << YAML::Dump(nona_projection_baseline) << '\n';
+  fs::create_directories(games / "nona-projection");
+  hm::Configurator nona_projection(
+      "nona-projection", nona_projection_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status nona_projection_configured = nona_projection.configure();
+  const absl::Status nona_projection_status = nona_projection_configured.ok()
+      ? nona_projection.persist_effective_stitching_backend_choices()
+      : nona_projection_configured;
+  ok &= expect(nona_projection_status.ok(), "Nona must accept supported non-rectilinear YAML projections");
   const fs::path backend_cli_dir = games / "backend-cli";
   fs::create_directories(backend_cli_dir);
   YAML::Node backend_cli_private(YAML::NodeType::Map);
@@ -1513,7 +1554,10 @@ play-tracker:
       backend_cli_configured.ok() && backend_cli_option.ok() && backend_cli_autooptimizer.ok() &&
           backend_cli_persisted.ok() && backend_cli_generated.ok() && backend_cli_generated->has_value() &&
           (**backend_cli_generated)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+          (**backend_cli_generated)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
           (**backend_cli_generated)["stitching"]["run_autooptimizer"].as<bool>() &&
+          (**backend_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["projection"]
+                  .as<std::string>() == "rectilinear" &&
           (**backend_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"]
                   .as<std::string>() == "opencv-affine-ransac" &&
           !(**backend_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["previous_run_autooptimizer"]
@@ -1530,6 +1574,101 @@ play-tracker:
           !(**backend_cli_final)["stitching"]["run_autooptimizer"].as<bool>() &&
           !hm::get_node(**backend_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "CLI materialization must preserve and restore an existing explicit game-private stitching backend choice");
+
+  const fs::path framing_cli_dir = games / "framing-cli";
+  fs::create_directories(framing_cli_dir);
+  YAML::Node framing_cli_private(YAML::NodeType::Map);
+  framing_cli_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  framing_cli_private["stitching"]["mapping_backend"] = "opencv-magsac";
+  framing_cli_private["stitching"]["projection"] = "rectilinear";
+  framing_cli_private["stitching"]["run_autooptimizer"] = false;
+  framing_cli_private["stitching"]["projection_framing"] =
+      YAML::Load("{auto_fov: true, horizontal_fov: 185, auto_canvas: false, auto_crop: true}");
+  const absl::Status framing_cli_published =
+      hm::stitching::publish_game_config(framing_cli_dir, YAML::Dump(framing_cli_private) + "\n");
+  hm::Configurator framing_cli("framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status framing_cli_configured = framing_cli.configure();
+  const std::vector<absl::Status> framing_cli_options = {
+      framing_cli.apply_config_item("stitching.projection_framing.auto_fov", "false"),
+      framing_cli.apply_config_item("stitching.projection_framing.horizontal_fov", "180"),
+      framing_cli.apply_config_item("stitching.projection_framing.auto_canvas", "true"),
+      framing_cli.apply_config_item("stitching.projection_framing.auto_crop", "false"),
+  };
+  const absl::Status framing_cli_persisted = framing_cli.persist_effective_stitching_backend_choices();
+  auto framing_cli_generated = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
+  hm::Configurator framing_cli_reloaded(
+      "framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status framing_cli_reconfigured = framing_cli_reloaded.configure();
+  const absl::Status framing_cli_restored = framing_cli_reloaded.persist_effective_stitching_backend_choices();
+  auto framing_cli_final = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
+  const bool framing_options_ok = std::all_of(
+      framing_cli_options.begin(), framing_cli_options.end(), [](const absl::Status& status) { return status.ok(); });
+  ok &= expect(
+      framing_cli_published.ok() && framing_cli_configured.ok() && framing_options_ok && framing_cli_persisted.ok() &&
+          framing_cli_generated.ok() && framing_cli_generated->has_value() &&
+          !(**framing_cli_generated)["stitching"]["projection_framing"]["auto_fov"].as<bool>() &&
+          (**framing_cli_generated)["stitching"]["projection_framing"]["horizontal_fov"].as<double>() == 180.0 &&
+          (**framing_cli_generated)["stitching"]["projection_framing"]["auto_canvas"].as<bool>() &&
+          !(**framing_cli_generated)["stitching"]["projection_framing"]["auto_crop"].as<bool>() &&
+          (**framing_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["projection_framing"]
+                                   ["horizontal_fov"]
+                                       .as<double>() == 180.0 &&
+          (**framing_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]
+                                   ["previous_projection_framing"]["horizontal_fov"]
+                                       .as<double>() == 185.0 &&
+          framing_cli_reconfigured.ok() && framing_cli_restored.ok() && framing_cli_final.ok() &&
+          framing_cli_final->has_value() &&
+          (**framing_cli_final)["stitching"]["projection_framing"]["auto_fov"].as<bool>() &&
+          (**framing_cli_final)["stitching"]["projection_framing"]["horizontal_fov"].as<double>() == 185.0 &&
+          !(**framing_cli_final)["stitching"]["projection_framing"]["auto_canvas"].as<bool>() &&
+          (**framing_cli_final)["stitching"]["projection_framing"]["auto_crop"].as<bool>() &&
+          !hm::get_node(**framing_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "CLI projection-framing overrides must be tracked as one generated tuple and restore prior private values");
+
+  const fs::path partial_framing_cli_dir = games / "partial-framing-cli";
+  fs::create_directories(partial_framing_cli_dir);
+  YAML::Node partial_framing_private(YAML::NodeType::Map);
+  partial_framing_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  partial_framing_private["stitching"]["mapping_backend"] = "opencv-magsac";
+  partial_framing_private["stitching"]["projection"] = "rectilinear";
+  partial_framing_private["stitching"]["run_autooptimizer"] = false;
+  partial_framing_private["stitching"]["projection_framing"]["auto_crop"] = true;
+  const absl::Status partial_framing_published =
+      hm::stitching::publish_game_config(partial_framing_cli_dir, YAML::Dump(partial_framing_private) + "\n");
+  hm::Configurator partial_framing_cli(
+      "partial-framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status partial_framing_configured = partial_framing_cli.configure();
+  const absl::Status partial_framing_option =
+      partial_framing_cli.apply_config_item("stitching.projection_framing.auto_crop", "false");
+  const absl::Status partial_framing_persisted =
+      partial_framing_cli.persist_effective_stitching_backend_choices();
+  auto partial_framing_generated =
+      hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  hm::Configurator partial_framing_reloaded(
+      "partial-framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status partial_framing_reconfigured = partial_framing_reloaded.configure();
+  const absl::Status partial_framing_restored =
+      partial_framing_reloaded.persist_effective_stitching_backend_choices();
+  auto partial_framing_final =
+      hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  const auto partial_previous_framing = partial_framing_generated.ok() && partial_framing_generated->has_value()
+      ? hm::get_node(
+            **partial_framing_generated,
+            "hstream_ui.generated_stitching_backend_choices.previous_projection_framing")
+      : std::nullopt;
+  const auto restored_partial_framing = partial_framing_final.ok() && partial_framing_final->has_value()
+      ? hm::get_node(**partial_framing_final, "stitching.projection_framing")
+      : std::nullopt;
+  ok &= expect(
+      partial_framing_published.ok() && partial_framing_configured.ok() && partial_framing_option.ok() &&
+          partial_framing_persisted.ok() && partial_previous_framing.has_value() &&
+          partial_previous_framing->IsMap() && partial_previous_framing->size() == 1 &&
+          (*partial_previous_framing)["auto_crop"].as<bool>() && partial_framing_reconfigured.ok() &&
+          partial_framing_restored.ok() && restored_partial_framing.has_value() &&
+          restored_partial_framing->IsMap() && restored_partial_framing->size() == 1 &&
+          (*restored_partial_framing)["auto_crop"].as<bool>() &&
+          !hm::get_node(**partial_framing_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "Generated framing restoration must preserve a partial private map so omitted fields continue inheriting");
 
   const fs::path malformed_backend_dir = games / "malformed-backend-cli";
   fs::create_directories(malformed_backend_dir);
@@ -1726,11 +1865,14 @@ play-tracker:
   fs::create_directories(backend_partial_baseline_root);
   YAML::Node backend_partial_baseline = YAML::Clone(test_baseline);
   backend_partial_baseline["stitching"]["mapping_backend"] = "opencv-magsac";
+  backend_partial_baseline["stitching"]["projection"] = "general-panini";
   backend_partial_baseline["stitching"]["run_autooptimizer"] = true;
+  backend_partial_baseline["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[100, 0, 0]");
   std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
   const fs::path backend_partial_dir = games / "backend-partial";
   fs::create_directories(backend_partial_dir);
   YAML::Node backend_partial_private(YAML::NodeType::Map);
+  backend_partial_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_partial_private["stitching"]["mapping_backend"] = "nona";
   ok &= expect(
       hm::stitching::publish_game_config(backend_partial_dir, YAML::Dump(backend_partial_private) + "\n").ok(),
@@ -1752,11 +1894,404 @@ play-tracker:
           backend_partial_final->has_value() &&
           (**backend_partial_final)["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
           (**backend_partial_final)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**backend_partial_final)["stitching"]["projection"].as<std::string>() == "general-panini" &&
           (**backend_partial_final)["stitching"]["run_autooptimizer"].as<bool>() &&
+          (**backend_partial_final)["hstream_ui"]["generated_stitching_backend_choices"]
+                                   ["previous_control_point_matcher"]
+                                       .as<std::string>() == "superpoint-lightglue" &&
           (**backend_partial_final)["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"]
-                  .as<std::string>() == "nona",
+                  .as<std::string>() == "nona" &&
+          !hm::get_node(
+               **backend_partial_final,
+               "hstream_ui.generated_stitching_backend_choices.previous_projection")
+               .has_value() &&
+          !hm::get_node(
+               **backend_partial_final,
+               "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer")
+               .has_value(),
       "Restoring a partial private backend choice must keep the complete effective worker tuple materialized and its "
       "provenance intact");
+  backend_partial_baseline["stitching"]["projection_parameters"]["general-panini"][0] = 120;
+  std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
+  hm::Configurator backend_partial_parameter_changed(
+      "backend-partial", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status backend_partial_parameter_configured = backend_partial_parameter_changed.configure();
+  const absl::Status backend_partial_parameter_persisted =
+      backend_partial_parameter_changed.persist_effective_stitching_backend_choices();
+  auto backend_partial_parameter_final = hm::stitching::load_game_config_file(backend_partial_dir / "config.yaml");
+  ok &= expect(
+      backend_partial_parameter_configured.ok() && backend_partial_parameter_persisted.ok() &&
+          backend_partial_parameter_final.ok() && backend_partial_parameter_final->has_value() &&
+          (**backend_partial_parameter_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
+              120.0 &&
+          (**backend_partial_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]
+                                             ["projection_parameters"][0]
+                                                 .as<double>() == 120.0,
+      "Generated projection-parameter provenance must continue inheriting lower-layer General Panini changes");
+  backend_partial_baseline["stitching"]["projection"] = "cylindrical";
+  std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
+  hm::Configurator backend_partial_changed(
+      "backend-partial", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status backend_partial_changed_configured = backend_partial_changed.configure();
+  const absl::Status backend_partial_changed_persisted =
+      backend_partial_changed.persist_effective_stitching_backend_choices();
+  auto backend_partial_changed_final = hm::stitching::load_game_config_file(backend_partial_dir / "config.yaml");
+  ok &= expect(
+      backend_partial_changed_configured.ok() && backend_partial_changed_persisted.ok() &&
+          backend_partial_changed_final.ok() && backend_partial_changed_final->has_value() &&
+          (**backend_partial_changed_final)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**backend_partial_changed_final)["stitching"]["projection"].as<std::string>() == "cylindrical" &&
+          (**backend_partial_changed_final)["hstream_ui"]["generated_stitching_backend_choices"]["projection"]
+                  .as<std::string>() == "cylindrical",
+      "Restored partial private choices must continue inheriting later lower-layer projection changes");
+
+  backend_partial_baseline["stitching"]["projection"] = "general-panini";
+  std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
+  const fs::path inherited_parameter_dir = games / "inherited-projection-private-parameters";
+  fs::create_directories(inherited_parameter_dir);
+  YAML::Node inherited_parameter_private(YAML::NodeType::Map);
+  inherited_parameter_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  inherited_parameter_private["stitching"]["mapping_backend"] = "nona";
+  inherited_parameter_private["stitching"]["projection"] = "general_panini";
+  inherited_parameter_private["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[110, 5, -5]");
+  inherited_parameter_private["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
+  ok &= expect(
+      hm::stitching::publish_game_config(inherited_parameter_dir, YAML::Dump(inherited_parameter_private) + "\n").ok(),
+      "inherited projection parameter fixture must publish");
+  hm::Configurator inherited_parameter_first(
+      "inherited-projection-private-parameters",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status inherited_parameter_first_configured = inherited_parameter_first.configure();
+  const absl::Status inherited_parameter_projection_overridden =
+      inherited_parameter_first.apply_config_item("stitching.projection", "triplane");
+  const absl::Status inherited_parameter_first_persisted =
+      inherited_parameter_first.persist_effective_stitching_backend_choices();
+  auto inherited_parameter_generated = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  const bool inherited_inactive_parameters_captured = inherited_parameter_generated.ok() &&
+      inherited_parameter_generated->has_value() &&
+      (**inherited_parameter_generated)["hstream_ui"]["generated_stitching_backend_choices"]
+                                       ["previous_generated_projection_parameters"][0]
+                                           .as<double>() == 80.0;
+  absl::Status inherited_parameter_generated_published = absl::UnknownError("generated fixture was not loaded");
+  if (inherited_parameter_generated.ok() && inherited_parameter_generated->has_value()) {
+    YAML::Node& generated = **inherited_parameter_generated;
+    generated["stitching"]["projection"] = "triplane";
+    generated["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[60]");
+    generated["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[115, 5, -5]");
+    YAML::Node generated_choices = generated["hstream_ui"]["generated_stitching_backend_choices"];
+    generated_choices["projection"] = "triplane";
+    generated_choices["projection_parameters"] = YAML::Load("[60]");
+    inherited_parameter_generated_published =
+        hm::stitching::publish_game_config(inherited_parameter_dir, YAML::Dump(generated) + "\n");
+  }
+  hm::Configurator inherited_parameter_reloaded(
+      "inherited-projection-private-parameters",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status inherited_parameter_reconfigured = inherited_parameter_reloaded.configure();
+  const absl::Status inherited_parameter_restored =
+      inherited_parameter_reloaded.persist_effective_stitching_backend_choices();
+  auto inherited_parameter_final = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  hm::Configurator inherited_parameter_roundtrip(
+      "inherited-projection-private-parameters",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status inherited_parameter_roundtrip_configured = inherited_parameter_roundtrip.configure();
+  const absl::Status inherited_parameter_roundtrip_persisted =
+      inherited_parameter_roundtrip.persist_effective_stitching_backend_choices();
+  auto inherited_parameter_after_roundtrip =
+      hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  ok &= expect(
+      inherited_parameter_first_configured.ok() && inherited_parameter_projection_overridden.ok() &&
+          inherited_parameter_first_persisted.ok() && inherited_inactive_parameters_captured &&
+          inherited_parameter_generated_published.ok() && inherited_parameter_reconfigured.ok() &&
+          inherited_parameter_restored.ok() && inherited_parameter_final.ok() &&
+          inherited_parameter_final->has_value() &&
+          (**inherited_parameter_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
+              115.0 &&
+          (**inherited_parameter_final)["stitching"]["projection_parameters"]["triplane"][0].as<double>() == 80.0 &&
+          (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["projection_parameters"][0]
+                  .as<double>() == 115.0 &&
+          (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]
+                                       ["previous_projection_parameters"][0]
+                                           .as<double>() == 115.0 &&
+          (**inherited_parameter_final)["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection"]
+                  .as<std::string>() == "general_panini" &&
+          inherited_parameter_roundtrip_configured.ok() && inherited_parameter_roundtrip_persisted.ok() &&
+          inherited_parameter_after_roundtrip.ok() && inherited_parameter_after_roundtrip->has_value() &&
+          (**inherited_parameter_after_roundtrip)["stitching"]["projection_parameters"]["general-panini"][0]
+                  .as<double>() == 115.0 &&
+          !hm::get_node(**inherited_parameter_final, "stitching.projection_parameters.general_panini").has_value(),
+      "Private active and inactive parameters under canonical keys for an aliased projection scalar must survive "
+      "cross-projection generated-choice normalization and reload");
+
+  const fs::path generated_alias_dir = games / "generated-projection-alias";
+  fs::create_directories(generated_alias_dir);
+  YAML::Node generated_alias_private(YAML::NodeType::Map);
+  generated_alias_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  generated_alias_private["stitching"]["mapping_backend"] = "nona";
+  generated_alias_private["stitching"]["projection"] = "general_panini";
+  generated_alias_private["stitching"]["run_autooptimizer"] = true;
+  generated_alias_private["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[110, 5, -5]");
+  generated_alias_private["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[80]");
+  YAML::Node generated_alias_choices = generated_alias_private["hstream_ui"]["generated_stitching_backend_choices"];
+  generated_alias_choices["control_point_matcher"] = "superpoint-lightglue";
+  generated_alias_choices["mapping_backend"] = "nona";
+  generated_alias_choices["projection"] = "general-panini";
+  generated_alias_choices["run_autooptimizer"] = true;
+  generated_alias_choices["projection_parameters"] = YAML::Load("[110, 5, -5]");
+  generated_alias_choices["previous_control_point_matcher"] = "superpoint-lightglue";
+  generated_alias_choices["previous_mapping_backend"] = "nona";
+  generated_alias_choices["previous_projection"] = "triplane";
+  generated_alias_choices["previous_run_autooptimizer"] = true;
+  generated_alias_choices["previous_projection_parameters"] = YAML::Load("[80]");
+  const absl::Status generated_alias_published =
+      hm::stitching::publish_game_config(generated_alias_dir, YAML::Dump(generated_alias_private) + "\n");
+  hm::Configurator generated_alias_configurator(
+      "generated-projection-alias", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status generated_alias_configured = generated_alias_configurator.configure();
+  const absl::Status generated_alias_persisted =
+      generated_alias_configurator.persist_effective_stitching_backend_choices();
+  auto generated_alias_final = hm::stitching::load_game_config_file(generated_alias_dir / "config.yaml");
+  ok &= expect(
+      generated_alias_published.ok() && generated_alias_configured.ok() && generated_alias_persisted.ok() &&
+          generated_alias_final.ok() && generated_alias_final->has_value() &&
+          (**generated_alias_final)["stitching"]["projection"].as<std::string>() == "triplane" &&
+          (**generated_alias_final)["stitching"]["projection_parameters"]["triplane"][0].as<double>() == 80.0 &&
+          !hm::get_node(**generated_alias_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "Generated projection provenance must match canonical aliases and restore the prior projection tuple");
+
+  const fs::path generated_backend_alias_dir = games / "generated-backend-alias";
+  fs::create_directories(generated_backend_alias_dir);
+  YAML::Node generated_backend_alias_private(YAML::NodeType::Map);
+  generated_backend_alias_private["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
+  generated_backend_alias_private["stitching"]["mapping_backend"] = "MAGSAC++";
+  generated_backend_alias_private["stitching"]["projection"] = "rectilinear";
+  generated_backend_alias_private["stitching"]["run_autooptimizer"] = false;
+  generated_backend_alias_private["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[111, 1, -1]");
+  YAML::Node generated_backend_alias_choices =
+      generated_backend_alias_private["hstream_ui"]["generated_stitching_backend_choices"];
+  generated_backend_alias_choices["control_point_matcher"] = "superpoint-lightglue";
+  generated_backend_alias_choices["mapping_backend"] = "opencv-magsac";
+  generated_backend_alias_choices["projection"] = "rectilinear";
+  generated_backend_alias_choices["run_autooptimizer"] = false;
+  generated_backend_alias_choices["previous_control_point_matcher"] = "superpoint";
+  generated_backend_alias_choices["previous_mapping_backend"] = "nona";
+  generated_backend_alias_choices["previous_projection"] = "general-panini";
+  generated_backend_alias_choices["previous_run_autooptimizer"] = true;
+  generated_backend_alias_choices["previous_projection_parameters"] = YAML::Load("[111, 1, -1]");
+  const absl::Status generated_backend_alias_published = hm::stitching::publish_game_config(
+      generated_backend_alias_dir, YAML::Dump(generated_backend_alias_private) + "\n");
+  hm::Configurator generated_backend_alias_configurator(
+      "generated-backend-alias", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status generated_backend_alias_configured = generated_backend_alias_configurator.configure();
+  const absl::Status generated_backend_alias_persisted =
+      generated_backend_alias_configurator.persist_effective_stitching_backend_choices();
+  auto generated_backend_alias_final =
+      hm::stitching::load_game_config_file(generated_backend_alias_dir / "config.yaml");
+  ok &= expect(
+      generated_backend_alias_published.ok() && generated_backend_alias_configured.ok() &&
+          generated_backend_alias_persisted.ok() && generated_backend_alias_final.ok() &&
+          generated_backend_alias_final->has_value() &&
+          (**generated_backend_alias_final)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**generated_backend_alias_final)["stitching"]["projection"].as<std::string>() == "general-panini" &&
+          (**generated_backend_alias_final)["stitching"]["projection_parameters"]["general-panini"][0].as<double>() ==
+              111.0 &&
+          !hm::get_node(**generated_backend_alias_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "Generated matcher and mapping provenance must compare accepted aliases canonically before restoring the prior "
+      "tuple");
+
+  auto invalid_previous_choice_is_retained = [&](const std::string& game_name, const std::string& metadata_key) {
+    const fs::path game_dir = games / game_name;
+    fs::create_directories(game_dir);
+    YAML::Node private_config = YAML::Clone(generated_alias_private);
+    YAML::Node choices = private_config["hstream_ui"]["generated_stitching_backend_choices"];
+    choices[metadata_key] = "invalid-previous-choice";
+    if (metadata_key == "previous_projection")
+      choices.remove("previous_projection_parameters");
+    const absl::Status published = hm::stitching::publish_game_config(game_dir, YAML::Dump(private_config) + "\n");
+    hm::Configurator configurator(
+        game_name, backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const absl::Status configured = configurator.configure();
+    const absl::Status persisted = configurator.persist_effective_stitching_backend_choices();
+    auto final_config = hm::stitching::load_game_config_file(game_dir / "config.yaml");
+    if (!published.ok() || !configured.ok() || !persisted.ok() || !final_config.ok() || !final_config->has_value()) {
+      return false;
+    }
+    const YAML::Node& final = **final_config;
+    const auto retained_marker = hm::get_node(final, "hstream_ui.generated_stitching_backend_choices." + metadata_key);
+    return final["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+        final["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+        final["stitching"]["projection"].as<std::string>() == "general_panini" &&
+        final["stitching"]["projection_parameters"]["general-panini"][0].as<double>() == 110.0 &&
+        retained_marker.has_value() && retained_marker->IsScalar() &&
+        retained_marker->as<std::string>() == "invalid-previous-choice";
+  };
+  ok &= expect(
+      invalid_previous_choice_is_retained("invalid-previous-control-point-matcher", "previous_control_point_matcher") &&
+          invalid_previous_choice_is_retained("invalid-previous-mapping-backend", "previous_mapping_backend") &&
+          invalid_previous_choice_is_retained("invalid-previous-projection", "previous_projection") &&
+          invalid_previous_choice_is_retained(
+              "invalid-previous-projection-framing", "previous_projection_framing"),
+      "Any present invalid previous algorithm choice must distrust the complete generated marker without partially "
+      "restoring its other fields");
+
+  auto invalid_previous_tuple_is_retained = [&](const std::string& game_name, bool malformed_autooptimizer) {
+    const fs::path game_dir = games / game_name;
+    fs::create_directories(game_dir);
+    YAML::Node private_config = YAML::Clone(generated_alias_private);
+    YAML::Node choices = private_config["hstream_ui"]["generated_stitching_backend_choices"];
+    if (malformed_autooptimizer) {
+      choices["previous_run_autooptimizer"] = "invalid";
+    } else {
+      choices["previous_mapping_backend"] = "opencv-magsac";
+      choices["previous_projection"] = "general-panini";
+      choices["previous_run_autooptimizer"] = false;
+      choices.remove("previous_projection_parameters");
+    }
+    const std::string expected_marker = YAML::Dump(choices);
+    const absl::Status published = hm::stitching::publish_game_config(game_dir, YAML::Dump(private_config) + "\n");
+    hm::Configurator configurator(
+        game_name, backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const absl::Status configured = configurator.configure();
+    const absl::Status persisted = configurator.persist_effective_stitching_backend_choices();
+    auto final_config = hm::stitching::load_game_config_file(game_dir / "config.yaml");
+    if (!published.ok() || !configured.ok() || !persisted.ok() || !final_config.ok() || !final_config->has_value()) {
+      return false;
+    }
+    const YAML::Node& final = **final_config;
+    const auto retained_marker = hm::get_node(final, "hstream_ui.generated_stitching_backend_choices");
+    return final["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+        final["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+        final["stitching"]["projection"].as<std::string>() == "general_panini" &&
+        final["stitching"]["run_autooptimizer"].as<bool>() &&
+        final["stitching"]["projection_parameters"]["general-panini"][0].as<double>() == 110.0 &&
+        retained_marker.has_value() && YAML::Dump(*retained_marker) == expected_marker;
+  };
+  ok &= expect(
+      invalid_previous_tuple_is_retained("incompatible-previous-tuple", false) &&
+          invalid_previous_tuple_is_retained("malformed-previous-autooptimizer", true),
+      "Malformed or backend-incompatible previous optimizer metadata must retain the complete generated marker and "
+      "current worker tuple");
+
+  const fs::path generated_alias_roundtrip_dir = games / "generated-projection-alias-roundtrip";
+  fs::create_directories(generated_alias_roundtrip_dir);
+  const absl::Status generated_alias_roundtrip_published =
+      hm::stitching::publish_game_config(generated_alias_roundtrip_dir, YAML::Dump(generated_alias_private) + "\n");
+  hm::Configurator generated_alias_roundtrip_override(
+      "generated-projection-alias-roundtrip",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status generated_alias_roundtrip_configured = generated_alias_roundtrip_override.configure();
+  const absl::Status generated_alias_roundtrip_option =
+      generated_alias_roundtrip_override.apply_config_item("stitching.projection", "general-panini");
+  const absl::Status generated_alias_roundtrip_persisted =
+      generated_alias_roundtrip_override.persist_effective_stitching_backend_choices();
+  auto generated_alias_roundtrip_intermediate =
+      hm::stitching::load_game_config_file(generated_alias_roundtrip_dir / "config.yaml");
+  const bool generated_alias_previous_tuple_retained = generated_alias_roundtrip_intermediate.ok() &&
+      generated_alias_roundtrip_intermediate->has_value() &&
+      (**generated_alias_roundtrip_intermediate)["hstream_ui"]["generated_stitching_backend_choices"]
+                                                ["previous_projection"]
+                                                    .as<std::string>() == "triplane" &&
+      (**generated_alias_roundtrip_intermediate)["hstream_ui"]["generated_stitching_backend_choices"]
+                                                ["previous_projection_parameters"][0]
+                                                    .as<double>() == 80.0;
+  hm::Configurator generated_alias_roundtrip_reloaded(
+      "generated-projection-alias-roundtrip",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status generated_alias_roundtrip_reconfigured = generated_alias_roundtrip_reloaded.configure();
+  const absl::Status generated_alias_roundtrip_restored =
+      generated_alias_roundtrip_reloaded.persist_effective_stitching_backend_choices();
+  auto generated_alias_roundtrip_final =
+      hm::stitching::load_game_config_file(generated_alias_roundtrip_dir / "config.yaml");
+  ok &= expect(
+      generated_alias_roundtrip_published.ok() && generated_alias_roundtrip_configured.ok() &&
+          generated_alias_roundtrip_option.ok() && generated_alias_roundtrip_persisted.ok() &&
+          generated_alias_previous_tuple_retained && generated_alias_roundtrip_reconfigured.ok() &&
+          generated_alias_roundtrip_restored.ok() && generated_alias_roundtrip_final.ok() &&
+          generated_alias_roundtrip_final->has_value() &&
+          (**generated_alias_roundtrip_final)["stitching"]["projection"].as<std::string>() == "triplane" &&
+          (**generated_alias_roundtrip_final)["stitching"]["projection_parameters"]["triplane"][0].as<double>() ==
+              80.0 &&
+          !hm::get_node(**generated_alias_roundtrip_final, "hstream_ui.generated_stitching_backend_choices")
+               .has_value(),
+      "Canonical generated aliases must retain the original previous tuple through another override, persist, and "
+      "reload cycle");
+
+  const fs::path malformed_displaced_parameters_dir = games / "malformed-displaced-projection-parameters";
+  fs::create_directories(malformed_displaced_parameters_dir);
+  YAML::Node malformed_displaced_parameters_private = YAML::Clone(generated_alias_private);
+  malformed_displaced_parameters_private["stitching"]["projection"] = "general-panini";
+  YAML::Node malformed_choices =
+      malformed_displaced_parameters_private["hstream_ui"]["generated_stitching_backend_choices"];
+  malformed_choices["previous_generated_projection_parameters"] = "invalid";
+  const absl::Status malformed_displaced_parameters_published = hm::stitching::publish_game_config(
+      malformed_displaced_parameters_dir, YAML::Dump(malformed_displaced_parameters_private) + "\n");
+  hm::Configurator malformed_displaced_parameters_configurator(
+      "malformed-displaced-projection-parameters",
+      backend_partial_baseline_root.string(),
+      hm::Configurator::kUseConfigFileGpu);
+  const absl::Status malformed_displaced_parameters_configured =
+      malformed_displaced_parameters_configurator.configure();
+  const absl::Status malformed_displaced_parameters_persisted =
+      malformed_displaced_parameters_configurator.persist_effective_stitching_backend_choices();
+  auto malformed_displaced_parameters_final =
+      hm::stitching::load_game_config_file(malformed_displaced_parameters_dir / "config.yaml");
+  ok &= expect(
+      malformed_displaced_parameters_published.ok() && malformed_displaced_parameters_configured.ok() &&
+          malformed_displaced_parameters_persisted.ok() && malformed_displaced_parameters_final.ok() &&
+          malformed_displaced_parameters_final->has_value() &&
+          (**malformed_displaced_parameters_final)["stitching"]["projection"].as<std::string>() == "general-panini" &&
+          (**malformed_displaced_parameters_final)["stitching"]["projection_parameters"]["general-panini"][0]
+                  .as<double>() == 110.0 &&
+          (**malformed_displaced_parameters_final)["hstream_ui"]["generated_stitching_backend_choices"]
+                                                  ["previous_generated_projection_parameters"]
+                                                      .as<std::string>() == "invalid",
+      "Malformed displaced-parameter provenance must be treated as untrusted current user intent");
+
+  const fs::path legacy_opencv_dir = games / "legacy-opencv-no-projection";
+  fs::create_directories(legacy_opencv_dir);
+  YAML::Node legacy_opencv_private(YAML::NodeType::Map);
+  legacy_opencv_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  legacy_opencv_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+  ok &= expect(
+      hm::stitching::publish_game_config(legacy_opencv_dir, YAML::Dump(legacy_opencv_private) + "\n").ok(),
+      "legacy OpenCV projection migration fixture must publish");
+  hm::Configurator legacy_opencv_first(
+      "legacy-opencv-no-projection", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status legacy_opencv_first_configured = legacy_opencv_first.configure();
+  const absl::Status legacy_opencv_first_persisted = legacy_opencv_first.persist_effective_stitching_backend_choices();
+  auto legacy_opencv_after_first = hm::stitching::load_game_config_file(legacy_opencv_dir / "config.yaml");
+  hm::Configurator legacy_opencv_second(
+      "legacy-opencv-no-projection", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status legacy_opencv_second_configured = legacy_opencv_second.configure();
+  const absl::Status legacy_opencv_second_persisted =
+      legacy_opencv_second.persist_effective_stitching_backend_choices();
+  auto legacy_opencv_after_second = hm::stitching::load_game_config_file(legacy_opencv_dir / "config.yaml");
+  hm::Configurator legacy_opencv_third(
+      "legacy-opencv-no-projection", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const absl::Status legacy_opencv_third_configured = legacy_opencv_third.configure();
+  const absl::Status legacy_opencv_third_persisted = legacy_opencv_third.persist_effective_stitching_backend_choices();
+  auto legacy_opencv_after_third = hm::stitching::load_game_config_file(legacy_opencv_dir / "config.yaml");
+  ok &= expect(
+      legacy_opencv_first_configured.ok() && legacy_opencv_first_persisted.ok() && legacy_opencv_after_first.ok() &&
+          legacy_opencv_after_first->has_value() &&
+          (**legacy_opencv_after_first)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
+          legacy_opencv_second_configured.ok() && legacy_opencv_second_persisted.ok() &&
+          legacy_opencv_after_second.ok() && legacy_opencv_after_second->has_value() &&
+          (**legacy_opencv_after_second)["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
+          (**legacy_opencv_after_second)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
+          hm::get_node(**legacy_opencv_after_second, "hstream_ui.generated_stitching_backend_choices").has_value() &&
+          legacy_opencv_third_configured.ok() && legacy_opencv_third_persisted.ok() && legacy_opencv_after_third.ok() &&
+          legacy_opencv_after_third->has_value() &&
+          (**legacy_opencv_after_third)["stitching"]["mapping_backend"].as<std::string>() == "opencv-affine-ransac" &&
+          (**legacy_opencv_after_third)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
+          hm::get_node(**legacy_opencv_after_third, "hstream_ui.generated_stitching_backend_choices").has_value(),
+      "Legacy OpenCV configs without projection must keep a stable rectilinear worker tuple and provenance for "
+      "inherited choices");
 
   YAML::Node source_uri_spellings(YAML::NodeType::Map);
   source_uri_spellings["source0"]["enable"] = 1;
@@ -3570,6 +4105,10 @@ play-tracker:
   runtime_claim_config["pipeline"]["application"]["complete-configuration"] = "1";
   runtime_claim_config["pipeline"]["hmstitcher"]["enable"] = "1";
   runtime_claim_config["pipeline"]["hmstitcher"]["one-pass-mode"] = "1";
+  runtime_claim_config["stitching"]["mapping_backend"] = "nona";
+  runtime_claim_config["stitching"]["projection"] = "general-panini";
+  runtime_claim_config["stitching"]["run_autooptimizer"] = true;
+  runtime_claim_config["stitching"]["projection_parameters"]["general-panini"] = YAML::Load("[120, 15, -20]");
   runtime_claim_config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
   runtime_claim_config["hstream_ui"]["stitching_calibration"]["frame_count"] = 4;
   runtime_claim_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
@@ -3588,7 +4127,6 @@ play-tracker:
       /*clean_stitching_artifacts=*/false,
       /*clean_stitching_from_control_points=*/false,
       /*clean_expected_invalidation_id=*/"runtime-claim-a");
-  (void)runtime_claim_status;
   const absl::Status runtime_peer_claim_status = runtime_claim_peer.complete_configuration(
       /*force=*/false,
       /*clean_stitching_artifacts=*/false,
@@ -3597,15 +4135,20 @@ play-tracker:
   const YAML::Node claimed_runtime_config = YAML::LoadFile((runtime_claim_dir / "config.yaml").string());
   const YAML::Node claimed_runtime_calibration = claimed_runtime_config["hstream_ui"]["stitching_calibration"];
   ok &= expect(
-      runtime_claim_configurator.stitching_calibration_required() &&
+      runtime_claim_status.code() != absl::StatusCode::kAborted &&
+          runtime_claim_configurator.stitching_calibration_required() &&
           runtime_claim_configurator.active_stitching_invalidation_id() == "runtime-claim-a" &&
           runtime_peer_claim_status.code() != absl::StatusCode::kAborted &&
           runtime_claim_peer.active_stitching_invalidation_id() == "runtime-claim-a" &&
           claimed_runtime_calibration["status"].as<std::string>() == "pending" &&
           claimed_runtime_calibration["stale_from"].as<std::string>() == "input" &&
           claimed_runtime_calibration["artifacts_invalidated"].as<bool>() &&
+          claimed_runtime_calibration["backend_generation"]["projection_parameters"][0].as<double>() == 120.0 &&
+          claimed_runtime_calibration["backend_generation"]["projection_parameters"][1].as<double>() == 15.0 &&
+          claimed_runtime_calibration["backend_generation"]["projection_parameters"][2].as<double>() == -20.0 &&
           claimed_runtime_calibration["invalidation_id"].as<std::string>() == "runtime-claim-a",
-      "runtime-discovered missing mappings must share the reserved owner before Hugin publication can begin");
+      "runtime-discovered missing mappings with custom projection parameters must share the reserved owner before "
+      "Hugin publication can begin");
 
   const fs::path superseded_complete_dir = games / "superseded-complete";
   fs::create_directories(superseded_complete_dir);

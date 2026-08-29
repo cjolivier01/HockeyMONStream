@@ -71,19 +71,12 @@ def _detect_opencv(ctx, root):
                 "version": version,
                 "include_dir": include_dir,
                 "lib_dir_rel": lib_dir_rel,
-                "has_cudawarping": _path_exists(ctx, include_dir + "/opencv2/cudawarping.hpp"),
-                "has_cudawarping_lib": _has_shared_lib(
-                    ctx,
-                    [root + "/" + lib_dir_rel],
-                    "opencv_cudawarping",
-                ),
             }
     return None
 
 def _build_file_content(
         opencv_version,
         use_conda,
-        has_cudawarping,
         lib_dir = "lib",
         soname_suffix = None):
     libs = [
@@ -95,8 +88,6 @@ def _build_file_content(
         "libopencv_video.so",
         "libopencv_videoio.so",
     ]
-    if has_cudawarping:
-        libs.append("libopencv_cudawarping.so")
 
     # Use cc_import for both conda and system OpenCV so the final link uses the
     # exact library directory detected above. Raw `-Llib -l:...` linkopts are
@@ -172,9 +163,6 @@ def _opencv_configure_impl(ctx):
     opencv_version = chosen["version"]
     use_conda = (chosen_kind == "conda")
 
-    # Only advertise cudawarping if both the header and a shared library exist.
-    has_cudawarping = chosen["has_cudawarping"] and chosen["has_cudawarping_lib"]
-
     # Keep the repository small: only expose the OpenCV include tree and lib dir.
     ctx.symlink(chosen["root"] + "/include/" + opencv_version, opencv_version)
 
@@ -188,7 +176,6 @@ def _opencv_configure_impl(ctx):
         _build_file_content(
             opencv_version,
             use_conda,
-            has_cudawarping,
             lib_dir = "lib",
             # System installs can carry multiple OpenCV ABIs side-by-side.
             # Prefer the unversioned linker symlinks there so headers and libs stay aligned.

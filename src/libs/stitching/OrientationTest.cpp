@@ -46,7 +46,7 @@ int main() {
   ok &= expect(created != nullptr, "temporary directory must be created");
   if (created != nullptr) {
     const fs::path root(created);
-    touch(root / "cam10" / "GX020123.MP4");
+    touch(root / "cam10" / "GA020123.MP4");
     touch(root / "cam10" / "GX010123.MP4");
     touch(root / "cam2" / "VID_20260102_030405_002.mp4");
     touch(root / "cam2" / "VID_20260102_030405_001.mp4");
@@ -60,6 +60,9 @@ int main() {
       ok &= expect(
           fs::path(videos->at("cam10").at(1)).filename() == "GX010123.MP4",
           "GoPro chapters must sort by chapter number");
+      ok &= expect(
+          fs::path(videos->at("cam10").at(2)).filename() == "GA020123.MP4",
+          "GoPro file-type codes accepted by discovery must also be parsed");
     }
     std::error_code error;
     fs::remove_all(root, error);

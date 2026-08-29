@@ -42,3 +42,13 @@ exports_files([
     "remove_deb_dependencies.py",
     "test_hstream_ui_e2e.sh",
 ])
+
+py_test(
+    name = "run_stitching_calibration_matrix_test",
+    size = "small",
+    srcs = [
+        "run_stitching_calibration_matrix.py",
+        "run_stitching_calibration_matrix_test.py",
+    ],
+    main = "run_stitching_calibration_matrix_test.py",
+)

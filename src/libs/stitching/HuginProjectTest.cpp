@@ -287,7 +287,10 @@ int main() {
   ok &= expect(canvas.ok() && canvas->first == 12092 && canvas->second == 9267, "PTO canvas dimensions must parse");
   auto projection = hm::stitching::HuginProject::ParseProjection(base);
   ok &= expect(projection.ok() && *projection == 2, "PTO panorama projection must parse");
+  auto horizontal_fov = hm::stitching::HuginProject::ParseHorizontalFov(base);
+  ok &= expect(horizontal_fov.ok() && *horizontal_fov == 360.0, "PTO panorama horizontal FOV must parse");
   ok &= expect(!hm::stitching::HuginProject::ParseProjection("p w12 h6\n").ok(), "missing projection must fail");
+  ok &= expect(!hm::stitching::HuginProject::ParseHorizontalFov("p f2 w12 h6\n").ok(), "missing FOV must fail");
   ok &= expect(!hm::stitching::HuginProject::ParseCanvasSize("p f2 w12 v360\n").ok(), "missing height must fail");
   const std::string pose_project =
       "i w5312 h2988 f0 r-1.25e-2 p2.5 y-43.75 Tpy0 n\"left.png\"\n"
@@ -312,6 +315,7 @@ int main() {
 
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / ("hstream-hugin-test-" + std::to_string(::getpid()));
+  fs::remove_all(root);
   fs::create_directories(root / "game");
   ok &= expect(
       cv::imwrite((root / "game" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(1, 2, 3))),
@@ -328,6 +332,7 @@ int main() {
   const fs::path nona = root / "nona";
   const fs::path nona_invocations = root / "nona.invocations";
   const fs::path enblend = root / "enblend";
+  const fs::path enblend_invocations = root / "enblend.invocations";
   const fs::path fixtures = root / "fixtures";
   const fs::path rounding_overflow_fixtures = root / "rounding-overflow-fixtures";
   fs::create_directories(fixtures);
@@ -412,7 +417,7 @@ int main() {
           pto_gen,
           "printf '%s\\n' \"$*\" > '" + pto_gen_args.string() +
               "'\n"
-              "printf '%s\\n' '# hugin project file' 'p f2 w100 h50 v180' '# control points' "
+              "printf '%s\\n' '# hugin project file' 'p f2 w100 h50 v180 n\"TIFF_m c:LZW r:CROP\"' '# control points' "
               "'#hugin_optimizeReferenceImage 0' > hm_project.pto\n"),
       "fake pto_gen must be created");
   ok &= expect(
@@ -434,15 +439,44 @@ int main() {
   ok &= expect(
       write_tool(
           pano_modify,
-          "args=\"$*\"; canvas=; output=; input=\n"
-          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --canvas=*) canvas=${1#--canvas=} ;; "
+          "args=\"$*\"; projection=; parameters=; fov=; canvas=; crop=0; output=; input=\n"
+          "while [ \"$#\" -gt 0 ]; do case \"$1\" in --projection=*) projection=${1#*=} ;; "
+          "--projection-parameter=*) parameters=${1#*=} ;; --canvas=*) canvas=${1#--canvas=} ;; "
+          "--fov=*) fov=${1#*=} ;; --crop=AUTO) crop=1 ;; --crop=0,100,0,100%) crop=0 ;; "
+          "--crop=*) exit 93 ;; --output=*) output=${1#*=} ;; "
           "-o) shift; output=$1 ;; *) input=$1 ;; esac; shift; done\n"
-          "test -n \"$canvas\"; test \"$output\" = .autooptimiser_out.resize.pto; "
           "test \"$input\" = autooptimiser_out.pto\n"
-          "width=${canvas%x*}; height=${canvas#*x}\n"
-          "awk -v width=\"$width\" -v height=\"$height\" "
+          "if test -n \"${HM_TEST_PANO_FOV_CLAMP:-}\" && test \"$fov\" != AUTO; then "
+          "fov=$HM_TEST_PANO_FOV_CLAMP; fi\n"
+          "if test \"$projection\" = 19; then\n"
+          "  test -n \"$fov\"\n"
+          "  if test -n \"${HM_TEST_PANINI_PARAMETERS:-}\"; then parameters=$HM_TEST_PANINI_PARAMETERS; fi\n"
+          "  test -n \"$parameters\"\n"
+          "  if test \"$canvas\" = AUTO; then width=200; height=100; elif test -z \"$canvas\"; then "
+          "width=62; height=31; else "
+          "case \"$canvas\" in *%) ;; *) exit 92 ;; esac; width=62; height=31; fi\n"
+          "  awk -v parameters=\"$parameters\" -v fov=\"$fov\" -v width=$width -v height=$height -v crop=$crop '/^p / { "
+          "sub(/f[0-9]+/, \"f19\"); sub(/w[0-9]+/, \"w\" width); sub(/h[0-9]+/, \"h\" height); "
+          "if (fov != \"AUTO\") sub(/v[-+0-9.eE]+/, \"v\" fov); "
+          "if (crop) $0 = $0 \" S0,\" width \",0,\" height; $0 = $0 \" P\\\"\" parameters \"\\\"\" } { print }' "
+          "\"$input\" > \"$output\"\n"
+          "elif test -n \"$projection\"; then\n"
+          "  test -n \"$fov\"\n"
+          "  if test \"$canvas\" = AUTO; then width=100000; height=50000; elif test -z \"$canvas\"; then "
+          "width=62; height=31; else "
+          "case \"$canvas\" in *x*) width=${canvas%x*}; height=${canvas#*x} ;; *) exit 92 ;; esac; fi\n"
+          "  awk -v projection=\"$projection\" -v fov=\"$fov\" -v width=$width -v height=$height -v crop=$crop '/^p / { "
+          "sub(/f[0-9]+/, \"f\" projection); sub(/w[0-9]+/, \"w\" width); sub(/h[0-9]+/, \"h\" height); "
+          "if (fov != \"AUTO\") sub(/v[-+0-9.eE]+/, \"v\" fov); "
+          "if (crop) $0 = $0 \" S0,\" width \",0,\" height } { print }' \"$input\" > \"$output\"\n"
+          "else\n"
+          "  test \"$output\" = .autooptimiser_out.resize.pto\n"
+          "  width=${canvas%x*}; height=${canvas#*x}\n"
+          "  if test -n \"${HM_TEST_PANO_ROUND_WIDTH:-}\"; then width=$((width + 1)); fi\n"
+          "  awk -v width=\"$width\" -v height=\"$height\" "
           "'/^p / { sub(/w[0-9]+/, \"w\" width); sub(/h[0-9]+/, \"h\" height) } { print }' "
           "\"$input\" > \"$output\"\n"
+          "fi\n"
           "printf '%s\\n' \"$args\" >> '" +
               pano_modify_args.string() + "'\n"),
       "fake pano_modify must be created");
@@ -463,7 +497,10 @@ int main() {
   ok &= expect(
       write_tool(
           enblend,
-          "cp '" + fixtures.string() +
+          "printf '%s\\n' run >> '" + enblend_invocations.string() +
+              "'\n"
+              "cp '" +
+              fixtures.string() +
               "/seam_file.png' seam_file.png\n"
               "cp '" +
               fixtures.string() + "/panorama.tif' panorama.tif\n"),
@@ -481,6 +518,7 @@ int main() {
   options.max_canvas_dimension = 64;
   options.mapping_backend = hm::stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
+  options.projection_framing = {true, 180.0, true, true};
   fs::create_directories(root / "private-inputs");
   ok &= expect(
       cv::imwrite((root / "private-inputs" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(11, 12, 13))),
@@ -529,6 +567,7 @@ int main() {
   ok &= expect(
       absl::IsCancelled(cancelled_optimizer) && cancellation_elapsed < std::chrono::seconds(5),
       "optimizer cancellation must terminate the Hugin process group before pipeline shutdown times out");
+  options.projection = hm::stitching::StitchProjection::kGeneralPanini;
   const auto configured = hm::stitching::HuginProject::Configure(
       root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
   if (!configured.ok())
@@ -545,11 +584,11 @@ int main() {
     const std::string contents((std::istreambuf_iterator<char>(optimized)), std::istreambuf_iterator<char>());
     const auto scaled = hm::stitching::HuginProject::ParseCanvasSize(contents);
     ok &= expect(
-        scaled.ok() && scaled->first == 63 && scaled->second == 32,
-        "pre-Nona PTO scaling must leave one pixel of Nona placement headroom");
+        scaled.ok() && scaled->first == 62 && scaled->second == 31,
+        "General Panini AUTO geometry must remain inside the pre-Nona canvas limits");
     ok &= expect(
-        contents.find("p f2 ") != std::string::npos,
-        "pano_modify must preserve the projection selected by autooptimiser");
+        contents.find("p f19 ") != std::string::npos && contents.find("P\"100 0 0\"") != std::string::npos,
+        "single-pass calibration must publish the selected General Panini projection");
     std::ifstream optimizer_invocations(autooptimiser_args);
     const std::string optimizer_args(
         (std::istreambuf_iterator<char>(optimizer_invocations)), std::istreambuf_iterator<char>());
@@ -562,13 +601,21 @@ int main() {
         "Hugin orchestration must optimize once without requesting unsupported output scaling");
     const std::string pano_modify_invocations = read_text_file(pano_modify_args);
     ok &= expect(
-        pano_modify_invocations.find("--canvas=63x32 -o .autooptimiser_out.resize.pto autooptimiser_out.pto") !=
-            std::string::npos,
-        "oversized Hugin canvases must reserve placement-rounding headroom through pano_modify");
+        pano_modify_invocations.find(".autooptimiser_out.resize.pto") == std::string::npos,
+        "projection geometry already within the configured canvas must not be resized a second time");
+    ok &= expect(
+        pano_modify_invocations.find("--projection=19 --projection-parameter=100 0 0") != std::string::npos &&
+            pano_modify_invocations.find("--fov=AUTO --canvas=AUTO --crop=AUTO") != std::string::npos &&
+            pano_modify_invocations.find("--canvas=49.75%") != std::string::npos,
+        "General Panini conversion must request standard parameters, automatic geometry, and one bounded scaling");
     const std::string nona_runs = read_text_file(nona_invocations);
     ok &= expect(
         std::count(nona_runs.begin(), nona_runs.end(), '\n') == 1,
-        "initial placement headroom must avoid repeating expensive Nona map generation");
+        "Nona must render the selected projection exactly once");
+    const std::string enblend_runs = read_text_file(enblend_invocations);
+    ok &= expect(
+        std::count(enblend_runs.begin(), enblend_runs.end(), '\n') == 1,
+        "enblend must stitch the selected projection exactly once");
     const cv::Mat published_seam = cv::imread((root / "game" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
     cv::Mat expected_seam;
     cv::copyMakeBorder(seam, expected_seam, 1, 1, 1, 1, cv::BORDER_REPLICATE);
@@ -607,13 +654,151 @@ int main() {
     const auto provenance = hm::stitching::HuginProject::ReadCanvasProvenance(root / "game", **provenance_lock);
     ok &= expect(
         provenance.ok() && provenance->has_value() && (*provenance)->max_output_width == 0 &&
-            (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 100 &&
-            (*provenance)->source_canvas_height == 51 && (*provenance)->canvas_width == 42 &&
+            (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 62 &&
+            (*provenance)->source_canvas_height == 32 && (*provenance)->canvas_width == 42 &&
             (*provenance)->canvas_height == 32 && !(*provenance)->max_output_width_applied &&
-            (*provenance)->max_canvas_dimension_applied,
-        "published Hugin provenance must record source/final canvases and applied generation constraints");
+            !(*provenance)->max_canvas_dimension_applied &&
+            (*provenance)->mapping_backend == hm::stitching::MappingBackend::kNona &&
+            (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini &&
+            (*provenance)->projection_parameters == std::vector<double>({100.0, 0.0, 0.0}) &&
+            (*provenance)->projection_framing == options.projection_framing,
+        "published Hugin provenance must record canvas, algorithm, projection parameters, and framing");
     provenance_lock->reset();
   }
+
+  const fs::path custom_panini = root / "custom-panini";
+  fs::create_directories(custom_panini);
+  std::error_code custom_copy_error;
+  fs::copy_file(
+      root / "game" / "hm_project.pto",
+      custom_panini / "autooptimiser_out.pto",
+      fs::copy_options::overwrite_existing,
+      custom_copy_error);
+  ok &= expect(!custom_copy_error, "custom Panini fixture PTO must be copied");
+  const auto custom_parameters = hm::stitching::HuginProject::ApplyProjection(
+      custom_panini, hm::stitching::StitchProjection::kGeneralPanini, {120.0, 25.0, -40.0});
+  ok &= expect(custom_parameters.ok(), "custom General Panini parameters must be accepted");
+  const std::string custom_panini_pto = read_text_file(custom_panini / "autooptimiser_out.pto");
+  ok &= expect(
+      custom_panini_pto.find("P\"120 25 -40\"") != std::string::npos,
+      "pano_modify must receive and preserve the selected General Panini values");
+  const auto unsupported_parameter_precision = hm::stitching::HuginProject::ApplyProjection(
+      custom_panini, hm::stitching::StitchProjection::kGeneralPanini, {100.123456789, 0.0, 0.0});
+  ok &= expect(
+      absl::IsInvalidArgument(unsupported_parameter_precision) &&
+          unsupported_parameter_precision.message().find("increments of 0.01") != std::string::npos,
+      "projection conversion must reject precision that pano_modify cannot preserve before invoking Hugin");
+
+  std::ofstream(pano_modify_args, std::ios::trunc).close();
+  for (unsigned mask = 0; mask < 8; ++mask) {
+    const fs::path framing_dir = root / ("framing-" + std::to_string(mask));
+    fs::create_directories(framing_dir);
+    std::error_code framing_copy_error;
+    fs::copy_file(
+        root / "game" / "hm_project.pto",
+        framing_dir / "autooptimiser_out.pto",
+        fs::copy_options::overwrite_existing,
+        framing_copy_error);
+    const hm::stitching::StitchProjectionFraming framing{
+        (mask & 1U) != 0, 185.0, (mask & 2U) != 0, (mask & 4U) != 0};
+    const auto framed = framing_copy_error
+        ? absl::Status(absl::StatusCode::kInternal, framing_copy_error.message())
+        : hm::stitching::HuginProject::ApplyProjection(
+              framing_dir,
+              hm::stitching::StitchProjection::kGeneralPanini,
+              {100.0, 0.0, 0.0},
+              framing);
+    const std::string expected_arguments =
+        std::string("--projection=19 --projection-parameter=100 0 0 --fov=") +
+        (framing.auto_fov ? "AUTO" : "185") + (framing.auto_canvas ? " --canvas=AUTO" : "") +
+        (framing.auto_crop ? " --crop=AUTO" : " --crop=0,100,0,100%") +
+        " --output=.autooptimiser_out.projection.pto";
+    const std::string framed_project = read_text_file(framing_dir / "autooptimiser_out.pto");
+    ok &= expect(
+        framed.ok() && read_text_file(pano_modify_args).find(expected_arguments) != std::string::npos &&
+            (framed_project.find(" S") != std::string::npos) == framing.auto_crop,
+        "all Auto FOV/Canvas/Crop permutations must produce exact arguments and an explicit full canvas when crop is off");
+  }
+
+  const fs::path rounded_fixed_fov = root / "rounded-fixed-fov";
+  fs::create_directories(rounded_fixed_fov);
+  std::error_code rounded_fixed_fov_copy_error;
+  fs::copy_file(
+      root / "game" / "hm_project.pto",
+      rounded_fixed_fov / "autooptimiser_out.pto",
+      fs::copy_options::overwrite_existing,
+      rounded_fixed_fov_copy_error);
+  ::setenv("HM_TEST_PANO_FOV_CLAMP", "185.123", 1);
+  const auto rounded_fixed_fov_status = hm::stitching::HuginProject::ApplyProjection(
+      rounded_fixed_fov,
+      hm::stitching::StitchProjection::kGeneralPanini,
+      {100.0, 0.0, 0.0},
+      hm::stitching::StitchProjectionFraming{false, 185.123456789, true, false});
+  ::unsetenv("HM_TEST_PANO_FOV_CLAMP");
+  ok &= expect(
+      !rounded_fixed_fov_copy_error && rounded_fixed_fov_status.ok(),
+      "fixed FOV validation must accept pano_modify's three-decimal PTO serialization");
+
+  const fs::path unsupported_rectilinear = root / "unsupported-rectilinear-fov";
+  fs::create_directories(unsupported_rectilinear);
+  std::error_code rectilinear_copy_error;
+  fs::copy_file(
+      root / "game" / "hm_project.pto",
+      unsupported_rectilinear / "autooptimiser_out.pto",
+      fs::copy_options::overwrite_existing,
+      rectilinear_copy_error);
+  ::setenv("HM_TEST_PANO_FOV_CLAMP", "179", 1);
+  const auto unsupported_fov = hm::stitching::HuginProject::ApplyProjection(
+      unsupported_rectilinear,
+      hm::stitching::StitchProjection::kRectilinear,
+      {},
+      hm::stitching::StitchProjectionFraming{false, 180.0, false, false});
+  ::unsetenv("HM_TEST_PANO_FOV_CLAMP");
+  ok &= expect(
+      !rectilinear_copy_error && absl::IsInvalidArgument(unsupported_fov) &&
+          unsupported_fov.message().find("at most 179 degrees") != std::string::npos,
+      "Hugin must reject an unsupported fixed Rectilinear field of view before invoking pano_modify");
+
+  const fs::path extreme_stereographic = root / "extreme-stereographic";
+  fs::create_directories(extreme_stereographic);
+  std::error_code extreme_copy_error;
+  fs::copy_file(
+      root / "game" / "hm_project.pto",
+      extreme_stereographic / "autooptimiser_out.pto",
+      fs::copy_options::overwrite_existing,
+      extreme_copy_error);
+  ok &= expect(!extreme_copy_error, "extreme Stereographic fixture PTO must be copied");
+  const auto extreme_projection = hm::stitching::HuginProject::ApplyProjection(
+      extreme_stereographic, hm::stitching::StitchProjection::kStereographic);
+  ok &= expect(
+      extreme_projection.ok(),
+      "an AUTO projection requiring a sub-one-percent canvas must use explicit bounded dimensions");
+  const std::string extreme_stereographic_pto = read_text_file(extreme_stereographic / "autooptimiser_out.pto");
+  const auto extreme_stereographic_canvas = hm::stitching::HuginProject::ParseCanvasSize(extreme_stereographic_pto);
+  ok &= expect(
+      extreme_stereographic_canvas.ok() && extreme_stereographic_canvas->first == 99 &&
+          extreme_stereographic_canvas->second == 49 &&
+          read_text_file(pano_modify_args).find("--projection=4 --fov=AUTO --canvas=99x49 --crop=AUTO") !=
+              std::string::npos,
+      "sub-one-percent Stereographic conversion must avoid Hugin's invalid percentage syntax");
+
+  const fs::path nonfinite_panini = root / "nonfinite-panini";
+  fs::create_directories(nonfinite_panini);
+  std::error_code copy_error;
+  fs::copy_file(
+      root / "game" / "hm_project.pto",
+      nonfinite_panini / "autooptimiser_out.pto",
+      fs::copy_options::overwrite_existing,
+      copy_error);
+  ok &= expect(!copy_error, "non-finite Panini fixture PTO must be copied");
+  ::setenv("HM_TEST_PANINI_PARAMETERS", "nan 0 0", 1);
+  const auto nonfinite_parameters =
+      hm::stitching::HuginProject::ApplyProjection(nonfinite_panini, hm::stitching::StitchProjection::kGeneralPanini);
+  ::unsetenv("HM_TEST_PANINI_PARAMETERS");
+  ok &= expect(
+      absl::IsFailedPrecondition(nonfinite_parameters),
+      "non-finite parameters emitted by pano_modify must fail before remap publication");
+  options.projection.reset();
 
   const fs::path width_headroom_game = root / "nona-width-headroom-game";
   fs::create_directories(width_headroom_game);
@@ -632,6 +817,24 @@ int main() {
   ok &= expect(
       std::count(width_headroom_nona_runs.begin(), width_headroom_nona_runs.end(), '\n') == 2,
       "width-cap placement headroom must avoid repeating expensive Nona map generation");
+
+  const fs::path rounded_canvas_game = root / "nona-rounded-canvas-game";
+  fs::create_directories(rounded_canvas_game);
+  hm::stitching::HuginProject::Options rounded_canvas_options = options;
+  rounded_canvas_options.max_canvas_dimension.reset();
+  rounded_canvas_options.max_output_width = 80;
+  rounded_canvas_options.progress = {};
+  ::setenv("HM_TEST_PANO_ROUND_WIDTH", "1", 1);
+  const auto rounded_canvas_configured = hm::stitching::HuginProject::Configure(
+      rounded_canvas_game,
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      rounded_canvas_options);
+  ::unsetenv("HM_TEST_PANO_ROUND_WIDTH");
+  ok &= expect(
+      rounded_canvas_configured.ok(),
+      "pano_modify may round a guarded odd canvas request upward by one pixel without invalidating calibration");
 
   const fs::path retry_native_fixtures = root / "retry-native-fixtures";
   const fs::path retry_capped_fixtures = root / "retry-capped-fixtures";
@@ -726,10 +929,9 @@ int main() {
   ok &= expect(
       write_tool(
           enblend,
-          "cp '" +
-              (root / "optimizer-disabled-seam.png").string() +
+          "cp '" + (root / "optimizer-disabled-seam.png").string() +
               "' seam_file.png\n"
-          "cp '" +
+              "cp '" +
               fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "optimizer-disabled fake enblend must preserve the native seam");
   optimizer_disabled_options.progress =
@@ -911,20 +1113,39 @@ int main() {
       "superseded Hugin publication must preserve both the prior artifacts and the newer invalidation");
 
   YAML::Node backend_claim(YAML::NodeType::Map);
+  const hm::stitching::StitchingBackendChoices expected_backend_choices{
+      "superpoint-lightglue",
+      "nona",
+      "equirectangular",
+      true,
+      {},
+      hm::stitching::StitchProjectionFraming{true, 180.0, true, true}};
   backend_claim["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_claim["stitching"]["mapping_backend"] = "nona";
+  backend_claim["stitching"]["projection"] = "equirectangular";
   backend_claim["stitching"]["run_autooptimizer"] = true;
+  hm::stitching::write_stitch_projection_framing(
+      backend_claim, expected_backend_choices.projection_framing);
   backend_claim["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   backend_claim["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
   backend_claim["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "hugin-backend-a";
-  const hm::stitching::StitchingBackendChoices expected_backend_choices{"superpoint-lightglue", "nona", true};
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["invalidation_id"] = "hugin-backend-a";
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["control_point_matcher"] =
       expected_backend_choices.control_point_matcher;
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"] =
       expected_backend_choices.mapping_backend;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection"] =
+      expected_backend_choices.projection;
   backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["run_autooptimizer"] =
       expected_backend_choices.run_autooptimizer;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection_parameters"] =
+      YAML::Load("[]");
+  YAML::Node backend_claim_framing =
+      backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection_framing"];
+  backend_claim_framing["auto_fov"] = expected_backend_choices.projection_framing.auto_fov;
+  backend_claim_framing["horizontal_fov"] = expected_backend_choices.projection_framing.horizontal_fov;
+  backend_claim_framing["auto_canvas"] = expected_backend_choices.projection_framing.auto_canvas;
+  backend_claim_framing["auto_crop"] = expected_backend_choices.projection_framing.auto_crop;
   std::ofstream(root / "game" / "config.yaml") << YAML::Dump(backend_claim) << '\n';
   options.expected_invalidation_id = "hugin-backend-a";
   options.expected_backend_choices = expected_backend_choices;
@@ -934,7 +1155,7 @@ int main() {
       return;
     backend_changed_during_hugin = true;
     YAML::Node changed = YAML::LoadFile((root / "game" / "config.yaml").string());
-    changed["stitching"]["mapping_backend"] = "opencv-affine-ransac";
+    changed["stitching"]["projection"] = "general-panini";
     std::ofstream(root / "game" / "config.yaml") << YAML::Dump(changed) << '\n';
   };
   const auto mismatched_backend_hugin = hm::stitching::HuginProject::Configure(root / "game", matches, options);
@@ -945,7 +1166,7 @@ int main() {
   ok &= expect(
       backend_changed_during_hugin && absl::IsAborted(mismatched_backend_hugin) &&
           project_after_mismatched_backend == previous_project,
-      "Hugin publication must abort when the worker-visible backend tuple changes under its generation claim");
+      "Hugin publication must abort when the worker-visible projection changes under its generation claim");
   options.expected_invalidation_id.clear();
   options.expected_backend_choices.reset();
   {

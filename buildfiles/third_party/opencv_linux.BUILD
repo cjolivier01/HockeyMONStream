@@ -76,8 +76,7 @@ cc_library(
         # '-lopencv_ximgproc', '-lopencv_video', '-lopencv_xobjdetect', '-lopencv_objdetect',
         # '-lopencv_calib3d', '-lopencv_imgcodecs',
         # '-lopencv_features2d', '-lopencv_dnn', '-lopencv_flann', '-lopencv_xphoto',
-        # '-lopencv_photo', '-lopencv_imgproc', '-lopencv_core', '-lopencv_cudawarping',
-        # '-lopencv_cudafilters', '-lopencv_cudaimgproc', '-lopencv_cudafeatures2d', '-lopencv_cudaoptflow', '-lopencv_cudabgsegm', '-lopencv_cudastereo', '-lopencv_cudalegacy', '-lopencv_cudaobjdetect', '-lopencv_cudacodec', '-lopencv_cudafeatures2d', '-lopencv_cudacodec', '-lopencv_cudalegacy', '-lopencv_cudaobjdetect', '-lopencv_cudastereo', '-lopencv_cudabgsegm', '-lopencv_cudaoptflow', '-lopencv_cudafilters', '-lopencv_cudaimgproc', '-lopencv_cudawarping ', '-lopencv_cudev', '-lopencv_cudnn', '-lopencv_cudnn_ops', '-lopencv_cudnn_solvers
+        # '-lopencv_photo', '-lopencv_imgproc', '-lopencv_core',
     ],
     visibility = ["//visibility:public"],
 )
