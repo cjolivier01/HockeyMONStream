@@ -105,6 +105,9 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":hstream_window",
+        # DeepStream's nvbufsurface libraries use the CUDA Driver API. Link
+        # the toolkit stub so package builds do not require a host GPU driver.
+        "@local_cuda//:cuda",
         "@qt//:qt_widgets",
     ],
 )
