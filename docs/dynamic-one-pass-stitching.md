@@ -41,12 +41,16 @@ Parameterized Hugin projections store their values by canonical projection name 
 General Panini (`f19`) exposes `Cmpr`, `Tops`, and `Bots`, defaulting to `[100, 0, 0]`. Albers equal-area conic,
 Biplane, and Triplane expose the parameter sets reported by libpano; the other Panini variants do not advertise
 adjustable parameters. The UI shows only the controls supported by the selected projection and supplies the libpano
-range, default, and behavior description on hover.
+range, default, and behavior description on hover. Adjustable numeric values use 0.01 increments so the configured
+tuple round-trips through Hugin's PTO serialization; Biplane's `corners` switch accepts exactly `0` or `1`.
 
-Hugin recalculates the projection-aware field of view, canvas, and largest all-image crop so the published remaps do
-not retain the black hourglass-shaped region produced by forcing Panini into the old rectilinear canvas. The crop is
-scaled down when necessary so it never exceeds the original calibrated canvas or configured live canvas limits.
-Steady-state video remains on the existing GPU remap and stitch path.
+Projection framing is configurable. Auto FOV asks Hugin to derive the field of view from camera coverage; otherwise
+it uses the selected fixed horizontal FOV. Auto canvas asks Hugin to recalculate projection-aware canvas dimensions;
+otherwise it retains the optimized PTO canvas. Auto crop selects Hugin's largest valid-image rectangle, removing the
+black hourglass-shaped boundary, and is scaled down when necessary so it never exceeds the original calibrated canvas
+or configured live canvas limits. The baseline intentionally uses fixed 180-degree FOV, automatic canvas, and crop
+off, so its full projection canvas can retain the rounded/black dual-camera boundary. Steady-state video remains on
+the existing GPU remap and stitch path for every framing combination.
 
 ## Validation
 
