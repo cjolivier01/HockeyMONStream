@@ -400,32 +400,41 @@ bool expect_composed_focus_control(
     const std::string& description) {
   if (!window || !button || QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) != 0)
     return true;
-  QApplication::processEvents();
-  const QPixmap composed = window->screen()->grabWindow(window->winId());
-  if (composed.isNull())
-    return expect(false, description + ": could not capture the composed X11 window");
-  const QImage image = composed.toImage().convertToFormat(QImage::Format_RGB32);
-  const qreal scale = composed.devicePixelRatio();
-  auto light_pixels = [&image, scale](const QPoint& center) {
-    const QPoint scaled(qRound(center.x() * scale), qRound(center.y() * scale));
-    const int radius = std::max(1, qRound(12 * scale));
-    int count = 0;
-    for (int y = std::max(0, scaled.y() - radius); y < std::min(image.height(), scaled.y() + radius); ++y) {
-      for (int x = std::max(0, scaled.x() - radius); x < std::min(image.width(), scaled.x() + radius); ++x) {
-        const QColor pixel = image.pixelColor(x, y);
-        if (pixel.red() + pixel.green() + pixel.blue() >= 600)
-          ++count;
-      }
-    }
-    return count;
-  };
+  int current_light_pixels = -1;
+  int stale_light_pixels = -1;
   const QPoint current_center = button->mapTo(window, button->rect().center());
-  const int current_light_pixels = light_pixels(current_center);
-  const int stale_light_pixels = stale_center.has_value() && *stale_center != current_center
-      ? light_pixels(*stale_center)
-      : 0;
+  for (int attempt = 0; attempt < 50; ++attempt) {
+    QApplication::processEvents();
+    QGuiApplication::sync();
+    const QPixmap composed = window->screen()->grabWindow(window->winId());
+    if (!composed.isNull()) {
+      const QImage image = composed.toImage().convertToFormat(QImage::Format_RGB32);
+      const qreal scale = composed.devicePixelRatio();
+      auto light_pixels = [&image, scale](const QPoint& center) {
+        const QPoint scaled(qRound(center.x() * scale), qRound(center.y() * scale));
+        const int radius = std::max(1, qRound(12 * scale));
+        int count = 0;
+        for (int y = std::max(0, scaled.y() - radius); y < std::min(image.height(), scaled.y() + radius); ++y) {
+          for (int x = std::max(0, scaled.x() - radius); x < std::min(image.width(), scaled.x() + radius); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            if (pixel.red() + pixel.green() + pixel.blue() >= 600)
+              ++count;
+          }
+        }
+        return count;
+      };
+      current_light_pixels = light_pixels(current_center);
+      stale_light_pixels = stale_center.has_value() && *stale_center != current_center
+          ? light_pixels(*stale_center)
+          : 0;
+      if (current_light_pixels >= 8 && stale_light_pixels <= 2)
+        return true;
+    }
+    if (attempt + 1 < 50)
+      QTest::qWait(10);
+  }
   return expect(
-      current_light_pixels >= 8 && stale_light_pixels <= 2,
+      false,
       description + ": composed maximize glyph pixels current=" + std::to_string(current_light_pixels) +
           " stale=" + std::to_string(stale_light_pixels));
 }
