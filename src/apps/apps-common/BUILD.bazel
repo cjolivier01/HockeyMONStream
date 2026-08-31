@@ -1,11 +1,36 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 exports_files([
+    "HStreamBatchDemux.cpp",
     "HStreamLosslessMux.cpp",
+    "nvstreamdemux_p010_caps.patch",
     "nvstreammux_lossless.patch",
     "nvstreammux_lossless_state.patch",
     "nvstreammux_p010_caps.patch",
 ])
+
+cc_library(
+    name = "hstream_batch_demux",
+    hdrs = ["HStreamBatchDemux.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@deepstream//:hstream_batch_demux_impl",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "hstream_batch_demux_test",
+    srcs = ["HStreamBatchDemuxTest.cpp"],
+    deps = [
+        ":hstream_batch_demux",
+        "@deepstream//:deepstream_includes",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
 
 cc_library(
     name = "gst_plugin_properties",
@@ -192,6 +217,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":gst_plugin_properties",
+        ":hstream_batch_demux",
         ":hstream_lossless_nvstreammux",
         ":rink_mask_image",
         "//src/libs/camera",

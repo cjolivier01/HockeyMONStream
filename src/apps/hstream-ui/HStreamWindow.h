@@ -179,6 +179,14 @@ class HStreamWindow : public QMainWindow {
     kSyncRecovery,
   };
 
+  struct PendingArchiveFinalization {
+    QString source_path;
+    QString game_id;
+    QString output_id;
+    bool hevc_video{false};
+    bool stitched_archive{false};
+  };
+
   void buildUi();
   void buildTopBar(QVBoxLayout* root);
   void buildMainArea(QVBoxLayout* root);
@@ -227,7 +235,9 @@ class HStreamWindow : public QMainWindow {
       const QString& source_path,
       const QString& game_id,
       bool hevc_video,
-      bool stitching_calibration_archive);
+      bool stitched_archive,
+      const QString& output_id = "archive-file");
+  void startNextArchiveFinalization();
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
   bool startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error);
@@ -463,6 +473,7 @@ class HStreamWindow : public QMainWindow {
   QLabel* game_path_label_{nullptr};
   QLabel* video_sets_path_label_{nullptr};
   QLabel* archive_output_path_label_{nullptr};
+  QLabel* stitched_archive_output_path_label_{nullptr};
   QWidget* game_controls_{nullptr};
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
@@ -587,10 +598,13 @@ class HStreamWindow : public QMainWindow {
   QString active_run_game_id_;
   QString active_archive_output_path_;
   QString active_archive_recovery_path_;
+  QString active_stitched_archive_output_path_;
+  QString active_stitched_archive_recovery_path_;
   QFile archive_job_log_;
   QString archive_job_log_path_;
   QString archive_job_log_guard_path_;
   QStringList archive_job_log_cleanup_directories_;
+  QStringList archive_job_log_recovery_paths_;
   QStringList archive_job_log_stale_paths_;
   quint64 archive_job_log_device_{0};
   quint64 archive_job_log_inode_{0};
@@ -598,6 +612,11 @@ class HStreamWindow : public QMainWindow {
   qint64 active_archive_initial_size_{-1};
   qint64 active_archive_initial_mtime_ms_{-1};
   bool active_archive_video_is_hevc_{false};
+  qint64 active_stitched_archive_initial_size_{-1};
+  qint64 active_stitched_archive_initial_mtime_ms_{-1};
+  bool active_stitched_archive_video_is_hevc_{false};
+  bool archive_job_log_is_stitched_{false};
+  std::deque<PendingArchiveFinalization> pending_archive_finalizations_;
   QProcess* archive_finalize_process_{nullptr};
   QThread* telemetry_publication_worker_{nullptr};
   QDialog* archive_finalize_dialog_{nullptr};
@@ -617,6 +636,7 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_stdout_buffer_;
   QString archive_finalize_error_output_;
   QString archive_finalize_pending_failure_detail_;
+  QStringList archive_finalize_failure_summaries_;
   QString archive_finalize_owner_lock_path_;
   qint64 archive_finalize_duration_us_{-1};
   int archive_finalize_owner_lock_fd_{-1};
@@ -631,7 +651,8 @@ class HStreamWindow : public QMainWindow {
   quint64 archive_finalize_recovery_log_inode_{0};
   ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
   bool archive_finalize_failed_{false};
-  bool archive_finalize_is_calibration_{false};
+  bool archive_finalize_is_stitched_{false};
+  QString archive_finalize_output_id_{"archive-file"};
   bool active_run_is_calibration_{false};
   bool active_run_high_bit_depth_{false};
   bool active_run_high_bit_depth_resolved_{false};

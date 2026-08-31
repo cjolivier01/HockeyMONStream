@@ -249,3 +249,67 @@ cc_library(
         "@yaml-cpp",
     ],
 )
+
+# The hardware video encoders consume one frame per GstBuffer, while the
+# stitched canvas remains in a batched NvBufSurface so it can preserve every
+# synchronized pair. Build a private zero-copy demux from the SDK source and
+# extend its otherwise format-agnostic pad templates to accept Main10 P010.
+genrule(
+    name = "hstream_batch_demux_source",
+    srcs = [
+        "sources/gst-plugins/gst-nvmultistream2/gstnvstreamdemux.cpp",
+        "@gst_plugin_dev//src/apps/apps-common:nvstreamdemux_p010_caps.patch",
+    ],
+    outs = ["gstnvstreamdemux_hstream.cpp"],
+    cmd = " && ".join([
+        "cp $(location sources/gst-plugins/gst-nvmultistream2/gstnvstreamdemux.cpp) $@",
+        "chmod u+w $@",
+        "patch $@ $$(pwd)/$(location @gst_plugin_dev//src/apps/apps-common:nvstreamdemux_p010_caps.patch)",
+    ]),
+)
+
+cc_library(
+    name = "hstream_batch_demux_impl",
+    srcs = [
+        "@gst_plugin_dev//src/apps/apps-common:HStreamBatchDemux.cpp",
+        ":hstream_batch_demux_source",
+    ],
+    hdrs = glob([
+        "sources/gst-plugins/gst-nvmultistream2/*.h",
+        "sources/libs/nvstreammux/include/*.h",
+    ]),
+    copts = [
+        "-fPIC",
+        "-std=c++17",
+        "-Wno-deprecated-declarations",
+        "-Wno-error=deprecated-declarations",
+        "-DGstNvStreamDemux=GstHStreamBatchDemux",
+        "-DGstNvStreamDemuxClass=GstHStreamBatchDemuxClass",
+        "-D_GstNvStreamDemux=_GstHStreamBatchDemux",
+        "-D_GstNvStreamDemuxClass=_GstHStreamBatchDemuxClass",
+        "-Dgst_nvstreamdemux_2_get_type=gst_hstream_batch_demux_get_type",
+    ],
+    includes = [
+        "sources/gst-plugins/gst-nvmultistream2",
+        "sources/libs/nvstreammux/include",
+    ],
+    linkopts = select({
+        ":jetson": ["-L/opt/jetson-sysroot/opt/nvidia/deepstream/deepstream/lib"],
+        ":arm64-sbsa": ["-L/opt/nvidia/deepstream/deepstream/lib"],
+        ":aarch64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
+        ":x86_64-linux-gnu": ["-L/opt/nvidia/deepstream/deepstream/lib"],
+        "//conditions:default": [],
+    }) + [
+        "-lnvdsgst_helper",
+        "-lnvdsgst_meta",
+        "-lnvds_meta",
+        "-lnvbufsurface",
+    ],
+    visibility = ["//visibility:public"],
+    linkstatic = True,
+    deps = [
+        ":deepstream_includes",
+        ":deepstream_lib",
+        "@gstreamer//:gstreamer",
+    ],
+)

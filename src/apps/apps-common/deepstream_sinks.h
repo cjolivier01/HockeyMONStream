@@ -36,6 +36,7 @@ typedef enum {
   NV_DS_SINK_RENDER_DRM,
   NV_DS_SINK_MSG_CONV_BROKER,
   NV_DS_SINK_WEBRTC,
+  NV_DS_SINK_ENCODE_STITCHED_FILE,
 } NvDsSinkType;
 
 typedef enum { NV_DS_CONTAINER_MP4 = 1, NV_DS_CONTAINER_MKV } NvDsContainerType;
@@ -134,6 +135,7 @@ typedef struct {
   GstElement* queue;
   GstElement* transform;
   GstElement* cap_filter;
+  GstElement* batch_demux;
   GstElement* enc_caps_filter;
   GstElement* encoder;
   GstElement* codecparse;
@@ -147,6 +149,8 @@ typedef struct {
   GstElement* bin;
   GstElement* queue;
   GstElement* tee;
+  GstElement* stitched_queue;
+  GstElement* stitched_tee;
 
   gint num_bins;
   NvDsSinkBinSubBin sub_bins[MAX_SINK_BINS];

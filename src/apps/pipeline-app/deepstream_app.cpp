@@ -1471,6 +1471,9 @@ static gboolean create_processing_instance(AppCtx* appCtx, guint index) {
     goto done;
 
   NVGSTDS_BIN_ADD_GHOST_PAD(instance_bin->bin, last_elem, "sink");
+  if (instance_bin->sink_bin.stitched_queue) {
+    NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(instance_bin->bin, instance_bin->sink_bin.bin, "stitched_sink", "stitched_sink");
+  }
   add_bbox_probe(config, instance_bin, instance_bin->sink_bin.bin);
 
   // for (size_t hmaudio_index = 0;
@@ -2344,9 +2347,34 @@ gboolean create_pipeline(
   //   // Set this bin as the last element
   //   last_elem = pipeline->dsexample_bin.bin;
   // }
+  config->hmsticher_config.archive_stitched = FALSE;
+  for (guint sink_index = 0; sink_index < config->num_sink_sub_bins; ++sink_index) {
+    const NvDsSinkSubBinConfig& sink = config->sink_bin_sub_bin_config[sink_index];
+    if (!sink.enable || sink.type != NV_DS_SINK_ENCODE_STITCHED_FILE)
+      continue;
+    if (sink.link_to_demux || sink.source_id != 0) {
+      NVGSTDS_ERR_MSG_V("ENCODE_STITCHED_FILE requires source-id=0 and link-to-demux=0");
+      goto done;
+    }
+    config->hmsticher_config.archive_stitched = TRUE;
+  }
+  if (config->hmsticher_config.archive_stitched && !config->hmsticher_config.enable) {
+    NVGSTDS_ERR_MSG_V("ENCODE_STITCHED_FILE requires hmstitcher to be enabled");
+    goto done;
+  }
+
   // create and add common components to pipeline.
   if (!create_common_elements(config, pipeline, &tmp_elem1, &tmp_elem2, bbox_generated_post_analytics_cb)) {
     goto done;
+  }
+
+  if (config->hmsticher_config.archive_stitched) {
+    GstElement* stitched_sink_instance = pipeline->instance_bins[0].bin;
+    if (!pipeline->hmstitcher_bin.stitched_queue || !stitched_sink_instance ||
+        !gst_element_link_pads(pipeline->hmstitcher_bin.bin, "stitched_src", stitched_sink_instance, "stitched_sink")) {
+      NVGSTDS_ERR_MSG_V("Failed to link the raw stitched canvas to ENCODE_STITCHED_FILE");
+      goto done;
+    }
   }
 
   if (!add_and_link_broker_sink(appCtx)) {

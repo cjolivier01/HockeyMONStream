@@ -54,6 +54,8 @@ class Surface {
       case NVBUF_COLOR_FORMAT_RGBA:
       case NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709:
       case NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020:
+      case NVBUF_COLOR_FORMAT_BGRA_10_10_10_2_709:
+      case NVBUF_COLOR_FORMAT_BGRA_10_10_10_2_2020:
         return 4;
       default:
         assert(false);

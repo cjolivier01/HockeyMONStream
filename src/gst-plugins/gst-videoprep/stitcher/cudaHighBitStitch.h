@@ -27,6 +27,18 @@ cudaError_t convertHalf4ToRgba8(
     float exposure,
     cudaStream_t stream);
 
+cudaError_t convertHalf4ToBgr10A2(
+    const half4* input,
+    size_t input_pitch,
+    int input_width,
+    int input_height,
+    NvBufSurfaceParams* output,
+    double rotation_degrees,
+    float shadow_lift_percent,
+    bool lift_shadow_black_point,
+    float exposure,
+    cudaStream_t stream);
+
 // Calibration must observe the stitched image before user-facing tone controls.
 cudaError_t convertHalf4ToCalibrationRgba8(
     const half4* input,

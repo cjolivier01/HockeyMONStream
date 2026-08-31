@@ -247,6 +247,21 @@ sink4:
   # Optional STUN server, for example: stun://stun.l.google.com:19302
   # webrtc-stun-server:
 
+# Encode the full-resolution stitched canvas before Program-only processing.
+sink5:
+  enable: 0
+  sink-id: 5
+  # Type 8 is the independently routed stitched archive.
+  type: 8
+  container: 2
+  output-file: stitched_output.mkv
+  # HEVC; profile is selected automatically (Main10 for known >=10-bit inputs).
+  codec: 2
+  enc-type: 0
+  sync: 0
+  profile: 0
+  source-id: 0
+
 # sink2:
 #   enable: 1
 #   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming

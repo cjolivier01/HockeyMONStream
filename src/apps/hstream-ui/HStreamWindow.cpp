@@ -1123,12 +1123,12 @@ QString archive_output_path(const QString& output_work_dir, const QString& game_
 QString available_final_archive_path(
     const QString& game_dir,
     const QString& game_id,
-    bool stitching_calibration,
+    bool stitched_archive,
     bool require_telemetry_paths = false) {
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
   const QString base =
-      QString("%1-%2_output-with-audio").arg(safe_game_id, stitching_calibration ? "stitched" : "tracking");
+      QString("%1-%2_output-with-audio").arg(safe_game_id, stitched_archive ? "stitched" : "tracking");
   for (int suffix = 0; suffix < 1000; ++suffix) {
     const QString filename = suffix == 0 ? base + ".mp4" : QString("%1-%2.mp4").arg(base).arg(suffix);
     const QString candidate = QDir(game_dir).filePath(filename);
@@ -4720,8 +4720,11 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
     return;
   }
   if ((archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      telemetry_publication_worker_) {
-    appendLog("window close deferred while the completed archive is being finalized");
+      !pending_archive_finalizations_.empty() || telemetry_publication_worker_) {
+    appendLog(
+        !archive_finalize_blocked_source_path_.isEmpty()
+            ? "window close deferred while a retained archive blocks pending finalization"
+            : "window close deferred while the completed archives are being finalized");
     if (archive_finalize_dialog_) {
       archive_finalize_dialog_->show();
       archive_finalize_dialog_->raise();
@@ -4965,6 +4968,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     }
     updateArchiveOutputPathLabel();
     updateStitchedColorPrecisionControls();
+    updateRunControls();
   });
 
   control_points_spin_ = new QSpinBox();
@@ -5588,6 +5592,7 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
       {"youtube-primary", "YouTube Primary"},
       {"rtsp-local", "RTSP Local"},
       {"archive-file", "Archive File"},
+      {"archive-stitched", "Archive Stitched"},
       {"spare-rtmp", "Spare RTMP"},
   };
 
@@ -5610,6 +5615,13 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
       archive_output_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
       archive_output_path_label_->setStyleSheet("color: #98a2b3; font-size: 11px; padding-left: 20px;");
       layout->addWidget(archive_output_path_label_);
+    } else if (id == "archive-stitched") {
+      stitched_archive_output_path_label_ = new QLabel("Stitched archive path will be shown when enabled", group);
+      stitched_archive_output_path_label_->setObjectName("stitchedArchiveOutputPath");
+      stitched_archive_output_path_label_->setWordWrap(true);
+      stitched_archive_output_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      stitched_archive_output_path_label_->setStyleSheet("color: #98a2b3; font-size: 11px; padding-left: 20px;");
+      layout->addWidget(stitched_archive_output_path_label_);
     }
   }
 
@@ -5636,7 +5648,8 @@ void HStreamWindow::configureControlHelp() {
       "runModeCombo",
       "Choose Program for the full output pipeline, or Stitching Calibration for a stitching-only graph without "
       "detection, tracking, rink-mask filtering, cropping, or Program output. Archive File records the stitched "
-      "canvas with audio in this mode.");
+      "canvas with audio in this mode. In Program mode, Archive File records Program while Archive Stitched can "
+      "simultaneously record the full stitched canvas.");
   help(
       "controlPointsSpin",
       "Set the maximum number of feature control points used during stitching calibration. Changing it makes Program recalibrate stale stitching before continuing.");
@@ -5707,6 +5720,11 @@ void HStreamWindow::configureControlHelp() {
       "Encode an archive during the next Program or Stitching Calibration run. Calibration records the stitched "
       "canvas with audio; Program records its normal output. Work is written below the configured output root, then "
       "a successful run is losslessly finalized as a fast-start MP4 in the game directory.");
+  help(
+      "outputToggle_archive-stitched",
+      "Encode the full stitched canvas with audio during the next Program run, independently of the Program archive. "
+      "Known 10-bit-or-higher inputs use HEVC Main10 SDR Rec.709; otherwise the stitched archive remains 8-bit. "
+      "The completed work file is losslessly finalized as a fast-start MP4 in the game directory.");
   help(
       "outputToggle_spare-rtmp",
       "Enable the spare RTMP destination for the next Program run. Changes made while playing apply on the next run.");
@@ -6255,7 +6273,9 @@ QStringList HStreamWindow::enabledSinkNames() const {
       sinks.push_back("RTMP");
     } else if (id.contains("rtsp")) {
       sinks.push_back("RTSP");
-    } else if (id.contains("archive")) {
+    } else if (id == "archive-stitched") {
+      sinks.push_back("ENCODE_STITCHED_FILE");
+    } else if (id == "archive-file") {
       sinks.push_back("ENCODE_FILE");
     }
   }
@@ -7640,7 +7660,7 @@ QStringList HStreamWindow::pipelineArguments() const {
     const bool archive_enabled =
         archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
     if (archive_enabled)
-      sinks << "ENCODE_FILE";
+      sinks << "ENCODE_STITCHED_FILE";
     if (sinks.isEmpty())
       sinks << "FAKE";
     args << QString("--enable-sinks=%1").arg(sinks.join(','));
@@ -7749,10 +7769,10 @@ void HStreamWindow::startPipeline() {
   }
   if (!pipeline_process_ || pipeline_process_->state() != QProcess::NotRunning ||
       (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      telemetry_publication_worker_) {
+      !pending_archive_finalizations_.empty() || telemetry_publication_worker_) {
     appendLog(
         (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-                telemetry_publication_worker_
+                !pending_archive_finalizations_.empty() || telemetry_publication_worker_
             ? "the completed archive is still being finalized"
             : "pipeline already running");
     return;
@@ -7764,7 +7784,11 @@ void HStreamWindow::startPipeline() {
   const auto blocked_archive_toggle = output_toggles_.find("archive-file");
   const bool blocked_archive_enabled = blocked_archive_toggle != output_toggles_.end() &&
       blocked_archive_toggle->second && blocked_archive_toggle->second->isChecked();
-  if (blocked_archive_enabled && !archive_finalize_blocked_source_path_.isEmpty()) {
+  const auto blocked_stitched_archive_toggle = output_toggles_.find("archive-stitched");
+  const bool blocked_stitched_archive_enabled = blocked_stitched_archive_toggle != output_toggles_.end() &&
+      blocked_stitched_archive_toggle->second && blocked_stitched_archive_toggle->second->isChecked();
+  if ((blocked_archive_enabled || blocked_stitched_archive_enabled) &&
+      !archive_finalize_blocked_source_path_.isEmpty()) {
     appendLog(QString("archive run blocked until the retained work file is moved to safety: %1")
                   .arg(archive_finalize_blocked_source_path_));
     updateRunControls();
@@ -7871,24 +7895,45 @@ void HStreamWindow::startPipeline() {
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
   active_archive_video_is_hevc_ = false;
+  active_stitched_archive_output_path_.clear();
+  active_stitched_archive_recovery_path_.clear();
+  active_stitched_archive_initial_size_ = -1;
+  active_stitched_archive_initial_mtime_ms_ = -1;
+  active_stitched_archive_video_is_hevc_ = false;
+  pending_archive_finalizations_.clear();
+  archive_finalize_failure_summaries_.clear();
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
       archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
-  if (archive_enabled) {
+  const auto stitched_archive_toggle = output_toggles_.find("archive-stitched");
+  const bool stitched_archive_enabled = !active_run_is_calibration_ &&
+      stitched_archive_toggle != output_toggles_.end() && stitched_archive_toggle->second &&
+      stitched_archive_toggle->second->isChecked();
+  if (archive_enabled || stitched_archive_enabled) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
     const QString archive_run_id = QString("%1-%2")
                                        .arg(QCoreApplication::applicationPid())
                                        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     env.insert("HSTREAM_ARCHIVE_RUN_ID", archive_run_id);
-    active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, active_run_is_calibration_);
-    const QString archive_dir = QFileInfo(active_archive_output_path_).absolutePath();
+    if (archive_enabled) {
+      active_archive_output_path_ =
+          archive_output_path(output_work_dir, active_run_game_id_, active_run_is_calibration_);
+    }
+    if (stitched_archive_enabled) {
+      active_stitched_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, true);
+    }
+    const QString primary_archive_path =
+        !active_archive_output_path_.isEmpty() ? active_archive_output_path_ : active_stitched_archive_output_path_;
+    const QString archive_dir = QFileInfo(primary_archive_path).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
-      output_states_["archive-file"]->setText("ERROR");
-      if (archive_output_path_label_)
-        archive_output_path_label_->setText(QString("Archive directory could not be created: %1").arg(archive_dir));
+      if (archive_enabled)
+        output_states_["archive-file"]->setText("ERROR");
+      if (stitched_archive_enabled)
+        output_states_["archive-stitched"]->setText("ERROR");
       appendLog(QString("archive output directory could not be created: %1").arg(archive_dir));
       active_archive_output_path_.clear();
+      active_stitched_archive_output_path_.clear();
       active_run_game_id_.clear();
       active_run_is_calibration_ = false;
       pipeline_state_->setText("STOPPED");
@@ -7897,22 +7942,42 @@ void HStreamWindow::startPipeline() {
       updateRunControls();
       return;
     }
-    beginArchiveJobLog(active_archive_output_path_, archive_run_id);
-    output_states_["archive-file"]->setText("WRITING");
-    if (archive_output_path_label_)
-      archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
-    appendLog(QString("archive output: %1 (the playable file is finalized when playback stops)")
-                  .arg(active_archive_output_path_));
+    archive_job_log_is_stitched_ = active_archive_output_path_.isEmpty() || active_run_is_calibration_;
+    beginArchiveJobLog(primary_archive_path, archive_run_id);
+    if (archive_enabled) {
+      output_states_["archive-file"]->setText("WRITING");
+      if (archive_output_path_label_)
+        archive_output_path_label_->setText(QString("Archive: %1").arg(active_archive_output_path_));
+      appendLog(QString("archive output: %1 (the playable file is finalized when playback stops)")
+                    .arg(active_archive_output_path_));
+    }
+    if (stitched_archive_enabled) {
+      output_states_["archive-stitched"]->setText("WRITING");
+      if (stitched_archive_output_path_label_) {
+        stitched_archive_output_path_label_->setText(
+            QString("Stitched archive: %1").arg(active_stitched_archive_output_path_));
+      }
+      appendLog(QString("stitched archive output: %1 (the playable file is finalized when playback stops)")
+                    .arg(active_stitched_archive_output_path_));
+    }
   }
   const auto abandon_archive_start = [this](const QString& reason) {
-    if (active_archive_output_path_.isEmpty())
-      return;
-    output_states_["archive-file"]->setText("NO FILE");
-    appendLog(
-        QString("archive output was not started (%1); expected path: %2").arg(reason, active_archive_output_path_));
-    active_archive_output_path_.clear();
+    if (!active_archive_output_path_.isEmpty()) {
+      output_states_["archive-file"]->setText("NO FILE");
+      appendLog(
+          QString("archive output was not started (%1); expected path: %2").arg(reason, active_archive_output_path_));
+      active_archive_output_path_.clear();
+    }
+    if (!active_stitched_archive_output_path_.isEmpty()) {
+      output_states_["archive-stitched"]->setText("NO FILE");
+      appendLog(QString("stitched archive output was not started (%1); expected path: %2")
+                    .arg(reason, active_stitched_archive_output_path_));
+      active_stitched_archive_output_path_.clear();
+    }
     active_archive_initial_size_ = -1;
     active_archive_initial_mtime_ms_ = -1;
+    active_stitched_archive_initial_size_ = -1;
+    active_stitched_archive_initial_mtime_ms_ = -1;
   };
   active_calibration_control_points_ = stitchingCalibrationControlPoints();
   active_calibration_frame_count_ = stitchingCalibrationFrameCount();
@@ -8304,41 +8369,58 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
   const bool completed_successfully =
       exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
-  QString archive_result;
-  QString archive_to_finalize;
-  QString archive_game_id;
-  bool archive_is_stitching_calibration = false;
+  QStringList archive_results;
+  const QString archive_game_id = active_run_game_id_;
   bool retain_archive_log_guard_for_recovery = false;
-  if (!active_archive_output_path_.isEmpty()) {
-    const QFileInfo archive_info(active_archive_output_path_);
+  const auto inspect_archive = [&](const QString& path,
+                                   qint64 initial_size,
+                                   qint64 initial_mtime_ms,
+                                   bool hevc_video,
+                                   bool stitched_archive,
+                                   const QString& output_id) {
+    if (path.isEmpty())
+      return;
+    const QFileInfo archive_info(path);
     const bool output_updated = archive_info.isFile() &&
-        (active_archive_initial_size_ < 0 || archive_info.size() != active_archive_initial_size_ ||
-         archive_info.lastModified().toMSecsSinceEpoch() != active_archive_initial_mtime_ms_);
+        (initial_size < 0 || archive_info.size() != initial_size ||
+         archive_info.lastModified().toMSecsSinceEpoch() != initial_mtime_ms);
     if (output_updated && archive_info.size() > 0) {
-      output_states_["archive-file"]->setText(completed_successfully ? "FINALIZING" : "INCOMPLETE");
-      archive_result =
-          QString("archive %1: %2 (%3 bytes)")
-              .arg(
-                  completed_successfully ? "container closed; lossless MP4 finalization starting" : "may be incomplete",
-                  active_archive_output_path_)
-              .arg(archive_info.size());
+      output_states_[output_id]->setText(completed_successfully ? "FINALIZING" : "INCOMPLETE");
+      archive_results << QString("archive %1: %2 (%3 bytes)")
+                             .arg(
+                                 completed_successfully ? "container closed; lossless MP4 finalization starting"
+                                                        : "may be incomplete",
+                                 path)
+                             .arg(archive_info.size());
       if (completed_successfully) {
-        archive_to_finalize = active_archive_output_path_;
-        archive_game_id = active_run_game_id_;
-        archive_is_stitching_calibration = active_run_is_calibration_;
+        pending_archive_finalizations_.push_back({path, archive_game_id, output_id, hevc_video, stitched_archive});
       } else {
         retain_archive_log_guard_for_recovery = true;
       }
     } else if (output_updated) {
-      output_states_["archive-file"]->setText("INCOMPLETE");
-      archive_result = QString("archive output is empty and incomplete: %1").arg(active_archive_output_path_);
+      output_states_[output_id]->setText("INCOMPLETE");
+      archive_results << QString("archive output is empty and incomplete: %1").arg(path);
     } else {
-      output_states_["archive-file"]->setText("NO FILE");
-      archive_result = archive_info.isFile()
-          ? QString("archive output was not updated; existing file remains at: %1").arg(active_archive_output_path_)
-          : QString("archive output was not created; expected: %1").arg(active_archive_output_path_);
+      output_states_[output_id]->setText("NO FILE");
+      archive_results
+          << (archive_info.isFile() ? QString("archive output was not updated; existing file remains at: %1").arg(path)
+                                    : QString("archive output was not created; expected: %1").arg(path));
     }
-  }
+  };
+  inspect_archive(
+      active_archive_output_path_,
+      active_archive_initial_size_,
+      active_archive_initial_mtime_ms_,
+      active_archive_video_is_hevc_,
+      active_run_is_calibration_,
+      "archive-file");
+  inspect_archive(
+      active_stitched_archive_output_path_,
+      active_stitched_archive_initial_size_,
+      active_stitched_archive_initial_mtime_ms_,
+      active_stitched_archive_video_is_hevc_,
+      true,
+      "archive-stitched");
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
@@ -8397,14 +8479,16 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   appendLog(QString("pipeline finished exit=%1 status=%2")
                 .arg(exit_code)
                 .arg(exit_status == QProcess::NormalExit ? "normal" : "crashed"));
-  if (!archive_result.isEmpty())
+  for (const QString& archive_result : std::as_const(archive_results))
     appendLog(archive_result);
   active_archive_output_path_.clear();
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
-  if (!archive_to_finalize.isEmpty()) {
-    startArchiveFinalization(
-        archive_to_finalize, archive_game_id, active_archive_video_is_hevc_, archive_is_stitching_calibration);
+  active_stitched_archive_output_path_.clear();
+  active_stitched_archive_initial_size_ = -1;
+  active_stitched_archive_initial_mtime_ms_ = -1;
+  if (!pending_archive_finalizations_.empty()) {
+    startNextArchiveFinalization();
   } else {
     if (active_run_telemetry_requested_ && completed_successfully) {
       appendLog(
@@ -8414,6 +8498,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
                     "DriveGPT CSVs completed in working storage at %1; no finalized Program archive exists to "
                     "provide a matching game-directory suffix")
                     .arg(QFileInfo(active_telemetry_manifest_path_).absolutePath()));
+      active_run_telemetry_requested_ = false;
+      active_telemetry_manifest_path_.clear();
     }
     releaseArchiveFinalizerOwnership(true);
     finishArchiveJobLog(!retain_archive_log_guard_for_recovery);
@@ -8533,6 +8619,20 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
       active_archive_output_path_.clear();
       active_archive_initial_size_ = -1;
       active_archive_initial_mtime_ms_ = -1;
+    }
+  }
+  if (!active_stitched_archive_output_path_.isEmpty()) {
+    if (error == QProcess::Crashed) {
+      output_states_["archive-stitched"]->setText("CHECKING");
+      appendLog(QString("pipeline crashed; checking stitched archive for partial output: %1")
+                    .arg(active_stitched_archive_output_path_));
+    } else {
+      output_states_["archive-stitched"]->setText("FAILED");
+      appendLog(
+          QString("stitched archive output was not created; expected: %1").arg(active_stitched_archive_output_path_));
+      active_stitched_archive_output_path_.clear();
+      active_stitched_archive_initial_size_ = -1;
+      active_stitched_archive_initial_mtime_ms_ = -1;
     }
   }
   active_run_game_id_.clear();
@@ -9159,46 +9259,75 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
 }
 
 void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
-  static const QRegularExpression recovery_status(R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+) path=(.+)$)");
+  static const QRegularExpression recovery_status(
+      R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+)(?: kind=(program|stitched))? path=(.+)$)");
   const QRegularExpressionMatch recovery_match = recovery_status.match(line);
-  if (recovery_match.hasMatch() && !active_archive_output_path_.isEmpty()) {
-    active_archive_recovery_path_ = QFileInfo(recovery_match.captured(2)).absoluteFilePath();
-    if (archive_output_path_label_) {
-      archive_output_path_label_->setText(QString("Archive: %1\nPrevious archive retained for recovery: %2")
-                                              .arg(active_archive_output_path_, active_archive_recovery_path_));
+  if (recovery_match.hasMatch()) {
+    const QString reported_kind = recovery_match.captured(2);
+    const bool stitched = reported_kind == "stitched" ||
+        (reported_kind.isEmpty() &&
+         (active_run_is_calibration_ ||
+          (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
+    QString& output_path =
+        stitched && !active_run_is_calibration_ ? active_stitched_archive_output_path_ : active_archive_output_path_;
+    QString& recovery_path = stitched && !active_run_is_calibration_ ? active_stitched_archive_recovery_path_
+                                                                     : active_archive_recovery_path_;
+    QLabel* path_label =
+        stitched && !active_run_is_calibration_ ? stitched_archive_output_path_label_ : archive_output_path_label_;
+    if (output_path.isEmpty())
+      return;
+    recovery_path = QFileInfo(recovery_match.captured(3)).absoluteFilePath();
+    if (path_label) {
+      path_label->setText(
+          QString("Archive: %1\nPrevious archive retained for recovery: %2").arg(output_path, recovery_path));
     }
-    appendLog(QString("pre-existing archive work file preserved for recovery: %1").arg(active_archive_recovery_path_));
+    appendLog(QString("pre-existing archive work file preserved for recovery: %1").arg(recovery_path));
     return;
   }
   static const QRegularExpression output_status(
-      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+) existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
+      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+)(?: kind=(program|stitched))? existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
   const QRegularExpressionMatch match = output_status.match(line);
-  if (!match.hasMatch() || active_archive_output_path_.isEmpty()) {
+  if (!match.hasMatch()) {
     return;
   }
-  const QString resolved_path = QFileInfo(match.captured(6)).absoluteFilePath();
+  const QString reported_kind = match.captured(2);
+  const bool stitched = reported_kind == "stitched" ||
+      (reported_kind.isEmpty() &&
+       (active_run_is_calibration_ ||
+        (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
+  QString& output_path =
+      stitched && !active_run_is_calibration_ ? active_stitched_archive_output_path_ : active_archive_output_path_;
+  QString& recovery_path =
+      stitched && !active_run_is_calibration_ ? active_stitched_archive_recovery_path_ : active_archive_recovery_path_;
+  qint64& initial_size =
+      stitched && !active_run_is_calibration_ ? active_stitched_archive_initial_size_ : active_archive_initial_size_;
+  qint64& initial_mtime = stitched && !active_run_is_calibration_ ? active_stitched_archive_initial_mtime_ms_
+                                                                  : active_archive_initial_mtime_ms_;
+  bool& video_is_hevc =
+      stitched && !active_run_is_calibration_ ? active_stitched_archive_video_is_hevc_ : active_archive_video_is_hevc_;
+  QLabel* path_label =
+      stitched && !active_run_is_calibration_ ? stitched_archive_output_path_label_ : archive_output_path_label_;
+  if (output_path.isEmpty())
+    return;
+  const QString resolved_path = QFileInfo(match.captured(7)).absoluteFilePath();
   if (resolved_path.isEmpty()) {
     return;
   }
-  resolveArchiveJobLogPath(resolved_path);
-  QString ownership_error;
-  if (!acquireArchiveFinalizerOwnership(resolved_path, &ownership_error)) {
-    appendLog(QString("archive finalizer ownership could not be established: %1").arg(ownership_error));
+  if (archive_job_log_is_stitched_ == stitched)
+    resolveArchiveJobLogPath(resolved_path);
+  const bool path_changed = resolved_path != output_path;
+  output_path = resolved_path;
+  const bool output_existed = match.captured(3) == "1";
+  initial_size = output_existed ? match.captured(4).toLongLong() : -1;
+  initial_mtime = output_existed ? match.captured(5).toLongLong() : -1;
+  video_is_hevc = match.captured(6) == "hevc";
+  if (path_label) {
+    path_label->setText(
+        recovery_path.isEmpty()
+            ? QString("Archive: %1").arg(output_path)
+            : QString("Archive: %1\nPrevious archive retained for recovery: %2").arg(output_path, recovery_path));
   }
-  const bool path_changed = resolved_path != active_archive_output_path_;
-  active_archive_output_path_ = resolved_path;
-  const bool output_existed = match.captured(2) == "1";
-  active_archive_initial_size_ = output_existed ? match.captured(3).toLongLong() : -1;
-  active_archive_initial_mtime_ms_ = output_existed ? match.captured(4).toLongLong() : -1;
-  active_archive_video_is_hevc_ = match.captured(5) == "hevc";
-  if (archive_output_path_label_) {
-    archive_output_path_label_->setText(
-        active_archive_recovery_path_.isEmpty() ? QString("Archive: %1").arg(active_archive_output_path_)
-                                                : QString("Archive: %1\nPrevious archive retained for recovery: %2")
-                                                      .arg(active_archive_output_path_, active_archive_recovery_path_));
-  }
-  appendLog(QString("archive backend %1 output: %2")
-                .arg(path_changed ? "resolved" : "confirmed", active_archive_output_path_));
+  appendLog(QString("archive backend %1 output: %2").arg(path_changed ? "resolved" : "confirmed", output_path));
 }
 
 void HStreamWindow::handleTelemetryOutputStatus(const QString& line) {
@@ -9796,6 +9925,7 @@ void HStreamWindow::finishArchiveJobLog(bool retire_identity_guard) {
   archive_job_log_path_.clear();
   archive_job_log_guard_path_.clear();
   archive_job_log_cleanup_directories_.clear();
+  archive_job_log_recovery_paths_.clear();
   archive_job_log_stale_paths_.clear();
   archive_job_log_device_ = 0;
   archive_job_log_inode_ = 0;
@@ -9809,14 +9939,14 @@ void HStreamWindow::finishArchiveJobLogAfterFinalizationFailure() {
 }
 
 void HStreamWindow::updateArchiveOutputPathLabel() {
-  if (!archive_output_path_label_) {
-    return;
-  }
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
       archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+  const auto stitched_archive_toggle = output_toggles_.find("archive-stitched");
+  const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
+      stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  if (pipeline_running && !active_archive_output_path_.isEmpty()) {
+  if (archive_output_path_label_ && pipeline_running && !active_archive_output_path_.isEmpty()) {
     archive_output_path_label_->setText(
         active_archive_recovery_path_.isEmpty()
             ? QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_)
@@ -9824,7 +9954,7 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
                   "Current archive: %1\nPrevious archive retained for recovery: "
                   "%2\nRoute change applies to the next run")
                   .arg(active_archive_output_path_, active_archive_recovery_path_));
-  } else if (archive_enabled) {
+  } else if (archive_output_path_label_ && archive_enabled) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     archive_output_path_label_->setText(QString("Archive: %1")
                                             .arg(archive_output_path(
@@ -9832,7 +9962,30 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
                                                 game_id_edit_ ? game_id_edit_->text().trimmed() : QString(),
                                                 isCalibrationRun())));
   } else {
-    archive_output_path_label_->setText("Archive path will be shown when enabled");
+    if (archive_output_path_label_)
+      archive_output_path_label_->setText("Archive path will be shown when enabled");
+  }
+
+  if (stitched_archive_output_path_label_ && pipeline_running && !active_stitched_archive_output_path_.isEmpty()) {
+    stitched_archive_output_path_label_->setText(
+        active_stitched_archive_recovery_path_.isEmpty()
+            ? QString("Current stitched archive: %1\nRoute change applies to the next run")
+                  .arg(active_stitched_archive_output_path_)
+            : QString(
+                  "Current stitched archive: %1\nPrevious archive retained for recovery: %2\nRoute change applies "
+                  "to the next run")
+                  .arg(active_stitched_archive_output_path_, active_stitched_archive_recovery_path_));
+  } else if (stitched_archive_output_path_label_ && stitched_archive_enabled && !isCalibrationRun()) {
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    stitched_archive_output_path_label_->setText(QString("Stitched archive: %1")
+                                                     .arg(archive_output_path(
+                                                         archive_output_work_dir(env, pipelineWorkingDirectory()),
+                                                         game_id_edit_ ? game_id_edit_->text().trimmed() : QString(),
+                                                         true)));
+  } else if (stitched_archive_output_path_label_) {
+    stitched_archive_output_path_label_->setText(
+        isCalibrationRun() ? "Archive File records the stitched canvas in this mode"
+                           : "Stitched archive path will be shown when enabled");
   }
 }
 
@@ -9986,9 +10139,10 @@ void HStreamWindow::startArchiveFinalization(
     const QString& source_path,
     const QString& game_id,
     bool hevc_video,
-    bool stitching_calibration_archive) {
+    bool stitched_archive,
+    const QString& output_id) {
   if (!archive_finalize_process_ || archive_finalize_process_->state() != QProcess::NotRunning ||
-      telemetry_publication_worker_)
+       telemetry_publication_worker_)
     return;
 
   if (!archive_finalize_dialog_) {
@@ -10064,7 +10218,8 @@ void HStreamWindow::startArchiveFinalization(
   archive_finalize_recovery_log_inode_ = 0;
   archive_finalize_source_path_ = QFileInfo(source_path).absoluteFilePath();
   archive_finalize_game_id_ = game_id;
-  archive_finalize_is_calibration_ = stitching_calibration_archive;
+  archive_finalize_is_stitched_ = stitched_archive;
+  archive_finalize_output_id_ = output_id;
   const QString archive_game_directory = gameDirectory(game_id);
 #ifdef Q_OS_UNIX
   QSet<QString> cleanup_directories = {
@@ -10083,7 +10238,10 @@ void HStreamWindow::startArchiveFinalization(
   }
 #endif
   archive_finalize_target_path_ = available_final_archive_path(
-      archive_game_directory, game_id, archive_finalize_is_calibration_, active_run_telemetry_requested_);
+      archive_game_directory,
+      game_id,
+      archive_finalize_is_stitched_,
+      active_run_telemetry_requested_ && !archive_finalize_is_stitched_);
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
   archive_finalize_pending_failure_detail_.clear();
@@ -10227,7 +10385,7 @@ void HStreamWindow::startArchiveFinalization(
   if (hevc_video)
     arguments << "-tag:v" << "hvc1";
   arguments << archive_finalize_partial_path_;
-  output_states_["archive-file"]->setText("FINALIZING");
+  output_states_[archive_finalize_output_id_]->setText("FINALIZING");
   appendLog(
       QString("finalizing archive without re-encoding: %1 -> %2").arg(source_path, archive_finalize_target_path_));
   archive_finalize_process_->setProgram(ffmpeg);
@@ -10243,6 +10401,22 @@ void HStreamWindow::startArchiveFinalization(
 #endif
   archive_finalize_process_->start();
   updateRunControls();
+}
+
+void HStreamWindow::startNextArchiveFinalization() {
+  if ((archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      telemetry_publication_worker_ || pending_archive_finalizations_.empty()) {
+    return;
+  }
+  if (!archive_finalize_blocked_source_path_.isEmpty()) {
+    if (QFileInfo::exists(archive_finalize_blocked_source_path_))
+      return;
+    archive_finalize_blocked_source_path_.clear();
+    releaseArchiveFinalizerOwnership(true);
+  }
+  PendingArchiveFinalization next = std::move(pending_archive_finalizations_.front());
+  pending_archive_finalizations_.pop_front();
+  startArchiveFinalization(next.source_path, next.game_id, next.hevc_video, next.stitched_archive, next.output_id);
 }
 
 void HStreamWindow::readArchiveFinalizationProgress() {
@@ -10556,8 +10730,8 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         const QString candidate = available_final_archive_path(
             gameDirectory(archive_finalize_game_id_),
             archive_finalize_game_id_,
-            archive_finalize_is_calibration_,
-            active_run_telemetry_requested_);
+            archive_finalize_is_stitched_,
+            active_run_telemetry_requested_ && !archive_finalize_is_stitched_);
         if (candidate.isEmpty()) {
           republish_error = "No safe filename remained for the pinned completed MP4.";
           break;
@@ -10650,8 +10824,8 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     const QString candidate = available_final_archive_path(
         gameDirectory(archive_finalize_game_id_),
         archive_finalize_game_id_,
-        archive_finalize_is_calibration_,
-        active_run_telemetry_requested_);
+        archive_finalize_is_stitched_,
+        active_run_telemetry_requested_ && !archive_finalize_is_stitched_);
     if (candidate.isEmpty()) {
       publication_error = "Could not find an available final filename in the game directory.";
       break;
@@ -10763,7 +10937,7 @@ void HStreamWindow::startTelemetryCsvPublication(
       worker,
       &QThread::finished,
       this,
-      [this, worker, result, destination_suffix, final_size, source_removed, source_was_replaced]() {
+      [this, worker, result, manifest_path, destination_suffix, final_size, source_removed, source_was_replaced]() {
         if (telemetry_publication_worker_ != worker)
           return;
         telemetry_publication_worker_ = nullptr;
@@ -10774,10 +10948,17 @@ void HStreamWindow::startTelemetryCsvPublication(
                             destination_suffix.isEmpty() ? QString("<none>") : destination_suffix,
                             result->published_paths.join(", ")));
         } else {
-          appendLog(QString(
-                        "WARNING: completed DriveGPT CSVs remain available in working storage, but copying them "
-                        "beside the finalized video failed: %1")
-                        .arg(result->error));
+          const QString working_storage = QFileInfo(manifest_path).absolutePath();
+          const QString warning =
+              QString(
+                  "DriveGPT CSV publication failed: %1\nTelemetry working storage: %2")
+                  .arg(result->error, working_storage);
+          archive_finalize_failure_summaries_.append(warning);
+          appendLog(
+              QString(
+                  "WARNING: completed DriveGPT CSVs remain available in working storage at %1, but copying them "
+                  "beside the finalized video failed: %2")
+                  .arg(working_storage, result->error));
         }
         finishCompletedArchivePresentation(final_size, source_removed, source_was_replaced);
       });
@@ -10877,8 +11058,8 @@ void HStreamWindow::completeArchiveFinalization() {
         const QString candidate = available_final_archive_path(
             gameDirectory(archive_finalize_game_id_),
             archive_finalize_game_id_,
-            archive_finalize_is_calibration_,
-            active_run_telemetry_requested_);
+            archive_finalize_is_stitched_,
+            active_run_telemetry_requested_ && !archive_finalize_is_stitched_);
         if (candidate.isEmpty())
           break;
         int rescue_errno = 0;
@@ -10911,7 +11092,7 @@ void HStreamWindow::completeArchiveFinalization() {
     return;
   }
   releaseArchiveFinalizerOwnership(true);
-  if (active_run_telemetry_requested_) {
+  if (active_run_telemetry_requested_ && !archive_finalize_is_stitched_) {
     const QString manifest_path = active_telemetry_manifest_path_;
     const QString csv_suffix =
         hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
@@ -10943,9 +11124,11 @@ void HStreamWindow::finishCompletedArchivePresentation(
     qint64 final_size,
     bool source_removed,
     bool source_was_replaced) {
-  output_states_["archive-file"]->setText("SAVED");
-  if (archive_output_path_label_)
-    archive_output_path_label_->setText(QString("Completed archive: %1").arg(archive_finalize_target_path_));
+  output_states_[archive_finalize_output_id_]->setText("SAVED");
+  QLabel* completed_path_label = archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
+                                                                                   : archive_output_path_label_;
+  if (completed_path_label)
+    completed_path_label->setText(QString("Completed archive: %1").arg(archive_finalize_target_path_));
   archive_finalize_progress_->setRange(0, 1000);
   archive_finalize_progress_->setValue(1000);
   archive_finalize_progress_->setFormat("COMPLETED  •  100.0%");
@@ -10970,8 +11153,42 @@ void HStreamWindow::finishCompletedArchivePresentation(
                   : (source_was_replaced
                          ? QString("; replaced source pathname left untouched at %1").arg(archive_finalize_source_path_)
                          : QString("; source retained at %1").arg(archive_finalize_source_path_))));
-  finishArchiveJobLog();
-  QTimer::singleShot(500, archive_finalize_dialog_, &QDialog::accept);
+  const bool more_archives = !pending_archive_finalizations_.empty();
+  const bool batch_has_failures = !archive_finalize_failure_summaries_.isEmpty();
+  if (!more_archives && active_run_telemetry_requested_) {
+    appendLog(
+        active_telemetry_manifest_path_.isEmpty()
+            ? "DriveGPT CSV export was requested, but the pipeline did not report its working manifest"
+            : QString(
+                  "DriveGPT CSVs completed in working storage at %1; no finalized Program archive exists to "
+                  "provide a matching game-directory suffix")
+                  .arg(QFileInfo(active_telemetry_manifest_path_).absolutePath()));
+    active_run_telemetry_requested_ = false;
+    active_telemetry_manifest_path_.clear();
+  }
+  if (!more_archives)
+    finishArchiveJobLog();
+  startNextArchiveFinalization();
+  if (!more_archives && batch_has_failures) {
+    archive_finalize_progress_->setFormat("COMPLETED WITH ERRORS");
+    archive_finalize_headline_->setText("Video finalization completed with errors");
+    archive_finalize_detail_->setText(
+        QString("Completed archive:\n%1\n\n%2")
+            .arg(archive_finalize_target_path_, archive_finalize_failure_summaries_.join("\n\n")));
+    archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxWarning).pixmap(32, 32));
+    for (QWidget* widget :
+         {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
+      widget->setProperty("finalizationState", "failed");
+      widget->style()->unpolish(widget);
+      widget->style()->polish(widget);
+    }
+    archive_finalize_ok_button_->show();
+    static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
+    archive_finalize_dialog_->show();
+    archive_finalize_dialog_->raise();
+  } else if (!more_archives) {
+    QTimer::singleShot(500, archive_finalize_dialog_, &QDialog::accept);
+  }
   updateRunControls();
   maybeStartDeferredRestart();
 }
@@ -10979,13 +11196,21 @@ void HStreamWindow::finishCompletedArchivePresentation(
 void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail) {
   archive_finalize_failed_ = true;
   archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
-  output_states_["archive-file"]->setText("ERROR");
+  output_states_[archive_finalize_output_id_]->setText("ERROR");
   archive_finalize_progress_->setRange(0, 1000);
   archive_finalize_progress_->setValue(1000);
   archive_finalize_progress_->setFormat("ERROR");
   archive_finalize_headline_->setText("Video finalization failed");
-  archive_finalize_detail_->setText(QString("%1\n\nThe completed archive was retained for recovery at:\n%2")
-                                        .arg(failure_detail, archive_finalize_source_path_));
+  const QString route_name = archive_finalize_is_stitched_ ? "Stitched" : "Program";
+  const QString failure_summary =
+      QString("%1 archive finalization failed: %2\nRecovery archive: %3")
+          .arg(route_name, failure_detail, archive_finalize_source_path_);
+  archive_finalize_failure_summaries_.append(failure_summary);
+  archive_finalize_detail_->setText(archive_finalize_failure_summaries_.join("\n\n"));
+  QLabel* recovery_path_label = archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
+                                                                                   : archive_output_path_label_;
+  if (recovery_path_label)
+    recovery_path_label->setText(QString("Recovery archive: %1").arg(archive_finalize_source_path_));
   archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
   for (QWidget* widget :
        {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
@@ -10998,7 +11223,23 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   archive_finalize_dialog_->show();
   appendLog(QString("archive finalization failed: %1; recovery archive retained at %2")
                 .arg(failure_detail, archive_finalize_source_path_));
-  finishArchiveJobLogAfterFinalizationFailure();
+  const bool recovery_blocks_queue = !archive_finalize_blocked_source_path_.isEmpty();
+  const bool more_archives = !pending_archive_finalizations_.empty();
+  if (active_run_telemetry_requested_ && (!archive_finalize_is_stitched_ || !more_archives)) {
+    appendLog(
+        active_telemetry_manifest_path_.isEmpty()
+            ? "DriveGPT CSV export was requested, but the pipeline did not report its working manifest"
+            : QString(
+                  "DriveGPT CSVs remain in working storage at %1 because no Program archive was finalized "
+                  "successfully")
+                  .arg(QFileInfo(active_telemetry_manifest_path_).absolutePath()));
+    active_run_telemetry_requested_ = false;
+    active_telemetry_manifest_path_.clear();
+  }
+  if (!more_archives)
+    finishArchiveJobLogAfterFinalizationFailure();
+  if (!recovery_blocks_queue)
+    startNextArchiveFinalization();
   updateRunControls();
   maybeStartDeferredRestart();
 }
@@ -11338,7 +11579,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         }
         QString old_log_cleanup_error;
         const bool original_log_is_ours = path_has_file_identity(original_log_path, original_log_stat);
-        const bool old_log_removed = !original_log_is_ours ||
+        const bool preserve_existing_recovery_log = archive_job_log_recovery_paths_.contains(original_log_path);
+        const bool old_log_removed = preserve_existing_recovery_log || !original_log_is_ours ||
             remove_path_if_same_identity(
                 original_log_path, original_log_stat, &old_log_cleanup_error, candidate_log, &original_log_stat);
         if (!old_log_removed) {
@@ -11430,6 +11672,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
       }
       if (has_job_log)
         archive_job_log_guard_path_ = candidate_log_guard_path;
+      if (has_job_log && !archive_job_log_recovery_paths_.contains(candidate_log))
+        archive_job_log_recovery_paths_.append(candidate_log);
       failed_archive_path = candidate;
       break;
     }
@@ -12573,15 +12817,23 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
 void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      telemetry_publication_worker_;
-  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_)) {
+      !pending_archive_finalizations_.empty() || telemetry_publication_worker_;
+  const bool archive_recovery_was_cleared =
+      !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
+  if (archive_recovery_was_cleared) {
     archive_finalize_blocked_source_path_.clear();
     releaseArchiveFinalizerOwnership(true);
+    if (!pending_archive_finalizations_.empty())
+      QTimer::singleShot(0, this, [this]() { startNextArchiveFinalization(); });
   }
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
       archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
-  const bool archive_recovery_blocked = archive_enabled && !archive_finalize_blocked_source_path_.isEmpty();
+  const auto stitched_archive_toggle = output_toggles_.find("archive-stitched");
+  const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
+      stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
+  const bool archive_recovery_blocked =
+      (archive_enabled || stitched_archive_enabled) && !archive_finalize_blocked_source_path_.isEmpty();
   if (!pipeline_state_) {
     return;
   }
@@ -12608,6 +12860,17 @@ void HStreamWindow::updateRunControls() {
   }
   if (run_mode_selector_) {
     run_mode_selector_->setEnabled(!running && !finalizing);
+  }
+  if (const auto stitched_archive = output_toggles_.find("archive-stitched");
+      stitched_archive != output_toggles_.end() && stitched_archive->second) {
+    stitched_archive->second->setEnabled(!running && !finalizing && !isCalibrationRun());
+    set_control_help(
+        stitched_archive->second,
+        isCalibrationRun()
+            ? "Archive File already records the stitched canvas with audio in Stitching Calibration mode; Archive "
+              "Stitched is an independent Program-mode output."
+            : "Encode the full stitched canvas with audio alongside the independently selectable Program archive. "
+              "Known 10-bit-or-higher inputs use HEVC Main10 SDR Rec.709; otherwise it remains 8-bit.");
   }
   if (control_points_spin_) {
     control_points_spin_->setEnabled(!running && !finalizing);
@@ -12672,7 +12935,7 @@ void HStreamWindow::maybeStartDeferredRestart() {
   if (!deferred_restart_requested_ || live_rotation_authorization_pending_ ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) ||
       (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      telemetry_publication_worker_) {
+      !pending_archive_finalizations_.empty() || telemetry_publication_worker_) {
     return;
   }
   const bool request_is_current = deferred_restart_pipeline_generation_ == pipeline_run_generation_ && game_id_edit_ &&
@@ -15417,7 +15680,7 @@ void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   output_states_[id]->setText(pipeline_running ? "NEXT RUN" : (enabled ? "ENABLED" : "STOPPED"));
   appendLog(QString("output route %1 %2").arg(id, enabled ? "enabled" : "disabled"));
-  if (id == "archive-file") {
+  if (id == "archive-file" || id == "archive-stitched") {
     updateArchiveOutputPathLabel();
   }
   if (pipeline_running) {
