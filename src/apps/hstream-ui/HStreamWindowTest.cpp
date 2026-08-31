@@ -7165,6 +7165,70 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
   drivegpt_csv->setChecked(false);
 
+  const bool telemetry_source_removed =
+      QFile::remove(QDir(telemetry_working).filePath("camera_fast-11.csv"));
+  const auto run_telemetry_publication_failure = [&](const QString& label, bool with_stitched_archive) {
+    const QString failed_telemetry_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
+    const QString failed_telemetry_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_telemetry_program_source.toLocal8Bit());
+    if (with_stitched_archive) {
+      qputenv(
+          "HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", failed_telemetry_stitched_source.toLocal8Bit());
+    } else {
+      qunsetenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH");
+    }
+    qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
+    qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "100");
+    stitched_archive->setChecked(with_stitched_archive);
+    drivegpt_csv->setChecked(true);
+    activate(start);
+    for (int i = 0; i < 600 &&
+         (window->outputStateText("archive-file") != "SAVED" ||
+          (with_stitched_archive && window->outputStateText("archive-stitched") != "SAVED"));
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
+    qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
+    drivegpt_csv->setChecked(false);
+    const QString failed_telemetry_program_completed =
+        archive_path->text().section("Completed archive: ", 1).trimmed();
+    const QString failed_telemetry_stitched_completed = with_stitched_archive
+        ? stitched_archive_path->text().section("Completed archive: ", 1).trimmed()
+        : QString();
+    auto* failed_telemetry_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+    auto* failed_telemetry_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+    auto* failed_telemetry_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+    const QString telemetry_warning = "DriveGPT CSV publication failed:";
+    const int telemetry_warning_index = window->logText().lastIndexOf("WARNING: completed DriveGPT CSVs");
+    const int stitched_after_warning_index =
+        window->logText().lastIndexOf(QString("finalizing archive without re-encoding: %1")
+                                         .arg(failed_telemetry_stitched_source));
+    const bool result = expect(
+        window->outputStateText("archive-file") == "SAVED" &&
+            (!with_stitched_archive || window->outputStateText("archive-stitched") == "SAVED") &&
+            failed_telemetry_dialog && failed_telemetry_dialog->isVisible() && failed_telemetry_ok_button &&
+            failed_telemetry_ok_button->isVisible() && failed_telemetry_detail &&
+            failed_telemetry_detail->text().contains(telemetry_warning) &&
+            failed_telemetry_detail->text().contains(telemetry_working) && telemetry_warning_index >= 0 &&
+            (!with_stitched_archive || stitched_after_warning_index > telemetry_warning_index),
+        QString("A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
+                "without blocking saved video outputs")
+            .arg(with_stitched_archive ? "dual-archive" : "Program-only")
+            .toStdString());
+    QFile::remove(failed_telemetry_program_completed);
+    QFile::remove(failed_telemetry_stitched_completed);
+    QFile::remove(failed_telemetry_program_source + ".log");
+    if (failed_telemetry_ok_button && failed_telemetry_ok_button->isVisible())
+      activate(failed_telemetry_ok_button);
+    return result;
+  };
+  const bool program_telemetry_failure_visible =
+      telemetry_source_removed && run_telemetry_publication_failure("program-telemetry-failure", false);
+  const bool dual_telemetry_failure_visible =
+      run_telemetry_publication_failure("dual-telemetry-failure", true);
+
   const auto run_route_failure = [&](const QString& label, const QByteArray& fail_route, bool fail_program) {
     const QString failed_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
     const QString failed_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
@@ -7367,7 +7431,8 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     qunsetenv("HM_OUTPUT_WORK_DIR");
   else
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
-  return ok && first_failure_safe && second_failure_safe && both_failures_safe && blocked_recovery_resumed;
+  return ok && program_telemetry_failure_visible && dual_telemetry_failure_visible && first_failure_safe &&
+      second_failure_safe && both_failures_safe && blocked_recovery_resumed;
 }
 
 bool test_projection_parameter_persistence(HStreamWindow* window) {

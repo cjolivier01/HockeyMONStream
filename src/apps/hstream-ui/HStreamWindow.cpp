@@ -10937,7 +10937,7 @@ void HStreamWindow::startTelemetryCsvPublication(
       worker,
       &QThread::finished,
       this,
-      [this, worker, result, destination_suffix, final_size, source_removed, source_was_replaced]() {
+      [this, worker, result, manifest_path, destination_suffix, final_size, source_removed, source_was_replaced]() {
         if (telemetry_publication_worker_ != worker)
           return;
         telemetry_publication_worker_ = nullptr;
@@ -10948,10 +10948,17 @@ void HStreamWindow::startTelemetryCsvPublication(
                             destination_suffix.isEmpty() ? QString("<none>") : destination_suffix,
                             result->published_paths.join(", ")));
         } else {
-          appendLog(QString(
-                        "WARNING: completed DriveGPT CSVs remain available in working storage, but copying them "
-                        "beside the finalized video failed: %1")
-                        .arg(result->error));
+          const QString working_storage = QFileInfo(manifest_path).absolutePath();
+          const QString warning =
+              QString(
+                  "DriveGPT CSV publication failed: %1\nTelemetry working storage: %2")
+                  .arg(result->error, working_storage);
+          archive_finalize_failure_summaries_.append(warning);
+          appendLog(
+              QString(
+                  "WARNING: completed DriveGPT CSVs remain available in working storage at %1, but copying them "
+                  "beside the finalized video failed: %2")
+                  .arg(working_storage, result->error));
         }
         finishCompletedArchivePresentation(final_size, source_removed, source_was_replaced);
       });
