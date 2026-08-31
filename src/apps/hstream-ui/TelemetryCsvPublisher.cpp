@@ -179,8 +179,13 @@ bool remove_owned_path(
     return false;
   }
   if (::unlinkat(directory_fd, filename.constData(), 0) != 0) {
-    if (error)
-      *error = QString("could not remove %1: %2").arg(QFile::decodeName(filename), errno_string(errno));
+    const int unlink_error = errno;
+    const PathIdentityResult after_failure = path_identity(directory_fd, filename, expected);
+    if (after_failure.state == PathIdentityState::kAbsent)
+      return true;
+    if (error) {
+      *error = QString("could not remove %1: %2").arg(QFile::decodeName(filename), errno_string(unlink_error));
+    }
     return false;
   }
   const PathIdentityResult after = path_identity(directory_fd, filename, expected);
@@ -339,8 +344,13 @@ bool remove_owned_directory(
     return false;
   }
   if (::unlinkat(parent_directory_fd, filename.constData(), AT_REMOVEDIR) != 0) {
+    const int unlink_error = errno;
+    const PathIdentityResult after_failure = directory_path_identity(parent_directory_fd, filename, expected);
+    if (after_failure.state == PathIdentityState::kAbsent)
+      return true;
     if (error) {
-      *error = QString("could not remove directory %1: %2").arg(QFile::decodeName(filename), errno_string(errno));
+      *error =
+          QString("could not remove directory %1: %2").arg(QFile::decodeName(filename), errno_string(unlink_error));
     }
     return false;
   }
@@ -589,6 +599,10 @@ bool recover_owned_staging_areas(int game_directory_fd, QString* error) {
       }
     }
     QString removal_error;
+    // NFS may silly-rename an unlinked open file to .nfs*. Release the lock
+    // and descriptor before removing the marker so a client failure cannot
+    // strand hidden marker state in the game directory.
+    marker.fd.reset();
     if (!remove_owned_path(staging_directory_fd.get(), kStagingMarkerFilename, marker.snapshot, &removal_error) ||
         !sync_fd(staging_directory_fd.get())) {
       if (error) {
@@ -599,7 +613,6 @@ bool recover_owned_staging_areas(int game_directory_fd, QString* error) {
       }
       return false;
     }
-    marker.fd.reset();
     if (!remove_owned_directory(game_directory_fd, encoded_name, directory_identity, &removal_error)) {
       if (error)
         *error = QString("could not finish recovery of %1: %2").arg(directory_name, removal_error);
@@ -856,6 +869,10 @@ bool cleanup_named_staging_area(
       artifact.temporary_filename.clear();
   }
   QString removal_error;
+  // Avoid NFS silly-renaming an ownership marker that is still open. Once
+  // the lock is released, concurrent recovery/removal is intentionally
+  // handled as an idempotent success by the identity-checked removers.
+  area->marker_fd.reset();
   if (!remove_owned_path(area->directory_fd.get(), kStagingMarkerFilename, area->marker_identity, &removal_error)) {
     if (error)
       *error = QString("could not remove ownership marker from %1: %2").arg(area->directory_name, removal_error);
@@ -868,7 +885,6 @@ bool cleanup_named_staging_area(
     }
     return false;
   }
-  area->marker_fd.reset();
   const QByteArray encoded_directory_name = QFile::encodeName(area->directory_name);
   if (!remove_owned_directory(game_directory_fd, encoded_directory_name, area->directory_identity, &removal_error)) {
     if (error)
