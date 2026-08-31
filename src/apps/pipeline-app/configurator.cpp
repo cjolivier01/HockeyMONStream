@@ -616,8 +616,7 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       return std::nullopt;
     }
   };
-  auto parsed_framing = [](const std::optional<YAML::Node>& node)
-      -> std::optional<stitching::StitchProjectionFraming> {
+  auto parsed_framing = [](const std::optional<YAML::Node>& node) -> std::optional<stitching::StitchProjectionFraming> {
     if (!node.has_value() || !node->IsMap())
       return std::nullopt;
     YAML::Node wrapper(YAML::NodeType::Map);
@@ -1313,37 +1312,62 @@ bool configurator_internal::hmstitcher_owns_stitching_cleanup(const YAML::Node& 
   return bool_at("stitching.enabled");
 }
 
-std::vector<std::string> configurator_internal::enabled_source_video_uris(const YAML::Node& pipeline) {
-  std::vector<std::string> uris;
+std::vector<std::optional<std::string>> configurator_internal::enabled_source_video_paths(const YAML::Node& pipeline) {
+  std::vector<std::optional<std::string>> paths;
   for (const auto& item : pipeline) {
     const std::string key = item.first.as<std::string>();
     if (!absl::StartsWith(key, "source") || !is_enabled(item.second)) {
       continue;
     }
     const NvDsSourceType source_type = static_cast<NvDsSourceType>(get_node_value<int>(item.second, "type", 0));
+    if (source_type == NV_DS_SOURCE_AUDIO_WAV || source_type == NV_DS_SOURCE_AUDIO_URI ||
+        source_type == NV_DS_SOURCE_ALSA_SRC) {
+      continue;
+    }
     if (source_type != NV_DS_SOURCE_URI && source_type != NV_DS_SOURCE_URI_MULTIPLE) {
+      paths.push_back(std::nullopt);
       continue;
     }
 
+    const size_t initial_size = paths.size();
     std::optional<YAML::Node> uri_list = get_node(item.second, "uri-list");
     if (!uri_list.has_value() || !uri_list->IsDefined()) {
       uri_list = get_node(item.second, "uri_list");
     }
     if (uri_list.has_value() && uri_list->IsSequence()) {
       for (const YAML::Node& uri : *uri_list) {
-        uris.emplace_back(uri.as<std::string>());
+        paths.push_back(local_video_path_from_uri(uri.as<std::string>()));
       }
     } else if (uri_list.has_value() && uri_list->IsScalar()) {
       for (const absl::string_view uri : absl::StrSplit(uri_list->as<std::string>(), ';', absl::SkipEmpty())) {
-        uris.emplace_back(uri.data(), uri.size());
+        paths.push_back(local_video_path_from_uri(std::string(uri)));
       }
     }
     const std::optional<YAML::Node> uri = get_node(item.second, "uri");
     if (uri.has_value() && uri->IsScalar()) {
-      uris.emplace_back(uri->as<std::string>());
+      paths.push_back(local_video_path_from_uri(uri->as<std::string>()));
     }
+    if (paths.size() == initial_size)
+      paths.push_back(std::nullopt);
   }
-  return uris;
+  return paths;
+}
+
+configurator_internal::AutomaticHighBitDepthDecision configurator_internal::decide_automatic_high_bit_depth(
+    const std::vector<std::optional<unsigned int>>& source_bit_depths) {
+  AutomaticHighBitDepthDecision decision;
+  decision.source_count = source_bit_depths.size();
+  for (const std::optional<unsigned int>& depth : source_bit_depths) {
+    if (!depth.has_value() || *depth == 0) {
+      ++decision.unknown_source_count;
+      continue;
+    }
+    decision.minimum_source_bit_depth =
+        decision.minimum_source_bit_depth == 0 ? *depth : std::min(decision.minimum_source_bit_depth, *depth);
+  }
+  decision.enabled =
+      decision.source_count > 0 && decision.unknown_source_count == 0 && decision.minimum_source_bit_depth >= 10;
+  return decision;
 }
 
 configurator_internal::ExplicitStitchingVideoSelection configurator_internal::select_explicit_stitching_videos(
@@ -1800,10 +1824,7 @@ absl::Status create_archive_cleanup_committed(int cleanup_fd, const struct stat&
     return absl::UnavailableError("archive cleanup interruption requested before commit publication");
   }
   if (rename_archive_entry_no_replace(
-          cleanup_fd,
-          kArchiveCleanupCommittedStagingName,
-          cleanup_fd,
-          kArchiveCleanupCommittedName) != 0) {
+          cleanup_fd, kArchiveCleanupCommittedStagingName, cleanup_fd, kArchiveCleanupCommittedName) != 0) {
     const int rename_errno = errno;
     ::unlinkat(cleanup_fd, kArchiveCleanupCommittedStagingName, 0);
     ::fsync(cleanup_fd);
@@ -2868,11 +2889,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
   };
   const auto retire_reconciled_entry = [](const ReconciledEntry& entry) -> absl::Status {
     return remove_archive_entry_if_owned(
-        entry.guard_path,
-        entry.identity,
-        "archive reconciliation guard",
-        &entry.required_path,
-        &entry.identity);
+        entry.guard_path, entry.identity, "archive reconciliation guard", &entry.required_path, &entry.identity);
   };
   const int parent_fd = ::open(parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (parent_fd < 0) {
@@ -3105,8 +3122,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
         }
         if (!candidate_stat->has_value())
           continue;
-        ReconciledEntry interrupted{
-            guarded_public_path, candidate, fs::path(), candidate_stat->value()};
+        ReconciledEntry interrupted{guarded_public_path, candidate, fs::path(), candidate_stat->value()};
         const absl::Status prepare_status = prepare_reconciled_entry(&interrupted);
         if (!prepare_status.ok()) {
           ::close(cleanup_fd);
@@ -3349,8 +3365,8 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
         ::close(cleanup_fd);
         ::close(parent_fd);
         return absl::FailedPreconditionError(TO_STRING(
-            "Archive reconciliation guard identity does not match its cleanup transaction at \""
-            << candidate.string() << "\""));
+            "Archive reconciliation guard identity does not match its cleanup transaction at \"" << candidate.string()
+                                                                                                 << "\""));
       }
       reconciled.push_back({guarded_public_path, candidate, fs::path(), candidate_stat->value()});
     }
@@ -3383,8 +3399,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
           "Failed to sync reconciled cleanup directory \"" << cleanup_path.string()
                                                            << "\": " << std::strerror(saved_errno)));
     }
-    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION") &&
-        !reconciled.empty()) {
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION") && !reconciled.empty()) {
       g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
       const fs::path& public_path = reconciled.front().required_path;
       ::unlink(public_path.c_str());
@@ -6674,6 +6689,218 @@ void Configurator::configure_audio(
   }
 }
 
+void Configurator::configure_stitching_calibration_archive_name(YAML::Node& pipeline) const {
+  for (auto entry : pipeline) {
+    if (!entry.first.IsScalar() || !entry.second.IsMap())
+      continue;
+    const std::string key = entry.first.as<std::string>();
+    YAML::Node sink = entry.second;
+    if (!absl::StartsWith(key, "sink") || !is_enabled(sink) ||
+        static_cast<NvDsSinkType>(get_node_value<int>(sink, "type", 0)) != NV_DS_SINK_ENCODE_FILE) {
+      continue;
+    }
+    const std::string configured = get_node_value<std::string>(sink, "output-file", "");
+    const fs::path configured_path(configured);
+    const std::optional<YAML::Node> canonical_output_file = get_node(config_, "video_out.output_video_path");
+    const bool canonical_output_file_is_explicit = explicit_value_rank("video_out.output_video_path") >= 1 &&
+        canonical_output_file.has_value() && canonical_output_file->IsScalar() &&
+        !canonical_output_file->as<std::string>().empty();
+    const bool output_file_is_explicit =
+        explicit_value_rank("pipeline." + key + ".output-file") >= 1 || canonical_output_file_is_explicit;
+    if (!output_file_is_explicit &&
+        (configured.empty() ||
+         (!configured_path.has_parent_path() &&
+          (configured == kDefaultOutputVideoName || configured == kLegacyDefaultOutputName)))) {
+      sink["output-file"] = "stitched_output.mkv";
+    }
+  }
+}
+
+absl::Status Configurator::configure_source_bit_depth(
+    YAML::Node& pipeline,
+    const std::vector<std::optional<std::string>>& source_video_paths,
+    bool stitching_calibration_only) {
+  YAML::Node stitcher = pipeline["hmstitcher"];
+  if (!stitcher.IsMap())
+    return absl::OkStatus();
+  if (!stitcher["properties"].IsDefined() || stitcher["properties"].IsNull())
+    stitcher["properties"] = YAML::Node(YAML::NodeType::Map);
+  if (!stitcher["properties"].IsMap())
+    return absl::InvalidArgumentError("pipeline.hmstitcher.properties must be a map");
+  YAML::Node stitcher_properties = stitcher["properties"];
+
+  struct ModeCandidate {
+    YAML::Node value;
+    std::string path;
+    int rank;
+    int priority;
+  };
+  std::vector<ModeCandidate> mode_candidates;
+  const auto add_mode_candidate = [&](const char* path, int priority) {
+    const std::optional<YAML::Node> value = get_node(config_, path);
+    if (value.has_value() && value->IsDefined() && !value->IsNull())
+      mode_candidates.push_back({YAML::Clone(*value), path, std::max(0, explicit_value_rank(path)), priority});
+  };
+  add_mode_candidate("pipeline.hmstitcher.properties.high-bit-depth", 2);
+  add_mode_candidate("hstream_ui.camera_controls.Use_10_Bit_Grading", 1);
+  const ModeCandidate* selected_mode = nullptr;
+  for (const ModeCandidate& candidate : mode_candidates) {
+    if (!selected_mode || candidate.rank > selected_mode->rank ||
+        (candidate.rank == selected_mode->rank && candidate.priority > selected_mode->priority)) {
+      selected_mode = &candidate;
+    }
+  }
+
+  std::optional<bool> forced_high_bit_depth;
+  if (selected_mode) {
+    if (!selected_mode->value.IsScalar())
+      return absl::InvalidArgumentError(selected_mode->path + " must be auto or a boolean");
+    std::string normalized = selected_mode->value.as<std::string>();
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char character) {
+      return static_cast<char>(std::tolower(character));
+    });
+    if (normalized == "auto") {
+      forced_high_bit_depth.reset();
+    } else if (normalized == "true" || normalized == "1") {
+      forced_high_bit_depth = true;
+    } else if (normalized == "false" || normalized == "0") {
+      forced_high_bit_depth = false;
+    } else {
+      return absl::InvalidArgumentError(selected_mode->path + " must be auto, true, false, 1, or 0");
+    }
+  }
+
+  const bool stitcher_enabled = get_node_value<int>(stitcher, "enable", false) != 0;
+  configurator_internal::AutomaticHighBitDepthDecision automatic_decision;
+  bool high_bit_depth = forced_high_bit_depth.value_or(false);
+  const char* selection_mode =
+      forced_high_bit_depth.has_value() ? (*forced_high_bit_depth ? "forced-on" : "forced-off") : "auto";
+  if (!stitcher_enabled) {
+    high_bit_depth = false;
+    selection_mode = "stitcher-disabled";
+  } else if (!forced_high_bit_depth.has_value()) {
+    std::vector<std::optional<unsigned int>> source_depths;
+    std::unordered_set<std::string> visited;
+    for (const std::optional<std::string>& source_path : source_video_paths) {
+      if (!source_path.has_value()) {
+        source_depths.push_back(std::nullopt);
+        continue;
+      }
+      const std::string normalized_path = fs::path(*source_path).lexically_normal().string();
+      if (normalized_path.empty() || !visited.insert(normalized_path).second)
+        continue;
+      source_depths.push_back(getVideoBitDepth(normalized_path));
+    }
+    automatic_decision = configurator_internal::decide_automatic_high_bit_depth(source_depths);
+    high_bit_depth = automatic_decision.enabled;
+  }
+  stitcher_properties["high-bit-depth"] = high_bit_depth ? 1 : 0;
+
+  struct ToneSpec {
+    const char* ui_name;
+    const char* native_name;
+    double minimum;
+    double maximum;
+    bool boolean;
+    bool ui_hundredths;
+  };
+  constexpr ToneSpec tone_specs[] = {
+      {"Bring_Up_Shadows", "shadow-lift", 0.0, 100.0, false, false},
+      {"Lift_Shadow_Black_Point", "shadow-lift-black-point", 0.0, 1.0, true, false},
+      {"Exposure_x100", "exposure", 0.0, 1.3, false, true},
+  };
+  if (!pipeline["hmplaycropper"].IsDefined() || pipeline["hmplaycropper"].IsNull())
+    pipeline["hmplaycropper"] = YAML::Node(YAML::NodeType::Map);
+  if (!pipeline["hmplaycropper"].IsMap())
+    return absl::InvalidArgumentError("pipeline.hmplaycropper must be a map");
+  YAML::Node cropper = pipeline["hmplaycropper"];
+  if (!cropper["properties"].IsDefined() || cropper["properties"].IsNull())
+    cropper["properties"] = YAML::Node(YAML::NodeType::Map);
+  if (!cropper["properties"].IsMap())
+    return absl::InvalidArgumentError("pipeline.hmplaycropper.properties must be a map");
+  YAML::Node cropper_properties = cropper["properties"];
+
+  struct ToneCandidate {
+    YAML::Node value;
+    std::string path;
+    int rank;
+    int priority;
+    bool ui_value;
+  };
+  for (const ToneSpec& spec : tone_specs) {
+    const std::string ui_path = std::string("hstream_ui.camera_controls.") + spec.ui_name;
+    const std::string stitcher_path = std::string("pipeline.hmstitcher.properties.") + spec.native_name;
+    const std::string cropper_path = std::string("pipeline.hmplaycropper.properties.") + spec.native_name;
+    std::vector<ToneCandidate> candidates;
+    const auto add_candidate = [&](const std::string& path, int priority, bool ui_value) {
+      const std::optional<YAML::Node> value = get_node(config_, path);
+      if (value.has_value() && value->IsDefined() && !value->IsNull()) {
+        candidates.push_back({YAML::Clone(*value), path, std::max(0, explicit_value_rank(path)), priority, ui_value});
+      }
+    };
+    add_candidate(ui_path, 3, true);
+    add_candidate(stitcher_path, high_bit_depth ? 2 : 1, false);
+    add_candidate(cropper_path, high_bit_depth ? 1 : 2, false);
+    if (candidates.empty())
+      continue;
+    const ToneCandidate* selected = &candidates.front();
+    for (const ToneCandidate& candidate : candidates) {
+      if (candidate.rank > selected->rank ||
+          (candidate.rank == selected->rank && candidate.priority > selected->priority)) {
+        selected = &candidate;
+      }
+    }
+
+    YAML::Node normalized_value;
+    try {
+      if (spec.boolean) {
+        const std::string raw = selected->value.as<std::string>();
+        std::string normalized = raw;
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char character) {
+          return static_cast<char>(std::tolower(character));
+        });
+        if (normalized == "true" || normalized == "1")
+          normalized_value = 1;
+        else if (normalized == "false" || normalized == "0")
+          normalized_value = 0;
+        else
+          return absl::InvalidArgumentError(selected->path + " must be true, false, 1, or 0");
+      } else {
+        double value = selected->value.as<double>();
+        if (selected->ui_value && spec.ui_hundredths)
+          value /= 100.0;
+        if (!std::isfinite(value) || value < spec.minimum || value > spec.maximum) {
+          return absl::InvalidArgumentError(
+              TO_STRING(selected->path << " must be from " << spec.minimum << " through " << spec.maximum));
+        }
+        normalized_value = value;
+      }
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + selected->path + ": " + error.what());
+    }
+
+    YAML::Node active_properties = high_bit_depth ? stitcher_properties : cropper_properties;
+    YAML::Node inactive_properties = high_bit_depth ? cropper_properties : stitcher_properties;
+    if (stitching_calibration_only && !high_bit_depth) {
+      stitcher_properties[spec.native_name] = 0;
+      cropper_properties[spec.native_name] = 0;
+    } else {
+      active_properties[spec.native_name] = normalized_value;
+      inactive_properties[spec.native_name] = 0;
+    }
+  }
+
+  g_print(
+      "HSTREAM_HIGH_BIT_DEPTH mode=%s enabled=%d sources=%zu unknown=%zu minimum-source-bit-depth=%u\n",
+      selection_mode,
+      high_bit_depth ? 1 : 0,
+      automatic_decision.source_count,
+      automatic_decision.unknown_source_count,
+      automatic_decision.minimum_source_bit_depth);
+  std::fflush(stdout);
+  return absl::OkStatus();
+}
+
 absl::Status Configurator::configure_encode_file_outputs(
     YAML::Node& pipeline,
     const std::vector<std::string>& source_video_paths) const {
@@ -7298,8 +7525,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection");
   const auto persisted_previous_projection_parameters = get_node(
       persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
-  const auto persisted_previous_projection_framing = get_node(
-      persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_framing");
+  const auto persisted_previous_projection_framing =
+      get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_framing");
   const auto persisted_previous_generated_projection_parameters = get_node(
       persisted_private_config_,
       "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
@@ -7358,8 +7585,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       return std::nullopt;
     }
   };
-  const auto parsed_framing = [](const std::optional<YAML::Node>& node)
-      -> std::optional<stitching::StitchProjectionFraming> {
+  const auto parsed_framing =
+      [](const std::optional<YAML::Node>& node) -> std::optional<stitching::StitchProjectionFraming> {
     if (!node.has_value() || !node->IsMap())
       return std::nullopt;
     YAML::Node wrapper(YAML::NodeType::Map);
@@ -8039,7 +8266,8 @@ absl::Status Configurator::complete_configuration(
     const std::string& clean_expected_invalidation_id,
     bool show_render_sink,
     double show_render_scale,
-    const fs::path& pipeline_config_dir) {
+    const fs::path& pipeline_config_dir,
+    bool stitching_calibration_only) {
   active_stitching_invalidation_id_.clear();
   stitching_calibration_start_stage_.clear();
   validated_stitching_artifacts_.reset();
@@ -8150,8 +8378,9 @@ absl::Status Configurator::complete_configuration(
         stitching::StitchProjectionFraming expected_projection_framing;
         HM_ASSIGN_OR_RETURN(expected_projection_framing, stitching::read_stitch_projection_framing(config_));
         if (get_node_value(config_, "stitching.mapping_backend", std::string()) == "nona") {
-          HM_RETURN_IF_ERROR(stitching::ValidateStitchProjectionFraming(
-              expected_projection, expected_projection_parameters, expected_projection_framing));
+          HM_RETURN_IF_ERROR(
+              stitching::ValidateStitchProjectionFraming(
+                  expected_projection, expected_projection_parameters, expected_projection_framing));
         }
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
@@ -8390,22 +8619,31 @@ absl::Status Configurator::complete_configuration(
     pipeline["streammux"]["frame-num-reset-on-eos"] = "0";
   }
   std::vector<std::string> source_video_paths;
+  std::vector<std::optional<std::string>> source_bit_depth_paths;
   source_video_paths.reserve(left_files.size() + right_files.size());
+  source_bit_depth_paths.reserve(left_files.size() + right_files.size());
   for (const std::string& path : left_files) {
-    source_video_paths.emplace_back(file_maybe_in_game_dir(path));
+    const std::string resolved_path = file_maybe_in_game_dir(path);
+    source_video_paths.push_back(resolved_path);
+    source_bit_depth_paths.push_back(resolved_path);
   }
   for (const std::string& path : right_files) {
-    source_video_paths.emplace_back(file_maybe_in_game_dir(path));
+    const std::string resolved_path = file_maybe_in_game_dir(path);
+    source_video_paths.push_back(resolved_path);
+    source_bit_depth_paths.push_back(resolved_path);
   }
-  const auto append_source_uri = [this, &source_video_paths](const std::string& uri) {
-    const std::optional<std::string> path = local_video_path_from_uri(uri);
+  for (const std::optional<std::string>& path : configurator_internal::enabled_source_video_paths(pipeline)) {
     if (path.has_value() && !path->empty()) {
-      source_video_paths.emplace_back(file_maybe_in_game_dir(*path));
+      const std::string resolved_path = file_maybe_in_game_dir(*path);
+      source_video_paths.push_back(resolved_path);
+      source_bit_depth_paths.push_back(resolved_path);
+    } else {
+      source_bit_depth_paths.push_back(std::nullopt);
     }
-  };
-  for (const std::string& uri : configurator_internal::enabled_source_video_uris(pipeline)) {
-    append_source_uri(uri);
   }
+  if (stitching_calibration_only)
+    configure_stitching_calibration_archive_name(pipeline);
+  HM_RETURN_IF_ERROR(configure_source_bit_depth(pipeline, source_bit_depth_paths, stitching_calibration_only));
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline, source_video_paths));
 
   if (show_render_sink) {

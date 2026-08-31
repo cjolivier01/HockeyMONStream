@@ -73,6 +73,21 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
+    window->active_run_is_calibration_ = active;
+    window->active_run_high_bit_depth_ = false;
+    window->active_run_high_bit_depth_resolved_ = false;
+    window->active_run_high_bit_depth_mode_.clear();
+    window->active_run_source_count_ = 0;
+    window->active_run_unknown_source_count_ = 0;
+    window->active_run_minimum_source_bit_depth_ = 0;
+    window->updateStitchedColorPrecisionControls();
+  }
+
+  static bool reportHighBitDepth(HStreamWindow* window, const QString& line) {
+    return window->handleHighBitDepthOutput(line);
+  }
+
   static bool liveRotationAuthorizationPending(HStreamWindow* window) {
     return window->live_rotation_authorization_pending_;
   }
@@ -424,9 +439,8 @@ bool expect_composed_focus_control(
         return count;
       };
       current_light_pixels = light_pixels(current_center);
-      stale_light_pixels = stale_center.has_value() && *stale_center != current_center
-          ? light_pixels(*stale_center)
-          : 0;
+      stale_light_pixels =
+          stale_center.has_value() && *stale_center != current_center ? light_pixels(*stale_center) : 0;
       if (current_light_pixels >= 8 && stale_light_pixels <= 2)
         return true;
     }
@@ -2455,6 +2469,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* program_controls = require_child<QWidget>(window, "programAssociatedControls");
   auto* program_controls_toggle = require_child<QToolButton>(window, "programControlsToggle");
   auto* stitched_controls = require_child<QWidget>(window, "stitchedAssociatedControls");
+  auto* stitched_bring_up_shadows = require_child<QSlider>(window, "stitchedCameraSlider_Bring_Up_Shadows");
+  auto* stitched_exposure = require_child<QSlider>(window, "stitchedCameraSlider_Exposure_x100");
+  auto* stitched_lift_black_point = require_child<QCheckBox>(window, "stitchedCameraCheck_Lift_Shadow_Black_Point");
+  auto* stitched_force_high_bit = require_child<QCheckBox>(window, "stitchedCameraCheck_Use_10_Bit_Grading");
+  auto* stitched_precision_status = require_child<QLabel>(window, "stitchedColorPrecisionStatus");
   auto* algorithms_scroll = require_child<QScrollArea>(window, "stitchingAlgorithmsScrollArea");
   auto* algorithms_page = require_child<QWidget>(window, "stitchingAlgorithmsTab");
   auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
@@ -2481,9 +2500,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
       !preview_surface || !preview_target || !stitched_surface || !stitched_target || !stitched_host || !camera1_host ||
       !camera1_surface || !camera1_target || !camera1_focus || !camera2_host || !camera2_surface || !camera2_target ||
-      !camera2_focus || !camera3_host || !camera3_surface || !camera3_target || !camera3_focus ||
-      !external_notice || !camera1_notice || !stitched_status || !preview_status || !program_controls ||
-      !program_controls_toggle || !stitched_controls || !algorithms_scroll || !algorithms_page ||
+      !camera2_focus || !camera3_host || !camera3_surface || !camera3_target || !camera3_focus || !external_notice ||
+      !camera1_notice || !stitched_status || !preview_status || !program_controls || !program_controls_toggle ||
+      !stitched_controls || !stitched_bring_up_shadows || !stitched_exposure || !stitched_lift_black_point ||
+      !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll || !algorithms_page ||
       !program_control_tabs || !stitched_control_tabs || !program_focus || !stitched_focus || !top_bar || !setup_row ||
       !log_panel || !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position ||
       !pipeline_process) {
@@ -2574,7 +2594,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const QString original_projection = projection->currentData().toString();
   window->resize(1440, 900);
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(1);
+  stitched_control_tabs->setCurrentIndex(2);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
@@ -2589,11 +2609,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   projection->setCurrentIndex(projection->findData("general-panini"));
   QApplication::processEvents();
-  const bool general_panini_framing_defaults = projection_auto_fov->isEnabled() &&
-      !projection_auto_fov->isChecked() && projection_horizontal_fov->isEnabled() &&
-      projection_horizontal_fov->value() == 180.0 && projection_horizontal_fov->maximum() == 319.91 &&
-      projection_auto_canvas->isEnabled() && projection_auto_canvas->isChecked() &&
-      projection_auto_crop->isEnabled() && !projection_auto_crop->isChecked();
+  const bool general_panini_framing_defaults = projection_auto_fov->isEnabled() && !projection_auto_fov->isChecked() &&
+      projection_horizontal_fov->isEnabled() && projection_horizontal_fov->value() == 180.0 &&
+      projection_horizontal_fov->maximum() == 319.91 && projection_auto_canvas->isEnabled() &&
+      projection_auto_canvas->isChecked() && projection_auto_crop->isEnabled() && !projection_auto_crop->isChecked();
   projection_auto_fov->setChecked(true);
   QApplication::processEvents();
   const bool auto_fov_disables_fixed_value = !projection_horizontal_fov->isEnabled();
@@ -2603,8 +2622,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   projection_auto_crop->setChecked(true);
   projection->setCurrentIndex(projection->findData("rectilinear"));
   QApplication::processEvents();
-  const bool rectilinear_fov_limit = projection_horizontal_fov->maximum() == 179.0 &&
-      projection_horizontal_fov->value() == 179.0;
+  const bool rectilinear_fov_limit =
+      projection_horizontal_fov->maximum() == 179.0 && projection_horizontal_fov->value() == 179.0;
   projection->setCurrentIndex(projection->findData("stereographic"));
   QApplication::processEvents();
   const bool wide_projection_fov_limit = projection_horizontal_fov->maximum() == 359.0;
@@ -2745,18 +2764,23 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               << " triplane-parameters=" << triplane_parameters_visible
               << " fixed-panini-hidden=" << fixed_panini_parameters_hidden
               << " native-hidden=" << parameters_hidden_for_native_backend
-              << " layouts=" << all_projection_layouts_legible
-              << " artifacts=" << all_projection_artifacts_captured << '\n';
+              << " layouts=" << all_projection_layouts_legible << " artifacts=" << all_projection_artifacts_captured
+              << '\n';
   }
   if (!expect(
           program_controls->isAncestorOf(max_speed_x) && program_controls->isAncestorOf(bring_up_shadows) &&
-              stitched_controls->isAncestorOf(rotate) && !camera1_host->isAncestorOf(max_speed_x) &&
+              stitched_controls->isAncestorOf(rotate) && stitched_controls->isAncestorOf(stitched_bring_up_shadows) &&
+              stitched_controls->isAncestorOf(stitched_exposure) &&
+              stitched_controls->isAncestorOf(stitched_lift_black_point) &&
+              stitched_controls->isAncestorOf(stitched_force_high_bit) &&
+              stitched_controls->isAncestorOf(stitched_precision_status) && !camera1_host->isAncestorOf(max_speed_x) &&
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
               stitched_controls->isAncestorOf(control_point_matcher) &&
               stitched_controls->isAncestorOf(mapping_backend) && stitched_controls->isAncestorOf(projection) &&
               stitched_controls->isAncestorOf(stitch_max_output_width) &&
               stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 4 &&
-              stitched_control_tabs->count() == 2 && stitched_control_tabs->tabText(1) == "Algorithms" &&
+              stitched_control_tabs->count() == 3 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
+              stitched_control_tabs->tabText(2) == "Algorithms" &&
               control_point_matcher_label->text() == "Control-point matcher" &&
               mapping_backend_label->text() == "Mapping backend" && projection_label->text() == "Projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
@@ -2774,8 +2798,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               general_panini_framing_defaults && auto_fov_disables_fixed_value && rectilinear_fov_limit &&
               wide_projection_fov_limit && general_panini_fov_restored && !projection_auto_fov->isEnabled() &&
               !projection_horizontal_fov->isEnabled() && !projection_auto_canvas->isEnabled() &&
-              !projection_auto_crop->isEnabled() && all_projection_layouts_legible &&
-              all_projection_artifacts_captured,
+              !projection_auto_crop->isEnabled() && all_projection_layouts_legible && all_projection_artifacts_captured,
           "Algorithm controls must expose compatible projections in the earliest preview tab whose frames reflect "
           "their pipeline stage")) {
     return false;
@@ -2805,7 +2828,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   preview_tabs->setCurrentIndex(1);
-  stitched_control_tabs->setCurrentIndex(1);
+  stitched_control_tabs->setCurrentIndex(2);
   QApplication::processEvents();
   if (!capture_interaction_artifact(window, "stitching-algorithms-controls.png"))
     return false;
@@ -4224,8 +4247,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "A real double-click on a ready GPU preview should focus it across the HStream app area")) {
     return false;
   }
-  const QPoint focused_button_center_before_resize =
-      program_focus->mapTo(window, program_focus->rect().center());
+  const QPoint focused_button_center_before_resize = program_focus->mapTo(window, program_focus->rect().center());
   window->resize(1500, 920);
   QApplication::processEvents();
   if (!expect_x11_widget_state(
@@ -4236,8 +4258,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           program_host->width() >= program_normal_host_size.width() &&
               program_host->height() >= program_normal_host_size.height() &&
               std::abs(preview_target->width() * 9 - preview_target->height() * 16) <= 16 &&
-              program_focus->x() == preview_target->width() - program_focus->width() - 6 &&
-              program_focus->y() == 6,
+              program_focus->x() == preview_target->width() - program_focus->width() - 6 && program_focus->y() == 6,
           "Focused Program video must grow at 16:9 with its restore control pinned to the top-right")) {
     return false;
   }
@@ -5554,10 +5575,11 @@ bool test_output_controls(HStreamWindow* window) {
   auto* add_rtsp = require_child<QPushButton>(window, "addRtspButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
   if (!spare || !archive || !archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop ||
-      !seek_slider || !seek_forward) {
+      !mode || !seek_slider || !seek_forward) {
     return false;
   }
 
@@ -5595,6 +5617,27 @@ bool test_output_controls(HStreamWindow* window) {
   const bool relative_override_resolved = expect(
       archive_path->text().contains(relative_planned_path),
       "A relative HM_OUTPUT_WORK_DIR should resolve from the backend working directory in both the UI and backend");
+  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  const QString calibration_planned_path =
+      QDir(QDir(QDir::currentPath()).filePath("relative-output-test/archive-relative-path-test"))
+          .filePath("stitched_output-with-audio.mkv");
+  const QStringList calibration_archive_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  const bool calibration_archive_path_unmodified = std::none_of(
+      calibration_archive_arguments.cbegin(),
+      calibration_archive_arguments.cend(),
+      [](const QString& argument) {
+        return argument.startsWith("--options=pipeline.sink2.output-file=") ||
+            argument.startsWith("--options=video_out.output_video_path=");
+      });
+  const bool calibration_archive_routed = expect(
+      archive_path->text().contains(calibration_planned_path) &&
+          calibration_archive_arguments.contains("--enable-sinks=RENDER,ENCODE_FILE") &&
+          calibration_archive_path_unmodified &&
+          !calibration_archive_arguments.join(' ').contains("RTMP") &&
+          !calibration_archive_arguments.join(' ').contains("RTSP"),
+      "Stitching Calibration Archive File must record the stitched sink without overriding native or canonical "
+      "custom archive paths or enabling streams");
+  mode->setCurrentIndex(mode->findData("program"));
 
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   game_id_edit->setText("archive-label-refresh-test");
@@ -6871,15 +6914,16 @@ bool test_output_controls(HStreamWindow* window) {
   } else {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
-  return relative_override_resolved && path_refreshes_with_game && path_visible_before_start && path_prepared &&
-      nonlocal_seek_blocked && interrupted_archive_preserved && missing_new_output_reported && job_log_persisted &&
-      incomplete_exit_log_guarded && same_filesystem_log_rollback && cross_filesystem_log_persisted &&
-      finalization_visible && completed_log_persisted && archive_deployed && durability_sync_responsive &&
-      target_cleanup_race_recovered && ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe &&
-      source_cleanup_sync_failure_recovered && cleanup_directory_sync_failure_safe && guard_sync_failure_moved &&
-      failed_archive_retained && no_log_recovery_reserved && post_quarantine_recovery_safe &&
-      recovery_publication_sync_failure_safe && publication_sync_failure_moved && unsafe_retry_blocked &&
-      retry_unblocked_after_recovery && ui_cleanup_owner_scoped;
+  return relative_override_resolved && calibration_archive_routed && path_refreshes_with_game &&
+      path_visible_before_start && path_prepared && nonlocal_seek_blocked && interrupted_archive_preserved &&
+      missing_new_output_reported && job_log_persisted && incomplete_exit_log_guarded && same_filesystem_log_rollback &&
+      cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
+      durability_sync_responsive && target_cleanup_race_recovered && ui_cleanup_restart_reconciled &&
+      ui_cleanup_reconciliation_race_safe && source_cleanup_sync_failure_recovered &&
+      cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
+      no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
+      publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery &&
+      ui_cleanup_owner_scoped;
 }
 
 bool test_projection_parameter_persistence(HStreamWindow* window) {
@@ -7030,16 +7074,14 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   std::ofstream(config_path) << YAML::Dump(generated_framing_override) << '\n';
   activate(create);
   const bool partial_previous_framing_inherits_defaults = expect(
-      !auto_fov->isChecked() && horizontal_fov->value() == 185.0 && auto_canvas->isChecked() &&
-          !auto_crop->isChecked(),
+      !auto_fov->isChecked() && horizontal_fov->value() == 185.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
       "UI load must merge partial previous projection framing over effective inherited defaults");
 
   generated_framing_choices.remove("previous_projection_framing");
   std::ofstream(config_path) << YAML::Dump(generated_framing_override) << '\n';
   activate(create);
   const bool absent_previous_framing_restores_defaults = expect(
-      !auto_fov->isChecked() && horizontal_fov->value() == 180.0 && auto_canvas->isChecked() &&
-          !auto_crop->isChecked(),
+      !auto_fov->isChecked() && horizontal_fov->value() == 180.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
       "UI load must restore inherited projection framing when generated choices displaced no private map");
 
   auto malformed_previous_choice_rejects_marker = [&](const char* key, const char* value, const char* message) {
@@ -7215,7 +7257,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 }
 
 bool test_camera_controls(HStreamWindow* window) {
-  if (!expect(window->cameraTabCount() == 6, "Native-effective controls should be grouped by associated stage")) {
+  if (!expect(window->cameraTabCount() == 7, "Native-effective controls should be grouped by associated stage")) {
     return false;
   }
 
@@ -7233,6 +7275,12 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* exposure = require_child<QSlider>(window, "cameraSlider_Exposure_x100");
   auto* lift_shadow_black_point = require_child<QCheckBox>(window, "cameraCheck_Lift_Shadow_Black_Point");
   auto* use_10_bit_grading = require_child<QCheckBox>(window, "cameraCheck_Use_10_Bit_Grading");
+  auto* stitched_bring_up_shadows = require_child<QSlider>(window, "stitchedCameraSlider_Bring_Up_Shadows");
+  auto* stitched_exposure = require_child<QSlider>(window, "stitchedCameraSlider_Exposure_x100");
+  auto* stitched_lift_shadow_black_point =
+      require_child<QCheckBox>(window, "stitchedCameraCheck_Lift_Shadow_Black_Point");
+  auto* stitched_use_10_bit_grading = require_child<QCheckBox>(window, "stitchedCameraCheck_Use_10_Bit_Grading");
+  auto* stitched_precision_status = require_child<QLabel>(window, "stitchedColorPrecisionStatus");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -7248,9 +7296,10 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   if (!rotate || !fixed_edge_link || !fixed_edge_left || !fixed_edge_right || !stop_delay || !zoom_in_aggressiveness ||
       !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !exposure ||
-      !lift_shadow_black_point || !use_10_bit_grading || !reset || !save || !create || !game_id || !start || !stop ||
-      !restart || !pipeline_process || !mode || !stitch_frame_time || !stitch_max_output_width || !mapping_backend ||
-      !projection) {
+      !lift_shadow_black_point || !use_10_bit_grading || !stitched_bring_up_shadows || !stitched_exposure ||
+      !stitched_lift_shadow_black_point || !stitched_use_10_bit_grading || !stitched_precision_status || !reset ||
+      !save || !create || !game_id || !start || !stop || !restart || !pipeline_process || !mode || !stitch_frame_time ||
+      !stitch_max_output_width || !mapping_backend || !projection) {
     return false;
   }
 
@@ -7305,6 +7354,10 @@ bool test_camera_controls(HStreamWindow* window) {
       "cameraSlider_Exposure_x100",
       "cameraCheck_Lift_Shadow_Black_Point",
       "cameraCheck_Use_10_Bit_Grading",
+      "stitchedCameraSlider_Bring_Up_Shadows",
+      "stitchedCameraSlider_Exposure_x100",
+      "stitchedCameraCheck_Lift_Shadow_Black_Point",
+      "stitchedCameraCheck_Use_10_Bit_Grading",
   };
   for (const QString& object_name : documented_controls) {
     QWidget* control = window->findChild<QWidget*>(object_name);
@@ -7314,6 +7367,90 @@ bool test_camera_controls(HStreamWindow* window) {
       return false;
     }
   }
+
+  mode->setCurrentIndex(mode->findData("program"));
+  bring_up_shadows->setValue(17);
+  if (!expect(
+          stitched_bring_up_shadows->value() == 17,
+          "Program Color slider changes should update the Stitched Color & Precision mirror")) {
+    return false;
+  }
+  stitched_bring_up_shadows->setValue(23);
+  stitched_exposure->setValue(30);
+  stitched_lift_shadow_black_point->setChecked(true);
+  if (!expect(
+          bring_up_shadows->value() == 23 && exposure->value() == 30 && lift_shadow_black_point->isChecked(),
+          "Stitched Color & Precision edits should update the canonical Program Color controls")) {
+    return false;
+  }
+  lift_shadow_black_point->setChecked(false);
+  exposure->setValue(60);
+  if (!expect(
+          !stitched_lift_shadow_black_point->isChecked() && stitched_exposure->value() == 60 &&
+              stitched_precision_status->text().contains("existing 8-bit Program grading"),
+          "Canonical checkbox/slider changes and Program-mode precision status should update the Stitched tab")) {
+    return false;
+  }
+
+  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  stitched_use_10_bit_grading->setCheckState(Qt::PartiallyChecked);
+  if (!expect(
+          stitched_precision_status->text().contains("automatic source-depth detection") &&
+              stitched_bring_up_shadows->isEnabled() && stitched_exposure->isEnabled() &&
+              stitched_lift_shadow_black_point->isEnabled(),
+          "Idle automatic calibration should explain its 10-bit-only color behavior while allowing preset edits")) {
+    return false;
+  }
+  stitched_use_10_bit_grading->setChecked(true);
+  if (!expect(
+          use_10_bit_grading->isChecked() && stitched_precision_status->text().contains("forced 10-bit / FP16"),
+          "The Stitched force override should update the canonical setting and next-run status")) {
+    return false;
+  }
+  use_10_bit_grading->setChecked(false);
+  if (!expect(
+          stitched_precision_status->text().contains("forced standard 8-bit") &&
+              !stitched_bring_up_shadows->isEnabled() && !stitched_exposure->isEnabled() &&
+              !stitched_lift_shadow_black_point->isEnabled(),
+          "The forced-off state should remain distinct from Auto and disable unsupported calibration grading")) {
+    return false;
+  }
+  use_10_bit_grading->setCheckState(Qt::PartiallyChecked);
+  HStreamWindowTestAccess::setCalibrationPrecisionRunActive(window, true);
+  if (!expect(
+          stitched_precision_status->text().contains("Detecting source precision") &&
+              !stitched_bring_up_shadows->isEnabled() && !stitched_exposure->isEnabled() &&
+              !stitched_lift_shadow_black_point->isEnabled() && stitched_use_10_bit_grading->isEnabled(),
+          "Calibration tone controls should wait for the effective source-precision decision while Force stays editable")) {
+    return false;
+  }
+  const bool high_bit_reported = HStreamWindowTestAccess::reportHighBitDepth(
+      window, "HSTREAM_HIGH_BIT_DEPTH mode=auto enabled=1 sources=2 unknown=0 minimum-source-bit-depth=10");
+  if (!expect(
+          high_bit_reported && stitched_precision_status->text().contains("Auto detected: 10-bit / FP16 active") &&
+              stitched_precision_status->text().contains("minimum 10-bit") && stitched_bring_up_shadows->isEnabled() &&
+              stitched_exposure->isEnabled() && stitched_lift_shadow_black_point->isEnabled(),
+          "An automatic 10-bit decision should unlock calibration color controls and report the effective path")) {
+    return false;
+  }
+  const bool low_bit_reported = HStreamWindowTestAccess::reportHighBitDepth(
+      window, "HSTREAM_HIGH_BIT_DEPTH mode=auto enabled=0 sources=2 unknown=0 minimum-source-bit-depth=8");
+  if (!expect(
+          low_bit_reported && stitched_precision_status->text().contains("minimum source depth is 8-bit") &&
+              !stitched_bring_up_shadows->isEnabled() && !stitched_exposure->isEnabled() &&
+              !stitched_lift_shadow_black_point->isEnabled() && stitched_use_10_bit_grading->isEnabled(),
+          "An 8-bit calibration decision should disable only the unsupported tone controls")) {
+    return false;
+  }
+  const bool unknown_reported = HStreamWindowTestAccess::reportHighBitDepth(
+      window, "HSTREAM_HIGH_BIT_DEPTH mode=auto enabled=0 sources=2 unknown=1 minimum-source-bit-depth=10");
+  if (!expect(
+          unknown_reported && stitched_precision_status->text().contains("1 of 2 source bit depths are unknown"),
+          "Unknown source precision should explain why calibration grading is unavailable")) {
+    return false;
+  }
+  HStreamWindowTestAccess::setCalibrationPrecisionRunActive(window, false);
+  mode->setCurrentIndex(mode->findData("program"));
 
   game_id->setText("ui-camera-control-game");
   activate(create);
@@ -7333,7 +7470,10 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") == 100 &&
               window->cameraControlValue("Lift_Shadow_Black_Point") == 0 && !lift_shadow_black_point->isChecked() &&
               window->cameraControlValue("Exposure_x100") == 0 &&
-              window->cameraControlValue("Use_10_Bit_Grading") == 0 && !use_10_bit_grading->isChecked(),
+              window->cameraControlValue("Use_10_Bit_Grading") == 0 &&
+              use_10_bit_grading->checkState() == Qt::PartiallyChecked && stitched_bring_up_shadows->value() == 0 &&
+              stitched_exposure->value() == 0 && !stitched_lift_shadow_black_point->isChecked() &&
+              stitched_use_10_bit_grading->checkState() == Qt::PartiallyChecked,
           "Camera control defaults should be transformed directly from the bundled baseline")) {
     return false;
   }
@@ -7344,26 +7484,27 @@ bool test_camera_controls(HStreamWindow* window) {
   const QStringList high_bit_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   if (!expect(
           high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=1") &&
-              high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift=35") &&
-              high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift-black-point=1") &&
-              high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.exposure=0.60") &&
-              high_bit_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift=0") &&
-              high_bit_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=0") &&
-              high_bit_arguments.contains("--options=pipeline.hmplaycropper.properties.exposure=0"),
-          "High-bit launch should grade only in the FP16 stitcher")) {
+              high_bit_arguments.contains("--options=hstream_ui.camera_controls.Bring_Up_Shadows=35") &&
+              high_bit_arguments.contains("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1") &&
+              high_bit_arguments.contains("--options=hstream_ui.camera_controls.Exposure_x100=60"),
+          "A forced high-bit launch should let the CLI route canonical tone controls to the FP16 stitcher")) {
     return false;
   }
   use_10_bit_grading->setChecked(false);
-  const QStringList rgba8_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  const QStringList forced_8_bit_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   if (!expect(
-          rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=0") &&
-              rgba8_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift=35") &&
-              rgba8_arguments.contains("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=1") &&
-              rgba8_arguments.contains("--options=pipeline.hmplaycropper.properties.exposure=0.60") &&
-              rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift=0") &&
-              rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.shadow-lift-black-point=0") &&
-              rgba8_arguments.contains("--options=pipeline.hmstitcher.properties.exposure=0"),
-          "RGBA8 launch should grade only in playcropper")) {
+          forced_8_bit_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=0") &&
+              forced_8_bit_arguments.contains("--options=hstream_ui.camera_controls.Bring_Up_Shadows=35") &&
+              forced_8_bit_arguments.contains("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1") &&
+              forced_8_bit_arguments.contains("--options=hstream_ui.camera_controls.Exposure_x100=60"),
+          "A forced standard launch should preserve the explicit off state and canonical tone controls")) {
+    return false;
+  }
+  use_10_bit_grading->setCheckState(Qt::PartiallyChecked);
+  const QStringList automatic_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  if (!expect(
+          automatic_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=auto"),
+          "The default launch should defer source-depth and tone-stage selection to the CLI")) {
     return false;
   }
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
@@ -7565,7 +7706,8 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 83 &&
               window->cameraControlValue("Stitch_Rotate_Degrees") == 72 &&
               window->cameraControlValue("Bring_Up_Shadows") == 35 && lift_shadow_black_point->isChecked() &&
-              window->cameraControlValue("Exposure_x100") == 60,
+              window->cameraControlValue("Exposure_x100") == 60 && stitched_bring_up_shadows->value() == 35 &&
+              stitched_lift_shadow_black_point->isChecked() && stitched_exposure->value() == 60,
           "Direct per-game baseline-key overrides should initialize every corresponding camera control")) {
     return false;
   }
@@ -7573,7 +7715,8 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
               bring_up_shadows->value() == 0 && exposure->value() == 0 && !lift_shadow_black_point->isChecked() &&
-              save->isEnabled(),
+              stitched_bring_up_shadows->value() == 0 && stitched_exposure->value() == 0 &&
+              !stitched_lift_shadow_black_point->isChecked() && save->isEnabled(),
           "Reset should stage removal of direct per-game canonical overrides")) {
     return false;
   }
@@ -7597,7 +7740,8 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
               bring_up_shadows->value() == 0 && exposure->value() == 0 && !lift_shadow_black_point->isChecked() &&
-              !save->isEnabled(),
+              stitched_bring_up_shadows->value() == 0 && stitched_exposure->value() == 0 &&
+              !stitched_lift_shadow_black_point->isChecked() && !save->isEnabled(),
           "Reload after Reset plus Save should remain on bundled defaults")) {
     return false;
   }
@@ -7623,6 +7767,73 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   {
+    YAML::Node automatic_color(YAML::NodeType::Map);
+    automatic_color["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = "auto";
+    automatic_color["pipeline"]["hmstitcher"]["properties"]["shadow-lift"] = 25;
+    automatic_color["pipeline"]["hmstitcher"]["properties"]["shadow-lift-black-point"] = true;
+    automatic_color["pipeline"]["hmstitcher"]["properties"]["exposure"] = 0.3;
+    std::ofstream out(config);
+    out << automatic_color << "\n";
+  }
+  activate(create);
+  if (!expect(
+          use_10_bit_grading->checkState() == Qt::PartiallyChecked &&
+              stitched_use_10_bit_grading->checkState() == Qt::PartiallyChecked && bring_up_shadows->value() == 25 &&
+              stitched_bring_up_shadows->value() == 25 && lift_shadow_black_point->isChecked() &&
+              stitched_lift_shadow_black_point->isChecked() && exposure->value() == 30 &&
+              stitched_exposure->value() == 30 &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains(
+                  "--options=hstream_ui.camera_controls.Bring_Up_Shadows=25") &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains(
+                  "--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1") &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains(
+                  "--options=hstream_ui.camera_controls.Exposure_x100=30") &&
+              !save->isEnabled(),
+          "Automatic precision should load and launch native stitcher tones without becoming a forced override")) {
+    return false;
+  }
+  bring_up_shadows->setValue(26);
+  activate(save);
+  const YAML::Node saved_automatic_color = YAML::LoadFile(config.string());
+  if (!expect(
+          !lookup_yaml_path(saved_automatic_color, {"pipeline", "hmstitcher", "properties", "high-bit-depth"}, nullptr),
+          "Saving automatic precision should omit a native force override")) {
+    return false;
+  }
+
+  {
+    YAML::Node forced_standard_color(YAML::NodeType::Map);
+    forced_standard_color["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = false;
+    forced_standard_color["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 20;
+    forced_standard_color["hstream_ui"]["camera_controls"]["Use_10_Bit_Grading"] = 1;
+    std::ofstream out(config);
+    out << forced_standard_color << "\n";
+  }
+  activate(create);
+  if (!expect(
+          use_10_bit_grading->checkState() == Qt::Unchecked &&
+              stitched_use_10_bit_grading->checkState() == Qt::Unchecked && bring_up_shadows->value() == 20 &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains(
+                  "--options=pipeline.hmstitcher.properties.high-bit-depth=0") &&
+              !save->isEnabled(),
+          "Native forced-standard precision should override a conflicting legacy UI value and launch explicitly off")) {
+    return false;
+  }
+  bring_up_shadows->setValue(21);
+  activate(save);
+  const YAML::Node saved_forced_standard_color = YAML::LoadFile(config.string());
+  YAML::Node saved_forced_standard_mode;
+  if (!expect(
+          lookup_yaml_path(
+              saved_forced_standard_color,
+              {"pipeline", "hmstitcher", "properties", "high-bit-depth"},
+              &saved_forced_standard_mode) &&
+              !saved_forced_standard_mode.as<bool>(),
+          "Saving forced standard precision should persist an explicit false override")) {
+    return false;
+  }
+
+  {
     YAML::Node high_bit_color(YAML::NodeType::Map);
     high_bit_color["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = true;
     high_bit_color["pipeline"]["hmstitcher"]["properties"]["shadow-lift"] = 35;
@@ -7635,7 +7846,9 @@ bool test_camera_controls(HStreamWindow* window) {
   activate(create);
   if (!expect(
           use_10_bit_grading->isChecked() && bring_up_shadows->value() == 35 && lift_shadow_black_point->isChecked() &&
-              exposure->value() == 60 && !save->isEnabled(),
+              exposure->value() == 60 && stitched_use_10_bit_grading->isChecked() &&
+              stitched_bring_up_shadows->value() == 35 && stitched_lift_shadow_black_point->isChecked() &&
+              stitched_exposure->value() == 60 && !save->isEnabled(),
           "High-bit presets should load grading controls from the FP16 stitcher instead of stale playcropper values")) {
     return false;
   }
@@ -8473,19 +8686,19 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   if (!expect(
-          window->logText().contains("--options=pipeline.hmplaycropper.properties.shadow-lift=45"),
+          window->logText().contains("--options=hstream_ui.camera_controls.Bring_Up_Shadows=45"),
           "Program launch should override stale canonical shadow lift with the effective UI value")) {
     activate(stop);
     return false;
   }
   if (!expect(
-          window->logText().contains("--options=pipeline.hmplaycropper.properties.shadow-lift-black-point=1"),
+          window->logText().contains("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1"),
           "Program launch should override stale canonical black-point lift with the effective checkbox value")) {
     activate(stop);
     return false;
   }
   if (!expect(
-          window->logText().contains("--options=pipeline.hmplaycropper.properties.exposure=0.30"),
+          window->logText().contains("--options=hstream_ui.camera_controls.Exposure_x100=30"),
           "Program launch should override stale canonical exposure with the effective UI value")) {
     activate(stop);
     return false;
@@ -9276,8 +9489,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
         require_child<QSlider>(&user_default_window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
     ok = game_id && create && save && start && stop && mode && stitch_frame_time && stitch_max_output_width &&
         control_point_matcher && mapping_backend && projection && run_autooptimizer && stitch_rotation &&
-        fixed_edge_left &&
-        fixed_edge_right;
+        fixed_edge_left && fixed_edge_right;
     if (ok) {
       game_id->setText("ui-user-stitch-default");
       activate(create);
@@ -9353,8 +9565,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       ok &= expect(
           normalized_backend["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
               !normalized_backend["stitching"]["run_autooptimizer"].as<bool>() &&
-              normalized_backend["stitching"]["projection"].as<std::string>() == "rectilinear" &&
-              !save->isEnabled(),
+              normalized_backend["stitching"]["projection"].as<std::string>() == "rectilinear" && !save->isEnabled(),
           "Saving a normalized backend pair must persist MAGSAC with the autooptimizer disabled");
 
       copied_config_node = YAML::LoadFile(copied_config.string());
@@ -10235,8 +10446,7 @@ bool test_cleanup_transaction_protocol() {
       "NFS cleanup must restore the pinned identity if durability sync fails before releasing a silly-rename pin");
   if (!preclose_sync_recovery) {
     std::cerr << "preclose recovery result=" << preclose_sync_removed
-              << " remove-error=" << preclose_sync_error.toStdString()
-              << " reconciled=" << preclose_reconciled
+              << " remove-error=" << preclose_sync_error.toStdString() << " reconciled=" << preclose_reconciled
               << " reconcile-error=" << preclose_reconciliation_error.toStdString()
               << " recovered-open=" << preclose_recovered_opened
               << " transaction=" << cleanup_transaction(preclose_sync_dir).toStdString() << '\n';
@@ -10278,16 +10488,15 @@ bool test_cleanup_transaction_protocol() {
   const QString pending_commit_target = QDir(pending_commit_dir).filePath("pending-commit.mp4");
   struct stat pending_commit_stat{};
   QString pending_commit_error;
-  const bool pending_commit_setup =
-      write_file(pending_commit_target, "trusted pending-commit UI cleanup") &&
+  const bool pending_commit_setup = write_file(pending_commit_target, "trusted pending-commit UI cleanup") &&
       file_identity(pending_commit_target, &pending_commit_stat);
   qputenv("HSTREAM_UI_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH", "1");
   const bool pending_commit_first = pending_commit_setup &&
       hm::ui_internal::remove_owned_path_for_test(
-          pending_commit_target,
-          static_cast<quint64>(pending_commit_stat.st_dev),
-          static_cast<quint64>(pending_commit_stat.st_ino),
-          &pending_commit_error);
+                                        pending_commit_target,
+                                        static_cast<quint64>(pending_commit_stat.st_dev),
+                                        static_cast<quint64>(pending_commit_stat.st_ino),
+                                        &pending_commit_error);
   qunsetenv("HSTREAM_UI_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH");
   const QString pending_commit_transaction = cleanup_transaction(pending_commit_dir);
   const bool pending_commit_unpublished = !pending_commit_transaction.isEmpty() &&
@@ -10314,18 +10523,17 @@ bool test_cleanup_transaction_protocol() {
   const QString missing_fallback_target = QDir(missing_fallback_dir).filePath("missing-fallback.mp4");
   struct stat missing_fallback_stat{};
   QString missing_fallback_error;
-  const bool missing_fallback_setup =
-      write_file(missing_fallback_target, "trusted missing-fallback UI cleanup") &&
+  const bool missing_fallback_setup = write_file(missing_fallback_target, "trusted missing-fallback UI cleanup") &&
       file_identity(missing_fallback_target, &missing_fallback_stat);
   qputenv(
       "HSTREAM_UI_TEST_REMOVE_FALLBACK_BEFORE_QUARANTINE",
       (missing_fallback_target + ".hstream-cleanup-pin").toLocal8Bit());
   const bool missing_fallback_first = missing_fallback_setup &&
       hm::ui_internal::remove_owned_path_for_test(
-          missing_fallback_target,
-          static_cast<quint64>(missing_fallback_stat.st_dev),
-          static_cast<quint64>(missing_fallback_stat.st_ino),
-          &missing_fallback_error);
+                                          missing_fallback_target,
+                                          static_cast<quint64>(missing_fallback_stat.st_dev),
+                                          static_cast<quint64>(missing_fallback_stat.st_ino),
+                                          &missing_fallback_error);
   qunsetenv("HSTREAM_UI_TEST_REMOVE_FALLBACK_BEFORE_QUARANTINE");
   const QString missing_fallback_transaction = cleanup_transaction(missing_fallback_dir);
   const bool missing_fallback_uncommitted = !missing_fallback_transaction.isEmpty() &&
@@ -10414,16 +10622,13 @@ bool test_cleanup_transaction_protocol() {
   };
   bool deep_cleanup_chain_setup = true;
   for (qsizetype index = 0; index < deep_cleanup_ids.size(); ++index) {
-    const QString transaction =
-        QDir(deep_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + deep_cleanup_ids[index]);
+    const QString transaction = QDir(deep_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + deep_cleanup_ids[index]);
     const QString target_name = index == 0
         ? "deep-cleanup-root.mp4"
-        : ".hstream-reconcile-" + deep_cleanup_ids[index - 1] +
-            "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+        : ".hstream-reconcile-" + deep_cleanup_ids[index - 1] + "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
     deep_cleanup_chain_setup = deep_cleanup_chain_setup && QDir().mkpath(transaction) &&
-        write_file(
-            QDir(transaction).filePath("owner"),
-            QByteArray("hstream-cleanup-v2\n") + target_name.toLocal8Bit().toBase64());
+        write_file(QDir(transaction).filePath("owner"),
+                   QByteArray("hstream-cleanup-v2\n") + target_name.toLocal8Bit().toBase64());
   }
   QString deep_cleanup_chain_error;
   const bool deep_cleanup_chain_reconciled =
@@ -10440,28 +10645,23 @@ bool test_cleanup_transaction_protocol() {
   const QString blocked_cleanup_chain_dir = QDir(root.path()).filePath("blocked-cleanup-chain");
   const QString blocked_outer_id = "00000000-0000-4000-8000-000000000070";
   const QString blocked_nested_id = "00000000-0000-4000-8000-000000000080";
-  const QString blocked_outer =
-      QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_outer_id);
-  const QString blocked_nested =
-      QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_nested_id);
+  const QString blocked_outer = QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_outer_id);
+  const QString blocked_nested = QDir(blocked_cleanup_chain_dir).filePath(".hstream-cleanup-v2-" + blocked_nested_id);
   const QString blocked_nested_target =
       ".hstream-reconcile-" + blocked_outer_id + "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
   const bool blocked_cleanup_chain_setup = QDir().mkpath(blocked_outer) && QDir().mkpath(blocked_nested) &&
-      write_file(
-          QDir(blocked_outer).filePath("owner"),
-          QByteArray("hstream-cleanup-v2\n") + QByteArray("blocked-cleanup-root.mp4").toBase64()) &&
-      write_file(
-          QDir(blocked_nested).filePath("owner"),
-          QByteArray("hstream-cleanup-v2\n") + blocked_nested_target.toLocal8Bit().toBase64());
+      write_file(QDir(blocked_outer).filePath("owner"),
+                 QByteArray("hstream-cleanup-v2\n") + QByteArray("blocked-cleanup-root.mp4").toBase64()) &&
+      write_file(QDir(blocked_nested).filePath("owner"),
+                 QByteArray("hstream-cleanup-v2\n") + blocked_nested_target.toLocal8Bit().toBase64());
   const int blocked_nested_fd =
       ::open(QFile::encodeName(blocked_nested).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   const bool blocked_cleanup_chain_locked =
       blocked_nested_fd >= 0 && ::flock(blocked_nested_fd, LOCK_EX | LOCK_NB) == 0;
   QString blocked_cleanup_chain_error;
-  const bool blocked_cleanup_chain_reconciled = hm::ui_internal::reconcile_cleanup_directory_for_test(
-      blocked_cleanup_chain_dir, &blocked_cleanup_chain_error);
-  const bool blocked_cleanup_chain_retained =
-      QFileInfo::exists(blocked_outer) && QFileInfo::exists(blocked_nested);
+  const bool blocked_cleanup_chain_reconciled =
+      hm::ui_internal::reconcile_cleanup_directory_for_test(blocked_cleanup_chain_dir, &blocked_cleanup_chain_error);
+  const bool blocked_cleanup_chain_retained = QFileInfo::exists(blocked_outer) && QFileInfo::exists(blocked_nested);
   if (blocked_nested_fd >= 0)
     ::close(blocked_nested_fd);
   QString blocked_cleanup_chain_resume_error;

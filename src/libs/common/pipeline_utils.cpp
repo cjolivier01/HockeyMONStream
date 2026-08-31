@@ -6,13 +6,15 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <regex>
 // #include <stack>
 // #include <vector>
 
+#include <gst/pbutils/pbutils.h>
 #include <opencv2/opencv.hpp>
 
 #include "absl/strings/str_split.h"
-//#include "absl/cleanup/cleanup.h"
+// #include "absl/cleanup/cleanup.h"
 
 #define CHECK_MESSAGE_TYPE(message, type)                      \
   do {                                                         \
@@ -161,6 +163,110 @@ Videoinfo getVideoInfo(const std::string& videoPath) {
   info.num_audio_streams = cap.get(cv::CAP_PROP_AUDIO_TOTAL_STREAMS);
 #endif
   return info;
+}
+
+std::optional<unsigned int> videoBitDepthFromCaps(const GstCaps* caps) {
+  if (!caps || gst_caps_is_empty(caps) || gst_caps_is_any(caps)) {
+    return std::nullopt;
+  }
+
+  std::optional<unsigned int> minimum_depth;
+  const auto consider = [&minimum_depth](unsigned int depth) {
+    if (depth == 0 || depth > 64)
+      return;
+    minimum_depth = minimum_depth.has_value() ? std::min(*minimum_depth, depth) : depth;
+  };
+  const auto consider_field = [&consider](const GstStructure* structure, const char* field) {
+    guint unsigned_value = 0;
+    if (gst_structure_get_uint(structure, field, &unsigned_value)) {
+      consider(unsigned_value);
+      return;
+    }
+    gint signed_value = 0;
+    if (gst_structure_get_int(structure, field, &signed_value) && signed_value > 0)
+      consider(static_cast<unsigned int>(signed_value));
+  };
+  const std::regex encoded_depth(R"((?:^|[-_])(8|10|12|14|16)(?:$|[-_]))", std::regex::icase);
+  const std::regex raw_depth(R"((?:^|_)(8|10|12|14|16)(?:LE|BE|$))", std::regex::icase);
+
+  for (guint index = 0; index < gst_caps_get_size(caps); ++index) {
+    const GstStructure* structure = gst_caps_get_structure(caps, index);
+    if (!structure)
+      continue;
+    consider_field(structure, "bit-depth-luma");
+    consider_field(structure, "bit-depth-chroma");
+    consider_field(structure, "bit-depth");
+
+    for (const char* field : {"profile", "format"}) {
+      const char* value = gst_structure_get_string(structure, field);
+      if (!value)
+        continue;
+      std::cmatch match;
+      const std::regex& pattern = std::string(field) == "format" ? raw_depth : encoded_depth;
+      if (std::regex_search(value, match, pattern) && match.size() > 1) {
+        try {
+          consider(static_cast<unsigned int>(std::stoul(match[1].str())));
+        } catch (const std::exception&) {
+        }
+      }
+    }
+  }
+  return minimum_depth;
+}
+
+std::optional<unsigned int> getVideoBitDepth(const std::string& videoPath) {
+  if (videoPath.empty() || !gst_is_initialized()) {
+    return std::nullopt;
+  }
+
+  GError* error = nullptr;
+  GstDiscoverer* discoverer = gst_discoverer_new(3 * GST_SECOND, &error);
+  if (!discoverer) {
+    if (error)
+      g_error_free(error);
+    return std::nullopt;
+  }
+
+  gchar* absolute_path = g_canonicalize_filename(videoPath.c_str(), nullptr);
+  gchar* uri = absolute_path ? gst_filename_to_uri(absolute_path, &error) : nullptr;
+  g_free(absolute_path);
+  if (!uri) {
+    if (error)
+      g_error_free(error);
+    g_object_unref(discoverer);
+    return std::nullopt;
+  }
+
+  GstDiscovererInfo* info = gst_discoverer_discover_uri(discoverer, uri, &error);
+  g_free(uri);
+  if (error) {
+    g_error_free(error);
+    error = nullptr;
+  }
+  std::optional<unsigned int> result;
+  if (info) {
+    GList* videos = gst_discoverer_info_get_video_streams(info);
+    for (GList* entry = videos; entry && !result.has_value(); entry = entry->next) {
+      auto* video = GST_DISCOVERER_VIDEO_INFO(entry->data);
+      if (!video || gst_discoverer_video_info_is_image(video))
+        continue;
+      GstCaps* caps = gst_discoverer_stream_info_get_caps(GST_DISCOVERER_STREAM_INFO(video));
+      result = videoBitDepthFromCaps(caps);
+      if (caps)
+        gst_caps_unref(caps);
+      if (!result.has_value()) {
+        // Discoverer reports aggregate RGB depth here (24/30/36/48), not
+        // per-component precision. Use it only for unambiguous triplets.
+        const guint aggregate_depth = gst_discoverer_video_info_get_depth(video);
+        if (aggregate_depth >= 24 && aggregate_depth <= 48 && aggregate_depth % 3 == 0)
+          result = aggregate_depth / 3;
+      }
+    }
+    gst_discoverer_stream_info_list_free(videos);
+    gst_discoverer_info_unref(info);
+  }
+  g_object_unref(discoverer);
+  return result;
 }
 
 bool has_node(const YAML::Node& n, const std::string& dot_string, bool non_null) {

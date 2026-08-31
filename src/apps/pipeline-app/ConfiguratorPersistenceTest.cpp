@@ -27,6 +27,22 @@
 
 GST_DEBUG_CATEGORY(NVDS_APP);
 
+namespace hm {
+
+struct ConfiguratorTestAccess {
+  static absl::Status configure_source_bit_depth(Configurator* configurator, bool stitching_calibration_only) {
+    YAML::Node pipeline = configurator->config_["pipeline"];
+    return configurator->configure_source_bit_depth(pipeline, {}, stitching_calibration_only);
+  }
+
+  static void configure_stitching_calibration_archive_name(Configurator* configurator) {
+    YAML::Node pipeline = configurator->config_["pipeline"];
+    configurator->configure_stitching_calibration_archive_name(pipeline);
+  }
+};
+
+} // namespace hm
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -42,6 +58,16 @@ bool expect(bool condition, const char* message) {
 int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
+  const auto automatic_10_bit = hm::configurator_internal::decide_automatic_high_bit_depth({10U, 12U, 10U});
+  const auto automatic_8_bit = hm::configurator_internal::decide_automatic_high_bit_depth({10U, 8U});
+  const auto automatic_unknown = hm::configurator_internal::decide_automatic_high_bit_depth({10U, std::nullopt});
+  const auto automatic_empty = hm::configurator_internal::decide_automatic_high_bit_depth({});
+  ok &= expect(
+      automatic_10_bit.enabled && automatic_10_bit.minimum_source_bit_depth == 10 &&
+          automatic_10_bit.unknown_source_count == 0 && !automatic_8_bit.enabled &&
+          automatic_8_bit.minimum_source_bit_depth == 8 && !automatic_unknown.enabled &&
+          automatic_unknown.unknown_source_count == 1 && !automatic_empty.enabled,
+      "Automatic high-bit selection must require every discovered source to be known and at least 10-bit");
   const auto rotation_value = [](const YAML::Node& config) {
     return hm::configurator_internal::effective_stitch_output_rotation(config);
   };
@@ -359,6 +385,108 @@ play-tracker:
           mapped_defaults["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.0 &&
           !mapped_defaults["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Every supported non-tracker native default must be filled from the bundled canonical baseline");
+
+  const auto prepare_tone_routing = [&](const std::string& game, const char* high_bit_mode) {
+    fs::create_directories(games / game);
+    auto configurator =
+        std::make_unique<hm::Configurator>(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    if (!configurator->configure().ok() ||
+        !configurator->underlay_config("pipeline", mapping_structure_path.string()) ||
+        !configurator->apply_supported_baseline_mappings().ok() ||
+        !configurator->apply_config_item("pipeline.hmstitcher.properties.high-bit-depth", high_bit_mode).ok() ||
+        !configurator->apply_config_item("hstream_ui.camera_controls.Bring_Up_Shadows", "35").ok() ||
+        !configurator->apply_config_item("hstream_ui.camera_controls.Lift_Shadow_Black_Point", "1").ok() ||
+        !configurator->apply_config_item("hstream_ui.camera_controls.Exposure_x100", "60").ok()) {
+      return std::unique_ptr<hm::Configurator>();
+    }
+    return configurator;
+  };
+  auto high_bit_calibration = prepare_tone_routing("high-bit-calibration", "1");
+  const absl::Status high_bit_calibration_status = high_bit_calibration
+      ? hm::ConfiguratorTestAccess::configure_source_bit_depth(
+            high_bit_calibration.get(), /*stitching_calibration_only=*/true)
+      : absl::InternalError("high-bit calibration fixture did not load");
+  auto low_bit_calibration = prepare_tone_routing("low-bit-calibration", "0");
+  const absl::Status low_bit_calibration_status = low_bit_calibration
+      ? hm::ConfiguratorTestAccess::configure_source_bit_depth(
+            low_bit_calibration.get(), /*stitching_calibration_only=*/true)
+      : absl::InternalError("low-bit calibration fixture did not load");
+  auto conflicting_bit_calibration = prepare_tone_routing("conflicting-bit-calibration", "0");
+  const absl::Status conflicting_legacy_mode_status = conflicting_bit_calibration
+      ? conflicting_bit_calibration->apply_config_item("hstream_ui.camera_controls.Use_10_Bit_Grading", "1")
+      : absl::InternalError("conflicting bit calibration fixture did not load");
+  const absl::Status conflicting_bit_calibration_status =
+      conflicting_bit_calibration && conflicting_legacy_mode_status.ok()
+      ? hm::ConfiguratorTestAccess::configure_source_bit_depth(
+            conflicting_bit_calibration.get(), /*stitching_calibration_only=*/true)
+      : absl::InternalError("conflicting bit calibration fixture did not configure");
+  if (high_bit_calibration && low_bit_calibration && conflicting_bit_calibration) {
+    const YAML::Node high_pipeline = high_bit_calibration->config()["pipeline"];
+    const YAML::Node low_pipeline = low_bit_calibration->config()["pipeline"];
+    const YAML::Node conflicting_pipeline = conflicting_bit_calibration->config()["pipeline"];
+    ok &= expect(
+        high_bit_calibration_status.ok() && low_bit_calibration_status.ok() &&
+            high_pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>() == 1 &&
+            high_pipeline["hmstitcher"]["properties"]["shadow-lift"].as<double>() == 35.0 &&
+            high_pipeline["hmstitcher"]["properties"]["shadow-lift-black-point"].as<int>() == 1 &&
+            high_pipeline["hmstitcher"]["properties"]["exposure"].as<double>() == 0.6 &&
+            high_pipeline["hmplaycropper"]["properties"]["shadow-lift"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["shadow-lift"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["shadow-lift-black-point"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["exposure"].as<int>() == 0 &&
+            low_pipeline["hmplaycropper"]["properties"]["shadow-lift"].as<int>() == 0 &&
+            low_pipeline["hmplaycropper"]["properties"]["shadow-lift-black-point"].as<int>() == 0 &&
+            low_pipeline["hmplaycropper"]["properties"]["exposure"].as<int>() == 0 &&
+            conflicting_legacy_mode_status.ok() && conflicting_bit_calibration_status.ok() &&
+            conflicting_pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>() == 0,
+        "Calibration tone controls must route through the high-bit stitcher and remain disabled in 8-bit mode");
+  } else {
+    ok = false;
+  }
+
+  auto calibration_archive = prepare_tone_routing("calibration-archive-name", "0");
+  if (calibration_archive) {
+    YAML::Node archive_pipeline = calibration_archive->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["output-file"] = "tracking_output.mkv";
+    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive.get());
+    ok &= expect(
+        archive_pipeline["sink0"]["output-file"].as<std::string>() == "stitched_output.mkv",
+        "Calibration encode sinks must use the stitched archive basename by default");
+  } else {
+    ok = false;
+  }
+
+  auto explicit_calibration_archive = prepare_tone_routing("explicit-calibration-archive-name", "0");
+  if (explicit_calibration_archive &&
+      explicit_calibration_archive->apply_config_item("pipeline.sink0.output-file", "tracking_output.mkv").ok()) {
+    YAML::Node archive_pipeline = explicit_calibration_archive->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(explicit_calibration_archive.get());
+    ok &= expect(
+        archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv",
+        "Calibration archive naming must preserve an explicit output-file override");
+  } else {
+    ok = false;
+  }
+
+  auto explicit_canonical_calibration_archive =
+      prepare_tone_routing("explicit-canonical-calibration-archive-name", "0");
+  if (explicit_canonical_calibration_archive &&
+      explicit_canonical_calibration_archive->apply_config_item("video_out.output_video_path", "tracking_output.mkv")
+          .ok() &&
+      explicit_canonical_calibration_archive->apply_supported_baseline_mappings().ok()) {
+    YAML::Node archive_pipeline = explicit_canonical_calibration_archive->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
+        explicit_canonical_calibration_archive.get());
+    ok &= expect(
+        archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv",
+        "Calibration archive naming must preserve an explicit canonical output path");
+  } else {
+    ok = false;
+  }
 
   const fs::path primary_draw_baseline_root = root / "primary-draw-baseline";
   fs::create_directories(primary_draw_baseline_root);
@@ -1596,8 +1724,7 @@ play-tracker:
   };
   const absl::Status framing_cli_persisted = framing_cli.persist_effective_stitching_backend_choices();
   auto framing_cli_generated = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
-  hm::Configurator framing_cli_reloaded(
-      "framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  hm::Configurator framing_cli_reloaded("framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status framing_cli_reconfigured = framing_cli_reloaded.configure();
   const absl::Status framing_cli_restored = framing_cli_reloaded.persist_effective_stitching_backend_choices();
   auto framing_cli_final = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
@@ -1613,8 +1740,8 @@ play-tracker:
           (**framing_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["projection_framing"]
                                    ["horizontal_fov"]
                                        .as<double>() == 180.0 &&
-          (**framing_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]
-                                   ["previous_projection_framing"]["horizontal_fov"]
+          (**framing_cli_generated)["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection_framing"]
+                                   ["horizontal_fov"]
                                        .as<double>() == 185.0 &&
           framing_cli_reconfigured.ok() && framing_cli_restored.ok() && framing_cli_final.ok() &&
           framing_cli_final->has_value() &&
@@ -1640,31 +1767,25 @@ play-tracker:
   const absl::Status partial_framing_configured = partial_framing_cli.configure();
   const absl::Status partial_framing_option =
       partial_framing_cli.apply_config_item("stitching.projection_framing.auto_crop", "false");
-  const absl::Status partial_framing_persisted =
-      partial_framing_cli.persist_effective_stitching_backend_choices();
-  auto partial_framing_generated =
-      hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  const absl::Status partial_framing_persisted = partial_framing_cli.persist_effective_stitching_backend_choices();
+  auto partial_framing_generated = hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
   hm::Configurator partial_framing_reloaded(
       "partial-framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status partial_framing_reconfigured = partial_framing_reloaded.configure();
-  const absl::Status partial_framing_restored =
-      partial_framing_reloaded.persist_effective_stitching_backend_choices();
-  auto partial_framing_final =
-      hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  const absl::Status partial_framing_restored = partial_framing_reloaded.persist_effective_stitching_backend_choices();
+  auto partial_framing_final = hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
   const auto partial_previous_framing = partial_framing_generated.ok() && partial_framing_generated->has_value()
       ? hm::get_node(
-            **partial_framing_generated,
-            "hstream_ui.generated_stitching_backend_choices.previous_projection_framing")
+            **partial_framing_generated, "hstream_ui.generated_stitching_backend_choices.previous_projection_framing")
       : std::nullopt;
   const auto restored_partial_framing = partial_framing_final.ok() && partial_framing_final->has_value()
       ? hm::get_node(**partial_framing_final, "stitching.projection_framing")
       : std::nullopt;
   ok &= expect(
       partial_framing_published.ok() && partial_framing_configured.ok() && partial_framing_option.ok() &&
-          partial_framing_persisted.ok() && partial_previous_framing.has_value() &&
-          partial_previous_framing->IsMap() && partial_previous_framing->size() == 1 &&
-          (*partial_previous_framing)["auto_crop"].as<bool>() && partial_framing_reconfigured.ok() &&
-          partial_framing_restored.ok() && restored_partial_framing.has_value() &&
+          partial_framing_persisted.ok() && partial_previous_framing.has_value() && partial_previous_framing->IsMap() &&
+          partial_previous_framing->size() == 1 && (*partial_previous_framing)["auto_crop"].as<bool>() &&
+          partial_framing_reconfigured.ok() && partial_framing_restored.ok() && restored_partial_framing.has_value() &&
           restored_partial_framing->IsMap() && restored_partial_framing->size() == 1 &&
           (*restored_partial_framing)["auto_crop"].as<bool>() &&
           !hm::get_node(**partial_framing_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
@@ -1712,8 +1833,7 @@ play-tracker:
           (**malformed_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
           !(**malformed_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
           !hm::get_node(
-               **malformed_backend_final,
-               "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
+               **malformed_backend_final, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
                .has_value(),
       "A valid CLI override must repair malformed private optimizer provenance across a restart without throwing");
 
@@ -1901,13 +2021,10 @@ play-tracker:
                                        .as<std::string>() == "superpoint-lightglue" &&
           (**backend_partial_final)["hstream_ui"]["generated_stitching_backend_choices"]["previous_mapping_backend"]
                   .as<std::string>() == "nona" &&
-          !hm::get_node(
-               **backend_partial_final,
-               "hstream_ui.generated_stitching_backend_choices.previous_projection")
+          !hm::get_node(**backend_partial_final, "hstream_ui.generated_stitching_backend_choices.previous_projection")
                .has_value() &&
           !hm::get_node(
-               **backend_partial_final,
-               "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer")
+               **backend_partial_final, "hstream_ui.generated_stitching_backend_choices.previous_run_autooptimizer")
                .has_value(),
       "Restoring a partial private backend choice must keep the complete effective worker tuple materialized and its "
       "provenance intact");
@@ -2132,8 +2249,7 @@ play-tracker:
       invalid_previous_choice_is_retained("invalid-previous-control-point-matcher", "previous_control_point_matcher") &&
           invalid_previous_choice_is_retained("invalid-previous-mapping-backend", "previous_mapping_backend") &&
           invalid_previous_choice_is_retained("invalid-previous-projection", "previous_projection") &&
-          invalid_previous_choice_is_retained(
-              "invalid-previous-projection-framing", "previous_projection_framing"),
+          invalid_previous_choice_is_retained("invalid-previous-projection-framing", "previous_projection_framing"),
       "Any present invalid previous algorithm choice must distrust the complete generated marker without partially "
       "restoring its other fields");
 
@@ -2302,14 +2418,28 @@ play-tracker:
   source_uri_spellings["source1"]["enable"] = 0;
   source_uri_spellings["source1"]["type"] = static_cast<int>(NV_DS_SOURCE_URI_MULTIPLE);
   source_uri_spellings["source1"]["uri-list"].push_back("file:///disabled.mp4");
-  const auto source_uris = hm::configurator_internal::enabled_source_video_uris(source_uri_spellings);
+  source_uri_spellings["source2"]["enable"] = 1;
+  source_uri_spellings["source2"]["type"] = static_cast<int>(NV_DS_SOURCE_URI);
+  source_uri_spellings["source2"]["uri"] = "https://example.test/live.m3u8";
+  source_uri_spellings["source3"]["enable"] = 1;
+  source_uri_spellings["source3"]["type"] = static_cast<int>(NV_DS_SOURCE_CAMERA_V4L2);
+  source_uri_spellings["source4"]["enable"] = 1;
+  source_uri_spellings["source4"]["type"] = static_cast<int>(NV_DS_SOURCE_AUDIO_URI);
+  source_uri_spellings["source4"]["uri"] = "file:///audio-only.wav";
+  source_uri_spellings["source5"]["enable"] = 1;
+  source_uri_spellings["source5"]["type"] = static_cast<int>(NV_DS_SOURCE_RTSP);
+  const auto source_paths = hm::configurator_internal::enabled_source_video_paths(source_uri_spellings);
   ok &= expect(
-      source_uris ==
-          std::vector<std::string>{
-              "file:///camera/chapter-1.mp4",
-              "file:///camera/chapter-highest-bitrate.mp4",
-              "file:///camera/chapter-1.mp4"},
-      "Bitrate discovery must inspect every enabled uri_list chapter, including later higher-bitrate entries");
+      source_paths ==
+          std::vector<std::optional<std::string>>{
+              "/camera/chapter-1.mp4",
+              "/camera/chapter-highest-bitrate.mp4",
+              "/camera/chapter-1.mp4",
+              std::nullopt,
+              std::nullopt,
+              std::nullopt},
+      "Precision discovery must inspect every local chapter, conservatively count remote/camera sources, and skip "
+      "audio-only sources");
 
   YAML::Node explicit_roles(YAML::NodeType::Map);
   explicit_roles["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010001.MP4");
@@ -3139,9 +3269,8 @@ play-tracker:
   const bool pending_commit_unpublished = !pending_commit_transaction.empty() &&
       fs::exists(pending_commit_transaction / "owner") &&
       fs::exists(pending_commit_transaction / "committed.pending") &&
-      !fs::exists(pending_commit_transaction / "committed") &&
-      fs::exists(pending_commit_transaction / "guard") && fs::exists(pending_commit_transaction / "fallback") &&
-      !fs::exists(pending_commit_target);
+      !fs::exists(pending_commit_transaction / "committed") && fs::exists(pending_commit_transaction / "guard") &&
+      fs::exists(pending_commit_transaction / "fallback") && !fs::exists(pending_commit_target);
   const auto pending_commit_restart =
       hm::configurator_internal::recover_stale_archive_work_files(pending_commit_dir / "configured.mkv");
   std::ifstream pending_commit_restored_stream(pending_commit_target, std::ios::binary);
@@ -3383,8 +3512,7 @@ play-tracker:
         reconciliation_guard_nested_transaction = true;
       }
     }
-    reconciliation_guard_public_fallback |=
-        fs::is_regular_file(entry) && name.find(".hstream-reconcile-") == 0 &&
+    reconciliation_guard_public_fallback |= fs::is_regular_file(entry) && name.find(".hstream-reconcile-") == 0 &&
         absl::EndsWith(name, ".hstream-cleanup-pin");
   }
   const auto reconciliation_race_resumed =
@@ -3420,23 +3548,21 @@ play-tracker:
   };
   bool deep_cleanup_chain_setup = true;
   for (size_t index = 0; index < deep_cleanup_ids.size(); ++index) {
-    const fs::path transaction =
-        deep_cleanup_chain_dir / (".hstream-cleanup-v2-" + deep_cleanup_ids[index]);
+    const fs::path transaction = deep_cleanup_chain_dir / (".hstream-cleanup-v2-" + deep_cleanup_ids[index]);
     fs::create_directories(transaction);
     const std::string target_name = index == 0
         ? "deep-cleanup-root.mkv"
-        : ".hstream-reconcile-" + deep_cleanup_ids[index - 1] +
-            "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
-    gchar* encoded_target = g_base64_encode(
-        reinterpret_cast<const guchar*>(target_name.data()), static_cast<gsize>(target_name.size()));
+        : ".hstream-reconcile-" + deep_cleanup_ids[index - 1] + "-target-ffffffff-ffff-4fff-8fff-ffffffffffff";
+    gchar* encoded_target =
+        g_base64_encode(reinterpret_cast<const guchar*>(target_name.data()), static_cast<gsize>(target_name.size()));
     std::ofstream owner_stream(transaction / "owner", std::ios::binary);
     owner_stream << "hstream-cleanup-v2\n" << encoded_target;
     owner_stream.close();
     deep_cleanup_chain_setup &= owner_stream.good();
     g_free(encoded_target);
   }
-  const auto deep_cleanup_chain_recovery = hm::configurator_internal::recover_stale_archive_work_files(
-      deep_cleanup_chain_dir / "configured.mkv");
+  const auto deep_cleanup_chain_recovery =
+      hm::configurator_internal::recover_stale_archive_work_files(deep_cleanup_chain_dir / "configured.mkv");
   const bool deep_cleanup_chain_retired =
       std::none_of(fs::directory_iterator(deep_cleanup_chain_dir), fs::directory_iterator(), [](const auto& entry) {
         return entry.path().filename().string().rfind(".hstream-cleanup-v2-", 0) == 0;
@@ -3460,26 +3586,23 @@ play-tracker:
   gchar* blocked_nested_target_encoded = g_base64_encode(
       reinterpret_cast<const guchar*>(blocked_nested_target.data()), static_cast<gsize>(blocked_nested_target.size()));
   std::ofstream(blocked_outer / "owner", std::ios::binary) << "hstream-cleanup-v2\n" << blocked_outer_target;
-  std::ofstream(blocked_nested / "owner", std::ios::binary)
-      << "hstream-cleanup-v2\n"
-      << blocked_nested_target_encoded;
+  std::ofstream(blocked_nested / "owner", std::ios::binary) << "hstream-cleanup-v2\n" << blocked_nested_target_encoded;
   g_free(blocked_outer_target);
   g_free(blocked_nested_target_encoded);
-  const int blocked_nested_fd =
-      ::open(blocked_nested.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const int blocked_nested_fd = ::open(blocked_nested.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   const bool blocked_cleanup_chain_locked =
       blocked_nested_fd >= 0 && ::flock(blocked_nested_fd, LOCK_EX | LOCK_NB) == 0;
-  const auto blocked_cleanup_chain_recovery = hm::configurator_internal::recover_stale_archive_work_files(
-      blocked_cleanup_chain_dir / "configured.mkv");
+  const auto blocked_cleanup_chain_recovery =
+      hm::configurator_internal::recover_stale_archive_work_files(blocked_cleanup_chain_dir / "configured.mkv");
   const bool blocked_cleanup_chain_retained = fs::exists(blocked_outer) && fs::exists(blocked_nested);
   if (blocked_nested_fd >= 0)
     ::close(blocked_nested_fd);
-  const auto blocked_cleanup_chain_resumed = hm::configurator_internal::recover_stale_archive_work_files(
-      blocked_cleanup_chain_dir / "configured.mkv");
+  const auto blocked_cleanup_chain_resumed =
+      hm::configurator_internal::recover_stale_archive_work_files(blocked_cleanup_chain_dir / "configured.mkv");
   ok &= expect(
       blocked_cleanup_chain_locked && !blocked_cleanup_chain_recovery.ok() && blocked_cleanup_chain_retained &&
-          blocked_cleanup_chain_resumed.ok() && blocked_cleanup_chain_resumed->empty() &&
-          !fs::exists(blocked_outer) && !fs::exists(blocked_nested),
+          blocked_cleanup_chain_resumed.ok() && blocked_cleanup_chain_resumed->empty() && !fs::exists(blocked_outer) &&
+          !fs::exists(blocked_nested),
       "Cleanup reconciliation must fail closed at a blocked fixed point and resume after the blocker releases");
 
   const fs::path fallback_restore_race_dir = root / "archive-cleanup-fallback-restore-race";
