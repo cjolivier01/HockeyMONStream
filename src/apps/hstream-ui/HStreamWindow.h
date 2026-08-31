@@ -592,6 +592,7 @@ class HStreamWindow : public QMainWindow {
   QString archive_job_log_path_;
   QString archive_job_log_guard_path_;
   QStringList archive_job_log_cleanup_directories_;
+  QStringList archive_job_log_recovery_paths_;
   QStringList archive_job_log_stale_paths_;
   quint64 archive_job_log_device_{0};
   quint64 archive_job_log_inode_{0};
