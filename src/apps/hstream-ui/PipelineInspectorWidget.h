@@ -17,7 +17,9 @@ class QGraphicsView;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSplitter;
 class QTableWidget;
+class QToolButton;
 
 class PipelineInspectorWidget : public QWidget {
  public:
@@ -36,6 +38,7 @@ class PipelineInspectorWidget : public QWidget {
   QString selectedNodeId() const;
   int nodeCount() const;
   int edgeCount() const;
+  bool graphMaximized() const;
 
  private:
   struct NodeData {
@@ -67,6 +70,7 @@ class PipelineInspectorWidget : public QWidget {
   void showProperties(const QJsonObject& response);
   void selectNode(const QString& node_id);
   void selectNextSearchMatch();
+  void setGraphMaximized(bool maximized);
   void updatePropertyEditor();
   void updateStatus(const QString& text, bool error = false);
   static QByteArray encodeToken(const QString& value);
@@ -85,9 +89,12 @@ class PipelineInspectorWidget : public QWidget {
   std::vector<EdgeData> edges_;
   std::map<QString, QGraphicsRectItem*> node_items_;
   std::vector<QJsonObject> displayed_properties_;
+  QList<int> normal_splitter_sizes_;
+  bool graph_maximized_{false};
 
   QGraphicsView* graph_view_{nullptr};
   QGraphicsScene* graph_scene_{nullptr};
+  QSplitter* splitter_{nullptr};
   QLabel* status_label_{nullptr};
   QLabel* selected_node_label_{nullptr};
   QLineEdit* node_search_{nullptr};
@@ -95,4 +102,5 @@ class PipelineInspectorWidget : public QWidget {
   QTableWidget* property_table_{nullptr};
   QComboBox* property_editor_{nullptr};
   QPushButton* apply_button_{nullptr};
+  QToolButton* graph_maximize_button_{nullptr};
 };
