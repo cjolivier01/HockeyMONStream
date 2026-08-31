@@ -58,14 +58,14 @@ void pause_after_marker_close(void* context) {
       !race->changed.wait_for(lock, std::chrono::milliseconds(200), [&]() { return race->second_acquired_lock; });
 }
 
-void note_before_game_directory_lock(void* context) {
+void note_before_publication_lock(void* context) {
   auto* race = static_cast<MarkerCloseRace*>(context);
   std::lock_guard<std::mutex> lock(race->mutex);
   race->second_waiting_for_lock = true;
   race->changed.notify_all();
 }
 
-void note_after_game_directory_lock(void* context) {
+void note_after_publication_lock(void* context) {
   auto* race = static_cast<MarkerCloseRace*>(context);
   std::lock_guard<std::mutex> lock(race->mutex);
   race->second_acquired_lock = true;
@@ -205,8 +205,8 @@ int main() {
   first_concurrent.after_named_marker_close = pause_after_marker_close;
   hm::ui_internal::TelemetryCsvPublicationTestHooks second_concurrent = named_fallback;
   second_concurrent.callback_context = &marker_close_race;
-  second_concurrent.before_game_directory_lock = note_before_game_directory_lock;
-  second_concurrent.after_game_directory_lock = note_after_game_directory_lock;
+  second_concurrent.before_publication_lock = note_before_publication_lock;
+  second_concurrent.after_publication_lock = note_after_publication_lock;
   hm::ui_internal::TelemetryCsvPublicationResult first_concurrent_result;
   hm::ui_internal::TelemetryCsvPublicationResult second_concurrent_result;
   std::thread first_publisher([&]() {
@@ -231,6 +231,14 @@ int main() {
   valid &= expect(
       marker_close_race.second_was_blocked,
       "a second publisher must remain blocked while the first removes its closed ownership marker");
+  struct stat publication_lock_info{};
+  valid &= expect(
+      ::stat(
+          QFile::encodeName(QDir(concurrent_game).filePath("hstream-telemetry-publication.lock")).constData(),
+          &publication_lock_info) == 0 &&
+          S_ISREG(publication_lock_info.st_mode) && (publication_lock_info.st_mode & 0777) == (S_IRUSR | S_IWUSR) &&
+          publication_lock_info.st_nlink == 1 && publication_lock_info.st_size == 0,
+      "publication serialization must use a persistent, private regular lock file");
   valid &= expect_no_staging_files(concurrent_game);
 
   const auto collision = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2", &named_fallback);

@@ -93,6 +93,7 @@ struct PathIdentityResult {
 constexpr auto kStagingDirectoryPrefix = "hstream-telemetry-stage-v1-";
 constexpr auto kStagingMarkerFilename = "ownership";
 constexpr auto kStagingMarkerMagic = "HSTREAM_TELEMETRY_STAGE_V1";
+constexpr auto kPublicationLockFilename = "hstream-telemetry-publication.lock";
 
 // Named fallback state lives in a random, mode-0700 directory. Its synced
 // marker binds the random token to one destination suffix, and its flock is
@@ -172,6 +173,54 @@ bool lock_fd_exclusively(int fd, QString* error) {
       *error = errno_string(errno);
     return false;
   }
+  return true;
+}
+
+bool open_and_lock_publication_file(int game_directory_fd, UniqueFd* publication_lock, QString* error) {
+  if (!publication_lock)
+    return false;
+  UniqueFd lock_fd(
+      ::openat(
+          game_directory_fd,
+          kPublicationLockFilename,
+          O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+          S_IRUSR | S_IWUSR));
+  if (lock_fd.get() < 0) {
+    if (error)
+      *error = errno_string(errno);
+    return false;
+  }
+  struct stat descriptor_info{};
+  struct stat named_info{};
+  auto identity_is_valid = [&]() {
+    return ::fstat(lock_fd.get(), &descriptor_info) == 0 && S_ISREG(descriptor_info.st_mode) &&
+        (descriptor_info.st_mode & 0777) == (S_IRUSR | S_IWUSR) && descriptor_info.st_uid == ::geteuid() &&
+        descriptor_info.st_nlink == 1 && descriptor_info.st_size == 0 &&
+        ::fstatat(game_directory_fd, kPublicationLockFilename, &named_info, AT_SYMLINK_NOFOLLOW) == 0 &&
+        S_ISREG(named_info.st_mode) && same_identity(descriptor_info, named_info);
+  };
+  if (!identity_is_valid()) {
+    if (error)
+      *error = "publication lock has the wrong identity";
+    return false;
+  }
+  QString lock_error;
+  if (!lock_fd_exclusively(lock_fd.get(), &lock_error)) {
+    if (error)
+      *error = lock_error;
+    return false;
+  }
+  if (!identity_is_valid()) {
+    if (error)
+      *error = "publication lock changed while it was being acquired";
+    return false;
+  }
+  if (!sync_fd(lock_fd.get()) || !sync_fd(game_directory_fd)) {
+    if (error)
+      *error = errno_string(errno);
+    return false;
+  }
+  *publication_lock = std::move(lock_fd);
   return true;
 }
 
@@ -883,7 +932,7 @@ bool cleanup_named_staging_area(
   }
   QString removal_error;
   // Avoid NFS silly-renaming an ownership marker that is still open. The
-  // game-directory lock remains held until this staging directory is gone,
+  // publication lock remains held until this staging directory is gone,
   // so another publisher cannot open the marker after this descriptor closes.
   area->marker_fd.reset();
   if (test_hooks && test_hooks->after_named_marker_close)
@@ -1032,16 +1081,17 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     result.error = QString("could not open game directory %1: %2").arg(game_directory, errno_string(errno));
     return result;
   }
-  if (test_hooks && test_hooks->before_game_directory_lock)
-    test_hooks->before_game_directory_lock(test_hooks->callback_context);
+  if (test_hooks && test_hooks->before_publication_lock)
+    test_hooks->before_publication_lock(test_hooks->callback_context);
+  UniqueFd publication_lock;
   QString lock_error;
-  if (!lock_fd_exclusively(game_directory_fd.get(), &lock_error)) {
+  if (!open_and_lock_publication_file(game_directory_fd.get(), &publication_lock, &lock_error)) {
     result.error =
-        QString("could not lock game directory %1 for telemetry publication: %2").arg(game_directory, lock_error);
+        QString("could not lock telemetry publication in game directory %1: %2").arg(game_directory, lock_error);
     return result;
   }
-  if (test_hooks && test_hooks->after_game_directory_lock)
-    test_hooks->after_game_directory_lock(test_hooks->callback_context);
+  if (test_hooks && test_hooks->after_publication_lock)
+    test_hooks->after_publication_lock(test_hooks->callback_context);
   QString recovery_error;
   if (!recover_owned_staging_areas(game_directory_fd.get(), &recovery_error)) {
     result.error = recovery_error;

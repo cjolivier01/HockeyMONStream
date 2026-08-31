@@ -19,8 +19,8 @@ struct TelemetryCsvPublicationTestHooks {
   bool fail_tracking_commit_sync{false};
   QString rollback_identity_error_filename;
   void* callback_context{nullptr};
-  void (*before_game_directory_lock)(void*){nullptr};
-  void (*after_game_directory_lock)(void*){nullptr};
+  void (*before_publication_lock)(void*){nullptr};
+  void (*after_publication_lock)(void*){nullptr};
   void (*after_named_marker_close)(void*){nullptr};
 };
 
