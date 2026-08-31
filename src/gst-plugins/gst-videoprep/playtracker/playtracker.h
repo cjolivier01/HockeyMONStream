@@ -25,6 +25,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
   bool HandleEvent(GstEvent* event) override;
   bool SetProperty(const Property& prop) override;
+  void Shutdown() override;
   // DSCustomLibraryBase-
 
   absl::Status GenerateOutput(NvDsBatchMeta* batch_meta, NvBufSurface* in_surface, NvBufSurface* out_surface) override;

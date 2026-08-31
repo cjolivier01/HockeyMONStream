@@ -22,10 +22,6 @@ class TestPlayTrackerPriv : public hm::playtracker::PlayTrackerPriv {
  public:
   using PlayTrackerPriv::PlayTrackerPriv;
 
-  void StopTelemetry() {
-    telemetry_csv_.Stop();
-  }
-
   float fixedEdgeRotationAngleLeft() const {
     return fixed_edge_rotation_angle_left_;
   }
@@ -563,7 +559,11 @@ int main() {
     std::cerr << "Pipeline EOS did not mark telemetry outcome\n";
     return 23;
   }
-  priv.StopTelemetry();
+  // Exercise the same lifecycle hook GstVideoPrep calls while transitioning
+  // the element out of PAUSED. Telemetry must not depend on eventual object
+  // destruction because pipeline-app may exit with a retained element ref.
+  priv.Shutdown();
+  priv.Shutdown();
   const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
   const std::string detections = read_file(telemetry_dir / "detections.csv");
   const std::string telemetry_manifest = read_file(telemetry_dir / "hstream_telemetry.json");

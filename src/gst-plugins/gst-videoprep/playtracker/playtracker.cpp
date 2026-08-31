@@ -96,12 +96,21 @@ DsPlayTrackerRuntimeTuning camera_geometry_tuning(
 } // namespace
 
 PlayTrackerPriv::~PlayTrackerPriv() {
-  telemetry_csv_.Stop();
+  Shutdown();
   std::lock_guard<std::mutex> lk(context_mu_);
   if (pt_context_) {
     DsPlayTrackerCtxDeinit(pt_context_);
     pt_context_ = nullptr;
   }
+}
+
+void PlayTrackerPriv::Shutdown() {
+  // GstVideoPrep invokes Shutdown() when the element stops, but the element's
+  // final GObject unref (and therefore this destructor) is not guaranteed to
+  // run before pipeline-app exits. Stop the frame worker first so no producer
+  // can enqueue behind the telemetry drain, then durably commit the CSV set.
+  Super::Shutdown();
+  telemetry_csv_.Stop();
 }
 
 absl::Status PlayTrackerPriv::PreCapsInit(DSCustom_CreateParams* params) {
