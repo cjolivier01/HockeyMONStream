@@ -6733,9 +6733,39 @@ void Configurator::configure_audio(
 }
 
 absl::Status Configurator::configure_stitching_calibration_archive_name(YAML::Node& pipeline) {
+  enum class ArchiveOverrideSource {
+    kLegacyProgram,
+    kCanonical,
+    kStitchedSink,
+  };
   struct LegacyArchiveValue {
     YAML::Node value;
     int rank{-1};
+  };
+  struct ArchiveOverride {
+    YAML::Node value;
+    int rank;
+    ArchiveOverrideSource source;
+  };
+  const auto select_override = [](const YAML::Node& native_value,
+                                  int native_rank,
+                                  const std::optional<YAML::Node>& canonical_value,
+                                  int canonical_rank,
+                                  const LegacyArchiveValue& legacy_value) -> std::optional<ArchiveOverride> {
+    std::optional<ArchiveOverride> selected;
+    const auto consider = [&selected](const YAML::Node& value, int rank, ArchiveOverrideSource source) {
+      if (rank < 1)
+        return;
+      if (!selected.has_value() || rank > selected->rank ||
+          (rank == selected->rank && static_cast<int>(source) > static_cast<int>(selected->source))) {
+        selected = ArchiveOverride{YAML::Clone(value), rank, source};
+      }
+    };
+    consider(legacy_value.value, legacy_value.rank, ArchiveOverrideSource::kLegacyProgram);
+    if (canonical_value.has_value())
+      consider(*canonical_value, canonical_rank, ArchiveOverrideSource::kCanonical);
+    consider(native_value, native_rank, ArchiveOverrideSource::kStitchedSink);
+    return selected;
   };
   LegacyArchiveValue legacy_output_file;
   LegacyArchiveValue legacy_bitrate;
@@ -6775,69 +6805,52 @@ absl::Status Configurator::configure_stitching_calibration_archive_name(YAML::No
     }
     const std::string sink_path = "pipeline." + key + ".";
     const int native_output_rank = explicit_value_rank(sink_path + "output-file");
-    if (native_output_rank < 1) {
-      const YAML::Node* selected_output = nullptr;
-      int selected_output_rank = -1;
-      if (canonical_output_rank >= 1 && canonical_output_file.has_value()) {
-        selected_output = &*canonical_output_file;
-        selected_output_rank = canonical_output_rank;
-      } else if (legacy_output_file.rank >= 1) {
-        selected_output = &legacy_output_file.value;
-        selected_output_rank = legacy_output_file.rank;
-      }
-      if (selected_output) {
-        if (selected_output->IsNull()) {
-          sink["output-file"] = "stitched_output.mkv";
-        } else if (!selected_output->IsScalar() || selected_output->as<std::string>().empty()) {
-          return absl::InvalidArgumentError(
-              selected_output_rank == canonical_output_rank
-                  ? "video_out.output_video_path must be null or a non-empty path"
-                  : "The Program archive output-file override must be null or a non-empty path");
-        } else {
-          sink["output-file"] = selected_output->as<std::string>();
+    const std::optional<ArchiveOverride> selected_output = select_override(
+        sink["output-file"], native_output_rank, canonical_output_file, canonical_output_rank, legacy_output_file);
+    if (selected_output.has_value()) {
+      if (selected_output->value.IsNull()) {
+        sink["output-file"] = "stitched_output.mkv";
+      } else if (!selected_output->value.IsScalar() || selected_output->value.as<std::string>().empty()) {
+        switch (selected_output->source) {
+          case ArchiveOverrideSource::kCanonical:
+            return absl::InvalidArgumentError("video_out.output_video_path must be null or a non-empty path");
+          case ArchiveOverrideSource::kLegacyProgram:
+            return absl::InvalidArgumentError(
+                "The Program archive output-file override must be null or a non-empty path");
+          case ArchiveOverrideSource::kStitchedSink:
+            return absl::InvalidArgumentError(
+                "The stitched archive output-file override must be null or a non-empty path");
         }
-        explicit_value_ranks_[sink_path + "output-file"] = selected_output_rank;
       } else {
-        const std::string configured = get_node_value<std::string>(sink, "output-file", "");
-        const fs::path configured_path(configured);
-        if (configured.empty() ||
-            (!configured_path.has_parent_path() &&
-             (configured == kDefaultOutputVideoName || configured == kLegacyDefaultOutputName))) {
-          sink["output-file"] = "stitched_output.mkv";
-        }
+        sink["output-file"] = selected_output->value.as<std::string>();
       }
-    } else if (sink["output-file"].IsNull()) {
-      sink["output-file"] = "stitched_output.mkv";
-    } else if (!sink["output-file"].IsScalar() || sink["output-file"].as<std::string>().empty()) {
-      return absl::InvalidArgumentError("The stitched archive output-file override must be null or a non-empty path");
+      explicit_value_ranks_[sink_path + "output-file"] = selected_output->rank;
+    } else {
+      const std::string configured = get_node_value<std::string>(sink, "output-file", "");
+      const fs::path configured_path(configured);
+      if (configured.empty() ||
+          (!configured_path.has_parent_path() &&
+           (configured == kDefaultOutputVideoName || configured == kLegacyDefaultOutputName))) {
+        sink["output-file"] = "stitched_output.mkv";
+      }
     }
 
     const int native_bitrate_rank = explicit_value_rank(sink_path + "bitrate");
-    if (native_bitrate_rank < 1) {
-      const YAML::Node* selected_bitrate = nullptr;
-      int selected_bitrate_rank = -1;
-      if (canonical_bitrate_rank >= 1 && canonical_bitrate.has_value()) {
-        selected_bitrate = &*canonical_bitrate;
-        selected_bitrate_rank = canonical_bitrate_rank;
-      } else if (legacy_bitrate.rank >= 1) {
-        selected_bitrate = &legacy_bitrate.value;
-        selected_bitrate_rank = legacy_bitrate.rank;
-      }
-      if (selected_bitrate) {
-        if (selected_bitrate->IsNull() || !selected_bitrate->IsScalar())
-          return absl::InvalidArgumentError("The calibration archive bitrate override must be a positive integer");
-        try {
-          const int64_t value = selected_bitrate->as<int64_t>();
-          if (value <= 0 || value > G_MAXINT)
-            return absl::InvalidArgumentError(
-                "The calibration archive bitrate override must fit a positive native encoder bitrate");
-          sink["bitrate"] = value;
-        } catch (const YAML::Exception& error) {
+    const std::optional<ArchiveOverride> selected_bitrate = select_override(
+        sink["bitrate"], native_bitrate_rank, canonical_bitrate, canonical_bitrate_rank, legacy_bitrate);
+    if (selected_bitrate.has_value()) {
+      if (selected_bitrate->value.IsNull() || !selected_bitrate->value.IsScalar())
+        return absl::InvalidArgumentError("The calibration archive bitrate override must be a positive integer");
+      try {
+        const int64_t value = selected_bitrate->value.as<int64_t>();
+        if (value <= 0 || value > G_MAXINT)
           return absl::InvalidArgumentError(
-              "Invalid calibration archive bitrate override: " + std::string(error.what()));
-        }
-        explicit_value_ranks_[sink_path + "bitrate"] = selected_bitrate_rank;
+              "The calibration archive bitrate override must fit a positive native encoder bitrate");
+        sink["bitrate"] = value;
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError("Invalid calibration archive bitrate override: " + std::string(error.what()));
       }
+      explicit_value_ranks_[sink_path + "bitrate"] = selected_bitrate->rank;
     }
   }
   return absl::OkStatus();

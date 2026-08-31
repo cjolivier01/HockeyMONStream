@@ -45,6 +45,10 @@ struct ConfiguratorTestAccess {
     configurator->config_["video_out"]["output_video_path"] = YAML::Node(YAML::NodeType::Null);
     configurator->explicit_value_ranks_["video_out.output_video_path"] = 3;
   }
+
+  static void set_explicit_rank(Configurator* configurator, const std::string& path, int rank) {
+    configurator->explicit_value_ranks_[path] = rank;
+  }
 };
 
 } // namespace hm
@@ -558,6 +562,59 @@ play-tracker:
   } else {
     ok = false;
   }
+
+  const auto test_calibration_layer_precedence = [&](const std::string& game,
+                                                     int stitched_rank,
+                                                     int canonical_rank,
+                                                     int legacy_rank,
+                                                     const char* expected_path,
+                                                     int expected_bitrate) {
+    auto configurator = prepare_tone_routing(game, "0");
+    if (!configurator)
+      return false;
+    YAML::Node archive_pipeline = configurator->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+    archive_pipeline["sink1"]["enable"] = 0;
+    archive_pipeline["sink1"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_FILE);
+    const bool overrides_applied =
+        configurator->apply_config_item("pipeline.sink0.output-file", "stitched-layer.mkv").ok() &&
+        configurator->apply_config_item("pipeline.sink0.bitrate", "11000000").ok() &&
+        configurator->apply_config_item("video_out.output_video_path", "canonical-layer.mkv").ok() &&
+        configurator->apply_config_item("video_out.bit_rate", "23000000").ok() &&
+        configurator->apply_config_item("pipeline.sink1.output-file", "legacy-layer.mkv").ok() &&
+        configurator->apply_config_item("pipeline.sink1.bitrate", "37000000").ok();
+    for (const char* suffix : {"output-file", "bitrate"}) {
+      hm::ConfiguratorTestAccess::set_explicit_rank(
+          configurator.get(), "pipeline.sink0." + std::string(suffix), stitched_rank);
+      hm::ConfiguratorTestAccess::set_explicit_rank(
+          configurator.get(), "pipeline.sink1." + std::string(suffix), legacy_rank);
+    }
+    hm::ConfiguratorTestAccess::set_explicit_rank(configurator.get(), "video_out.output_video_path", canonical_rank);
+    hm::ConfiguratorTestAccess::set_explicit_rank(configurator.get(), "video_out.bit_rate", canonical_rank);
+    const absl::Status archive_status = overrides_applied
+        ? hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(configurator.get())
+        : absl::InternalError("layered calibration overrides did not apply");
+    return archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == expected_path &&
+        archive_pipeline["sink0"]["bitrate"].as<int>() == expected_bitrate;
+  };
+  ok &= expect(
+      test_calibration_layer_precedence(
+          "calibration-canonical-layer-wins",
+          /*stitched_rank=*/1,
+          /*canonical_rank=*/3,
+          /*legacy_rank=*/2,
+          "canonical-layer.mkv",
+          23000000) &&
+          test_calibration_layer_precedence(
+              "calibration-legacy-layer-wins",
+              /*stitched_rank=*/1,
+              /*canonical_rank=*/2,
+              /*legacy_rank=*/3,
+              "legacy-layer.mkv",
+              37000000),
+      "Calibration archive overrides must select the highest configuration layer before using field specificity "
+      "as the equal-rank tie-breaker");
 
   auto calibration_archive_null = prepare_tone_routing("calibration-archive-null", "0");
   if (calibration_archive_null) {

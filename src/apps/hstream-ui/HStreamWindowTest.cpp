@@ -7081,6 +7081,60 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const bool first_failure_safe = run_route_failure("dual-first-failure", "tracking_output", true);
   const bool second_failure_safe = run_route_failure("dual-second-failure", "stitched_output", false);
 
+  const QString both_failed_program_source = QDir(output_root.path()).filePath("dual-both-fail-program.mkv");
+  const QString both_failed_stitched_source = QDir(output_root.path()).filePath("dual-both-fail-stitched.mkv");
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", both_failed_program_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", both_failed_stitched_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
+  activate(start);
+  for (int i = 0; i < 600 &&
+       (window->outputStateText("archive-file") != "ERROR" ||
+        window->outputStateText("archive-stitched") != "ERROR");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL");
+  const QString both_failed_program_recovery =
+      QDir(output_root.path()).filePath("dual-both-fail-program-finalization-failed.mkv");
+  const QString both_failed_stitched_recovery =
+      QDir(output_root.path()).filePath("dual-both-fail-stitched-finalization-failed.mkv");
+  QFile both_failed_program_log(both_failed_program_recovery + ".log");
+  QFile both_failed_stitched_log(both_failed_stitched_recovery + ".log");
+  const bool both_failed_program_log_opened =
+      both_failed_program_log.open(QIODevice::ReadOnly | QIODevice::Text);
+  const bool both_failed_stitched_log_opened =
+      both_failed_stitched_log.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString both_failed_program_log_text =
+      both_failed_program_log_opened ? QString::fromUtf8(both_failed_program_log.readAll()) : QString();
+  const QString both_failed_stitched_log_text =
+      both_failed_stitched_log_opened ? QString::fromUtf8(both_failed_stitched_log.readAll()) : QString();
+  const bool both_failures_safe = expect(
+      window->outputStateText("archive-file") == "ERROR" &&
+          window->outputStateText("archive-stitched") == "ERROR" &&
+          QFileInfo::exists(both_failed_program_recovery) && QFileInfo::exists(both_failed_stitched_recovery) &&
+          both_failed_program_log_opened && both_failed_stitched_log_opened &&
+          both_failed_program_log_text.contains(
+              QString("finalizing archive without re-encoding: %1").arg(both_failed_program_source)) &&
+          both_failed_program_log_text.contains(
+              QString("finalizing archive without re-encoding: %1").arg(both_failed_stitched_source)) &&
+          both_failed_stitched_log_text.contains(
+              QString("finalizing archive without re-encoding: %1").arg(both_failed_program_source)) &&
+          both_failed_stitched_log_text.contains(
+              QString("finalizing archive without re-encoding: %1").arg(both_failed_stitched_source)),
+      "When both archive routes fail, each retained recovery video must keep a durable link to the combined job log");
+  both_failed_program_log.close();
+  both_failed_stitched_log.close();
+  for (const QString& recovery : {both_failed_program_recovery, both_failed_stitched_recovery}) {
+    QFile::remove(recovery + ".hstream-pin");
+    QFile::remove(recovery + ".log.hstream-pin");
+    QFile::remove(recovery);
+    QFile::remove(recovery + ".log");
+  }
+  auto* both_failed_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  if (both_failed_ok_button && both_failed_ok_button->isVisible())
+    activate(both_failed_ok_button);
+
   const QString blocked_directory = QDir(output_root.path()).filePath("dual-blocked");
   const QString blocked_program_source = QDir(blocked_directory).filePath("program.mkv");
   const QString blocked_program_manual = QDir(blocked_directory).filePath("program-manually-retained.mkv");
@@ -7111,6 +7165,10 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const bool queue_stayed_blocked = window->outputStateText("archive-file") == "ERROR" &&
       window->outputStateText("archive-stitched") == "FINALIZING" && QFileInfo::exists(blocked_program_source) &&
       !window->logText().contains(stitched_finalize_after_block) && blocked_owner_lock_held;
+  window->close();
+  QApplication::processEvents();
+  const bool blocked_close_deferred = window->isVisible() &&
+      window->logText().contains("window close deferred while a retained archive blocks pending finalization");
   QFile::setPermissions(blocked_directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
   const bool blocked_source_moved = QFile::rename(blocked_program_source, blocked_program_manual);
   qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE");
@@ -7122,15 +7180,17 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   }
   const QString resumed_stitched_completed = stitched_archive_path->text().section("Completed archive: ", 1).trimmed();
   const bool blocked_recovery_resumed = expect(
-      queue_stayed_blocked && blocked_source_moved && window->outputStateText("archive-file") == "ERROR" &&
+      queue_stayed_blocked && blocked_close_deferred && blocked_source_moved &&
+          window->outputStateText("archive-file") == "ERROR" &&
           window->outputStateText("archive-stitched") == "SAVED" &&
           window->logText().contains(stitched_finalize_after_block) && QFileInfo::exists(blocked_program_manual) &&
           !QFileInfo::exists(resumed_stitched_source),
       QString(
           "A blocked first finalization must keep its ownership lock and halt the second archive until the retained "
-          "file is moved to safety, then resume the queue (queue_blocked=%1 moved=%2 program=%3 stitched=%4 "
-          "manual=%5 source=%6 log=%7)")
+          "file is moved to safety, then resume the queue (queue_blocked=%1 close_deferred=%2 moved=%3 program=%4 "
+          "stitched=%5 manual=%6 source=%7 log=%8)")
           .arg(queue_stayed_blocked)
+          .arg(blocked_close_deferred)
           .arg(blocked_source_moved)
           .arg(window->outputStateText("archive-file"), window->outputStateText("archive-stitched"))
           .arg(QFileInfo::exists(blocked_program_manual))
@@ -7156,7 +7216,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     qunsetenv("HM_OUTPUT_WORK_DIR");
   else
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
-  return ok && first_failure_safe && second_failure_safe && blocked_recovery_resumed;
+  return ok && first_failure_safe && second_failure_safe && both_failures_safe && blocked_recovery_resumed;
 }
 
 bool test_projection_parameter_persistence(HStreamWindow* window) {
@@ -9103,19 +9163,18 @@ bool test_camera_controls(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const int rejected_batch_log_start = window->logText().size();
   fixed_edge_right->setValue(640);
   rotate->setValue(73);
   for (int i = 0; i < 100 && !window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=failed"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const QString rejected_batch_log = window->logText().mid(rejected_batch_log_start);
+  const QString rejected_batch_log = window->logText();
   const int rejected_tracker_index =
-      rejected_batch_log.indexOf("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=64.0");
+      rejected_batch_log.lastIndexOf("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=64.0");
   const int rejected_cropper_index =
-      rejected_batch_log.indexOf("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=64.0");
-  const int rejected_epoch_index = rejected_batch_log.indexOf("stdin:@set-property hmstitcher0 stitched-output-epoch=");
+      rejected_batch_log.lastIndexOf("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=64.0");
+  const int rejected_epoch_index = rejected_batch_log.lastIndexOf("stdin:@set-property hmstitcher0 stitched-output-epoch=");
   if (!expect(
           rejected_tracker_index >= 0 && rejected_cropper_index > rejected_tracker_index &&
               rejected_epoch_index > rejected_cropper_index &&

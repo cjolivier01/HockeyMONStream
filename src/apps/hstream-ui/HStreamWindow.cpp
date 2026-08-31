@@ -4706,8 +4706,12 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
     event->ignore();
     return;
   }
-  if (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) {
-    appendLog("window close deferred while the completed archive is being finalized");
+  if ((archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      !pending_archive_finalizations_.empty()) {
+    appendLog(
+        !archive_finalize_blocked_source_path_.isEmpty()
+            ? "window close deferred while a retained archive blocks pending finalization"
+            : "window close deferred while the completed archives are being finalized");
     if (archive_finalize_dialog_) {
       archive_finalize_dialog_->show();
       archive_finalize_dialog_->raise();
@@ -9874,6 +9878,7 @@ void HStreamWindow::finishArchiveJobLog(bool retire_identity_guard) {
   archive_job_log_path_.clear();
   archive_job_log_guard_path_.clear();
   archive_job_log_cleanup_directories_.clear();
+  archive_job_log_recovery_paths_.clear();
   archive_job_log_stale_paths_.clear();
   archive_job_log_device_ = 0;
   archive_job_log_inode_ = 0;
@@ -11370,7 +11375,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         }
         QString old_log_cleanup_error;
         const bool original_log_is_ours = path_has_file_identity(original_log_path, original_log_stat);
-        const bool old_log_removed = !original_log_is_ours ||
+        const bool preserve_existing_recovery_log = archive_job_log_recovery_paths_.contains(original_log_path);
+        const bool old_log_removed = preserve_existing_recovery_log || !original_log_is_ours ||
             remove_path_if_same_identity(
                 original_log_path, original_log_stat, &old_log_cleanup_error, candidate_log, &original_log_stat);
         if (!old_log_removed) {
@@ -11462,6 +11468,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
       }
       if (has_job_log)
         archive_job_log_guard_path_ = candidate_log_guard_path;
+      if (has_job_log && !archive_job_log_recovery_paths_.contains(candidate_log))
+        archive_job_log_recovery_paths_.append(candidate_log);
       failed_archive_path = candidate;
       break;
     }
