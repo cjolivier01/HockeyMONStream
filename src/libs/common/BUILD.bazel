@@ -136,6 +136,27 @@ cc_library(
 )
 
 cc_library(
+    name = "detection_snapshot_meta",
+    srcs = ["DetectionSnapshotMeta.cpp"],
+    hdrs = ["DetectionSnapshotMeta.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@deepstream//:deepstream_lib",
+        "@glib",
+    ],
+)
+
+cc_test(
+    name = "detection_snapshot_meta_test",
+    srcs = ["DetectionSnapshotMetaTest.cpp"],
+    deps = [
+        ":detection_snapshot_meta",
+        "@deepstream//:deepstream_lib",
+    ],
+)
+
+cc_library(
     name = "preview_overlay_meta",
     srcs = ["PreviewOverlayMeta.cpp"],
     hdrs = ["PreviewOverlayMeta.h"],

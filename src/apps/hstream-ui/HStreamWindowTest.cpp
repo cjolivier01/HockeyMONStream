@@ -774,6 +774,9 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "    print('HSTREAM_OUTPUT type=archive sink=5 kind=stitched ' + stitched_archive_before + "
       "' codec=hevc path=' + stitched_archive_path, flush=True)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_TELEMETRY_MANIFEST'):\n");
+  file.write(
+      "    print('HSTREAM_TELEMETRY manifest=' + os.environ['HSTREAM_UI_TEST_TELEMETRY_MANIFEST'], flush=True)\n");
   file.write(
       "print('HSTREAM_CALIBRATION_INVALIDATION_ID=' + "
       "os.environ.get('HSTREAM_CALIBRATION_INVALIDATION_ID', ''), flush=True)\n");
@@ -3028,12 +3031,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   drivegpt_csv->setChecked(true);
-  const QString expected_telemetry_option =
-      QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
-          .arg(QDir::cleanPath(window->gameDirectoryText()));
+  const QString telemetry_option_prefix = "--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=";
+  const QStringList telemetry_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  const auto telemetry_argument = std::find_if(
+      telemetry_arguments.cbegin(), telemetry_arguments.cend(), [&telemetry_option_prefix](const QString& argument) {
+        return argument.startsWith(telemetry_option_prefix);
+      });
+  const QString telemetry_work_directory = telemetry_argument == telemetry_arguments.cend()
+      ? QString()
+      : telemetry_argument->mid(telemetry_option_prefix.size());
   if (!expect(
-          HStreamWindowTestAccess::pipelineArguments(window).contains(expected_telemetry_option),
-          "The DriveGPT checkbox should route metadata export into the selected HM game directory")) {
+          !telemetry_work_directory.isEmpty() &&
+              QDir::cleanPath(telemetry_work_directory) != QDir::cleanPath(window->gameDirectoryText()) &&
+              QFileInfo(telemetry_work_directory).fileName() == window->gameIdText(),
+          "The DriveGPT checkbox should stage metadata under HStream working storage, never in the HM game directory")) {
     return false;
   }
   drivegpt_csv->setChecked(false);
@@ -5592,6 +5603,7 @@ bool test_output_controls(HStreamWindow* window) {
   auto* spare = require_child<QCheckBox>(window, "outputToggle_spare-rtmp");
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
   auto* stitched_archive = require_child<QCheckBox>(window, "outputToggle_archive-stitched");
+  auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
   auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
   auto* stitched_archive_path = require_child<QLabel>(window, "stitchedArchiveOutputPath");
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
@@ -5602,8 +5614,8 @@ bool test_output_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
-  if (!spare || !archive || !stitched_archive || !archive_path || !stitched_archive_path || !game_id_edit ||
-      !youtube_redirect || !add_rtsp || !start || !stop || !mode || !seek_slider || !seek_forward) {
+  if (!spare || !archive || !stitched_archive || !drivegpt_csv || !archive_path || !stitched_archive_path ||
+      !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop || !mode || !seek_slider || !seek_forward) {
     return false;
   }
 
@@ -6120,11 +6132,41 @@ bool test_output_controls(HStreamWindow* window) {
           .filePath(QString("%1-tracking_output-with-audio-2.mp4").arg(window->gameIdText()));
   const QString replaced_completed_target =
       QDir(window->gameDirectoryText())
-          .filePath(QString("%1-tracking_output-with-audio-3.mp4").arg(window->gameIdText()));
+          .filePath(QString("%1-tracking_output-with-audio-4.mp4").arg(window->gameIdText()));
   const QString dangling_completed_target =
       QDir(window->gameDirectoryText())
           .filePath(QString("%1-tracking_output-with-audio-1.mp4").arg(window->gameIdText()));
   const QString missing_completed_target = QDir(window->gameDirectoryText()).filePath("missing-completed-target");
+  const QString existing_telemetry_tracking = QDir(window->gameDirectoryText()).filePath("tracking-3.csv");
+  const QString telemetry_working = QDir(output_root.path()).filePath("telemetry-working");
+  const std::array<QString, 6> telemetry_stems = {
+      "tracking", "detections", "camera", "camera_fast", "hstream_frame_index", "hstream_config_events"};
+  const QString telemetry_manifest = QDir(telemetry_working).filePath("hstream_telemetry-7.json");
+  bool telemetry_fixture_created = QDir().mkpath(telemetry_working);
+  for (const QString& stem : telemetry_stems) {
+    QFile artifact(QDir(telemetry_working).filePath(stem + "-7.csv"));
+    telemetry_fixture_created &= artifact.open(QIODevice::WriteOnly | QIODevice::NewOnly) &&
+        artifact.write((stem + " async contents\n").toUtf8()) > 0;
+  }
+  QFile telemetry_manifest_file(telemetry_manifest);
+  telemetry_fixture_created &=
+      telemetry_manifest_file.open(QIODevice::WriteOnly | QIODevice::NewOnly) && telemetry_manifest_file.write(R"json({
+  "publication_state": "committed",
+  "completed": true,
+  "hm_compatibility": {
+    "tracking_csv": {"file": "tracking-7.csv"},
+    "detections_csv": {"file": "detections-7.csv"},
+    "camera_csv": {"file": "camera-7.csv"},
+    "camera_fast_csv": {"file": "camera_fast-7.csv"}
+  },
+  "sidecars": {
+    "frame_index": "hstream_frame_index-7.csv",
+    "config_events": "hstream_config_events-7.csv"
+  }
+})json") > 0;
+  telemetry_manifest_file.close();
+  if (!expect(telemetry_fixture_created, "asynchronous telemetry publication fixture must be created"))
+    return false;
   const QString ffmpeg_arguments = QDir(output_root.path()).filePath("ffmpeg-arguments.txt");
   QFile::remove(completed_source);
   QFile::remove(completed_job_log);
@@ -6133,7 +6175,13 @@ bool test_output_controls(HStreamWindow* window) {
   QFile::remove(replaced_completed_target);
   QFile::remove(dangling_completed_target);
   QFile::remove(missing_completed_target);
+  QFile::remove(existing_telemetry_tracking);
   const bool dangling_completed_target_created = QFile::link(missing_completed_target, dangling_completed_target);
+  QFile existing_telemetry_tracking_file(existing_telemetry_tracking);
+  const bool existing_telemetry_tracking_created =
+      existing_telemetry_tracking_file.open(QIODevice::WriteOnly | QIODevice::NewOnly) &&
+      existing_telemetry_tracking_file.write("existing HM generation\n") > 0;
+  existing_telemetry_tracking_file.close();
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", completed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
   qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
@@ -6142,6 +6190,9 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT", "1");
+  qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "250");
+  drivegpt_csv->setChecked(true);
   activate(start);
   QDialog* finalize_dialog = nullptr;
   QProgressBar* finalize_progress = nullptr;
@@ -6188,6 +6239,19 @@ bool test_output_controls(HStreamWindow* window) {
       finalize_headline && finalize_headline->text() == "Saving completed video safely…" && finalize_progress &&
           finalize_progress->maximum() == 0 && ui_timer_fired_during_sync,
       "Durability sync must keep an indeterminate finalization popup active without blocking the Qt event loop");
+  for (int i = 0; i < 300 && finalize_headline && finalize_headline->text() != "Copying DriveGPT CSVs…"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  bool ui_timer_fired_during_telemetry_copy = false;
+  QTimer::singleShot(
+      0, window, [&ui_timer_fired_during_telemetry_copy]() { ui_timer_fired_during_telemetry_copy = true; });
+  QApplication::processEvents();
+  const bool telemetry_copy_responsive = expect(
+      finalize_headline && finalize_headline->text() == "Copying DriveGPT CSVs…" && finalize_progress &&
+          finalize_progress->maximum() == 0 && ui_timer_fired_during_telemetry_copy &&
+          window->outputStateText("archive-file") == "FINALIZING",
+      "DriveGPT CSV publication must remain asynchronous and keep the Qt event loop responsive");
   for (int i = 0; i < 300 && window->outputStateText("archive-file") != "SAVED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -6196,6 +6260,9 @@ bool test_output_controls(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT");
   qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
+  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
+  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
+  drivegpt_csv->setChecked(false);
   QFile argument_file(ffmpeg_arguments);
   const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
   const QString argument_text = opened_arguments ? QString::fromUtf8(argument_file.readAll()) : QString();
@@ -6222,8 +6289,8 @@ bool test_output_controls(HStreamWindow* window) {
       "A completed job log must remain beside the work artifacts and include asynchronous MP4 finalization output");
   const bool archive_deployed = expect(
       finalizer_owner_lock_held && concurrent_completed_archive_created && dangling_completed_target_created &&
-          QFileInfo(dangling_completed_target).isSymLink() && window->outputStateText("archive-file") == "SAVED" &&
-          completed_video_text == "completed lossless archive" &&
+          existing_telemetry_tracking_created && QFileInfo(dangling_completed_target).isSymLink() &&
+          window->outputStateText("archive-file") == "SAVED" && completed_video_text == "completed lossless archive" &&
           !QFileInfo::exists(replaced_completed_target + ".hstream-pin") &&
           replaced_target_text == "injected foreign completed target" &&
           foreign_source_text == "injected foreign source before ffmpeg input" &&
@@ -6239,6 +6306,18 @@ bool test_output_controls(HStreamWindow* window) {
           window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),
       "Finalization must remux the pinned source FD, skip dangling names, republish a target replaced during sync, "
       "and leave replacement source, target, and ownership-lock paths untouched");
+  bool telemetry_deployed = true;
+  for (const QString& stem : telemetry_stems) {
+    QFile published_file(QDir(window->gameDirectoryText()).filePath(stem + "-4.csv"));
+    telemetry_deployed &=
+        published_file.open(QIODevice::ReadOnly) && published_file.readAll() == (stem + " async contents\n").toUtf8();
+  }
+  QFile preserved_tracking(existing_telemetry_tracking);
+  telemetry_deployed &=
+      preserved_tracking.open(QIODevice::ReadOnly) && preserved_tracking.readAll() == "existing HM generation\n";
+  telemetry_deployed = expect(
+      telemetry_deployed,
+      "archive suffix selection must skip existing HM CSVs and copy all six DriveGPT CSVs with the video suffix");
 
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
@@ -6948,8 +7027,8 @@ bool test_output_controls(HStreamWindow* window) {
       path_visible_before_start && path_prepared && nonlocal_seek_blocked && interrupted_archive_preserved &&
       missing_new_output_reported && job_log_persisted && incomplete_exit_log_guarded && same_filesystem_log_rollback &&
       cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
-      durability_sync_responsive && target_cleanup_race_recovered && ui_cleanup_restart_reconciled &&
-      ui_cleanup_reconciliation_race_safe && source_cleanup_sync_failure_recovered &&
+      durability_sync_responsive && telemetry_copy_responsive && telemetry_deployed && target_cleanup_race_recovered &&
+      ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe && source_cleanup_sync_failure_recovered &&
       cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
       no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
       publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery &&

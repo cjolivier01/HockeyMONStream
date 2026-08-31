@@ -175,6 +175,7 @@ class HStreamWindow : public QMainWindow {
     kIdle,
     kRemux,
     kSyncCompleted,
+    kPublishTelemetry,
     kSyncRecovery,
   };
 
@@ -218,6 +219,7 @@ class HStreamWindow : public QMainWindow {
   void beginPlaybackProgressReset();
   void sendPlaybackProgressReset(quint64 generation);
   int playbackProgressResetTimeoutMs() const;
+  void handleTelemetryOutputStatus(const QString& line);
   void handleArchiveOutputStatus(const QString& line);
   void updateArchiveOutputPathLabel();
   void beginArchiveJobLog(const QString& configured_output_path, const QString& run_id);
@@ -239,7 +241,15 @@ class HStreamWindow : public QMainWindow {
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
   bool startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error);
+  void startTelemetryCsvPublication(
+      const QString& manifest_path,
+      const QString& game_directory,
+      const QString& destination_suffix,
+      qint64 final_size,
+      bool source_removed,
+      bool source_was_replaced);
   void completeArchiveFinalization();
+  void finishCompletedArchivePresentation(qint64 final_size, bool source_removed, bool source_was_replaced);
   void showArchiveFinalizationFailure(const QString& failure_detail);
   void failArchiveFinalization(const QString& message);
   bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
@@ -536,6 +546,8 @@ class HStreamWindow : public QMainWindow {
   bool preview_overlay_reconciliation_fallback_rink_{false};
   int preview_overlay_reconciliation_attempts_{0};
   QCheckBox* drivegpt_csv_toggle_{nullptr};
+  bool active_run_telemetry_requested_{false};
+  QString active_telemetry_manifest_path_;
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
@@ -606,6 +618,7 @@ class HStreamWindow : public QMainWindow {
   bool archive_job_log_is_stitched_{false};
   std::deque<PendingArchiveFinalization> pending_archive_finalizations_;
   QProcess* archive_finalize_process_{nullptr};
+  QThread* telemetry_publication_worker_{nullptr};
   QDialog* archive_finalize_dialog_{nullptr};
   QLabel* archive_finalize_icon_{nullptr};
   QLabel* archive_finalize_headline_{nullptr};

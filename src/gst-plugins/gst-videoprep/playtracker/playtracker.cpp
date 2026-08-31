@@ -17,6 +17,7 @@
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
+#include "hstream/src/libs/common/DetectionSnapshotMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/TempFile.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
@@ -144,6 +145,7 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
       return telemetry_status;
     }
     std::cout << "Playtracker telemetry CSV export: " << telemetry_csv_.output_manifest() << std::endl;
+    std::cout << "HSTREAM_TELEMETRY manifest=" << telemetry_csv_.output_manifest() << std::endl;
   }
   return absl::OkStatus();
 }
@@ -411,6 +413,10 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     TelemetrySample telemetry_sample;
     const bool export_telemetry = telemetry_csv_.active();
     if (export_telemetry) {
+      const auto* detection_snapshot = hm::detection_snapshot::find_meta(batch_meta, frame.frame_meta);
+      if (!detection_snapshot) {
+        return absl::DataLossError("primary detection snapshot missing from a frame during lossless telemetry export");
+      }
       telemetry_sample.source_id = frame.frame_meta->source_id;
       telemetry_sample.source_frame = frame.frame_meta->frame_num;
       telemetry_sample.seek_epoch = telemetry_seek_epoch_;
@@ -422,18 +428,30 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       if (frame.frame_meta->ntp_timestamp != 0) {
         telemetry_sample.ntp_ns = frame.frame_meta->ntp_timestamp;
       }
-      const std::optional<DecodedFrameSequence> decoded_sequence = hm::decoded_frame_sequence(frame.frame_meta);
-      if (decoded_sequence.has_value()) {
-        telemetry_sample.decoded_source_id = decoded_sequence->source_id;
-        telemetry_sample.decoded_sequence = decoded_sequence->sequence;
-      }
-
       const double scale_x = frame.input_surf_params->width > 0
           ? static_cast<double>(frame.frame_meta->source_frame_width) / frame.input_surf_params->width
           : 1.0;
       const double scale_y = frame.input_surf_params->height > 0
           ? static_cast<double>(frame.frame_meta->source_frame_height) / frame.input_surf_params->height
           : 1.0;
+      telemetry_sample.detections.reserve(detection_snapshot->detections.size());
+      for (const hm::detection_snapshot::Detection& detection : detection_snapshot->detections) {
+        telemetry_sample.detections.push_back(
+            TelemetryDetection{
+                static_cast<float>(detection.left * scale_x),
+                static_cast<float>(detection.top * scale_y),
+                static_cast<float>(detection.width * scale_x),
+                static_cast<float>(detection.height * scale_y),
+                detection.score,
+                detection.class_id,
+            });
+      }
+      const std::optional<DecodedFrameSequence> decoded_sequence = hm::decoded_frame_sequence(frame.frame_meta);
+      if (decoded_sequence.has_value()) {
+        telemetry_sample.decoded_source_id = decoded_sequence->source_id;
+        telemetry_sample.decoded_sequence = decoded_sequence->sequence;
+      }
+
       for (NvDsMetaList* item = frame.frame_meta->obj_meta_list; item; item = item->next) {
         const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
         if (!object || object->class_id != 0 || object->object_id == UNTRACKED_OBJECT_ID) {
@@ -481,9 +499,8 @@ absl::Status PlayTrackerPriv::GenerateOutput(
                 static_cast<float>(box.height()),
             });
       }
-      if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample)) && telemetry_csv_.dropped_samples() == 1) {
-        std::cerr << "Playtracker telemetry writer queue is full; dropping complete metadata samples" << std::endl;
-      }
+      if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample)))
+        return absl::DataLossError("lossless telemetry exporter stopped before accepting a frame sample");
     }
     if (show_) {
       NvDisplayMetaList* dm_list = frame.frame_meta->display_meta_list;
