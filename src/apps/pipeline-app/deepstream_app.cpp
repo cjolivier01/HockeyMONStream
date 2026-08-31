@@ -246,6 +246,26 @@ static void mark_playtracker_telemetry_eos(AppCtx* appCtx) {
   mark_playtracker_telemetry_outcome(appCtx, "hstream-playtracker-telemetry-eos");
 }
 
+static gboolean finalize_playtracker_telemetry(AppCtx* appCtx) {
+  GstElement* playtracker = appCtx ? appCtx->pipeline.dsplaytracker_bin.elem_dsplaytracker : nullptr;
+  if (!playtracker) {
+    return TRUE;
+  }
+  GObjectClass* object_class = G_OBJECT_GET_CLASS(playtracker);
+  if (!g_object_class_find_property(object_class, "finalize-telemetry") ||
+      !g_object_class_find_property(object_class, "last-property-set-ok")) {
+    g_printerr("Playtracker does not expose the telemetry finalization contract\n");
+    return FALSE;
+  }
+  g_object_set(G_OBJECT(playtracker), "finalize-telemetry", TRUE, nullptr);
+  gboolean finalized = FALSE;
+  g_object_get(G_OBJECT(playtracker), "last-property-set-ok", &finalized, nullptr);
+  if (!finalized) {
+    g_printerr("Playtracker rejected telemetry finalization after pipeline shutdown\n");
+  }
+  return finalized;
+}
+
 // Error messages can be posted while createMainLoop() is synchronously waiting
 // for PAUSED/preroll, before the GLib main loop dispatches bus_callback(). Wake
 // an exact-frame peer immediately in the posting thread, but leave the message
@@ -2459,11 +2479,18 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   }
 
   GstElement* pipeline = appCtx->pipeline.pipeline;
+  const gint64 wait_started = g_get_monotonic_time();
+  const gint64 timeout_us = static_cast<gint64>(timeout / GST_USECOND);
+  const gint64 deadline = timeout_us > G_MAXINT64 - wait_started ? G_MAXINT64 : wait_started + timeout_us;
+  const auto remaining_timeout = [deadline]() -> GstClockTime {
+    const gint64 now = g_get_monotonic_time();
+    return now >= deadline ? 0 : static_cast<GstClockTime>(deadline - now) * GST_USECOND;
+  };
   GstState current = GST_STATE_NULL;
   GstState pending = GST_STATE_VOID_PENDING;
   gst_element_get_state(pipeline, &current, &pending, 0);
   if (current == GST_STATE_NULL && pending == GST_STATE_VOID_PENDING) {
-    return TRUE;
+    return finalize_playtracker_telemetry(appCtx);
   }
 
   stop_uri_playlist_sources_gracefully(&appCtx->pipeline.multi_src_bin);
@@ -2475,9 +2502,6 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   if (!finalized) {
     if (gst_element_send_event(pipeline, gst_event_new_eos())) {
       GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
-      const gint64 wait_started = g_get_monotonic_time();
-      const gint64 timeout_us = static_cast<gint64>(timeout / GST_USECOND);
-      const gint64 deadline = timeout_us > G_MAXINT64 - wait_started ? G_MAXINT64 : wait_started + timeout_us;
       while (!finalized && !fatal_error) {
         const gint64 now = g_get_monotonic_time();
         if (now >= deadline) {
@@ -2511,11 +2535,27 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
     }
   }
 
-  const gboolean stopped = gst_element_set_state(pipeline, GST_STATE_NULL) != GST_STATE_CHANGE_FAILURE;
+  GstStateChangeReturn stop_result = gst_element_set_state(pipeline, GST_STATE_NULL);
+  GstState stopped_current = GST_STATE_VOID_PENDING;
+  GstState stopped_pending = GST_STATE_VOID_PENDING;
+  if (stop_result != GST_STATE_CHANGE_FAILURE) {
+    stop_result = gst_element_get_state(
+        pipeline,
+        &stopped_current,
+        &stopped_pending,
+        stop_result == GST_STATE_CHANGE_ASYNC ? remaining_timeout() : 0);
+  }
+  const gboolean stopped = stop_result == GST_STATE_CHANGE_SUCCESS && stopped_current == GST_STATE_NULL &&
+                           stopped_pending == GST_STATE_VOID_PENDING;
   if (!stopped) {
     mark_playtracker_telemetry_failed(appCtx);
+    g_printerr("Pipeline NULL transition did not complete; DriveGPT CSVs will remain unpublished\n");
   }
-  return stopped && finalized;
+  const gboolean telemetry_finalized = stopped && finalize_playtracker_telemetry(appCtx);
+  if (stopped && !telemetry_finalized) {
+    mark_playtracker_telemetry_failed(appCtx);
+  }
+  return stopped && finalized && telemetry_finalized;
 }
 
 void destroy_pipeline(AppCtx* appCtx) {

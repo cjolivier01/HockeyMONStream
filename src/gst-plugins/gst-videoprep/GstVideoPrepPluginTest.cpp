@@ -36,6 +36,7 @@ bool expect_videoprep_factory(const char* factory_name) {
           {"shadow-lift", G_TYPE_DOUBLE, true},
           {"shadow-lift-black-point", G_TYPE_BOOLEAN, true},
           {"runtime-tuning-config-file", G_TYPE_STRING, false},
+          {"finalize-telemetry", G_TYPE_BOOLEAN, true},
           {"last-property-set-ok", G_TYPE_BOOLEAN, false},
       },
       {
