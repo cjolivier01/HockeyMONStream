@@ -471,6 +471,23 @@ play-tracker:
     ok = false;
   }
 
+  auto explicit_canonical_calibration_archive =
+      prepare_tone_routing("explicit-canonical-calibration-archive-name", "0");
+  if (explicit_canonical_calibration_archive &&
+      explicit_canonical_calibration_archive->apply_config_item("video_out.output_video_path", "tracking_output.mkv")
+          .ok() &&
+      explicit_canonical_calibration_archive->apply_supported_baseline_mappings().ok()) {
+    YAML::Node archive_pipeline = explicit_canonical_calibration_archive->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
+        explicit_canonical_calibration_archive.get());
+    ok &= expect(
+        archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv",
+        "Calibration archive naming must preserve an explicit canonical output path");
+  } else {
+    ok = false;
+  }
+
   const fs::path primary_draw_baseline_root = root / "primary-draw-baseline";
   fs::create_directories(primary_draw_baseline_root);
   YAML::Node primary_draw_baseline = YAML::Clone(test_baseline);

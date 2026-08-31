@@ -6701,7 +6701,12 @@ void Configurator::configure_stitching_calibration_archive_name(YAML::Node& pipe
     }
     const std::string configured = get_node_value<std::string>(sink, "output-file", "");
     const fs::path configured_path(configured);
-    const bool output_file_is_explicit = explicit_value_rank("pipeline." + key + ".output-file") >= 1;
+    const std::optional<YAML::Node> canonical_output_file = get_node(config_, "video_out.output_video_path");
+    const bool canonical_output_file_is_explicit = explicit_value_rank("video_out.output_video_path") >= 1 &&
+        canonical_output_file.has_value() && canonical_output_file->IsScalar() &&
+        !canonical_output_file->as<std::string>().empty();
+    const bool output_file_is_explicit =
+        explicit_value_rank("pipeline." + key + ".output-file") >= 1 || canonical_output_file_is_explicit;
     if (!output_file_is_explicit &&
         (configured.empty() ||
          (!configured_path.has_parent_path() &&
