@@ -13019,6 +13019,7 @@ void HStreamWindow::loadSavedControlConfig() {
     YAML::Node config = **loaded_config;
     std::map<QString, int> staged_controls;
     QString staged_high_bit_depth_mode = highBitDepthMode();
+    bool native_high_bit_depth_mode_present = false;
     for (const auto& [id, default_value] : camera_defaults_) {
       Q_UNUSED(default_value);
       staged_controls[id] = cameraControlValue(id);
@@ -13074,11 +13075,15 @@ void HStreamWindow::loadSavedControlConfig() {
       if (lookup_yaml_path(config, path, &value))
         stage_control(id, strict_boolean_control(path, value));
     };
-    auto stage_high_bit_mode_path = [&config, &stage_control, &staged_high_bit_depth_mode, &strict_boolean_control](
-                                        const QString& path, const QString& id) {
+    auto stage_high_bit_mode_path = [&config,
+                                     &stage_control,
+                                     &staged_high_bit_depth_mode,
+                                     &native_high_bit_depth_mode_present,
+                                     &strict_boolean_control](const QString& path, const QString& id) {
       YAML::Node value;
       if (!lookup_yaml_path(config, path, &value))
         return;
+      native_high_bit_depth_mode_present = true;
       if (!value.IsScalar())
         throw std::invalid_argument(QString("%1 must be auto, true, false, 1, or 0").arg(path).toStdString());
       const QString normalized = QString::fromStdString(value.as<std::string>()).trimmed().toLower();
@@ -13376,37 +13381,57 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     stage_high_bit_mode_path("pipeline.hmstitcher.properties.high-bit-depth", "Use_10_Bit_Grading");
     YAML::Node legacy_high_bit_mode;
-    if (lookup_yaml_path(config, "hstream_ui.camera_controls.Use_10_Bit_Grading", &legacy_high_bit_mode)) {
+    if (!native_high_bit_depth_mode_present &&
+        lookup_yaml_path(config, "hstream_ui.camera_controls.Use_10_Bit_Grading", &legacy_high_bit_mode)) {
       const int value = strict_boolean_control("hstream_ui.camera_controls.Use_10_Bit_Grading", legacy_high_bit_mode);
       staged_high_bit_depth_mode = value != 0 ? "1" : "0";
       stage_control("Use_10_Bit_Grading", value);
     }
-    const QString tone_property_owner = staged_high_bit_depth_mode == "1"
-        ? QStringLiteral("pipeline.hmstitcher.properties")
-        : QStringLiteral("pipeline.hmplaycropper.properties");
-    const QString shadow_lift_path = tone_property_owner + ".shadow-lift";
-    YAML::Node shadow_lift;
-    if (lookup_yaml_path(config, shadow_lift_path, &shadow_lift)) {
-      stage_control("Bring_Up_Shadows", bounded_integer_control(shadow_lift_path, shadow_lift, 0, 100));
+    // The configurator accepts either native tone owner and routes the selected
+    // value to the effective stage. Auto cannot know that stage until source
+    // discovery, so prefer the high-bit owner but fall back per property to the
+    // standard owner. Explicit UI controls below still override both.
+    const QStringList tone_property_owners = staged_high_bit_depth_mode == "0"
+        ? QStringList{QStringLiteral("pipeline.hmplaycropper.properties"), QStringLiteral("pipeline.hmstitcher.properties")}
+        : QStringList{
+              QStringLiteral("pipeline.hmstitcher.properties"), QStringLiteral("pipeline.hmplaycropper.properties")};
+    for (const QString& owner : tone_property_owners) {
+      const QString path = owner + ".shadow-lift";
+      YAML::Node value;
+      if (lookup_yaml_path(config, path, &value)) {
+        stage_control("Bring_Up_Shadows", bounded_integer_control(path, value, 0, 100));
+        break;
+      }
     }
-    stage_boolean_path(tone_property_owner + ".shadow-lift-black-point", "Lift_Shadow_Black_Point");
-    const QString exposure_path = tone_property_owner + ".exposure";
-    YAML::Node exposure;
-    if (lookup_yaml_path(config, exposure_path, &exposure)) {
-      const double setting = exposure.as<double>();
-      const int setting_x100 = rounded_control(exposure_path, setting * 100.0);
+    for (const QString& owner : tone_property_owners) {
+      const QString path = owner + ".shadow-lift-black-point";
+      YAML::Node value;
+      if (lookup_yaml_path(config, path, &value)) {
+        stage_control("Lift_Shadow_Black_Point", strict_boolean_control(path, value));
+        break;
+      }
+    }
+    for (const QString& owner : tone_property_owners) {
+      const QString path = owner + ".exposure";
+      YAML::Node value;
+      if (!lookup_yaml_path(config, path, &value))
+        continue;
+      const double setting = value.as<double>();
+      const int setting_x100 = rounded_control(path, setting * 100.0);
       if (!std::isfinite(setting) || setting < 0.0 || setting > 1.3 ||
           std::abs(setting * 100.0 - setting_x100) > 1e-6) {
-        throw std::invalid_argument(
-            QString("%1 must be from 0.00 through 1.30 in hundredths").arg(exposure_path).toStdString());
+        throw std::invalid_argument(QString("%1 must be from 0.00 through 1.30 in hundredths").arg(path).toStdString());
       }
       stage_control("Exposure_x100", setting_x100);
+      break;
     }
     YAML::Node controls = config["hstream_ui"]["camera_controls"];
     int loaded = 0;
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
+        if (id == "Use_10_Bit_Grading" && native_high_bit_depth_mode_present)
+          continue;
         int value = id == "Use_10_Bit_Grading"
             ? strict_boolean_control("hstream_ui.camera_controls." + id, entry.second)
             : entry.second.as<int>();

@@ -411,9 +411,19 @@ play-tracker:
       ? hm::ConfiguratorTestAccess::configure_source_bit_depth(
             low_bit_calibration.get(), /*stitching_calibration_only=*/true)
       : absl::InternalError("low-bit calibration fixture did not load");
-  if (high_bit_calibration && low_bit_calibration) {
+  auto conflicting_bit_calibration = prepare_tone_routing("conflicting-bit-calibration", "0");
+  const absl::Status conflicting_legacy_mode_status = conflicting_bit_calibration
+      ? conflicting_bit_calibration->apply_config_item("hstream_ui.camera_controls.Use_10_Bit_Grading", "1")
+      : absl::InternalError("conflicting bit calibration fixture did not load");
+  const absl::Status conflicting_bit_calibration_status =
+      conflicting_bit_calibration && conflicting_legacy_mode_status.ok()
+      ? hm::ConfiguratorTestAccess::configure_source_bit_depth(
+            conflicting_bit_calibration.get(), /*stitching_calibration_only=*/true)
+      : absl::InternalError("conflicting bit calibration fixture did not configure");
+  if (high_bit_calibration && low_bit_calibration && conflicting_bit_calibration) {
     const YAML::Node high_pipeline = high_bit_calibration->config()["pipeline"];
     const YAML::Node low_pipeline = low_bit_calibration->config()["pipeline"];
+    const YAML::Node conflicting_pipeline = conflicting_bit_calibration->config()["pipeline"];
     ok &= expect(
         high_bit_calibration_status.ok() && low_bit_calibration_status.ok() &&
             high_pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>() == 1 &&
@@ -427,7 +437,9 @@ play-tracker:
             low_pipeline["hmstitcher"]["properties"]["exposure"].as<int>() == 0 &&
             low_pipeline["hmplaycropper"]["properties"]["shadow-lift"].as<int>() == 0 &&
             low_pipeline["hmplaycropper"]["properties"]["shadow-lift-black-point"].as<int>() == 0 &&
-            low_pipeline["hmplaycropper"]["properties"]["exposure"].as<int>() == 0,
+            low_pipeline["hmplaycropper"]["properties"]["exposure"].as<int>() == 0 &&
+            conflicting_legacy_mode_status.ok() && conflicting_bit_calibration_status.ok() &&
+            conflicting_pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>() == 0,
         "Calibration tone controls must route through the high-bit stitcher and remain disabled in 8-bit mode");
   } else {
     ok = false;

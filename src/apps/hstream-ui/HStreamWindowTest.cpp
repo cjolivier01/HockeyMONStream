@@ -7761,9 +7761,9 @@ bool test_camera_controls(HStreamWindow* window) {
   {
     YAML::Node automatic_color(YAML::NodeType::Map);
     automatic_color["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = "auto";
-    automatic_color["hstream_ui"]["camera_controls"]["Bring_Up_Shadows"] = 25;
-    automatic_color["hstream_ui"]["camera_controls"]["Lift_Shadow_Black_Point"] = 1;
-    automatic_color["hstream_ui"]["camera_controls"]["Exposure_x100"] = 30;
+    automatic_color["pipeline"]["hmstitcher"]["properties"]["shadow-lift"] = 25;
+    automatic_color["pipeline"]["hmstitcher"]["properties"]["shadow-lift-black-point"] = true;
+    automatic_color["pipeline"]["hmstitcher"]["properties"]["exposure"] = 0.3;
     std::ofstream out(config);
     out << automatic_color << "\n";
   }
@@ -7773,8 +7773,15 @@ bool test_camera_controls(HStreamWindow* window) {
               stitched_use_10_bit_grading->checkState() == Qt::PartiallyChecked && bring_up_shadows->value() == 25 &&
               stitched_bring_up_shadows->value() == 25 && lift_shadow_black_point->isChecked() &&
               stitched_lift_shadow_black_point->isChecked() && exposure->value() == 30 &&
-              stitched_exposure->value() == 30 && !save->isEnabled(),
-          "Automatic high-bit presets should load all tone controls without becoming a forced override")) {
+              stitched_exposure->value() == 30 &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains(
+                  "--options=hstream_ui.camera_controls.Bring_Up_Shadows=25") &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains(
+                  "--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1") &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains(
+                  "--options=hstream_ui.camera_controls.Exposure_x100=30") &&
+              !save->isEnabled(),
+          "Automatic precision should load and launch native stitcher tones without becoming a forced override")) {
     return false;
   }
   bring_up_shadows->setValue(26);
@@ -7790,6 +7797,7 @@ bool test_camera_controls(HStreamWindow* window) {
     YAML::Node forced_standard_color(YAML::NodeType::Map);
     forced_standard_color["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = false;
     forced_standard_color["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 20;
+    forced_standard_color["hstream_ui"]["camera_controls"]["Use_10_Bit_Grading"] = 1;
     std::ofstream out(config);
     out << forced_standard_color << "\n";
   }
@@ -7800,7 +7808,7 @@ bool test_camera_controls(HStreamWindow* window) {
               HStreamWindowTestAccess::pipelineArguments(window).contains(
                   "--options=pipeline.hmstitcher.properties.high-bit-depth=0") &&
               !save->isEnabled(),
-          "Forced standard precision should load distinctly from Auto and launch with an explicit off override")) {
+          "Native forced-standard precision should override a conflicting legacy UI value and launch explicitly off")) {
     return false;
   }
   bring_up_shadows->setValue(21);
