@@ -1,5 +1,6 @@
 #include "deepstream_app.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
+#include "hstream/src/libs/common/DetectionSnapshotMeta.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <gst/gst.h>
@@ -1196,8 +1197,45 @@ static GstPadProbeReturn gie_primary_processing_done_buf_prob(GstPad* pad, GstPa
     return GST_PAD_PROBE_OK;
   }
 
+  if (appCtx->capture_playtracker_detections) {
+    if (!hm::detection_snapshot::add_meta(batch_meta, appCtx->config.primary_gie_config.unique_id)) {
+      g_printerr("Playtracker telemetry could not snapshot primary detections; failing the run to avoid data loss\n");
+      GstElement* element = GST_ELEMENT(gst_pad_get_parent(pad));
+      if (element) {
+        GST_ELEMENT_ERROR(
+            element, STREAM, FAILED, ("Could not snapshot primary detections for lossless telemetry export"), (NULL));
+        gst_object_unref(element);
+      }
+    }
+  }
+
   write_kitti_output(appCtx, batch_meta);
 
+  return GST_PAD_PROBE_OK;
+}
+
+// Telemetry-only configurations can intentionally omit primary inference. Add
+// an explicit empty snapshot immediately before playtracker so downstream code
+// can distinguish that case from lost post-inference metadata.
+static GstPadProbeReturn no_primary_detection_snapshot_buf_prob(
+    GstPad* pad,
+    GstPadProbeInfo* info,
+    gpointer /*u_data*/) {
+  GstBuffer* buf = (GstBuffer*)info->data;
+  NvDsBatchMeta* batch_meta = gst_buffer_get_nvds_batch_meta(buf);
+  if (!batch_meta) {
+    NVGSTDS_WARN_MSG_V("Batch meta not found for buffer %p", buf);
+    return GST_PAD_PROBE_OK;
+  }
+  if (!hm::detection_snapshot::add_empty_meta(batch_meta)) {
+    g_printerr("Playtracker telemetry could not record empty detector output; failing the run to avoid data loss\n");
+    GstElement* element = GST_ELEMENT(gst_pad_get_parent(pad));
+    if (element) {
+      GST_ELEMENT_ERROR(
+          element, STREAM, FAILED, ("Could not record empty detector output for lossless telemetry export"), (NULL));
+      gst_object_unref(element);
+    }
+  }
   return GST_PAD_PROBE_OK;
 }
 
@@ -1605,6 +1643,16 @@ static gboolean create_common_elements(
 
     // Set this bin as the last element
     *sink_elem = pipeline->dsplaytracker_bin.bin;
+
+    if (pipeline->common_elements.appCtx->capture_playtracker_detections && !config->primary_gie_config.enable) {
+      NVGSTDS_ELEM_ADD_PROBE(
+          pipeline->detection_snapshot_buffer_probe_id,
+          pipeline->dsplaytracker_bin.elem_dsplaytracker,
+          "sink",
+          no_primary_detection_snapshot_buf_prob,
+          GST_PAD_PROBE_TYPE_BUFFER,
+          pipeline->common_elements.appCtx);
+    }
   }
 
   if (config->tracker_config.enable) {
@@ -1677,7 +1725,7 @@ static gboolean create_common_elements(
       *src_elem = pipeline->common_elements.primary_gie_bin.bin;
     }
     NVGSTDS_ELEM_ADD_PROBE(
-        pipeline->common_elements.primary_bbox_buffer_probe_id,
+        pipeline->detection_snapshot_buffer_probe_id,
         pipeline->common_elements.primary_gie_bin.bin,
         "src",
         gie_primary_processing_done_buf_prob,
@@ -2270,6 +2318,15 @@ gboolean create_pipeline(
   }
 
   pipeline->common_elements.appCtx = appCtx;
+  appCtx->capture_playtracker_detections = false;
+  if (config->dsplaytracker_config.enable) {
+    std::string telemetry_csv_dir;
+    for (const hm::gst::PluginProperty& property : config->dsplaytracker_config.private_properties) {
+      if (property.name == "telemetry-csv-dir" || property.name == "telemetry_csv_dir")
+        telemetry_csv_dir = property.value;
+    }
+    appCtx->capture_playtracker_detections = !telemetry_csv_dir.empty();
+  }
   // Decide where in the pipeline the element should be added and add only if
   // enabled
   // if (config->dsexample_config.enable) {
@@ -2469,6 +2526,21 @@ void destroy_pipeline(AppCtx* appCtx) {
 
   destroy_secondary_gie_bin(&appCtx->pipeline.common_elements.secondary_gie_bin);
   destroy_secondary_preprocess_bin(&appCtx->pipeline.common_elements.secondary_preprocess_bin);
+
+  if (appCtx->pipeline.detection_snapshot_buffer_probe_id != 0) {
+    if (config->primary_gie_config.enable) {
+      NVGSTDS_ELEM_REMOVE_PROBE(
+          appCtx->pipeline.detection_snapshot_buffer_probe_id,
+          appCtx->pipeline.common_elements.primary_gie_bin.bin,
+          "src");
+    } else {
+      NVGSTDS_ELEM_REMOVE_PROBE(
+          appCtx->pipeline.detection_snapshot_buffer_probe_id,
+          appCtx->pipeline.dsplaytracker_bin.elem_dsplaytracker,
+          "sink");
+    }
+    appCtx->pipeline.detection_snapshot_buffer_probe_id = 0;
+  }
 
   for (i = 0; i < appCtx->config.num_source_sub_bins; i++) {
     NvDsInstanceBin* bin = &appCtx->pipeline.instance_bins[i];

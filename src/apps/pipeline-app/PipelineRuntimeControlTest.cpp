@@ -336,8 +336,10 @@ bool verify_telemetry_seek_rejection(
   const std::string telemetry_manifest = read_file(telemetry_csv_dir / "hstream_telemetry.json");
   return check(
       !telemetry_manifest.empty() && telemetry_manifest.find("\"writer_drained\": true") != std::string::npos &&
+          fs::exists(telemetry_csv_dir / "detections.csv") &&
           !fs::exists(telemetry_csv_dir / "hstream_telemetry-1.json"),
-      "a rejected seek must finalize one uninterrupted telemetry session, never only a replacement segment");
+      "a rejected seek must finalize one uninterrupted telemetry session with detections, never only a replacement "
+      "segment");
 }
 
 bool verify_telemetry_seek_allowed_when_disabled(

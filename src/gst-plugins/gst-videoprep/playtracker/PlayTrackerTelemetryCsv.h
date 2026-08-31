@@ -29,6 +29,15 @@ struct TelemetryTrack {
   int class_id{0};
 };
 
+struct TelemetryDetection {
+  float left{0.0f};
+  float top{0.0f};
+  float width{0.0f};
+  float height{0.0f};
+  float score{0.0f};
+  int class_id{0};
+};
+
 struct TelemetryBox {
   float left{0.0f};
   float top{0.0f};
@@ -46,6 +55,7 @@ struct TelemetrySample {
   uint64_t seek_epoch{0};
   uint32_t width{0};
   uint32_t height{0};
+  std::vector<TelemetryDetection> detections;
   std::vector<TelemetryTrack> tracks;
   // Native playtracker order: first is the fast policy box, last is the
   // follower/Program camera box. A one-box policy uses the same box for both.
@@ -73,10 +83,12 @@ enum class TelemetryRunOutcome {
 };
 
 /**
- * Bounded, non-blocking metadata exporter for HM camera-policy datasets.
+ * Bounded, lossless metadata exporter for HM camera-policy datasets.
  *
- * TryEnqueue() copies only small CPU-resident DeepStream/playtracker metadata.
- * It never owns, maps, or reads a video surface. Disk I/O runs on writer_thread_.
+ * Producers block when the bounded queue is full so telemetry is never
+ * discarded. It copies only small CPU-resident DeepStream/playtracker
+ * metadata and never owns, maps, or reads a video surface. Disk I/O runs on
+ * writer_thread_.
  */
 class PlayTrackerTelemetryCsv {
  public:
@@ -114,6 +126,9 @@ class PlayTrackerTelemetryCsv {
   uint64_t dropped_samples() const {
     return dropped_samples_.load(std::memory_order_acquire);
   }
+  uint64_t queue_full_waits() const {
+    return queue_full_waits_.load(std::memory_order_acquire);
+  }
   std::string output_manifest() const;
 
  private:
@@ -145,8 +160,7 @@ class PlayTrackerTelemetryCsv {
       const std::string& output_directory,
       const TelemetryConfigArtifact& source_config,
       const TelemetryConfigArtifact& effective_config);
-  bool TryEnqueueLocked(TelemetrySample sample);
-  bool TryRecordConfigEventLocked(TelemetryConfigEvent event);
+  bool WaitForQueueSpace(std::unique_lock<std::mutex>& lock);
   void WriterLoop();
   void WriteSample(const QueuedSample& queued);
   bool WriteConfigEvent(const QueuedConfigEvent& queued);
@@ -156,7 +170,7 @@ class PlayTrackerTelemetryCsv {
   bool FlushAndSyncStagedArtifacts();
   bool SyncFd(int fd, const std::string& event);
   bool SyncDirectory(const std::string& phase);
-  bool PublishTrainingArtifacts();
+  bool PublishCsvArtifacts();
   bool VerifyOwnedArtifacts() const;
   void RemoveOwnedArtifacts(bool training_only);
   void CloseOutputs();
@@ -164,7 +178,11 @@ class PlayTrackerTelemetryCsv {
   void ResetOutputPaths();
 
   mutable std::mutex mutex_;
+  // Serializes producer calls across condition-variable waits so frame and
+  // live-policy event ordering cannot change while the queue is saturated.
+  std::mutex producer_mutex_;
   std::condition_variable ready_;
+  std::condition_variable space_available_;
   std::deque<WorkItem> queue_;
   size_t queue_capacity_{0};
   bool active_{false};
@@ -182,6 +200,8 @@ class PlayTrackerTelemetryCsv {
   std::atomic<uint64_t> config_event_discontinuity_gaps_{0};
   std::atomic<uint64_t> dropped_samples_{0};
   std::atomic<uint64_t> dropped_config_events_{0};
+  std::atomic<uint64_t> queue_full_waits_{0};
+  std::atomic<bool> queue_full_warning_emitted_{false};
   std::atomic<uint64_t> samples_buffered_{0};
   std::atomic<uint64_t> training_samples_buffered_{0};
   std::atomic<uint64_t> config_events_buffered_{0};
@@ -208,6 +228,7 @@ class PlayTrackerTelemetryCsv {
   std::string suffix_;
   std::string manifest_path_;
   std::string tracking_filename_;
+  std::string detections_filename_;
   std::string camera_filename_;
   std::string camera_fast_filename_;
   std::string frame_index_filename_;
@@ -218,6 +239,7 @@ class PlayTrackerTelemetryCsv {
   std::string effective_config_path_;
 
   std::ofstream tracking_;
+  std::ofstream detections_;
   std::ofstream camera_;
   std::ofstream camera_fast_;
   std::ofstream frame_index_;

@@ -1,10 +1,12 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
+#include "hstream/src/libs/common/DetectionSnapshotMeta.h"
 
 #include "absl/status/status.h"
 
 #include <cuda_runtime.h>
 #include <gst/gst.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -74,14 +76,21 @@ bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
   frame_meta->pipeline_height = 1080;
   object_meta->class_id = 0;
   object_meta->object_id = 1;
+  object_meta->unique_component_id = 1;
+  object_meta->confidence = 0.8f;
   object_meta->tracker_confidence = 0.9f;
+  object_meta->detector_bbox_info.org_bbox_coords = NvBbox_Coords{118.0f, 98.0f, 404.0f, 264.0f};
   object_meta->tracker_bbox_info.org_bbox_coords = NvBbox_Coords{120.0f, 100.0f, 400.0f, 260.0f};
   nvds_add_obj_meta_to_frame(frame_meta, object_meta, nullptr);
   nvds_add_frame_meta_to_batch(batch, frame_meta);
+  if (!hm::detection_snapshot::add_meta(batch, 1)) {
+    nvds_destroy_batch_meta(batch);
+    return false;
+  }
 
   NvBufSurfaceParams surface_params{};
-  surface_params.width = 3840;
-  surface_params.height = 1080;
+  surface_params.width = 1920;
+  surface_params.height = 540;
   NvBufSurface surface{};
   surface.batchSize = 1;
   surface.numFilled = 1;
@@ -556,7 +565,26 @@ int main() {
   }
   priv.StopTelemetry();
   const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
+  const std::string detections = read_file(telemetry_dir / "detections.csv");
   const std::string telemetry_manifest = read_file(telemetry_dir / "hstream_telemetry.json");
+  std::string first_detection = detections.substr(0, detections.find('\n'));
+  std::replace(first_detection.begin(), first_detection.end(), ',', ' ');
+  uint64_t detection_frame = 0;
+  float detection_x1 = 0.0f;
+  float detection_y1 = 0.0f;
+  float detection_x2 = 0.0f;
+  float detection_y2 = 0.0f;
+  float detection_score = 0.0f;
+  int detection_label = -1;
+  std::istringstream detection_fields(first_detection);
+  detection_fields >> detection_frame >> detection_x1 >> detection_y1 >> detection_x2 >> detection_y2 >>
+      detection_score >> detection_label;
+  if (!detection_fields || detection_frame == 0 || std::abs(detection_x1 - 236.0f) > 0.001f ||
+      std::abs(detection_y1 - 196.0f) > 0.001f || std::abs(detection_x2 - 1044.0f) > 0.001f ||
+      std::abs(detection_y2 - 724.0f) > 0.001f || std::abs(detection_score - 0.8f) > 0.001f || detection_label != 0) {
+    std::cerr << "detection export did not scale inference-surface coordinates to source-frame coordinates\n";
+    return 36;
+  }
   if (config_events.find("1,1,runtime-tuning,runtime-tuning-config-file,") == std::string::npos ||
       read_file(telemetry_dir / "play_tracker_runtime_tuning-1.yaml") != original_runtime_contents ||
       read_file(telemetry_dir / "play_tracker_source.yaml") != original_cfg_contents ||
