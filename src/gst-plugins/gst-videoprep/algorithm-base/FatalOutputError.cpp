@@ -11,7 +11,9 @@ bool post_fatal_output_error(GstElement* element, const absl::Status& status) {
 
   const std::string message = "Video preparation failed: " + status.ToString();
   GError* error = g_error_new_literal(GST_LIBRARY_ERROR, GST_LIBRARY_ERROR_FAILED, message.c_str());
-  return gst_element_post_message(element, gst_message_new_error(GST_OBJECT(element), error, nullptr));
+  GstMessage* gst_message = gst_message_new_error(GST_OBJECT(element), error, nullptr);
+  g_error_free(error);
+  return gst_element_post_message(element, gst_message);
 }
 
 } // namespace hm::videoprep

@@ -985,7 +985,9 @@ void CustomAlgorithmBase::OutputThread(void) {
           cuda_status.Update(generate_status);
           if (!cuda_status.ok()) {
             std::cerr << cuda_status << std::endl;
-            if (cuda_status.code() == absl::StatusCode::kCancelled) {
+            if (
+                absl::IsCancelled(generate_status) ||
+                shutdown_requested_.load(std::memory_order_acquire)) {
               // update_last_flow_ret(GST_FLOW_EOS);
               send_eos = true;
             } else {
@@ -1064,7 +1066,8 @@ void CustomAlgorithmBase::OutputThread(void) {
       cuda_status.Update(generate_status);
       if (!cuda_status.ok()) {
         std::cerr << cuda_status << std::endl;
-        if (cuda_status.code() == absl::StatusCode::kCancelled) {
+        if (
+            absl::IsCancelled(generate_status) || shutdown_requested_.load(std::memory_order_acquire)) {
           send_eos = true;
         } else {
           update_last_flow_ret(GST_FLOW_ERROR);
