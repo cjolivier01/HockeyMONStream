@@ -7,7 +7,11 @@
 #include <sys/stat.h>
 
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
+#include <thread>
 
 namespace {
 
@@ -32,6 +36,40 @@ bool expect_no_staging_files(const QString& directory) {
         "game directory must not retain owned telemetry staging directories");
   }
   return valid;
+}
+
+struct MarkerCloseRace {
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool marker_closed{false};
+  bool second_waiting_for_lock{false};
+  bool second_acquired_lock{false};
+  bool second_was_blocked{false};
+};
+
+void pause_after_marker_close(void* context) {
+  auto* race = static_cast<MarkerCloseRace*>(context);
+  std::unique_lock<std::mutex> lock(race->mutex);
+  race->marker_closed = true;
+  race->changed.notify_all();
+  if (!race->changed.wait_for(lock, std::chrono::seconds(5), [&]() { return race->second_waiting_for_lock; }))
+    return;
+  race->second_was_blocked =
+      !race->changed.wait_for(lock, std::chrono::milliseconds(200), [&]() { return race->second_acquired_lock; });
+}
+
+void note_before_game_directory_lock(void* context) {
+  auto* race = static_cast<MarkerCloseRace*>(context);
+  std::lock_guard<std::mutex> lock(race->mutex);
+  race->second_waiting_for_lock = true;
+  race->changed.notify_all();
+}
+
+void note_after_game_directory_lock(void* context) {
+  auto* race = static_cast<MarkerCloseRace*>(context);
+  std::lock_guard<std::mutex> lock(race->mutex);
+  race->second_acquired_lock = true;
+  race->changed.notify_all();
 }
 
 } // namespace
@@ -158,6 +196,42 @@ int main() {
         QFileInfo::exists(QDir(recovery_game).filePath(stem + "-7.csv")),
         "new-suffix publication must succeed after stale staging recovery");
   }
+
+  const QString concurrent_game = QDir(root.path()).filePath("concurrent-game");
+  valid &= expect(QDir().mkpath(concurrent_game), "concurrent publication game directory must be created");
+  MarkerCloseRace marker_close_race;
+  hm::ui_internal::TelemetryCsvPublicationTestHooks first_concurrent = named_fallback;
+  first_concurrent.callback_context = &marker_close_race;
+  first_concurrent.after_named_marker_close = pause_after_marker_close;
+  hm::ui_internal::TelemetryCsvPublicationTestHooks second_concurrent = named_fallback;
+  second_concurrent.callback_context = &marker_close_race;
+  second_concurrent.before_game_directory_lock = note_before_game_directory_lock;
+  second_concurrent.after_game_directory_lock = note_after_game_directory_lock;
+  hm::ui_internal::TelemetryCsvPublicationResult first_concurrent_result;
+  hm::ui_internal::TelemetryCsvPublicationResult second_concurrent_result;
+  std::thread first_publisher([&]() {
+    first_concurrent_result =
+        hm::ui_internal::publish_telemetry_csvs(manifest_path, concurrent_game, "-9", &first_concurrent);
+  });
+  {
+    std::unique_lock<std::mutex> lock(marker_close_race.mutex);
+    valid &= expect(
+        marker_close_race.changed.wait_for(
+            lock, std::chrono::seconds(5), [&]() { return marker_close_race.marker_closed; }),
+        "first publisher must reach the closed-marker cleanup window");
+  }
+  std::thread second_publisher([&]() {
+    second_concurrent_result =
+        hm::ui_internal::publish_telemetry_csvs(manifest_path, concurrent_game, "-10", &second_concurrent);
+  });
+  first_publisher.join();
+  second_publisher.join();
+  valid &= expect(first_concurrent_result.ok, first_concurrent_result.error.toStdString().c_str());
+  valid &= expect(second_concurrent_result.ok, second_concurrent_result.error.toStdString().c_str());
+  valid &= expect(
+      marker_close_race.second_was_blocked,
+      "a second publisher must remain blocked while the first removes its closed ownership marker");
+  valid &= expect_no_staging_files(concurrent_game);
 
   const auto collision = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2", &named_fallback);
   valid &= expect(!collision.ok, "copy publication must never replace an existing game CSV");

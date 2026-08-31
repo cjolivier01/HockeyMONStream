@@ -164,6 +164,17 @@ bool sync_fd(int fd) {
   return true;
 }
 
+bool lock_fd_exclusively(int fd, QString* error) {
+  while (::flock(fd, LOCK_EX) != 0) {
+    if (errno == EINTR)
+      continue;
+    if (error)
+      *error = errno_string(errno);
+    return false;
+  }
+  return true;
+}
+
 bool remove_owned_path(
     int directory_fd,
     const QByteArray& filename,
@@ -385,6 +396,7 @@ bool cleanup_named_staging_area(
     int game_directory_fd,
     NamedStagingArea* area,
     std::vector<CopiedArtifact>* copied,
+    const TelemetryCsvPublicationTestHooks* test_hooks,
     QString* error);
 
 bool create_named_staging_area(
@@ -477,7 +489,7 @@ bool create_named_staging_area(
     }
     if (!initialized) {
       QString cleanup_error;
-      cleanup_named_staging_area(game_directory_fd, &candidate, nullptr, &cleanup_error);
+      cleanup_named_staging_area(game_directory_fd, &candidate, nullptr, nullptr, &cleanup_error);
       if (error) {
         *error = QString("could not initialize telemetry staging directory %1: %2")
                      .arg(candidate.directory_name, marker_error.isEmpty() ? QString("unknown error") : marker_error);
@@ -819,6 +831,7 @@ bool cleanup_named_staging_area(
     int game_directory_fd,
     NamedStagingArea* area,
     std::vector<CopiedArtifact>* copied,
+    const TelemetryCsvPublicationTestHooks* test_hooks,
     QString* error) {
   if (!area || area->directory_fd.get() < 0)
     return true;
@@ -869,10 +882,12 @@ bool cleanup_named_staging_area(
       artifact.temporary_filename.clear();
   }
   QString removal_error;
-  // Avoid NFS silly-renaming an ownership marker that is still open. Once
-  // the lock is released, concurrent recovery/removal is intentionally
-  // handled as an idempotent success by the identity-checked removers.
+  // Avoid NFS silly-renaming an ownership marker that is still open. The
+  // game-directory lock remains held until this staging directory is gone,
+  // so another publisher cannot open the marker after this descriptor closes.
   area->marker_fd.reset();
+  if (test_hooks && test_hooks->after_named_marker_close)
+    test_hooks->after_named_marker_close(test_hooks->callback_context);
   if (!remove_owned_path(area->directory_fd.get(), kStagingMarkerFilename, area->marker_identity, &removal_error)) {
     if (error)
       *error = QString("could not remove ownership marker from %1: %2").arg(area->directory_name, removal_error);
@@ -1017,6 +1032,16 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     result.error = QString("could not open game directory %1: %2").arg(game_directory, errno_string(errno));
     return result;
   }
+  if (test_hooks && test_hooks->before_game_directory_lock)
+    test_hooks->before_game_directory_lock(test_hooks->callback_context);
+  QString lock_error;
+  if (!lock_fd_exclusively(game_directory_fd.get(), &lock_error)) {
+    result.error =
+        QString("could not lock game directory %1 for telemetry publication: %2").arg(game_directory, lock_error);
+    return result;
+  }
+  if (test_hooks && test_hooks->after_game_directory_lock)
+    test_hooks->after_game_directory_lock(test_hooks->callback_context);
   QString recovery_error;
   if (!recover_owned_staging_areas(game_directory_fd.get(), &recovery_error)) {
     result.error = recovery_error;
@@ -1028,7 +1053,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   NamedStagingArea staging_area;
   auto cleanup_staging = [&]() -> QString {
     QString cleanup_error;
-    cleanup_named_staging_area(game_directory_fd.get(), &staging_area, &copied, &cleanup_error);
+    cleanup_named_staging_area(game_directory_fd.get(), &staging_area, &copied, test_hooks, &cleanup_error);
     return cleanup_error;
   };
   auto append_error = [](QString* destination, const QString& addition) {

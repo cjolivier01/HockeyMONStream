@@ -18,6 +18,10 @@ struct TelemetryCsvPublicationTestHooks {
   bool abandon_named_staging_after_copy{false};
   bool fail_tracking_commit_sync{false};
   QString rollback_identity_error_filename;
+  void* callback_context{nullptr};
+  void (*before_game_directory_lock)(void*){nullptr};
+  void (*after_game_directory_lock)(void*){nullptr};
+  void (*after_named_marker_close)(void*){nullptr};
 };
 
 // Returns the suffix shared by a finalized Program video and its CSVs: an
