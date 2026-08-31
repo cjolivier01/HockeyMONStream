@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/FatalOutputError.h"
 #include "hstream/src/libs/common/ApplicationPayload.h"
 #include "hstream/src/libs/common/Status.h"
 
@@ -984,11 +985,20 @@ void CustomAlgorithmBase::OutputThread(void) {
           cuda_status.Update(generate_status);
           if (!cuda_status.ok()) {
             std::cerr << cuda_status << std::endl;
-            if (cuda_status.code() == absl::StatusCode::kCancelled) {
+            if (
+                absl::IsCancelled(generate_status) ||
+                shutdown_requested_.load(std::memory_order_acquire)) {
               // update_last_flow_ret(GST_FLOW_EOS);
               send_eos = true;
             } else {
               update_last_flow_ret(GST_FLOW_ERROR);
+              // GenerateOutput runs on this private worker rather than a
+              // GStreamer streaming thread. A flow flag alone is only observed
+              // if another input buffer arrives, so terminal failures such as
+              // CUDA allocation errors can otherwise leave the pipeline and UI
+              // waiting forever. Post the failure now and stop accepting work.
+              videoprep::post_fatal_output_error(GST_ELEMENT(m_element), generate_status);
+              RequestShutdown();
             }
           }
         }
@@ -1052,10 +1062,18 @@ void CustomAlgorithmBase::OutputThread(void) {
       outBuffer = packetInfo.inbuf;
       assert(cuda_stream_);
       batch_meta = GetNVDS_BatchMeta(outBuffer);
-      cuda_status.Update(GenerateOutput(batch_meta, in_surf, nullptr));
+      const absl::Status generate_status = GenerateOutput(batch_meta, in_surf, nullptr);
+      cuda_status.Update(generate_status);
       if (!cuda_status.ok()) {
         std::cerr << cuda_status << std::endl;
-        update_last_flow_ret(GST_FLOW_ERROR);
+        if (
+            absl::IsCancelled(generate_status) || shutdown_requested_.load(std::memory_order_acquire)) {
+          send_eos = true;
+        } else {
+          update_last_flow_ret(GST_FLOW_ERROR);
+          videoprep::post_fatal_output_error(GST_ELEMENT(m_element), generate_status);
+          RequestShutdown();
+        }
       }
       nvds_set_input_system_timestamp(outBuffer, GST_ELEMENT_NAME(m_element));
     }
