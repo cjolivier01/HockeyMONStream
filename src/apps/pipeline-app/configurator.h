@@ -71,7 +71,7 @@ absl::Status remove_archive_entry_if_owned_for_test(
     uintmax_t expected_inode);
 absl::StatusOr<double> effective_stitch_output_rotation(const YAML::Node& config);
 bool hmstitcher_owns_stitching_cleanup(const YAML::Node& config);
-std::vector<std::string> enabled_source_video_uris(const YAML::Node& pipeline);
+std::vector<std::optional<std::string>> enabled_source_video_paths(const YAML::Node& pipeline);
 using ConfigLeafRanks = std::map<std::string, int>;
 absl::StatusOr<YAML::Node> build_effective_playtracker_config(
     const YAML::Node& effective_config,
@@ -236,7 +236,7 @@ class Configurator {
       const;
   absl::Status configure_source_bit_depth(
       YAML::Node& pipeline,
-      const std::vector<std::string>& source_video_paths,
+      const std::vector<std::optional<std::string>>& source_video_paths,
       bool stitching_calibration_only);
   void configure_stitching_calibration_archive_name(YAML::Node& pipeline) const;
   void log_enabled_bins(const YAML::Node& pipeline) const;

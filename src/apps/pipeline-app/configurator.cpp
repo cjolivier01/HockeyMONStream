@@ -616,8 +616,7 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
       return std::nullopt;
     }
   };
-  auto parsed_framing = [](const std::optional<YAML::Node>& node)
-      -> std::optional<stitching::StitchProjectionFraming> {
+  auto parsed_framing = [](const std::optional<YAML::Node>& node) -> std::optional<stitching::StitchProjectionFraming> {
     if (!node.has_value() || !node->IsMap())
       return std::nullopt;
     YAML::Node wrapper(YAML::NodeType::Map);
@@ -1313,37 +1312,45 @@ bool configurator_internal::hmstitcher_owns_stitching_cleanup(const YAML::Node& 
   return bool_at("stitching.enabled");
 }
 
-std::vector<std::string> configurator_internal::enabled_source_video_uris(const YAML::Node& pipeline) {
-  std::vector<std::string> uris;
+std::vector<std::optional<std::string>> configurator_internal::enabled_source_video_paths(const YAML::Node& pipeline) {
+  std::vector<std::optional<std::string>> paths;
   for (const auto& item : pipeline) {
     const std::string key = item.first.as<std::string>();
     if (!absl::StartsWith(key, "source") || !is_enabled(item.second)) {
       continue;
     }
     const NvDsSourceType source_type = static_cast<NvDsSourceType>(get_node_value<int>(item.second, "type", 0));
+    if (source_type == NV_DS_SOURCE_AUDIO_WAV || source_type == NV_DS_SOURCE_AUDIO_URI ||
+        source_type == NV_DS_SOURCE_ALSA_SRC) {
+      continue;
+    }
     if (source_type != NV_DS_SOURCE_URI && source_type != NV_DS_SOURCE_URI_MULTIPLE) {
+      paths.push_back(std::nullopt);
       continue;
     }
 
+    const size_t initial_size = paths.size();
     std::optional<YAML::Node> uri_list = get_node(item.second, "uri-list");
     if (!uri_list.has_value() || !uri_list->IsDefined()) {
       uri_list = get_node(item.second, "uri_list");
     }
     if (uri_list.has_value() && uri_list->IsSequence()) {
       for (const YAML::Node& uri : *uri_list) {
-        uris.emplace_back(uri.as<std::string>());
+        paths.push_back(local_video_path_from_uri(uri.as<std::string>()));
       }
     } else if (uri_list.has_value() && uri_list->IsScalar()) {
       for (const absl::string_view uri : absl::StrSplit(uri_list->as<std::string>(), ';', absl::SkipEmpty())) {
-        uris.emplace_back(uri.data(), uri.size());
+        paths.push_back(local_video_path_from_uri(std::string(uri)));
       }
     }
     const std::optional<YAML::Node> uri = get_node(item.second, "uri");
     if (uri.has_value() && uri->IsScalar()) {
-      uris.emplace_back(uri->as<std::string>());
+      paths.push_back(local_video_path_from_uri(uri->as<std::string>()));
     }
+    if (paths.size() == initial_size)
+      paths.push_back(std::nullopt);
   }
-  return uris;
+  return paths;
 }
 
 configurator_internal::AutomaticHighBitDepthDecision configurator_internal::decide_automatic_high_bit_depth(
@@ -1817,10 +1824,7 @@ absl::Status create_archive_cleanup_committed(int cleanup_fd, const struct stat&
     return absl::UnavailableError("archive cleanup interruption requested before commit publication");
   }
   if (rename_archive_entry_no_replace(
-          cleanup_fd,
-          kArchiveCleanupCommittedStagingName,
-          cleanup_fd,
-          kArchiveCleanupCommittedName) != 0) {
+          cleanup_fd, kArchiveCleanupCommittedStagingName, cleanup_fd, kArchiveCleanupCommittedName) != 0) {
     const int rename_errno = errno;
     ::unlinkat(cleanup_fd, kArchiveCleanupCommittedStagingName, 0);
     ::fsync(cleanup_fd);
@@ -2885,11 +2889,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
   };
   const auto retire_reconciled_entry = [](const ReconciledEntry& entry) -> absl::Status {
     return remove_archive_entry_if_owned(
-        entry.guard_path,
-        entry.identity,
-        "archive reconciliation guard",
-        &entry.required_path,
-        &entry.identity);
+        entry.guard_path, entry.identity, "archive reconciliation guard", &entry.required_path, &entry.identity);
   };
   const int parent_fd = ::open(parent_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (parent_fd < 0) {
@@ -3122,8 +3122,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
         }
         if (!candidate_stat->has_value())
           continue;
-        ReconciledEntry interrupted{
-            guarded_public_path, candidate, fs::path(), candidate_stat->value()};
+        ReconciledEntry interrupted{guarded_public_path, candidate, fs::path(), candidate_stat->value()};
         const absl::Status prepare_status = prepare_reconciled_entry(&interrupted);
         if (!prepare_status.ok()) {
           ::close(cleanup_fd);
@@ -3366,8 +3365,8 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
         ::close(cleanup_fd);
         ::close(parent_fd);
         return absl::FailedPreconditionError(TO_STRING(
-            "Archive reconciliation guard identity does not match its cleanup transaction at \""
-            << candidate.string() << "\""));
+            "Archive reconciliation guard identity does not match its cleanup transaction at \"" << candidate.string()
+                                                                                                 << "\""));
       }
       reconciled.push_back({guarded_public_path, candidate, fs::path(), candidate_stat->value()});
     }
@@ -3400,8 +3399,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
           "Failed to sync reconciled cleanup directory \"" << cleanup_path.string()
                                                            << "\": " << std::strerror(saved_errno)));
     }
-    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION") &&
-        !reconciled.empty()) {
+    if (g_getenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION") && !reconciled.empty()) {
       g_unsetenv("HSTREAM_CONFIGURATOR_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
       const fs::path& public_path = reconciled.front().required_path;
       ::unlink(public_path.c_str());
@@ -6703,9 +6701,11 @@ void Configurator::configure_stitching_calibration_archive_name(YAML::Node& pipe
     }
     const std::string configured = get_node_value<std::string>(sink, "output-file", "");
     const fs::path configured_path(configured);
-    if (configured.empty() ||
-        (!configured_path.has_parent_path() &&
-         (configured == kDefaultOutputVideoName || configured == kLegacyDefaultOutputName))) {
+    const bool output_file_is_explicit = explicit_value_rank("pipeline." + key + ".output-file") >= 1;
+    if (!output_file_is_explicit &&
+        (configured.empty() ||
+         (!configured_path.has_parent_path() &&
+          (configured == kDefaultOutputVideoName || configured == kLegacyDefaultOutputName)))) {
       sink["output-file"] = "stitched_output.mkv";
     }
   }
@@ -6713,7 +6713,7 @@ void Configurator::configure_stitching_calibration_archive_name(YAML::Node& pipe
 
 absl::Status Configurator::configure_source_bit_depth(
     YAML::Node& pipeline,
-    const std::vector<std::string>& source_video_paths,
+    const std::vector<std::optional<std::string>>& source_video_paths,
     bool stitching_calibration_only) {
   YAML::Node stitcher = pipeline["hmstitcher"];
   if (!stitcher.IsMap())
@@ -6776,8 +6776,12 @@ absl::Status Configurator::configure_source_bit_depth(
   } else if (!forced_high_bit_depth.has_value()) {
     std::vector<std::optional<unsigned int>> source_depths;
     std::unordered_set<std::string> visited;
-    for (const std::string& source_path : source_video_paths) {
-      const std::string normalized_path = fs::path(source_path).lexically_normal().string();
+    for (const std::optional<std::string>& source_path : source_video_paths) {
+      if (!source_path.has_value()) {
+        source_depths.push_back(std::nullopt);
+        continue;
+      }
+      const std::string normalized_path = fs::path(*source_path).lexically_normal().string();
       if (normalized_path.empty() || !visited.insert(normalized_path).second)
         continue;
       source_depths.push_back(getVideoBitDepth(normalized_path));
@@ -7516,8 +7520,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection");
   const auto persisted_previous_projection_parameters = get_node(
       persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_parameters");
-  const auto persisted_previous_projection_framing = get_node(
-      persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_framing");
+  const auto persisted_previous_projection_framing =
+      get_node(persisted_private_config_, "hstream_ui.generated_stitching_backend_choices.previous_projection_framing");
   const auto persisted_previous_generated_projection_parameters = get_node(
       persisted_private_config_,
       "hstream_ui.generated_stitching_backend_choices.previous_generated_projection_parameters");
@@ -7576,8 +7580,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       return std::nullopt;
     }
   };
-  const auto parsed_framing = [](const std::optional<YAML::Node>& node)
-      -> std::optional<stitching::StitchProjectionFraming> {
+  const auto parsed_framing =
+      [](const std::optional<YAML::Node>& node) -> std::optional<stitching::StitchProjectionFraming> {
     if (!node.has_value() || !node->IsMap())
       return std::nullopt;
     YAML::Node wrapper(YAML::NodeType::Map);
@@ -8369,8 +8373,9 @@ absl::Status Configurator::complete_configuration(
         stitching::StitchProjectionFraming expected_projection_framing;
         HM_ASSIGN_OR_RETURN(expected_projection_framing, stitching::read_stitch_projection_framing(config_));
         if (get_node_value(config_, "stitching.mapping_backend", std::string()) == "nona") {
-          HM_RETURN_IF_ERROR(stitching::ValidateStitchProjectionFraming(
-              expected_projection, expected_projection_parameters, expected_projection_framing));
+          HM_RETURN_IF_ERROR(
+              stitching::ValidateStitchProjectionFraming(
+                  expected_projection, expected_projection_parameters, expected_projection_framing));
         }
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
@@ -8609,25 +8614,31 @@ absl::Status Configurator::complete_configuration(
     pipeline["streammux"]["frame-num-reset-on-eos"] = "0";
   }
   std::vector<std::string> source_video_paths;
+  std::vector<std::optional<std::string>> source_bit_depth_paths;
   source_video_paths.reserve(left_files.size() + right_files.size());
+  source_bit_depth_paths.reserve(left_files.size() + right_files.size());
   for (const std::string& path : left_files) {
-    source_video_paths.emplace_back(file_maybe_in_game_dir(path));
+    const std::string resolved_path = file_maybe_in_game_dir(path);
+    source_video_paths.push_back(resolved_path);
+    source_bit_depth_paths.push_back(resolved_path);
   }
   for (const std::string& path : right_files) {
-    source_video_paths.emplace_back(file_maybe_in_game_dir(path));
+    const std::string resolved_path = file_maybe_in_game_dir(path);
+    source_video_paths.push_back(resolved_path);
+    source_bit_depth_paths.push_back(resolved_path);
   }
-  const auto append_source_uri = [this, &source_video_paths](const std::string& uri) {
-    const std::optional<std::string> path = local_video_path_from_uri(uri);
+  for (const std::optional<std::string>& path : configurator_internal::enabled_source_video_paths(pipeline)) {
     if (path.has_value() && !path->empty()) {
-      source_video_paths.emplace_back(file_maybe_in_game_dir(*path));
+      const std::string resolved_path = file_maybe_in_game_dir(*path);
+      source_video_paths.push_back(resolved_path);
+      source_bit_depth_paths.push_back(resolved_path);
+    } else {
+      source_bit_depth_paths.push_back(std::nullopt);
     }
-  };
-  for (const std::string& uri : configurator_internal::enabled_source_video_uris(pipeline)) {
-    append_source_uri(uri);
   }
   if (stitching_calibration_only)
     configure_stitching_calibration_archive_name(pipeline);
-  HM_RETURN_IF_ERROR(configure_source_bit_depth(pipeline, source_video_paths, stitching_calibration_only));
+  HM_RETURN_IF_ERROR(configure_source_bit_depth(pipeline, source_bit_depth_paths, stitching_calibration_only));
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline, source_video_paths));
 
   if (show_render_sink) {

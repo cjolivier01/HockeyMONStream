@@ -14,7 +14,7 @@
 #include <opencv2/opencv.hpp>
 
 #include "absl/strings/str_split.h"
-//#include "absl/cleanup/cleanup.h"
+// #include "absl/cleanup/cleanup.h"
 
 #define CHECK_MESSAGE_TYPE(message, type)                      \
   do {                                                         \
@@ -170,11 +170,11 @@ std::optional<unsigned int> videoBitDepthFromCaps(const GstCaps* caps) {
     return std::nullopt;
   }
 
-  std::optional<unsigned int> maximum_depth;
-  const auto consider = [&maximum_depth](unsigned int depth) {
+  std::optional<unsigned int> minimum_depth;
+  const auto consider = [&minimum_depth](unsigned int depth) {
     if (depth == 0 || depth > 64)
       return;
-    maximum_depth = std::max(maximum_depth.value_or(0U), depth);
+    minimum_depth = minimum_depth.has_value() ? std::min(*minimum_depth, depth) : depth;
   };
   const auto consider_field = [&consider](const GstStructure* structure, const char* field) {
     guint unsigned_value = 0;
@@ -211,7 +211,7 @@ std::optional<unsigned int> videoBitDepthFromCaps(const GstCaps* caps) {
       }
     }
   }
-  return maximum_depth;
+  return minimum_depth;
 }
 
 std::optional<unsigned int> getVideoBitDepth(const std::string& videoPath) {

@@ -25,6 +25,11 @@ int main(int argc, char** argv) {
   ok &= expect_depth("video/x-h265, profile=(string)main-10, bit-depth-luma=(uint)10", 10);
   ok &= expect_depth("video/x-raw, format=(string)P010_10LE", 10);
   ok &= expect_depth("video/x-av1, profile=(string)main-12", 12);
+  ok &= expect_depth("video/x-h265, bit-depth-luma=(uint)8, bit-depth-chroma=(uint)10", 8);
+  ok &= expect_depth(
+      "video/x-h265, profile=(string)main, bit-depth-luma=(uint)8; "
+      "video/x-h265, profile=(string)main-10, bit-depth-luma=(uint)10",
+      8);
 
   GstCaps* unknown = gst_caps_from_string("video/x-h264, profile=(string)high");
   ok &= !hm::videoBitDepthFromCaps(unknown).has_value();

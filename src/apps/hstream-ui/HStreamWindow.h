@@ -335,6 +335,8 @@ class HStreamWindow : public QMainWindow {
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments() const;
+  QString highBitDepthMode() const;
+  void setHighBitDepthMode(const QString& mode);
   bool setupPretrainedAssets(const QStringList& pipeline_args);
   void logMissingTensorRtEngineCaches(const QStringList& pipeline_args);
   int stitchingCalibrationControlPoints() const;
@@ -676,6 +678,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, std::vector<double>> default_projection_parameters_;
   hm::stitching::StitchProjectionFraming default_projection_framing_;
   std::map<QString, int> saved_camera_controls_;
+  QString saved_high_bit_depth_mode_{"auto"};
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};
   int saved_stitch_max_output_width_{0};
