@@ -23,6 +23,16 @@ bool expect(bool condition, const char* message) {
   return condition;
 }
 
+bool expect_no_staging_files(const QString& directory) {
+  bool valid = true;
+  for (const QString& entry : QDir(directory).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot)) {
+    valid &= expect(!entry.startsWith('.'), "game directory must not retain hidden telemetry staging files");
+    valid &=
+        expect(!entry.endsWith(".hstream-publish-tmp"), "game directory must not retain named telemetry staging files");
+  }
+  return valid;
+}
+
 } // namespace
 
 int main() {
@@ -65,6 +75,8 @@ int main() {
   bool valid = expect(
       hm::ui_internal::telemetry_csv_destination_paths_available(game, "-2"),
       "an unused telemetry suffix must be available before archive publication");
+  hm::ui_internal::TelemetryCsvPublicationTestHooks named_fallback;
+  named_fallback.force_named_temporary_files = true;
   const auto published = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2");
   valid &= expect(published.ok, published.error.toStdString().c_str()) &&
       expect(published.published_paths.size() == 6, "all six CSVs must be copied");
@@ -95,17 +107,43 @@ int main() {
       hm::ui_internal::finalized_archive_csv_suffix(QDir(game).filePath("unrelated.mp4"), "sabercats-16a").isNull(),
       "unrelated video names must not produce a CSV suffix");
 
-  const auto collision = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2");
-  valid &= expect(!collision.ok, "copy publication must never replace an existing game CSV");
-  for (const QString& entry : QDir(game).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot)) {
-    valid &= expect(!entry.startsWith('.'), "game directory must not retain hidden telemetry staging files");
+  const QString fallback_game = QDir(root.path()).filePath("fallback-game");
+  valid &= expect(QDir().mkpath(fallback_game), "named fallback game directory must be created");
+  valid &= expect(
+      write_file(QDir(fallback_game).filePath("camera-6.csv.hstream-publish-tmp"), "stale staging contents\n"),
+      "stale named staging fixture must be written");
+  const auto fallback_published =
+      hm::ui_internal::publish_telemetry_csvs(manifest_path, fallback_game, "-6", &named_fallback);
+  valid &= expect(fallback_published.ok, fallback_published.error.toStdString().c_str()) &&
+      expect(fallback_published.published_paths.size() == 6, "named fallback must copy all six CSVs");
+  for (const QString& stem : stems) {
+    valid &=
+        expect(QFileInfo::exists(QDir(fallback_game).filePath(stem + "-6.csv")), "named fallback game CSV must exist");
   }
+  valid &= expect_no_staging_files(fallback_game);
+
+  const auto collision = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2", &named_fallback);
+  valid &= expect(!collision.ok, "copy publication must never replace an existing game CSV");
+  valid &= expect_no_staging_files(game);
+
+  const QString tracking_source = QDir(working).filePath("tracking-7.csv");
+  const QString saved_tracking_source = tracking_source + ".saved";
+  valid &= expect(QFile::rename(tracking_source, saved_tracking_source), "tracking source must be hidden from copier");
+  const auto incomplete_copy = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-3", &named_fallback);
+  valid &= expect(!incomplete_copy.ok, "a missing source must fail named fallback publication");
+  valid &= expect_no_staging_files(game);
+  for (const QString& stem : stems) {
+    valid &= expect(
+        !QFileInfo::exists(QDir(game).filePath(stem + "-3.csv")), "a copy failure must not publish any game CSV");
+  }
+  valid &= expect(QFile::rename(saved_tracking_source, tracking_source), "tracking source fixture must be restored");
 
   const QString rollback_game = QDir(root.path()).filePath("rollback-game");
   valid &= expect(QDir().mkpath(rollback_game), "rollback test game directory must be created");
   const QString foreign_tracking = QDir(rollback_game).filePath("tracking-4.csv");
   valid &= expect(write_file(foreign_tracking, "foreign tracking\n"), "foreign tracking fixture must be written");
-  const auto tracking_collision = hm::ui_internal::publish_telemetry_csvs(manifest_path, rollback_game, "-4");
+  const auto tracking_collision =
+      hm::ui_internal::publish_telemetry_csvs(manifest_path, rollback_game, "-4", &named_fallback);
   QFile foreign_tracking_file(foreign_tracking);
   const bool foreign_tracking_opened = foreign_tracking_file.open(QIODevice::ReadOnly);
   valid &= expect(!tracking_collision.ok, "tracking collision must fail the whole CSV publication");
@@ -119,5 +157,25 @@ int main() {
         !QFileInfo::exists(QDir(rollback_game).filePath(stem + "-4.csv")),
         "tracking collision must roll back every copied companion CSV");
   }
+
+  valid &= expect_no_staging_files(rollback_game);
+
+  const QString ambiguous_game = QDir(root.path()).filePath("ambiguous-game");
+  valid &= expect(QDir().mkpath(ambiguous_game), "ambiguous rollback game directory must be created");
+  hm::ui_internal::TelemetryCsvPublicationTestHooks ambiguous_rollback = named_fallback;
+  ambiguous_rollback.fail_tracking_commit_sync = true;
+  ambiguous_rollback.rollback_identity_error_filename = "tracking-5.csv";
+  const auto ambiguous =
+      hm::ui_internal::publish_telemetry_csvs(manifest_path, ambiguous_game, "-5", &ambiguous_rollback);
+  valid &= expect(!ambiguous.ok, "an ambiguous tracking rollback must report publication failure");
+  valid &= expect(
+      ambiguous.error.contains("retaining complete telemetry set"),
+      "ambiguous tracking rollback must report that the complete set was retained");
+  for (const QString& stem : stems) {
+    valid &= expect(
+        QFileInfo::exists(QDir(ambiguous_game).filePath(stem + "-5.csv")),
+        "ambiguous tracking rollback must retain every companion CSV");
+  }
+  valid &= expect_no_staging_files(ambiguous_game);
   return valid ? 0 : 1;
 }

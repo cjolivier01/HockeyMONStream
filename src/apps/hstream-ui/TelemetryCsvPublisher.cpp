@@ -8,6 +8,7 @@
 #include <QtCore/QRegularExpression>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -57,12 +58,22 @@ struct OpenRegularFile {
 struct CopiedArtifact {
   QString stem;
   QString destination_filename;
+  QByteArray temporary_filename;
   OpenRegularFile source;
   UniqueFd destination_fd;
   struct stat destination_identity{};
   off_t size{0};
   bool linked{false};
 };
+
+enum class PathIdentityState { kOwned, kAbsent, kReplaced, kError };
+
+struct PathIdentityResult {
+  PathIdentityState state{PathIdentityState::kError};
+  int error_number{0};
+};
+
+constexpr auto kNamedTemporarySuffix = ".hstream-publish-tmp";
 
 bool same_identity(const struct stat& left, const struct stat& right) {
   return left.st_dev == right.st_dev && left.st_ino == right.st_ino;
@@ -81,14 +92,31 @@ QString errno_string(int value) {
   return QString::fromLocal8Bit(std::strerror(value));
 }
 
-bool path_has_identity(int directory_fd, const QByteArray& filename, const struct stat& expected) {
+PathIdentityResult path_identity(
+    int directory_fd,
+    const QByteArray& filename,
+    const struct stat& expected,
+    const TelemetryCsvPublicationTestHooks* test_hooks = nullptr) {
+  if (test_hooks && test_hooks->rollback_identity_error_filename == QFile::decodeName(filename))
+    return {PathIdentityState::kError, EIO};
   struct stat actual{};
-  return ::fstatat(directory_fd, filename.constData(), &actual, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(actual.st_mode) &&
-      same_identity(actual, expected);
+  if (::fstatat(directory_fd, filename.constData(), &actual, AT_SYMLINK_NOFOLLOW) == 0) {
+    return {
+        S_ISREG(actual.st_mode) && same_identity(actual, expected) ? PathIdentityState::kOwned
+                                                                   : PathIdentityState::kReplaced,
+        0};
+  }
+  const int lookup_error = errno;
+  return {lookup_error == ENOENT ? PathIdentityState::kAbsent : PathIdentityState::kError, lookup_error};
 }
 
-bool unlink_if_owned(int directory_fd, const QByteArray& filename, const struct stat& expected) {
-  return path_has_identity(directory_fd, filename, expected) && ::unlinkat(directory_fd, filename.constData(), 0) == 0;
+QString path_identity_error(const QString& action, const QString& filename, const PathIdentityResult& identity) {
+  if (identity.state == PathIdentityState::kReplaced)
+    return QString("could not %1 %2 because the path was replaced").arg(action, filename);
+  if (identity.state == PathIdentityState::kError)
+    return QString("could not inspect %1 while trying to %2 it: %3")
+        .arg(filename, action, errno_string(identity.error_number));
+  return {};
 }
 
 bool sync_fd(int fd) {
@@ -98,6 +126,135 @@ bool sync_fd(int fd) {
     return false;
   }
   return true;
+}
+
+bool remove_owned_path(
+    int directory_fd,
+    const QByteArray& filename,
+    const struct stat& expected,
+    QString* error,
+    const TelemetryCsvPublicationTestHooks* test_hooks = nullptr) {
+  const PathIdentityResult before = path_identity(directory_fd, filename, expected, test_hooks);
+  if (before.state == PathIdentityState::kAbsent)
+    return true;
+  if (before.state != PathIdentityState::kOwned) {
+    if (error)
+      *error = path_identity_error("remove", QFile::decodeName(filename), before);
+    return false;
+  }
+  if (::unlinkat(directory_fd, filename.constData(), 0) != 0) {
+    if (error)
+      *error = QString("could not remove %1: %2").arg(QFile::decodeName(filename), errno_string(errno));
+    return false;
+  }
+  const PathIdentityResult after = path_identity(directory_fd, filename, expected);
+  if (after.state == PathIdentityState::kAbsent)
+    return true;
+  if (error) {
+    *error = after.state == PathIdentityState::kOwned
+        ? QString("removed path is still present: %1").arg(QFile::decodeName(filename))
+        : path_identity_error("confirm removal of", QFile::decodeName(filename), after);
+  }
+  return false;
+}
+
+bool unnamed_temporary_files_unsupported(int error_number) {
+  return error_number == EOPNOTSUPP || error_number == EINVAL || error_number == EISDIR || error_number == ENOENT ||
+      error_number == ENOSYS;
+}
+
+bool create_named_temporary_file(
+    int directory_fd,
+    const QString& destination_filename,
+    UniqueFd* destination_fd,
+    QByteArray* temporary_filename,
+    struct stat* destination_identity,
+    QString* error) {
+  if (!destination_fd || !temporary_filename || !destination_identity)
+    return false;
+  const QByteArray name = QFile::encodeName(destination_filename + kNamedTemporarySuffix);
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    UniqueFd created(
+        ::openat(
+            directory_fd, name.constData(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR));
+    if (created.get() >= 0) {
+      struct stat identity{};
+      if (::fstat(created.get(), &identity) != 0 || !S_ISREG(identity.st_mode)) {
+        const int stat_error = errno;
+        ::unlinkat(directory_fd, name.constData(), 0);
+        if (error) {
+          *error = QString("could not identify named telemetry staging file %1: %2")
+                       .arg(QFile::decodeName(name), errno_string(stat_error));
+        }
+        return false;
+      }
+      if (::flock(created.get(), LOCK_EX | LOCK_NB) != 0) {
+        const int lock_error = errno;
+        QString ignored;
+        remove_owned_path(directory_fd, name, identity, &ignored);
+        if (error) {
+          *error = QString("could not lock named telemetry staging file %1: %2")
+                       .arg(QFile::decodeName(name), errno_string(lock_error));
+        }
+        return false;
+      }
+      *destination_fd = std::move(created);
+      *temporary_filename = name;
+      *destination_identity = identity;
+      return true;
+    }
+    const int create_error = errno;
+    if (create_error != EEXIST) {
+      if (error) {
+        *error = QString("could not create named telemetry staging file %1: %2")
+                     .arg(QFile::decodeName(name), errno_string(create_error));
+      }
+      return false;
+    }
+
+    UniqueFd stale(::openat(directory_fd, name.constData(), O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (stale.get() < 0) {
+      if (errno == ENOENT)
+        continue;
+      if (error) {
+        *error = QString("could not inspect existing telemetry staging file %1: %2")
+                     .arg(QFile::decodeName(name), errno_string(errno));
+      }
+      return false;
+    }
+    struct stat stale_identity{};
+    if (::fstat(stale.get(), &stale_identity) != 0 || !S_ISREG(stale_identity.st_mode)) {
+      if (error)
+        *error = QString("existing telemetry staging path is not a regular file: %1").arg(QFile::decodeName(name));
+      return false;
+    }
+    if (::flock(stale.get(), LOCK_EX | LOCK_NB) != 0) {
+      if (error) {
+        *error = errno == EWOULDBLOCK
+            ? QString("another telemetry publication owns staging file %1").arg(QFile::decodeName(name))
+            : QString("could not lock existing telemetry staging file %1: %2")
+                  .arg(QFile::decodeName(name), errno_string(errno));
+      }
+      return false;
+    }
+    QString cleanup_error;
+    if (!remove_owned_path(directory_fd, name, stale_identity, &cleanup_error)) {
+      if (error)
+        *error =
+            QString("could not clean stale telemetry staging file %1: %2").arg(QFile::decodeName(name), cleanup_error);
+      return false;
+    }
+    if (!sync_fd(directory_fd)) {
+      if (error) {
+        *error = QString("could not sync stale telemetry staging cleanup for %1: %2")
+                     .arg(QFile::decodeName(name), errno_string(errno));
+      }
+      return false;
+    }
+  }
+  if (error)
+    *error = QString("could not exclusively create telemetry staging file %1").arg(QFile::decodeName(name));
+  return false;
 }
 
 bool open_regular_file_at(int directory_fd, const QByteArray& filename, OpenRegularFile* opened, QString* error) {
@@ -171,12 +328,13 @@ bool read_regular_file_at(
   return true;
 }
 
-bool copy_regular_file_to_unnamed(
+bool copy_regular_file_to_staging(
     int source_directory_fd,
     const QString& source_filename,
     int destination_directory_fd,
     const QString& stem,
     const QString& destination_filename,
+    bool force_named_temporary_files,
     CopiedArtifact* copied,
     QString* error) {
   if (!copied)
@@ -187,14 +345,31 @@ bool copy_regular_file_to_unnamed(
       *error = QString("could not open %1: %2").arg(source_filename, *error);
     return false;
   }
-  UniqueFd destination_fd(::openat(destination_directory_fd, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR));
-  if (destination_fd.get() < 0) {
-    if (error)
-      *error = QString("could not create an unnamed copy for %1: %2").arg(destination_filename, errno_string(errno));
+  UniqueFd destination_fd;
+  QByteArray temporary_filename;
+  struct stat destination_identity{};
+  if (!force_named_temporary_files) {
+    destination_fd =
+        UniqueFd(::openat(destination_directory_fd, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR));
+    if (destination_fd.get() < 0 && !unnamed_temporary_files_unsupported(errno)) {
+      if (error) {
+        *error = QString("could not create an unnamed copy for %1: %2").arg(destination_filename, errno_string(errno));
+      }
+      return false;
+    }
+  }
+  if (destination_fd.get() < 0 &&
+      !create_named_temporary_file(
+          destination_directory_fd,
+          destination_filename,
+          &destination_fd,
+          &temporary_filename,
+          &destination_identity,
+          error)) {
     return false;
   }
-  struct stat destination_identity{};
-  if (::fstat(destination_fd.get(), &destination_identity) != 0 || !S_ISREG(destination_identity.st_mode)) {
+  if (temporary_filename.isEmpty() &&
+      (::fstat(destination_fd.get(), &destination_identity) != 0 || !S_ISREG(destination_identity.st_mode))) {
     if (error)
       *error = QString("could not identify new telemetry copy %1").arg(destination_filename);
     return false;
@@ -250,6 +425,14 @@ bool copy_regular_file_to_unnamed(
     failure = QString("telemetry destination changed or has the wrong size: %1").arg(destination_filename);
   }
   if (!success) {
+    if (!temporary_filename.isEmpty()) {
+      QString cleanup_error;
+      if (!remove_owned_path(destination_directory_fd, temporary_filename, destination_identity, &cleanup_error)) {
+        failure += QString("; could not clean staging file: %1").arg(cleanup_error);
+      } else if (!sync_fd(destination_directory_fd)) {
+        failure += QString("; could not sync staging cleanup: %1").arg(errno_string(errno));
+      }
+    }
     if (error)
       *error =
           failure.isEmpty() ? QString("could not copy %1 to %2").arg(source_filename, destination_filename) : failure;
@@ -258,6 +441,7 @@ bool copy_regular_file_to_unnamed(
 
   copied->stem = stem;
   copied->destination_filename = destination_filename;
+  copied->temporary_filename = temporary_filename;
   copied->source = std::move(source);
   copied->destination_fd = std::move(destination_fd);
   copied->destination_identity = destination_identity;
@@ -265,12 +449,17 @@ bool copy_regular_file_to_unnamed(
   return true;
 }
 
-bool link_unnamed_copy(int destination_directory_fd, CopiedArtifact* artifact, QString* error) {
+bool link_staged_copy(int destination_directory_fd, CopiedArtifact* artifact, QString* error) {
   if (!artifact || artifact->destination_fd.get() < 0)
     return false;
-  const QByteArray source = QByteArray("/proc/self/fd/") + QByteArray::number(artifact->destination_fd.get());
   const QByteArray destination = QFile::encodeName(artifact->destination_filename);
-  if (::linkat(AT_FDCWD, source.constData(), destination_directory_fd, destination.constData(), AT_SYMLINK_FOLLOW) !=
+  const bool named = !artifact->temporary_filename.isEmpty();
+  const QByteArray source = named ? artifact->temporary_filename
+                                  : QByteArray("/proc/self/fd/") + QByteArray::number(artifact->destination_fd.get());
+  const int source_directory_fd = named ? destination_directory_fd : AT_FDCWD;
+  const int link_flags = named ? 0 : AT_SYMLINK_FOLLOW;
+  if (::linkat(
+          source_directory_fd, source.constData(), destination_directory_fd, destination.constData(), link_flags) !=
       0) {
     if (error)
       *error = QString("could not publish %1: %2").arg(artifact->destination_filename, errno_string(errno));
@@ -284,6 +473,18 @@ bool link_unnamed_copy(int destination_directory_fd, CopiedArtifact* artifact, Q
     if (error)
       *error = QString("published telemetry path has the wrong identity: %1").arg(artifact->destination_filename);
     return false;
+  }
+  if (named) {
+    QString cleanup_error;
+    if (!remove_owned_path(
+            destination_directory_fd, artifact->temporary_filename, artifact->destination_identity, &cleanup_error)) {
+      if (error) {
+        *error = QString("published %1 but could not clean its staging file: %2")
+                     .arg(artifact->destination_filename, cleanup_error);
+      }
+      return false;
+    }
+    artifact->temporary_filename.clear();
   }
   return true;
 }
@@ -330,7 +531,8 @@ bool telemetry_csv_destination_paths_available(const QString& game_directory, co
 TelemetryCsvPublicationResult publish_telemetry_csvs(
     const QString& manifest_path,
     const QString& game_directory,
-    const QString& destination_suffix) {
+    const QString& destination_suffix,
+    const TelemetryCsvPublicationTestHooks* test_hooks) {
   TelemetryCsvPublicationResult result;
   if (!QRegularExpression(R"(^(-\d+)?$)").match(destination_suffix).hasMatch()) {
     result.error = QString("invalid telemetry destination suffix: %1").arg(destination_suffix);
@@ -404,35 +606,79 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
 
   std::vector<CopiedArtifact> copied;
   copied.reserve(artifacts.size());
+  auto cleanup_staging = [&]() -> QString {
+    QString cleanup_error;
+    bool removed_any = false;
+    for (CopiedArtifact& artifact : copied) {
+      if (artifact.temporary_filename.isEmpty())
+        continue;
+      QString item_error;
+      if (!remove_owned_path(
+              game_directory_fd.get(), artifact.temporary_filename, artifact.destination_identity, &item_error)) {
+        if (cleanup_error.isEmpty())
+          cleanup_error = item_error;
+        continue;
+      }
+      artifact.temporary_filename.clear();
+      removed_any = true;
+    }
+    if (removed_any && !sync_fd(game_directory_fd.get()) && cleanup_error.isEmpty()) {
+      cleanup_error = QString("could not sync telemetry staging cleanup: %1").arg(errno_string(errno));
+    }
+    return cleanup_error;
+  };
+  auto append_error = [](QString* destination, const QString& addition) {
+    if (addition.isEmpty())
+      return;
+    if (!destination->isEmpty())
+      *destination += "; ";
+    *destination += addition;
+  };
   auto rollback = [&]() -> QString {
     QString rollback_error;
     auto tracking = std::find_if(
         copied.begin(), copied.end(), [](const CopiedArtifact& artifact) { return artifact.stem == "tracking"; });
     if (tracking != copied.end() && tracking->linked) {
       const QByteArray filename = QFile::encodeName(tracking->destination_filename);
-      if (!unlink_if_owned(game_directory_fd.get(), filename, tracking->destination_identity) &&
-          path_has_identity(game_directory_fd.get(), filename, tracking->destination_identity)) {
-        return QString("could not retract %1: %2").arg(tracking->destination_filename, errno_string(errno));
+      const PathIdentityResult tracking_identity =
+          path_identity(game_directory_fd.get(), filename, tracking->destination_identity, test_hooks);
+      if (tracking_identity.state == PathIdentityState::kOwned) {
+        QString removal_error;
+        if (!remove_owned_path(game_directory_fd.get(), filename, tracking->destination_identity, &removal_error)) {
+          append_error(&rollback_error, removal_error);
+          append_error(&rollback_error, cleanup_staging());
+          return rollback_error + "; retaining complete telemetry set because tracking removal is ambiguous";
+        }
+      } else if (tracking_identity.state != PathIdentityState::kAbsent) {
+        append_error(
+            &rollback_error, path_identity_error("retract", tracking->destination_filename, tracking_identity));
+        append_error(&rollback_error, cleanup_staging());
+        return rollback_error + "; retaining complete telemetry set because tracking presence is ambiguous";
       }
       tracking->linked = false;
       if (!sync_fd(game_directory_fd.get())) {
-        return QString("could not durably retract %1: %2").arg(tracking->destination_filename, errno_string(errno));
+        rollback_error =
+            QString("could not durably retract %1: %2").arg(tracking->destination_filename, errno_string(errno));
+        append_error(&rollback_error, cleanup_staging());
+        return rollback_error + "; retaining telemetry companions because tracking removal is not durable";
       }
     }
     for (auto item = copied.rbegin(); item != copied.rend(); ++item) {
       if (!item->linked)
         continue;
       const QByteArray filename = QFile::encodeName(item->destination_filename);
-      if (!unlink_if_owned(game_directory_fd.get(), filename, item->destination_identity) &&
-          path_has_identity(game_directory_fd.get(), filename, item->destination_identity) &&
-          rollback_error.isEmpty()) {
-        rollback_error = QString("could not roll back %1: %2").arg(item->destination_filename, errno_string(errno));
-      } else {
+      QString removal_error;
+      if (remove_owned_path(game_directory_fd.get(), filename, item->destination_identity, &removal_error)) {
         item->linked = false;
+      } else {
+        append_error(&rollback_error, removal_error);
       }
     }
-    if (!sync_fd(game_directory_fd.get()) && rollback_error.isEmpty())
-      rollback_error = QString("could not sync telemetry companion rollback: %1").arg(errno_string(errno));
+    if (!sync_fd(game_directory_fd.get())) {
+      append_error(
+          &rollback_error, QString("could not sync telemetry companion rollback: %1").arg(errno_string(errno)));
+    }
+    append_error(&rollback_error, cleanup_staging());
     return rollback_error;
   };
 
@@ -440,15 +686,17 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     const QString destination_filename = stem + destination_suffix + ".csv";
     CopiedArtifact artifact;
     QString copy_error;
-    if (!copy_regular_file_to_unnamed(
+    if (!copy_regular_file_to_staging(
             source_directory_fd.get(),
             source_filename,
             game_directory_fd.get(),
             stem,
             destination_filename,
+            test_hooks && test_hooks->force_named_temporary_files,
             &artifact,
             &copy_error)) {
       result.error = copy_error;
+      append_error(&result.error, cleanup_staging());
       return result;
     }
     copied.push_back(std::move(artifact));
@@ -462,6 +710,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   };
   if (!sources_are_stable()) {
     result.error = "telemetry working files changed before publication";
+    append_error(&result.error, cleanup_staging());
     return result;
   }
 
@@ -469,7 +718,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     if (artifact.stem == "tracking")
       continue;
     QString link_error;
-    if (!link_unnamed_copy(game_directory_fd.get(), &artifact, &link_error)) {
+    if (!link_staged_copy(game_directory_fd.get(), &artifact, &link_error)) {
       result.error = link_error;
       const QString rollback_error = rollback();
       if (!rollback_error.isEmpty())
@@ -494,14 +743,16 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   auto tracking = std::find_if(
       copied.begin(), copied.end(), [](const CopiedArtifact& artifact) { return artifact.stem == "tracking"; });
   QString tracking_error;
-  if (tracking == copied.end() || !link_unnamed_copy(game_directory_fd.get(), &*tracking, &tracking_error)) {
+  if (tracking == copied.end() || !link_staged_copy(game_directory_fd.get(), &*tracking, &tracking_error)) {
     result.error = tracking_error.isEmpty() ? "tracking telemetry copy is unavailable" : tracking_error;
     const QString rollback_error = rollback();
     if (!rollback_error.isEmpty())
       result.error += "; " + rollback_error;
     return result;
   }
-  if (!sync_fd(game_directory_fd.get())) {
+  const bool tracking_commit_synced =
+      test_hooks && test_hooks->fail_tracking_commit_sync ? (errno = EIO, false) : sync_fd(game_directory_fd.get());
+  if (!tracking_commit_synced) {
     result.error = QString("could not sync telemetry tracking commit: %1").arg(errno_string(errno));
     const QString rollback_error = rollback();
     if (!rollback_error.isEmpty())
