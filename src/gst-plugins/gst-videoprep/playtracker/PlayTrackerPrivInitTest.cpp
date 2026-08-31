@@ -559,11 +559,26 @@ int main() {
     std::cerr << "Pipeline EOS did not mark telemetry outcome\n";
     return 23;
   }
+  if (priv.SetProperty(hm::Property("finalize-telemetry", "1"))) {
+    std::cerr << "telemetry finalized before the playtracker worker stopped\n";
+    return 41;
+  }
   // Exercise the same lifecycle hook GstVideoPrep calls while transitioning
-  // the element out of PAUSED. Telemetry must not depend on eventual object
-  // destruction because pipeline-app may exit with a retained element ref.
+  // the element out of PAUSED. The pipeline-wide state result is not known at
+  // this point, so shutdown must leave the generation pending until the app
+  // explicitly finalizes it after a successful transition to NULL.
   priv.Shutdown();
   priv.Shutdown();
+  if (fs::exists(telemetry_dir / "tracking.csv") || fs::exists(telemetry_dir / "detections.csv") ||
+      read_file(telemetry_dir / "hstream_telemetry.json").find("\"publication_state\": \"pending\"") ==
+          std::string::npos) {
+    std::cerr << "element shutdown committed telemetry before pipeline-wide shutdown succeeded\n";
+    return 37;
+  }
+  if (!priv.SetProperty(hm::Property("finalize-telemetry", "1"))) {
+    std::cerr << "post-shutdown telemetry finalization was rejected\n";
+    return 38;
+  }
   const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
   const std::string detections = read_file(telemetry_dir / "detections.csv");
   const std::string telemetry_manifest = read_file(telemetry_dir / "hstream_telemetry.json");
@@ -595,6 +610,37 @@ int main() {
       telemetry_manifest.find("\"eligible_for_training\": true") == std::string::npos) {
     std::cerr << "geometry or seek event was not committed at the correct attempted-sample boundary\n";
     return 21;
+  }
+
+  // Model a sibling element failing its NULL transition after playtracker has
+  // already stopped. The app reports that pipeline-wide failure before issuing
+  // the explicit finalization action, so the late failure must keep this
+  // generation unpublished.
+  const fs::path late_failure_dir = tmpdir / "telemetry-late-stop-failure";
+  TestPlayTrackerPriv late_failure_priv(/*gpu_id=*/0, /*batch_size=*/1);
+  if (!late_failure_priv.SetProperty(hm::Property("telemetry-csv-dir", late_failure_dir.string())) ||
+      !late_failure_priv.PreCapsInit(&params).ok() || !late_failure_priv.PostCapsInit(&params).ok() ||
+      !generate_export_sample(late_failure_priv, 1)) {
+    std::cerr << "could not initialize late stop-transition telemetry regression\n";
+    return 39;
+  }
+  GstEvent* late_eos = gst_event_new_custom(
+      GST_EVENT_CUSTOM_DOWNSTREAM_OOB, gst_structure_new_empty("hstream-playtracker-telemetry-eos"));
+  const bool late_eos_handled = late_failure_priv.HandleEvent(late_eos);
+  gst_event_unref(late_eos);
+  late_failure_priv.Shutdown();
+  GstEvent* late_failure = gst_event_new_custom(
+      GST_EVENT_CUSTOM_DOWNSTREAM_OOB, gst_structure_new_empty("hstream-playtracker-telemetry-failed"));
+  const bool late_failure_handled = late_failure_priv.HandleEvent(late_failure);
+  gst_event_unref(late_failure);
+  const bool late_failure_finalized = late_failure_priv.SetProperty(hm::Property("finalize-telemetry", "1"));
+  const std::string late_failure_manifest = read_file(late_failure_dir / "hstream_telemetry.json");
+  if (!late_eos_handled || !late_failure_handled || !late_failure_finalized ||
+      late_failure_manifest.find("\"run_outcome\": \"failed\"") == std::string::npos ||
+      late_failure_manifest.find("\"completed\": false") == std::string::npos ||
+      fs::exists(late_failure_dir / "tracking.csv") || fs::exists(late_failure_dir / "detections.csv")) {
+    std::cerr << "late pipeline stop failure published a successful telemetry generation\n";
+    return 40;
   }
 
   if (params.m_inCaps) {

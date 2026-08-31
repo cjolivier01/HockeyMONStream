@@ -4,6 +4,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
 
+#include <atomic>
 #include <mutex>
 #include <vector>
 #include "absl/status/status.h"
@@ -48,6 +49,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
   PlayTrackerTelemetryCsv telemetry_csv_;
+  std::atomic<bool> telemetry_shutdown_ready_{false};
   uint64_t telemetry_seek_epoch_{0};
   std::vector<DsPlayTrackerRuntimeTuning> runtime_tuning_history_;
   std::vector<TelemetryConfigEvent> runtime_tuning_provenance_history_;

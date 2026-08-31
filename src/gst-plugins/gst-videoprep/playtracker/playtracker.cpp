@@ -97,6 +97,13 @@ DsPlayTrackerRuntimeTuning camera_geometry_tuning(
 
 PlayTrackerPriv::~PlayTrackerPriv() {
   Shutdown();
+  // Only pipeline-app's post-NULL finalization action may authorize a
+  // successful commit. If teardown bypasses that action, retain a failed,
+  // unpublished generation rather than trusting an earlier local EOS.
+  if (telemetry_csv_.active()) {
+    telemetry_csv_.MarkRunOutcome(TelemetryRunOutcome::kFailed);
+  }
+  telemetry_csv_.Stop();
   std::lock_guard<std::mutex> lk(context_mu_);
   if (pt_context_) {
     DsPlayTrackerCtxDeinit(pt_context_);
@@ -105,12 +112,12 @@ PlayTrackerPriv::~PlayTrackerPriv() {
 }
 
 void PlayTrackerPriv::Shutdown() {
-  // GstVideoPrep invokes Shutdown() when the element stops, but the element's
-  // final GObject unref (and therefore this destructor) is not guaranteed to
-  // run before pipeline-app exits. Stop the frame worker first so no producer
-  // can enqueue behind the telemetry drain, then durably commit the CSV set.
+  // Stop the frame worker before pipeline-app decides whether the pipeline-wide
+  // NULL transition succeeded. The app invokes the explicit finalization
+  // property only after that transition, so a later child-element stop failure
+  // cannot race behind an already committed telemetry generation.
   Super::Shutdown();
-  telemetry_csv_.Stop();
+  telemetry_shutdown_ready_.store(true, std::memory_order_release);
 }
 
 absl::Status PlayTrackerPriv::PreCapsInit(DSCustom_CreateParams* params) {
@@ -266,6 +273,13 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     telemetry_csv_dir_ = prop.value;
+  } else if (key == "finalize-telemetry") {
+    if (prop.value != "1" || !telemetry_shutdown_ready_.load(std::memory_order_acquire)) {
+      std::cerr << "telemetry finalization requires a completed playtracker shutdown" << std::endl;
+      return false;
+    }
+    telemetry_csv_.Stop();
+    return true;
   } else if (key == "fixed-edge-rotation-angle") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {
