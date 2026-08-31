@@ -108,8 +108,8 @@ stitching:
     m_kpts1: null
   control_point_matcher: "superpoint-lightglue"
   # Native mapping keeps calibration functional when Hugin autooptimization is disabled.
-  mapping_backend: "opencv-magsac"
-  projection: "rectilinear"
+  mapping_backend: "nona"
+  projection: "general-panini"
   # Hugin/libpano projection defaults retained per adjustable projection so
   # switching projections in the UI does not discard another projection's tuning.
   projection_parameters:
