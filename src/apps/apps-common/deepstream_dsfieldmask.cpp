@@ -208,6 +208,7 @@ bool hmaudio_supports_sink(const NvDsSinkSubBinConfig* sink_config) {
   }
   switch (sink_config->type) {
     case NV_DS_SINK_ENCODE_FILE:
+    case NV_DS_SINK_ENCODE_STITCHED_FILE:
     case NV_DS_SINK_UDPSINK:
     case NV_DS_SINK_WEBRTC:
     case NV_DS_SINK_FAKE:
@@ -317,7 +318,7 @@ bool create_audio_branch_queue(NvDsHmAudioBin* bin, const NvDsSinkSubBinConfig* 
   if (!make_audio_bin_element(bin, queue, NVDS_ELEM_QUEUE, branch_element_name("branch", sink_config, "queue"))) {
     return false;
   }
-  if (sink_config->type != NV_DS_SINK_ENCODE_FILE) {
+  if (sink_config->type != NV_DS_SINK_ENCODE_FILE && sink_config->type != NV_DS_SINK_ENCODE_STITCHED_FILE) {
     g_object_set(G_OBJECT(*queue), "leaky", 2, "max-size-buffers", 30, "max-size-time", 0, "max-size-bytes", 0, NULL);
   }
   return link_to_tee(bin->tee, *queue);
@@ -584,7 +585,7 @@ bool create_audio_branch_for_target(
     return false;
   }
 
-  if (target.config->type == NV_DS_SINK_ENCODE_FILE) {
+  if (target.config->type == NV_DS_SINK_ENCODE_FILE || target.config->type == NV_DS_SINK_ENCODE_STITCHED_FILE) {
     return create_file_audio_branch(bin, target, input_encoded_aac);
   }
   if (target.config->type == NV_DS_SINK_UDPSINK) {
@@ -620,6 +621,7 @@ void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
 gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   gboolean ret = FALSE;
   gboolean high_bit_depth = FALSE;
+  gboolean high_bit_depth_output = FALSE;
   std::stringstream ppc;
   std::string private_config;
 
@@ -660,95 +662,6 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_hmstitcher);
 
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
-  if (config->ui_preview) {
-    if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
-      NVGSTDS_ERR_MSG_V("GPU-native stitching preview is unavailable on this platform");
-      goto done;
-    }
-    HMGST_ELEMENT_MAKE_BINADD(bin->output_tee, "tee", "hmstitcher_preview_tee");
-    HMGST_ELEMENT_MAKE_BINADD(
-        bin->preview_ingress_isolation, "hmpreviewisolation", "hmstitcher_preview_ingress_isolation");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_queue, NVDS_ELEM_QUEUE, "hmstitcher_preview_queue");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_isolation, "hmpreviewisolation", "hmstitcher_preview_isolation");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_converter, NVDS_ELEM_VIDEO_CONV, "hmstitcher_preview_converter");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_caps_filter, NVDS_ELEM_CAPS_FILTER, "hmstitcher_preview_caps");
-    HMGST_ELEMENT_MAKE_BINADD(bin->preview_sink, "hmgpupreviewsink", "hmstitcher_preview_sink");
-
-    constexpr gint kStitchedPreviewWidth = 1600;
-    constexpr gint kStitchedPreviewHeight = 900;
-    g_object_set(
-        G_OBJECT(bin->preview_queue),
-        "leaky",
-        2,
-        "max-size-buffers",
-        1,
-        "max-size-bytes",
-        0,
-        "max-size-time",
-        static_cast<guint64>(0),
-        NULL);
-    g_object_set(
-        G_OBJECT(bin->preview_converter),
-        "gpu-id",
-        config->gpu_id,
-        "nvbuf-memory-type",
-        NVBUF_MEM_CUDA_DEVICE,
-        "output-buffers",
-        1,
-        NULL);
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-    g_object_set(G_OBJECT(bin->preview_converter), "copy-hw", 2, NULL);
-#endif
-    GstCaps* preview_caps = gst_caps_new_simple(
-        "video/x-raw",
-        "format",
-        G_TYPE_STRING,
-        "RGBA",
-        "width",
-        G_TYPE_INT,
-        kStitchedPreviewWidth,
-        "height",
-        G_TYPE_INT,
-        kStitchedPreviewHeight,
-        NULL);
-    gst_caps_set_features(preview_caps, 0, gst_caps_features_new(MEMORY_FEATURES, NULL));
-    g_object_set(G_OBJECT(bin->preview_caps_filter), "caps", preview_caps, NULL);
-    gst_caps_unref(preview_caps);
-    g_object_set(G_OBJECT(bin->preview_ingress_isolation), "channel", "stitched", "active", FALSE, NULL);
-    g_object_set(G_OBJECT(bin->preview_isolation), "channel", "stitched", "active", FALSE, NULL);
-    g_object_set(
-        G_OBJECT(bin->preview_sink),
-        "channel",
-        "stitched",
-        "gpu-id",
-        config->gpu_id,
-        "sync",
-        FALSE,
-        "async",
-        FALSE,
-        "qos",
-        FALSE,
-        "enable-last-sample",
-        FALSE,
-        NULL);
-
-    NVGSTDS_LINK_ELEMENT(bin->elem_hmstitcher, bin->output_tee);
-    if (!add_tee_output_ghost_pad(bin->bin, bin->output_tee) ||
-        !link_to_tee(bin->output_tee, bin->preview_ingress_isolation) ||
-        !gst_element_link_many(
-            bin->preview_ingress_isolation,
-            bin->preview_queue,
-            bin->preview_isolation,
-            bin->preview_converter,
-            bin->preview_caps_filter,
-            bin->preview_sink,
-            NULL)) {
-      NVGSTDS_ERR_MSG_V("Failed to link hmstitcher UI preview branch");
-      goto done;
-    }
-  } else {
-    NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_hmstitcher, "src");
-  }
   // assert(false);
   // assert(strlen(config->detection_mask_file) > 0);
 
@@ -806,9 +719,134 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   if (high_bit_depth) {
     g_object_set(G_OBJECT(bin->pre_conv), "compute-hw", 1, NULL);
   }
+  high_bit_depth_output = high_bit_depth && config->archive_stitched;
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "high-bit-depth-output", high_bit_depth_output, NULL);
   setup_rgb_nvvm_caps_filter(
       gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, high_bit_depth ? "RGB10A2_LE" : "RGBA", NULL),
       bin->cap_filter);
+
+  if (config->ui_preview || config->archive_stitched) {
+    HMGST_ELEMENT_MAKE_BINADD(bin->output_tee, "tee", "hmstitcher_output_tee");
+    NVGSTDS_LINK_ELEMENT(bin->elem_hmstitcher, bin->output_tee);
+    if (high_bit_depth_output) {
+      HMGST_ELEMENT_MAKE_BINADD(bin->program_queue, NVDS_ELEM_QUEUE, "hmstitcher_program_queue");
+      HMGST_ELEMENT_MAKE_BINADD(bin->program_converter, NVDS_ELEM_VIDEO_CONV, "hmstitcher_program_converter");
+      HMGST_ELEMENT_MAKE_BINADD(bin->program_caps_filter, NVDS_ELEM_CAPS_FILTER, "hmstitcher_program_caps");
+      g_object_set(
+          G_OBJECT(bin->program_converter),
+          "gpu-id",
+          config->gpu_id,
+          "nvbuf-memory-type",
+          config->nvbuf_memory_type,
+          NULL);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+      g_object_set(G_OBJECT(bin->program_converter), "copy-hw", 2, NULL);
+#endif
+      setup_rgb_nvvm_caps_filter(nullptr, bin->program_caps_filter);
+      if (!link_to_tee(bin->output_tee, bin->program_queue) ||
+          !gst_element_link_many(bin->program_queue, bin->program_converter, bin->program_caps_filter, NULL)) {
+        NVGSTDS_ERR_MSG_V("Failed to link the stitched-to-Program 8-bit conversion branch");
+        goto done;
+      }
+      NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(bin->bin, bin->program_caps_filter, "src", "src");
+    } else if (!add_tee_output_ghost_pad(bin->bin, bin->output_tee)) {
+      goto done;
+    }
+
+    if (config->archive_stitched) {
+      HMGST_ELEMENT_MAKE_BINADD(bin->stitched_queue, NVDS_ELEM_QUEUE, "hmstitcher_archive_queue");
+      if (!link_to_tee(bin->output_tee, bin->stitched_queue)) {
+        goto done;
+      }
+      NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(bin->bin, bin->stitched_queue, "src", "stitched_src");
+    }
+
+    if (config->ui_preview) {
+      if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
+        NVGSTDS_ERR_MSG_V("GPU-native stitching preview is unavailable on this platform");
+        goto done;
+      }
+      HMGST_ELEMENT_MAKE_BINADD(
+          bin->preview_ingress_isolation, "hmpreviewisolation", "hmstitcher_preview_ingress_isolation");
+      HMGST_ELEMENT_MAKE_BINADD(bin->preview_queue, NVDS_ELEM_QUEUE, "hmstitcher_preview_queue");
+      HMGST_ELEMENT_MAKE_BINADD(bin->preview_isolation, "hmpreviewisolation", "hmstitcher_preview_isolation");
+      HMGST_ELEMENT_MAKE_BINADD(bin->preview_converter, NVDS_ELEM_VIDEO_CONV, "hmstitcher_preview_converter");
+      HMGST_ELEMENT_MAKE_BINADD(bin->preview_caps_filter, NVDS_ELEM_CAPS_FILTER, "hmstitcher_preview_caps");
+      HMGST_ELEMENT_MAKE_BINADD(bin->preview_sink, "hmgpupreviewsink", "hmstitcher_preview_sink");
+
+      constexpr gint kStitchedPreviewWidth = 1600;
+      constexpr gint kStitchedPreviewHeight = 900;
+      g_object_set(
+          G_OBJECT(bin->preview_queue),
+          "leaky",
+          2,
+          "max-size-buffers",
+          1,
+          "max-size-bytes",
+          0,
+          "max-size-time",
+          static_cast<guint64>(0),
+          NULL);
+      g_object_set(
+          G_OBJECT(bin->preview_converter),
+          "gpu-id",
+          config->gpu_id,
+          "nvbuf-memory-type",
+          NVBUF_MEM_CUDA_DEVICE,
+          "output-buffers",
+          1,
+          NULL);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+      g_object_set(G_OBJECT(bin->preview_converter), "copy-hw", 2, NULL);
+#endif
+      GstCaps* preview_caps = gst_caps_new_simple(
+          "video/x-raw",
+          "format",
+          G_TYPE_STRING,
+          "RGBA",
+          "width",
+          G_TYPE_INT,
+          kStitchedPreviewWidth,
+          "height",
+          G_TYPE_INT,
+          kStitchedPreviewHeight,
+          NULL);
+      gst_caps_set_features(preview_caps, 0, gst_caps_features_new(MEMORY_FEATURES, NULL));
+      g_object_set(G_OBJECT(bin->preview_caps_filter), "caps", preview_caps, NULL);
+      gst_caps_unref(preview_caps);
+      g_object_set(G_OBJECT(bin->preview_ingress_isolation), "channel", "stitched", "active", FALSE, NULL);
+      g_object_set(G_OBJECT(bin->preview_isolation), "channel", "stitched", "active", FALSE, NULL);
+      g_object_set(
+          G_OBJECT(bin->preview_sink),
+          "channel",
+          "stitched",
+          "gpu-id",
+          config->gpu_id,
+          "sync",
+          FALSE,
+          "async",
+          FALSE,
+          "qos",
+          FALSE,
+          "enable-last-sample",
+          FALSE,
+          NULL);
+      if (!link_to_tee(bin->output_tee, bin->preview_ingress_isolation) ||
+          !gst_element_link_many(
+              bin->preview_ingress_isolation,
+              bin->preview_queue,
+              bin->preview_isolation,
+              bin->preview_converter,
+              bin->preview_caps_filter,
+              bin->preview_sink,
+              NULL)) {
+        NVGSTDS_ERR_MSG_V("Failed to link hmstitcher UI preview branch");
+        goto done;
+      }
+    }
+  } else {
+    NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_hmstitcher, "src");
+  }
 
   ret = TRUE;
 

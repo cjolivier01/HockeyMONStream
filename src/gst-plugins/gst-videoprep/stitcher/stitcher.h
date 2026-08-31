@@ -223,6 +223,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   int max_output_width_{0};
   bool require_decoded_frame_sequence_meta_{false};
   bool high_bit_depth_{false};
+  bool high_bit_depth_output_{false};
   bool caps_initialized_{false};
   StitchComputePrecision stitch_compute_precision_{StitchComputePrecision::kFp32};
   std::atomic<float> shadow_lift_percent_{0.0f};

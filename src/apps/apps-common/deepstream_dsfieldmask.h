@@ -195,6 +195,9 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   guint calibration_frame_count;
   gulong calibration_sample_span_ns;
   gchar stitch_compute_precision[32];
+  // Runtime-only routing decision. This is derived from enabled sink types,
+  // not parsed as a user-facing stitcher option.
+  gboolean archive_stitched;
 };
 
 // Struct to store references to the bin and elements
@@ -205,6 +208,10 @@ struct HmStitcherBin {
   GstElement* cap_filter{nullptr};
   GstElement* elem_hmstitcher{nullptr};
   GstElement* output_tee{nullptr};
+  GstElement* program_queue{nullptr};
+  GstElement* program_converter{nullptr};
+  GstElement* program_caps_filter{nullptr};
+  GstElement* stitched_queue{nullptr};
   GstElement* preview_queue{nullptr};
   GstElement* preview_ingress_isolation{nullptr};
   GstElement* preview_isolation{nullptr};

@@ -36,6 +36,12 @@ struct AutomaticHighBitDepthDecision {
 AutomaticHighBitDepthDecision decide_automatic_high_bit_depth(
     const std::vector<std::optional<unsigned int>>& source_bit_depths);
 
+bool bitrate_density_greater(
+    uint64_t candidate_numerator,
+    uint64_t candidate_denominator,
+    uint64_t selected_numerator,
+    uint64_t selected_denominator);
+
 struct ExplicitStitchingVideoSelection {
   std::vector<std::string> left;
   std::vector<std::string> right;

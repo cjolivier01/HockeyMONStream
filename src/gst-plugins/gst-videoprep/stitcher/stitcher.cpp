@@ -768,7 +768,7 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   m_transformMode = true;
 
   m_inVideoFmt = high_bit_depth_ ? GST_VIDEO_FORMAT_RGB10A2_LE : GST_VIDEO_FORMAT_RGBA;
-  m_outVideoFmt = GST_VIDEO_FORMAT_RGBA;
+  m_outVideoFmt = high_bit_depth_output_ ? GST_VIDEO_FORMAT_BGR10A2_LE : GST_VIDEO_FORMAT_RGBA;
 
   {
     absl::MutexLock lk(&stitcher_mu_);
@@ -1349,6 +1349,22 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     if (high_bit_depth_) {
       stitch_compute_precision_ = StitchComputePrecision::kFp16;
     }
+  } else if (prop.key == "high-bit-depth-output" || prop.key == "high_bit_depth_output") {
+    bool requested = false;
+    if (!parse_strict_bool(prop.value, requested)) {
+      std::cerr << "Invalid high-bit-depth-output value: " << prop.value << std::endl;
+      return false;
+    }
+    absl::MutexLock lk(&stitcher_mu_);
+    if ((caps_initialized_ || has_stitcher()) && requested != high_bit_depth_output_) {
+      std::cerr << "Cannot change high-bit-depth-output after stitcher caps initialization" << std::endl;
+      return false;
+    }
+    if (requested && !high_bit_depth_) {
+      std::cerr << "High-bit-depth output requires high-bit-depth stitching" << std::endl;
+      return false;
+    }
+    high_bit_depth_output_ = requested;
   } else if (prop.key == "shadow-lift") {
     double parsed = 0.0;
     if (!parse_finite_double(prop.value, parsed) || parsed < 0.0 || parsed > 100.0) {
@@ -2013,17 +2029,18 @@ absl::Status StitcherPriv::GenerateOutput(
           stitcher_rgb10_fp16_->process(*high_bit_left_, *high_bit_right_, cuda_stream_, std::move(high_bit_canvas)));
       high_bit_canvas_ = std::move(high_bit_canvas);
 
-      NvBufSurfaceParams* rgba_output = outgoing_surface.get_mutable();
-      rgba_output->width = high_bit_canvas_->width();
-      rgba_output->height = high_bit_canvas_->height();
-      rgba_output->planeParams.width[0] = rgba_output->width;
-      rgba_output->planeParams.height[0] = rgba_output->height;
-      HM_RETURN_IF_ERROR(to_status(convertHalf4ToRgba8(
+      NvBufSurfaceParams* stitched_output = outgoing_surface.get_mutable();
+      stitched_output->width = high_bit_canvas_->width();
+      stitched_output->height = high_bit_canvas_->height();
+      stitched_output->planeParams.width[0] = stitched_output->width;
+      stitched_output->planeParams.height[0] = stitched_output->height;
+      const auto conversion = high_bit_depth_output_ ? convertHalf4ToBgr10A2 : convertHalf4ToRgba8;
+      HM_RETURN_IF_ERROR(to_status(conversion(
           high_bit_canvas_->data(),
           high_bit_canvas_->pitch(),
           high_bit_canvas_->width(),
           high_bit_canvas_->height(),
-          rgba_output,
+          stitched_output,
           applied_post_stitch_rotation,
           shadow_lift_percent_.load(std::memory_order_relaxed),
           lift_shadow_black_point_.load(std::memory_order_relaxed),

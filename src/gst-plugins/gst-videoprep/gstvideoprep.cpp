@@ -156,6 +156,7 @@ enum {
   PROP_DYNAMIC_ACCELERATION_SCALING,
   PROP_PREVIEW_OVERLAY_FLAGS,
   PROP_HIGH_BIT_DEPTH,
+  PROP_HIGH_BIT_DEPTH_OUTPUT,
   PROP_SHADOW_LIFT,
   PROP_SHADOW_LIFT_BLACK_POINT,
   PROP_EXPOSURE,
@@ -217,7 +218,7 @@ static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE(
     GST_STATIC_CAPS(GST_VIDEO_CAPS_MAKE_WITH_FEATURES(
         GST_CAPS_FEATURE_MEMORY_NVMM,
         "{ "
-        "RGBA }")));
+        "RGBA, BGR10A2_LE }")));
 
 #define gst_videoprep_parent_class parent_class
 G_DEFINE_TYPE(GstVideoPrep, gst_videoprep, GST_TYPE_BASE_TRANSFORM);
@@ -578,6 +579,7 @@ static GstCaps* gst_videoprep_transform_caps(
   GstCaps* temp_caps = NULL;
 
   if (direction == GST_PAD_SINK) {
+    const gchar* output_format = videoprep->high_bit_depth_output ? "BGR10A2_LE" : "RGBA";
     const guint output_batch_size = get_output_batch_size(videoprep, caps);
     const RuntimeOutputSize runtime_size =
         videoprep->priv ? videoprep->priv->RuntimeOutputSizeForNegotiation() : RuntimeOutputSize{};
@@ -586,7 +588,7 @@ static GstCaps* gst_videoprep_transform_caps(
           "video/x-raw",
           "format",
           G_TYPE_STRING,
-          "RGBA",
+          output_format,
           "width",
           G_TYPE_INT,
           static_cast<gint>(runtime_size.width),
@@ -602,7 +604,7 @@ static GstCaps* gst_videoprep_transform_caps(
           "video/x-raw",
           "format",
           G_TYPE_STRING,
-          "RGBA",
+          output_format,
           "width",
           GST_TYPE_INT_RANGE,
           1,
@@ -621,7 +623,7 @@ static GstCaps* gst_videoprep_transform_caps(
           "video/x-raw",
           "format",
           G_TYPE_STRING,
-          "RGBA",
+          output_format,
           "width",
           G_TYPE_INT,
           videoprep->output_width,
@@ -635,6 +637,9 @@ static GstCaps* gst_videoprep_transform_caps(
     }
     feature = gst_caps_features_new("memory:NVMM", NULL);
     gst_caps_set_features(new_caps, 0, feature);
+    if (videoprep->high_bit_depth_output) {
+      gst_structure_set(gst_caps_get_structure(new_caps, 0), "colorimetry", G_TYPE_STRING, "bt709", NULL);
+    }
   }
   if (direction == GST_PAD_SRC) {
     new_caps = gst_caps_new_simple(
@@ -1257,6 +1262,16 @@ void gst_videoprep_class_init_base(GstVideoPrepClass* klass) {
 
   g_object_class_install_property(
       gobject_class,
+      PROP_HIGH_BIT_DEPTH_OUTPUT,
+      g_param_spec_boolean(
+          "high-bit-depth-output",
+          "High-bit-depth stitched output",
+          "Emit the graded stitched canvas as SDR Rec.709 BGR10A2 instead of RGBA8",
+          FALSE,
+          GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  g_object_class_install_property(
+      gobject_class,
       PROP_SHADOW_LIFT,
       g_param_spec_double(
           "shadow-lift",
@@ -1369,6 +1384,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->dynamic_acceleration_scaling = 1.0;
   videoprep->preview_overlay_flags = 0;
   videoprep->high_bit_depth = FALSE;
+  videoprep->high_bit_depth_output = FALSE;
   videoprep->shadow_lift = 0.0;
   videoprep->shadow_lift_black_point = FALSE;
   videoprep->exposure = 0.0;
@@ -1381,6 +1397,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->fixed_edge_rotation_angle_right_set = FALSE;
   videoprep->dynamic_acceleration_scaling_set = FALSE;
   videoprep->high_bit_depth_set = FALSE;
+  videoprep->high_bit_depth_output_set = FALSE;
   videoprep->shadow_lift_set = FALSE;
   videoprep->shadow_lift_black_point_set = FALSE;
   videoprep->exposure_set = FALSE;
@@ -1395,6 +1412,7 @@ void gst_videoprep_init_base(GstVideoPrep* videoprep) {
   videoprep->fixed_edge_rotation_angle_right_sequence = 0;
   videoprep->dynamic_acceleration_scaling_sequence = 0;
   videoprep->high_bit_depth_sequence = 0;
+  videoprep->high_bit_depth_output_sequence = 0;
   videoprep->shadow_lift_sequence = 0;
   videoprep->shadow_lift_black_point_sequence = 0;
   videoprep->exposure_sequence = 0;
@@ -1686,6 +1704,20 @@ static void gst_videoprep_set_property(GObject* object, guint prop_id, const GVa
       }
       break;
     }
+    case PROP_HIGH_BIT_DEPTH_OUTPUT: {
+      const gboolean previous = videoprep->high_bit_depth_output;
+      const gboolean previous_set = videoprep->high_bit_depth_output_set;
+      const guint previous_sequence = videoprep->high_bit_depth_output_sequence;
+      videoprep->high_bit_depth_output = g_value_get_boolean(value);
+      videoprep->high_bit_depth_output_set = TRUE;
+      videoprep->high_bit_depth_output_sequence = ++videoprep->property_set_sequence;
+      if (!set_priv_property("high-bit-depth-output", videoprep->high_bit_depth_output ? "1" : "0")) {
+        videoprep->high_bit_depth_output = previous;
+        videoprep->high_bit_depth_output_set = previous_set;
+        videoprep->high_bit_depth_output_sequence = previous_sequence;
+      }
+      break;
+    }
     case PROP_SHADOW_LIFT: {
       const gdouble previous = videoprep->shadow_lift;
       const gboolean previous_set = videoprep->shadow_lift_set;
@@ -1862,6 +1894,13 @@ static bool gst_videoprep_apply_typed_properties(GstVideoPrep* videoprep) {
       typed_property_wins_over_private_config(videoprep, videoprep->high_bit_depth_sequence, "high-bit-depth")) {
     ok = videoprep->priv->SetProperty(Property("high-bit-depth", videoprep->high_bit_depth ? "1" : "0")) && ok;
   }
+  if (videoprep->high_bit_depth_output_set &&
+      typed_property_wins_over_private_config(
+          videoprep, videoprep->high_bit_depth_output_sequence, "high-bit-depth-output")) {
+    ok =
+        videoprep->priv->SetProperty(Property("high-bit-depth-output", videoprep->high_bit_depth_output ? "1" : "0")) &&
+        ok;
+  }
   if (videoprep->shadow_lift_set &&
       typed_property_wins_over_private_config(videoprep, videoprep->shadow_lift_sequence, "shadow-lift")) {
     ok = videoprep->priv->SetProperty(Property("shadow-lift", std::to_string(videoprep->shadow_lift))) && ok;
@@ -1935,6 +1974,9 @@ static void gst_videoprep_get_property(GObject* object, guint prop_id, GValue* v
       break;
     case PROP_HIGH_BIT_DEPTH:
       g_value_set_boolean(value, videoprep->high_bit_depth);
+      break;
+    case PROP_HIGH_BIT_DEPTH_OUTPUT:
+      g_value_set_boolean(value, videoprep->high_bit_depth_output);
       break;
     case PROP_SHADOW_LIFT:
       g_value_set_double(value, videoprep->shadow_lift);

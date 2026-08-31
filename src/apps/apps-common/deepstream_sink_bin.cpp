@@ -34,6 +34,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
+#include "hstream/src/apps/apps-common/HStreamBatchDemux.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
 
@@ -772,6 +773,8 @@ std::string to_string(const NvDsSinkType& type) {
       return "MSG_CONV_BROKER";
     case NV_DS_SINK_WEBRTC:
       return "WEBRTC";
+    case NV_DS_SINK_ENCODE_STITCHED_FILE:
+      return "ENCODE_STITCHED_FILE";
     default:
       return "INVALID";
   }
@@ -799,6 +802,8 @@ std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
     return NV_DS_SINK_MSG_CONV_BROKER;
   if (s == "WEBRTC")
     return NV_DS_SINK_WEBRTC;
+  if (s == "ENCODE_STITCHED_FILE" || s == "ARCHIVE_STITCHED")
+    return NV_DS_SINK_ENCODE_STITCHED_FILE;
 
   // Return an empty optional if no match was found.
   return std::nullopt;
@@ -1277,7 +1282,11 @@ bool link_video_pad_to_muxer(GstElement* postParse, GstElement* muxer) {
 /**
  * Function to create sink bin to generate encoded output.
  */
-static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSubBin* bin) {
+static gboolean create_encode_file_bin(
+    NvDsSinkEncoderConfig* config,
+    NvDsSinkBinSubBin* bin,
+    gboolean stitched_output = FALSE,
+    gboolean main10_output = FALSE) {
   GstCaps* caps = NULL;
   gboolean ret = FALSE;
   gchar elem_name[50];
@@ -1360,11 +1369,30 @@ static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
     goto done;
   }
 
-  if (config->codec == NV_DS_ENCODER_MPEG4 || config->enc_type == NV_DS_ENCODER_TYPE_SW)
+  if (main10_output && (config->codec != NV_DS_ENCODER_H265 || config->enc_type != NV_DS_ENCODER_TYPE_HW)) {
+    NVGSTDS_ERR_MSG_V("Main10 stitched archives require the hardware HEVC encoder");
+    goto done;
+  }
+  if (main10_output)
+    caps = gst_caps_from_string("video/x-raw(memory:NVMM), format=P010_10LE, colorimetry=bt709");
+  else if (config->codec == NV_DS_ENCODER_MPEG4 || config->enc_type == NV_DS_ENCODER_TYPE_SW)
     caps = gst_caps_from_string("video/x-raw, format=I420");
   else
     caps = gst_caps_from_string("video/x-raw(memory:NVMM), format=I420");
   g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
+
+  if (stitched_output) {
+    if (!register_hstream_batch_demux()) {
+      NVGSTDS_ERR_MSG_V("Failed to register the stitched archive batch demuxer");
+      goto done;
+    }
+    g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_batch_demux%d", uid);
+    bin->batch_demux = gst_element_factory_make("hstreambatchdemux", elem_name);
+    if (!bin->batch_demux) {
+      NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
+      goto done;
+    }
+  }
 
   NVGSTDS_ELEM_ADD_PROBE(probe_id, bin->encoder, "sink", seek_query_drop_prob, GST_PAD_PROBE_TYPE_QUERY_UPSTREAM, bin);
 
@@ -1402,6 +1430,9 @@ static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
     g_object_set(G_OBJECT(bin->encoder), "iframeinterval", config->iframeinterval, NULL);
     g_object_set(G_OBJECT(bin->encoder), "bitrate", bitrate, NULL);
     g_object_set(G_OBJECT(bin->encoder), "gpu-id", config->gpu_id, NULL);
+    if (main10_output && g_object_class_find_property(G_OBJECT_GET_CLASS(bin->encoder), "insert-vui")) {
+      g_object_set(G_OBJECT(bin->encoder), "insert-vui", TRUE, NULL);
+    }
   } else {
     if (config->codec == NV_DS_ENCODER_MPEG4)
       g_object_set(G_OBJECT(bin->encoder), "bitrate", bitrate, NULL);
@@ -1468,11 +1499,30 @@ static gboolean create_encode_file_bin(NvDsSinkEncoderConfig* config, NvDsSinkBi
       bin->mux,
       bin->sink,
       NULL);
+  if (bin->batch_demux) {
+    gst_bin_add(GST_BIN(bin->bin), bin->batch_demux);
+  }
 
   NVGSTDS_LINK_ELEMENT(bin->queue, bin->transform);
 
   NVGSTDS_LINK_ELEMENT(bin->transform, bin->cap_filter);
-  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->encoder);
+  if (bin->batch_demux) {
+    NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->batch_demux);
+    GstPad* demux_src_pad = gst_element_request_pad_simple(bin->batch_demux, "src_0");
+    GstPad* encoder_sink_pad = gst_element_get_static_pad(bin->encoder, "sink");
+    if (!demux_src_pad || !encoder_sink_pad || gst_pad_link(demux_src_pad, encoder_sink_pad) != GST_PAD_LINK_OK) {
+      if (demux_src_pad)
+        gst_object_unref(demux_src_pad);
+      if (encoder_sink_pad)
+        gst_object_unref(encoder_sink_pad);
+      NVGSTDS_ERR_MSG_V("Failed to link the stitched archive batch demuxer to the encoder");
+      goto done;
+    }
+    gst_object_unref(demux_src_pad);
+    gst_object_unref(encoder_sink_pad);
+  } else {
+    NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->encoder);
+  }
 
   NVGSTDS_LINK_ELEMENT(bin->encoder, bin->codecparse);
   // NVGSTDS_LINK_ELEMENT(bin->codecparse, bin->mux);
@@ -2129,7 +2179,9 @@ done:
 
 gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array, NvDsSinkBin* bin, guint index) {
   gboolean ret = FALSE;
+  gboolean has_stitched_file = FALSE;
   guint i;
+  guint normal_num_bins = 0;
   std::set<guint> rtsp_udp_ports;
 
   bin->bin = gst_bin_new("sink_bin");
@@ -2159,6 +2211,24 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
   NVGSTDS_LINK_ELEMENT(bin->queue, bin->tee);
 
   g_object_set(G_OBJECT(bin->tee), "allow-not-linked", TRUE, NULL);
+
+  has_stitched_file =
+      std::any_of(config_array, config_array + num_sub_bins, [index](const NvDsSinkSubBinConfig& config) {
+        return config.enable && config.source_id == index && !config.link_to_demux &&
+            config.type == NV_DS_SINK_ENCODE_STITCHED_FILE;
+      });
+  if (has_stitched_file) {
+    bin->stitched_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "stitched_sink_bin_queue");
+    bin->stitched_tee = gst_element_factory_make(NVDS_ELEM_TEE, "stitched_sink_bin_tee");
+    if (!bin->stitched_queue || !bin->stitched_tee) {
+      NVGSTDS_ERR_MSG_V("Failed to create stitched archive input route");
+      goto done;
+    }
+    gst_bin_add_many(GST_BIN(bin->bin), bin->stitched_queue, bin->stitched_tee, NULL);
+    NVGSTDS_LINK_ELEMENT(bin->stitched_queue, bin->stitched_tee);
+    g_object_set(G_OBJECT(bin->stitched_tee), "allow-not-linked", TRUE, NULL);
+    NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(bin->bin, bin->stitched_queue, "sink", "stitched_sink");
+  }
 
   for (i = 0; i < num_sub_bins; i++) {
     if (!config_array[i].enable || config_array[i].source_id != index || config_array[i].link_to_demux ||
@@ -2210,6 +2280,12 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
         if (!create_encode_file_bin(&config_array[i].encoder_config, &bin->sub_bins[i]))
           goto done;
         break;
+      case NV_DS_SINK_ENCODE_STITCHED_FILE:
+        config_array[i].encoder_config.sync = config_array[i].sync;
+        if (!create_encode_file_bin(
+                &config_array[i].encoder_config, &bin->sub_bins[i], TRUE, config_array[i].encoder_config.profile == 1))
+          goto done;
+        break;
       case NV_DS_SINK_UDPSINK:
         config_array[i].encoder_config.sync = config_array[i].sync;
         if (!create_udpsink_bin(
@@ -2234,23 +2310,32 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
 
     if (config_array[i].type != NV_DS_SINK_MSG_CONV_BROKER) {
       gst_bin_add(GST_BIN(bin->bin), bin->sub_bins[i].bin);
-      if (!link_element_to_tee_src_pad(bin->tee, bin->sub_bins[i].bin)) {
+      GstElement* route_tee = config_array[i].type == NV_DS_SINK_ENCODE_STITCHED_FILE ? bin->stitched_tee : bin->tee;
+      if (!route_tee || !link_element_to_tee_src_pad(route_tee, bin->sub_bins[i].bin)) {
         goto done;
       }
     }
     bin->num_bins++;
+    if (config_array[i].type != NV_DS_SINK_ENCODE_STITCHED_FILE && config_array[i].type != NV_DS_SINK_MSG_CONV_BROKER) {
+      normal_num_bins++;
+    }
   }
 
-  if (bin->num_bins == 0) {
+  if (normal_num_bins == 0) {
     NvDsSinkRenderConfig config;
+    memset(&config, 0, sizeof(config));
     config.type = NV_DS_SINK_FAKE;
-    if (!create_render_bin(&config, &bin->sub_bins[0]))
+    guint fallback_index = 0;
+    while (fallback_index < MAX_SINK_BINS && bin->sub_bins[fallback_index].bin) {
+      ++fallback_index;
+    }
+    if (fallback_index >= MAX_SINK_BINS || !create_render_bin(&config, &bin->sub_bins[fallback_index]))
       goto done;
-    gst_bin_add(GST_BIN(bin->bin), bin->sub_bins[0].bin);
-    if (!link_element_to_tee_src_pad(bin->tee, bin->sub_bins[0].bin)) {
+    gst_bin_add(GST_BIN(bin->bin), bin->sub_bins[fallback_index].bin);
+    if (!link_element_to_tee_src_pad(bin->tee, bin->sub_bins[fallback_index].bin)) {
       goto done;
     }
-    bin->num_bins = 1;
+    bin->num_bins++;
   }
 
   ret = TRUE;

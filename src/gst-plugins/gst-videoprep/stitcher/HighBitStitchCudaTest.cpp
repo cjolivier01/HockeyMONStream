@@ -25,6 +25,10 @@ uint32_t pack_rgb10a2(uint32_t red, uint32_t green, uint32_t blue, uint32_t alph
   return (red & 0x3ffu) | ((green & 0x3ffu) << 10) | ((blue & 0x3ffu) << 20) | ((alpha & 0x3u) << 30);
 }
 
+uint32_t pack_bgr10a2(uint32_t red, uint32_t green, uint32_t blue, uint32_t alpha = 3) {
+  return (blue & 0x3ffu) | ((green & 0x3ffu) << 10) | ((red & 0x3ffu) << 20) | ((alpha & 0x3u) << 30);
+}
+
 uint8_t composed_grade(float value, float shadow_lift_percent, float exposure) {
   float normalized = value / 255.0f;
   if (shadow_lift_percent > 0.0f) {
@@ -32,6 +36,16 @@ uint8_t composed_grade(float value, float shadow_lift_percent, float exposure) {
   }
   return static_cast<uint8_t>(hm::playcropper::clamp_shadow_value(
       normalized * 255.0f * hm::playcropper::exposure_gain(exposure) + 0.5f, 0.0f, 255.0f));
+}
+
+uint32_t composed_grade_10(float value, float shadow_lift_percent, float exposure) {
+  float normalized = value / 255.0f;
+  if (shadow_lift_percent > 0.0f) {
+    normalized = hm::playcropper::evaluate_shadow_lift_luma(normalized, shadow_lift_percent, false);
+  }
+  const float graded =
+      hm::playcropper::clamp_shadow_value(normalized * 255.0f * hm::playcropper::exposure_gain(exposure), 0.0f, 255.0f);
+  return static_cast<uint32_t>(std::lrint(graded * (1023.0f / 255.0f)));
 }
 
 } // namespace
@@ -163,8 +177,124 @@ int main() {
     ok = false;
   }
 
+  output_params.colorFormat = NVBUF_COLOR_FORMAT_BGRA_10_10_10_2_709;
+  ok = ok &&
+      cuda_ok(
+           hm::stitcher::convertHalf4ToBgr10A2(
+               device_half,
+               half_pitch,
+               kWidth,
+               kHeight,
+               &output_params,
+               /*rotation_degrees=*/0.0,
+               /*shadow_lift_percent=*/0.0f,
+               /*lift_shadow_black_point=*/false,
+               /*exposure=*/0.0f,
+               stream),
+           "convertHalf4ToBgr10A2(identity)");
+  std::vector<uint32_t> bgr10(kWidth * kHeight);
+  ok = ok &&
+      cuda_ok(
+           cudaMemcpy2DAsync(
+               bgr10.data(),
+               kWidth * sizeof(uint32_t),
+               device_rgba,
+               rgba_pitch,
+               kWidth * sizeof(uint32_t),
+               kHeight,
+               cudaMemcpyDeviceToHost,
+               stream),
+           "cudaMemcpy2DAsync(bgr10)") &&
+      cuda_ok(cudaStreamSynchronize(stream), "cudaStreamSynchronize(bgr10)");
+  for (const int code : {0, 1, 64, 256, 614, 1023}) {
+    if (bgr10[code] != pack_rgb10a2(code, code, code)) {
+      std::cerr << "BGR10A2 identity conversion changed 10-bit code " << code << " to 0x" << std::hex << bgr10[code]
+                << std::dec << '\n';
+      ok = false;
+    }
+  }
+
+  half4 colored{};
+  colored.x = __float2half(255.0f);
+  colored.y = __float2half(127.5f);
+  colored.z = __float2half(0.25f);
+  colored.w = __float2half(255.0f);
+  ok = ok &&
+      cuda_ok(
+           cudaMemcpyAsync(device_half, &colored, sizeof(colored), cudaMemcpyHostToDevice, stream),
+           "cudaMemcpyAsync(colored half)") &&
+      cuda_ok(
+           hm::stitcher::convertHalf4ToBgr10A2(
+               device_half,
+               half_pitch,
+               kWidth,
+               kHeight,
+               &output_params,
+               /*rotation_degrees=*/0.0,
+               /*shadow_lift_percent=*/0.0f,
+               /*lift_shadow_black_point=*/false,
+               /*exposure=*/0.0f,
+               stream),
+           "convertHalf4ToBgr10A2(colored)") &&
+      cuda_ok(
+           cudaMemcpyAsync(bgr10.data(), device_rgba, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream),
+           "cudaMemcpyAsync(colored bgr10)") &&
+      cuda_ok(cudaStreamSynchronize(stream), "cudaStreamSynchronize(colored bgr10)");
+  if (ok) {
+    const uint32_t actual_blue = bgr10[0] & 0x3ffu;
+    const uint32_t actual_green = (bgr10[0] >> 10) & 0x3ffu;
+    const uint32_t actual_red = (bgr10[0] >> 20) & 0x3ffu;
+    const uint32_t actual_alpha = (bgr10[0] >> 30) & 0x3u;
+    if (actual_red != 1023 || actual_green < 510 || actual_green > 512 || actual_blue != 1 || actual_alpha != 3) {
+      std::cerr << "BGR10A2 conversion stored colored channels in the wrong fields (actual 0x" << std::hex << bgr10[0]
+                << std::dec << ")\n";
+      ok = false;
+    }
+  }
+  ok = ok &&
+      cuda_ok(
+           cudaMemcpyAsync(device_half, unpacked.data(), sizeof(half4), cudaMemcpyHostToDevice, stream),
+           "cudaMemcpyAsync(restore half)");
+
   constexpr float kShadowLift = 100.0f;
   constexpr float kExposure = 1.0f;
+  ok = ok &&
+      cuda_ok(
+           hm::stitcher::convertHalf4ToBgr10A2(
+               device_half,
+               half_pitch,
+               kWidth,
+               kHeight,
+               &output_params,
+               /*rotation_degrees=*/0.0,
+               kShadowLift,
+               /*lift_shadow_black_point=*/false,
+               kExposure,
+               stream),
+           "convertHalf4ToBgr10A2(grade)") &&
+      cuda_ok(
+           cudaMemcpy2DAsync(
+               bgr10.data(),
+               kWidth * sizeof(uint32_t),
+               device_rgba,
+               rgba_pitch,
+               kWidth * sizeof(uint32_t),
+               kHeight,
+               cudaMemcpyDeviceToHost,
+               stream),
+           "cudaMemcpy2DAsync(graded bgr10)") &&
+      cuda_ok(cudaStreamSynchronize(stream), "cudaStreamSynchronize(graded bgr10)");
+  const int graded_code = 256;
+  const uint32_t expected_graded_code =
+      composed_grade_10(__half2float(unpacked[graded_code].x), kShadowLift, kExposure);
+  if (ok &&
+      (expected_graded_code <= static_cast<uint32_t>(graded_code) ||
+       bgr10[graded_code] != pack_bgr10a2(expected_graded_code, expected_graded_code, expected_graded_code))) {
+    std::cerr << "BGR10A2 output did not apply the FP16 shadow/exposure grade before quantization\n";
+    ok = false;
+  }
+  output_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+
   ok = ok &&
       cuda_ok(
            hm::stitcher::convertHalf4ToRgba8(

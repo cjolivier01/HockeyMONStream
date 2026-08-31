@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -68,6 +69,18 @@ int main() {
           automatic_8_bit.minimum_source_bit_depth == 8 && !automatic_unknown.enabled &&
           automatic_unknown.unknown_source_count == 1 && !automatic_empty.enabled,
       "Automatic high-bit selection must require every discovered source to be known and at least 10-bit");
+  ok &= expect(
+      hm::configurator_internal::bitrate_density_greater(
+          /*candidate=*/20'000'000,
+          1920ULL * 1080,
+          /*selected=*/40'000'000,
+          3840ULL * 2160) &&
+          !hm::configurator_internal::bitrate_density_greater(
+              /*candidate=*/40'000'000,
+              3840ULL * 2160,
+              /*selected=*/20'000'000,
+              1920ULL * 1080),
+      "Stitched bitrate selection must prefer higher bitrate per pixel even when its absolute bitrate is lower");
   const auto rotation_value = [](const YAML::Node& config) {
     return hm::configurator_internal::effective_stitch_output_rotation(config);
   };
@@ -449,6 +462,7 @@ play-tracker:
   if (calibration_archive) {
     YAML::Node archive_pipeline = calibration_archive->config()["pipeline"];
     archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
     archive_pipeline["sink0"]["output-file"] = "tracking_output.mkv";
     hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive.get());
     ok &= expect(
@@ -463,6 +477,7 @@ play-tracker:
       explicit_calibration_archive->apply_config_item("pipeline.sink0.output-file", "tracking_output.mkv").ok()) {
     YAML::Node archive_pipeline = explicit_calibration_archive->config()["pipeline"];
     archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
     hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(explicit_calibration_archive.get());
     ok &= expect(
         archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv",

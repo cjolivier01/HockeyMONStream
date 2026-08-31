@@ -150,7 +150,8 @@ gboolean set_typed_value(GObject* object, GParamSpec* pspec, const std::string& 
     const GType value_type = G_VALUE_TYPE(&value);
     if (value_type == G_TYPE_BOOLEAN) {
       const std::string property_name = pspec->name;
-      const bool strict_boolean = property_name == "shadow-lift-black-point" || property_name == "high-bit-depth";
+      const bool strict_boolean = property_name == "shadow-lift-black-point" || property_name == "high-bit-depth" ||
+          property_name == "high-bit-depth-output";
       g_value_set_boolean(&value, strict_boolean ? parse_strict_bool(raw_value) : parse_bool(raw_value));
     } else if (value_type == G_TYPE_INT) {
       const gint64 parsed = parse_int64_exact(raw_value);

@@ -758,6 +758,18 @@ bool write_fake_runner(const QString& path) {
   file.write("        archive_before = 'existed=0 size=-1 mtime-ms=-1'\n");
   file.write(
       "    print('HSTREAM_OUTPUT type=archive sink=2 ' + archive_before + ' codec=hevc path=' + archive_path, flush=True)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH'):\n");
+  file.write("    stitched_archive_path = os.environ['HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH']\n");
+  file.write("    try:\n");
+  file.write("        stitched_archive_stat = os.stat(stitched_archive_path)\n");
+  file.write(
+      "        stitched_archive_before = 'existed=1 size=%d mtime-ms=%d' % "
+      "(stitched_archive_stat.st_size, stitched_archive_stat.st_mtime_ns // 1000000)\n");
+  file.write("    except FileNotFoundError:\n");
+  file.write("        stitched_archive_before = 'existed=0 size=-1 mtime-ms=-1'\n");
+  file.write(
+      "    print('HSTREAM_OUTPUT type=archive sink=5 kind=stitched ' + stitched_archive_before + "
+      "' codec=hevc path=' + stitched_archive_path, flush=True)\n");
   file.write(
       "print('HSTREAM_CALIBRATION_INVALIDATION_ID=' + "
       "os.environ.get('HSTREAM_CALIBRATION_INVALIDATION_ID', ''), flush=True)\n");
@@ -805,6 +817,11 @@ bool write_fake_runner(const QString& path) {
       "    if os.environ.get('HSTREAM_UI_TEST_ARCHIVE_WRITE') and os.environ.get('HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH'):\n");
   file.write("        with open(os.environ['HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH'], 'wb') as archive:\n");
   file.write("            archive.write(b'completed lossless archive')\n");
+  file.write(
+      "    if os.environ.get('HSTREAM_UI_TEST_ARCHIVE_WRITE') and "
+      "os.environ.get('HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH'):\n");
+  file.write("        with open(os.environ['HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH'], 'wb') as archive:\n");
+  file.write("            archive.write(b'completed stitched archive')\n");
   file.write("    sys.exit(int(os.environ['HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS']))\n");
   file.write(
       "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
@@ -5569,7 +5586,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 bool test_output_controls(HStreamWindow* window) {
   auto* spare = require_child<QCheckBox>(window, "outputToggle_spare-rtmp");
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
+  auto* stitched_archive = require_child<QCheckBox>(window, "outputToggle_archive-stitched");
   auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
+  auto* stitched_archive_path = require_child<QLabel>(window, "stitchedArchiveOutputPath");
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
   auto* youtube_redirect = require_child<QPushButton>(window, "redirectYoutubeButton");
   auto* add_rtsp = require_child<QPushButton>(window, "addRtspButton");
@@ -5578,8 +5597,8 @@ bool test_output_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
-  if (!spare || !archive || !archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop ||
-      !mode || !seek_slider || !seek_forward) {
+  if (!spare || !archive || !stitched_archive || !archive_path || !stitched_archive_path || !game_id_edit ||
+      !youtube_redirect || !add_rtsp || !start || !stop || !mode || !seek_slider || !seek_forward) {
     return false;
   }
 
@@ -5623,21 +5642,27 @@ bool test_output_controls(HStreamWindow* window) {
           .filePath("stitched_output-with-audio.mkv");
   const QStringList calibration_archive_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   const bool calibration_archive_path_unmodified = std::none_of(
-      calibration_archive_arguments.cbegin(),
-      calibration_archive_arguments.cend(),
-      [](const QString& argument) {
+      calibration_archive_arguments.cbegin(), calibration_archive_arguments.cend(), [](const QString& argument) {
         return argument.startsWith("--options=pipeline.sink2.output-file=") ||
             argument.startsWith("--options=video_out.output_video_path=");
       });
   const bool calibration_archive_routed = expect(
       archive_path->text().contains(calibration_planned_path) &&
-          calibration_archive_arguments.contains("--enable-sinks=RENDER,ENCODE_FILE") &&
-          calibration_archive_path_unmodified &&
+          calibration_archive_arguments.contains("--enable-sinks=RENDER,ENCODE_STITCHED_FILE") &&
+          calibration_archive_path_unmodified && !stitched_archive->isEnabled() &&
           !calibration_archive_arguments.join(' ').contains("RTMP") &&
           !calibration_archive_arguments.join(' ').contains("RTSP"),
       "Stitching Calibration Archive File must record the stitched sink without overriding native or canonical "
       "custom archive paths or enabling streams");
   mode->setCurrentIndex(mode->findData("program"));
+  stitched_archive->setChecked(true);
+  const QStringList dual_archive_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  const bool dual_archive_routed = expect(
+      stitched_archive->isEnabled() && dual_archive_arguments.join(' ').contains("ENCODE_FILE") &&
+          dual_archive_arguments.join(' ').contains("ENCODE_STITCHED_FILE") &&
+          stitched_archive_path->text().contains("stitched_output-with-audio.mkv"),
+      "Program mode must independently route Program and stitched archives when both toggles are checked");
+  stitched_archive->setChecked(false);
 
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   game_id_edit->setText("archive-label-refresh-test");
@@ -6914,7 +6939,7 @@ bool test_output_controls(HStreamWindow* window) {
   } else {
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
   }
-  return relative_override_resolved && calibration_archive_routed && path_refreshes_with_game &&
+  return relative_override_resolved && calibration_archive_routed && dual_archive_routed && path_refreshes_with_game &&
       path_visible_before_start && path_prepared && nonlocal_seek_blocked && interrupted_archive_preserved &&
       missing_new_output_reported && job_log_persisted && incomplete_exit_log_guarded && same_filesystem_log_rollback &&
       cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
@@ -6924,6 +6949,80 @@ bool test_output_controls(HStreamWindow* window) {
       no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
       publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery &&
       ui_cleanup_owner_scoped;
+}
+
+bool test_dual_archive_finalization(HStreamWindow* window) {
+  auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
+  auto* stitched_archive = require_child<QCheckBox>(window, "outputToggle_archive-stitched");
+  auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
+  auto* stitched_archive_path = require_child<QLabel>(window, "stitchedArchiveOutputPath");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  if (!archive || !stitched_archive || !archive_path || !stitched_archive_path || !start || !mode)
+    return false;
+
+  QTemporaryDir output_root;
+  if (!output_root.isValid())
+    return false;
+  const QByteArray original_output_root = qgetenv("HM_OUTPUT_WORK_DIR");
+  const QString program_source = QDir(output_root.path()).filePath("dual-program.mkv");
+  const QString stitched_source = QDir(output_root.path()).filePath("dual-stitched.mkv");
+  qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", program_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", stitched_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
+  qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
+  mode->setCurrentIndex(mode->findData("program"));
+  archive->setChecked(true);
+  stitched_archive->setChecked(true);
+  activate(start);
+  for (int i = 0; i < 600 &&
+       (window->outputStateText("archive-file") != "SAVED" || window->outputStateText("archive-stitched") != "SAVED");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+
+  const QString program_completed = archive_path->text().section("Completed archive: ", 1).trimmed();
+  const QString stitched_completed = stitched_archive_path->text().section("Completed archive: ", 1).trimmed();
+  QFile program_file(program_completed);
+  QFile stitched_file(stitched_completed);
+  const bool program_opened = program_file.open(QIODevice::ReadOnly);
+  const bool stitched_opened = stitched_file.open(QIODevice::ReadOnly);
+  const QString program_finalize_log = QString("finalizing archive without re-encoding: %1").arg(program_source);
+  const QString stitched_finalize_log = QString("finalizing archive without re-encoding: %1").arg(stitched_source);
+  const int program_finalize_index = window->logText().lastIndexOf(program_finalize_log);
+  const int stitched_finalize_index = window->logText().lastIndexOf(stitched_finalize_log);
+  const bool ok = expect(
+      window->outputStateText("archive-file") == "SAVED" && window->outputStateText("archive-stitched") == "SAVED" &&
+          program_opened && stitched_opened && program_file.readAll() == "completed lossless archive" &&
+          stitched_file.readAll() == "completed stitched archive" &&
+          QFileInfo(program_completed).completeBaseName().contains("-tracking_output-with-audio") &&
+          QFileInfo(stitched_completed).completeBaseName().contains("-stitched_output-with-audio") &&
+          !QFileInfo::exists(program_source) && !QFileInfo::exists(stitched_source) && program_finalize_index >= 0 &&
+          stitched_finalize_index > program_finalize_index,
+      "A successful Program run with both archives must finalize both work files sequentially with distinct names");
+
+  auto* finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
+  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  program_file.close();
+  stitched_file.close();
+  QFile::remove(program_completed);
+  QFile::remove(stitched_completed);
+  archive->setChecked(false);
+  stitched_archive->setChecked(false);
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH");
+  qunsetenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
+  qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
+  if (original_output_root.isEmpty())
+    qunsetenv("HM_OUTPUT_WORK_DIR");
+  else
+    qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
+  return ok;
 }
 
 bool test_projection_parameter_persistence(HStreamWindow* window) {
@@ -7328,6 +7427,7 @@ bool test_camera_controls(HStreamWindow* window) {
       "outputToggle_youtube-primary",
       "outputToggle_rtsp-local",
       "outputToggle_archive-file",
+      "outputToggle_archive-stitched",
       "outputToggle_spare-rtmp",
       "redirectYoutubeButton",
       "addRtspButton",
@@ -10866,6 +10966,10 @@ int main(int argc, char** argv) {
   }
   if (!test_output_controls(&window)) {
     std::cerr << "test_output_controls failed\n";
+    return 1;
+  }
+  if (!test_dual_archive_finalization(&window)) {
+    std::cerr << "test_dual_archive_finalization failed\n";
     return 1;
   }
   if (!test_camera_controls(&window)) {

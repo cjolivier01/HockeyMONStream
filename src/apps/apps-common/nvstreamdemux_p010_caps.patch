@@ -1,0 +1,25 @@
+--- gstnvstreamdemux.cpp
++++ gstnvstreamdemux.cpp
+@@ -63 +63 @@
+-            "{ " "NV12, RGBA, I420 }") "; "
++            "{ " "NV12, RGBA, I420, P010_10LE }") "; "
+@@ -75 +75 @@
+-            "{ " "NV12, RGBA, I420 }") "; "
++            "{ " "NV12, RGBA, I420, P010_10LE }") "; "
+@@ -152,2 +151,0 @@
+-  gst_pad_use_fixed_caps (srcpad);
+-
+@@ -787,0 +786,13 @@
++
++    // This private demux is downstream of hmstitcher. Source-specific
++    // update-caps events still describe the pre-stitch camera, while the
++    // demux sink caps carry the authoritative stitched canvas geometry.
++    if (nvstreamdemux->sink_caps) {
++      GstStructure *sink_caps_structure = gst_caps_get_structure (nvstreamdemux->sink_caps, 0);
++      gint stitched_width = 0;
++      gint stitched_height = 0;
++      if (gst_structure_get_int (sink_caps_structure, "width", &stitched_width) && stitched_width > 0)
++        width_val = stitched_width;
++      if (gst_structure_get_int (sink_caps_structure, "height", &stitched_height) && stitched_height > 0)
++        height_val = stitched_height;
++    }
