@@ -11,6 +11,18 @@ cc_library(
     deps = ["@gstreamer"],
 )
 
+cc_library(
+    name = "fatal-output-error",
+    srcs = ["FatalOutputError.cpp"],
+    hdrs = ["FatalOutputError.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@gstreamer",
+    ],
+)
+
 cc_library (
   name = "algorithm-base",
     srcs = [
@@ -30,12 +42,23 @@ cc_library (
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+        ":fatal-output-error",
         ":runtime-output-caps",
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "@com_google_absl//absl/status",
         "//toolchains/jetson:cuda_runtime",
   ],
+)
+
+cc_test(
+    name = "fatal_output_error_test",
+    srcs = ["FatalOutputErrorTest.cpp"],
+    deps = [
+        ":fatal-output-error",
+        "@com_google_absl//absl/status",
+        "@gstreamer",
+    ],
 )
 
 cc_test(
