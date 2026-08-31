@@ -128,6 +128,11 @@ struct HStreamWindowTestAccess {
     window->updateRunControls();
   }
 
+  static void clearLog(HStreamWindow* window) {
+    if (window->log_)
+      window->log_->clear();
+  }
+
   static void finishArchiveJobLogAfterFinalizationFailure(
       HStreamWindow* window,
       const QString& configured_output_path,
@@ -7038,11 +7043,12 @@ bool test_output_controls(HStreamWindow* window) {
 bool test_dual_archive_finalization(HStreamWindow* window) {
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
   auto* stitched_archive = require_child<QCheckBox>(window, "outputToggle_archive-stitched");
+  auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
   auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
   auto* stitched_archive_path = require_child<QLabel>(window, "stitchedArchiveOutputPath");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!archive || !stitched_archive || !archive_path || !stitched_archive_path || !start || !mode)
+  if (!archive || !stitched_archive || !drivegpt_csv || !archive_path || !stitched_archive_path || !start || !mode)
     return false;
 
   QTemporaryDir output_root;
@@ -7052,14 +7058,46 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QString program_source = QDir(output_root.path()).filePath("dual-program.mkv");
   const QString stitched_source = QDir(output_root.path()).filePath("dual-stitched.mkv");
   const QString combined_job_log = program_source + ".log";
+  const QString telemetry_working = QDir(output_root.path()).filePath("dual-telemetry-working");
+  const std::array<QString, 6> telemetry_stems = {
+      "tracking", "detections", "camera", "camera_fast", "hstream_frame_index", "hstream_config_events"};
+  const QString telemetry_manifest = QDir(telemetry_working).filePath("hstream_telemetry-11.json");
+  bool telemetry_fixture_created = QDir().mkpath(telemetry_working);
+  for (const QString& stem : telemetry_stems) {
+    QFile artifact(QDir(telemetry_working).filePath(stem + "-11.csv"));
+    telemetry_fixture_created &= artifact.open(QIODevice::WriteOnly | QIODevice::NewOnly) &&
+        artifact.write((stem + " dual archive contents\n").toUtf8()) > 0;
+  }
+  QFile telemetry_manifest_file(telemetry_manifest);
+  telemetry_fixture_created &=
+      telemetry_manifest_file.open(QIODevice::WriteOnly | QIODevice::NewOnly) && telemetry_manifest_file.write(R"json({
+  "publication_state": "committed",
+  "completed": true,
+  "hm_compatibility": {
+    "tracking_csv": {"file": "tracking-11.csv"},
+    "detections_csv": {"file": "detections-11.csv"},
+    "camera_csv": {"file": "camera-11.csv"},
+    "camera_fast_csv": {"file": "camera_fast-11.csv"}
+  },
+  "sidecars": {
+    "frame_index": "hstream_frame_index-11.csv",
+    "config_events": "hstream_config_events-11.csv"
+  }
+})json") > 0;
+  telemetry_manifest_file.close();
+  if (!expect(telemetry_fixture_created, "dual archive telemetry fixture must be created"))
+    return false;
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", program_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", stitched_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
   qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
+  qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "100");
   mode->setCurrentIndex(mode->findData("program"));
   archive->setChecked(true);
   stitched_archive->setChecked(true);
+  drivegpt_csv->setChecked(true);
   activate(start);
   for (int i = 0; i < 600 &&
        (window->outputStateText("archive-file") != "SAVED" || window->outputStateText("archive-stitched") != "SAVED");
@@ -7080,7 +7118,20 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QString program_finalize_log = QString("finalizing archive without re-encoding: %1").arg(program_source);
   const QString stitched_finalize_log = QString("finalizing archive without re-encoding: %1").arg(stitched_source);
   const int program_finalize_index = window->logText().lastIndexOf(program_finalize_log);
+  const int telemetry_finalize_index = window->logText().lastIndexOf("DriveGPT CSVs copied to the game directory");
   const int stitched_finalize_index = window->logText().lastIndexOf(stitched_finalize_log);
+  const QString completed_base = QFileInfo(program_completed).completeBaseName();
+  const QString unsuffixed_base = QString("%1-tracking_output-with-audio").arg(window->gameIdText());
+  const QString telemetry_suffix = completed_base.startsWith(unsuffixed_base)
+      ? completed_base.mid(unsuffixed_base.size())
+      : QString("invalid");
+  bool dual_telemetry_deployed = telemetry_suffix.isEmpty() ||
+      QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch();
+  for (const QString& stem : telemetry_stems) {
+    QFile published(QDir(window->gameDirectoryText()).filePath(stem + telemetry_suffix + ".csv"));
+    dual_telemetry_deployed &= published.open(QIODevice::ReadOnly) &&
+        published.readAll() == (stem + " dual archive contents\n").toUtf8();
+  }
   const bool ok = expect(
       window->outputStateText("archive-file") == "SAVED" && window->outputStateText("archive-stitched") == "SAVED" &&
           program_opened && stitched_opened && program_file.readAll() == "completed lossless archive" &&
@@ -7088,12 +7139,14 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
           QFileInfo(program_completed).completeBaseName().contains("-tracking_output-with-audio") &&
           QFileInfo(stitched_completed).completeBaseName().contains("-stitched_output-with-audio") &&
           !QFileInfo::exists(program_source) && !QFileInfo::exists(stitched_source) && program_finalize_index >= 0 &&
-          stitched_finalize_index > program_finalize_index && combined_log_opened &&
+          telemetry_finalize_index > program_finalize_index && stitched_finalize_index > telemetry_finalize_index &&
+          dual_telemetry_deployed && combined_log_opened &&
           combined_log_text.contains(program_finalize_log) && combined_log_text.contains(stitched_finalize_log) &&
+          combined_log_text.contains("DriveGPT CSVs copied to the game directory") &&
           combined_log_text.contains(QString("completed archive published: %1").arg(program_completed)) &&
           combined_log_text.contains(QString("completed archive published: %1").arg(stitched_completed)),
-      "A successful Program run with both archives must finalize both work files sequentially with distinct names "
-      "and retain one complete run log");
+      "A successful Program run with both archives must publish Program telemetry, finalize both work files "
+      "sequentially with distinct names, and retain one complete run log");
 
   auto* finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
@@ -7106,6 +7159,11 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   QFile::remove(program_completed);
   QFile::remove(stitched_completed);
   QFile::remove(combined_job_log);
+  for (const QString& stem : telemetry_stems)
+    QFile::remove(QDir(window->gameDirectoryText()).filePath(stem + telemetry_suffix + ".csv"));
+  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
+  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
+  drivegpt_csv->setChecked(false);
 
   const auto run_route_failure = [&](const QString& label, const QByteArray& fail_route, bool fail_program) {
     const QString failed_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
@@ -9280,6 +9338,7 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  HStreamWindowTestAccess::clearLog(window);
   const int pipeline_commands_before_deferred_restart = window->logText().count("pipeline command ");
   activate(restart);
   for (int i = 0; i < 200 &&
