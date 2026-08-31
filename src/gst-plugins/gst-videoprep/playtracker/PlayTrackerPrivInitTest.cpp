@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
+#include "hstream/src/libs/common/DetectionSnapshotMeta.h"
 
 #include "absl/status/status.h"
 
@@ -74,10 +75,17 @@ bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
   frame_meta->pipeline_height = 1080;
   object_meta->class_id = 0;
   object_meta->object_id = 1;
+  object_meta->unique_component_id = 1;
+  object_meta->confidence = 0.8f;
   object_meta->tracker_confidence = 0.9f;
+  object_meta->detector_bbox_info.org_bbox_coords = NvBbox_Coords{118.0f, 98.0f, 404.0f, 264.0f};
   object_meta->tracker_bbox_info.org_bbox_coords = NvBbox_Coords{120.0f, 100.0f, 400.0f, 260.0f};
   nvds_add_obj_meta_to_frame(frame_meta, object_meta, nullptr);
   nvds_add_frame_meta_to_batch(batch, frame_meta);
+  if (!hm::detection_snapshot::add_meta(batch, 1)) {
+    nvds_destroy_batch_meta(batch);
+    return false;
+  }
 
   NvBufSurfaceParams surface_params{};
   surface_params.width = 3840;

@@ -3006,12 +3006,20 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   drivegpt_csv->setChecked(true);
-  const QString expected_telemetry_option =
-      QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
-          .arg(QDir::cleanPath(window->gameDirectoryText()));
+  const QString telemetry_option_prefix = "--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=";
+  const QStringList telemetry_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  const auto telemetry_argument = std::find_if(
+      telemetry_arguments.cbegin(), telemetry_arguments.cend(), [&telemetry_option_prefix](const QString& argument) {
+        return argument.startsWith(telemetry_option_prefix);
+      });
+  const QString telemetry_work_directory = telemetry_argument == telemetry_arguments.cend()
+      ? QString()
+      : telemetry_argument->mid(telemetry_option_prefix.size());
   if (!expect(
-          HStreamWindowTestAccess::pipelineArguments(window).contains(expected_telemetry_option),
-          "The DriveGPT checkbox should route metadata export into the selected HM game directory")) {
+          !telemetry_work_directory.isEmpty() &&
+              QDir::cleanPath(telemetry_work_directory) != QDir::cleanPath(window->gameDirectoryText()) &&
+              QFileInfo(telemetry_work_directory).fileName() == window->gameIdText(),
+          "The DriveGPT checkbox should stage metadata under HStream working storage, never in the HM game directory")) {
     return false;
   }
   drivegpt_csv->setChecked(false);
@@ -5623,17 +5631,14 @@ bool test_output_controls(HStreamWindow* window) {
           .filePath("stitched_output-with-audio.mkv");
   const QStringList calibration_archive_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   const bool calibration_archive_path_unmodified = std::none_of(
-      calibration_archive_arguments.cbegin(),
-      calibration_archive_arguments.cend(),
-      [](const QString& argument) {
+      calibration_archive_arguments.cbegin(), calibration_archive_arguments.cend(), [](const QString& argument) {
         return argument.startsWith("--options=pipeline.sink2.output-file=") ||
             argument.startsWith("--options=video_out.output_video_path=");
       });
   const bool calibration_archive_routed = expect(
       archive_path->text().contains(calibration_planned_path) &&
           calibration_archive_arguments.contains("--enable-sinks=RENDER,ENCODE_FILE") &&
-          calibration_archive_path_unmodified &&
-          !calibration_archive_arguments.join(' ').contains("RTMP") &&
+          calibration_archive_path_unmodified && !calibration_archive_arguments.join(' ').contains("RTMP") &&
           !calibration_archive_arguments.join(' ').contains("RTSP"),
       "Stitching Calibration Archive File must record the stitched sink without overriding native or canonical "
       "custom archive paths or enabling streams");

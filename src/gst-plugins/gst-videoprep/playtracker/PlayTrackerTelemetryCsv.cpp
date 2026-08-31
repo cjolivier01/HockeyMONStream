@@ -17,6 +17,7 @@
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <system_error>
@@ -215,6 +216,8 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   config_event_discontinuity_gaps_.store(0, std::memory_order_release);
   dropped_samples_.store(0, std::memory_order_release);
   dropped_config_events_.store(0, std::memory_order_release);
+  queue_full_waits_.store(0, std::memory_order_release);
+  queue_full_warning_emitted_.store(false, std::memory_order_release);
   samples_buffered_.store(0, std::memory_order_release);
   training_samples_buffered_.store(0, std::memory_order_release);
   config_events_buffered_.store(0, std::memory_order_release);
@@ -248,11 +251,11 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   }
 
   frame_index_ << "Sample,SourceID,SourceFrame,DecodedSourceID,DecodedSequence,PTS_NS,NTP_NS,SeekEpoch,Width,Height,"
-                  "TrackCount,HasCamera\n";
+                  "DetectionCount,TrackCount,HasCamera\n";
   config_events_ << "Event,SampleBoundary,Kind,Key,Value,Artifact\n";
   config_events_ << "0,1,base-config,config-file," << csv_string(source_config.path) << ','
                  << csv_string(source_config_filename_) << '\n';
-  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
     RemoveIncompleteOutputs();
     CloseOutputs();
     return absl::InternalError("could not initialize playtracker telemetry CSV headers");
@@ -331,6 +334,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
 
   const std::vector<std::pair<std::string, std::string>> artifact_names = {
       {"tracking", ".csv"},
+      {"detections", ".csv"},
       {"camera", ".csv"},
       {"camera_fast", ".csv"},
       {"hstream_frame_index", ".csv"},
@@ -383,7 +387,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
     return absl::InternalError(absl::StrCat("could not inspect telemetry generations: ", error.message()));
   }
 
-  std::array<int, 8> artifact_fds;
+  std::array<int, 9> artifact_fds;
   artifact_fds.fill(-1);
   bool generation_reserved = false;
   for (uint64_t attempt = 0; attempt < 100000; ++attempt) {
@@ -393,6 +397,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
     const uint64_t generation = first_generation + attempt;
     suffix_ = generation == 0 ? "" : absl::StrCat("-", generation);
     tracking_filename_ = suffixed_name("tracking", suffix_, ".csv");
+    detections_filename_ = suffixed_name("detections", suffix_, ".csv");
     camera_filename_ = suffixed_name("camera", suffix_, ".csv");
     camera_fast_filename_ = suffixed_name("camera_fast", suffix_, ".csv");
     frame_index_filename_ = suffixed_name("hstream_frame_index", suffix_, ".csv");
@@ -404,8 +409,9 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       std::string published_filename;
       bool training_input;
     };
-    const std::array<ArtifactReservation, 8> generation_artifacts = {{
+    const std::array<ArtifactReservation, 9> generation_artifacts = {{
         {absl::StrCat(".", tracking_filename_, ".partial"), tracking_filename_, true},
+        {absl::StrCat(".", detections_filename_, ".partial"), detections_filename_, true},
         {absl::StrCat(".", camera_filename_, ".partial"), camera_filename_, true},
         {absl::StrCat(".", camera_fast_filename_, ".partial"), camera_fast_filename_, true},
         {frame_index_filename_, {}, false},
@@ -436,11 +442,11 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
            generation_artifacts[index].published_filename,
            static_cast<uint64_t>(info.st_dev),
            static_cast<uint64_t>(info.st_ino),
-           index == 5 ? -1 : artifact_fds[index],
+           index == 6 ? -1 : artifact_fds[index],
            generation_artifacts[index].training_input});
     }
     if (reservation_error == 0) {
-      manifest_path_ = (fs::path(output_directory_) / generation_artifacts[5].filename).string();
+      manifest_path_ = (fs::path(output_directory_) / generation_artifacts[6].filename).string();
       generation_reserved = true;
       break;
     }
@@ -467,17 +473,18 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
   }
 
   const bool provenance_written =
-      write_all(artifact_fds[6], source_config.contents) && write_all(artifact_fds[7], effective_config.contents);
+      write_all(artifact_fds[7], source_config.contents) && write_all(artifact_fds[8], effective_config.contents);
   const bool streams_opened = open_reserved_stream(artifact_fds[0], &tracking_) &&
-      open_reserved_stream(artifact_fds[1], &camera_) && open_reserved_stream(artifact_fds[2], &camera_fast_) &&
-      open_reserved_stream(artifact_fds[3], &frame_index_) && open_reserved_stream(artifact_fds[4], &config_events_);
-  manifest_fd_ = artifact_fds[5];
-  artifact_fds[5] = -1;
+      open_reserved_stream(artifact_fds[1], &detections_) && open_reserved_stream(artifact_fds[2], &camera_) &&
+      open_reserved_stream(artifact_fds[3], &camera_fast_) && open_reserved_stream(artifact_fds[4], &frame_index_) &&
+      open_reserved_stream(artifact_fds[5], &config_events_);
+  manifest_fd_ = artifact_fds[6];
+  artifact_fds[6] = -1;
   // Keep stable descriptors for every staged artifact. Training publication
   // links the exact reserved inodes, and finalization fsyncs every file without
   // reopening a mutable pathname. The manifest descriptor is owned separately.
   for (size_t index = 0; index < artifact_fds.size(); ++index) {
-    if (index != 5) {
+    if (index != 6) {
       artifact_fds[index] = -1;
     }
   }
@@ -521,11 +528,13 @@ void PlayTrackerTelemetryCsv::Stop() {
     active_ = false;
   }
   ready_.notify_all();
+  space_available_.notify_all();
   if (writer_thread_.joinable()) {
     writer_thread_.join();
   }
   writer_drained_ = true;
-  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_ || !VerifyOwnedArtifacts()) {
+  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_ ||
+      !VerifyOwnedArtifacts()) {
     writer_failed_ = true;
   }
   const bool staged_artifacts_durable = !writer_failed_ && FlushAndSyncStagedArtifacts();
@@ -542,8 +551,8 @@ void PlayTrackerTelemetryCsv::Stop() {
   }
   const bool successful_outcome =
       run_outcome_ == TelemetryRunOutcome::kEndOfStream || run_outcome_ == TelemetryRunOutcome::kIntentionalStop;
-  const bool publication_candidate =
-      successful_outcome && !writer_failed_ && training_samples_persisted_.load(std::memory_order_acquire) > 0;
+  const bool publication_candidate = successful_outcome && !writer_failed_;
+  const bool has_training_samples = training_samples_persisted_.load(std::memory_order_acquire) > 0;
   completed_ = false;
   eligible_for_training_ = false;
   publication_committed_ = false;
@@ -556,13 +565,13 @@ void PlayTrackerTelemetryCsv::Stop() {
     writer_failed_ = true;
     WriteManifestAndSync("fsync:manifest:failed");
     SyncDirectory("failed");
-  } else if (publication_candidate && PublishTrainingArtifacts()) {
-    // PublishTrainingArtifacts() returns success only after the tracking link
+  } else if (publication_candidate && PublishCsvArtifacts()) {
+    // PublishCsvArtifacts() returns success only after the tracking link
     // and its containing directory are durable. Eligibility is never written
     // before that irreversible commit point.
     publication_committed_ = true;
     completed_ = true;
-    eligible_for_training_ = true;
+    eligible_for_training_ = has_training_samples;
     if (!WriteManifestAndSync("fsync:manifest:committed")) {
       writer_failed_ = true;
       // The prior durable manifest was pending and the HM inputs are already a
@@ -592,34 +601,36 @@ bool PlayTrackerTelemetryCsv::active() const {
 }
 
 bool PlayTrackerTelemetryCsv::TryEnqueue(TelemetrySample sample) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return TryEnqueueLocked(std::move(sample));
-}
-
-bool PlayTrackerTelemetryCsv::TryEnqueueLocked(TelemetrySample sample) {
-  if (!active_ || stopping_) {
+  std::lock_guard<std::mutex> producer_lock(producer_mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!active_ || stopping_ || !WaitForQueueSpace(lock)) {
     return false;
   }
-  // Frame identity follows attempted input samples, not successful writes.
-  // Reserving before admission leaves a detectable numeric gap on overflow.
   const uint64_t sample_id = frame_id_high_watermark_.fetch_add(1, std::memory_order_acq_rel) + 1;
   attempted_samples_.fetch_add(1, std::memory_order_acq_rel);
-  if (queue_.size() >= queue_capacity_) {
-    dropped_samples_.fetch_add(1, std::memory_order_acq_rel);
-    return false;
-  }
   queue_.emplace_back(QueuedSample{sample_id, std::move(sample)});
+  lock.unlock();
   ready_.notify_one();
   return true;
 }
 
-bool PlayTrackerTelemetryCsv::TryRecordConfigEvent(TelemetryConfigEvent event) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return TryRecordConfigEventLocked(std::move(event));
+bool PlayTrackerTelemetryCsv::WaitForQueueSpace(std::unique_lock<std::mutex>& lock) {
+  if (queue_.size() < queue_capacity_)
+    return active_ && !stopping_;
+  queue_full_waits_.fetch_add(1, std::memory_order_acq_rel);
+  if (!queue_full_warning_emitted_.exchange(true, std::memory_order_acq_rel)) {
+    std::cerr << "WARNING: Playtracker telemetry writer queue is full; blocking the streaming thread until disk I/O "
+                 "catches up so no CSV data is dropped"
+              << std::endl;
+  }
+  space_available_.wait(lock, [this] { return stopping_ || !active_ || queue_.size() < queue_capacity_; });
+  return active_ && !stopping_;
 }
 
-bool PlayTrackerTelemetryCsv::TryRecordConfigEventLocked(TelemetryConfigEvent event) {
-  if (!active_ || stopping_) {
+bool PlayTrackerTelemetryCsv::TryRecordConfigEvent(TelemetryConfigEvent event) {
+  std::lock_guard<std::mutex> producer_lock(producer_mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!active_ || stopping_ || !WaitForQueueSpace(lock)) {
     return false;
   }
   // A live policy mutation has already been applied by the caller. Reserve a
@@ -629,19 +640,17 @@ bool PlayTrackerTelemetryCsv::TryRecordConfigEventLocked(TelemetryConfigEvent ev
   frame_id_high_watermark_.fetch_add(1, std::memory_order_acq_rel);
   discontinuity_gaps_.fetch_add(1, std::memory_order_acq_rel);
   config_event_discontinuity_gaps_.fetch_add(1, std::memory_order_acq_rel);
-  if (queue_.size() >= queue_capacity_) {
-    dropped_config_events_.fetch_add(1, std::memory_order_acq_rel);
-    return false;
-  }
   queue_.emplace_back(
       QueuedConfigEvent{frame_id_high_watermark_.load(std::memory_order_acquire) + 1, std::move(event)});
+  lock.unlock();
   ready_.notify_one();
   return true;
 }
 
 bool PlayTrackerTelemetryCsv::TryRecordDiscontinuity(TelemetryConfigEvent event) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!active_ || stopping_) {
+  std::lock_guard<std::mutex> producer_lock(producer_mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!active_ || stopping_ || !WaitForQueueSpace(lock)) {
     return false;
   }
   config_events_attempted_.fetch_add(1, std::memory_order_acq_rel);
@@ -649,12 +658,9 @@ bool PlayTrackerTelemetryCsv::TryRecordDiscontinuity(TelemetryConfigEvent event)
   // interpreted as adjacent to the pre-seek timeline.
   frame_id_high_watermark_.fetch_add(1, std::memory_order_acq_rel);
   discontinuity_gaps_.fetch_add(1, std::memory_order_acq_rel);
-  if (queue_.size() >= queue_capacity_) {
-    dropped_config_events_.fetch_add(1, std::memory_order_acq_rel);
-    return false;
-  }
   queue_.emplace_back(
       QueuedConfigEvent{frame_id_high_watermark_.load(std::memory_order_acquire) + 1, std::move(event)});
+  lock.unlock();
   ready_.notify_one();
   return true;
 }
@@ -679,27 +685,36 @@ void PlayTrackerTelemetryCsv::WriterLoop() {
       item = std::move(queue_.front());
       queue_.pop_front();
     }
+    space_available_.notify_one();
     if (const auto* sample = std::get_if<QueuedSample>(&item)) {
       WriteSample(*sample);
     } else {
       WriteConfigEvent(std::get<QueuedConfigEvent>(item));
     }
-    if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_) {
+    if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_) {
       writer_failed_ = true;
     }
   }
   tracking_.flush();
+  detections_.flush();
   camera_.flush();
   camera_fast_.flush();
   frame_index_.flush();
   config_events_.flush();
-  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
     writer_failed_ = true;
   }
 }
 
 void PlayTrackerTelemetryCsv::WriteSample(const QueuedSample& queued) {
   const TelemetrySample& sample = queued.sample;
+  for (const TelemetryDetection& detection : sample.detections) {
+    // Exact current HM DetectionDataFrame order (headerless):
+    // Frame,BBox_X1,BBox_Y1,BBox_X2,BBox_Y2,Scores,Labels.
+    detections_ << queued.sample_id << ',' << std::setprecision(9) << detection.left << ',' << detection.top << ','
+                << detection.left + detection.width << ',' << detection.top + detection.height << ',' << detection.score
+                << ',' << detection.class_id << '\n';
+  }
   for (const TelemetryTrack& track : sample.tracks) {
     // Exact current HM TrackingDataFrame order (headerless):
     // Frame,ID,BBox_X,BBox_Y,BBox_W,BBox_H,Scores,Labels,Visibility,
@@ -721,9 +736,10 @@ void PlayTrackerTelemetryCsv::WriteSample(const QueuedSample& queued) {
   write_optional(frame_index_, sample.pts_ns);
   frame_index_ << ',';
   write_optional(frame_index_, sample.ntp_ns);
-  frame_index_ << ',' << sample.seek_epoch << ',' << sample.width << ',' << sample.height << ',' << sample.tracks.size()
-               << ',' << (!sample.policy_boxes.empty() ? 1 : 0) << '\n';
-  if (tracking_ && camera_ && camera_fast_ && frame_index_) {
+  frame_index_ << ',' << sample.seek_epoch << ',' << sample.width << ',' << sample.height << ','
+               << sample.detections.size() << ',' << sample.tracks.size() << ','
+               << (!sample.policy_boxes.empty() ? 1 : 0) << '\n';
+  if (tracking_ && detections_ && camera_ && camera_fast_ && frame_index_) {
     samples_buffered_.fetch_add(1, std::memory_order_acq_rel);
     if (!sample.tracks.empty() && !sample.policy_boxes.empty()) {
       training_samples_buffered_.fetch_add(1, std::memory_order_acq_rel);
@@ -838,11 +854,12 @@ bool PlayTrackerTelemetryCsv::SyncDirectory(const std::string& phase) {
 
 bool PlayTrackerTelemetryCsv::FlushAndSyncStagedArtifacts() {
   tracking_.flush();
+  detections_.flush();
   camera_.flush();
   camera_fast_.flush();
   frame_index_.flush();
   config_events_.flush();
-  if (!tracking_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
     return false;
   }
 
@@ -856,16 +873,18 @@ bool PlayTrackerTelemetryCsv::FlushAndSyncStagedArtifacts() {
   return success;
 }
 
-bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
+bool PlayTrackerTelemetryCsv::PublishCsvArtifacts() {
   if (output_directory_fd_ < 0 || directory_lock_fd_ < 0 || ::flock(directory_lock_fd_, LOCK_EX) != 0) {
     return false;
   }
 
   std::vector<size_t> publication_order;
-  publication_order.reserve(3);
+  publication_order.reserve(4);
   // Publish tracking last because HM discovers a generation from tracking*.csv.
-  // Its appearance therefore means both camera inputs are already present.
-  const std::array<std::string, 3> filenames = {camera_filename_, camera_fast_filename_, tracking_filename_};
+  // Its appearance therefore means both camera inputs and detections are
+  // already present.
+  const std::array<std::string, 4> filenames = {
+      camera_filename_, camera_fast_filename_, detections_filename_, tracking_filename_};
   for (const std::string& filename : filenames) {
     const auto artifact =
         std::find_if(owned_artifacts_.begin(), owned_artifacts_.end(), [&filename](const OwnedArtifact& candidate) {
@@ -913,14 +932,15 @@ bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
     SyncDirectory("publication-rollback");
   };
 
-  // Persist both camera links before exposing tracking, which is HM's commit
-  // marker for a complete generation.
-  if (!link_artifact(publication_order[0]) || !link_artifact(publication_order[1]) || !SyncDirectory("cameras")) {
+  // Persist every companion input before exposing tracking, which is HM's
+  // commit marker for a complete generation.
+  if (!link_artifact(publication_order[0]) || !link_artifact(publication_order[1]) ||
+      !link_artifact(publication_order[2]) || !SyncDirectory("inputs")) {
     roll_back_publication();
     ::flock(directory_lock_fd_, LOCK_UN);
     return false;
   }
-  if (!link_artifact(publication_order[2])) {
+  if (!link_artifact(publication_order[3])) {
     roll_back_publication();
     ::flock(directory_lock_fd_, LOCK_UN);
     return false;
@@ -928,12 +948,12 @@ bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
   if (!SyncDirectory("tracking-commit")) {
     // Retract tracking first. If that removal becomes durable, the camera
     // links can then be removed independently without ever exposing tracking
-    // without both inputs. If the removal fsync also fails, retain both durable
-    // cameras: after a crash the uncertain tracking link is then either absent
-    // or still names a complete generation. HM additionally treats the durable
-    // pending manifest as authoritative and rejects either visible failure
-    // state.
-    const OwnedArtifact& tracking_artifact = owned_artifacts_[publication_order[2]];
+    // without its companion inputs. If the removal fsync also fails, retain
+    // the durable companions: after a crash the uncertain tracking link is
+    // then either absent or still names a complete generation. HM additionally
+    // treats the durable pending manifest as authoritative and rejects either
+    // visible failure state.
+    const OwnedArtifact& tracking_artifact = owned_artifacts_[publication_order[3]];
     if (unlink_owned_name(
             output_directory_fd_,
             tracking_artifact.published_filename,
@@ -941,17 +961,17 @@ bool PlayTrackerTelemetryCsv::PublishTrainingArtifacts() {
             tracking_artifact.inode)) {
       durability_events_for_testing_.push_back(absl::StrCat("unlink:", tracking_artifact.published_filename));
       if (SyncDirectory("tracking-rollback")) {
-        for (size_t position = 0; position < 2; ++position) {
-          const OwnedArtifact& camera_artifact = owned_artifacts_[publication_order[position]];
+        for (size_t position = 0; position < 3; ++position) {
+          const OwnedArtifact& companion_artifact = owned_artifacts_[publication_order[position]];
           if (unlink_owned_name(
                   output_directory_fd_,
-                  camera_artifact.published_filename,
-                  camera_artifact.device,
-                  camera_artifact.inode)) {
-            durability_events_for_testing_.push_back(absl::StrCat("unlink:", camera_artifact.published_filename));
+                  companion_artifact.published_filename,
+                  companion_artifact.device,
+                  companion_artifact.inode)) {
+            durability_events_for_testing_.push_back(absl::StrCat("unlink:", companion_artifact.published_filename));
           }
         }
-        SyncDirectory("cameras-rollback");
+        SyncDirectory("inputs-rollback");
       }
     }
     ::flock(directory_lock_fd_, LOCK_UN);
@@ -1117,6 +1137,8 @@ std::string PlayTrackerTelemetryCsv::BuildManifestContents() const {
            << config_event_discontinuity_gaps_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_samples\": " << dropped_samples_.load(std::memory_order_acquire) << ",\n"
            << "  \"dropped_config_events\": " << dropped_config_events_.load(std::memory_order_acquire) << ",\n"
+           << "  \"queue_full_waits\": " << queue_full_waits_.load(std::memory_order_acquire) << ",\n"
+           << "  \"lossless_queue\": true,\n"
            << "  \"samples_buffered\": " << samples_buffered_.load(std::memory_order_acquire) << ",\n"
            << "  \"training_samples_buffered\": " << training_samples_buffered_.load(std::memory_order_acquire) << ",\n"
            << "  \"samples_persisted\": " << samples_persisted_.load(std::memory_order_acquire) << ",\n"
@@ -1126,21 +1148,26 @@ std::string PlayTrackerTelemetryCsv::BuildManifestContents() const {
            << "  \"config_events_buffered\": " << config_events_buffered_.load(std::memory_order_acquire) << ",\n"
            << "  \"config_events_persisted\": " << config_events_persisted << ",\n"
            << "  \"config_events_lost\": " << config_events_attempted - config_events_persisted << ",\n"
-           << "  \"performance_contract\": \"metadata-only; no video-frame mapping or CPU pixel conversion\",\n"
+           << "  \"performance_contract\": \"metadata-only; no video-frame mapping or CPU pixel conversion; disk I/O "
+              "runs on a writer thread and a full queue blocks producers instead of dropping data\",\n"
            << "  \"hm_compatibility\": {\n"
            << "    \"tracking_csv\": {\"file\": " << json_string(tracking_filename_)
            << ", \"header\": false, \"columns\": "
               "[\"Frame\",\"ID\",\"BBox_X\",\"BBox_Y\",\"BBox_W\",\"BBox_H\",\"Scores\","
               "\"Labels\",\"Visibility\",\"JerseyInfo\",\"ActionLabel\",\"ActionScore\",\"ActionIndex\"]},\n"
+           << "    \"detections_csv\": {\"file\": " << json_string(detections_filename_)
+           << ", \"header\": false, \"columns\": "
+              "[\"Frame\",\"BBox_X1\",\"BBox_Y1\",\"BBox_X2\",\"BBox_Y2\",\"Scores\",\"Labels\"], "
+              "\"capture_point\": \"post-primary-inference/pre-rink-mask/pre-tracker\"},\n"
            << "    \"camera_csv\": {\"file\": " << json_string(camera_filename_)
            << ", \"header\": false, \"columns\": [\"Frame\",\"BBox_X\",\"BBox_Y\",\"BBox_W\",\"BBox_H\"], "
               "\"policy_role\": \"follower/program\"},\n"
            << "    \"camera_fast_csv\": {\"file\": " << json_string(camera_fast_filename_)
            << ", \"header\": false, \"columns\": [\"Frame\",\"BBox_X\",\"BBox_Y\",\"BBox_W\",\"BBox_H\"], "
               "\"policy_role\": \"fast\"},\n"
-           << "    \"frame_identity\": \"Frame is a monotonic attempted-sample ID shared by all three HM CSVs; "
-              "queue drops, seeks, live policy mutations, and missing schema rows leave gaps that split training "
-              "windows; native source/frame/PTS identity is in the frame-index sidecar\"\n"
+           << "    \"frame_identity\": \"Frame is a monotonic sample ID shared by all four HM CSVs; seeks, live "
+              "policy mutations, and missing schema rows leave gaps that split training windows; queue saturation "
+              "blocks instead of creating loss; native source/frame/PTS identity is in the frame-index sidecar\"\n"
            << "  },\n"
            << "  \"sidecars\": {\"frame_index\": " << json_string(frame_index_filename_)
            << ", \"config_events\": " << json_string(config_events_filename_) << "},\n"
@@ -1156,6 +1183,7 @@ std::string PlayTrackerTelemetryCsv::BuildManifestContents() const {
 
 void PlayTrackerTelemetryCsv::CloseOutputs() {
   tracking_.close();
+  detections_.close();
   camera_.close();
   camera_fast_.close();
   frame_index_.close();
@@ -1189,6 +1217,7 @@ void PlayTrackerTelemetryCsv::ResetOutputPaths() {
   suffix_.clear();
   manifest_path_.clear();
   tracking_filename_.clear();
+  detections_filename_.clear();
   camera_filename_.clear();
   camera_fast_filename_.clear();
   frame_index_filename_.clear();

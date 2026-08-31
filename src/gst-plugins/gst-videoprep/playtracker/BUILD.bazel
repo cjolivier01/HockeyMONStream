@@ -30,6 +30,7 @@ cc_library(
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "//src/libs/common:decoded_frame_sequence_meta",
+        "//src/libs/common:detection_snapshot_meta",
         "//src/libs/draw_display",
     ],
 )
@@ -70,6 +71,7 @@ cc_test(
         ":playtracker",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
+        "//src/libs/common:detection_snapshot_meta",
         "//toolchains/jetson:cuda_runtime",
         "@local_cuda//:nppc",
         "@local_cuda//:nppif",

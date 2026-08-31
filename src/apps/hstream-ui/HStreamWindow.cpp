@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
+#include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
@@ -5188,7 +5189,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   drivegpt_csv_toggle_->setObjectName("drivegptCsvCheck");
   drivegpt_csv_toggle_->setChecked(false);
   drivegpt_csv_toggle_->setToolTip(
-      "Save HM-compatible tracking.csv, camera.csv, and camera_fast.csv policy metadata for this Program run");
+      "Save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv metadata in working storage, "
+      "then copy the completed CSV set beside the finalized Program video");
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
@@ -5633,8 +5635,9 @@ void HStreamWindow::configureControlHelp() {
       "Show GPU video previews and local monitor audio. This can be toggled while running without stopping the processing pipeline.");
   help(
       "drivegptCsvCheck",
-      "For the next Program run, save HM-compatible tracking.csv, camera.csv, and camera_fast.csv in the game "
-      "directory, plus timestamp/config sidecars. Only tracker and policy metadata is copied; video pixels remain on the GPU.");
+      "For the next Program run, save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv "
+      "in HStream working storage, plus timestamp/config sidecars. After a completed archive is finalized, non-hidden "
+      "copies are placed in the game directory with the video's suffix. Only metadata is copied; video pixels remain on the GPU.");
   help(
       "startPipelineButton",
       "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run.");
@@ -7696,8 +7699,11 @@ QStringList HStreamWindow::pipelineArguments() const {
     args
         << QString("--options=rink.camera.zoom_in_aggressiveness=%1").arg(cameraControlValue("Zoom_In_Aggressiveness"));
     if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
+      const QString telemetry_work_directory =
+          QDir(archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory()))
+              .filePath(game_id);
       args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
-                  .arg(QDir::cleanPath(gameDirectory(game_id)));
+                  .arg(QDir::cleanPath(telemetry_work_directory));
     }
   }
   args << "--options=pipeline.hmaudio.enable=1";
@@ -7773,6 +7779,9 @@ void HStreamWindow::startPipeline() {
   }
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
+  active_run_telemetry_requested_ =
+      !active_run_is_calibration_ && drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked();
+  active_telemetry_manifest_path_.clear();
   // A checked override is known before launch. Automatic mode is updated from
   // the CLI's effective source-depth report before runtime controls are used.
   active_run_high_bit_depth_ = highBitDepthMode() == "1";
@@ -8381,6 +8390,15 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     startArchiveFinalization(
         archive_to_finalize, archive_game_id, active_archive_video_is_hevc_, archive_is_stitching_calibration);
   } else {
+    if (active_run_telemetry_requested_ && completed_successfully) {
+      appendLog(
+          active_telemetry_manifest_path_.isEmpty()
+              ? "DriveGPT CSV export was requested, but the pipeline did not report its working manifest"
+              : QString(
+                    "DriveGPT CSVs completed in working storage at %1; no finalized Program archive exists to "
+                    "provide a matching game-directory suffix")
+                    .arg(QFileInfo(active_telemetry_manifest_path_).absolutePath()));
+    }
     releaseArchiveFinalizerOwnership(true);
     finishArchiveJobLog(!retain_archive_log_guard_for_recovery);
   }
@@ -8565,6 +8583,7 @@ void HStreamWindow::readPipelineOutput() {
         if (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed)) {
           continue;
         }
+        handleTelemetryOutputStatus(trimmed);
         handleArchiveOutputStatus(trimmed);
         appendLog(trimmed);
         handleRuntimeControlResponse(trimmed);
@@ -9164,6 +9183,17 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
   }
   appendLog(QString("archive backend %1 output: %2")
                 .arg(path_changed ? "resolved" : "confirmed", active_archive_output_path_));
+}
+
+void HStreamWindow::handleTelemetryOutputStatus(const QString& line) {
+  static const QString prefix = QStringLiteral("HSTREAM_TELEMETRY manifest=");
+  if (!line.startsWith(prefix) || !active_run_telemetry_requested_)
+    return;
+  const QString manifest = QFileInfo(line.mid(prefix.size()).trimmed()).absoluteFilePath();
+  if (manifest.isEmpty())
+    return;
+  active_telemetry_manifest_path_ = manifest;
+  appendLog(QString("DriveGPT CSV working manifest: %1").arg(manifest));
 }
 
 void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, const QString& run_id) {
@@ -10696,6 +10726,36 @@ void HStreamWindow::completeArchiveFinalization() {
   }
   if (target_is_pinned)
     final_size = target_stat.st_size;
+#endif
+  if (active_run_telemetry_requested_) {
+    const QString csv_suffix =
+        hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
+    if (active_telemetry_manifest_path_.isEmpty()) {
+      appendLog(
+          "WARNING: DriveGPT CSV export was requested, but the completed pipeline did not report a telemetry manifest");
+    } else if (csv_suffix.isNull()) {
+      appendLog(QString(
+                    "WARNING: DriveGPT CSVs remain in working storage because the finalized video name does not "
+                    "have a usable generation suffix: %1")
+                    .arg(archive_finalize_target_path_));
+    } else {
+      const hm::ui_internal::TelemetryCsvPublicationResult telemetry = hm::ui_internal::publish_telemetry_csvs(
+          active_telemetry_manifest_path_, gameDirectory(archive_finalize_game_id_), csv_suffix);
+      if (telemetry.ok) {
+        appendLog(
+            QString("DriveGPT CSVs copied to the game directory with video suffix '%1': %2")
+                .arg(csv_suffix.isEmpty() ? QString("<none>") : csv_suffix, telemetry.published_paths.join(", ")));
+      } else {
+        appendLog(QString(
+                      "WARNING: completed DriveGPT CSVs remain available in working storage, but copying them "
+                      "beside the finalized video failed: %1")
+                      .arg(telemetry.error));
+      }
+    }
+    active_run_telemetry_requested_ = false;
+    active_telemetry_manifest_path_.clear();
+  }
+#ifdef Q_OS_UNIX
   struct stat source_stat{};
   if (archive_finalize_source_fd_ >= 0 && ::fstat(archive_finalize_source_fd_, &source_stat) == 0 &&
       S_ISREG(source_stat.st_mode) && static_cast<quint64>(source_stat.st_dev) == archive_finalize_source_device_ &&

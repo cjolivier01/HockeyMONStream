@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -21,16 +20,6 @@ namespace hm::playtracker {
 
 class PlayTrackerTelemetryCsvTestPeer {
  public:
-  static std::pair<bool, bool> EnqueueThenRecordWhileWriterExcluded(
-      PlayTrackerTelemetryCsv& exporter,
-      TelemetrySample sample,
-      TelemetryConfigEvent event) {
-    std::lock_guard<std::mutex> lock(exporter.mutex_);
-    const bool sample_accepted = exporter.TryEnqueueLocked(std::move(sample));
-    const bool event_accepted = exporter.TryRecordConfigEventLocked(std::move(event));
-    return {sample_accepted, event_accepted};
-  }
-
   static bool WaitUntilQueueEmpty(PlayTrackerTelemetryCsv& exporter) {
     for (size_t attempt = 0; attempt < 1'000'000; ++attempt) {
       {
@@ -143,6 +132,7 @@ hm::playtracker::TelemetrySample make_policy_sample(bool with_track, size_t extr
   hm::playtracker::TelemetrySample sample;
   sample.width = 3840;
   sample.height = 1080;
+  sample.detections.push_back({9.0f, 19.0f, 32.0f, 42.0f, 0.625f, 0});
   if (with_track) {
     sample.tracks.push_back({88, 10.5f, 20.25f, 30.0f, 40.0f, 0.875f, 0});
   }
@@ -187,7 +177,7 @@ int main() {
   }
   if (!expect(
           !fs::exists(directory / "tracking-10.csv") && !fs::exists(directory / "camera-10.csv") &&
-              !fs::exists(directory / "camera_fast-10.csv"),
+              !fs::exists(directory / "camera_fast-10.csv") && !fs::exists(directory / "detections-10.csv"),
           "an active run must not expose HM-discoverable training filenames")) {
     return 1;
   }
@@ -210,6 +200,7 @@ int main() {
   sample.seek_epoch = 3;
   sample.width = 3840;
   sample.height = 1080;
+  sample.detections.push_back({8.0f, 18.0f, 34.0f, 44.0f, 0.75f, 0});
   sample.tracks.push_back({88, 10.5f, 20.25f, 30.0f, 40.0f, 0.875f, 0});
   sample.policy_boxes.push_back({1.0f, 2.0f, 300.0f, 150.0f});
   sample.policy_boxes.push_back({3.0f, 4.0f, 500.0f, 250.0f});
@@ -235,6 +226,9 @@ int main() {
 
   const std::string tracking = read_file(directory / "tracking-10.csv");
   const std::vector<std::string> tracking_fields = split_csv_without_quotes(tracking.substr(0, tracking.find('\n')));
+  const std::string detections = read_file(directory / "detections-10.csv");
+  const std::vector<std::string> detection_fields =
+      split_csv_without_quotes(detections.substr(0, detections.find('\n')));
   const std::string camera = read_file(directory / "camera-10.csv");
   const std::string camera_fast = read_file(directory / "camera_fast-10.csv");
   const std::string frame_index = read_file(directory / "hstream_frame_index-10.csv");
@@ -245,7 +239,8 @@ int main() {
   const size_t pending_manifest_sync = event_position(durability_events, "fsync:manifest:pending");
   const size_t camera_link = event_position(durability_events, "link:camera-10.csv");
   const size_t fast_camera_link = event_position(durability_events, "link:camera_fast-10.csv");
-  const size_t camera_directory_sync = event_position(durability_events, "fsync:directory:cameras");
+  const size_t detections_link = event_position(durability_events, "link:detections-10.csv");
+  const size_t input_directory_sync = event_position(durability_events, "fsync:directory:inputs");
   const size_t tracking_link = event_position(durability_events, "link:tracking-10.csv");
   const size_t tracking_commit_sync = event_position(durability_events, "fsync:directory:tracking-commit");
   const size_t committed_manifest_sync = event_position(durability_events, "fsync:manifest:committed");
@@ -255,6 +250,11 @@ int main() {
           read_file(directory / "tracking.csv") == "preserve-existing-hm-data\n",
           "pre-existing HM tracking data must remain byte-for-byte intact") &&
       expect(tracking_fields.size() == 13, "tracking CSV must use HM's current 13-column headerless schema") &&
+      expect(
+          detection_fields.size() == 7 && detection_fields[0] == "1" && detection_fields[1] == "8" &&
+              detection_fields[2] == "18" && detection_fields[3] == "42" && detection_fields[4] == "62" &&
+              detection_fields[5] == "0.75" && detection_fields[6] == "0",
+          "detections CSV must use HM's current seven-column headerless TLBR schema") &&
       expect(
           tracking_fields[0] == "1" && tracking_fields[1] == "88" && tracking_fields[8] == "-1" &&
               tracking_fields[9] == "{}" && tracking_fields[10].empty() && tracking_fields[11] == "0" &&
@@ -269,8 +269,8 @@ int main() {
           csv_frame_ids(camera) == std::vector<uint64_t>({1, 4, 6}),
           "trackless samples should keep their camera action without collapsing the timeline") &&
       expect(
-          frame_index.find("1,7,991,2,1234,17490000000,42,3,3840,1080,1,1") != std::string::npos,
-          "frame sidecar should preserve source, native frame, timestamps, seek epoch, and dimensions") &&
+          frame_index.find("1,7,991,2,1234,17490000000,42,3,3840,1080,1,1,1") != std::string::npos,
+          "frame sidecar should preserve source, native frame, timestamps, dimensions, and detection/track counts") &&
       expect(
           config_events.find("runtime-tuning,max-speed-x,24,runtime-10-1.yaml") != std::string::npos &&
               read_file(directory / "runtime-10-1.yaml").find("max-speed-x: 24") != std::string::npos,
@@ -293,103 +293,84 @@ int main() {
               manifest.find("\"config_events_persisted\": 3") != std::string::npos &&
               manifest.find("\"config_events_lost\": 0") != std::string::npos &&
               manifest.find("\"dropped_samples\": 0") != std::string::npos &&
+              manifest.find("\"lossless_queue\": true") != std::string::npos &&
+              manifest.find("\"detections_csv\"") != std::string::npos &&
               manifest.find("metadata-only; no video-frame mapping") != std::string::npos,
           "final manifest should declare completeness, loss accounting, and the GPU-path contract") &&
       expect(
-          pending_manifest_sync < camera_link && camera_link < fast_camera_link &&
-              fast_camera_link < camera_directory_sync && camera_directory_sync < tracking_link &&
+          pending_manifest_sync < camera_link && camera_link < fast_camera_link && fast_camera_link < detections_link &&
+              detections_link < input_directory_sync && input_directory_sync < tracking_link &&
               tracking_link < tracking_commit_sync && tracking_commit_sync < committed_manifest_sync,
-          "durability order must commit pending manifest and both cameras before tracking, then the final manifest") &&
+          "durability order must commit pending manifest and companion inputs before tracking, then the final manifest") &&
       expect(
           read_file(directory / "play_tracker_source-10.yaml") == read_file(source_config) &&
               read_file(directory / "play_tracker_effective-10.yaml") == read_file(effective_config),
           "base and effective policy configuration must be copied for provenance");
 
-  hm::playtracker::PlayTrackerTelemetryCsv overflow_exporter;
-  const absl::Status overflow_start =
-      overflow_exporter.Start(directory.string(), source_config.string(), effective_config.string(), 1);
-  if (!expect(overflow_start.ok(), overflow_start.ToString()) ||
+  hm::playtracker::PlayTrackerTelemetryCsv saturated_exporter;
+  const absl::Status saturated_start =
+      saturated_exporter.Start(directory.string(), source_config.string(), effective_config.string(), 1);
+  if (!expect(saturated_start.ok(), saturated_start.ToString()) ||
       !expect(
-          overflow_exporter.TryEnqueue(make_policy_sample(true, 100'000)),
-          "large leading sample should start the bounded writer")) {
+          saturated_exporter.TryEnqueue(make_policy_sample(true, 100'000)),
+          "large leading sample should start the bounded writer") ||
+      !expect(saturated_exporter.TryEnqueue(make_policy_sample(true)), "second sample should be retained") ||
+      !expect(
+          saturated_exporter.TryEnqueue(make_policy_sample(true)), "saturated writer must retain the third sample")) {
     return 1;
   }
+  saturated_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kIntentionalStop);
+  saturated_exporter.Stop();
+  const std::vector<uint64_t> saturated_ids = csv_frame_ids(read_file(directory / "camera-11.csv"));
+  const std::string saturated_manifest = read_file(directory / "hstream_telemetry-11.json");
+  const bool saturation_valid = expect(
+                                    saturated_exporter.queue_full_waits() > 0,
+                                    "capacity-one writer should observe queue backpressure") &&
+      expect(saturated_exporter.dropped_samples() == 0, "queue saturation must never discard a frame sample") &&
+      expect(saturated_ids == std::vector<uint64_t>({1, 2, 3}), "queue saturation must preserve contiguous samples") &&
+      expect(csv_frame_ids(read_file(directory / "detections-11.csv")) == saturated_ids &&
+                 csv_frame_ids(read_file(directory / "tracking-11.csv")).front() == 1 &&
+                 csv_frame_ids(read_file(directory / "tracking-11.csv")).back() == 3,
+             "detections, tracking, and camera outputs must remain aligned through queue backpressure") &&
+      expect(saturated_manifest.find("\"queue_full_waits\": 0") == std::string::npos &&
+                 saturated_manifest.find("\"dropped_samples\": 0") != std::string::npos,
+             "manifest should report blocking backpressure without any sample loss");
 
-  bool saw_drop = false;
-  uint64_t first_dropped_id = 0;
-  uint64_t accepted_after_drop = 0;
-  for (size_t attempt = 0; attempt < 1'000'000 && accepted_after_drop == 0; ++attempt) {
-    const bool accepted = overflow_exporter.TryEnqueue(make_policy_sample(true));
-    const uint64_t frame_id = overflow_exporter.frame_id_high_watermark();
-    if (!accepted && !saw_drop) {
-      saw_drop = true;
-      first_dropped_id = frame_id;
-    } else if (accepted && saw_drop) {
-      accepted_after_drop = frame_id;
-    }
-    if (saw_drop && accepted_after_drop == 0) {
-      std::this_thread::yield();
-    }
-  }
-  overflow_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kIntentionalStop);
-  overflow_exporter.Stop();
-  const uint64_t overflow_dropped = overflow_exporter.dropped_samples();
-  const std::vector<uint64_t> overflow_camera_ids = csv_frame_ids(read_file(directory / "camera-11.csv"));
-  const std::set<uint64_t> overflow_camera_id_set(overflow_camera_ids.begin(), overflow_camera_ids.end());
-  const std::string overflow_manifest = read_file(directory / "hstream_telemetry-11.json");
-  const bool overflow_valid = expect(saw_drop, "bounded writer regression must force at least one complete drop") &&
-      expect(overflow_dropped > 0, "overflow counter should retain the number of missing attempted samples") &&
-      expect(accepted_after_drop > first_dropped_id, "writer should recover and accept a later sample") &&
-      expect(overflow_camera_id_set.count(first_dropped_id) == 0 &&
-                 overflow_camera_id_set.count(accepted_after_drop) == 1,
-             "a dropped attempt must leave a numeric gap before the later accepted sample") &&
-      expect(overflow_manifest.find("\"dropped_samples\": " + std::to_string(overflow_dropped)) != std::string::npos,
-             "overflow manifest should report dropped samples");
-
-  hm::playtracker::PlayTrackerTelemetryCsv config_drop_exporter;
-  const absl::Status config_drop_start =
-      config_drop_exporter.Start(directory.string(), source_config.string(), effective_config.string(), 1);
-  if (!expect(config_drop_start.ok(), config_drop_start.ToString())) {
+  hm::playtracker::PlayTrackerTelemetryCsv config_block_exporter;
+  const absl::Status config_block_start =
+      config_block_exporter.Start(directory.string(), source_config.string(), effective_config.string(), 1);
+  if (!expect(config_block_start.ok(), config_block_start.ToString()) ||
+      !expect(
+          config_block_exporter.TryEnqueue(make_policy_sample(true, 100'000)), "leading sample should be retained") ||
+      !expect(config_block_exporter.TryEnqueue(make_policy_sample(true)), "queued sample should be retained") ||
+      !expect(
+          config_block_exporter.TryRecordConfigEvent({"property", "fixed-edge-rotation-angle", "33", {}, {}}),
+          "saturated queue must retain the applied config event") ||
+      !expect(config_block_exporter.TryEnqueue(make_policy_sample(true)), "post-change sample should be retained") ||
+      !expect(
+          config_block_exporter.frame_id_high_watermark() == 4,
+          "preserved config event must reserve only its intentional policy-boundary gap")) {
     return 1;
   }
-  const auto [saturated_sample_accepted, config_event_accepted] =
-      hm::playtracker::PlayTrackerTelemetryCsvTestPeer::EnqueueThenRecordWhileWriterExcluded(
-          config_drop_exporter, make_policy_sample(true), {"property", "fixed-edge-rotation-angle", "33", {}, {}});
-  if (!expect(saturated_sample_accepted, "capacity-one queue should accept the pre-change sample") ||
-      !expect(!config_event_accepted, "saturated queue should reject the applied config event") ||
-      !expect(
-          hm::playtracker::PlayTrackerTelemetryCsvTestPeer::WaitUntilQueueEmpty(config_drop_exporter),
-          "writer should drain the deliberately saturated queue") ||
-      !expect(config_drop_exporter.TryEnqueue(make_policy_sample(true)), "post-change sample should be accepted") ||
-      !expect(
-          config_drop_exporter.frame_id_high_watermark() == 3,
-          "dropped config event must reserve frame ID 2 between pre/post-change samples")) {
-    return 1;
-  }
-  config_drop_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kIntentionalStop);
-  config_drop_exporter.Stop();
-  const std::vector<uint64_t> config_drop_tracking_ids = csv_frame_ids(read_file(directory / "tracking-12.csv"));
-  const std::vector<uint64_t> config_drop_camera_ids = csv_frame_ids(read_file(directory / "camera-12.csv"));
-  const std::string config_drop_events = read_file(directory / "hstream_config_events-12.csv");
-  const std::string config_drop_manifest = read_file(directory / "hstream_telemetry-12.json");
-  const bool config_drop_valid =
+  config_block_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kIntentionalStop);
+  config_block_exporter.Stop();
+  const std::vector<uint64_t> config_block_ids = csv_frame_ids(read_file(directory / "camera-12.csv"));
+  const std::string config_block_events = read_file(directory / "hstream_config_events-12.csv");
+  const std::string config_block_manifest = read_file(directory / "hstream_telemetry-12.json");
+  const bool config_block_valid =
       expect(
-          config_drop_tracking_ids == std::vector<uint64_t>({1, 3}) &&
-              config_drop_camera_ids == std::vector<uint64_t>({1, 3}),
-          "HM training rows must contain a numeric gap across the unrecorded policy change") &&
+          config_block_ids == std::vector<uint64_t>({1, 2, 4}) &&
+              csv_frame_ids(read_file(directory / "detections-12.csv")) == config_block_ids,
+          "only the documented policy boundary may create a gap while the queue is saturated") &&
       expect(
-          config_drop_events.find("fixed-edge-rotation-angle") == std::string::npos,
-          "the saturated queue must not claim it preserved the dropped config event") &&
+          config_block_events.find(",4,property,fixed-edge-rotation-angle,33,") != std::string::npos,
+          "the saturated queue must preserve the policy event before the next sample") &&
       expect(
-          config_drop_manifest.find("\"frame_id_high_watermark\": 3") != std::string::npos &&
-              config_drop_manifest.find("\"samples_attempted\": 2") != std::string::npos &&
-              config_drop_manifest.find("\"discontinuity_gaps\": 1") != std::string::npos &&
-              config_drop_manifest.find("\"config_event_discontinuity_gaps\": 1") != std::string::npos &&
-              config_drop_manifest.find("\"dropped_config_events\": 1") != std::string::npos &&
-              config_drop_manifest.find("\"config_events_attempted\": 1") != std::string::npos &&
-              config_drop_manifest.find("\"config_events_persisted\": 0") != std::string::npos &&
-              config_drop_manifest.find("\"config_events_lost\": 1") != std::string::npos,
-          "manifest must account for the dropped config event and its protective discontinuity");
+          config_block_manifest.find("\"dropped_config_events\": 0") != std::string::npos &&
+              config_block_manifest.find("\"config_events_attempted\": 1") != std::string::npos &&
+              config_block_manifest.find("\"config_events_persisted\": 1") != std::string::npos &&
+              config_block_manifest.find("\"config_events_lost\": 0") != std::string::npos,
+          "manifest must report lossless config-event persistence under backpressure");
 
   hm::playtracker::PlayTrackerTelemetryCsv event_io_failure_exporter;
   const absl::Status event_io_failure_start =
@@ -461,7 +442,9 @@ int main() {
                                      aborted_manifest.find("\"eligible_for_training\": false") != std::string::npos,
                                  "draining after a post-start failure must not claim a successful run") &&
       expect(!fs::exists(directory / "tracking-14.csv") && !fs::exists(directory / "camera-14.csv") &&
-                 !fs::exists(directory / "camera_fast-14.csv") && !fs::exists(directory / ".tracking-14.csv.partial") &&
+                 !fs::exists(directory / "camera_fast-14.csv") && !fs::exists(directory / "detections-14.csv") &&
+                 !fs::exists(directory / ".tracking-14.csv.partial") &&
+                 !fs::exists(directory / ".detections-14.csv.partial") &&
                  !fs::exists(directory / ".camera-14.csv.partial") &&
                  !fs::exists(directory / ".camera_fast-14.csv.partial"),
              "failed partial generation must not become HM's latest eligible training input") &&
@@ -479,14 +462,21 @@ int main() {
   const std::string empty_manifest = read_file(directory / "hstream_telemetry-15.json");
   const bool empty_valid = expect(
                                empty_manifest.find("\"run_outcome\": \"intentional-stop\"") != std::string::npos &&
-                                   empty_manifest.find("\"completed\": false") != std::string::npos &&
+                                   empty_manifest.find("\"completed\": true") != std::string::npos &&
+                                   empty_manifest.find("\"publication_state\": \"committed\"") != std::string::npos &&
                                    empty_manifest.find("\"eligible_for_training\": false") != std::string::npos,
-                               "an intentional but empty run must remain ineligible") &&
-      expect(!fs::exists(directory / "tracking-15.csv") && !fs::exists(directory / "camera-15.csv") &&
-                 !fs::exists(directory / "camera_fast-15.csv") && !fs::exists(directory / ".tracking-15.csv.partial") &&
+                               "an intentional but empty run must be complete but remain ineligible") &&
+      expect(fs::is_regular_file(directory / "tracking-15.csv") && fs::is_regular_file(directory / "camera-15.csv") &&
+                 fs::is_regular_file(directory / "camera_fast-15.csv") &&
+                 fs::is_regular_file(directory / "detections-15.csv") &&
+                 fs::file_size(directory / "tracking-15.csv") == 0 && fs::file_size(directory / "camera-15.csv") == 0 &&
+                 fs::file_size(directory / "camera_fast-15.csv") == 0 &&
+                 fs::file_size(directory / "detections-15.csv") == 0 &&
+                 !fs::exists(directory / ".tracking-15.csv.partial") &&
+                 !fs::exists(directory / ".detections-15.csv.partial") &&
                  !fs::exists(directory / ".camera-15.csv.partial") &&
                  !fs::exists(directory / ".camera_fast-15.csv.partial"),
-             "empty generation must not shadow the latest usable HM training files");
+             "every successful generation must expose all four non-hidden HM CSVs");
 
   hm::playtracker::PlayTrackerTelemetryCsv publication_conflict_exporter;
   const absl::Status publication_conflict_start =
@@ -510,10 +500,13 @@ int main() {
               read_file(publication_conflict_victim) == "preserve-publication-race\n",
           "no-replace publication must not follow or truncate a concurrently created symlink") &&
       expect(
-          !fs::exists(directory / "camera-16.csv") && !fs::exists(directory / "camera_fast-16.csv"),
+          !fs::exists(directory / "camera-16.csv") && !fs::exists(directory / "camera_fast-16.csv") &&
+              !fs::exists(directory / "detections-16.csv"),
           "a publication conflict must roll back the partially linked camera inputs") &&
       expect(
-          !fs::exists(directory / ".tracking-16.csv.partial") && !fs::exists(directory / ".camera-16.csv.partial") &&
+          !fs::exists(directory / ".tracking-16.csv.partial") &&
+              !fs::exists(directory / ".detections-16.csv.partial") &&
+              !fs::exists(directory / ".camera-16.csv.partial") &&
               !fs::exists(directory / ".camera_fast-16.csv.partial"),
           "a publication conflict must remove the owned hidden staging inputs") &&
       expect(
@@ -541,7 +534,7 @@ int main() {
           "a fatal pipeline result must downgrade an earlier element-local EOS") &&
       expect(
           !fs::exists(directory / "tracking-17.csv") && !fs::exists(directory / "camera-17.csv") &&
-              !fs::exists(directory / "camera_fast-17.csv"),
+              !fs::exists(directory / "camera_fast-17.csv") && !fs::exists(directory / "detections-17.csv"),
           "a failed pipeline outcome must not publish HM training inputs");
 
   hm::playtracker::PlayTrackerTelemetryCsv final_sync_failure_exporter;
@@ -568,7 +561,7 @@ int main() {
           "ENOSPC during final durability sync must not claim buffered rows were persisted") &&
       expect(
           !fs::exists(directory / "tracking-18.csv") && !fs::exists(directory / "camera-18.csv") &&
-              !fs::exists(directory / "camera_fast-18.csv"),
+              !fs::exists(directory / "camera_fast-18.csv") && !fs::exists(directory / "detections-18.csv"),
           "a failed final durability sync must not publish training inputs");
 
   hm::playtracker::PlayTrackerTelemetryCsv camera_commit_failure_exporter;
@@ -581,7 +574,7 @@ int main() {
     return 1;
   }
   camera_commit_failure_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kIntentionalStop);
-  hm::playtracker::PlayTrackerTelemetryCsvTestPeer::FailSync(camera_commit_failure_exporter, "fsync:directory:cameras");
+  hm::playtracker::PlayTrackerTelemetryCsvTestPeer::FailSync(camera_commit_failure_exporter, "fsync:directory:inputs");
   camera_commit_failure_exporter.Stop();
   const std::string camera_commit_failure_manifest = read_file(directory / "hstream_telemetry-19.json");
   const std::vector<std::string> camera_failure_events =
@@ -594,7 +587,7 @@ int main() {
           "camera-link durability failure must retain a pending ineligible manifest") &&
       expect(
           !fs::exists(directory / "tracking-19.csv") && !fs::exists(directory / "camera-19.csv") &&
-              !fs::exists(directory / "camera_fast-19.csv") &&
+              !fs::exists(directory / "camera_fast-19.csv") && !fs::exists(directory / "detections-19.csv") &&
               event_position(camera_failure_events, "link:tracking-19.csv") == camera_failure_events.size(),
           "tracking must not be linked when the camera directory commit fails");
 
@@ -627,14 +620,16 @@ int main() {
       expect(
           !fs::exists(directory / "tracking-20.csv") && fs::is_regular_file(directory / "camera-20.csv") &&
               fs::is_regular_file(directory / "camera_fast-20.csv") &&
+              fs::is_regular_file(directory / "detections-20.csv") &&
               fs::is_regular_file(directory / "tracking-10.csv") && fs::is_regular_file(directory / "camera-10.csv"),
           "tracking must be retracted before camera cleanup, leaving the prior committed generation discoverable") &&
       expect(
           tracking_failure_link < tracking_failure_commit && tracking_failure_commit < tracking_failure_unlink &&
               tracking_failure_unlink < tracking_failure_rollback &&
               event_position(tracking_failure_events, "unlink:camera-20.csv") == tracking_failure_events.size() &&
-              event_position(tracking_failure_events, "unlink:camera_fast-20.csv") == tracking_failure_events.size(),
-          "failed tracking rollback fsync must retain both durable cameras for crash-safe all-or-none recovery");
+              event_position(tracking_failure_events, "unlink:camera_fast-20.csv") == tracking_failure_events.size() &&
+              event_position(tracking_failure_events, "unlink:detections-20.csv") == tracking_failure_events.size(),
+          "failed tracking rollback fsync must retain durable companion inputs for crash-safe recovery");
 
   const fs::path atomic_manifest_directory = directory / "atomic-manifest";
   hm::playtracker::PlayTrackerTelemetryCsv atomic_manifest_exporter;
@@ -734,7 +729,9 @@ int main() {
       expect(concurrent_first.output_manifest() != concurrent_second.output_manifest(),
              "directory transaction must assign concurrent exporters different generations") &&
       expect(fs::is_regular_file(atomic_directory / "tracking-1.csv") &&
-                 fs::is_regular_file(atomic_directory / "tracking-2.csv"),
+                 fs::is_regular_file(atomic_directory / "tracking-2.csv") &&
+                 fs::is_regular_file(atomic_directory / "detections-1.csv") &&
+                 fs::is_regular_file(atomic_directory / "detections-2.csv"),
              "both concurrent generations should publish their exclusively reserved HM files") &&
       expect(fs::is_symlink(atomic_directory / "tracking.csv") &&
                  read_file(symlink_victim) == "preserve-concurrent-data\n",
@@ -753,7 +750,7 @@ int main() {
       expect(failed_directory_empty, "failed startup must not leave empty generation artifacts");
 
   fs::remove_all(directory, error);
-  return valid && overflow_valid && config_drop_valid && event_io_failure_valid && aborted_valid && empty_valid &&
+  return valid && saturation_valid && config_block_valid && event_io_failure_valid && aborted_valid && empty_valid &&
           publication_conflict_valid && failed_outcome_valid && final_sync_failure_valid &&
           camera_commit_failure_valid && tracking_commit_failure_valid && atomic_manifest_valid &&
           descriptor_bound_valid && atomic_reservation_valid && startup_cleanup_valid

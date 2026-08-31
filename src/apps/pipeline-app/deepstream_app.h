@@ -91,6 +91,7 @@ typedef struct {
 
 struct NvDsPipeline {
   gulong primary_bbox_buffer_probe_id;
+  gulong detection_snapshot_buffer_probe_id;
   guint bus_id;
   GstElement* pipeline;
   NvDsSrcParentBin multi_src_bin;
@@ -185,6 +186,7 @@ struct _AppCtx {
   gboolean show_bbox_text{false};
   gboolean seeking{false};
   gboolean quit{false};
+  gboolean capture_playtracker_detections{false};
   gint person_class_id{0};
   gint car_class_id{0};
   gint return_value{0};

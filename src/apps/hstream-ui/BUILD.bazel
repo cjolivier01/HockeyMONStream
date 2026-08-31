@@ -26,6 +26,8 @@ filegroup(
         "PipelineInspectorWidget.h",
         "ScoreboardSelectionDialog.cpp",
         "ScoreboardSelectionDialog.h",
+        "TelemetryCsvPublisher.cpp",
+        "TelemetryCsvPublisher.h",
         "hstream-ui.desktop",
         "hstream-ui.svg",
         "main.cpp",
@@ -58,6 +60,16 @@ cc_library(
 )
 
 cc_library(
+    name = "telemetry_csv_publisher",
+    srcs = ["TelemetryCsvPublisher.cpp"],
+    hdrs = ["TelemetryCsvPublisher.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = ["@qt//:qt_core"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp"],
     hdrs = ["HStreamWindow.h"],
@@ -68,6 +80,7 @@ cc_library(
     deps = [
         ":pipeline_inspector_widget",
         ":scoreboard_selection_dialog",
+        ":telemetry_csv_publisher",
         "//src/libs/common:baseline_config",
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:user_config",
@@ -79,6 +92,17 @@ cc_library(
         "//src/libs/stitching:stitching_algorithms",
         "@qt//:qt_widgets",
         "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "telemetry_csv_publisher_test",
+    srcs = ["TelemetryCsvPublisherTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":telemetry_csv_publisher",
+        "@qt//:qt_core",
     ],
 )
 

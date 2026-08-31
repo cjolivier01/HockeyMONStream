@@ -210,6 +210,7 @@ class HStreamWindow : public QMainWindow {
   void beginPlaybackProgressReset();
   void sendPlaybackProgressReset(quint64 generation);
   int playbackProgressResetTimeoutMs() const;
+  void handleTelemetryOutputStatus(const QString& line);
   void handleArchiveOutputStatus(const QString& line);
   void updateArchiveOutputPathLabel();
   void beginArchiveJobLog(const QString& configured_output_path, const QString& run_id);
@@ -525,6 +526,8 @@ class HStreamWindow : public QMainWindow {
   bool preview_overlay_reconciliation_fallback_rink_{false};
   int preview_overlay_reconciliation_attempts_{0};
   QCheckBox* drivegpt_csv_toggle_{nullptr};
+  bool active_run_telemetry_requested_{false};
+  QString active_telemetry_manifest_path_;
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
