@@ -7878,6 +7878,7 @@ void HStreamWindow::startPipeline() {
   active_stitched_archive_initial_mtime_ms_ = -1;
   active_stitched_archive_video_is_hevc_ = false;
   pending_archive_finalizations_.clear();
+  archive_finalize_failure_summaries_.clear();
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
       archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
@@ -10999,11 +11000,30 @@ void HStreamWindow::completeArchiveFinalization() {
                          ? QString("; replaced source pathname left untouched at %1").arg(archive_finalize_source_path_)
                          : QString("; source retained at %1").arg(archive_finalize_source_path_))));
   const bool more_archives = !pending_archive_finalizations_.empty();
+  const bool batch_has_failures = !archive_finalize_failure_summaries_.isEmpty();
   if (!more_archives)
     finishArchiveJobLog();
   startNextArchiveFinalization();
-  if (!more_archives)
+  if (!more_archives && batch_has_failures) {
+    archive_finalize_progress_->setFormat("COMPLETED WITH ERRORS");
+    archive_finalize_headline_->setText("Video finalization completed with errors");
+    archive_finalize_detail_->setText(
+        QString("Completed archive:\n%1\n\n%2")
+            .arg(archive_finalize_target_path_, archive_finalize_failure_summaries_.join("\n\n")));
+    archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxWarning).pixmap(32, 32));
+    for (QWidget* widget :
+         {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
+      widget->setProperty("finalizationState", "failed");
+      widget->style()->unpolish(widget);
+      widget->style()->polish(widget);
+    }
+    archive_finalize_ok_button_->show();
+    static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
+    archive_finalize_dialog_->show();
+    archive_finalize_dialog_->raise();
+  } else if (!more_archives) {
     QTimer::singleShot(500, archive_finalize_dialog_, &QDialog::accept);
+  }
   updateRunControls();
   maybeStartDeferredRestart();
 }
@@ -11016,8 +11036,16 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   archive_finalize_progress_->setValue(1000);
   archive_finalize_progress_->setFormat("ERROR");
   archive_finalize_headline_->setText("Video finalization failed");
-  archive_finalize_detail_->setText(QString("%1\n\nThe completed archive was retained for recovery at:\n%2")
-                                        .arg(failure_detail, archive_finalize_source_path_));
+  const QString route_name = archive_finalize_is_stitched_ ? "Stitched" : "Program";
+  const QString failure_summary =
+      QString("%1 archive finalization failed: %2\nRecovery archive: %3")
+          .arg(route_name, failure_detail, archive_finalize_source_path_);
+  archive_finalize_failure_summaries_.append(failure_summary);
+  archive_finalize_detail_->setText(archive_finalize_failure_summaries_.join("\n\n"));
+  QLabel* recovery_path_label = archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
+                                                                                   : archive_output_path_label_;
+  if (recovery_path_label)
+    recovery_path_label->setText(QString("Recovery archive: %1").arg(archive_finalize_source_path_));
   archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
   for (QWidget* widget :
        {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {

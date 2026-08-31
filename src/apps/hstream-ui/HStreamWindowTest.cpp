@@ -7051,6 +7051,10 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
             .dir()
             .filePath(QFileInfo(failed_source).completeBaseName() + "-finalization-failed.mkv");
     const QString failed_log = failed_recovery + ".log";
+    QLabel* failed_path_label = fail_program ? archive_path : stitched_archive_path;
+    auto* finalize_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+    auto* ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+    auto* finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
     QFile run_log(failed_log);
     const bool run_log_opened = run_log.open(QIODevice::ReadOnly | QIODevice::Text);
     const QString run_log_text = run_log_opened ? QString::fromUtf8(run_log.readAll()) : QString();
@@ -7058,6 +7062,9 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
         window->outputStateText(failed_output) == "ERROR" && window->outputStateText(saved_output) == "SAVED" &&
             QFileInfo::exists(failed_recovery) && !QFileInfo::exists(failed_source) &&
             !QFileInfo::exists(saved_source) && run_log_opened &&
+            failed_path_label->text() == QString("Recovery archive: %1").arg(failed_recovery) &&
+            finalize_dialog && finalize_dialog->isVisible() && ok_button && ok_button->isVisible() &&
+            finalize_detail && finalize_detail->text().contains(failed_recovery) &&
             run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_program_source)) &&
             run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_stitched_source)) &&
             run_log_text.contains("archive finalization failed") &&
@@ -7072,7 +7079,6 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     QFile::remove(failed_log + ".hstream-pin");
     QFile::remove(failed_recovery);
     QFile::remove(failed_log);
-    auto* ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
     if (ok_button && ok_button->isVisible())
       activate(ok_button);
     return route_result;
@@ -7109,11 +7115,20 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
       both_failed_program_log_opened ? QString::fromUtf8(both_failed_program_log.readAll()) : QString();
   const QString both_failed_stitched_log_text =
       both_failed_stitched_log_opened ? QString::fromUtf8(both_failed_stitched_log.readAll()) : QString();
+  auto* both_failed_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* both_failed_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  auto* both_failed_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
   const bool both_failures_safe = expect(
       window->outputStateText("archive-file") == "ERROR" &&
           window->outputStateText("archive-stitched") == "ERROR" &&
           QFileInfo::exists(both_failed_program_recovery) && QFileInfo::exists(both_failed_stitched_recovery) &&
           both_failed_program_log_opened && both_failed_stitched_log_opened &&
+          archive_path->text() == QString("Recovery archive: %1").arg(both_failed_program_recovery) &&
+          stitched_archive_path->text() == QString("Recovery archive: %1").arg(both_failed_stitched_recovery) &&
+          both_failed_dialog && both_failed_dialog->isVisible() && both_failed_ok_button &&
+          both_failed_ok_button->isVisible() && both_failed_detail &&
+          both_failed_detail->text().contains(both_failed_program_recovery) &&
+          both_failed_detail->text().contains(both_failed_stitched_recovery) &&
           both_failed_program_log_text.contains(
               QString("finalizing archive without re-encoding: %1").arg(both_failed_program_source)) &&
           both_failed_program_log_text.contains(
@@ -7131,7 +7146,6 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     QFile::remove(recovery);
     QFile::remove(recovery + ".log");
   }
-  auto* both_failed_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
   if (both_failed_ok_button && both_failed_ok_button->isVisible())
     activate(both_failed_ok_button);
 
