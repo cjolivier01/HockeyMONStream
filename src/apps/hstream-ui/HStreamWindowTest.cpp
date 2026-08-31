@@ -124,6 +124,10 @@ struct HStreamWindowTestAccess {
     return window->pipelineArguments();
   }
 
+  static void refreshRunControls(HStreamWindow* window) {
+    window->updateRunControls();
+  }
+
   static void finishArchiveJobLogAfterFinalizationFailure(
       HStreamWindow* window,
       const QString& configured_output_path,
@@ -1199,7 +1203,8 @@ bool write_fake_ffmpeg(const QString& path) {
   file.write("target = args[-1]\n");
   file.write("print('out_time=00:05:00.000000', flush=True)\n");
   file.write("print('progress=continue', flush=True)\n");
-  file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_FAIL') == '1':\n");
+  file.write("fail_route = os.environ.get('HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE', '')\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_FFMPEG_FAIL') == '1' or (fail_route and fail_route in target):\n");
   file.write("    if os.environ.get('HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY') == '1':\n");
   file.write("        os.chmod(os.path.dirname(os.environ['HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH']), 0o500)\n");
   file.write("    print('intentional remux failure', file=sys.stderr, flush=True)\n");
@@ -6967,6 +6972,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QByteArray original_output_root = qgetenv("HM_OUTPUT_WORK_DIR");
   const QString program_source = QDir(output_root.path()).filePath("dual-program.mkv");
   const QString stitched_source = QDir(output_root.path()).filePath("dual-stitched.mkv");
+  const QString combined_job_log = program_source + ".log";
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", program_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", stitched_source.toLocal8Bit());
@@ -6987,8 +6993,11 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QString stitched_completed = stitched_archive_path->text().section("Completed archive: ", 1).trimmed();
   QFile program_file(program_completed);
   QFile stitched_file(stitched_completed);
+  QFile combined_log_file(combined_job_log);
   const bool program_opened = program_file.open(QIODevice::ReadOnly);
   const bool stitched_opened = stitched_file.open(QIODevice::ReadOnly);
+  const bool combined_log_opened = combined_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
+  const QString combined_log_text = combined_log_opened ? QString::fromUtf8(combined_log_file.readAll()) : QString();
   const QString program_finalize_log = QString("finalizing archive without re-encoding: %1").arg(program_source);
   const QString stitched_finalize_log = QString("finalizing archive without re-encoding: %1").arg(stitched_source);
   const int program_finalize_index = window->logText().lastIndexOf(program_finalize_log);
@@ -7000,8 +7009,12 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
           QFileInfo(program_completed).completeBaseName().contains("-tracking_output-with-audio") &&
           QFileInfo(stitched_completed).completeBaseName().contains("-stitched_output-with-audio") &&
           !QFileInfo::exists(program_source) && !QFileInfo::exists(stitched_source) && program_finalize_index >= 0 &&
-          stitched_finalize_index > program_finalize_index,
-      "A successful Program run with both archives must finalize both work files sequentially with distinct names");
+          stitched_finalize_index > program_finalize_index && combined_log_opened &&
+          combined_log_text.contains(program_finalize_log) && combined_log_text.contains(stitched_finalize_log) &&
+          combined_log_text.contains(QString("completed archive published: %1").arg(program_completed)) &&
+          combined_log_text.contains(QString("completed archive published: %1").arg(stitched_completed)),
+      "A successful Program run with both archives must finalize both work files sequentially with distinct names "
+      "and retain one complete run log");
 
   auto* finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
@@ -7010,8 +7023,129 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   }
   program_file.close();
   stitched_file.close();
+  combined_log_file.close();
   QFile::remove(program_completed);
   QFile::remove(stitched_completed);
+  QFile::remove(combined_job_log);
+
+  const auto run_route_failure = [&](const QString& label, const QByteArray& fail_route, bool fail_program) {
+    const QString failed_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
+    const QString failed_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
+    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_program_source.toLocal8Bit());
+    qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", failed_stitched_source.toLocal8Bit());
+    qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE", fail_route);
+    activate(start);
+    const QString failed_output = fail_program ? QString("archive-file") : QString("archive-stitched");
+    const QString saved_output = fail_program ? QString("archive-stitched") : QString("archive-file");
+    for (int i = 0; i < 600 &&
+         (window->outputStateText(failed_output) != "ERROR" || window->outputStateText(saved_output) != "SAVED");
+         ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE");
+    const QString failed_source = fail_program ? failed_program_source : failed_stitched_source;
+    const QString saved_source = fail_program ? failed_stitched_source : failed_program_source;
+    const QString failed_recovery =
+        QFileInfo(failed_source)
+            .dir()
+            .filePath(QFileInfo(failed_source).completeBaseName() + "-finalization-failed.mkv");
+    const QString failed_log = failed_recovery + ".log";
+    QFile run_log(failed_log);
+    const bool run_log_opened = run_log.open(QIODevice::ReadOnly | QIODevice::Text);
+    const QString run_log_text = run_log_opened ? QString::fromUtf8(run_log.readAll()) : QString();
+    const bool route_result = expect(
+        window->outputStateText(failed_output) == "ERROR" && window->outputStateText(saved_output) == "SAVED" &&
+            QFileInfo::exists(failed_recovery) && !QFileInfo::exists(failed_source) &&
+            !QFileInfo::exists(saved_source) && run_log_opened &&
+            run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_program_source)) &&
+            run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_stitched_source)) &&
+            run_log_text.contains("archive finalization failed") &&
+            run_log_text.contains("completed archive published"),
+        QString(
+            "A %1-route failure must retain its recovery pair while the other archive still finalizes and the "
+            "combined log records both outcomes")
+            .arg(fail_program ? "first" : "second")
+            .toStdString());
+    run_log.close();
+    QFile::remove(failed_recovery + ".hstream-pin");
+    QFile::remove(failed_log + ".hstream-pin");
+    QFile::remove(failed_recovery);
+    QFile::remove(failed_log);
+    auto* ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+    if (ok_button && ok_button->isVisible())
+      activate(ok_button);
+    return route_result;
+  };
+
+  const bool first_failure_safe = run_route_failure("dual-first-failure", "tracking_output", true);
+  const bool second_failure_safe = run_route_failure("dual-second-failure", "stitched_output", false);
+
+  const QString blocked_directory = QDir(output_root.path()).filePath("dual-blocked");
+  const QString blocked_program_source = QDir(blocked_directory).filePath("program.mkv");
+  const QString blocked_program_manual = QDir(blocked_directory).filePath("program-manually-retained.mkv");
+  const QString resumed_stitched_source = QDir(output_root.path()).filePath("dual-blocked-stitched.mkv");
+  QDir().mkpath(blocked_directory);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", blocked_program_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", resumed_stitched_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE", "tracking_output");
+  qputenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY", "1");
+  activate(start);
+  for (int i = 0; i < 600 && window->outputStateText("archive-file") != "ERROR"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const QString blocked_owner_lock = blocked_program_source + ".hstream-owner-lock";
+  bool blocked_owner_lock_held = false;
+#ifdef Q_OS_UNIX
+  const int blocked_lock_probe =
+      ::open(QFile::encodeName(blocked_owner_lock).constData(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+  if (blocked_lock_probe >= 0) {
+    blocked_owner_lock_held =
+        ::flock(blocked_lock_probe, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
+    ::close(blocked_lock_probe);
+  }
+#endif
+  const QString stitched_finalize_after_block =
+      QString("finalizing archive without re-encoding: %1").arg(resumed_stitched_source);
+  const bool queue_stayed_blocked = window->outputStateText("archive-file") == "ERROR" &&
+      window->outputStateText("archive-stitched") == "FINALIZING" && QFileInfo::exists(blocked_program_source) &&
+      !window->logText().contains(stitched_finalize_after_block) && blocked_owner_lock_held;
+  QFile::setPermissions(blocked_directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  const bool blocked_source_moved = QFile::rename(blocked_program_source, blocked_program_manual);
+  qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE");
+  qunsetenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY");
+  HStreamWindowTestAccess::refreshRunControls(window);
+  for (int i = 0; i < 600 && window->outputStateText("archive-stitched") != "SAVED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const QString resumed_stitched_completed = stitched_archive_path->text().section("Completed archive: ", 1).trimmed();
+  const bool blocked_recovery_resumed = expect(
+      queue_stayed_blocked && blocked_source_moved && window->outputStateText("archive-file") == "ERROR" &&
+          window->outputStateText("archive-stitched") == "SAVED" &&
+          window->logText().contains(stitched_finalize_after_block) && QFileInfo::exists(blocked_program_manual) &&
+          !QFileInfo::exists(resumed_stitched_source),
+      QString(
+          "A blocked first finalization must keep its ownership lock and halt the second archive until the retained "
+          "file is moved to safety, then resume the queue (queue_blocked=%1 moved=%2 program=%3 stitched=%4 "
+          "manual=%5 source=%6 log=%7)")
+          .arg(queue_stayed_blocked)
+          .arg(blocked_source_moved)
+          .arg(window->outputStateText("archive-file"), window->outputStateText("archive-stitched"))
+          .arg(QFileInfo::exists(blocked_program_manual))
+          .arg(QFileInfo::exists(resumed_stitched_source))
+          .arg(window->logText().contains(stitched_finalize_after_block))
+          .toStdString());
+  QFile::remove(resumed_stitched_completed);
+  QFile::remove(blocked_program_source + ".hstream-pin");
+  QFile::remove(blocked_program_source + ".log.hstream-pin");
+  QFile::remove(blocked_program_source + ".log");
+  QFile::remove(blocked_program_manual);
+  QFile::remove(blocked_owner_lock);
+  auto* blocked_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  if (blocked_ok_button && blocked_ok_button->isVisible())
+    activate(blocked_ok_button);
   archive->setChecked(false);
   stitched_archive->setChecked(false);
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH");
@@ -7022,7 +7156,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     qunsetenv("HM_OUTPUT_WORK_DIR");
   else
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
-  return ok;
+  return ok && first_failure_safe && second_failure_safe && blocked_recovery_resumed;
 }
 
 bool test_projection_parameter_persistence(HStreamWindow* window) {

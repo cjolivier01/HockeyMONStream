@@ -244,7 +244,7 @@ class Configurator {
       YAML::Node& pipeline,
       const std::vector<std::optional<std::string>>& source_video_paths,
       bool stitching_calibration_only);
-  void configure_stitching_calibration_archive_name(YAML::Node& pipeline) const;
+  absl::Status configure_stitching_calibration_archive_name(YAML::Node& pipeline);
   void log_enabled_bins(const YAML::Node& pipeline) const;
 
   std::string file_maybe_in_game_dir(const std::string& basename);

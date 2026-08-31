@@ -36,9 +36,14 @@ struct ConfiguratorTestAccess {
     return configurator->configure_source_bit_depth(pipeline, {}, stitching_calibration_only);
   }
 
-  static void configure_stitching_calibration_archive_name(Configurator* configurator) {
+  static absl::Status configure_stitching_calibration_archive_name(Configurator* configurator) {
     YAML::Node pipeline = configurator->config_["pipeline"];
-    configurator->configure_stitching_calibration_archive_name(pipeline);
+    return configurator->configure_stitching_calibration_archive_name(pipeline);
+  }
+
+  static void set_explicit_null_output_path(Configurator* configurator) {
+    configurator->config_["video_out"]["output_video_path"] = YAML::Node(YAML::NodeType::Null);
+    configurator->explicit_value_ranks_["video_out.output_video_path"] = 3;
   }
 };
 
@@ -464,9 +469,10 @@ play-tracker:
     archive_pipeline["sink0"]["enable"] = 1;
     archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
     archive_pipeline["sink0"]["output-file"] = "tracking_output.mkv";
-    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive.get());
+    const absl::Status archive_status =
+        hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive.get());
     ok &= expect(
-        archive_pipeline["sink0"]["output-file"].as<std::string>() == "stitched_output.mkv",
+        archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == "stitched_output.mkv",
         "Calibration encode sinks must use the stitched archive basename by default");
   } else {
     ok = false;
@@ -478,9 +484,10 @@ play-tracker:
     YAML::Node archive_pipeline = explicit_calibration_archive->config()["pipeline"];
     archive_pipeline["sink0"]["enable"] = 1;
     archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
-    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(explicit_calibration_archive.get());
+    const absl::Status archive_status =
+        hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(explicit_calibration_archive.get());
     ok &= expect(
-        archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv",
+        archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv",
         "Calibration archive naming must preserve an explicit output-file override");
   } else {
     ok = false;
@@ -491,14 +498,78 @@ play-tracker:
   if (explicit_canonical_calibration_archive &&
       explicit_canonical_calibration_archive->apply_config_item("video_out.output_video_path", "tracking_output.mkv")
           .ok() &&
+      explicit_canonical_calibration_archive->apply_config_item("video_out.bit_rate", "23000000").ok() &&
       explicit_canonical_calibration_archive->apply_supported_baseline_mappings().ok()) {
     YAML::Node archive_pipeline = explicit_canonical_calibration_archive->config()["pipeline"];
     archive_pipeline["sink0"]["enable"] = 1;
-    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+    const absl::Status archive_status = hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
         explicit_canonical_calibration_archive.get());
     ok &= expect(
-        archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv",
-        "Calibration archive naming must preserve an explicit canonical output path");
+        archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv" &&
+            archive_pipeline["sink0"]["bitrate"].as<int>() == 23000000,
+        "Calibration archives must preserve explicit canonical output path and bitrate overrides");
+  } else {
+    ok = false;
+  }
+
+  auto calibration_archive_precedence = prepare_tone_routing("calibration-archive-precedence", "0");
+  if (calibration_archive_precedence) {
+    YAML::Node archive_pipeline = calibration_archive_precedence->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+    archive_pipeline["sink1"]["enable"] = 0;
+    archive_pipeline["sink1"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_FILE);
+    const bool overrides_applied =
+        calibration_archive_precedence->apply_config_item("pipeline.sink1.output-file", "legacy-program.mkv").ok() &&
+        calibration_archive_precedence->apply_config_item("pipeline.sink1.bitrate", "17000000").ok() &&
+        calibration_archive_precedence->apply_config_item("video_out.output_video_path", "canonical.mkv").ok() &&
+        calibration_archive_precedence->apply_config_item("video_out.bit_rate", "23000000").ok() &&
+        calibration_archive_precedence->apply_config_item("pipeline.sink0.output-file", "stitched-native.mkv").ok() &&
+        calibration_archive_precedence->apply_config_item("pipeline.sink0.bitrate", "31000000").ok();
+    const absl::Status archive_status = overrides_applied
+        ? hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive_precedence.get())
+        : absl::InternalError("calibration precedence overrides did not apply");
+    ok &= expect(
+        archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == "stitched-native.mkv" &&
+            archive_pipeline["sink0"]["bitrate"].as<int>() == 31000000,
+        "An explicit stitched calibration sink must outrank canonical and legacy Program archive overrides");
+  } else {
+    ok = false;
+  }
+
+  auto calibration_archive_legacy = prepare_tone_routing("calibration-archive-legacy", "0");
+  if (calibration_archive_legacy) {
+    YAML::Node archive_pipeline = calibration_archive_legacy->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+    archive_pipeline["sink1"]["enable"] = 0;
+    archive_pipeline["sink1"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_FILE);
+    const bool overrides_applied =
+        calibration_archive_legacy->apply_config_item("pipeline.sink1.output-file", "legacy-program.mkv").ok() &&
+        calibration_archive_legacy->apply_config_item("pipeline.sink1.bitrate", "17000000").ok();
+    const absl::Status archive_status = overrides_applied
+        ? hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive_legacy.get())
+        : absl::InternalError("legacy calibration overrides did not apply");
+    ok &= expect(
+        archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == "legacy-program.mkv" &&
+            archive_pipeline["sink0"]["bitrate"].as<int>() == 17000000,
+        "Legacy Program archive path and bitrate overrides must continue to control calibration archives");
+  } else {
+    ok = false;
+  }
+
+  auto calibration_archive_null = prepare_tone_routing("calibration-archive-null", "0");
+  if (calibration_archive_null) {
+    YAML::Node archive_pipeline = calibration_archive_null->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+    hm::ConfiguratorTestAccess::set_explicit_null_output_path(calibration_archive_null.get());
+    const absl::Status archive_status =
+        hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive_null.get());
+    ok &= expect(
+        archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == "stitched_output.mkv",
+        "An explicit null canonical archive path must restore the calibration stitched basename");
   } else {
     ok = false;
   }

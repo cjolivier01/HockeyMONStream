@@ -10352,6 +10352,12 @@ void HStreamWindow::startNextArchiveFinalization() {
       pending_archive_finalizations_.empty()) {
     return;
   }
+  if (!archive_finalize_blocked_source_path_.isEmpty()) {
+    if (QFileInfo::exists(archive_finalize_blocked_source_path_))
+      return;
+    archive_finalize_blocked_source_path_.clear();
+    releaseArchiveFinalizerOwnership(true);
+  }
   PendingArchiveFinalization next = std::move(pending_archive_finalizations_.front());
   pending_archive_finalizations_.pop_front();
   startArchiveFinalization(next.source_path, next.game_id, next.hevc_video, next.stitched_archive, next.output_id);
@@ -10987,8 +10993,9 @@ void HStreamWindow::completeArchiveFinalization() {
                   : (source_was_replaced
                          ? QString("; replaced source pathname left untouched at %1").arg(archive_finalize_source_path_)
                          : QString("; source retained at %1").arg(archive_finalize_source_path_))));
-  finishArchiveJobLog();
   const bool more_archives = !pending_archive_finalizations_.empty();
+  if (!more_archives)
+    finishArchiveJobLog();
   startNextArchiveFinalization();
   if (!more_archives)
     QTimer::singleShot(500, archive_finalize_dialog_, &QDialog::accept);
@@ -11018,8 +11025,12 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   archive_finalize_dialog_->show();
   appendLog(QString("archive finalization failed: %1; recovery archive retained at %2")
                 .arg(failure_detail, archive_finalize_source_path_));
-  finishArchiveJobLogAfterFinalizationFailure();
-  startNextArchiveFinalization();
+  const bool recovery_blocks_queue = !archive_finalize_blocked_source_path_.isEmpty();
+  const bool more_archives = !pending_archive_finalizations_.empty();
+  if (!more_archives)
+    finishArchiveJobLogAfterFinalizationFailure();
+  if (!recovery_blocks_queue)
+    startNextArchiveFinalization();
   updateRunControls();
   maybeStartDeferredRestart();
 }
@@ -12595,9 +12606,13 @@ void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
       !pending_archive_finalizations_.empty();
-  if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_)) {
+  const bool archive_recovery_was_cleared =
+      !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
+  if (archive_recovery_was_cleared) {
     archive_finalize_blocked_source_path_.clear();
     releaseArchiveFinalizerOwnership(true);
+    if (!pending_archive_finalizations_.empty())
+      QTimer::singleShot(0, this, [this]() { startNextArchiveFinalization(); });
   }
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
