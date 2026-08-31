@@ -15,6 +15,7 @@ struct TelemetryCsvPublicationResult {
 // should leave this null.
 struct TelemetryCsvPublicationTestHooks {
   bool force_named_temporary_files{false};
+  bool abandon_named_staging_after_copy{false};
   bool fail_tracking_commit_sync{false};
   QString rollback_identity_error_filename;
 };

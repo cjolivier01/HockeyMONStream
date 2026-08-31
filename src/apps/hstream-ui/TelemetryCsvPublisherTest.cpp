@@ -25,10 +25,11 @@ bool expect(bool condition, const char* message) {
 
 bool expect_no_staging_files(const QString& directory) {
   bool valid = true;
-  for (const QString& entry : QDir(directory).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot)) {
+  for (const QString& entry : QDir(directory).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot)) {
     valid &= expect(!entry.startsWith('.'), "game directory must not retain hidden telemetry staging files");
-    valid &=
-        expect(!entry.endsWith(".hstream-publish-tmp"), "game directory must not retain named telemetry staging files");
+    valid &= expect(
+        !entry.startsWith("hstream-telemetry-stage-v1-"),
+        "game directory must not retain owned telemetry staging directories");
   }
   return valid;
 }
@@ -109,9 +110,6 @@ int main() {
 
   const QString fallback_game = QDir(root.path()).filePath("fallback-game");
   valid &= expect(QDir().mkpath(fallback_game), "named fallback game directory must be created");
-  valid &= expect(
-      write_file(QDir(fallback_game).filePath("camera-6.csv.hstream-publish-tmp"), "stale staging contents\n"),
-      "stale named staging fixture must be written");
   const auto fallback_published =
       hm::ui_internal::publish_telemetry_csvs(manifest_path, fallback_game, "-6", &named_fallback);
   valid &= expect(fallback_published.ok, fallback_published.error.toStdString().c_str()) &&
@@ -121,6 +119,45 @@ int main() {
         expect(QFileInfo::exists(QDir(fallback_game).filePath(stem + "-6.csv")), "named fallback game CSV must exist");
   }
   valid &= expect_no_staging_files(fallback_game);
+
+  const QString unowned_game = QDir(root.path()).filePath("unowned-game");
+  const QString unowned_stage =
+      QDir(unowned_game).filePath("hstream-telemetry-stage-v1-00000000000000000000000000000000");
+  const QString unowned_marker = QDir(unowned_stage).filePath("ownership");
+  valid &= expect(QDir().mkpath(unowned_stage), "unowned staging-like directory must be created");
+  valid &= expect(write_file(unowned_marker, "unowned contents\n"), "unowned staging-like marker must be written");
+  const auto preserved_unowned =
+      hm::ui_internal::publish_telemetry_csvs(manifest_path, unowned_game, "-8", &named_fallback);
+  QFile unowned_marker_file(unowned_marker);
+  const bool unowned_marker_opened = unowned_marker_file.open(QIODevice::ReadOnly);
+  valid &= expect(preserved_unowned.ok, preserved_unowned.error.toStdString().c_str());
+  valid &= expect(
+      unowned_marker_opened && unowned_marker_file.readAll() == "unowned contents\n",
+      "publication recovery must preserve staging-like state without a valid ownership marker");
+
+  const QString recovery_game = QDir(root.path()).filePath("recovery-game");
+  valid &= expect(QDir().mkpath(recovery_game), "crash recovery game directory must be created");
+  hm::ui_internal::TelemetryCsvPublicationTestHooks abandoned_staging = named_fallback;
+  abandoned_staging.abandon_named_staging_after_copy = true;
+  const auto abandoned =
+      hm::ui_internal::publish_telemetry_csvs(manifest_path, recovery_game, "-6", &abandoned_staging);
+  valid &= expect(!abandoned.ok, "simulated interruption must abandon owned staging state");
+  valid &= expect(
+      QDir(recovery_game)
+              .entryList(QStringList{"hstream-telemetry-stage-v1-*"}, QDir::Dirs | QDir::NoDotAndDotDot)
+              .size() == 1,
+      "simulated interruption must leave one recoverable staging directory");
+  const auto recovered = hm::ui_internal::publish_telemetry_csvs(manifest_path, recovery_game, "-7", &named_fallback);
+  valid &= expect(recovered.ok, recovered.error.toStdString().c_str());
+  valid &= expect_no_staging_files(recovery_game);
+  for (const QString& stem : stems) {
+    valid &= expect(
+        !QFileInfo::exists(QDir(recovery_game).filePath(stem + "-6.csv")),
+        "recovery must not publish the abandoned suffix");
+    valid &= expect(
+        QFileInfo::exists(QDir(recovery_game).filePath(stem + "-7.csv")),
+        "new-suffix publication must succeed after stale staging recovery");
+  }
 
   const auto collision = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2", &named_fallback);
   valid &= expect(!collision.ok, "copy publication must never replace an existing game CSV");
