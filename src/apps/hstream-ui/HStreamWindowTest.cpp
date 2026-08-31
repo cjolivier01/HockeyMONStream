@@ -5622,13 +5622,21 @@ bool test_output_controls(HStreamWindow* window) {
       QDir(QDir(QDir::currentPath()).filePath("relative-output-test/archive-relative-path-test"))
           .filePath("stitched_output-with-audio.mkv");
   const QStringList calibration_archive_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  const bool calibration_archive_path_unmodified = std::none_of(
+      calibration_archive_arguments.cbegin(),
+      calibration_archive_arguments.cend(),
+      [](const QString& argument) {
+        return argument.startsWith("--options=pipeline.sink2.output-file=") ||
+            argument.startsWith("--options=video_out.output_video_path=");
+      });
   const bool calibration_archive_routed = expect(
       archive_path->text().contains(calibration_planned_path) &&
           calibration_archive_arguments.contains("--enable-sinks=RENDER,ENCODE_FILE") &&
-          calibration_archive_arguments.contains("--options=pipeline.sink2.output-file=stitched_output.mkv") &&
+          calibration_archive_path_unmodified &&
           !calibration_archive_arguments.join(' ').contains("RTMP") &&
           !calibration_archive_arguments.join(' ').contains("RTSP"),
-      "Stitching Calibration Archive File must record the stitched sink with audio naming without enabling streams");
+      "Stitching Calibration Archive File must record the stitched sink without overriding native or canonical "
+      "custom archive paths or enabling streams");
   mode->setCurrentIndex(mode->findData("program"));
 
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());

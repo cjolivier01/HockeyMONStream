@@ -7622,10 +7622,8 @@ QStringList HStreamWindow::pipelineArguments() const {
     const auto archive_toggle = output_toggles_.find("archive-file");
     const bool archive_enabled =
         archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
-    if (archive_enabled) {
+    if (archive_enabled)
       sinks << "ENCODE_FILE";
-      args << "--options=pipeline.sink2.output-file=stitched_output.mkv";
-    }
     if (sinks.isEmpty())
       sinks << "FAKE";
     args << QString("--enable-sinks=%1").arg(sinks.join(','));
