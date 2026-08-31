@@ -689,7 +689,9 @@ void PlayTrackerTelemetryCsv::WriterLoop() {
     if (const auto* sample = std::get_if<QueuedSample>(&item)) {
       WriteSample(*sample);
     } else {
-      WriteConfigEvent(std::get<QueuedConfigEvent>(item));
+      if (!WriteConfigEvent(std::get<QueuedConfigEvent>(item))) {
+        writer_failed_ = true;
+      }
     }
     if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_) {
       writer_failed_ = true;

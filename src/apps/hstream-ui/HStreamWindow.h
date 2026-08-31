@@ -175,6 +175,7 @@ class HStreamWindow : public QMainWindow {
     kIdle,
     kRemux,
     kSyncCompleted,
+    kPublishTelemetry,
     kSyncRecovery,
   };
 
@@ -230,7 +231,15 @@ class HStreamWindow : public QMainWindow {
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
   bool startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error);
+  void startTelemetryCsvPublication(
+      const QString& manifest_path,
+      const QString& game_directory,
+      const QString& destination_suffix,
+      qint64 final_size,
+      bool source_removed,
+      bool source_was_replaced);
   void completeArchiveFinalization();
+  void finishCompletedArchivePresentation(qint64 final_size, bool source_removed, bool source_was_replaced);
   void showArchiveFinalizationFailure(const QString& failure_detail);
   void failArchiveFinalization(const QString& message);
   bool acquireArchiveFinalizerOwnership(const QString& source_path, QString* error);
@@ -590,6 +599,7 @@ class HStreamWindow : public QMainWindow {
   qint64 active_archive_initial_mtime_ms_{-1};
   bool active_archive_video_is_hevc_{false};
   QProcess* archive_finalize_process_{nullptr};
+  QThread* telemetry_publication_worker_{nullptr};
   QDialog* archive_finalize_dialog_{nullptr};
   QLabel* archive_finalize_icon_{nullptr};
   QLabel* archive_finalize_headline_{nullptr};

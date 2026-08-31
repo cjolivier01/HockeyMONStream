@@ -408,23 +408,24 @@ int main() {
   event_io_failure_exporter.Stop();
   const std::string event_io_failure_events = read_file(directory / "hstream_config_events-13.csv");
   const std::string event_io_failure_manifest = read_file(directory / "hstream_telemetry-13.json");
-  const bool event_io_failure_valid = expect(
-                                          csv_frame_ids(read_file(directory / "tracking-13.csv")) ==
-                                                  std::vector<uint64_t>({1, 3, 5}) &&
-                                              csv_frame_ids(read_file(directory / "camera-13.csv")) ==
-                                                  std::vector<uint64_t>({1, 3, 5}),
-                                          "async config-event I/O loss must retain a numeric HM training gap") &&
-      expect(event_io_failure_events.find("runtime.yaml") == std::string::npos &&
-                 event_io_failure_events.find("vanished-runtime.yaml") == std::string::npos,
-             "failed or missing required artifacts must not advertise their events as persisted") &&
-      expect(event_io_failure_manifest.find("\"completed\": true") != std::string::npos &&
-                 event_io_failure_manifest.find("\"eligible_for_training\": true") != std::string::npos &&
-                 event_io_failure_manifest.find("\"writer_failed\": false") != std::string::npos &&
-                 event_io_failure_manifest.find("\"frame_id_high_watermark\": 5") != std::string::npos &&
-                 event_io_failure_manifest.find("\"config_events_attempted\": 2") != std::string::npos &&
-                 event_io_failure_manifest.find("\"config_events_persisted\": 0") != std::string::npos &&
-                 event_io_failure_manifest.find("\"config_events_lost\": 2") != std::string::npos,
-             "manifest must distinguish protected artifact/event loss from core writer failure");
+  const bool event_io_failure_valid =
+      expect(
+          event_io_failure_events.find("runtime.yaml") == std::string::npos &&
+              event_io_failure_events.find("vanished-runtime.yaml") == std::string::npos,
+          "failed or missing required artifacts must not advertise their events as persisted") &&
+      expect(
+          event_io_failure_manifest.find("\"completed\": false") != std::string::npos &&
+              event_io_failure_manifest.find("\"eligible_for_training\": false") != std::string::npos &&
+              event_io_failure_manifest.find("\"writer_failed\": true") != std::string::npos &&
+              event_io_failure_manifest.find("\"frame_id_high_watermark\": 5") != std::string::npos &&
+              event_io_failure_manifest.find("\"config_events_attempted\": 2") != std::string::npos &&
+              event_io_failure_manifest.find("\"config_events_persisted\": 0") != std::string::npos &&
+              event_io_failure_manifest.find("\"config_events_lost\": 2") != std::string::npos,
+          "an accepted config event persistence failure must fail the lossless generation") &&
+      expect(
+          !fs::exists(directory / "tracking-13.csv") && !fs::exists(directory / "detections-13.csv") &&
+              !fs::exists(directory / "camera-13.csv") && !fs::exists(directory / "camera_fast-13.csv"),
+          "a generation with lost accepted config events must not publish HM training inputs");
 
   hm::playtracker::PlayTrackerTelemetryCsv aborted_exporter;
   const absl::Status aborted_start =

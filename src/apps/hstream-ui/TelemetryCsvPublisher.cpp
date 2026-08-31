@@ -11,24 +11,70 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstring>
-#include <optional>
+#include <utility>
 #include <vector>
 
 namespace hm::ui_internal {
 namespace {
 
+class UniqueFd {
+ public:
+  UniqueFd() = default;
+  explicit UniqueFd(int fd) : fd_(fd) {}
+  ~UniqueFd() {
+    if (fd_ >= 0)
+      ::close(fd_);
+  }
+  UniqueFd(const UniqueFd&) = delete;
+  UniqueFd& operator=(const UniqueFd&) = delete;
+  UniqueFd(UniqueFd&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
+  UniqueFd& operator=(UniqueFd&& other) noexcept {
+    if (this != &other) {
+      if (fd_ >= 0)
+        ::close(fd_);
+      fd_ = std::exchange(other.fd_, -1);
+    }
+    return *this;
+  }
+  int get() const {
+    return fd_;
+  }
+
+ private:
+  int fd_{-1};
+};
+
+struct OpenRegularFile {
+  UniqueFd fd;
+  QByteArray filename;
+  struct stat snapshot{};
+};
+
 struct CopiedArtifact {
-  QString filename;
-  int fd{-1};
-  struct stat identity{};
+  QString stem;
+  QString destination_filename;
+  OpenRegularFile source;
+  UniqueFd destination_fd;
+  struct stat destination_identity{};
   off_t size{0};
+  bool linked{false};
 };
 
 bool same_identity(const struct stat& left, const struct stat& right) {
   return left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+}
+
+bool same_timespec(const struct timespec& left, const struct timespec& right) {
+  return left.tv_sec == right.tv_sec && left.tv_nsec == right.tv_nsec;
+}
+
+bool same_snapshot(const struct stat& left, const struct stat& right) {
+  return same_identity(left, right) && left.st_size == right.st_size && same_timespec(left.st_mtim, right.st_mtim) &&
+      same_timespec(left.st_ctim, right.st_ctim);
 }
 
 QString errno_string(int value) {
@@ -54,92 +100,103 @@ bool sync_fd(int fd) {
   return true;
 }
 
-std::optional<QByteArray> read_regular_file_no_follow(const QString& path, qsizetype maximum_size, QString* error) {
-  const QByteArray encoded_path = QFile::encodeName(QFileInfo(path).absoluteFilePath());
-  const int fd = ::open(encoded_path.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  if (fd < 0) {
+bool open_regular_file_at(int directory_fd, const QByteArray& filename, OpenRegularFile* opened, QString* error) {
+  if (!opened)
+    return false;
+  UniqueFd fd(::openat(directory_fd, filename.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+  if (fd.get() < 0) {
     if (error)
       *error = errno_string(errno);
-    return std::nullopt;
+    return false;
   }
-  struct stat identity{};
-  if (::fstat(fd, &identity) != 0 || !S_ISREG(identity.st_mode) || identity.st_size < 0 ||
-      identity.st_size > maximum_size) {
+  struct stat descriptor_info{};
+  struct stat named_info{};
+  if (::fstat(fd.get(), &descriptor_info) != 0 || !S_ISREG(descriptor_info.st_mode) ||
+      ::fstatat(directory_fd, filename.constData(), &named_info, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISREG(named_info.st_mode) || !same_snapshot(descriptor_info, named_info)) {
+    if (error)
+      *error = "file is not a stable regular file";
+    return false;
+  }
+  opened->fd = std::move(fd);
+  opened->filename = filename;
+  opened->snapshot = descriptor_info;
+  return true;
+}
+
+bool revalidate_open_file(int directory_fd, const OpenRegularFile& opened) {
+  struct stat descriptor_info{};
+  struct stat named_info{};
+  return opened.fd.get() >= 0 && ::fstat(opened.fd.get(), &descriptor_info) == 0 &&
+      ::fstatat(directory_fd, opened.filename.constData(), &named_info, AT_SYMLINK_NOFOLLOW) == 0 &&
+      S_ISREG(descriptor_info.st_mode) && S_ISREG(named_info.st_mode) &&
+      same_snapshot(opened.snapshot, descriptor_info) && same_snapshot(opened.snapshot, named_info);
+}
+
+bool read_regular_file_at(
+    int directory_fd,
+    const QByteArray& filename,
+    qsizetype maximum_size,
+    QByteArray* contents,
+    OpenRegularFile* opened,
+    QString* error) {
+  if (!contents || !open_regular_file_at(directory_fd, filename, opened, error))
+    return false;
+  if (opened->snapshot.st_size < 0 || opened->snapshot.st_size > maximum_size) {
     if (error)
       *error = "file is not a bounded regular file";
-    ::close(fd);
-    return std::nullopt;
+    return false;
   }
-  QByteArray contents;
-  contents.resize(static_cast<qsizetype>(identity.st_size));
+  QByteArray file_contents;
+  file_contents.resize(static_cast<qsizetype>(opened->snapshot.st_size));
   qsizetype offset = 0;
-  while (offset < contents.size()) {
-    const ssize_t count = ::pread(fd, contents.data() + offset, contents.size() - offset, offset);
+  while (offset < file_contents.size()) {
+    const ssize_t count =
+        ::pread(opened->fd.get(), file_contents.data() + offset, file_contents.size() - offset, offset);
     if (count < 0 && errno == EINTR)
       continue;
     if (count <= 0) {
       if (error)
         *error = count == 0 ? "file became shorter while being read" : errno_string(errno);
-      ::close(fd);
-      return std::nullopt;
+      return false;
     }
     offset += count;
   }
-  struct stat named_identity{};
-  if (::lstat(encoded_path.constData(), &named_identity) != 0 || !same_identity(identity, named_identity)) {
+  if (!revalidate_open_file(directory_fd, *opened)) {
     if (error)
-      *error = "file pathname changed while being read";
-    ::close(fd);
-    return std::nullopt;
+      *error = "file changed while being read";
+    return false;
   }
-  ::close(fd);
-  return contents;
+  *contents = std::move(file_contents);
+  return true;
 }
 
-bool copy_regular_file_no_replace(
-    const QString& source_path,
+bool copy_regular_file_to_unnamed(
+    int source_directory_fd,
+    const QString& source_filename,
     int destination_directory_fd,
+    const QString& stem,
     const QString& destination_filename,
     CopiedArtifact* copied,
     QString* error) {
   if (!copied)
     return false;
-  const QByteArray encoded_source = QFile::encodeName(QFileInfo(source_path).absoluteFilePath());
-  const QByteArray encoded_destination = QFile::encodeName(destination_filename);
-  const int source_fd = ::open(encoded_source.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  if (source_fd < 0) {
+  OpenRegularFile source;
+  if (!open_regular_file_at(source_directory_fd, QFile::encodeName(source_filename), &source, error)) {
     if (error)
-      *error = QString("could not open %1: %2").arg(source_path, errno_string(errno));
+      *error = QString("could not open %1: %2").arg(source_filename, *error);
     return false;
   }
-  struct stat source_identity{};
-  struct stat named_source_identity{};
-  if (::fstat(source_fd, &source_identity) != 0 || !S_ISREG(source_identity.st_mode) ||
-      ::lstat(encoded_source.constData(), &named_source_identity) != 0 ||
-      !same_identity(source_identity, named_source_identity)) {
+  UniqueFd destination_fd(::openat(destination_directory_fd, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR));
+  if (destination_fd.get() < 0) {
     if (error)
-      *error = QString("telemetry source is not a stable regular file: %1").arg(source_path);
-    ::close(source_fd);
-    return false;
-  }
-
-  const int destination_fd = ::openat(
-      destination_directory_fd,
-      encoded_destination.constData(),
-      O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-      S_IRUSR | S_IWUSR);
-  if (destination_fd < 0) {
-    if (error)
-      *error = QString("could not reserve %1: %2").arg(destination_filename, errno_string(errno));
-    ::close(source_fd);
+      *error = QString("could not create an unnamed copy for %1: %2").arg(destination_filename, errno_string(errno));
     return false;
   }
   struct stat destination_identity{};
-  if (::fstat(destination_fd, &destination_identity) != 0 || !S_ISREG(destination_identity.st_mode)) {
+  if (::fstat(destination_fd.get(), &destination_identity) != 0 || !S_ISREG(destination_identity.st_mode)) {
     if (error)
       *error = QString("could not identify new telemetry copy %1").arg(destination_filename);
-    ::close(source_fd);
-    ::close(destination_fd);
     return false;
   }
 
@@ -148,19 +205,19 @@ bool copy_regular_file_no_replace(
   off_t offset = 0;
   std::array<char, 256 * 1024> buffer{};
   while (success) {
-    const ssize_t count = ::pread(source_fd, buffer.data(), buffer.size(), offset);
+    const ssize_t count = ::pread(source.fd.get(), buffer.data(), buffer.size(), offset);
     if (count == 0)
       break;
     if (count < 0) {
       if (errno == EINTR)
         continue;
       success = false;
-      failure = QString("could not read %1: %2").arg(source_path, errno_string(errno));
+      failure = QString("could not read %1: %2").arg(source_filename, errno_string(errno));
       break;
     }
     ssize_t written = 0;
     while (written < count) {
-      const ssize_t result = ::write(destination_fd, buffer.data() + written, count - written);
+      const ssize_t result = ::write(destination_fd.get(), buffer.data() + written, count - written);
       if (result < 0 && errno == EINTR)
         continue;
       if (result <= 0) {
@@ -172,66 +229,62 @@ bool copy_regular_file_no_replace(
     }
     offset += count;
   }
-  struct stat final_source_identity{};
-  struct stat final_named_source_identity{};
   struct stat final_destination_identity{};
-  struct stat final_named_destination_identity{};
-  if (success && !sync_fd(destination_fd)) {
+  if (success && !sync_fd(destination_fd.get())) {
     success = false;
     failure = QString("could not sync %1: %2").arg(destination_filename, errno_string(errno));
   }
-  if (success && ::fstat(source_fd, &final_source_identity) != 0) {
+  if (success && !revalidate_open_file(source_directory_fd, source)) {
     success = false;
-    failure = QString("could not revalidate %1: %2").arg(source_path, errno_string(errno));
+    failure = QString("telemetry source changed while being copied: %1").arg(source_filename);
   }
-  if (success && ::lstat(encoded_source.constData(), &final_named_source_identity) != 0) {
-    success = false;
-    failure = QString("could not revalidate the path for %1: %2").arg(source_path, errno_string(errno));
-  }
-  if (success && ::fstat(destination_fd, &final_destination_identity) != 0) {
+  if (success && ::fstat(destination_fd.get(), &final_destination_identity) != 0) {
     success = false;
     failure = QString("could not revalidate %1: %2").arg(destination_filename, errno_string(errno));
   }
   if (success &&
-      ::fstatat(
-          destination_directory_fd,
-          encoded_destination.constData(),
-          &final_named_destination_identity,
-          AT_SYMLINK_NOFOLLOW) != 0) {
-    success = false;
-    failure = QString("could not revalidate the path for %1: %2").arg(destination_filename, errno_string(errno));
-  }
-  if (success &&
-      (!same_identity(source_identity, final_source_identity) ||
-       !same_identity(source_identity, final_named_source_identity) || source_identity.st_size != offset ||
-       final_source_identity.st_size != offset)) {
-    success = false;
-    failure = QString("telemetry source changed while being copied: %1").arg(source_path);
-  }
-  if (success &&
-      (!S_ISREG(final_destination_identity.st_mode) || !S_ISREG(final_named_destination_identity.st_mode) ||
+      (!S_ISREG(final_destination_identity.st_mode) ||
        !same_identity(destination_identity, final_destination_identity) ||
-       !same_identity(destination_identity, final_named_destination_identity) ||
-       final_destination_identity.st_size != offset || final_named_destination_identity.st_size != offset)) {
+       final_destination_identity.st_size != offset)) {
     success = false;
     failure = QString("telemetry destination changed or has the wrong size: %1").arg(destination_filename);
   }
-  ::close(source_fd);
   if (!success) {
-    if (!unlink_if_owned(destination_directory_fd, encoded_destination, destination_identity) &&
-        path_has_identity(destination_directory_fd, encoded_destination, destination_identity)) {
-      failure += QString("; could not remove incomplete destination: %1").arg(errno_string(errno));
-    }
     if (error)
-      *error = failure.isEmpty() ? QString("could not copy %1 to %2").arg(source_path, destination_filename) : failure;
-    ::close(destination_fd);
+      *error =
+          failure.isEmpty() ? QString("could not copy %1 to %2").arg(source_filename, destination_filename) : failure;
     return false;
   }
 
-  copied->filename = destination_filename;
-  copied->fd = destination_fd;
-  copied->identity = destination_identity;
+  copied->stem = stem;
+  copied->destination_filename = destination_filename;
+  copied->source = std::move(source);
+  copied->destination_fd = std::move(destination_fd);
+  copied->destination_identity = destination_identity;
   copied->size = offset;
+  return true;
+}
+
+bool link_unnamed_copy(int destination_directory_fd, CopiedArtifact* artifact, QString* error) {
+  if (!artifact || artifact->destination_fd.get() < 0)
+    return false;
+  const QByteArray source = QByteArray("/proc/self/fd/") + QByteArray::number(artifact->destination_fd.get());
+  const QByteArray destination = QFile::encodeName(artifact->destination_filename);
+  if (::linkat(AT_FDCWD, source.constData(), destination_directory_fd, destination.constData(), AT_SYMLINK_FOLLOW) !=
+      0) {
+    if (error)
+      *error = QString("could not publish %1: %2").arg(artifact->destination_filename, errno_string(errno));
+    return false;
+  }
+  artifact->linked = true;
+  struct stat named_info{};
+  if (::fstatat(destination_directory_fd, destination.constData(), &named_info, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISREG(named_info.st_mode) || !same_identity(named_info, artifact->destination_identity) ||
+      named_info.st_size != artifact->size) {
+    if (error)
+      *error = QString("published telemetry path has the wrong identity: %1").arg(artifact->destination_filename);
+    return false;
+  }
   return true;
 }
 
@@ -255,6 +308,25 @@ QString finalized_archive_csv_suffix(const QString& archive_path, const QString&
   return match.captured(1).isEmpty() ? QString("") : "-" + match.captured(1);
 }
 
+bool telemetry_csv_destination_paths_available(const QString& game_directory, const QString& destination_suffix) {
+  if (!QRegularExpression(R"(^(-\d+)?$)").match(destination_suffix).hasMatch())
+    return false;
+  const QByteArray encoded_game_directory = QFile::encodeName(QFileInfo(game_directory).absoluteFilePath());
+  UniqueFd game_directory_fd(
+      ::open(encoded_game_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+  if (game_directory_fd.get() < 0)
+    return false;
+  const std::array<QString, 6> stems = {
+      "camera", "camera_fast", "detections", "hstream_frame_index", "hstream_config_events", "tracking"};
+  for (const QString& stem : stems) {
+    struct stat info{};
+    const QByteArray filename = QFile::encodeName(stem + destination_suffix + ".csv");
+    if (::fstatat(game_directory_fd.get(), filename.constData(), &info, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+      return false;
+  }
+  return true;
+}
+
 TelemetryCsvPublicationResult publish_telemetry_csvs(
     const QString& manifest_path,
     const QString& game_directory,
@@ -265,15 +337,36 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     return result;
   }
 
+  const QFileInfo manifest_info(manifest_path);
+  const QRegularExpression manifest_pattern(R"(^hstream_telemetry(-\d+)?\.json$)");
+  const QRegularExpressionMatch manifest_match = manifest_pattern.match(manifest_info.fileName());
+  if (!manifest_match.hasMatch()) {
+    result.error = "telemetry manifest filename does not identify a generation";
+    return result;
+  }
+  const QByteArray encoded_source_directory = QFile::encodeName(manifest_info.dir().absolutePath());
+  UniqueFd source_directory_fd(
+      ::open(encoded_source_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+  if (source_directory_fd.get() < 0) {
+    result.error = QString("could not open telemetry working directory %1: %2")
+                       .arg(manifest_info.dir().absolutePath(), errno_string(errno));
+    return result;
+  }
+  OpenRegularFile open_manifest;
+  QByteArray manifest_contents;
   QString manifest_error;
-  const std::optional<QByteArray> manifest_contents =
-      read_regular_file_no_follow(manifest_path, 1024 * 1024, &manifest_error);
-  if (!manifest_contents.has_value()) {
+  if (!read_regular_file_at(
+          source_directory_fd.get(),
+          QFile::encodeName(manifest_info.fileName()),
+          1024 * 1024,
+          &manifest_contents,
+          &open_manifest,
+          &manifest_error)) {
     result.error = QString("could not read telemetry manifest %1: %2").arg(manifest_path, manifest_error);
     return result;
   }
   QJsonParseError parse_error{};
-  const QJsonDocument document = QJsonDocument::fromJson(*manifest_contents, &parse_error);
+  const QJsonDocument document = QJsonDocument::fromJson(manifest_contents, &parse_error);
   if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
     result.error = QString("telemetry manifest is invalid JSON: %1").arg(parse_error.errorString());
     return result;
@@ -284,13 +377,6 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     return result;
   }
 
-  const QFileInfo manifest_info(manifest_path);
-  const QRegularExpression manifest_pattern(R"(^hstream_telemetry(-\d+)?\.json$)");
-  const QRegularExpressionMatch manifest_match = manifest_pattern.match(manifest_info.fileName());
-  if (!manifest_match.hasMatch()) {
-    result.error = "telemetry manifest filename does not identify a generation";
-    return result;
-  }
   const QString source_suffix = manifest_match.captured(1);
   const QJsonObject sidecars = root.value("sidecars").toObject();
   const std::array<std::pair<QString, QString>, 6> artifacts = {{
@@ -309,9 +395,9 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   }
 
   const QByteArray encoded_game_directory = QFile::encodeName(QFileInfo(game_directory).absoluteFilePath());
-  const int game_directory_fd =
-      ::open(encoded_game_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  if (game_directory_fd < 0) {
+  UniqueFd game_directory_fd(
+      ::open(encoded_game_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+  if (game_directory_fd.get() < 0) {
     result.error = QString("could not open game directory %1: %2").arg(game_directory, errno_string(errno));
     return result;
   }
@@ -320,75 +406,110 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   copied.reserve(artifacts.size());
   auto rollback = [&]() -> QString {
     QString rollback_error;
-    for (auto item = copied.rbegin(); item != copied.rend(); ++item) {
-      CopiedArtifact& artifact = *item;
-      unlink_if_owned(game_directory_fd, QFile::encodeName(artifact.filename), artifact.identity);
-      if (path_has_identity(game_directory_fd, QFile::encodeName(artifact.filename), artifact.identity) &&
-          rollback_error.isEmpty()) {
-        rollback_error = QString("could not roll back %1: %2").arg(artifact.filename, errno_string(errno));
+    auto tracking = std::find_if(
+        copied.begin(), copied.end(), [](const CopiedArtifact& artifact) { return artifact.stem == "tracking"; });
+    if (tracking != copied.end() && tracking->linked) {
+      const QByteArray filename = QFile::encodeName(tracking->destination_filename);
+      if (!unlink_if_owned(game_directory_fd.get(), filename, tracking->destination_identity) &&
+          path_has_identity(game_directory_fd.get(), filename, tracking->destination_identity)) {
+        return QString("could not retract %1: %2").arg(tracking->destination_filename, errno_string(errno));
       }
-      if (artifact.fd >= 0) {
-        ::close(artifact.fd);
-        artifact.fd = -1;
+      tracking->linked = false;
+      if (!sync_fd(game_directory_fd.get())) {
+        return QString("could not durably retract %1: %2").arg(tracking->destination_filename, errno_string(errno));
       }
     }
-    if (!sync_fd(game_directory_fd) && rollback_error.isEmpty())
-      rollback_error = QString("could not sync telemetry rollback: %1").arg(errno_string(errno));
+    for (auto item = copied.rbegin(); item != copied.rend(); ++item) {
+      if (!item->linked)
+        continue;
+      const QByteArray filename = QFile::encodeName(item->destination_filename);
+      if (!unlink_if_owned(game_directory_fd.get(), filename, item->destination_identity) &&
+          path_has_identity(game_directory_fd.get(), filename, item->destination_identity) &&
+          rollback_error.isEmpty()) {
+        rollback_error = QString("could not roll back %1: %2").arg(item->destination_filename, errno_string(errno));
+      } else {
+        item->linked = false;
+      }
+    }
+    if (!sync_fd(game_directory_fd.get()) && rollback_error.isEmpty())
+      rollback_error = QString("could not sync telemetry companion rollback: %1").arg(errno_string(errno));
     return rollback_error;
   };
 
   for (const auto& [stem, source_filename] : artifacts) {
-    const QString source_path = manifest_info.dir().filePath(source_filename);
     const QString destination_filename = stem + destination_suffix + ".csv";
     CopiedArtifact artifact;
     QString copy_error;
-    if (!copy_regular_file_no_replace(source_path, game_directory_fd, destination_filename, &artifact, &copy_error)) {
+    if (!copy_regular_file_to_unnamed(
+            source_directory_fd.get(),
+            source_filename,
+            game_directory_fd.get(),
+            stem,
+            destination_filename,
+            &artifact,
+            &copy_error)) {
       result.error = copy_error;
-      const QString rollback_error = rollback();
-      if (!rollback_error.isEmpty())
-        result.error += "; " + rollback_error;
-      ::close(game_directory_fd);
       return result;
     }
     copied.push_back(std::move(artifact));
-    // Make all companion directory entries durable before tracking appears.
-    if (stem == "hstream_config_events" && !sync_fd(game_directory_fd)) {
-      result.error = QString("could not sync telemetry companion files: %1").arg(errno_string(errno));
+  }
+  auto sources_are_stable = [&]() {
+    if (!revalidate_open_file(source_directory_fd.get(), open_manifest))
+      return false;
+    return std::all_of(copied.cbegin(), copied.cend(), [&](const CopiedArtifact& artifact) {
+      return revalidate_open_file(source_directory_fd.get(), artifact.source);
+    });
+  };
+  if (!sources_are_stable()) {
+    result.error = "telemetry working files changed before publication";
+    return result;
+  }
+
+  for (CopiedArtifact& artifact : copied) {
+    if (artifact.stem == "tracking")
+      continue;
+    QString link_error;
+    if (!link_unnamed_copy(game_directory_fd.get(), &artifact, &link_error)) {
+      result.error = link_error;
       const QString rollback_error = rollback();
       if (!rollback_error.isEmpty())
         result.error += "; " + rollback_error;
-      ::close(game_directory_fd);
       return result;
     }
   }
-  if (!sync_fd(game_directory_fd)) {
+  if (!sync_fd(game_directory_fd.get())) {
+    result.error = QString("could not sync telemetry companion files: %1").arg(errno_string(errno));
+    const QString rollback_error = rollback();
+    if (!rollback_error.isEmpty())
+      result.error += "; " + rollback_error;
+    return result;
+  }
+  if (!sources_are_stable()) {
+    result.error = "telemetry working files changed before the tracking commit";
+    const QString rollback_error = rollback();
+    if (!rollback_error.isEmpty())
+      result.error += "; " + rollback_error;
+    return result;
+  }
+  auto tracking = std::find_if(
+      copied.begin(), copied.end(), [](const CopiedArtifact& artifact) { return artifact.stem == "tracking"; });
+  QString tracking_error;
+  if (tracking == copied.end() || !link_unnamed_copy(game_directory_fd.get(), &*tracking, &tracking_error)) {
+    result.error = tracking_error.isEmpty() ? "tracking telemetry copy is unavailable" : tracking_error;
+    const QString rollback_error = rollback();
+    if (!rollback_error.isEmpty())
+      result.error += "; " + rollback_error;
+    return result;
+  }
+  if (!sync_fd(game_directory_fd.get())) {
     result.error = QString("could not sync telemetry tracking commit: %1").arg(errno_string(errno));
     const QString rollback_error = rollback();
     if (!rollback_error.isEmpty())
       result.error += "; " + rollback_error;
-    ::close(game_directory_fd);
     return result;
   }
-  for (CopiedArtifact& artifact : copied) {
-    struct stat final_identity{};
-    const QByteArray filename = QFile::encodeName(artifact.filename);
-    if (::fstatat(game_directory_fd, filename.constData(), &final_identity, AT_SYMLINK_NOFOLLOW) != 0 ||
-        !S_ISREG(final_identity.st_mode) || !same_identity(final_identity, artifact.identity) ||
-        final_identity.st_size != artifact.size) {
-      result.error = QString("published telemetry file changed before commit completed: %1").arg(artifact.filename);
-      const QString rollback_error = rollback();
-      if (!rollback_error.isEmpty())
-        result.error += "; " + rollback_error;
-      ::close(game_directory_fd);
-      return result;
-    }
-  }
-  for (CopiedArtifact& artifact : copied) {
-    result.published_paths.push_back(QDir(game_directory).filePath(artifact.filename));
-    ::close(artifact.fd);
-    artifact.fd = -1;
-  }
-  ::close(game_directory_fd);
+  for (const CopiedArtifact& artifact : copied)
+    result.published_paths.push_back(QDir(game_directory).filePath(artifact.destination_filename));
   result.ok = true;
   return result;
 }

@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <gst/gst.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -88,8 +89,8 @@ bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
   }
 
   NvBufSurfaceParams surface_params{};
-  surface_params.width = 3840;
-  surface_params.height = 1080;
+  surface_params.width = 1920;
+  surface_params.height = 540;
   NvBufSurface surface{};
   surface.batchSize = 1;
   surface.numFilled = 1;
@@ -564,7 +565,26 @@ int main() {
   }
   priv.StopTelemetry();
   const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
+  const std::string detections = read_file(telemetry_dir / "detections.csv");
   const std::string telemetry_manifest = read_file(telemetry_dir / "hstream_telemetry.json");
+  std::string first_detection = detections.substr(0, detections.find('\n'));
+  std::replace(first_detection.begin(), first_detection.end(), ',', ' ');
+  uint64_t detection_frame = 0;
+  float detection_x1 = 0.0f;
+  float detection_y1 = 0.0f;
+  float detection_x2 = 0.0f;
+  float detection_y2 = 0.0f;
+  float detection_score = 0.0f;
+  int detection_label = -1;
+  std::istringstream detection_fields(first_detection);
+  detection_fields >> detection_frame >> detection_x1 >> detection_y1 >> detection_x2 >> detection_y2 >>
+      detection_score >> detection_label;
+  if (!detection_fields || detection_frame == 0 || std::abs(detection_x1 - 236.0f) > 0.001f ||
+      std::abs(detection_y1 - 196.0f) > 0.001f || std::abs(detection_x2 - 1044.0f) > 0.001f ||
+      std::abs(detection_y2 - 724.0f) > 0.001f || std::abs(detection_score - 0.8f) > 0.001f || detection_label != 0) {
+    std::cerr << "detection export did not scale inference-surface coordinates to source-frame coordinates\n";
+    return 36;
+  }
   if (config_events.find("1,1,runtime-tuning,runtime-tuning-config-file,") == std::string::npos ||
       read_file(telemetry_dir / "play_tracker_runtime_tuning-1.yaml") != original_runtime_contents ||
       read_file(telemetry_dir / "play_tracker_source.yaml") != original_cfg_contents ||

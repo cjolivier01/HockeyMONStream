@@ -62,9 +62,15 @@ int main() {
   if (!expect(write_file(manifest_path, manifest), "telemetry manifest fixture must be written"))
     return 1;
 
+  bool valid = expect(
+      hm::ui_internal::telemetry_csv_destination_paths_available(game, "-2"),
+      "an unused telemetry suffix must be available before archive publication");
   const auto published = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2");
-  bool valid = expect(published.ok, published.error.toStdString().c_str()) &&
+  valid &= expect(published.ok, published.error.toStdString().c_str()) &&
       expect(published.published_paths.size() == 6, "all six CSVs must be copied");
+  valid &= expect(
+      !hm::ui_internal::telemetry_csv_destination_paths_available(game, "-2"),
+      "a suffix with existing telemetry inputs must be skipped when naming the archive");
   for (const QString& stem : stems) {
     const QString source = QDir(working).filePath(stem + "-7.csv");
     const QString destination = QDir(game).filePath(stem + "-2.csv");

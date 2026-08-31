@@ -1120,7 +1120,11 @@ QString archive_output_path(const QString& output_work_dir, const QString& game_
       .filePath(stitching_calibration ? "stitched_output-with-audio.mkv" : "tracking_output-with-audio.mkv");
 }
 
-QString available_final_archive_path(const QString& game_dir, const QString& game_id, bool stitching_calibration) {
+QString available_final_archive_path(
+    const QString& game_dir,
+    const QString& game_id,
+    bool stitching_calibration,
+    bool require_telemetry_paths = false) {
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
   const QString base =
@@ -1134,9 +1138,15 @@ QString available_final_archive_path(const QString& game_dir, const QString& gam
     const QByteArray encoded_candidate = QFile::encodeName(candidate);
     const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
     if (::lstat(encoded_candidate.constData(), &candidate_stat) != 0 && errno == ENOENT &&
-        ::lstat(encoded_guard.constData(), &guard_stat) != 0 && errno == ENOENT)
+        ::lstat(encoded_guard.constData(), &guard_stat) != 0 && errno == ENOENT &&
+        (!require_telemetry_paths ||
+         hm::ui_internal::telemetry_csv_destination_paths_available(
+             game_dir, suffix == 0 ? QString("") : QString("-%1").arg(suffix))))
 #else
-    if (!QFileInfo::exists(candidate))
+    if (!QFileInfo::exists(candidate) &&
+        (!require_telemetry_paths ||
+         hm::ui_internal::telemetry_csv_destination_paths_available(
+             game_dir, suffix == 0 ? QString("") : QString("-%1").arg(suffix))))
 #endif
       return candidate;
   }
@@ -4667,6 +4677,8 @@ void HStreamWindow::loadBaselineDefaults() {
 }
 
 HStreamWindow::~HStreamWindow() {
+  if (telemetry_publication_worker_)
+    telemetry_publication_worker_->wait();
   finishArchiveJobLog();
   releaseArchiveFinalizeSource(false);
   releaseArchiveFinalizerOwnership(false);
@@ -4707,7 +4719,8 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
     event->ignore();
     return;
   }
-  if (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) {
+  if ((archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      telemetry_publication_worker_) {
     appendLog("window close deferred while the completed archive is being finalized");
     if (archive_finalize_dialog_) {
       archive_finalize_dialog_->show();
@@ -6471,7 +6484,8 @@ void HStreamWindow::updateProjectionParameterControls() {
 
 void HStreamWindow::updateProjectionFramingControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  const bool finalizing = archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning;
+  const bool finalizing = (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      telemetry_publication_worker_;
   const bool nona = mappingBackend() == "nona";
   double maximum_fov = 360.0;
   QString projection_display_name = stitchProjection();
@@ -7734,9 +7748,11 @@ void HStreamWindow::startPipeline() {
     return;
   }
   if (!pipeline_process_ || pipeline_process_->state() != QProcess::NotRunning ||
-      (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning)) {
+      (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      telemetry_publication_worker_) {
     appendLog(
-        archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning
+        (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+                telemetry_publication_worker_
             ? "the completed archive is still being finalized"
             : "pipeline already running");
     return;
@@ -9971,7 +9987,8 @@ void HStreamWindow::startArchiveFinalization(
     const QString& game_id,
     bool hevc_video,
     bool stitching_calibration_archive) {
-  if (!archive_finalize_process_ || archive_finalize_process_->state() != QProcess::NotRunning)
+  if (!archive_finalize_process_ || archive_finalize_process_->state() != QProcess::NotRunning ||
+      telemetry_publication_worker_)
     return;
 
   if (!archive_finalize_dialog_) {
@@ -10065,8 +10082,8 @@ void HStreamWindow::startArchiveFinalization(
     }
   }
 #endif
-  archive_finalize_target_path_ =
-      available_final_archive_path(archive_game_directory, game_id, archive_finalize_is_calibration_);
+  archive_finalize_target_path_ = available_final_archive_path(
+      archive_game_directory, game_id, archive_finalize_is_calibration_, active_run_telemetry_requested_);
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
   archive_finalize_pending_failure_detail_.clear();
@@ -10537,7 +10554,10 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
       QString republish_error;
       for (int attempt = 0; attempt < 1000; ++attempt) {
         const QString candidate = available_final_archive_path(
-            gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_, archive_finalize_is_calibration_);
+            gameDirectory(archive_finalize_game_id_),
+            archive_finalize_game_id_,
+            archive_finalize_is_calibration_,
+            active_run_telemetry_requested_);
         if (candidate.isEmpty()) {
           republish_error = "No safe filename remained for the pinned completed MP4.";
           break;
@@ -10628,7 +10648,10 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   QString publication_error;
   for (int attempt = 0; attempt < 1000; ++attempt) {
     const QString candidate = available_final_archive_path(
-        gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_, archive_finalize_is_calibration_);
+        gameDirectory(archive_finalize_game_id_),
+        archive_finalize_game_id_,
+        archive_finalize_is_calibration_,
+        active_run_telemetry_requested_);
     if (candidate.isEmpty()) {
       publication_error = "Could not find an available final filename in the game directory.";
       break;
@@ -10709,6 +10732,60 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   }
 }
 
+void HStreamWindow::startTelemetryCsvPublication(
+    const QString& manifest_path,
+    const QString& game_directory,
+    const QString& destination_suffix,
+    qint64 final_size,
+    bool source_removed,
+    bool source_was_replaced) {
+  archive_finalize_stage_ = ArchiveFinalizeStage::kPublishTelemetry;
+  archive_finalize_headline_->setText("Copying DriveGPT CSVs…");
+  archive_finalize_detail_->setText(
+      QString("The completed video is safe. Its telemetry is being copied to:\n%1").arg(game_directory));
+  archive_finalize_progress_->setRange(0, 0);
+  archive_finalize_progress_->setFormat("Copying telemetry safely");
+  appendLog(QString("copying completed DriveGPT CSVs to the game directory with video suffix '%1'")
+                .arg(destination_suffix.isEmpty() ? QString("<none>") : destination_suffix));
+
+  auto result = std::make_shared<hm::ui_internal::TelemetryCsvPublicationResult>();
+  bool delay_ok = false;
+  const int requested_delay_ms =
+      qEnvironmentVariableIntValue("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", &delay_ok);
+  const int delay_ms = delay_ok ? std::clamp(requested_delay_ms, 0, 5000) : 0;
+  QThread* worker = QThread::create([manifest_path, game_directory, destination_suffix, result, delay_ms]() {
+    if (delay_ms > 0)
+      QThread::msleep(static_cast<unsigned long>(delay_ms));
+    *result = hm::ui_internal::publish_telemetry_csvs(manifest_path, game_directory, destination_suffix);
+  });
+  telemetry_publication_worker_ = worker;
+  connect(
+      worker,
+      &QThread::finished,
+      this,
+      [this, worker, result, destination_suffix, final_size, source_removed, source_was_replaced]() {
+        if (telemetry_publication_worker_ != worker)
+          return;
+        telemetry_publication_worker_ = nullptr;
+        archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
+        if (result->ok) {
+          appendLog(QString("DriveGPT CSVs copied to the game directory with video suffix '%1': %2")
+                        .arg(
+                            destination_suffix.isEmpty() ? QString("<none>") : destination_suffix,
+                            result->published_paths.join(", ")));
+        } else {
+          appendLog(QString(
+                        "WARNING: completed DriveGPT CSVs remain available in working storage, but copying them "
+                        "beside the finalized video failed: %1")
+                        .arg(result->error));
+        }
+        finishCompletedArchivePresentation(final_size, source_removed, source_was_replaced);
+      });
+  connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+  worker->start();
+  updateRunControls();
+}
+
 void HStreamWindow::completeArchiveFinalization() {
   archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
   qint64 final_size = QFileInfo(archive_finalize_target_path_).size();
@@ -10727,34 +10804,6 @@ void HStreamWindow::completeArchiveFinalization() {
   if (target_is_pinned)
     final_size = target_stat.st_size;
 #endif
-  if (active_run_telemetry_requested_) {
-    const QString csv_suffix =
-        hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
-    if (active_telemetry_manifest_path_.isEmpty()) {
-      appendLog(
-          "WARNING: DriveGPT CSV export was requested, but the completed pipeline did not report a telemetry manifest");
-    } else if (csv_suffix.isNull()) {
-      appendLog(QString(
-                    "WARNING: DriveGPT CSVs remain in working storage because the finalized video name does not "
-                    "have a usable generation suffix: %1")
-                    .arg(archive_finalize_target_path_));
-    } else {
-      const hm::ui_internal::TelemetryCsvPublicationResult telemetry = hm::ui_internal::publish_telemetry_csvs(
-          active_telemetry_manifest_path_, gameDirectory(archive_finalize_game_id_), csv_suffix);
-      if (telemetry.ok) {
-        appendLog(
-            QString("DriveGPT CSVs copied to the game directory with video suffix '%1': %2")
-                .arg(csv_suffix.isEmpty() ? QString("<none>") : csv_suffix, telemetry.published_paths.join(", ")));
-      } else {
-        appendLog(QString(
-                      "WARNING: completed DriveGPT CSVs remain available in working storage, but copying them "
-                      "beside the finalized video failed: %1")
-                      .arg(telemetry.error));
-      }
-    }
-    active_run_telemetry_requested_ = false;
-    active_telemetry_manifest_path_.clear();
-  }
 #ifdef Q_OS_UNIX
   struct stat source_stat{};
   if (archive_finalize_source_fd_ >= 0 && ::fstat(archive_finalize_source_fd_, &source_stat) == 0 &&
@@ -10826,7 +10875,10 @@ void HStreamWindow::completeArchiveFinalization() {
     } else if (have_target_identity) {
       for (int attempt = 0; attempt < 1000; ++attempt) {
         const QString candidate = available_final_archive_path(
-            gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_, archive_finalize_is_calibration_);
+            gameDirectory(archive_finalize_game_id_),
+            archive_finalize_game_id_,
+            archive_finalize_is_calibration_,
+            active_run_telemetry_requested_);
         if (candidate.isEmpty())
           break;
         int rescue_errno = 0;
@@ -10859,6 +10911,38 @@ void HStreamWindow::completeArchiveFinalization() {
     return;
   }
   releaseArchiveFinalizerOwnership(true);
+  if (active_run_telemetry_requested_) {
+    const QString manifest_path = active_telemetry_manifest_path_;
+    const QString csv_suffix =
+        hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
+    active_run_telemetry_requested_ = false;
+    active_telemetry_manifest_path_.clear();
+    if (manifest_path.isEmpty()) {
+      appendLog(
+          "WARNING: DriveGPT CSV export was requested, but the completed pipeline did not report a telemetry manifest");
+    } else if (csv_suffix.isNull()) {
+      appendLog(QString(
+                    "WARNING: DriveGPT CSVs remain in working storage because the finalized video name does not "
+                    "have a usable generation suffix: %1")
+                    .arg(archive_finalize_target_path_));
+    } else {
+      startTelemetryCsvPublication(
+          manifest_path,
+          gameDirectory(archive_finalize_game_id_),
+          csv_suffix,
+          final_size,
+          source_removed,
+          source_was_replaced);
+      return;
+    }
+  }
+  finishCompletedArchivePresentation(final_size, source_removed, source_was_replaced);
+}
+
+void HStreamWindow::finishCompletedArchivePresentation(
+    qint64 final_size,
+    bool source_removed,
+    bool source_was_replaced) {
   output_states_["archive-file"]->setText("SAVED");
   if (archive_output_path_label_)
     archive_output_path_label_->setText(QString("Completed archive: %1").arg(archive_finalize_target_path_));
@@ -12488,7 +12572,8 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
 
 void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  const bool finalizing = archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning;
+  const bool finalizing = (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      telemetry_publication_worker_;
   if (!archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_)) {
     archive_finalize_blocked_source_path_.clear();
     releaseArchiveFinalizerOwnership(true);
@@ -12586,7 +12671,8 @@ void HStreamWindow::restartStage() {
 void HStreamWindow::maybeStartDeferredRestart() {
   if (!deferred_restart_requested_ || live_rotation_authorization_pending_ ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) ||
-      (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning)) {
+      (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      telemetry_publication_worker_) {
     return;
   }
   const bool request_is_current = deferred_restart_pipeline_generation_ == pipeline_run_generation_ && game_id_edit_ &&

@@ -104,8 +104,13 @@ CSV files into the game directory:
 The game files are independent copies, not links back to working storage. Their
 suffix is taken from the finalized
 `<game-id>-tracking_output-with-audio[-N].mp4`, even when the working telemetry
-generation used a different suffix. Companion files are durably copied before
-`tracking` appears. No hidden telemetry files are staged in the game directory,
+generation used a different suffix. Archive naming skips suffixes that already
+have any of these CSV names. After the video commit and identity-guard cleanup
+finish, a background finalization worker copies and synchronizes each CSV to an
+unnamed inode in the game filesystem. It then atomically links the five final
+companion names, synchronizes the directory, and atomically links `tracking`
+last. A final `tracking` name is therefore never visible while its bytes are
+still being copied. No hidden telemetry files are staged in the game directory,
 and an existing destination is never overwritten. If final copying fails, the
 complete non-hidden working generation is retained and the UI logs its path.
 
@@ -128,3 +133,5 @@ queue (2,048 complete frame samples by default). A sample is queued for every
 processed frame; export is not reduced to every Nth step. If the queue becomes
 full, the streaming/config producer blocks until space is available and emits
 a one-time warning to the log. It never drops a frame sample or config event.
+If an accepted config event cannot be written with its required provenance,
+the generation is failed and its HM training inputs are not published.

@@ -16,9 +16,14 @@ struct TelemetryCsvPublicationResult {
 // An invalid or unrelated archive path returns a null QString.
 QString finalized_archive_csv_suffix(const QString& archive_path, const QString& game_id);
 
+// Returns true only when none of the six final CSV names for this suffix
+// already exists in the game directory.
+bool telemetry_csv_destination_paths_available(const QString& game_directory, const QString& destination_suffix);
+
 // Copies a committed telemetry generation from its non-hidden working files
-// into non-hidden, no-replace files in the game directory. Every destination
-// uses destination_suffix; tracking is copied last as HM's discovery marker.
+// into non-hidden, no-replace files in the game directory. Each copy is fully
+// written and synced while unnamed; tracking is atomically linked last as
+// HM's discovery marker.
 TelemetryCsvPublicationResult publish_telemetry_csvs(
     const QString& manifest_path,
     const QString& game_directory,

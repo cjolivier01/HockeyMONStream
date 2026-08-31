@@ -428,14 +428,20 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       if (frame.frame_meta->ntp_timestamp != 0) {
         telemetry_sample.ntp_ns = frame.frame_meta->ntp_timestamp;
       }
+      const double scale_x = frame.input_surf_params->width > 0
+          ? static_cast<double>(frame.frame_meta->source_frame_width) / frame.input_surf_params->width
+          : 1.0;
+      const double scale_y = frame.input_surf_params->height > 0
+          ? static_cast<double>(frame.frame_meta->source_frame_height) / frame.input_surf_params->height
+          : 1.0;
       telemetry_sample.detections.reserve(detection_snapshot->detections.size());
       for (const hm::detection_snapshot::Detection& detection : detection_snapshot->detections) {
         telemetry_sample.detections.push_back(
             TelemetryDetection{
-                detection.left,
-                detection.top,
-                detection.width,
-                detection.height,
+                static_cast<float>(detection.left * scale_x),
+                static_cast<float>(detection.top * scale_y),
+                static_cast<float>(detection.width * scale_x),
+                static_cast<float>(detection.height * scale_y),
                 detection.score,
                 detection.class_id,
             });
@@ -446,12 +452,6 @@ absl::Status PlayTrackerPriv::GenerateOutput(
         telemetry_sample.decoded_sequence = decoded_sequence->sequence;
       }
 
-      const double scale_x = frame.input_surf_params->width > 0
-          ? static_cast<double>(frame.frame_meta->source_frame_width) / frame.input_surf_params->width
-          : 1.0;
-      const double scale_y = frame.input_surf_params->height > 0
-          ? static_cast<double>(frame.frame_meta->source_frame_height) / frame.input_surf_params->height
-          : 1.0;
       for (NvDsMetaList* item = frame.frame_meta->obj_meta_list; item; item = item->next) {
         const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
         if (!object || object->class_id != 0 || object->object_id == UNTRACKED_OBJECT_ID) {
