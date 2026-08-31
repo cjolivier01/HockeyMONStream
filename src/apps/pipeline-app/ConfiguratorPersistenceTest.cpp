@@ -27,6 +27,22 @@
 
 GST_DEBUG_CATEGORY(NVDS_APP);
 
+namespace hm {
+
+struct ConfiguratorTestAccess {
+  static absl::Status configure_source_bit_depth(Configurator* configurator, bool stitching_calibration_only) {
+    YAML::Node pipeline = configurator->config_["pipeline"];
+    return configurator->configure_source_bit_depth(pipeline, {}, stitching_calibration_only);
+  }
+
+  static void configure_stitching_calibration_archive_name(Configurator* configurator) {
+    YAML::Node pipeline = configurator->config_["pipeline"];
+    configurator->configure_stitching_calibration_archive_name(pipeline);
+  }
+};
+
+} // namespace hm
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -42,6 +58,16 @@ bool expect(bool condition, const char* message) {
 int main() {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = true;
+  const auto automatic_10_bit = hm::configurator_internal::decide_automatic_high_bit_depth({10U, 12U, 10U});
+  const auto automatic_8_bit = hm::configurator_internal::decide_automatic_high_bit_depth({10U, 8U});
+  const auto automatic_unknown = hm::configurator_internal::decide_automatic_high_bit_depth({10U, std::nullopt});
+  const auto automatic_empty = hm::configurator_internal::decide_automatic_high_bit_depth({});
+  ok &= expect(
+      automatic_10_bit.enabled && automatic_10_bit.minimum_source_bit_depth == 10 &&
+          automatic_10_bit.unknown_source_count == 0 && !automatic_8_bit.enabled &&
+          automatic_8_bit.minimum_source_bit_depth == 8 && !automatic_unknown.enabled &&
+          automatic_unknown.unknown_source_count == 1 && !automatic_empty.enabled,
+      "Automatic high-bit selection must require every discovered source to be known and at least 10-bit");
   const auto rotation_value = [](const YAML::Node& config) {
     return hm::configurator_internal::effective_stitch_output_rotation(config);
   };
@@ -359,6 +385,66 @@ play-tracker:
           mapped_defaults["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.0 &&
           !mapped_defaults["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Every supported non-tracker native default must be filled from the bundled canonical baseline");
+
+  const auto prepare_tone_routing = [&](const std::string& game, const char* high_bit_mode) {
+    fs::create_directories(games / game);
+    auto configurator =
+        std::make_unique<hm::Configurator>(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    if (!configurator->configure().ok() ||
+        !configurator->underlay_config("pipeline", mapping_structure_path.string()) ||
+        !configurator->apply_supported_baseline_mappings().ok() ||
+        !configurator->apply_config_item("pipeline.hmstitcher.properties.high-bit-depth", high_bit_mode).ok() ||
+        !configurator->apply_config_item("hstream_ui.camera_controls.Bring_Up_Shadows", "35").ok() ||
+        !configurator->apply_config_item("hstream_ui.camera_controls.Lift_Shadow_Black_Point", "1").ok() ||
+        !configurator->apply_config_item("hstream_ui.camera_controls.Exposure_x100", "60").ok()) {
+      return std::unique_ptr<hm::Configurator>();
+    }
+    return configurator;
+  };
+  auto high_bit_calibration = prepare_tone_routing("high-bit-calibration", "1");
+  const absl::Status high_bit_calibration_status = high_bit_calibration
+      ? hm::ConfiguratorTestAccess::configure_source_bit_depth(
+            high_bit_calibration.get(), /*stitching_calibration_only=*/true)
+      : absl::InternalError("high-bit calibration fixture did not load");
+  auto low_bit_calibration = prepare_tone_routing("low-bit-calibration", "0");
+  const absl::Status low_bit_calibration_status = low_bit_calibration
+      ? hm::ConfiguratorTestAccess::configure_source_bit_depth(
+            low_bit_calibration.get(), /*stitching_calibration_only=*/true)
+      : absl::InternalError("low-bit calibration fixture did not load");
+  if (high_bit_calibration && low_bit_calibration) {
+    const YAML::Node high_pipeline = high_bit_calibration->config()["pipeline"];
+    const YAML::Node low_pipeline = low_bit_calibration->config()["pipeline"];
+    ok &= expect(
+        high_bit_calibration_status.ok() && low_bit_calibration_status.ok() &&
+            high_pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>() == 1 &&
+            high_pipeline["hmstitcher"]["properties"]["shadow-lift"].as<double>() == 35.0 &&
+            high_pipeline["hmstitcher"]["properties"]["shadow-lift-black-point"].as<int>() == 1 &&
+            high_pipeline["hmstitcher"]["properties"]["exposure"].as<double>() == 0.6 &&
+            high_pipeline["hmplaycropper"]["properties"]["shadow-lift"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["shadow-lift"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["shadow-lift-black-point"].as<int>() == 0 &&
+            low_pipeline["hmstitcher"]["properties"]["exposure"].as<int>() == 0 &&
+            low_pipeline["hmplaycropper"]["properties"]["shadow-lift"].as<int>() == 0 &&
+            low_pipeline["hmplaycropper"]["properties"]["shadow-lift-black-point"].as<int>() == 0 &&
+            low_pipeline["hmplaycropper"]["properties"]["exposure"].as<int>() == 0,
+        "Calibration tone controls must route through the high-bit stitcher and remain disabled in 8-bit mode");
+  } else {
+    ok = false;
+  }
+
+  auto calibration_archive = prepare_tone_routing("calibration-archive-name", "0");
+  if (calibration_archive) {
+    YAML::Node archive_pipeline = calibration_archive->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["output-file"] = "tracking_output.mkv";
+    hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(calibration_archive.get());
+    ok &= expect(
+        archive_pipeline["sink0"]["output-file"].as<std::string>() == "stitched_output.mkv",
+        "Calibration encode sinks must use the stitched archive basename by default");
+  } else {
+    ok = false;
+  }
 
   const fs::path primary_draw_baseline_root = root / "primary-draw-baseline";
   fs::create_directories(primary_draw_baseline_root);

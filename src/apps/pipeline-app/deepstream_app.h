@@ -304,7 +304,8 @@ class HmApp : public _AppCtx {
       bool clean_stitching_from_control_points = false,
       const std::string& clean_expected_invalidation_id = {},
       bool show_render_sink = false,
-      double show_render_scale = -1.0) {
+      double show_render_scale = -1.0,
+      bool stitching_calibration_only = false) {
     return configurator_->complete_configuration(
         force,
         clean_stitching_artifacts,
@@ -312,7 +313,8 @@ class HmApp : public _AppCtx {
         clean_expected_invalidation_id,
         show_render_sink,
         show_render_scale,
-        std::filesystem::path(app_config_file_).parent_path());
+        std::filesystem::path(app_config_file_).parent_path(),
+        stitching_calibration_only);
   }
 
   bool pause();

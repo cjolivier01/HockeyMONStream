@@ -26,6 +26,16 @@ struct StitchingBackendChoices;
 }
 namespace configurator_internal {
 
+struct AutomaticHighBitDepthDecision {
+  bool enabled{false};
+  size_t source_count{0};
+  size_t unknown_source_count{0};
+  unsigned int minimum_source_bit_depth{0};
+};
+
+AutomaticHighBitDepthDecision decide_automatic_high_bit_depth(
+    const std::vector<std::optional<unsigned int>>& source_bit_depths);
+
 struct ExplicitStitchingVideoSelection {
   std::vector<std::string> left;
   std::vector<std::string> right;
@@ -72,6 +82,8 @@ absl::StatusOr<YAML::Node> build_effective_playtracker_config(
 } // namespace configurator_internal
 
 class Configurator {
+  friend struct ConfiguratorTestAccess;
+
  public:
   static constexpr int kUseConfigFileGpu = -1;
 
@@ -137,7 +149,8 @@ class Configurator {
       const std::string& clean_expected_invalidation_id = {},
       bool show_render_sink = false,
       double show_render_scale = -1.0,
-      const std::filesystem::path& pipeline_config_dir = {});
+      const std::filesystem::path& pipeline_config_dir = {},
+      bool stitching_calibration_only = false);
 
   absl::Status prepare_initial_pipeline_position(
       NvDsPipeline& pipeline,
@@ -221,6 +234,11 @@ class Configurator {
       size_t& num_video_sources);
   absl::Status configure_encode_file_outputs(YAML::Node& pipeline, const std::vector<std::string>& source_video_paths)
       const;
+  absl::Status configure_source_bit_depth(
+      YAML::Node& pipeline,
+      const std::vector<std::string>& source_video_paths,
+      bool stitching_calibration_only);
+  void configure_stitching_calibration_archive_name(YAML::Node& pipeline) const;
   void log_enabled_bins(const YAML::Node& pipeline) const;
 
   std::string file_maybe_in_game_dir(const std::string& basename);

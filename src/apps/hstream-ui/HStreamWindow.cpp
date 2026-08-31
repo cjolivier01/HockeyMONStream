@@ -1114,14 +1114,16 @@ QString archive_output_work_dir(const QProcessEnvironment& env, const QString& w
   return QDir::cleanPath(root);
 }
 
-QString archive_output_path(const QString& output_work_dir, const QString& game_id) {
-  return QDir(QDir(output_work_dir).filePath(game_id)).filePath("tracking_output-with-audio.mkv");
+QString archive_output_path(const QString& output_work_dir, const QString& game_id, bool stitching_calibration) {
+  return QDir(QDir(output_work_dir).filePath(game_id))
+      .filePath(stitching_calibration ? "stitched_output-with-audio.mkv" : "tracking_output-with-audio.mkv");
 }
 
-QString available_final_archive_path(const QString& game_dir, const QString& game_id) {
+QString available_final_archive_path(const QString& game_dir, const QString& game_id, bool stitching_calibration) {
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
-  const QString base = QString("%1-tracking_output-with-audio").arg(safe_game_id);
+  const QString base =
+      QString("%1-%2_output-with-audio").arg(safe_game_id, stitching_calibration ? "stitched" : "tracking");
   for (int suffix = 0; suffix < 1000; ++suffix) {
     const QString filename = suffix == 0 ? base + ".mp4" : QString("%1-%2.mp4").arg(base).arg(suffix);
     const QString candidate = QDir(game_dir).filePath(filename);
@@ -4945,6 +4947,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       if (toggle)
         toggle->setEnabled(overlays_available);
     }
+    updateArchiveOutputPathLabel();
+    updateStitchedColorPrecisionControls();
   });
 
   control_points_spin_ = new QSpinBox();
@@ -5614,8 +5618,8 @@ void HStreamWindow::configureControlHelp() {
   help(
       "runModeCombo",
       "Choose Program for the full output pipeline, or Stitching Calibration for a stitching-only graph without "
-      "detection, tracking, rink-mask filtering, cropping, or Program output. Output archives are created only by "
-      "Program runs.");
+      "detection, tracking, rink-mask filtering, cropping, or Program output. Archive File records the stitched "
+      "canvas with audio in this mode.");
   help(
       "controlPointsSpin",
       "Set the maximum number of feature control points used during stitching calibration. Changing it makes Program recalibrate stale stitching before continuing.");
@@ -5682,7 +5686,9 @@ void HStreamWindow::configureControlHelp() {
       "Enable the local RTSP server output for the next Program run. Changes made while playing apply on the next run.");
   help(
       "outputToggle_archive-file",
-      "Encode an archive during the next Program run. Work is written below the configured output root, then a successful run is losslessly finalized as a fast-start MP4 in the game directory. Stitching Calibration does not archive.");
+      "Encode an archive during the next Program or Stitching Calibration run. Calibration records the stitched "
+      "canvas with audio; Program records its normal output. Work is written below the configured output root, then "
+      "a successful run is losslessly finalized as a fast-start MP4 in the game directory.");
   help(
       "outputToggle_spare-rtmp",
       "Enable the spare RTMP destination for the next Program run. Changes made while playing apply on the next run.");
@@ -5733,8 +5739,9 @@ void HStreamWindow::configureControlHelp() {
        "stop (sqrt(2) gain). It preserves exact black, raises the whole signal, and clips at white. When Bring up "
        "shadows is also enabled, the luma lift runs first and exposure runs second."},
       {"Use_10_Bit_Grading",
-       "Keep 10-bit decoded video in P010 through the lossless camera mux, convert it to RGB10A2, and stitch and "
-       "grade in FP16 before the one final RGBA8 conversion. This uses more GPU memory and applies on the next run."},
+       "Source videos at 10-bit or higher automatically use P010/RGB10A2 and FP16 stitching and grading. Check this "
+       "to force that path when source metadata is unavailable. The stitched result has one final RGBA8 conversion "
+       "before the existing archive encoder. This uses more GPU memory and applies on the next run."},
       {"Overshoot_Stop_Delay_Frames", "Frames to delay stopping when tracking motion overshoots its destination."},
       {"Post_Nonstop_Stop_Delay_Frames", "Frames to delay stopping after a continuous non-stop movement segment."},
       {"Overshoot_Speed_Ratio_x100",
@@ -5758,7 +5765,20 @@ void HStreamWindow::configureControlHelp() {
     const QString object_name =
         id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading" ? "cameraCheck_" + id : "cameraSlider_" + id;
     help(object_name, description + " Changes apply live where supported; Save Preset stores the value for this game.");
+    if (id == "Bring_Up_Shadows" || id == "Exposure_x100" || id == "Lift_Shadow_Black_Point" ||
+        id == "Use_10_Bit_Grading") {
+      const QString stitched_object_name = id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading"
+          ? "stitchedCameraCheck_" + id
+          : "stitchedCameraSlider_" + id;
+      help(
+          stitched_object_name,
+          description + " This mirrors the Program Color setting; Save Preset stores one shared value for this game.");
+    }
   }
+  help(
+      "stitchedColorPrecisionStatus",
+      "Shows whether calibration grading will use automatic source-depth detection, a forced 10-bit / FP16 path, "
+      "or the standard 8-bit path where calibration color controls are unavailable.");
   updatePresetDirtyState();
 }
 
@@ -5821,7 +5841,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       addCameraCheckBox(
           content_layout,
           "Use_10_Bit_Grading",
-          "Use 10-bit / FP16 stitch and grade (next run)",
+          "Force 10-bit / FP16 (otherwise auto, next run)",
           default_value("Use_10_Bit_Grading") != 0);
     }
     content_layout->addStretch(1);
@@ -5905,6 +5925,77 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
+
+    auto* color_page = new QWidget();
+    color_page->setObjectName("stitchedColorPrecisionTab");
+    color_page->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto* color_page_layout = new QVBoxLayout(color_page);
+    color_page_layout->setContentsMargins(0, 0, 0, 0);
+    auto* color_scroll = new QScrollArea();
+    color_scroll->setObjectName("stitchedColorPrecisionScrollArea");
+    color_scroll->setFrameShape(QFrame::NoFrame);
+    color_scroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    color_scroll->setWidgetResizable(true);
+    auto* color_content = new QWidget();
+    color_content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto* color_layout = new QVBoxLayout(color_content);
+    const auto add_mirrored_slider = [this, color_layout](const CameraSliderSpec& spec) {
+      const auto canonical = camera_sliders_.find(spec.id);
+      if (canonical == camera_sliders_.end() || !canonical->second)
+        throw std::logic_error(QString("No canonical camera slider for %1").arg(spec.id).toStdString());
+      auto* row = new QGridLayout();
+      auto* name = new QLabel(spec.label);
+      const QString id = QString::fromLatin1(spec.id);
+      auto* value_label = make_value_label("stitchedCameraValue_" + id, QString::number(canonical->second->value()));
+      auto* slider = new WheelPassthroughSlider(Qt::Horizontal);
+      slider->setObjectName("stitchedCameraSlider_" + id);
+      slider->setRange(canonical->second->minimum(), canonical->second->maximum());
+      slider->setValue(canonical->second->value());
+      stitched_color_sliders_[id] = slider;
+      stitched_color_value_labels_[id] = value_label;
+      connect(slider, &QSlider::valueChanged, canonical->second, &QSlider::setValue);
+      connect(canonical->second, &QSlider::valueChanged, this, [slider, value_label](int value) {
+        const QSignalBlocker blocker(slider);
+        slider->setValue(value);
+        value_label->setText(QString::number(value));
+      });
+      row->addWidget(name, 0, 0);
+      row->addWidget(value_label, 0, 1);
+      row->addWidget(slider, 1, 0, 1, 2);
+      color_layout->addLayout(row);
+    };
+    for (const CameraSliderSpec& spec : color_controls)
+      add_mirrored_slider(spec);
+
+    const auto add_mirrored_checkbox = [this, color_layout](const QString& id, const QString& label) {
+      const auto canonical = camera_checkboxes_.find(id);
+      if (canonical == camera_checkboxes_.end() || !canonical->second)
+        throw std::logic_error(QString("No canonical camera checkbox for %1").arg(id).toStdString());
+      auto* checkbox = new QCheckBox(label);
+      checkbox->setObjectName("stitchedCameraCheck_" + id);
+      checkbox->setChecked(canonical->second->isChecked());
+      stitched_color_checkboxes_[id] = checkbox;
+      connect(checkbox, &QCheckBox::toggled, canonical->second, &QCheckBox::setChecked);
+      connect(canonical->second, &QCheckBox::toggled, this, [this, checkbox, id](bool checked) {
+        const QSignalBlocker blocker(checkbox);
+        checkbox->setChecked(checked);
+        if (id == "Use_10_Bit_Grading")
+          updateStitchedColorPrecisionControls();
+      });
+      color_layout->addWidget(checkbox);
+    };
+    add_mirrored_checkbox("Lift_Shadow_Black_Point", "Lift black point too (stronger)");
+    add_mirrored_checkbox("Use_10_Bit_Grading", "Force 10-bit / FP16 (otherwise auto, next run)");
+    stitched_color_precision_status_ = new QLabel();
+    stitched_color_precision_status_->setObjectName("stitchedColorPrecisionStatus");
+    stitched_color_precision_status_->setWordWrap(true);
+    stitched_color_precision_status_->setStyleSheet("color: #667085;");
+    color_layout->addWidget(stitched_color_precision_status_);
+    color_layout->addStretch(1);
+    color_scroll->setWidget(color_content);
+    color_page_layout->addWidget(color_scroll, 1);
+    control_tabs->addTab(color_page, "Color & Precision");
+
     auto* algorithms_scroll = new QScrollArea();
     algorithms_scroll->setObjectName("stitchingAlgorithmsScrollArea");
     algorithms_scroll->setFrameShape(QFrame::NoFrame);
@@ -5973,6 +6064,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     control_tabs->addTab(algorithms_scroll, "Algorithms");
     updateProjectionParameterControls();
     updateProjectionFramingControls();
+    synchronizeStitchedColorControls();
   }
   layout->addWidget(control_tabs);
   parent->addWidget(group);
@@ -6156,6 +6248,84 @@ QStringList HStreamWindow::enabledSinkNames() const {
 
 bool HStreamWindow::isCalibrationRun() const {
   return run_mode_selector_ && run_mode_selector_->currentData().toString() == "stitch-calibration";
+}
+
+void HStreamWindow::synchronizeStitchedColorControls() {
+  for (const auto& [id, mirror] : stitched_color_sliders_) {
+    const auto canonical = camera_sliders_.find(id);
+    if (!mirror || canonical == camera_sliders_.end() || !canonical->second)
+      continue;
+    const QSignalBlocker blocker(mirror);
+    mirror->setRange(canonical->second->minimum(), canonical->second->maximum());
+    mirror->setValue(canonical->second->value());
+    const auto label = stitched_color_value_labels_.find(id);
+    if (label != stitched_color_value_labels_.end() && label->second)
+      label->second->setText(QString::number(mirror->value()));
+  }
+  for (const auto& [id, mirror] : stitched_color_checkboxes_) {
+    const auto canonical = camera_checkboxes_.find(id);
+    if (!mirror || canonical == camera_checkboxes_.end() || !canonical->second)
+      continue;
+    const QSignalBlocker blocker(mirror);
+    mirror->setChecked(canonical->second->isChecked());
+  }
+  updateStitchedColorPrecisionControls();
+}
+
+void HStreamWindow::updateStitchedColorPrecisionControls() {
+  if (!stitched_color_precision_status_)
+    return;
+
+  const bool calibration_active = active_run_is_calibration_;
+  bool tone_controls_enabled = true;
+  QString status;
+  if (!calibration_active && !isCalibrationRun()) {
+    status = "Program mode: these controls mirror Program Color; existing 8-bit Program grading remains available.";
+  } else if (!calibration_active) {
+    const bool forced = cameraControlValue("Use_10_Bit_Grading") != 0;
+    status = forced
+        ? "Next run: forced 10-bit / FP16. Calibration color controls will be available."
+        : "Next run: automatic source-depth detection. Calibration color controls apply only when all selected "
+          "sources are known to be at least 10-bit.";
+  } else if (!active_run_high_bit_depth_resolved_) {
+    tone_controls_enabled = false;
+    status = "Detecting source precision… Calibration color controls will unlock if the 10-bit / FP16 path is active.";
+  } else if (active_run_high_bit_depth_) {
+    const QString decision = active_run_high_bit_depth_mode_ == "forced-on" ? "Forced" : "Auto detected";
+    status = QString("%1: 10-bit / FP16 active; calibration color controls are available").arg(decision);
+    if (active_run_source_count_ > 0) {
+      status += QString(" (%1 source%2, minimum %3-bit)")
+                    .arg(active_run_source_count_)
+                    .arg(active_run_source_count_ == 1 ? "" : "s")
+                    .arg(active_run_minimum_source_bit_depth_);
+    }
+    status += ".";
+  } else {
+    tone_controls_enabled = false;
+    if (active_run_unknown_source_count_ > 0) {
+      status = QString("8-bit calibration: color controls unavailable because %1 of %2 source bit depths are unknown.")
+                   .arg(active_run_unknown_source_count_)
+                   .arg(active_run_source_count_);
+    } else if (active_run_minimum_source_bit_depth_ > 0) {
+      status = QString("8-bit calibration: color controls unavailable; minimum source depth is %1-bit.")
+                   .arg(active_run_minimum_source_bit_depth_);
+    } else {
+      status = "8-bit calibration: color controls unavailable because source precision could not be confirmed.";
+    }
+  }
+
+  for (const QString& id : {QString("Bring_Up_Shadows"), QString("Exposure_x100")}) {
+    const auto control = stitched_color_sliders_.find(id);
+    if (control != stitched_color_sliders_.end() && control->second)
+      control->second->setEnabled(tone_controls_enabled);
+  }
+  const auto black_point = stitched_color_checkboxes_.find("Lift_Shadow_Black_Point");
+  if (black_point != stitched_color_checkboxes_.end() && black_point->second)
+    black_point->second->setEnabled(tone_controls_enabled);
+  const auto force = stitched_color_checkboxes_.find("Use_10_Bit_Grading");
+  if (force != stitched_color_checkboxes_.end() && force->second)
+    force->second->setEnabled(true);
+  stitched_color_precision_status_->setText(status);
 }
 
 int HStreamWindow::stitchingCalibrationControlPoints() const {
@@ -7436,7 +7606,19 @@ QStringList HStreamWindow::pipelineArguments() const {
   if (isCalibrationRun()) {
     args << "--stitching-calibration-only";
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
-    args << QString("--enable-sinks=%1").arg(render_video || embed_render_window ? "RENDER" : "FAKE");
+    QStringList sinks;
+    if (render_video || embed_render_window)
+      sinks << "RENDER";
+    const auto archive_toggle = output_toggles_.find("archive-file");
+    const bool archive_enabled =
+        archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
+    if (archive_enabled) {
+      sinks << "ENCODE_FILE";
+      args << "--options=pipeline.sink2.output-file=stitched_output.mkv";
+    }
+    if (sinks.isEmpty())
+      sinks << "FAKE";
+    args << QString("--enable-sinks=%1").arg(sinks.join(','));
     if (render_video || embed_render_window) {
       args << "--show";
     }
@@ -7496,25 +7678,17 @@ QStringList HStreamWindow::pipelineArguments() const {
                   .arg(render_video ? (initial_channel.isEmpty() ? "program" : initial_channel) : "none");
     }
   }
-  const bool use_high_bit_grading = cameraControlValue("Use_10_Bit_Grading") != 0;
-  args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1").arg(use_high_bit_grading ? 1 : 0);
+  const bool force_high_bit_grading = cameraControlValue("Use_10_Bit_Grading") != 0;
+  args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1")
+              .arg(force_high_bit_grading ? "1" : "auto");
+  args << QString("--options=hstream_ui.camera_controls.Bring_Up_Shadows=%1")
+              .arg(cameraControlValue("Bring_Up_Shadows"));
+  args << QString("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=%1")
+              .arg(cameraControlValue("Lift_Shadow_Black_Point"));
+  args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
   if (!isCalibrationRun()) {
     args
         << QString("--options=rink.camera.zoom_in_aggressiveness=%1").arg(cameraControlValue("Zoom_In_Aggressiveness"));
-    const QString active_tone_element = use_high_bit_grading ? "hmstitcher" : "hmplaycropper";
-    const QString bypassed_tone_element = use_high_bit_grading ? "hmplaycropper" : "hmstitcher";
-    args << QString("--options=pipeline.%1.properties.shadow-lift=%2")
-                .arg(active_tone_element)
-                .arg(cameraControlValue("Bring_Up_Shadows"));
-    args << QString("--options=pipeline.%1.properties.shadow-lift-black-point=%2")
-                .arg(active_tone_element)
-                .arg(cameraControlValue("Lift_Shadow_Black_Point"));
-    args << QString("--options=pipeline.%1.properties.exposure=%2")
-                .arg(active_tone_element)
-                .arg(QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2));
-    args << QString("--options=pipeline.%1.properties.shadow-lift=0").arg(bypassed_tone_element);
-    args << QString("--options=pipeline.%1.properties.shadow-lift-black-point=0").arg(bypassed_tone_element);
-    args << QString("--options=pipeline.%1.properties.exposure=0").arg(bypassed_tone_element);
     if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
       args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
                   .arg(QDir::cleanPath(gameDirectory(game_id)));
@@ -7542,7 +7716,7 @@ void HStreamWindow::startPipeline() {
     releaseArchiveFinalizerOwnership(true);
   }
   const auto blocked_archive_toggle = output_toggles_.find("archive-file");
-  const bool blocked_archive_enabled = !isCalibrationRun() && blocked_archive_toggle != output_toggles_.end() &&
+  const bool blocked_archive_enabled = blocked_archive_toggle != output_toggles_.end() &&
       blocked_archive_toggle->second && blocked_archive_toggle->second->isChecked();
   if (blocked_archive_enabled && !archive_finalize_blocked_source_path_.isEmpty()) {
     appendLog(QString("archive run blocked until the retained work file is moved to safety: %1")
@@ -7575,7 +7749,15 @@ void HStreamWindow::startPipeline() {
   }
   active_run_game_id_ = game_id_edit_->text().trimmed();
   active_run_is_calibration_ = isCalibrationRun();
+  // A checked override is known before launch. Automatic mode is updated from
+  // the CLI's effective source-depth report before runtime controls are used.
   active_run_high_bit_depth_ = cameraControlValue("Use_10_Bit_Grading") != 0;
+  active_run_high_bit_depth_resolved_ = false;
+  active_run_high_bit_depth_mode_.clear();
+  active_run_source_count_ = 0;
+  active_run_unknown_source_count_ = 0;
+  active_run_minimum_source_bit_depth_ = 0;
+  updateStitchedColorPrecisionControls();
   const QStringList active_sinks = enabledSinkNames();
   active_run_local_render_only_ = !active_run_is_calibration_ &&
       (!render_video_toggle_ || render_video_toggle_->isChecked()) && active_sinks.size() == 1 &&
@@ -7641,8 +7823,8 @@ void HStreamWindow::startPipeline() {
   active_archive_initial_mtime_ms_ = -1;
   active_archive_video_is_hevc_ = false;
   const auto archive_toggle = output_toggles_.find("archive-file");
-  const bool archive_enabled = !active_run_is_calibration_ && archive_toggle != output_toggles_.end() &&
-      archive_toggle->second && archive_toggle->second->isChecked();
+  const bool archive_enabled =
+      archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
   if (archive_enabled) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
@@ -7650,7 +7832,7 @@ void HStreamWindow::startPipeline() {
                                        .arg(QCoreApplication::applicationPid())
                                        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     env.insert("HSTREAM_ARCHIVE_RUN_ID", archive_run_id);
-    active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_);
+    active_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, active_run_is_calibration_);
     const QString archive_dir = QFileInfo(active_archive_output_path_).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
       output_states_["archive-file"]->setText("ERROR");
@@ -8076,6 +8258,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   QString archive_result;
   QString archive_to_finalize;
   QString archive_game_id;
+  bool archive_is_stitching_calibration = false;
   bool retain_archive_log_guard_for_recovery = false;
   if (!active_archive_output_path_.isEmpty()) {
     const QFileInfo archive_info(active_archive_output_path_);
@@ -8093,6 +8276,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
       if (completed_successfully) {
         archive_to_finalize = active_archive_output_path_;
         archive_game_id = active_run_game_id_;
+        archive_is_stitching_calibration = active_run_is_calibration_;
       } else {
         retain_archive_log_guard_for_recovery = true;
       }
@@ -8135,6 +8319,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
   active_run_high_bit_depth_ = false;
+  active_run_high_bit_depth_resolved_ = false;
+  active_run_high_bit_depth_mode_.clear();
+  active_run_source_count_ = 0;
+  active_run_unknown_source_count_ = 0;
+  active_run_minimum_source_bit_depth_ = 0;
   active_run_local_render_only_ = false;
   active_calibration_control_points_ = 0;
   active_calibration_frame_count_ = 0;
@@ -8165,7 +8354,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
   if (!archive_to_finalize.isEmpty()) {
-    startArchiveFinalization(archive_to_finalize, archive_game_id, active_archive_video_is_hevc_);
+    startArchiveFinalization(
+        archive_to_finalize, archive_game_id, active_archive_video_is_hevc_, archive_is_stitching_calibration);
   } else {
     releaseArchiveFinalizerOwnership(true);
     finishArchiveJobLog(!retain_archive_log_guard_for_recovery);
@@ -8289,6 +8479,12 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   }
   active_run_game_id_.clear();
   active_run_is_calibration_ = false;
+  active_run_high_bit_depth_ = false;
+  active_run_high_bit_depth_resolved_ = false;
+  active_run_high_bit_depth_mode_.clear();
+  active_run_source_count_ = 0;
+  active_run_unknown_source_count_ = 0;
+  active_run_minimum_source_bit_depth_ = 0;
   active_calibration_control_points_ = 0;
   active_calibration_frame_count_ = 0;
   active_calibration_start_stage_.clear();
@@ -8325,6 +8521,9 @@ void HStreamWindow::readPipelineOutput() {
       if (!line.trimmed().isEmpty()) {
         const QString trimmed = line.trimmed();
         if (handleStartupProgressOutput(trimmed)) {
+          continue;
+        }
+        if (handleHighBitDepthOutput(trimmed)) {
           continue;
         }
         if (handlePlaybackProgressOutput(trimmed)) {
@@ -8364,6 +8563,29 @@ bool HStreamWindow::handleStartupProgressOutput(const QString& line) {
   }
   setPlaybackStartupStage(match.captured(1), match.captured(2));
   appendLog(QString("startup [%1]: %2").arg(match.captured(1), match.captured(2)));
+  return true;
+}
+
+bool HStreamWindow::handleHighBitDepthOutput(const QString& line) {
+  static const QRegularExpression pattern(QStringLiteral(
+      R"(^HSTREAM_HIGH_BIT_DEPTH mode=([^ ]+) enabled=([01]) sources=(\d+) unknown=(\d+) minimum-source-bit-depth=(\d+)$)"));
+  const QRegularExpressionMatch match = pattern.match(line);
+  if (!match.hasMatch())
+    return false;
+  active_run_high_bit_depth_ = match.captured(2) == "1";
+  active_run_high_bit_depth_resolved_ = true;
+  active_run_high_bit_depth_mode_ = match.captured(1);
+  active_run_source_count_ = match.captured(3).toInt();
+  active_run_unknown_source_count_ = match.captured(4).toInt();
+  active_run_minimum_source_bit_depth_ = match.captured(5).toInt();
+  const QString minimum_depth = match.captured(5) == "0" ? "unknown" : match.captured(5) + "-bit";
+  appendLog(QString("source precision mode=%1; %2 stitch/grade path; minimum source depth=%3; unknown sources=%4")
+                .arg(
+                    match.captured(1),
+                    active_run_high_bit_depth_ ? "10-bit / FP16" : "standard 8-bit",
+                    minimum_depth,
+                    match.captured(4)));
+  updateStitchedColorPrecisionControls();
   return true;
 }
 
@@ -9537,7 +9759,8 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
     archive_output_path_label_->setText(QString("Archive: %1")
                                             .arg(archive_output_path(
                                                 archive_output_work_dir(env, pipelineWorkingDirectory()),
-                                                game_id_edit_ ? game_id_edit_->text().trimmed() : QString())));
+                                                game_id_edit_ ? game_id_edit_->text().trimmed() : QString(),
+                                                isCalibrationRun())));
   } else {
     archive_output_path_label_->setText("Archive path will be shown when enabled");
   }
@@ -9689,7 +9912,11 @@ bool HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
   return true;
 }
 
-void HStreamWindow::startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video) {
+void HStreamWindow::startArchiveFinalization(
+    const QString& source_path,
+    const QString& game_id,
+    bool hevc_video,
+    bool stitching_calibration_archive) {
   if (!archive_finalize_process_ || archive_finalize_process_->state() != QProcess::NotRunning)
     return;
 
@@ -9766,6 +9993,7 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
   archive_finalize_recovery_log_inode_ = 0;
   archive_finalize_source_path_ = QFileInfo(source_path).absoluteFilePath();
   archive_finalize_game_id_ = game_id;
+  archive_finalize_is_calibration_ = stitching_calibration_archive;
   const QString archive_game_directory = gameDirectory(game_id);
 #ifdef Q_OS_UNIX
   QSet<QString> cleanup_directories = {
@@ -9783,7 +10011,8 @@ void HStreamWindow::startArchiveFinalization(const QString& source_path, const Q
     }
   }
 #endif
-  archive_finalize_target_path_ = available_final_archive_path(archive_game_directory, game_id);
+  archive_finalize_target_path_ =
+      available_final_archive_path(archive_game_directory, game_id, archive_finalize_is_calibration_);
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
   archive_finalize_pending_failure_detail_.clear();
@@ -10253,8 +10482,8 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
       bool republished = false;
       QString republish_error;
       for (int attempt = 0; attempt < 1000; ++attempt) {
-        const QString candidate =
-            available_final_archive_path(gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_);
+        const QString candidate = available_final_archive_path(
+            gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_, archive_finalize_is_calibration_);
         if (candidate.isEmpty()) {
           republish_error = "No safe filename remained for the pinned completed MP4.";
           break;
@@ -10344,8 +10573,8 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   bool published = false;
   QString publication_error;
   for (int attempt = 0; attempt < 1000; ++attempt) {
-    const QString candidate =
-        available_final_archive_path(gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_);
+    const QString candidate = available_final_archive_path(
+        gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_, archive_finalize_is_calibration_);
     if (candidate.isEmpty()) {
       publication_error = "Could not find an available final filename in the game directory.";
       break;
@@ -10512,8 +10741,8 @@ void HStreamWindow::completeArchiveFinalization() {
       retained_target = archive_finalize_target_guard_path_ + ".hstream-pin";
     } else if (have_target_identity) {
       for (int attempt = 0; attempt < 1000; ++attempt) {
-        const QString candidate =
-            available_final_archive_path(gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_);
+        const QString candidate = available_final_archive_path(
+            gameDirectory(archive_finalize_game_id_), archive_finalize_game_id_, archive_finalize_is_calibration_);
         if (candidate.isEmpty())
           break;
         int rescue_errno = 0;
@@ -12183,8 +12412,7 @@ void HStreamWindow::updateRunControls() {
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
       archive_toggle != output_toggles_.end() && archive_toggle->second && archive_toggle->second->isChecked();
-  const bool archive_recovery_blocked =
-      !isCalibrationRun() && archive_enabled && !archive_finalize_blocked_source_path_.isEmpty();
+  const bool archive_recovery_blocked = archive_enabled && !archive_finalize_blocked_source_path_.isEmpty();
   if (!pipeline_state_) {
     return;
   }
@@ -12256,6 +12484,7 @@ void HStreamWindow::updateRunControls() {
     video_controls_->setEnabled(!running && !finalizing);
   }
   updatePlaybackSeekControls();
+  updateStitchedColorPrecisionControls();
 }
 
 void HStreamWindow::restartStage() {
@@ -12517,6 +12746,7 @@ void HStreamWindow::resetCameraControls() {
       checkbox->second->setChecked(value != 0);
     }
   }
+  synchronizeStitchedColorControls();
   if (!pipeline_running && stitch_frame_time_edit_) {
     const auto parsed = parse_stitch_frame_time(default_stitch_frame_time_);
     if (parsed.has_value())
@@ -12736,6 +12966,7 @@ void HStreamWindow::loadSavedControlConfig() {
       label_it->second->setText(QString::number(value));
     }
   }
+  synchronizeStitchedColorControls();
 
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   auto loaded_config = hm::stitching::load_game_config_file(config_path);
@@ -13236,6 +13467,7 @@ void HStreamWindow::loadSavedControlConfig() {
         label_it->second->setText(QString::number(slider_it->second->value()));
       }
     }
+    synchronizeStitchedColorControls();
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
     captureSavedControlState();
     if (normalized_nona_without_autooptimizer) {
@@ -15476,7 +15708,8 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
-  if (active_run_is_calibration_ && id != "Stitch_Rotate_Degrees") {
+  const bool tone_control = id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Exposure_x100";
+  if (active_run_is_calibration_ && id != "Stitch_Rotate_Degrees" && !(tone_control && active_run_high_bit_depth_)) {
     return false;
   }
   if (id == "Stitch_Rotate_Degrees") {
@@ -15513,7 +15746,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
     schedulePlaytrackerRuntimeControl(id, value);
     return false;
   }
-  if (id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Exposure_x100") {
+  if (tone_control) {
     schedulePlaycropperRuntimeControl(id, value);
     return false;
   }

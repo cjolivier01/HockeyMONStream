@@ -197,6 +197,7 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
   bool handleStartupProgressOutput(const QString& line);
+  bool handleHighBitDepthOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
   bool handlePlaybackSeekOutput(const QString& line);
   void setPlaybackStartupStage(const QString& stage, const QString& detail);
@@ -220,7 +221,11 @@ class HStreamWindow : public QMainWindow {
       quint64 expected_inode = 0);
   void finishArchiveJobLog(bool retire_identity_guard = true);
   void finishArchiveJobLogAfterFinalizationFailure();
-  void startArchiveFinalization(const QString& source_path, const QString& game_id, bool hevc_video);
+  void startArchiveFinalization(
+      const QString& source_path,
+      const QString& game_id,
+      bool hevc_video,
+      bool stitching_calibration_archive);
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
   bool startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error);
@@ -376,6 +381,8 @@ class HStreamWindow : public QMainWindow {
   QStringList enabledSinkNames() const;
   bool isCalibrationRun() const;
   void updateRunControls();
+  void synchronizeStitchedColorControls();
+  void updateStitchedColorPrecisionControls();
   bool applySavedControlConfig(
       YAML::Node& config,
       bool* invalidate_rink_masks,
@@ -609,8 +616,14 @@ class HStreamWindow : public QMainWindow {
   quint64 archive_finalize_recovery_log_inode_{0};
   ArchiveFinalizeStage archive_finalize_stage_{ArchiveFinalizeStage::kIdle};
   bool archive_finalize_failed_{false};
+  bool archive_finalize_is_calibration_{false};
   bool active_run_is_calibration_{false};
   bool active_run_high_bit_depth_{false};
+  bool active_run_high_bit_depth_resolved_{false};
+  QString active_run_high_bit_depth_mode_;
+  int active_run_source_count_{0};
+  int active_run_unknown_source_count_{0};
+  int active_run_minimum_source_bit_depth_{0};
   int active_calibration_control_points_{0};
   int active_calibration_frame_count_{0};
   int active_stitch_max_output_width_{0};
@@ -647,6 +660,10 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QSlider*> camera_sliders_;
   std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
+  std::map<QString, QSlider*> stitched_color_sliders_;
+  std::map<QString, QCheckBox*> stitched_color_checkboxes_;
+  std::map<QString, QLabel*> stitched_color_value_labels_;
+  QLabel* stitched_color_precision_status_{nullptr};
   std::map<QString, int> camera_defaults_;
   YAML::Node baseline_config_;
   QString baseline_config_root_;

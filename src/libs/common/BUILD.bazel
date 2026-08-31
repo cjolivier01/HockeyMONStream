@@ -163,6 +163,15 @@ cc_test(
 )
 
 cc_test(
+    name = "video_bit_depth_test",
+    srcs = ["VideoBitDepthTest.cpp"],
+    deps = [
+        ":utils",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
     name = "decoded_frame_sequence_meta_test",
     srcs = ["DecodedFrameSequenceMetaTest.cpp"],
     deps = [

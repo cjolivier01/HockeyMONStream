@@ -55,6 +55,15 @@ struct Videoinfo {
 
 Videoinfo getVideoInfo(const std::string& videoPath);
 
+// Returns the per-component video depth advertised by encoded or raw video
+// caps. This intentionally does not use GstDiscovererVideoInfo::depth, whose
+// value is the aggregate pixel depth (for example 24 for 8-bit video).
+std::optional<unsigned int> videoBitDepthFromCaps(const GstCaps* caps);
+
+// Discovers the first non-image video stream in a local media file. An empty
+// result means that the stream depth could not be established safely.
+std::optional<unsigned int> getVideoBitDepth(const std::string& videoPath);
+
 template <typename T>
 inline T get_node_value(const YAML::Node& n, const std::string& dot_string, const T& default_value) {
   std::optional<YAML::Node> o_n = hm::get_node(n, dot_string);

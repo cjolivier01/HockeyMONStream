@@ -1238,7 +1238,8 @@ absl::Status PipelineApplication::configureInstances(
           clean_stitching_from_control_points_,
           clean_stitching_expected_invalidation_id_ ? clean_stitching_expected_invalidation_id_ : "",
           show_ || show_render_scale_ == 0.0,
-          show_render_scale_);
+          show_render_scale_,
+          stitching_calibration_only_);
       if (configuration_status.code() == absl::StatusCode::kCancelled) {
         if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
           return configuration_status;
