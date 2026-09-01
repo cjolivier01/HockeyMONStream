@@ -11925,7 +11925,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
     return true;
   }
   static const QRegularExpression pattern(
-      R"(^HSTREAM_PREVIEW channel=(\S+) status=(\S+) generation=(\d+)(?: width=(\d+) height=(\d+))? message=(.*)$)");
+      R"(^HSTREAM_PREVIEW channel=(\S+) status=(\S+) generation=(\d+) message=(.*?)(?: resolution=(\d+)x(\d+))?$)");
   const QRegularExpressionMatch match = pattern.match(line);
   if (!match.hasMatch())
     return false;
@@ -11934,7 +11934,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
   const QString status = match.captured(2);
   bool generation_valid = false;
   const quint64 generation = match.captured(3).toULongLong(&generation_valid);
-  const QString message = match.captured(6);
+  const QString message = match.captured(4);
   if (!generation_valid || generation < preview_generation_)
     return true;
 
@@ -11971,8 +11971,8 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
   if (status == "ready") {
     bool width_valid = false;
     bool height_valid = false;
-    const int width = match.captured(4).toInt(&width_valid);
-    const int height = match.captured(5).toInt(&height_valid);
+    const int width = match.captured(5).toInt(&width_valid);
+    const int height = match.captured(6).toInt(&height_valid);
     if (width_valid && height_valid && width > 0 && height > 0)
       updatePreviewTabResolution(channel, width, height);
     if (matches_pending) {

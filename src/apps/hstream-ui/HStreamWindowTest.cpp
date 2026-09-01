@@ -850,9 +850,9 @@ bool write_fake_runner(const QString& path) {
       "preview branch re-armed', flush=True)\n");
   file.write("        if int(os.environ.get('HSTREAM_UI_TEST_PREVIEW_READY_AFTER', '0')) == 0:\n");
   file.write(
-      "            dimensions = ' width=1920 height=1080' if initial_preview == 'program' else ' width=4096 height=1080'\n"
-      "            print('HSTREAM_PREVIEW channel=' + initial_preview + ' status=ready generation=2' + dimensions + ' message=first "
-      "GPU frame presented', flush=True)\n");
+      "            resolution = '1920x1080' if initial_preview == 'program' else '4096x1080'\n"
+      "            print('HSTREAM_PREVIEW channel=' + initial_preview + ' status=ready generation=2 message=first "
+      "GPU frame presented resolution=' + resolution, flush=True)\n");
   file.write("calibration_result = os.environ.get('HSTREAM_UI_TEST_CALIBRATION_RESULT', '')\n");
   file.write("stitching_only = '--stitching-calibration-only' in sys.argv[1:]\n");
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
@@ -1119,9 +1119,9 @@ bool write_fake_runner(const QString& path) {
   file.write("        ready_after = int(os.environ.get('HSTREAM_UI_TEST_PREVIEW_READY_AFTER', '0'))\n");
   file.write("        if ready_after and preview_activation_count >= ready_after:\n");
   file.write(
-      "            dimensions = ' width=1920 height=1080' if channel == 'program' else (' width=4096 height=1080' if channel == 'stitched' else ' width=3840 height=2160')\n"
-      "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + dimensions + "
-      "' message=first GPU frame presented', flush=True)\n");
+      "            resolution = '1920x1080' if channel == 'program' else ('4096x1080' if channel == 'stitched' else '3840x2160')\n"
+      "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + "
+      "' message=first GPU frame presented resolution=' + resolution, flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@set-preview-overlays '):\n");
   file.write("        _, generation, players, play, rink = line.rstrip('\\n').split(' ')\n");

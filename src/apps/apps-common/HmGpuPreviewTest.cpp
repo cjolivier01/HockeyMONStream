@@ -902,6 +902,7 @@ bool run_renderer_test(Display* display, Window window) {
   }
   GstElement* sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
   g_object_set(G_OBJECT(sink), "window-id", static_cast<guint64>(window), nullptr);
+  hm::gpu_preview::set_source_geometry(sink, 1920, 1080);
   gst_object_unref(sink);
 
   if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
@@ -921,7 +922,13 @@ bool run_renderer_test(Display* display, Window window) {
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_APPLICATION) {
       const GstStructure* structure = gst_message_get_structure(message);
       const gchar* status = structure ? gst_structure_get_string(structure, "status") : nullptr;
-      ready = ready || g_strcmp0(status, "ready") == 0;
+      if (g_strcmp0(status, "ready") == 0) {
+        gint reported_width = 0;
+        gint reported_height = 0;
+        ready = gst_structure_get_int(structure, "width", &reported_width) &&
+            gst_structure_get_int(structure, "height", &reported_height) && reported_width == 1920 &&
+            reported_height == 1080;
+      }
     } else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
       GError* bus_error = nullptr;
       gchar* debug = nullptr;

@@ -65,13 +65,14 @@ void post_preview_status(
     gst_element_post_message(element, gst_message_new_application(GST_OBJECT(element), structure));
   if (width > 0 && height > 0) {
     emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " width=%d height=%d message=%s\n",
+        "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT
+        " message=%s resolution=%dx%d\n",
         safe_channel,
         status,
         static_cast<guint64>(generation),
+        safe_message,
         width,
-        height,
-        safe_message);
+        height);
   } else {
     emit_preview_protocol(
         "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
@@ -1600,8 +1601,8 @@ GstFlowReturn preview_sink_render_impl(GstBaseSink* base_sink, GstBuffer* buffer
           "ready",
           generation,
           "first GPU frame presented",
-          state->negotiated_width,
-          state->negotiated_height);
+          state->source_width ? state->source_width : state->negotiated_width,
+          state->source_height ? state->source_height : state->negotiated_height);
     }
   }
   return state->failed.load() ? GST_FLOW_ERROR : GST_FLOW_OK;
