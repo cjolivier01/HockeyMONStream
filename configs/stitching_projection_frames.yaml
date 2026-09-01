@@ -1,6 +1,8 @@
 # Projection review matrix for scripts/capture_stitching_projection_frames.py.
 # Paths are relative to this file. Set source_game_dir here or pass
 # --source-game-dir=/path/to/game on the command line.
+# Successful cases with an existing PNG are skipped on later runs. Pass
+# --force to rerun them, or --clean to remove this matrix's output and exit.
 version: 1
 source_game_dir: null
 output_dir: ../projection-review

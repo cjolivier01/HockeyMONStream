@@ -18,6 +18,42 @@ except ModuleNotFoundError:
 
 
 class ProjectionFrameConfigTest(unittest.TestCase):
+  def write_runtime_fixture(self, root: Path, labels: tuple[str, ...] = ("first",)) -> tuple[Path, Path]:
+    source_game = root / "source-game"
+    source_game.mkdir()
+    (source_game / "config.yaml").write_text("{}\n", encoding="utf-8")
+    executable = root / "pipeline-app"
+    executable.touch()
+    pipeline_config = root / "pipeline.yaml"
+    pipeline_config.touch()
+    matrix_config = root / "matrix.yaml"
+    matrix_config.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "source_game_dir": str(source_game),
+                "output_dir": str(root / "results"),
+                "pipeline": {
+                    "workspace": str(root),
+                    "executable": str(executable),
+                    "config_root": str(root),
+                    "config": str(pipeline_config),
+                },
+                "projections": [
+                    {
+                        "name": "rectilinear",
+                        "variants": [
+                            {"label": label, "parameters": [], "auto_fov": True} for label in labels
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return matrix_config, root / "results"
+
   def test_starter_config_is_exhaustive_and_bounded(self) -> None:
     config_path = Path(__file__).resolve().parents[1] / "configs/stitching_projection_frames.yaml"
     with config_path.open("r", encoding="utf-8") as stream:
@@ -90,40 +126,7 @@ class ProjectionFrameConfigTest(unittest.TestCase):
   def test_resource_failure_is_recorded_per_case_and_matrix_continues(self) -> None:
     with tempfile.TemporaryDirectory(prefix="projection-frame-failure-test-") as temporary:
       root = Path(temporary)
-      source_game = root / "source-game"
-      source_game.mkdir()
-      (source_game / "config.yaml").write_text("{}\n", encoding="utf-8")
-      executable = root / "pipeline-app"
-      executable.touch()
-      pipeline_config = root / "pipeline.yaml"
-      pipeline_config.touch()
-      matrix_config = root / "matrix.yaml"
-      matrix_config.write_text(
-          yaml.safe_dump(
-              {
-                  "version": 1,
-                  "source_game_dir": str(source_game),
-                  "output_dir": str(root / "results"),
-                  "pipeline": {
-                      "workspace": str(root),
-                      "executable": str(executable),
-                      "config_root": str(root),
-                      "config": str(pipeline_config),
-                  },
-                  "projections": [
-                      {
-                          "name": "rectilinear",
-                          "variants": [
-                              {"label": "first", "parameters": [], "auto_fov": True},
-                              {"label": "second", "parameters": [], "auto_fov": True},
-                          ],
-                      }
-                  ],
-              },
-              sort_keys=False,
-          ),
-          encoding="utf-8",
-      )
+      matrix_config, results = self.write_runtime_fixture(root, ("first", "second"))
       arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config)]
       with (
           mock.patch.object(sys, "argv", arguments),
@@ -142,13 +145,91 @@ class ProjectionFrameConfigTest(unittest.TestCase):
 
       self.assertEqual(wait.call_count, 2)
       isolate.assert_not_called()
-      with (root / "results/manifest.csv").open("r", encoding="utf-8", newline="") as stream:
+      with (results / "manifest.csv").open("r", encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
       self.assertEqual([row["outcome"] for row in rows], ["fail", "fail"])
       self.assertEqual([row["first_failure"] for row in rows], ["headroom one", "headroom two"])
       self.assertTrue(all(Path(row["log"]).is_file() for row in rows))
       self.assertIn("Results:\n  FAIL 001 rectilinear--first :: headroom one", output.getvalue())
       self.assertIn("  FAIL 002 rectilinear--second :: headroom two", output.getvalue())
+
+  def test_completed_case_is_skipped_and_force_reruns_it(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-resume-test-") as temporary:
+      root = Path(temporary)
+      matrix_config, results = self.write_runtime_fixture(root)
+      config = capture.load_config(matrix_config)
+      state = capture.expand_cases(config)[0]
+      capture.prepare_output_directory(results)
+      stem = capture.output_stem(1, state)
+      png_path = results / f"{stem}.png"
+      png_path.write_bytes(b"png")
+      effective_path = results / "effective-configs" / f"{stem}.yaml"
+      effective_path.touch()
+      log_path = results / "logs" / f"{stem}.log"
+      log_path.touch()
+      capture.write_manifest(
+          results / "manifest.csv",
+          {
+              "1": capture.manifest_row(
+                  1, state, png_path, effective_path, log_path, {"outcome": "pass", "return_code": 0}
+              )
+          },
+      )
+
+      arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config)]
+      with (
+          mock.patch.object(sys, "argv", arguments),
+          mock.patch.object(capture.shutil, "which", return_value="/usr/bin/ffmpeg"),
+          mock.patch.object(capture.fcntl, "flock"),
+          mock.patch.object(capture.calibration_matrix, "wait_for_resource_headroom") as wait,
+          mock.patch.object(capture.calibration_matrix, "create_isolated_game") as isolate,
+      ):
+        output = io.StringIO()
+        with redirect_stdout(output):
+          self.assertEqual(capture.main(), 0)
+      wait.assert_not_called()
+      isolate.assert_not_called()
+      self.assertIn("SKIP 001 rectilinear--first", output.getvalue())
+      self.assertIn("PASS 001 rectilinear--first :: already captured (skipped)", output.getvalue())
+
+      force_arguments = [*arguments, "--force"]
+      with (
+          mock.patch.object(sys, "argv", force_arguments),
+          mock.patch.object(capture.shutil, "which", return_value="/usr/bin/ffmpeg"),
+          mock.patch.object(capture.fcntl, "flock"),
+          mock.patch.object(
+              capture.calibration_matrix, "wait_for_resource_headroom", side_effect=RuntimeError("forced failure")
+          ) as forced_wait,
+          mock.patch.object(capture.calibration_matrix, "create_isolated_game") as forced_isolate,
+      ):
+        with redirect_stdout(io.StringIO()):
+          self.assertEqual(capture.main(), 1)
+      forced_wait.assert_called_once()
+      forced_isolate.assert_not_called()
+      self.assertFalse(png_path.exists())
+      forced_manifest = capture.read_manifest(results / "manifest.csv")
+      self.assertEqual(forced_manifest["1"]["outcome"], "fail")
+
+  def test_clean_removes_only_owned_output_and_exits(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-clean-test-") as temporary:
+      root = Path(temporary)
+      matrix_config, results = self.write_runtime_fixture(root)
+      capture.prepare_output_directory(results)
+      (results / "artifact.png").write_bytes(b"png")
+      arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config), "--clean"]
+      with mock.patch.object(sys, "argv", arguments), mock.patch.object(capture.fcntl, "flock"):
+        output = io.StringIO()
+        with redirect_stdout(output):
+          self.assertEqual(capture.main(), 0)
+      self.assertFalse(results.exists())
+      self.assertIn("Cleaned projection capture artifacts", output.getvalue())
+
+      results.mkdir()
+      (results / "unrelated.txt").write_text("keep\n", encoding="utf-8")
+      with mock.patch.object(sys, "argv", arguments), mock.patch.object(capture.fcntl, "flock"):
+        with self.assertRaisesRegex(ValueError, "unrecognized output directory"):
+          capture.main()
+      self.assertTrue((results / "unrelated.txt").is_file())
 
 
 if __name__ == "__main__":

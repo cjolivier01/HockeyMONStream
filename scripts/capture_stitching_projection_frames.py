@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 from typing import Any
 
@@ -32,6 +33,8 @@ PARAMETER_SPECS: dict[str, tuple[tuple[float, float], ...]] = {
     "general-panini": ((0, 150), (-100, 100), (-100, 100)),
 }
 SUPPORTED_PROJECTIONS = frozenset(calibration_matrix.PARAMETERLESS_PROJECTIONS) | frozenset(PARAMETER_SPECS)
+OUTPUT_MARKER = ".hstream-projection-frames"
+OUTPUT_MARKER_CONTENT = "hstream stitching projection frames v1\n"
 MANIFEST_FIELDS = (
     "sequence",
     "label",
@@ -249,6 +252,112 @@ def outcome_label(outcome: str, use_color: bool) -> str:
   return f"{color}{label}\033[0m"
 
 
+def output_directory_is_owned(output_dir: Path) -> bool:
+  if output_dir.is_symlink() or not output_dir.is_dir():
+    return False
+  marker = output_dir / OUTPUT_MARKER
+  if marker.is_file():
+    try:
+      return marker.read_text(encoding="utf-8") == OUTPUT_MARKER_CONTENT
+    except OSError:
+      return False
+  # Accept output from the initial script version so an in-progress or
+  # completed pre-resume matrix can be continued and upgraded in place.
+  legacy_files = (output_dir / "manifest.csv", output_dir / "matrix-config.yaml")
+  legacy_directories = (output_dir / "logs", output_dir / "evidence", output_dir / "effective-configs")
+  return all(path.is_file() for path in legacy_files) and all(path.is_dir() for path in legacy_directories)
+
+
+def validate_removable_output_directory(output_dir: Path) -> None:
+  if output_dir == Path(output_dir.anchor) or len(output_dir.parts) < 3:
+    raise ValueError(f"refusing to clean unsafe output directory: {output_dir}")
+  if not output_directory_is_owned(output_dir):
+    raise ValueError(f"refusing to use or clean unrecognized output directory: {output_dir}")
+
+
+def prepare_output_directory(output_dir: Path) -> None:
+  if output_dir.exists() or output_dir.is_symlink():
+    validate_removable_output_directory(output_dir)
+  else:
+    output_dir.mkdir(parents=True)
+  (output_dir / OUTPUT_MARKER).write_text(OUTPUT_MARKER_CONTENT, encoding="utf-8")
+  for name in ("logs", "evidence", "effective-configs"):
+    (output_dir / name).mkdir(exist_ok=True)
+
+
+def clean_output_directory(output_dir: Path) -> bool:
+  if not output_dir.exists() and not output_dir.is_symlink():
+    return False
+  validate_removable_output_directory(output_dir)
+  shutil.rmtree(output_dir)
+  return True
+
+
+def read_manifest(path: Path) -> dict[str, dict[str, object]]:
+  if not path.is_file():
+    return {}
+  with path.open("r", encoding="utf-8", newline="") as stream:
+    reader = csv.DictReader(stream)
+    if reader.fieldnames != list(MANIFEST_FIELDS):
+      raise ValueError(f"existing manifest has an incompatible header: {path}")
+    rows: dict[str, dict[str, object]] = {}
+    for row in reader:
+      sequence = row.get("sequence", "")
+      if not sequence.isdigit():
+        raise ValueError(f"existing manifest has an invalid sequence: {sequence!r}")
+      rows[sequence] = row
+    return rows
+
+
+def write_manifest(path: Path, rows: dict[str, dict[str, object]]) -> None:
+  temporary_path: Path | None = None
+  try:
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="", prefix=f".{path.name}.", dir=path.parent, delete=False
+    ) as stream:
+      temporary_path = Path(stream.name)
+      writer = csv.DictWriter(stream, fieldnames=MANIFEST_FIELDS)
+      writer.writeheader()
+      for sequence in sorted(rows, key=int):
+        writer.writerow(rows[sequence])
+      stream.flush()
+      os.fsync(stream.fileno())
+    os.replace(temporary_path, path)
+    temporary_path = None
+  finally:
+    if temporary_path is not None:
+      temporary_path.unlink(missing_ok=True)
+
+
+def manifest_row(
+    sequence: int,
+    state: dict[str, object],
+    png_path: Path,
+    effective_path: Path,
+    log_path: Path,
+    result: dict[str, object],
+    work_directory: str = "",
+) -> dict[str, object]:
+  return {
+      "sequence": sequence,
+      "label": state["label"],
+      "projection": state["projection"],
+      "parameters": calibration_matrix.parameter_text(tuple(state["parameters"])),
+      "auto_fov": state["auto_fov"],
+      "horizontal_fov": state["horizontal_fov"],
+      "auto_canvas": state["auto_canvas"],
+      "auto_crop": state["auto_crop"],
+      "png": str(png_path) if png_path.is_file() else "",
+      "effective_config": str(effective_path),
+      "log": str(log_path),
+      "outcome": result["outcome"],
+      "duration_seconds": result.get("duration_seconds", ""),
+      "return_code": result.get("return_code", ""),
+      "first_failure": result.get("first_failure", ""),
+      "work_directory": work_directory,
+  }
+
+
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--config", type=Path, required=True, help="Projection matrix YAML")
@@ -258,9 +367,14 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--limit", type=int, help="Maximum number of cases")
   parser.add_argument("--dry-run", action="store_true", help="Validate and list cases without launching pipelines")
   parser.add_argument("--keep-failed-work", action="store_true")
+  rerun = parser.add_mutually_exclusive_group()
+  rerun.add_argument("--force", action="store_true", help="Rerun selected cases even when their PNG already exists")
+  rerun.add_argument("--clean", action="store_true", help="Remove all artifacts from the configured output directory and exit")
   args = parser.parse_args()
   if args.start_at <= 0 or (args.limit is not None and args.limit <= 0):
     parser.error("--start-at and --limit must be positive")
+  if args.clean and (args.dry_run or args.start_at != 1 or args.limit is not None or args.keep_failed_work):
+    parser.error("--clean cannot be combined with --dry-run, --start-at, --limit, or --keep-failed-work")
   args.config = args.config.resolve()
   return args
 
@@ -274,17 +388,32 @@ def main() -> int:
     selected = selected[: cli.limit]
   if not selected:
     raise SystemExit("no cases selected")
+  base = cli.config.parent
+  output_dir = (
+      cli.output_dir.resolve()
+      if cli.output_dir
+      else resolve_path(config.get("output_dir"), base, "output_dir")
+  )
+  assert output_dir
+  lock_path = Path(os.getenv("TMPDIR", "/tmp")) / "hstream-stitching-calibration-matrix.lock"
+  if cli.clean:
+    with lock_path.open("a+", encoding="utf-8") as lock_stream:
+      try:
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+      except BlockingIOError as exception:
+        raise SystemExit(f"another stitching calibration matrix owns {lock_path}") from exception
+      removed = clean_output_directory(output_dir)
+    print(f"Cleaned projection capture artifacts from {output_dir}" if removed else f"Nothing to clean in {output_dir}")
+    return 0
   for sequence, state in selected:
     print(f"{sequence:03d} {output_stem(sequence, state)}")
   if cli.dry_run:
     print(f"Dry run: {len(selected)} of {len(cases)} cases")
     return 0
 
-  base = cli.config.parent
   pipeline = as_map(config.get("pipeline", {}), "pipeline")
   resources = as_map(config.get("resources", {}), "resources")
   source_game_dir = (cli.source_game_dir.resolve() if cli.source_game_dir else resolve_path(config.get("source_game_dir"), base, "source_game_dir"))
-  output_dir = (cli.output_dir.resolve() if cli.output_dir else resolve_path(config.get("output_dir"), base, "output_dir"))
   workspace = resolve_path(pipeline.get("workspace", ".."), base, "pipeline.workspace")
   executable = resolve_path(pipeline.get("executable", "bazel-bin/src/apps/pipeline-app/pipeline-app"), workspace, "pipeline.executable")
   config_root = resolve_path(pipeline.get("config_root", "configs"), workspace, "pipeline.config_root")
@@ -329,8 +458,8 @@ def main() -> int:
   if any(not math.isfinite(value) or value < 0 for value in resource_values):
     raise ValueError("resource thresholds and headroom wait timeout must be finite and non-negative")
 
-  lock_path = Path(os.getenv("TMPDIR", "/tmp")) / "hstream-stitching-calibration-matrix.lock"
   failures = 0
+  skipped = 0
   summaries: list[tuple[int, str, str, str]] = []
   with ExitStack() as cleanup:
     lock_stream = cleanup.enter_context(lock_path.open("a+", encoding="utf-8"))
@@ -338,25 +467,36 @@ def main() -> int:
       fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exception:
       raise SystemExit(f"another stitching calibration matrix owns {lock_path}") from exception
-    output_dir.mkdir(parents=True, exist_ok=False)
-    for directory in (logs_dir, evidence_dir, configs_dir):
-      directory.mkdir()
+    prepare_output_directory(output_dir)
     shutil.copy2(cli.config, output_dir / "matrix-config.yaml")
     source_config_snapshot = output_dir / "source-game-config.yaml"
     shutil.copy2(source_game_dir / "config.yaml", source_config_snapshot)
-    manifest = cleanup.enter_context((output_dir / "manifest.csv").open("w", encoding="utf-8", newline=""))
-    writer = csv.DictWriter(manifest, fieldnames=MANIFEST_FIELDS)
-    writer.writeheader()
+    manifest_path = output_dir / "manifest.csv"
+    manifest_rows = read_manifest(manifest_path)
     for sequence, state in selected:
       stem = output_stem(sequence, state)
       log_path = logs_dir / f"{stem}.log"
       effective_path = configs_dir / f"{stem}.yaml"
+      png_path = output_dir / f"{stem}.png"
+      previous = manifest_rows.get(str(sequence))
+      previously_passed = (
+          previous is not None
+          and previous.get("outcome") == "pass"
+          and previous.get("png") == str(png_path)
+          and png_path.is_file()
+          and png_path.stat().st_size > 0
+      )
+      if previously_passed and not cli.force:
+        skipped += 1
+        summaries.append((sequence, str(state["case"]), "pass", "already captured (skipped)"))
+        print(f"SKIP {sequence:03d} {state['case']} (already captured)", flush=True)
+        continue
+      png_path.unlink(missing_ok=True)
       with effective_path.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(effective_case_config(state), stream, sort_keys=False)
       print(f"START {sequence:03d}/{selected[-1][0]:03d} {state['case']}", flush=True)
       work_root: Path | None = None
       result: dict[str, object] | None = None
-      png_path = output_dir / f"{stem}.png"
       try:
         calibration_matrix.wait_for_resource_headroom(runner_args)
         work_root, game_id = calibration_matrix.create_isolated_game(source_game_dir, source_config_snapshot)
@@ -387,28 +527,16 @@ def main() -> int:
           calibration_matrix.remove_work_root(work_root)
       assert result is not None
       failures += result["outcome"] != "pass"
-      writer.writerow(
-          {
-              "sequence": sequence,
-              "label": state["label"],
-              "projection": state["projection"],
-              "parameters": calibration_matrix.parameter_text(tuple(state["parameters"])),
-              "auto_fov": state["auto_fov"],
-              "horizontal_fov": state["horizontal_fov"],
-              "auto_canvas": state["auto_canvas"],
-              "auto_crop": state["auto_crop"],
-              "png": str(png_path) if png_path.is_file() else "",
-              "effective_config": str(effective_path),
-              "log": str(log_path),
-              "outcome": result["outcome"],
-              "duration_seconds": result.get("duration_seconds", ""),
-              "return_code": result.get("return_code", ""),
-              "first_failure": result.get("first_failure", ""),
-              "work_directory": str(work_root) if keep_work and work_root is not None else "",
-          }
+      manifest_rows[str(sequence)] = manifest_row(
+          sequence,
+          state,
+          png_path,
+          effective_path,
+          log_path,
+          result,
+          str(work_root) if keep_work and work_root is not None else "",
       )
-      manifest.flush()
-      os.fsync(manifest.fileno())
+      write_manifest(manifest_path, manifest_rows)
       summaries.append(
           (sequence, str(state["case"]), str(result["outcome"]), str(result.get("first_failure", "")))
       )
@@ -418,7 +546,10 @@ def main() -> int:
   for sequence, case, outcome, failure in summaries:
     detail = f" :: {failure}" if failure else ""
     print(f"  {outcome_label(outcome, use_color)} {sequence:03d} {case}{detail}")
-  print(f"Captured {len(selected) - failures}/{len(selected)} PNG frames in {output_dir}")
+  print(
+      f"Successful {len(selected) - failures}/{len(selected)} cases"
+      f" ({skipped} skipped); PNG frames are in {output_dir}"
+  )
   return 1 if failures else 0
 
 
