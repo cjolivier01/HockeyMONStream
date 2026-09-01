@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import csv
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 
@@ -74,6 +78,65 @@ class ProjectionFrameConfigTest(unittest.TestCase):
               ],
           }
       )
+
+  def test_resource_failure_is_recorded_per_case_and_matrix_continues(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-failure-test-") as temporary:
+      root = Path(temporary)
+      source_game = root / "source-game"
+      source_game.mkdir()
+      (source_game / "config.yaml").write_text("{}\n", encoding="utf-8")
+      executable = root / "pipeline-app"
+      executable.touch()
+      pipeline_config = root / "pipeline.yaml"
+      pipeline_config.touch()
+      matrix_config = root / "matrix.yaml"
+      matrix_config.write_text(
+          yaml.safe_dump(
+              {
+                  "version": 1,
+                  "source_game_dir": str(source_game),
+                  "output_dir": str(root / "results"),
+                  "pipeline": {
+                      "workspace": str(root),
+                      "executable": str(executable),
+                      "config_root": str(root),
+                      "config": str(pipeline_config),
+                  },
+                  "projections": [
+                      {
+                          "name": "rectilinear",
+                          "variants": [
+                              {"label": "first", "parameters": [], "auto_fov": True},
+                              {"label": "second", "parameters": [], "auto_fov": True},
+                          ],
+                      }
+                  ],
+              },
+              sort_keys=False,
+          ),
+          encoding="utf-8",
+      )
+      arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config)]
+      with (
+          mock.patch.object(sys, "argv", arguments),
+          mock.patch.object(capture.shutil, "which", return_value="/usr/bin/ffmpeg"),
+          mock.patch.object(capture.fcntl, "flock"),
+          mock.patch.object(
+              capture.calibration_matrix,
+              "wait_for_resource_headroom",
+              side_effect=[RuntimeError("headroom one"), RuntimeError("headroom two")],
+          ) as wait,
+          mock.patch.object(capture.calibration_matrix, "create_isolated_game") as isolate,
+      ):
+        self.assertEqual(capture.main(), 1)
+
+      self.assertEqual(wait.call_count, 2)
+      isolate.assert_not_called()
+      with (root / "results/manifest.csv").open("r", encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+      self.assertEqual([row["outcome"] for row in rows], ["fail", "fail"])
+      self.assertEqual([row["first_failure"] for row in rows], ["headroom one", "headroom two"])
+      self.assertTrue(all(Path(row["log"]).is_file() for row in rows))
 
 
 if __name__ == "__main__":

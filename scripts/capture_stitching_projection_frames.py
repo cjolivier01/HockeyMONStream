@@ -344,11 +344,12 @@ def main() -> int:
       with effective_path.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(effective_case_config(state), stream, sort_keys=False)
       print(f"START {sequence:03d}/{selected[-1][0]:03d} {state['case']}", flush=True)
-      calibration_matrix.wait_for_resource_headroom(runner_args)
-      work_root, game_id = calibration_matrix.create_isolated_game(source_game_dir, source_config_snapshot)
+      work_root: Path | None = None
       result: dict[str, object] | None = None
       png_path = output_dir / f"{stem}.png"
       try:
+        calibration_matrix.wait_for_resource_headroom(runner_args)
+        work_root, game_id = calibration_matrix.create_isolated_game(source_game_dir, source_config_snapshot)
         result = calibration_matrix.run_state(runner_args, work_root, game_id, state, sequence, log_path)
         if result["outcome"] == "pass":
           convert_panorama(work_root / game_id / "panorama.tif", png_path, ffmpeg)
@@ -362,10 +363,17 @@ def main() -> int:
         else:
           result["outcome"] = "fail"
           result["first_failure"] = str(exception)
+        with log_path.open("a", encoding="utf-8") as log:
+          log.write(f"projection capture case failed: {exception}\n")
         png_path.unlink(missing_ok=True)
       finally:
-        keep_work = result is not None and result["outcome"] != "pass" and cli.keep_failed_work
-        if not keep_work:
+        keep_work = (
+            work_root is not None
+            and result is not None
+            and result["outcome"] != "pass"
+            and cli.keep_failed_work
+        )
+        if work_root is not None and not keep_work:
           calibration_matrix.remove_work_root(work_root)
       assert result is not None
       failures += result["outcome"] != "pass"
@@ -386,7 +394,7 @@ def main() -> int:
               "duration_seconds": result.get("duration_seconds", ""),
               "return_code": result.get("return_code", ""),
               "first_failure": result.get("first_failure", ""),
-              "work_directory": str(work_root) if keep_work else "",
+              "work_directory": str(work_root) if keep_work and work_root is not None else "",
           }
       )
       manifest.flush()
