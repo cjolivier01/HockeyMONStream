@@ -8539,6 +8539,19 @@ void HStreamWindow::clearPreviewFrames() {
   preview_recovery_attempts_ = 0;
   preview_disable_attempts_ = 0;
   preview_runtime_ready_ = false;
+  updatePreviewTabResolution("program", 0, 0);
+  updatePreviewTabResolution("stitched", 0, 0);
+}
+
+void HStreamWindow::updatePreviewTabResolution(const QString& channel, int width, int height) {
+  if (!preview_tabs_)
+    return;
+  const int tab_index = channel == "program" ? 0 : (channel == "stitched" ? 1 : -1);
+  if (tab_index < 0)
+    return;
+  const QString title = channel == "program" ? "Program" : "Stitched";
+  preview_tabs_->setTabText(
+      tab_index, width > 0 && height > 0 ? QString("%1 (%2×%3)").arg(title).arg(width).arg(height) : title);
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
@@ -11912,7 +11925,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
     return true;
   }
   static const QRegularExpression pattern(
-      R"(^HSTREAM_PREVIEW channel=(\S+) status=(\S+) generation=(\d+) message=(.*)$)");
+      R"(^HSTREAM_PREVIEW channel=(\S+) status=(\S+) generation=(\d+) message=(.*?)(?: resolution=(\d+)x(\d+))?$)");
   const QRegularExpressionMatch match = pattern.match(line);
   if (!match.hasMatch())
     return false;
@@ -11956,6 +11969,12 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
     return true;
   }
   if (status == "ready") {
+    bool width_valid = false;
+    bool height_valid = false;
+    const int width = match.captured(5).toInt(&width_valid);
+    const int height = match.captured(6).toInt(&height_valid);
+    if (width_valid && height_valid && width > 0 && height > 0)
+      updatePreviewTabResolution(channel, width, height);
     if (matches_pending) {
       active_preview_channel_ = channel;
       pending_preview_channel_.clear();
