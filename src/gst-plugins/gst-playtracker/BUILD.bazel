@@ -50,7 +50,7 @@ cc_library(
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
-        "@hm//hockeymom/csrc/play_tracker",
+        "@hm//hockeymon/csrc/play_tracker",
     ],
 )
 
@@ -68,7 +68,7 @@ cc_library(
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:utils",
-        "@hm//hockeymom/csrc/play_tracker",
+        "@hm//hockeymon/csrc/play_tracker",
     ],
 )
 
@@ -104,6 +104,6 @@ cc_test(
     name = "playtracker_stop_delay_test",
     srcs = ["PlayTrackerStopDelayTest.cpp"],
     deps = [
-        "@hm//hockeymom/csrc/play_tracker",
+        "@hm//hockeymon/csrc/play_tracker",
     ],
 )

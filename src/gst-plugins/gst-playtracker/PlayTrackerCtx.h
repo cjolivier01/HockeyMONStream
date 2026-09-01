@@ -16,7 +16,7 @@
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
-#include "hockeymom/csrc/play_tracker/PlayTracker.h"
+#include "hockeymon/csrc/play_tracker/PlayTracker.h"
 #include "yaml-cpp/yaml.h"
 
 typedef struct GstDsPlayTrackerFrame GstDsPlayTrackerFrame;
