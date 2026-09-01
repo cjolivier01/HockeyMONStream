@@ -38,7 +38,9 @@ void post_preview_status(
     const char* channel,
     const char* status,
     std::uint64_t generation,
-    const char* message) noexcept {
+    const char* message,
+    int width = 0,
+    int height = 0) noexcept {
   const char* safe_channel = channel && *channel ? channel : "unknown";
   const char* safe_message = message ? message : "";
   GstStructure* structure = gst_structure_new(
@@ -56,14 +58,28 @@ void post_preview_status(
       G_TYPE_STRING,
       safe_message,
       nullptr);
+  if (structure && width > 0 && height > 0) {
+    gst_structure_set(structure, "width", G_TYPE_INT, width, "height", G_TYPE_INT, height, nullptr);
+  }
   if (structure)
     gst_element_post_message(element, gst_message_new_application(GST_OBJECT(element), structure));
-  emit_preview_protocol(
-      "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
-      safe_channel,
-      status,
-      static_cast<guint64>(generation),
-      safe_message);
+  if (width > 0 && height > 0) {
+    emit_preview_protocol(
+        "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " width=%d height=%d message=%s\n",
+        safe_channel,
+        status,
+        static_cast<guint64>(generation),
+        width,
+        height,
+        safe_message);
+  } else {
+    emit_preview_protocol(
+        "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
+        safe_channel,
+        status,
+        static_cast<guint64>(generation),
+        safe_message);
+  }
 }
 
 void log_callback_exception(const char* callback, const char* message) noexcept {
@@ -1578,7 +1594,14 @@ GstFlowReturn preview_sink_render_impl(GstBaseSink* base_sink, GstBuffer* buffer
     const guint64 generation = state->generation.load();
     if (!state->failed.load() && state->ready_generation != generation) {
       state->ready_generation = generation;
-      post_preview_status(GST_ELEMENT(self), state->channel.c_str(), "ready", generation, "first GPU frame presented");
+      post_preview_status(
+          GST_ELEMENT(self),
+          state->channel.c_str(),
+          "ready",
+          generation,
+          "first GPU frame presented",
+          state->negotiated_width,
+          state->negotiated_height);
     }
   }
   return state->failed.load() ? GST_FLOW_ERROR : GST_FLOW_OK;

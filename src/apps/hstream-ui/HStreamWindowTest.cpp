@@ -850,7 +850,8 @@ bool write_fake_runner(const QString& path) {
       "preview branch re-armed', flush=True)\n");
   file.write("        if int(os.environ.get('HSTREAM_UI_TEST_PREVIEW_READY_AFTER', '0')) == 0:\n");
   file.write(
-      "            print('HSTREAM_PREVIEW channel=' + initial_preview + ' status=ready generation=2 message=first "
+      "            dimensions = ' width=1920 height=1080' if initial_preview == 'program' else ' width=4096 height=1080'\n"
+      "            print('HSTREAM_PREVIEW channel=' + initial_preview + ' status=ready generation=2' + dimensions + ' message=first "
       "GPU frame presented', flush=True)\n");
   file.write("calibration_result = os.environ.get('HSTREAM_UI_TEST_CALIBRATION_RESULT', '')\n");
   file.write("stitching_only = '--stitching-calibration-only' in sys.argv[1:]\n");
@@ -1118,7 +1119,8 @@ bool write_fake_runner(const QString& path) {
   file.write("        ready_after = int(os.environ.get('HSTREAM_UI_TEST_PREVIEW_READY_AFTER', '0'))\n");
   file.write("        if ready_after and preview_activation_count >= ready_after:\n");
   file.write(
-      "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + "
+      "            dimensions = ' width=1920 height=1080' if channel == 'program' else (' width=4096 height=1080' if channel == 'stitched' else ' width=3840 height=2160')\n"
+      "            print('HSTREAM_PREVIEW channel=' + channel + ' status=ready generation=' + generation + dimensions + "
       "' message=first GPU frame presented', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@set-preview-overlays '):\n");
@@ -3492,6 +3494,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
              "A fresh Program one-pass calibration should persist completed state") &&
       expect(window->logText().contains("GPU preview backend ready channel=program generation=2"),
              "Program startup must acknowledge the selected GPU preview without a tab change") &&
+      expect(preview_tabs->tabText(0) == QString::fromUtf8("Program (1920×1080)"),
+             "Program must show its negotiated per-run frame resolution in the tab title") &&
       expect(window->logText().contains("GPU preview first-frame wait exceeded channel=program") &&
                  window->logText().contains("GPU preview requested channel=program generation=3 reason=recovery") &&
                  window->logText().contains("GPU preview ready channel=program generation="),
@@ -4460,6 +4464,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     previous_target = focus_case.target;
   }
+  if (!expect(
+          preview_tabs->tabText(1) == QString::fromUtf8("Stitched (4096×1080)"),
+          "The Stitched tab must show the negotiated canvas resolution when that output presents a frame")) {
+    return false;
+  }
   preview_tabs->setCurrentIndex(2);
   for (int i = 0; i < 100 && (camera1_target->isHidden() || camera1_focus->isHidden()); ++i) {
     QApplication::processEvents();
@@ -4489,6 +4498,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               camera2_surface->property("previewRendererState").toString() == "idle" &&
               camera3_surface->property("previewRendererState").toString() == "idle",
           "Finishing a pipeline should clear every GPU renderer state")) {
+    return false;
+  }
+  if (!expect(
+          preview_tabs->tabText(0) == "Program" && preview_tabs->tabText(1) == "Stitched",
+          "Stopping Program must remove per-run frame resolutions from both tab titles")) {
     return false;
   }
   if (!expect(
@@ -4717,7 +4731,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  if (!expect(window->pipelineStateText() == "STOPPED", "Stop should terminate calibration process")) {
+  if (!expect(
+          window->pipelineStateText() == "STOPPED" && preview_tabs->tabText(1) == "Stitched",
+          "Stop should terminate calibration and remove its per-run frame resolution from the tab title")) {
     return false;
   }
   {
