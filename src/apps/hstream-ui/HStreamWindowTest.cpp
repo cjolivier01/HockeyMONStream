@@ -3032,10 +3032,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   game_id->setText(valid_game_id);
-  if (!expect(!drivegpt_csv->isChecked(), "DriveGPT CSV export must remain opt-in")) {
+  if (!expect(drivegpt_csv->isChecked(), "DriveGPT CSV export must default on")) {
     return false;
   }
-  drivegpt_csv->setChecked(true);
   const QString telemetry_option_prefix = "--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=";
   const QStringList telemetry_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   const auto telemetry_argument = std::find_if(
@@ -3053,6 +3052,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   drivegpt_csv->setChecked(false);
+  const QStringList telemetry_disabled_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  if (!expect(
+          std::none_of(
+              telemetry_disabled_arguments.cbegin(),
+              telemetry_disabled_arguments.cend(),
+              [&telemetry_option_prefix](const QString& argument) {
+                return argument.startsWith(telemetry_option_prefix);
+              }),
+          "Explicitly unchecking DriveGPT CSV must disable telemetry for the next run")) {
+    return false;
+  }
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500") ||
       !expect(
           stitch_frame_time->time() == QTime(0, 0, 0) &&

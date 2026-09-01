@@ -5204,7 +5204,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   drivegpt_csv_toggle_ = new QCheckBox("DriveGPT CSV");
   drivegpt_csv_toggle_->setObjectName("drivegptCsvCheck");
-  drivegpt_csv_toggle_->setChecked(false);
+  drivegpt_csv_toggle_->setChecked(true);
   drivegpt_csv_toggle_->setToolTip(
       "Save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv metadata in working storage, "
       "then copy the completed CSV set beside the finalized Program video");
