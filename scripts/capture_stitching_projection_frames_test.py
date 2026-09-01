@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+from contextlib import redirect_stdout
 import csv
+import io
 import sys
 import tempfile
 import unittest
@@ -50,6 +52,12 @@ class ProjectionFrameConfigTest(unittest.TestCase):
         capture.output_stem(7, state),
         "007__general-panini__params-100-m50-25p5__fov-190__canvas-retained__crop-auto__review",
     )
+
+  def test_outcome_labels_are_green_and_red(self) -> None:
+    self.assertEqual(capture.outcome_label("pass", False), "PASS")
+    self.assertEqual(capture.outcome_label("fail", False), "FAIL")
+    self.assertEqual(capture.outcome_label("pass", True), "\033[32mPASS\033[0m")
+    self.assertEqual(capture.outcome_label("fail", True), "\033[31mFAIL\033[0m")
 
   def test_rejects_parameters_on_parameterless_projection(self) -> None:
     with self.assertRaisesRegex(ValueError, "exactly 0"):
@@ -128,7 +136,9 @@ class ProjectionFrameConfigTest(unittest.TestCase):
           ) as wait,
           mock.patch.object(capture.calibration_matrix, "create_isolated_game") as isolate,
       ):
-        self.assertEqual(capture.main(), 1)
+        output = io.StringIO()
+        with redirect_stdout(output):
+          self.assertEqual(capture.main(), 1)
 
       self.assertEqual(wait.call_count, 2)
       isolate.assert_not_called()
@@ -137,6 +147,8 @@ class ProjectionFrameConfigTest(unittest.TestCase):
       self.assertEqual([row["outcome"] for row in rows], ["fail", "fail"])
       self.assertEqual([row["first_failure"] for row in rows], ["headroom one", "headroom two"])
       self.assertTrue(all(Path(row["log"]).is_file() for row in rows))
+      self.assertIn("Results:\n  FAIL 001 rectilinear--first :: headroom one", output.getvalue())
+      self.assertIn("  FAIL 002 rectilinear--second :: headroom two", output.getvalue())
 
 
 if __name__ == "__main__":

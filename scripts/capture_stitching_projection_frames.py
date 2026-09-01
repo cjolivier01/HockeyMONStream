@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import csv
 import fcntl
 import math
@@ -240,6 +241,14 @@ def convert_panorama(source: Path, destination: Path, ffmpeg: str) -> None:
     raise RuntimeError(f"ffmpeg did not create {destination}")
 
 
+def outcome_label(outcome: str, use_color: bool) -> str:
+  label = "PASS" if outcome == "pass" else "FAIL"
+  if not use_color:
+    return label
+  color = "\033[32m" if outcome == "pass" else "\033[31m"
+  return f"{color}{label}\033[0m"
+
+
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--config", type=Path, required=True, help="Projection matrix YAML")
@@ -288,15 +297,9 @@ def main() -> int:
   ffmpeg = shutil.which("ffmpeg")
   if ffmpeg is None:
     raise SystemExit("ffmpeg is required to convert calibration panoramas to PNG")
-  output_dir.mkdir(parents=True, exist_ok=False)
   logs_dir = output_dir / "logs"
   evidence_dir = output_dir / "evidence"
   configs_dir = output_dir / "effective-configs"
-  for directory in (logs_dir, evidence_dir, configs_dir):
-    directory.mkdir()
-  shutil.copy2(cli.config, output_dir / "matrix-config.yaml")
-  source_config_snapshot = output_dir / "source-game-config.yaml"
-  shutil.copy2(source_game_dir / "config.yaml", source_config_snapshot)
 
   runner_args = SimpleNamespace(
       workspace=workspace,
@@ -328,13 +331,20 @@ def main() -> int:
 
   lock_path = Path(os.getenv("TMPDIR", "/tmp")) / "hstream-stitching-calibration-matrix.lock"
   failures = 0
-  with lock_path.open("a+", encoding="utf-8") as lock_stream, (output_dir / "manifest.csv").open(
-      "w", encoding="utf-8", newline=""
-  ) as manifest:
+  summaries: list[tuple[int, str, str, str]] = []
+  with ExitStack() as cleanup:
+    lock_stream = cleanup.enter_context(lock_path.open("a+", encoding="utf-8"))
     try:
       fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exception:
       raise SystemExit(f"another stitching calibration matrix owns {lock_path}") from exception
+    output_dir.mkdir(parents=True, exist_ok=False)
+    for directory in (logs_dir, evidence_dir, configs_dir):
+      directory.mkdir()
+    shutil.copy2(cli.config, output_dir / "matrix-config.yaml")
+    source_config_snapshot = output_dir / "source-game-config.yaml"
+    shutil.copy2(source_game_dir / "config.yaml", source_config_snapshot)
+    manifest = cleanup.enter_context((output_dir / "manifest.csv").open("w", encoding="utf-8", newline=""))
     writer = csv.DictWriter(manifest, fieldnames=MANIFEST_FIELDS)
     writer.writeheader()
     for sequence, state in selected:
@@ -399,7 +409,15 @@ def main() -> int:
       )
       manifest.flush()
       os.fsync(manifest.fileno())
+      summaries.append(
+          (sequence, str(state["case"]), str(result["outcome"]), str(result.get("first_failure", "")))
+      )
       print(f"{str(result['outcome']).upper()} {sequence:03d} {state['case']}", flush=True)
+  use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+  print("\nResults:")
+  for sequence, case, outcome, failure in summaries:
+    detail = f" :: {failure}" if failure else ""
+    print(f"  {outcome_label(outcome, use_color)} {sequence:03d} {case}{detail}")
   print(f"Captured {len(selected) - failures}/{len(selected)} PNG frames in {output_dir}")
   return 1 if failures else 0
 
