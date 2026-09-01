@@ -214,6 +214,17 @@ def resolve_path(value: object, base: Path, path: str, required: bool = True) ->
   return (candidate if candidate.is_absolute() else base / candidate).resolve()
 
 
+def lexical_absolute_path(value: object, base: Path, path: str) -> Path:
+  if isinstance(value, Path):
+    candidate = value.expanduser()
+  elif isinstance(value, str) and value:
+    candidate = Path(value).expanduser()
+  else:
+    raise ValueError(f"{path} must be a non-empty path")
+  combined = candidate if candidate.is_absolute() else base / candidate
+  return Path(os.path.abspath(combined))
+
+
 def load_config(path: Path) -> dict[str, Any]:
   with path.open("r", encoding="utf-8") as stream:
     config = yaml.safe_load(stream) or {}
@@ -289,8 +300,71 @@ def clean_output_directory(output_dir: Path) -> bool:
   if not output_dir.exists() and not output_dir.is_symlink():
     return False
   validate_removable_output_directory(output_dir)
+  manifest_rows = read_manifest(output_dir / "manifest.csv")
+  retained_work = {
+      validate_retained_work_directory(str(row.get("work_directory", "")))
+      for row in manifest_rows.values()
+      if row.get("work_directory")
+  }
+  for work_directory in retained_work:
+    if work_directory.is_dir():
+      shutil.rmtree(work_directory)
   shutil.rmtree(output_dir)
   return True
+
+
+def validate_retained_work_directory(value: str) -> Path:
+  candidate = Path(value)
+  normalized = Path(os.path.abspath(candidate))
+  temporary_root = Path(tempfile.gettempdir()).resolve()
+  if (
+      not candidate.is_absolute()
+      or candidate != normalized
+      or candidate.parent.resolve() != temporary_root
+      or not candidate.name.startswith("hstream-stitching-matrix-work-")
+      or candidate.is_symlink()
+  ):
+    raise ValueError(f"refusing to remove unrecognized retained work directory: {value}")
+  if candidate.exists():
+    if not candidate.is_dir():
+      raise ValueError(f"retained work path is not a directory: {candidate}")
+    entries = list(candidate.iterdir())
+    if len(entries) != 1 or entries[0].is_symlink() or not entries[0].is_dir() or not entries[0].name.endswith("-matrix"):
+      raise ValueError(f"retained work directory has an unexpected layout: {candidate}")
+  return candidate
+
+
+def remove_retained_work_directory(value: object) -> None:
+  if not value:
+    return
+  candidate = validate_retained_work_directory(str(value))
+  if candidate.is_dir():
+    shutil.rmtree(candidate)
+
+
+def effective_config_matches(path: Path, state: dict[str, object]) -> bool:
+  try:
+    with path.open("r", encoding="utf-8") as stream:
+      return yaml.safe_load(stream) == effective_case_config(state)
+  except (OSError, yaml.YAMLError):
+    return False
+
+
+def clear_case_artifacts(
+    png_path: Path,
+    effective_path: Path,
+    log_path: Path,
+    evidence_dir: Path,
+    stem: str,
+) -> None:
+  for path in (
+      png_path,
+      effective_path,
+      log_path,
+      evidence_dir / f"{stem}.pto",
+      evidence_dir / f"{stem}.provenance.txt",
+  ):
+    path.unlink(missing_ok=True)
 
 
 def read_manifest(path: Path) -> dict[str, dict[str, object]]:
@@ -390,9 +464,9 @@ def main() -> int:
     raise SystemExit("no cases selected")
   base = cli.config.parent
   output_dir = (
-      cli.output_dir.resolve()
+      lexical_absolute_path(cli.output_dir, Path.cwd(), "--output-dir")
       if cli.output_dir
-      else resolve_path(config.get("output_dir"), base, "output_dir")
+      else lexical_absolute_path(config.get("output_dir"), base, "output_dir")
   )
   assert output_dir
   lock_path = Path(os.getenv("TMPDIR", "/tmp")) / "hstream-stitching-calibration-matrix.lock"
@@ -485,13 +559,16 @@ def main() -> int:
           and previous.get("png") == str(png_path)
           and png_path.is_file()
           and png_path.stat().st_size > 0
+          and effective_config_matches(effective_path, state)
       )
       if previously_passed and not cli.force:
         skipped += 1
         summaries.append((sequence, str(state["case"]), "pass", "already captured (skipped)"))
         print(f"SKIP {sequence:03d} {state['case']} (already captured)", flush=True)
         continue
-      png_path.unlink(missing_ok=True)
+      if previous is not None:
+        remove_retained_work_directory(previous.get("work_directory", ""))
+      clear_case_artifacts(png_path, effective_path, log_path, evidence_dir, stem)
       with effective_path.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(effective_case_config(state), stream, sort_keys=False)
       print(f"START {sequence:03d}/{selected[-1][0]:03d} {state['case']}", flush=True)

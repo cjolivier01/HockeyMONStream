@@ -164,7 +164,7 @@ class ProjectionFrameConfigTest(unittest.TestCase):
       png_path = results / f"{stem}.png"
       png_path.write_bytes(b"png")
       effective_path = results / "effective-configs" / f"{stem}.yaml"
-      effective_path.touch()
+      effective_path.write_text(yaml.safe_dump(capture.effective_case_config(state), sort_keys=False), encoding="utf-8")
       log_path = results / "logs" / f"{stem}.log"
       log_path.touch()
       capture.write_manifest(
@@ -192,6 +192,12 @@ class ProjectionFrameConfigTest(unittest.TestCase):
       self.assertIn("SKIP 001 rectilinear--first", output.getvalue())
       self.assertIn("PASS 001 rectilinear--first :: already captured (skipped)", output.getvalue())
 
+      stale_log_text = "old successful log\n"
+      log_path.write_text(stale_log_text, encoding="utf-8")
+      stale_pto = results / "evidence" / f"{stem}.pto"
+      stale_provenance = results / "evidence" / f"{stem}.provenance.txt"
+      stale_pto.write_text("old pto\n", encoding="utf-8")
+      stale_provenance.write_text("old provenance\n", encoding="utf-8")
       force_arguments = [*arguments, "--force"]
       with (
           mock.patch.object(sys, "argv", force_arguments),
@@ -209,6 +215,47 @@ class ProjectionFrameConfigTest(unittest.TestCase):
       self.assertFalse(png_path.exists())
       forced_manifest = capture.read_manifest(results / "manifest.csv")
       self.assertEqual(forced_manifest["1"]["outcome"], "fail")
+      self.assertNotIn(stale_log_text.strip(), log_path.read_text(encoding="utf-8"))
+      self.assertFalse(stale_pto.exists())
+      self.assertFalse(stale_provenance.exists())
+
+  def test_changed_effective_config_is_not_skipped(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-identity-test-") as temporary:
+      root = Path(temporary)
+      matrix_config, results = self.write_runtime_fixture(root)
+      config = capture.load_config(matrix_config)
+      state = capture.expand_cases(config)[0]
+      capture.prepare_output_directory(results)
+      stem = capture.output_stem(1, state)
+      png_path = results / f"{stem}.png"
+      png_path.write_bytes(b"png")
+      effective_path = results / "effective-configs" / f"{stem}.yaml"
+      effective_path.write_text(yaml.safe_dump(capture.effective_case_config(state), sort_keys=False), encoding="utf-8")
+      log_path = results / "logs" / f"{stem}.log"
+      log_path.touch()
+      capture.write_manifest(
+          results / "manifest.csv",
+          {"1": capture.manifest_row(1, state, png_path, effective_path, log_path, {"outcome": "pass"})},
+      )
+      config["defaults"] = {"max_output_width": 2048}
+      matrix_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+      arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config)]
+      with (
+          mock.patch.object(sys, "argv", arguments),
+          mock.patch.object(capture.shutil, "which", return_value="/usr/bin/ffmpeg"),
+          mock.patch.object(capture.fcntl, "flock"),
+          mock.patch.object(
+              capture.calibration_matrix, "wait_for_resource_headroom", side_effect=RuntimeError("reran changed case")
+          ) as wait,
+          mock.patch.object(capture.calibration_matrix, "create_isolated_game") as isolate,
+      ):
+        with redirect_stdout(io.StringIO()):
+          self.assertEqual(capture.main(), 1)
+      wait.assert_called_once()
+      isolate.assert_not_called()
+      self.assertFalse(png_path.exists())
+      self.assertEqual(capture.read_manifest(results / "manifest.csv")["1"]["first_failure"], "reran changed case")
 
   def test_clean_removes_only_owned_output_and_exits(self) -> None:
     with tempfile.TemporaryDirectory(prefix="projection-frame-clean-test-") as temporary:
@@ -216,12 +263,31 @@ class ProjectionFrameConfigTest(unittest.TestCase):
       matrix_config, results = self.write_runtime_fixture(root)
       capture.prepare_output_directory(results)
       (results / "artifact.png").write_bytes(b"png")
+      state = capture.expand_cases(capture.load_config(matrix_config))[0]
+      retained_work = Path(tempfile.mkdtemp(prefix="hstream-stitching-matrix-work-"))
+      self.addCleanup(capture.shutil.rmtree, retained_work, ignore_errors=True)
+      (retained_work / "fixture-matrix").mkdir()
+      capture.write_manifest(
+          results / "manifest.csv",
+          {
+              "1": capture.manifest_row(
+                  1,
+                  state,
+                  results / "missing.png",
+                  results / "effective-configs/missing.yaml",
+                  results / "logs/missing.log",
+                  {"outcome": "fail"},
+                  str(retained_work),
+              )
+          },
+      )
       arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config), "--clean"]
       with mock.patch.object(sys, "argv", arguments), mock.patch.object(capture.fcntl, "flock"):
         output = io.StringIO()
         with redirect_stdout(output):
           self.assertEqual(capture.main(), 0)
       self.assertFalse(results.exists())
+      self.assertFalse(retained_work.exists())
       self.assertIn("Cleaned projection capture artifacts", output.getvalue())
 
       results.mkdir()
@@ -230,6 +296,21 @@ class ProjectionFrameConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unrecognized output directory"):
           capture.main()
       self.assertTrue((results / "unrelated.txt").is_file())
+
+  def test_clean_refuses_output_symlink_without_following_it(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-symlink-test-") as temporary:
+      root = Path(temporary)
+      matrix_config, results = self.write_runtime_fixture(root)
+      target = root / "owned-target"
+      capture.prepare_output_directory(target)
+      results.symlink_to(target, target_is_directory=True)
+      arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config), "--clean"]
+      with mock.patch.object(sys, "argv", arguments), mock.patch.object(capture.fcntl, "flock"):
+        with self.assertRaisesRegex(ValueError, "unrecognized output directory"):
+          capture.main()
+      self.assertTrue(results.is_symlink())
+      self.assertTrue(target.is_dir())
+      self.assertTrue((target / capture.OUTPUT_MARKER).is_file())
 
 
 if __name__ == "__main__":
