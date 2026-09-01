@@ -246,13 +246,18 @@ def effective_case_config(state: dict[str, object]) -> dict[str, object]:
 
 
 def convert_panorama(source: Path, destination: Path, ffmpeg: str) -> None:
-  subprocess.run(
-      [ffmpeg, "-v", "error", "-y", "-i", str(source), "-frames:v", "1", "-pix_fmt", "rgb24", str(destination)],
-      check=True,
-      timeout=120,
-  )
-  if not destination.is_file() or destination.stat().st_size == 0:
-    raise RuntimeError(f"ffmpeg did not create {destination}")
+  temporary = destination.with_name(f".{destination.stem}.tmp-{os.getpid()}{destination.suffix}")
+  try:
+    subprocess.run(
+        [ffmpeg, "-v", "error", "-y", "-i", str(source), "-frames:v", "1", "-pix_fmt", "rgb24", str(temporary)],
+        check=True,
+        timeout=120,
+    )
+    if not temporary.is_file() or temporary.stat().st_size == 0:
+      raise RuntimeError(f"ffmpeg did not create {destination}")
+    os.replace(temporary, destination)
+  finally:
+    temporary.unlink(missing_ok=True)
 
 
 def outcome_label(outcome: str, use_color: bool) -> str:
@@ -568,6 +573,15 @@ def main() -> int:
         continue
       if previous is not None:
         remove_retained_work_directory(previous.get("work_directory", ""))
+      manifest_rows[str(sequence)] = manifest_row(
+          sequence,
+          state,
+          png_path,
+          effective_path,
+          log_path,
+          {"outcome": "in_progress"},
+      )
+      write_manifest(manifest_path, manifest_rows)
       clear_case_artifacts(png_path, effective_path, log_path, evidence_dir, stem)
       with effective_path.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(effective_case_config(state), stream, sort_keys=False)

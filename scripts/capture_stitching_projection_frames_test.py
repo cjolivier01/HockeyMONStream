@@ -95,6 +95,24 @@ class ProjectionFrameConfigTest(unittest.TestCase):
     self.assertEqual(capture.outcome_label("pass", True), "\033[32mPASS\033[0m")
     self.assertEqual(capture.outcome_label("fail", True), "\033[31mFAIL\033[0m")
 
+  def test_panorama_conversion_publishes_atomically(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-convert-test-") as temporary:
+      root = Path(temporary)
+      source = root / "panorama.tif"
+      source.touch()
+      destination = root / "frame.png"
+      destination.write_bytes(b"previous")
+
+      def fail_after_partial_output(command: list[str], **_kwargs: object) -> None:
+        Path(command[-1]).write_bytes(b"partial")
+        raise capture.subprocess.CalledProcessError(1, command)
+
+      with mock.patch.object(capture.subprocess, "run", side_effect=fail_after_partial_output):
+        with self.assertRaises(capture.subprocess.CalledProcessError):
+          capture.convert_panorama(source, destination, "ffmpeg")
+      self.assertEqual(destination.read_bytes(), b"previous")
+      self.assertEqual(list(root.glob(".*.tmp-*.png")), [])
+
   def test_rejects_parameters_on_parameterless_projection(self) -> None:
     with self.assertRaisesRegex(ValueError, "exactly 0"):
       capture.expand_cases(
@@ -256,6 +274,40 @@ class ProjectionFrameConfigTest(unittest.TestCase):
       isolate.assert_not_called()
       self.assertFalse(png_path.exists())
       self.assertEqual(capture.read_manifest(results / "manifest.csv")["1"]["first_failure"], "reran changed case")
+
+  def test_interrupted_force_is_marked_in_progress_before_artifacts_change(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-interrupt-test-") as temporary:
+      root = Path(temporary)
+      matrix_config, results = self.write_runtime_fixture(root)
+      state = capture.expand_cases(capture.load_config(matrix_config))[0]
+      capture.prepare_output_directory(results)
+      stem = capture.output_stem(1, state)
+      png_path = results / f"{stem}.png"
+      png_path.write_bytes(b"png")
+      effective_path = results / "effective-configs" / f"{stem}.yaml"
+      effective_path.write_text(yaml.safe_dump(capture.effective_case_config(state), sort_keys=False), encoding="utf-8")
+      log_path = results / "logs" / f"{stem}.log"
+      log_path.touch()
+      capture.write_manifest(
+          results / "manifest.csv",
+          {"1": capture.manifest_row(1, state, png_path, effective_path, log_path, {"outcome": "pass"})},
+      )
+
+      arguments = ["capture_stitching_projection_frames.py", "--config", str(matrix_config), "--force"]
+      with (
+          mock.patch.object(sys, "argv", arguments),
+          mock.patch.object(capture.shutil, "which", return_value="/usr/bin/ffmpeg"),
+          mock.patch.object(capture.fcntl, "flock"),
+          mock.patch.object(
+              capture.calibration_matrix, "wait_for_resource_headroom", side_effect=KeyboardInterrupt
+          ),
+          mock.patch.object(capture.calibration_matrix, "create_isolated_game") as isolate,
+      ):
+        with redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+          capture.main()
+      isolate.assert_not_called()
+      self.assertFalse(png_path.exists())
+      self.assertEqual(capture.read_manifest(results / "manifest.csv")["1"]["outcome"], "in_progress")
 
   def test_clean_removes_only_owned_output_and_exits(self) -> None:
     with tempfile.TemporaryDirectory(prefix="projection-frame-clean-test-") as temporary:
