@@ -30,6 +30,7 @@
 #     visibility = ["//visibility:public"],
 # )
 exports_files([
+    "capture_stitching_projection_frames.py",
     "install_deb.sh",
     "build_hugin_tools_jetson.sh",
     "delete_release.sh",
@@ -51,4 +52,16 @@ py_test(
         "run_stitching_calibration_matrix_test.py",
     ],
     main = "run_stitching_calibration_matrix_test.py",
+)
+
+py_test(
+    name = "capture_stitching_projection_frames_test",
+    size = "small",
+    srcs = [
+        "capture_stitching_projection_frames.py",
+        "capture_stitching_projection_frames_test.py",
+        "run_stitching_calibration_matrix.py",
+    ],
+    data = ["//configs:stitching_projection_frames.yaml"],
+    main = "capture_stitching_projection_frames_test.py",
 )

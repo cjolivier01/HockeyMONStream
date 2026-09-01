@@ -2,4 +2,5 @@ exports_files([
     "baseline.yaml",
     "ds_hockey_app_config.yaml",
     "ds_hockey_configure_stitching.yaml",
+    "stitching_projection_frames.yaml",
 ])
