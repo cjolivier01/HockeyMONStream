@@ -38,7 +38,7 @@
 #         "@deepstream//sources/libs/nvdsinfer",
 #         "@glib",
 #         "@gstreamer",
-#         # "@hm//hockeymom/csrc/bytetrack",
+#         # "@hm//hockeymon/csrc/bytetrack",
 #         "@local_cuda//:cuda_runtime",
 #         "@opencv_linux//:opencv",
 #     ],

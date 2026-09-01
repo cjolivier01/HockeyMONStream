@@ -11,7 +11,7 @@
 #include "hstream/src/libs/common/Surface.h"
 #include "nvdsmeta.h"
 
-#include "external/hm/hockeymom/csrc/play_tracker/BoxUtils.h"
+#include "external/hm/hockeymon/csrc/play_tracker/BoxUtils.h"
 
 namespace hm {
 
