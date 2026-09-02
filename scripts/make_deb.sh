@@ -236,6 +236,7 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/lib/gst-plugins" \
   "${STAGING}${INSTALL_PREFIX}/configs" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin" \
+  "${STAGING}${INSTALL_PREFIX}/share/licenses/native-calibration-models" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra" \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
@@ -421,6 +422,15 @@ fi
 install -m 0644 "${ORT_SOURCE}/LICENSE" "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime/LICENSE"
 install -m 0644 "${ORT_SOURCE}/ThirdPartyNotices.txt" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime/ThirdPartyNotices.txt"
+for native_model_notice in Apache-2.0-LICENSE.txt DeDoDe-LICENSE.txt NOTICE.txt; do
+  native_model_notice_source="${TOPDIR}/third_party/native_model_licenses/${native_model_notice}"
+  if [[ ! -f "${native_model_notice_source}" ]]; then
+    echo "ERROR: native calibration model notice is missing: ${native_model_notice_source}" >&2
+    exit 1
+  fi
+  install -m 0644 "${native_model_notice_source}" \
+    "${STAGING}${INSTALL_PREFIX}/share/licenses/native-calibration-models/${native_model_notice}"
+done
 install -m 0644 "${TOPDIR}/LICENSE.md" "${STAGING}/usr/share/doc/${PKG_NAME}/copyright"
 
 # ---------- HStream GStreamer plugins ----------

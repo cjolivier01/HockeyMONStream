@@ -1,0 +1,26 @@
+HStream native calibration model notices
+
+The DeDoDe + LightGlue ONNX model is generated from:
+
+- DeDoDe L-C4-v2 detector and B-upright descriptor weights from
+  https://github.com/Parskatt/DeDoDe (license source revision
+  6d156183f4dc84cd704ae779eebc8350995c5b06), licensed under the MIT
+  License. See DeDoDe-LICENSE.txt. Copyright (c) 2023 Johan Edstedt.
+- LightGlue DeDoDe-B weights and architecture from
+  https://github.com/cvg/LightGlue (license source revision
+  eb42fee2d71449efb0aa5c10549752b5d75384d8), licensed under the Apache
+  License 2.0. See Apache-2.0-LICENSE.txt. Copyright 2023 ETH Zurich.
+- Kornia 0.8.3 DeDoDe and LightGlue implementations from
+  https://github.com/kornia/kornia at tag commit
+  004af771266187080c9908df422378eb86296fe8, licensed under the Apache
+  License 2.0. See Apache-2.0-LICENSE.txt.
+
+The EfficientLoFTR outdoor ONNX model comes from
+https://huggingface.co/SpatialHub/efficient-loftr-onnx at revision
+2c4515cbfd4866663db0ca1b3e02c55163dc5a75 and is based on
+https://github.com/zju3dv/EfficientLoFTR (license source revision
+ffd4a4644064354468eb1f0c7a3e732233cb732f), licensed under the Apache
+License 2.0. See Apache-2.0-LICENSE.txt.
+
+The ONNX artifacts have fixed runtime tensor contracts and packaging added by
+the HStream project. No upstream project endorses this distribution.

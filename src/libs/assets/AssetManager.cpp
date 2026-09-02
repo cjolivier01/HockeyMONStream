@@ -468,6 +468,16 @@ absl::StatusOr<AssetSpec> make_spec(const YAML::Node& node, const YAML::Node& co
   if (result.sha256.size() != 64 ||
       !std::all_of(result.sha256.begin(), result.sha256.end(), [](unsigned char c) { return std::isxdigit(c); }))
     return absl::InvalidArgumentError(path.string() + ": sha256 must contain 64 hexadecimal characters");
+  const YAML::Node on_demand = node["on-demand"] ? node["on-demand"] : node["on_demand"];
+  if (on_demand) {
+    if (!on_demand.IsScalar())
+      return absl::InvalidArgumentError(path.string() + ": asset on-demand must be a boolean scalar");
+    try {
+      result.on_demand = on_demand.as<bool>();
+    } catch (const YAML::Exception&) {
+      return absl::InvalidArgumentError(path.string() + ": asset on-demand must be a boolean scalar");
+    }
+  }
 
   std::string raw_target;
   if (node["path"])
@@ -807,6 +817,69 @@ absl::Status AssetManager::Ensure(
     return absl::InternalError("Unable to initialize HTTPS asset manager");
   size_t total = 0;
   for (const AssetSpec& spec : *assets) {
+    auto status = ensure_one(spec, limits, &total);
+    if (!status.ok())
+      return status;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::EnsureRequired(const std::vector<fs::path>& configs, const Limits& limits) {
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  size_t total = 0;
+  for (const AssetSpec& spec : *assets) {
+    if (spec.on_demand)
+      continue;
+    auto status = ensure_one(spec, limits, &total);
+    if (!status.ok())
+      return status;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::EnsureRequired(
+    const std::vector<fs::path>& configs,
+    const ConfigTransform& transform,
+    const Limits& limits) {
+  auto assets = Discover(configs, transform, limits);
+  if (!assets.ok())
+    return assets.status();
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  size_t total = 0;
+  for (const AssetSpec& spec : *assets) {
+    if (spec.on_demand)
+      continue;
+    auto status = ensure_one(spec, limits, &total);
+    if (!status.ok())
+      return status;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::EnsureNamed(
+    const std::vector<fs::path>& configs,
+    const std::vector<std::string>& names,
+    const Limits& limits) {
+  if (names.empty())
+    return absl::OkStatus();
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  std::set<std::string> requested(names.begin(), names.end());
+  size_t total = 0;
+  for (const AssetSpec& spec : *assets) {
+    if (!requested.count(spec.name))
+      continue;
     auto status = ensure_one(spec, limits, &total);
     if (!status.ok())
       return status;

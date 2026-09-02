@@ -18,11 +18,17 @@ backends:
 
 The DeDoDe and LightGlue projects are MIT and Apache-2.0 respectively; Kornia
 and the EfficientLoFTR artifact are Apache-2.0. Model files are downloaded at
-runtime with pinned SHA-256 values and are not stored in Git.
+runtime with pinned SHA-256 values and are not stored in Git. Matcher models
+are on-demand assets: startup downloads only the graph selected by the layered
+`stitching.control_point_matcher` configuration. Package builds verify and
+stage every graph together with the notices in
+`third_party/native_model_licenses`.
 
 The sibling `video-stitcher` repository's CUDA AKAZE implementation has the
 desired tolerance-level CPU parity, but that implementation is distributed as
 part of an AGPL-3.0 project. It is not copied or linked into this MIT project.
 The OpenCV implementation here independently reproduces its interoperable
-AKAZE/M-LDB/Hamming behavior. A CUDA implementation can replace it after a
-compatibly licensed kernel is available.
+AKAZE/M-LDB/Hamming behavior. It relies on HStream's downstream control-point
+selection and robust homography fitting rather than copying video-stitcher's
+overlap-ROI and black-border calibration heuristics. A CUDA implementation can
+replace it after a compatibly licensed kernel is available.

@@ -234,6 +234,34 @@ int main(int, char**) {
     ok &= expect(
         discovered->front().target == root / "pretrained" / "model.bin", "relative target must resolve from config");
   {
+    std::ofstream deferred(root / "configs" / "on-demand.yaml");
+    deferred << "pretrained-assets:\n"
+                "  - name: deferred missing model\n"
+                "    on-demand: true\n"
+                "    url: https://example.invalid/deferred.bin\n"
+                "    sha256: "
+             << std::string(64, '0')
+             << "\n"
+                "    path: ../pretrained/deferred.bin\n"
+                "  - name: selected cached model\n"
+                "    on-demand: true\n"
+                "    url: https://example.invalid/model.bin\n"
+                "    sha256: "
+             << (hash.ok() ? *hash : std::string(64, '0'))
+             << "\n"
+                "    path: ../pretrained/model.bin\n";
+  }
+  auto deferred = hm::assets::AssetManager::Discover({root / "configs" / "on-demand.yaml"});
+  ok &= expect(
+      deferred.ok() && deferred->size() == 2 && deferred->front().on_demand,
+      "asset discovery must retain on-demand metadata for packaging and explicit selection");
+  ok &= expect(
+      hm::assets::AssetManager::EnsureRequired({root / "configs" / "on-demand.yaml"}).ok(),
+      "ordinary startup must skip an absent on-demand asset");
+  ok &= expect(
+      hm::assets::AssetManager::EnsureNamed({root / "configs" / "on-demand.yaml"}, {"selected cached model"}).ok(),
+      "explicit selection must ensure the named on-demand asset");
+  {
     std::ofstream child(root / "configs" / "program-assets.yaml");
     child << "pretrained-assets:\n  - name: program detector\n    url: https://example.invalid/detector.bin\n"
              "    sha256: "

@@ -8,6 +8,7 @@ verifies the three downloaded checkpoint digests before writing the graph.
 
 import argparse
 import hashlib
+import io
 from pathlib import Path
 import types
 
@@ -35,6 +36,10 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def checkpoint_path(filename: str) -> Path:
+    return Path(torch.hub.get_dir()) / "checkpoints" / filename
+
+
 def verify_checkpoints() -> None:
     checkpoint_dir = Path(torch.hub.get_dir()) / "checkpoints"
     for filename, expected in CHECKPOINTS.items():
@@ -46,6 +51,18 @@ def verify_checkpoints() -> None:
             raise RuntimeError(
                 f"checkpoint {path} has SHA-256 {actual}, expected {expected}"
             )
+
+
+def load_verified_state_dict(filename: str):
+    path = checkpoint_path(filename)
+    payload = path.read_bytes()
+    actual = hashlib.sha256(payload).hexdigest()
+    expected = CHECKPOINTS[filename]
+    if actual != expected:
+        raise RuntimeError(
+            f"checkpoint {path} changed before loading: SHA-256 {actual}, expected {expected}"
+        )
+    return torch.load(io.BytesIO(payload), map_location="cpu", weights_only=True)
 
 
 def patched_cross_forward(self, x0, x1, mask=None):
@@ -134,14 +151,29 @@ class DeDoDeLightGluePipeline(nn.Module):
         self.keypoint_count = keypoint_count
         self.height = height
         self.width = width
-        self.dedode = KF.DeDoDe.from_pretrained(
-            detector_weights="L-C4-v2",
-            descriptor_weights="B-upright",
-            amp_dtype=torch.float32,
+        self.dedode = KF.DeDoDe(
+            detector_model="L", descriptor_model="B", amp_dtype=torch.float32
         )
-        self.lightglue = KF.LightGlue(
-            "dedodeb", depth_confidence=-1, width_confidence=-1, flash=False, mp=False
+        self.dedode.detector.load_state_dict(
+            load_verified_state_dict("dedode_detector_L_v2.pth")
         )
+        self.dedode.descriptor.load_state_dict(
+            load_verified_state_dict("dedode_descriptor_B.pth")
+        )
+        lightglue_config = dict(KF.LightGlue.features["dedodeb"])
+        lightglue_config.update(
+            weights=None,
+            depth_confidence=-1,
+            width_confidence=-1,
+            flash=False,
+            mp=False,
+        )
+        self.lightglue = KF.LightGlue(None, **lightglue_config)
+        incompatible = self.lightglue.load_state_dict(
+            load_verified_state_dict("dedodeb_lightglue.pth"), strict=False
+        )
+        if incompatible.missing_keys != ["confidence_thresholds"] or incompatible.unexpected_keys:
+            raise RuntimeError(f"unexpected DeDoDe-B LightGlue checkpoint contract: {incompatible}")
         self.lightglue.posenc.forward = types.MethodType(
             patched_positional_forward, self.lightglue.posenc
         )
@@ -240,8 +272,8 @@ def main() -> None:
             f"expected Kornia 0.8.3 and PyTorch {expected_torch}, got {kornia.__version__} and {torch.__version__}"
         )
 
-    model = DeDoDeLightGluePipeline(args.keypoints, args.height, args.width).eval()
     verify_checkpoints()
+    model = DeDoDeLightGluePipeline(args.keypoints, args.height, args.width).eval()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     original_assignment = lightglue_module.sigmoid_log_double_softmax
     lightglue_module.sigmoid_log_double_softmax = patched_assignment

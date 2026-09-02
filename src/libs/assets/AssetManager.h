@@ -25,6 +25,7 @@ struct AssetSpec {
   std::string sha256;
   std::filesystem::path target;
   std::filesystem::path declaring_config;
+  bool on_demand{false};
 };
 
 struct Limits {
@@ -53,6 +54,17 @@ class AssetManager {
   static absl::Status Ensure(
       const std::vector<std::filesystem::path>& configs,
       const ConfigTransform& transform,
+      const Limits& limits = {});
+  // Ensures startup-required assets while leaving on-demand assets deferred.
+  static absl::Status EnsureRequired(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
+  static absl::Status EnsureRequired(
+      const std::vector<std::filesystem::path>& configs,
+      const ConfigTransform& transform,
+      const Limits& limits = {});
+  // Ensures explicitly selected assets, including assets marked on-demand.
+  static absl::Status EnsureNamed(
+      const std::vector<std::filesystem::path>& configs,
+      const std::vector<std::string>& names,
       const Limits& limits = {});
   static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::StatusOr<std::string> Sha256(const std::filesystem::path& path);

@@ -55,8 +55,11 @@ int main(int argc, char** argv) {
       contains(packager, "X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}") &&
           contains(packager, "X-HStream-Target-Platform: ${TARGET_PLATFORM}") &&
           contains(packager, "EXPECTED_CUDA_SONAME") && contains(packager, "unexpected CUDA major") &&
-          contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root"),
-      "package must carry platform provenance, enforce each platform's CUDA ABI, and stage verified native models");
+          contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root") &&
+          contains(packager, "native_model_licenses") && contains(packager, "Apache-2.0-LICENSE.txt") &&
+          contains(packager, "DeDoDe-LICENSE.txt") && contains(packager, "NOTICE.txt"),
+      "package must carry platform provenance, enforce each platform's CUDA ABI, and stage verified native models "
+      "with their notices");
   ok &= expect(
       contains(docker_runner, ":/root/.cache/hstream/models:ro") && contains(docker_runner, "HSTREAM_MODEL_CACHE_DIR"),
       "immutable Docker build must expose the content-addressed native model cache read-only");
@@ -146,9 +149,8 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "auth\", \"login") && contains(windows_powershell, "--web") &&
           contains(windows_powershell, "https://github.com/login/device") &&
           contains(windows_powershell, "Start-Process $GitHubDeviceLoginUri") &&
-          contains(windows_powershell, "--clipboard") &&
-          contains(windows_powershell, "--insecure-storage") && contains(windows_powershell, "GH_CONFIG_DIR") &&
-          contains(windows_powershell, "GH_PROMPT_DISABLED") &&
+          contains(windows_powershell, "--clipboard") && contains(windows_powershell, "--insecure-storage") &&
+          contains(windows_powershell, "GH_CONFIG_DIR") && contains(windows_powershell, "GH_PROMPT_DISABLED") &&
           contains(windows_powershell, "function Test-GitHubCliReleaseAccess") &&
           contains(windows_powershell, "release view $ReleaseTag --repo $RepositoryName --json tagName") &&
           contains(windows_powershell, "function Start-GitHubDeviceLogin") &&
@@ -179,8 +181,7 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "/lib64/ld-linux-x86-64.so.2") &&
           contains(windows_powershell, "function Invoke-WslBashScript") &&
           contains(windows_powershell, "# hstream-wsl-stdin-terminator") &&
-          contains(windows_powershell, "$scriptWithTerminator |") &&
-          contains(windows_powershell, "-- bash -s") &&
+          contains(windows_powershell, "$scriptWithTerminator |") && contains(windows_powershell, "-- bash -s") &&
           contains(windows_powershell, "function Get-WslPackageState") &&
           contains(windows_powershell, "dpkg-query --status $Package") &&
           contains(windows_powershell, "$WindowsPath.Replace([char]92, [char]47)") &&
@@ -197,8 +198,9 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "$disallowedThumbprints.ContainsKey($thumbprint)") &&
           contains(windows_powershell, "/usr/local/share/ca-certificates/hstream-windows") &&
           contains(windows_powershell, "update-ca-certificates") &&
-          contains(windows_powershell,
-                   "Sync-WindowsRootCertificates\n    Invoke-WslBashScript -Name $DistroName -Script $bootstrap") &&
+          contains(
+              windows_powershell,
+              "Sync-WindowsRootCertificates\n    Invoke-WslBashScript -Name $DistroName -Script $bootstrap") &&
           contains(windows_powershell, "PROCESSOR_ARCHITEW6432") &&
           contains(windows_powershell, "Test-HStreamDistroOwnership") &&
           contains(windows_powershell, "hstream-wsl-bootstrapper-schema-1") &&
@@ -217,8 +219,7 @@ int main(int argc, char** argv) {
           contains(windows_powershell, "--import\", $DistroName") &&
           contains(windows_powershell, "$hstreamState.Version -ne $expectedHStreamVersion") &&
           contains(windows_powershell, "$hstreamState.Status -ne \"install ok installed\"") &&
-          contains(windows_powershell, "install ok installed") &&
-          !contains(windows_powershell, "9.1.0-1+resolute2") &&
+          contains(windows_powershell, "install ok installed") && !contains(windows_powershell, "9.1.0-1+resolute2") &&
           contains(windows_powershell, "/usr/lib/wsl/lib/libcuda.so.1") &&
           contains(windows_powershell, "Package: hstream-wsl-libcuda") &&
           !contains(windows_powershell, "nvidia-driver") && !contains(windows_powershell, "cuda-drivers"),
