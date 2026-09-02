@@ -181,7 +181,14 @@ std::optional<hm::stitching::MappingBackend> parse_mapping_backend_choice(const 
 }
 
 bool ui_selectable_control_point_matcher(hm::stitching::ControlPointMatcher matcher) {
-  return matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue;
+  switch (matcher) {
+    case hm::stitching::ControlPointMatcher::kSuperPointLightGlue:
+    case hm::stitching::ControlPointMatcher::kDeDoDeLightGlue:
+    case hm::stitching::ControlPointMatcher::kLoFTR:
+    case hm::stitching::ControlPointMatcher::kAkazeHamming:
+      return true;
+  }
+  return false;
 }
 
 bool ui_selectable_mapping_backend(hm::stitching::MappingBackend backend) {
@@ -5042,14 +5049,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_point_matcher_combo_->setMinimumWidth(240);
   control_point_matcher_combo_->addItem("SuperPoint + LightGlue", "superpoint-lightglue");
   control_point_matcher_combo_->addItem("DeDoDe + LightGlue", "dedode-lightglue");
-  control_point_matcher_combo_->addItem("LoFTR", "loftr");
-  if (auto* matcher_model = qobject_cast<QStandardItemModel*>(control_point_matcher_combo_->model())) {
-    for (int index = 1; index < control_point_matcher_combo_->count(); ++index) {
-      if (auto* item = matcher_model->item(index)) {
-        item->setEnabled(false);
-      }
-    }
-  }
+  control_point_matcher_combo_->addItem("LoFTR (EfficientLoFTR outdoor)", "loftr");
+  control_point_matcher_combo_->addItem("AKAZE + M-LDB + Hamming", "akaze-hamming");
   int matcher_index = control_point_matcher_combo_->findData(default_control_point_matcher_);
   control_point_matcher_combo_->setCurrentIndex(matcher_index < 0 ? 0 : matcher_index);
   control_point_matcher_combo_->setToolTip("Native feature matcher used to find stitching control points.");

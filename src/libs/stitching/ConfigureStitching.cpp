@@ -2510,11 +2510,11 @@ absl::Status create_control_points(
       TO_STRING(
           "Looking for control points in " << input_files.size() << " synchronized camera frame pair"
                                            << (input_files.size() == 1 ? "" : "s")));
-  fs::path model_path;
-  HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
   std::unique_ptr<FeatureMatcher> matcher;
   ControlPointMatcher control_point_matcher;
   HM_ASSIGN_OR_RETURN(control_point_matcher, ParseControlPointMatcher(backend_choices.control_point_matcher));
+  fs::path model_path;
+  HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path(control_point_matcher));
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher));
   struct CandidateFramePair {
     size_t index{0};

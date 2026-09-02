@@ -19,6 +19,14 @@ pretrained-assets:
     url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v2.0/superpoint_lightglue_pipeline.onnx
     sha256: 228994cea8c010146fa2aef933baa3ffaa4bcdc522bc8aa560087fcff8134526
     path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx
+  - name: dedode-lightglue
+    url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/541752348
+    sha256: f8bd053e44d57a77adaf51a106fd2b307212c9299f198066f6daa7e7856e78a7
+    path: $HOME/.cache/hstream/models/dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx
+  - name: efficient-loftr-outdoor
+    url: https://huggingface.co/SpatialHub/efficient-loftr-onnx/resolve/2c4515cbfd4866663db0ca1b3e02c55163dc5a75/eloftr_outdoor_opt.onnx?download=true
+    sha256: a2cbdcfef0ddb5cdab062ae34bf7b09da6cac79baf97fc5155033c8cb1eab602
+    path: $HOME/.cache/hstream/models/efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx
 
 application:
   stage: -1

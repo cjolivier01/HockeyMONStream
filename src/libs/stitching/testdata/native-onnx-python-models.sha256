@@ -1,6 +1,8 @@
-# Source-only Python oracle inputs. The release gate requires these exact
-# bytes; they are never shipped in the HStream Debian package.
+# Native ONNX qualification inputs. The Python oracle sources/checkpoints are
+# source-only; runtime ONNX assets are downloaded separately and not stored in Git.
 e34b9634f9678a181a970b712389cdbaa8cc45004117c916e5af6a3ba931591b  rink-config
 fd7278b84ec48d31a781e5fd1c637ae50cce38f4df120034a98b5f73fbe5fc2e  rink-checkpoint
 2c231f9f4897779d19f5bd2c1a8f7c80b7dac01da6555ff0b9d1787f26c1bfeb  native-rink-onnx
 ea4a4ab2cb5569580bccdd29037bf1437363c5ec1c0d1c0638840a3096332ae6  native-feature-matcher-onnx
+f8bd053e44d57a77adaf51a106fd2b307212c9299f198066f6daa7e7856e78a7  native-dedode-lightglue-onnx
+a2cbdcfef0ddb5cdab062ae34bf7b09da6cac79baf97fc5155033c8cb1eab602  native-loftr-onnx

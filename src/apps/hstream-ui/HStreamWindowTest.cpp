@@ -2619,9 +2619,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   setup_preview_splitter->setSizes({240, 440});
   QApplication::processEvents();
-  const bool unimplemented_matchers_disabled = control_point_matcher->model() &&
-      !(control_point_matcher->model()->flags(control_point_matcher->model()->index(1, 0)) & Qt::ItemIsEnabled) &&
-      !(control_point_matcher->model()->flags(control_point_matcher->model()->index(2, 0)) & Qt::ItemIsEnabled);
+  bool all_matchers_enabled = control_point_matcher->model();
+  for (int index = 0; all_matchers_enabled && index < control_point_matcher->count(); ++index) {
+    all_matchers_enabled =
+        control_point_matcher->model()->flags(control_point_matcher->model()->index(index, 0)) & Qt::ItemIsEnabled;
+  }
   const QString original_mapping_backend = mapping_backend->currentData().toString();
   const QString original_projection = projection->currentData().toString();
   window->resize(1440, 900);
@@ -2818,10 +2820,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
               !run_autooptimizer->isChecked() && !run_autooptimizer->isEnabled() &&
-              mapping_backend->currentData().toString() == "opencv-magsac" && control_point_matcher->count() == 3 &&
+              mapping_backend->currentData().toString() == "opencv-magsac" && control_point_matcher->count() == 4 &&
               control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
               control_point_matcher->itemText(1) == "DeDoDe + LightGlue" &&
-              control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
+              control_point_matcher->itemText(2) == "LoFTR (EfficientLoFTR outdoor)" &&
+              control_point_matcher->itemText(3) == "AKAZE + M-LDB + Hamming" && all_matchers_enabled &&
               mapping_backend->count() == 3 && mapping_backend->itemText(0) == "NONA" &&
               mapping_backend->itemText(1) == "MAGSAC++" && mapping_backend->itemText(2) == "RANSAC" &&
               projection->findData("general-panini") >= 0 && all_nona_projections_enabled && only_rectilinear_enabled &&
@@ -7625,7 +7628,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     std::ofstream(config_path) << YAML::Dump(malformed) << '\n';
     activate(create);
     return expect(
-        control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+        control_point_matcher->currentData().toString() == "dedode-lightglue" &&
             mapping_backend->currentData().toString() == "opencv-magsac" &&
             projection->currentData().toString() == "rectilinear",
         message);
@@ -7646,7 +7649,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   std::ofstream(config_path) << YAML::Dump(invalid_previous_projection) << '\n';
   activate(create);
   const bool invalid_previous_projection_rejects_marker = expect(
-      control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+      control_point_matcher->currentData().toString() == "dedode-lightglue" &&
           mapping_backend->currentData().toString() == "opencv-magsac" &&
           projection->currentData().toString() == "rectilinear",
       "UI load must reject the entire generated marker when its previous projection scalar is malformed");
@@ -7687,21 +7690,21 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(create);
   const bool malformed_previous_autooptimizer_rejects_marker = worker_tuple_is_visible(
       "UI load must reject a malformed previous autooptimizer without aborting the current worker-tuple load");
-  YAML::Node unselectable_previous_matcher = YAML::Clone(generated_backend_alias);
-  unselectable_previous_matcher["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
+  YAML::Node selectable_previous_matcher = worker_tuple_fixture();
+  selectable_previous_matcher["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
       "dedode-lightglue";
-  std::ofstream(config_path) << YAML::Dump(unselectable_previous_matcher) << '\n';
+  std::ofstream(config_path) << YAML::Dump(selectable_previous_matcher) << '\n';
   const int dedode_index = control_point_matcher->findData("dedode-lightglue");
-  control_point_matcher->setCurrentIndex(dedode_index);
-  const bool unselectable_stale_state_selected = expect(
-      dedode_index >= 0 && control_point_matcher->currentData().toString() == "dedode-lightglue",
-      "UI test setup must select a stale disabled matcher before loading generated provenance");
+  control_point_matcher->setCurrentIndex(control_point_matcher->findData("superpoint-lightglue"));
+  const bool alternate_matcher_state_selected = expect(
+      dedode_index >= 0 && control_point_matcher->currentData().toString() == "superpoint-lightglue",
+      "UI test setup must select an alternate matcher before loading generated provenance");
   activate(create);
-  const bool unselectable_previous_matcher_is_ignored = expect(
-      control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+  const bool selectable_previous_matcher_is_restored = expect(
+      control_point_matcher->currentData().toString() == "dedode-lightglue" &&
           mapping_backend->currentData().toString() == "nona" &&
           projection->currentData().toString() == "general-panini",
-      "UI load must trust valid generated provenance while ignoring a previous matcher disabled in this UI");
+      "UI load must restore a generated-choice previous matcher that is now selectable");
 
   game_id->setText("ui-opencv-framing-roundtrip-game");
   activate(create);
@@ -7784,8 +7787,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       partial_previous_framing_inherits_defaults && absent_previous_framing_restores_defaults &&
       invalid_previous_matcher_rejects_marker && invalid_previous_backend_rejects_marker &&
       invalid_previous_projection_rejects_marker && incompatible_previous_tuple_rejects_marker &&
-      malformed_previous_autooptimizer_rejects_marker && unselectable_stale_state_selected &&
-      unselectable_previous_matcher_is_ignored && opencv_framing_starts_clean && nona_rectilinear_clamps_fov &&
+      malformed_previous_autooptimizer_rejects_marker && alternate_matcher_state_selected &&
+      selectable_previous_matcher_is_restored && opencv_framing_starts_clean && nona_rectilinear_clamps_fov &&
       inactive_opencv_framing_is_clean && projection_fov_does_not_leak_between_games &&
       projection_fov_reset_clears_cache && projection_parameters_do_not_leak_between_games &&
       projection_parameter_reset_clears_cache;

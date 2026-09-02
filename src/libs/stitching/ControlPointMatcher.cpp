@@ -16,6 +16,8 @@ const char* ControlPointMatcherName(ControlPointMatcher matcher) {
       return "dedode-lightglue";
     case ControlPointMatcher::kLoFTR:
       return "loftr";
+    case ControlPointMatcher::kAkazeHamming:
+      return "akaze-hamming";
   }
   return "superpoint-lightglue";
 }
@@ -36,9 +38,13 @@ absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& 
   if (normalized == "loftr") {
     return ControlPointMatcher::kLoFTR;
   }
+  if (normalized == "akaze-hamming" || normalized == "akaze" || normalized == "akaze-mldb" ||
+      normalized == "akaze-mldb-hamming") {
+    return ControlPointMatcher::kAkazeHamming;
+  }
   return absl::InvalidArgumentError(
       "Unsupported native control-point matcher \"" + value +
-      "\"; choose superpoint-lightglue, dedode-lightglue, or loftr");
+      "\"; choose superpoint-lightglue, dedode-lightglue, loftr, or akaze-hamming");
 }
 
 } // namespace hm::stitching

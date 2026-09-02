@@ -10,6 +10,7 @@ enum class ControlPointMatcher {
   kSuperPointLightGlue,
   kDeDoDeLightGlue,
   kLoFTR,
+  kAkazeHamming,
 };
 
 const char* ControlPointMatcherName(ControlPointMatcher matcher);
