@@ -491,8 +491,14 @@ done
 # and TensorRT input use the same writable per-user download target.
 hockey_yolo_model="hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
 sed -i \
-  "s#onnx-file: ../pretrained/deepstream/yolov8/${hockey_yolo_model}#onnx-file: \\$HOME/.cache/hstream/models/${hockey_yolo_model}#g" \
+  "s#onnx-file: ../pretrained/deepstream/yolov8/${hockey_yolo_model}#onnx-file: \$HOME/.cache/hstream/models/${hockey_yolo_model}#g" \
   "${STAGING}${INSTALL_PREFIX}/configs/config_infer_yolov8_hockey.yaml"
+if ! grep -Fqx \
+    "  onnx-file: \$HOME/.cache/hstream/models/${hockey_yolo_model}" \
+    "${STAGING}${INSTALL_PREFIX}/configs/config_infer_yolov8_hockey.yaml"; then
+  echo "ERROR: installed hockey YOLO config does not preserve its per-user model path." >&2
+  exit 1
+fi
 
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."
