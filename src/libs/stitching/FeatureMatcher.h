@@ -42,6 +42,7 @@ class FeatureMatcher {
   static constexpr int kInputWidth = 1024;
   static constexpr int kInputHeight = 576;
   static constexpr int kKeypointsPerImage = 1024;
+  static constexpr int kLegacyAlikedKeypointsPerImage = 2048;
   static constexpr int kLoFTRMaximumDimension = 1600;
   static constexpr int kLoFTRDimensionAlignment = 32;
   static constexpr int kAkazeMaximumDimension = 1920;
@@ -53,6 +54,10 @@ class FeatureMatcher {
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(
       const std::string& model_path,
       ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue);
+  // The release qualification oracle predates the selectable production
+  // backends and uses a frozen RGB RaCo-ALIKED k2048 graph. Keep its contract
+  // explicit so it cannot be mistaken for the production SuperPoint graph.
+  static absl::StatusOr<std::unique_ptr<FeatureMatcher>> CreateLegacyAlikedParity(const std::string& model_path);
   static absl::StatusOr<FeaturePairInput> Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeaturePairInput> PrepareLoFTR(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeatureMatchResult> Postprocess(
@@ -95,7 +100,22 @@ class FeatureMatcher {
       const std::function<bool()>& is_cancelled = {}) const;
 
  private:
-  FeatureMatcher(ControlPointMatcher matcher, std::unique_ptr<hm::onnx::Session> session = {}, int input_channels = 0);
+  FeatureMatcher(
+      ControlPointMatcher matcher,
+      std::unique_ptr<hm::onnx::Session> session = {},
+      int input_channels = 0,
+      size_t sparse_keypoints_per_image = kKeypointsPerImage,
+      bool sparse_keypoints_are_float = false);
+  static absl::StatusOr<FeatureMatchResult> PostprocessSparse(
+      const FeaturePairInput& input,
+      const float* keypoints,
+      size_t keypoint_count,
+      const int64_t* matches,
+      size_t match_value_count,
+      const float* scores,
+      size_t score_count,
+      size_t max_control_points,
+      size_t keypoints_per_image);
   absl::StatusOr<FeatureMatchResult> InferAkaze(
       const cv::Mat& left_bgr,
       const cv::Mat& right_bgr,
@@ -106,6 +126,8 @@ class FeatureMatcher {
   ControlPointMatcher matcher_{ControlPointMatcher::kSuperPointLightGlue};
   std::unique_ptr<hm::onnx::Session> session_;
   int input_channels_{0};
+  size_t sparse_keypoints_per_image_{kKeypointsPerImage};
+  bool sparse_keypoints_are_float_{false};
 };
 
 } // namespace hm::stitching

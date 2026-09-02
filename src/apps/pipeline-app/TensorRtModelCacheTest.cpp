@@ -63,9 +63,12 @@ int main(int argc, char** argv) {
       fs::weakly_canonical(fs::temp_directory_path()) / ("hstream-trt-cache-test-" + std::to_string(::getpid()));
   const fs::path configs = root / "configs";
   const fs::path models = root / "packaged-models";
+  const fs::path home = root / "home";
+  const fs::path home_models = home / ".cache/hstream/models";
   const fs::path cache = root / "cache";
   fs::create_directories(configs);
   fs::create_directories(models);
+  fs::create_directories(home_models);
   {
     std::ofstream(models / "detector.onnx") << "test onnx model\n";
     std::ofstream(models / "labels.txt") << "person\n";
@@ -75,6 +78,7 @@ int main(int argc, char** argv) {
     std::ofstream(models / "output-0.tensor") << "test output tensor zero\n";
     std::ofstream(models / "output-1.tensor") << "test output tensor one\n";
     std::ofstream(models / "detector_bf16.engine") << "prebuilt BF16 engine\n";
+    std::ofstream(home_models / "home-detector.onnx") << "user-cache ONNX model\n";
     fs::create_symlink("detector.onnx", models / "linked-detector.onnx");
     write_inference_config(configs / "infer.yaml", 0);
     std::ofstream(configs / "loader.yaml") << "property:\n"
@@ -110,12 +114,31 @@ int main(int argc, char** argv) {
                                                     "  onnx-file: ../packaged-models/detector.onnx\n"
                                                     "  model-engine-file: ../packaged-models/missing_bf16.engine\n"
                                                     "  network-mode: 0\n";
+    for (const auto& [name, prefix] : {
+             std::pair{"home-dollar.yaml", "$HOME"},
+             std::pair{"home-braced.yaml", "${HOME}"},
+             std::pair{"home-tilde.yaml", "~"},
+         }) {
+      std::ofstream(configs / name) << "property:\n"
+                                    << "  onnx-file: " << prefix << "/.cache/hstream/models/home-detector.onnx\n"
+                                    << "  model-engine-file: " << prefix
+                                    << "/.cache/hstream/models/home-detector.engine\n"
+                                       "  network-mode: 0\n";
+    }
   }
   fs::permissions(
       models,
       fs::perms::owner_read | fs::perms::owner_exec | fs::perms::group_read | fs::perms::group_exec |
           fs::perms::others_read | fs::perms::others_exec);
   ::setenv("HSTREAM_TENSORRT_CACHE_DIR", cache.c_str(), 1);
+  ::setenv("HOME", home.c_str(), 1);
+
+  for (const char* home_config : {"home-dollar.yaml", "home-braced.yaml", "home-tilde.yaml"}) {
+    YAML::Node home_pipeline = pipeline_for(home_config);
+    ok &= expect(
+        hm::pipeline::PrepareTensorRtModelCache(home_pipeline, configs).ok(),
+        "HOME-prefixed paths in inference configs must resolve to the user model cache");
+  }
 
   YAML::Node ini_pipeline = pipeline_for("infer.txt");
   ok &= expect(

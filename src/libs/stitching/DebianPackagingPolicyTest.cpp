@@ -57,7 +57,8 @@ int main(int argc, char** argv) {
           contains(packager, "EXPECTED_CUDA_SONAME") && contains(packager, "unexpected CUDA major") &&
           contains(packager, "pretrained/native-calibration") && contains(packager, "model_cache_root") &&
           contains(packager, "--package-assets --verify") && contains(packager, "--package-assets --print-targets") &&
-          contains(packager, "restrictive SuperPoint graph remains") &&
+          contains(packager, "non-redistributable rink and SuperPoint graphs remain") &&
+          contains(packager, "hockey YOLO checkpoint likewise has no recorded redistribution grant") &&
           !contains(packager, "superpoint-lightglue-pipeline-228994cea8c01014.onnx") &&
           contains(packager, "native_model_licenses") && contains(packager, "Apache-2.0-LICENSE.txt") &&
           contains(packager, "DeDoDe-LICENSE.txt") && contains(packager, "NOTICE.txt"),

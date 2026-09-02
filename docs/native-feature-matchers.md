@@ -27,9 +27,11 @@ The upstream SuperPoint weights are covered by
 internal, non-commercial use only, non-transferable, and no redistribution.
 HStream can download the graph into an individual user's cache when selected,
 but source and Debian releases do not redistribute it. Package builds stage
-only the redistributable rink, DeDoDe, and EfficientLoFTR graphs, together with
-their notices in `third_party/native_model_licenses`. Package eligibility is
-fail-closed: every packaged asset must declare `redistributable: true`.
+only the redistributable DeDoDe and EfficientLoFTR matcher graphs, together
+with their notices in `third_party/native_model_licenses`. The rink and hockey
+YOLO checkpoints also remain per-user downloads until their model-rights
+records permit redistribution. Package eligibility is fail-closed: every
+packaged asset must declare `redistributable: true`.
 
 The sibling `video-stitcher` repository's CUDA AKAZE implementation has the
 desired tolerance-level CPU parity, but that implementation is distributed as

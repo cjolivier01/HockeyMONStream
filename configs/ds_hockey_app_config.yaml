@@ -15,7 +15,8 @@
 # config. Unrelated configs do not inherit these private assets.
 pretrained-assets:
   - name: ice-rink-mask2former-swin-s
-    redistributable: true
+    # Checkpoint redistribution is blocked pending a model-rights record.
+    redistributable: false
     url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/501418054
     sha256: 2c231f9f4897779d19f5bd2c1a8f7c80b7dac01da6555ff0b9d1787f26c1bfeb
     path: $HOME/.cache/hstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx

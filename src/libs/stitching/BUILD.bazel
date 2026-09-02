@@ -366,6 +366,7 @@ cc_test(
   srcs = ["NativeModelSmokeTest.cpp"],
   env_inherit = [
     "HM_DEDODE_LIGHTGLUE_ONNX_MODEL",
+    "HM_FEATURE_MATCHER_ONNX_MODEL",
     "HM_LOFTR_ONNX_MODEL",
     "HM_REQUIRE_ONNX_MODEL_TESTS",
     "HM_RINK_ONNX_MODEL",

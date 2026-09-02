@@ -54,7 +54,19 @@ bool enabled(const YAML::Node& section) {
 }
 
 fs::path resolve_path(const std::string& raw, const fs::path& base) {
-  fs::path path(raw);
+  fs::path path;
+  const char* home = std::getenv("HOME");
+  if (home != nullptr && *home != '\0' && (raw == "$HOME" || raw == "${HOME}" || raw == "~")) {
+    path = home;
+  } else if (home != nullptr && *home != '\0' && raw.rfind("$HOME/", 0) == 0) {
+    path = fs::path(home) / raw.substr(6);
+  } else if (home != nullptr && *home != '\0' && raw.rfind("${HOME}/", 0) == 0) {
+    path = fs::path(home) / raw.substr(8);
+  } else if (home != nullptr && *home != '\0' && raw.rfind("~/", 0) == 0) {
+    path = fs::path(home) / raw.substr(2);
+  } else {
+    path = raw;
+  }
   if (!path.is_absolute())
     path = base / path;
   return path.lexically_normal();

@@ -46,7 +46,7 @@ absl::StatusOr<std::filesystem::path> model_path(
 } // namespace
 
 absl::StatusOr<std::filesystem::path> rink_model_path() {
-  return model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx");
+  return model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx", false);
 }
 
 absl::StatusOr<std::filesystem::path> feature_matcher_model_path(ControlPointMatcher matcher) {

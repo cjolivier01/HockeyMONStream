@@ -36,6 +36,7 @@ int main() {
   write_model(package_models / rink);
   write_model(package_models / dedode);
   write_model(package_models / loftr);
+  write_model(user_models / rink);
   write_model(user_models / superpoint);
 
   ::setenv("HOME", (root / "home").c_str(), 1);
@@ -48,8 +49,9 @@ int main() {
 
   bool ok = true;
   const auto rink_path = hm::stitching::rink_model_path();
-  ok &=
-      expect(rink_path.ok() && *rink_path == package_models / rink, "rink model must use the package model directory");
+  ok &= expect(
+      rink_path.ok() && *rink_path == user_models / rink,
+      "non-redistributable rink model must use the user cache even when packaged models exist");
   const auto superpoint_path =
       hm::stitching::feature_matcher_model_path(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
   ok &= expect(

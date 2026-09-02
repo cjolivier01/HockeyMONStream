@@ -219,8 +219,14 @@ absl::StatusOr<AkazeFeatures> detect_akaze(const cv::Mat& source) {
 FeatureMatcher::FeatureMatcher(
     ControlPointMatcher matcher,
     std::unique_ptr<hm::onnx::Session> session,
-    int input_channels)
-    : matcher_(matcher), session_(std::move(session)), input_channels_(input_channels) {}
+    int input_channels,
+    size_t sparse_keypoints_per_image,
+    bool sparse_keypoints_are_float)
+    : matcher_(matcher),
+      session_(std::move(session)),
+      input_channels_(input_channels),
+      sparse_keypoints_per_image_(sparse_keypoints_per_image),
+      sparse_keypoints_are_float_(sparse_keypoints_are_float) {}
 
 absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     const std::string& model_path,
@@ -280,6 +286,22 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
   return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher, std::move(*session), input_channels));
 }
 
+absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::CreateLegacyAlikedParity(
+    const std::string& model_path) {
+  auto session = hm::onnx::Session::Create(
+      model_path,
+      {{"images", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, 3, -1, -1}}},
+      {
+          {"keypoints", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1, kLegacyAlikedKeypointsPerImage, 2}},
+          {"matches", ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, {-1, 3}},
+          {"mscores", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {-1}},
+      });
+  if (!session.ok())
+    return session.status();
+  return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(
+      ControlPointMatcher::kSuperPointLightGlue, std::move(*session), 3, kLegacyAlikedKeypointsPerImage, true));
+}
+
 absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
   return prepare_feature_pair(left_bgr, right_bgr, 3);
 }
@@ -327,7 +349,31 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     const float* scores,
     size_t score_count,
     size_t max_control_points) {
-  constexpr size_t expected_keypoints = static_cast<size_t>(2) * kKeypointsPerImage * 2;
+  return PostprocessSparse(
+      input,
+      keypoints,
+      keypoint_count,
+      matches,
+      match_value_count,
+      scores,
+      score_count,
+      max_control_points,
+      kKeypointsPerImage);
+}
+
+absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessSparse(
+    const FeaturePairInput& input,
+    const float* keypoints,
+    size_t keypoint_count,
+    const int64_t* matches,
+    size_t match_value_count,
+    const float* scores,
+    size_t score_count,
+    size_t max_control_points,
+    size_t keypoints_per_image) {
+  if (keypoints_per_image == 0 || keypoints_per_image > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return absl::InvalidArgumentError("Feature matcher keypoint capacity is invalid");
+  const size_t expected_keypoints = static_cast<size_t>(2) * keypoints_per_image * 2;
   if (keypoints == nullptr || keypoint_count != expected_keypoints) {
     return absl::InvalidArgumentError("Feature matcher keypoints violate the frozen output contract");
   }
@@ -353,8 +399,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     const int64_t pair = matches[match_index * 3];
     const int64_t left_index = matches[match_index * 3 + 1];
     const int64_t right_index = matches[match_index * 3 + 2];
-    if (pair != 0 || left_index < 0 || left_index >= kKeypointsPerImage || right_index < 0 ||
-        right_index >= kKeypointsPerImage) {
+    if (pair != 0 || left_index < 0 || left_index >= static_cast<int64_t>(keypoints_per_image) || right_index < 0 ||
+        right_index >= static_cast<int64_t>(keypoints_per_image)) {
       return absl::OutOfRangeError("LightGlue returned an invalid pair or keypoint index");
     }
     const float score = scores[match_index];
@@ -363,7 +409,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     if (!(score > kMinimumScore))
       continue;
     const float* left = keypoints + static_cast<size_t>(left_index) * 2;
-    const float* right = keypoints + (static_cast<size_t>(kKeypointsPerImage) + right_index) * 2;
+    const float* right = keypoints + (keypoints_per_image + right_index) * 2;
     if (!std::isfinite(left[0]) || !std::isfinite(left[1]) || !std::isfinite(right[0]) || !std::isfinite(right[1])) {
       return absl::InvalidArgumentError("Feature matcher returned a non-finite keypoint");
     }
@@ -657,13 +703,28 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
         *input, *keypoints, *first_count, *matches, *second_count, *scores, *score_count, max_control_points);
   }
 
+  if (sparse_keypoints_are_float_) {
+    auto keypoints = outputs->at(0).float_data();
+    if (!keypoints.ok())
+      return keypoints.status();
+    return PostprocessSparse(
+        *input,
+        *keypoints,
+        *first_count,
+        *matches,
+        *second_count,
+        *scores,
+        *score_count,
+        max_control_points,
+        sparse_keypoints_per_image_);
+  }
   auto keypoints = outputs->at(0).int64_data();
   if (!keypoints.ok())
     return keypoints.status();
   std::vector<float> keypoint_values(*first_count);
   for (size_t index = 0; index < *first_count; ++index)
     keypoint_values[index] = static_cast<float>((*keypoints)[index]);
-  return Postprocess(
+  return PostprocessSparse(
       *input,
       keypoint_values.data(),
       keypoint_values.size(),
@@ -671,7 +732,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
       *second_count,
       *scores,
       *score_count,
-      max_control_points);
+      max_control_points,
+      sparse_keypoints_per_image_);
 }
 
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(

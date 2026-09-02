@@ -476,10 +476,9 @@ cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # Source checkouts keep native models in a per-user cache. Installed configs
 # reference immutable package-owned copies for redistributable models. The
-# restrictive SuperPoint graph remains a per-user, on-demand download.
+# non-redistributable rink and SuperPoint graphs remain per-user downloads.
 for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yaml; do
   for packaged_native_model in \
-      ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx \
       dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx \
       efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx; do
     sed -i \
@@ -487,6 +486,13 @@ for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yam
       "${STAGING}${INSTALL_PREFIX}/configs/${native_config}"
   done
 done
+# The hockey YOLO checkpoint likewise has no recorded redistribution grant.
+# Keep the source-checkout path unchanged, but make the installed declaration
+# and TensorRT input use the same writable per-user download target.
+hockey_yolo_model="hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
+sed -i \
+  "s#onnx-file: ../pretrained/deepstream/yolov8/${hockey_yolo_model}#onnx-file: \\$HOME/.cache/hstream/models/${hockey_yolo_model}#g" \
+  "${STAGING}${INSTALL_PREFIX}/configs/config_infer_yolov8_hockey.yaml"
 
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."

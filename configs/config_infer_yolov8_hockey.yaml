@@ -1,6 +1,7 @@
 pretrained-assets:
   - property: onnx-file
-    redistributable: true
+    # Checkpoint redistribution is blocked pending a model-rights record.
+    redistributable: false
     url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/501508436
     sha256: d2d1a3a54383d136b0a4d16ae95b3539641f3aa44c76f7c06933959ecc8b45e8
   - property: labelfile-path
