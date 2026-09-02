@@ -905,6 +905,18 @@ absl::Status AssetManager::EnsureNamed(
     auto status = ensure_one(spec, limits, &total);
     if (!status.ok())
       return status;
+    requested.erase(spec.name);
+  }
+  if (!requested.empty()) {
+    std::ostringstream missing;
+    bool first = true;
+    for (const std::string& name : requested) {
+      if (!first)
+        missing << ", ";
+      missing << name;
+      first = false;
+    }
+    return absl::NotFoundError("Requested pretrained asset declarations were not found: " + missing.str());
   }
   return absl::OkStatus();
 }

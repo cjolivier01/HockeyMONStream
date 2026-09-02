@@ -72,6 +72,21 @@ pipeline:
   ok &= expect(
       hm::OnePassCalibrationRequiredForMode(true, true, false, true, false),
       "Program mode must still calibrate a missing rink mask");
+  ok &= expect(
+      hm::StitcherMatcherModelRequired(false, true, false, false),
+      "one-pass stitching must provision its matcher when stitching artifacts are missing");
+  ok &= expect(
+      !hm::StitcherMatcherModelRequired(false, true, true, false),
+      "one-pass stitching must not provision a matcher for already-valid stitching artifacts");
+  ok &= expect(
+      hm::StitcherMatcherModelRequired(true, false, false, false),
+      "configure-only stitching must provision its matcher when artifacts are missing");
+  ok &= expect(
+      hm::StitcherMatcherModelRequired(true, false, true, true),
+      "forced configure-only stitching must provision its matcher even when artifacts exist");
+  ok &= expect(
+      !hm::StitcherMatcherModelRequired(false, false, false, false),
+      "a non-stitching pipeline must never provision a matcher");
   const std::string completion_scope = hm::stitching::calibration_completion_scope("output-a", "owner-a", "17");
   ok &= expect(
       completion_scope == hm::stitching::calibration_completion_scope("output-a", "owner-a", "17") &&

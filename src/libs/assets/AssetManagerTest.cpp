@@ -287,6 +287,11 @@ int main(int, char**) {
   ok &= expect(
       hm::assets::AssetManager::EnsureNamed({root / "configs" / "on-demand.yaml"}, {"selected cached model"}).ok(),
       "explicit selection must ensure the named on-demand asset");
+  ok &= expect(
+      !hm::assets::AssetManager::EnsureNamed(
+           {root / "configs" / "on-demand.yaml"}, {"selected cached model", "missing model declaration"})
+           .ok(),
+      "explicit selection must fail when any requested asset declaration is missing");
   {
     std::ofstream child(root / "configs" / "program-assets.yaml");
     child << "pretrained-assets:\n  - name: program detector\n    url: https://example.invalid/detector.bin\n"

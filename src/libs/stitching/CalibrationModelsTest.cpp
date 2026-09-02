@@ -61,6 +61,11 @@ int main() {
   ok &= expect(
       superpoint_path.ok() && *superpoint_path == user_models / superpoint,
       "non-redistributable SuperPoint must use the user cache even when packaged models exist");
+  const auto cached_superpoint_asset =
+      hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
+  ok &= expect(
+      cached_superpoint_asset.ok() && *cached_superpoint_asset == "superpoint-lightglue",
+      "a stock cached SuperPoint graph must still select its asset declaration for SHA-256 verification");
   const fs::path explicit_models = root / "explicit-models";
   write_model(explicit_models / superpoint);
   ::setenv("HM_NATIVE_MODEL_DIR", explicit_models.c_str(), 1);
@@ -93,6 +98,11 @@ int main() {
   ok &= expect(
       loftr_path.ok() && *loftr_path == package_models / loftr,
       "redistributable LoFTR must use the package model directory");
+  const auto packaged_loftr_asset =
+      hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kLoFTR);
+  ok &= expect(
+      packaged_loftr_asset.ok() && *packaged_loftr_asset == "efficient-loftr-outdoor",
+      "a stock packaged LoFTR graph must still select its asset declaration for SHA-256 verification");
 
   fs::remove(user_models / dedode);
   const auto missing_dedode_asset =

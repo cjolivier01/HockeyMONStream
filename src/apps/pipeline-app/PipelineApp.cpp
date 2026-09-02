@@ -1246,27 +1246,6 @@ absl::Status PipelineApplication::configureInstances(
         }
       }
 
-      // Matcher graphs are optional and large. Resolve the layered matcher
-      // choice first, honor an already available or explicitly overridden
-      // graph, then fetch only an authorized declared asset. DeDoDe must be
-      // locally exported/provided because its embedded LightGlue checkpoint
-      // has no recorded redistribution grant. AKAZE has no external model.
-      if (!clean_only_requested) {
-        hm::stitching::ControlPointMatcher matcher;
-        HM_ASSIGN_OR_RETURN(matcher, selected_stitching_matcher(app_ctx->configurator().config()));
-        std::string matcher_asset;
-        HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher));
-        if (!matcher_asset.empty()) {
-          std::vector<fs::path> asset_configs;
-          for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
-            asset_configs.emplace_back(cfg_files_[index]);
-          HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureNamed(asset_configs, {matcher_asset}));
-          auto model_path = hm::stitching::feature_matcher_model_path(matcher);
-          if (!model_path.ok())
-            return model_path.status();
-        }
-      }
-
       // Now auto-configure stuff as needed, i.e. dependent pipelines or stitching (if needed)
       absl::Status configuration_status = app_ctx->complete_configuration(
           force_reconfigure_,
@@ -1289,6 +1268,27 @@ absl::Status PipelineApplication::configureInstances(
       }
       if (clean_only_requested) {
         return absl::FailedPreconditionError("Eligible stitching configuration did not complete clean-only setup");
+      }
+      // Matcher graphs are optional and large. Provision one only after
+      // configuration inspection proves that this launch will regenerate
+      // control points. Honor explicit local overrides before fetching an
+      // authorized declared asset. DeDoDe must be locally exported/provided
+      // because its embedded LightGlue checkpoint has no redistribution grant;
+      // AKAZE has no external model.
+      if (app_ctx->configurator().stitching_matcher_model_required()) {
+        hm::stitching::ControlPointMatcher matcher;
+        HM_ASSIGN_OR_RETURN(matcher, selected_stitching_matcher(app_ctx->configurator().config()));
+        std::string matcher_asset;
+        HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher));
+        if (!matcher_asset.empty()) {
+          std::vector<fs::path> asset_configs;
+          for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
+            asset_configs.emplace_back(cfg_files_[index]);
+          HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureNamed(asset_configs, {matcher_asset}));
+          auto model_path = hm::stitching::feature_matcher_model_path(matcher);
+          if (!model_path.ok())
+            return model_path.status();
+        }
       }
       std::optional<double> stitch_output_rotation;
       HM_ASSIGN_OR_RETURN(stitch_output_rotation, active_stitch_output_rotation(app_ctx->configurator().config()));

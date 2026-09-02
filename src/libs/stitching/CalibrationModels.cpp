@@ -93,17 +93,20 @@ absl::StatusOr<std::string> feature_matcher_asset_to_ensure(ControlPointMatcher 
   if (matcher == ControlPointMatcher::kAkazeHamming)
     return std::string();
   auto model = feature_matcher_model_path(matcher);
-  if (model.ok())
+  if (feature_matcher_model_override_configured(matcher)) {
+    if (!model.ok())
+      return model.status();
     return std::string();
-  if (feature_matcher_model_override_configured(matcher))
-    return model.status();
+  }
   switch (matcher) {
     case ControlPointMatcher::kSuperPointLightGlue:
       return "superpoint-lightglue";
     case ControlPointMatcher::kLoFTR:
       return "efficient-loftr-outdoor";
     case ControlPointMatcher::kDeDoDeLightGlue:
-      return model.status();
+      if (!model.ok())
+        return model.status();
+      return std::string();
     case ControlPointMatcher::kAkazeHamming:
       return std::string();
   }
