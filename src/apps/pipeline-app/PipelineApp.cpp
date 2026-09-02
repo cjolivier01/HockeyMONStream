@@ -765,8 +765,8 @@ absl::Status configure_pipeline_runtime_environment(const char* argv0) {
   // keep any UI-selected private cache root coherent in the child process.
   setenv("HSTREAM_RUNTIME_CACHE_DIR", cache_root->c_str(), 1);
   const fs::path packaged_native_models = root / "pretrained/native-calibration";
-  if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
-    setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
+  if (!std::getenv("HM_PACKAGED_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
+    setenv("HM_PACKAGED_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
   }
   std::error_code ec;
   fs::path registry_dir = *cache_root / "gstreamer-1.0";

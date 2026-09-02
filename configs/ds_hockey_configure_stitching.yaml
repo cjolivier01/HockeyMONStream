@@ -17,6 +17,8 @@ pretrained-assets:
     path: $HOME/.cache/hstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx
   - name: superpoint-lightglue
     on-demand: true
+    # Upstream SuperPoint weights are not licensed for redistribution.
+    redistributable: false
     url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v2.0/superpoint_lightglue_pipeline.onnx
     sha256: 228994cea8c010146fa2aef933baa3ffaa4bcdc522bc8aa560087fcff8134526
     path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx

@@ -26,6 +26,7 @@ struct AssetSpec {
   std::filesystem::path target;
   std::filesystem::path declaring_config;
   bool on_demand{false};
+  bool redistributable{true};
 };
 
 struct Limits {
@@ -50,6 +51,12 @@ class AssetManager {
       const std::vector<std::filesystem::path>& configs,
       const ConfigTransform& transform,
       const Limits& limits = {});
+  // Returns only assets whose declarations permit redistribution in a binary
+  // package. Runtime discovery still retains non-redistributable assets so
+  // they can be downloaded into the user's cache on demand.
+  static absl::StatusOr<std::vector<AssetSpec>> DiscoverPackageAssets(
+      const std::vector<std::filesystem::path>& configs,
+      const Limits& limits = {});
   static absl::Status Ensure(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::Status Ensure(
       const std::vector<std::filesystem::path>& configs,
@@ -67,6 +74,7 @@ class AssetManager {
       const std::vector<std::string>& names,
       const Limits& limits = {});
   static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
+  static absl::Status VerifyPackageAssets(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::StatusOr<std::string> Sha256(const std::filesystem::path& path);
   static absl::StatusOr<std::string> Sha256Bytes(std::string_view contents);
 };

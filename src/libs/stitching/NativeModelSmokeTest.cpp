@@ -39,7 +39,7 @@ bool fail_or_skip(const std::string& message) {
 int main() {
   const fs::path rink_path = model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx");
   const fs::path matcher_path =
-      model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx");
+      model_path("HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx");
   const fs::path dedode_path =
       model_path("HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx");
   const fs::path loftr_path = model_path("HM_LOFTR_ONNX_MODEL", "efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx");

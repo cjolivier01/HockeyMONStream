@@ -474,23 +474,28 @@ echo "[make_deb] Staging configs..."
 cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 # Remove the systemd unit files — those belong to a separate package/install step
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
-# Source checkouts keep native models in a per-user cache.  Installed configs
-# instead reference the immutable package-owned copies staged below, so Play
-# works without a token, download, or writable model directory.
+# Source checkouts keep native models in a per-user cache. Installed configs
+# reference immutable package-owned copies for redistributable models. The
+# restrictive SuperPoint graph remains a per-user, on-demand download.
 for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yaml; do
-  sed -i \
-    "s#\\\$HOME/.cache/hstream/models/#${INSTALL_PREFIX}/pretrained/native-calibration/#g" \
-    "${STAGING}${INSTALL_PREFIX}/configs/${native_config}"
+  for packaged_native_model in \
+      ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx \
+      dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx \
+      efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx; do
+    sed -i \
+      "s#\\\$HOME/.cache/hstream/models/${packaged_native_model}#${INSTALL_PREFIX}/pretrained/native-calibration/${packaged_native_model}#g" \
+      "${STAGING}${INSTALL_PREFIX}/configs/${native_config}"
+  done
 done
 
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."
 asset_manifest="$(mktemp)"
-if ! "${HSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+if ! "${HSTREAM_ASSETS}" --package-assets --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
   echo "ERROR: every package-owned pretrained asset must exist and match its declared SHA256." >&2
   exit 1
 fi
-"${HSTREAM_ASSETS}" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
+"${HSTREAM_ASSETS}" --package-assets --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
   > "${asset_manifest}"
 pretrained_root="$(readlink -f "${TOPDIR}/pretrained" 2>/dev/null || true)"
 model_cache_root="$(readlink -f "${HOME}/.cache/hstream/models" 2>/dev/null || true)"
@@ -529,7 +534,7 @@ while IFS= read -r asset; do
 done < "${asset_manifest}"
 # Close the verification/copy window by confirming the sources still match the
 # declared manifest after every staged byte has been rehashed.
-if ! "${HSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+if ! "${HSTREAM_ASSETS}" --package-assets --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
   echo "ERROR: a pretrained source changed during package staging." >&2
   exit 1
 fi

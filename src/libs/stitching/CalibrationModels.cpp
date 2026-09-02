@@ -9,11 +9,17 @@
 namespace hm::stitching {
 namespace {
 
-absl::StatusOr<std::filesystem::path> model_path(const char* override_name, const char* content_addressed_name) {
+absl::StatusOr<std::filesystem::path> model_path(
+    const char* override_name,
+    const char* content_addressed_name,
+    bool may_use_packaged_model = true) {
   std::filesystem::path path;
   if (const char* override_path = std::getenv(override_name); override_path && *override_path) {
     path = override_path;
   } else if (const char* model_dir = std::getenv("HM_NATIVE_MODEL_DIR"); model_dir && *model_dir) {
+    path = std::filesystem::path(model_dir) / content_addressed_name;
+  } else if (const char* model_dir = std::getenv("HM_PACKAGED_NATIVE_MODEL_DIR");
+             may_use_packaged_model && model_dir && *model_dir) {
     path = std::filesystem::path(model_dir) / content_addressed_name;
   } else {
     const char* home = std::getenv("HOME");
@@ -24,10 +30,12 @@ absl::StatusOr<std::filesystem::path> model_path(const char* override_name, cons
   }
   std::error_code error;
   if (!std::filesystem::is_regular_file(path, error) || error) {
+    const std::string directory_overrides =
+        may_use_packaged_model ? "/HM_NATIVE_MODEL_DIR/HM_PACKAGED_NATIVE_MODEL_DIR" : "/HM_NATIVE_MODEL_DIR";
     return absl::NotFoundError(
         "Missing native calibration model " + path.string() +
         "; run hstream-assets on configs/ds_hockey_configure_stitching.yaml or set " + override_name +
-        "/HM_NATIVE_MODEL_DIR");
+        directory_overrides);
   }
   if (std::filesystem::file_size(path, error) == 0 || error) {
     return absl::FailedPreconditionError("Native calibration model is empty: " + path.string());
@@ -44,7 +52,7 @@ absl::StatusOr<std::filesystem::path> rink_model_path() {
 absl::StatusOr<std::filesystem::path> feature_matcher_model_path(ControlPointMatcher matcher) {
   switch (matcher) {
     case ControlPointMatcher::kSuperPointLightGlue:
-      return model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx");
+      return model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx", false);
     case ControlPointMatcher::kDeDoDeLightGlue:
       return model_path("HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx");
     case ControlPointMatcher::kLoFTR:

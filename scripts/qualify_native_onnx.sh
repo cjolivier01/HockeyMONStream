@@ -75,6 +75,7 @@ if [[ ! -f "${model_manifest}" ]]; then
 fi
 rink_model="${HM_RINK_ONNX_MODEL:-${HOME}/.cache/hstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx}"
 matcher_model="${HM_FEATURE_MATCHER_ONNX_MODEL:-${HOME}/.cache/hstream/models/aliked-lightglue-k2048-ea4a4ab2cb556958.onnx}"
+superpoint_model="${HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL:-${HOME}/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx}"
 dedode_model="${HM_DEDODE_LIGHTGLUE_ONNX_MODEL:-${HOME}/.cache/hstream/models/dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx}"
 loftr_model="${HM_LOFTR_ONNX_MODEL:-${HOME}/.cache/hstream/models/efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx}"
 for model_entry in \
@@ -82,6 +83,7 @@ for model_entry in \
     "rink-checkpoint:${HM_PARITY_RINK_CHECKPOINT}" \
     "native-rink-onnx:${rink_model}" \
     "native-feature-matcher-onnx:${matcher_model}" \
+    "native-superpoint-lightglue-onnx:${superpoint_model}" \
     "native-dedode-lightglue-onnx:${dedode_model}" \
     "native-loftr-onnx:${loftr_model}"; do
   model_name="${model_entry%%:*}"
@@ -102,6 +104,8 @@ export HM_RINK_ONNX_MODEL
 HM_RINK_ONNX_MODEL="$(realpath "${rink_model}")"
 export HM_FEATURE_MATCHER_ONNX_MODEL
 HM_FEATURE_MATCHER_ONNX_MODEL="$(realpath "${matcher_model}")"
+export HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL
+HM_SUPERPOINT_LIGHTGLUE_ONNX_MODEL="$(realpath "${superpoint_model}")"
 export HM_DEDODE_LIGHTGLUE_ONNX_MODEL
 HM_DEDODE_LIGHTGLUE_ONNX_MODEL="$(realpath "${dedode_model}")"
 export HM_LOFTR_ONNX_MODEL

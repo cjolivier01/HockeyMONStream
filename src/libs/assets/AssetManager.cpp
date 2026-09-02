@@ -478,6 +478,16 @@ absl::StatusOr<AssetSpec> make_spec(const YAML::Node& node, const YAML::Node& co
       return absl::InvalidArgumentError(path.string() + ": asset on-demand must be a boolean scalar");
     }
   }
+  const YAML::Node redistributable = node["redistributable"];
+  if (redistributable) {
+    if (!redistributable.IsScalar())
+      return absl::InvalidArgumentError(path.string() + ": asset redistributable must be a boolean scalar");
+    try {
+      result.redistributable = redistributable.as<bool>();
+    } catch (const YAML::Exception&) {
+      return absl::InvalidArgumentError(path.string() + ": asset redistributable must be a boolean scalar");
+    }
+  }
 
   std::string raw_target;
   if (node["path"])
@@ -789,6 +799,18 @@ absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
   return discover_impl(configs, transform, limits);
 }
 
+absl::StatusOr<std::vector<AssetSpec>> AssetManager::DiscoverPackageAssets(
+    const std::vector<fs::path>& configs,
+    const Limits& limits) {
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  assets->erase(
+      std::remove_if(assets->begin(), assets->end(), [](const AssetSpec& spec) { return !spec.redistributable; }),
+      assets->end());
+  return assets;
+}
+
 absl::Status AssetManager::Ensure(const std::vector<fs::path>& configs, const Limits& limits) {
   auto assets = Discover(configs, limits);
   if (!assets.ok())
@@ -904,6 +926,27 @@ absl::Status AssetManager::Verify(const std::vector<fs::path>& configs, const Li
       return hash.status();
     if (*hash != spec.sha256)
       return absl::DataLossError("Pretrained asset checksum mismatch for " + spec.target.string());
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::VerifyPackageAssets(const std::vector<fs::path>& configs, const Limits& limits) {
+  auto assets = DiscoverPackageAssets(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  for (const AssetSpec& spec : *assets) {
+    auto status = validate_target(spec);
+    if (!status.ok())
+      return status;
+    std::error_code error;
+    if (!fs::is_regular_file(spec.target, error) || error) {
+      return absl::NotFoundError("Required package asset is unavailable: " + spec.target.string());
+    }
+    auto hash = Sha256(spec.target);
+    if (!hash.ok())
+      return hash.status();
+    if (*hash != spec.sha256)
+      return absl::DataLossError("Package asset checksum mismatch for " + spec.target.string());
   }
   return absl::OkStatus();
 }

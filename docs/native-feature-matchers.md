@@ -20,9 +20,15 @@ The DeDoDe and LightGlue projects are MIT and Apache-2.0 respectively; Kornia
 and the EfficientLoFTR artifact are Apache-2.0. Model files are downloaded at
 runtime with pinned SHA-256 values and are not stored in Git. Matcher models
 are on-demand assets: startup downloads only the graph selected by the layered
-`stitching.control_point_matcher` configuration. Package builds verify and
-stage every graph together with the notices in
-`third_party/native_model_licenses`.
+`stitching.control_point_matcher` configuration.
+
+The upstream SuperPoint weights are covered by
+[Magic Leap's restrictive research license](https://github.com/magicleap/SuperPointPretrainedNetwork/blob/master/LICENSE):
+internal, non-commercial use only, non-transferable, and no redistribution.
+HStream can download the graph into an individual user's cache when selected,
+but source and Debian releases do not redistribute it. Package builds stage
+only the redistributable rink, DeDoDe, and EfficientLoFTR graphs, together with
+their notices in `third_party/native_model_licenses`.
 
 The sibling `video-stitcher` repository's CUDA AKAZE implementation has the
 desired tolerance-level CPU parity, but that implementation is distributed as
