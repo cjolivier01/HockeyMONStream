@@ -103,6 +103,22 @@ int main() {
   ok &= expect(
       packaged_loftr_asset.ok() && *packaged_loftr_asset == "efficient-loftr-outdoor",
       "a stock packaged LoFTR graph must still select its asset declaration for SHA-256 verification");
+  const auto packaged_loftr_target =
+      hm::stitching::feature_matcher_model_target_path(hm::stitching::ControlPointMatcher::kLoFTR);
+  ok &= expect(
+      packaged_loftr_target.ok() && *packaged_loftr_target == package_models / loftr,
+      "asset provisioning must resolve the same packaged LoFTR target that runtime will consume");
+  ok &= expect(
+      hm::stitching::bind_feature_matcher_model_path(hm::stitching::ControlPointMatcher::kLoFTR, package_models / loftr)
+          .ok(),
+      "a verified matcher model path must be bindable for later construction");
+  ::setenv("HM_PACKAGED_NATIVE_MODEL_DIR", (root / "different-package-models").c_str(), 1);
+  const auto bound_loftr_path = hm::stitching::feature_matcher_model_path(hm::stitching::ControlPointMatcher::kLoFTR);
+  ok &= expect(
+      bound_loftr_path.ok() && *bound_loftr_path == package_models / loftr,
+      "a bound verified matcher path must not drift with later packaged-directory changes");
+  ::unsetenv("HM_LOFTR_ONNX_MODEL");
+  ::setenv("HM_PACKAGED_NATIVE_MODEL_DIR", package_models.c_str(), 1);
 
   fs::remove(user_models / dedode);
   const auto missing_dedode_asset =
@@ -111,6 +127,11 @@ int main() {
       !missing_dedode_asset.ok(),
       "a missing DeDoDe graph must require local provisioning instead of selecting a download asset");
   fs::remove(user_models / superpoint);
+  const auto missing_superpoint_target =
+      hm::stitching::feature_matcher_model_target_path(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
+  ok &= expect(
+      missing_superpoint_target.ok() && *missing_superpoint_target == user_models / superpoint,
+      "stock model target resolution must work before the asset has been downloaded");
   const auto missing_superpoint_asset =
       hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
   ok &= expect(

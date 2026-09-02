@@ -1,6 +1,8 @@
 #include "hstream/src/libs/stitching/CalibrationModels.h"
 
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -9,11 +11,10 @@
 namespace hm::stitching {
 namespace {
 
-absl::StatusOr<std::filesystem::path> model_path(
+absl::StatusOr<std::filesystem::path> model_target_path(
     const char* override_name,
     const char* content_addressed_name,
-    bool may_use_packaged_model = true,
-    bool automatic_download_available = true) {
+    bool may_use_packaged_model = true) {
   std::filesystem::path path;
   if (const char* override_path = std::getenv(override_name); override_path && *override_path) {
     path = override_path;
@@ -29,20 +30,31 @@ absl::StatusOr<std::filesystem::path> model_path(
     }
     path = std::filesystem::path(home) / ".cache" / "hstream" / "models" / content_addressed_name;
   }
+  return path;
+}
+
+absl::StatusOr<std::filesystem::path> model_path(
+    const char* override_name,
+    const char* content_addressed_name,
+    bool may_use_packaged_model = true,
+    bool automatic_download_available = true) {
+  auto target = model_target_path(override_name, content_addressed_name, may_use_packaged_model);
+  if (!target.ok())
+    return target.status();
   std::error_code error;
-  if (!std::filesystem::is_regular_file(path, error) || error) {
+  if (!std::filesystem::is_regular_file(*target, error) || error) {
     const std::string directory_overrides =
         may_use_packaged_model ? "/HM_NATIVE_MODEL_DIR/HM_PACKAGED_NATIVE_MODEL_DIR" : "/HM_NATIVE_MODEL_DIR";
     const std::string remediation = automatic_download_available
         ? "; run hstream-assets on configs/ds_hockey_configure_stitching.yaml or set "
         : "; export or provide the model locally and set ";
     return absl::NotFoundError(
-        "Missing native calibration model " + path.string() + remediation + override_name + directory_overrides);
+        "Missing native calibration model " + target->string() + remediation + override_name + directory_overrides);
   }
-  if (std::filesystem::file_size(path, error) == 0 || error) {
-    return absl::FailedPreconditionError("Native calibration model is empty: " + path.string());
+  if (std::filesystem::file_size(*target, error) == 0 || error) {
+    return absl::FailedPreconditionError("Native calibration model is empty: " + target->string());
   }
-  return path;
+  return *target;
 }
 
 const char* feature_matcher_override_name(ControlPointMatcher matcher) {
@@ -89,6 +101,22 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_path(ControlPointMat
   return absl::InvalidArgumentError("Unknown native control-point matcher");
 }
 
+absl::StatusOr<std::filesystem::path> feature_matcher_model_target_path(ControlPointMatcher matcher) {
+  switch (matcher) {
+    case ControlPointMatcher::kSuperPointLightGlue:
+      return model_target_path(
+          "HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx", false);
+    case ControlPointMatcher::kDeDoDeLightGlue:
+      return model_target_path(
+          "HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx", false);
+    case ControlPointMatcher::kLoFTR:
+      return model_target_path("HM_LOFTR_ONNX_MODEL", "efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx");
+    case ControlPointMatcher::kAkazeHamming:
+      return std::filesystem::path();
+  }
+  return absl::InvalidArgumentError("Unknown native control-point matcher");
+}
+
 absl::StatusOr<std::string> feature_matcher_asset_to_ensure(ControlPointMatcher matcher) {
   if (matcher == ControlPointMatcher::kAkazeHamming)
     return std::string();
@@ -111,6 +139,19 @@ absl::StatusOr<std::string> feature_matcher_asset_to_ensure(ControlPointMatcher 
       return std::string();
   }
   return absl::InvalidArgumentError("Unknown native control-point matcher");
+}
+
+absl::Status bind_feature_matcher_model_path(ControlPointMatcher matcher, const std::filesystem::path& verified_path) {
+  const char* override_name = feature_matcher_override_name(matcher);
+  if (override_name == nullptr)
+    return absl::InvalidArgumentError("A model path cannot be bound for a model-free control-point matcher");
+  if (verified_path.empty())
+    return absl::InvalidArgumentError("A verified feature-matcher model path may not be empty");
+  if (::setenv(override_name, verified_path.c_str(), 1) != 0) {
+    return absl::InternalError(
+        std::string("Unable to bind verified feature-matcher model path: ") + std::strerror(errno));
+  }
+  return absl::OkStatus();
 }
 
 } // namespace hm::stitching

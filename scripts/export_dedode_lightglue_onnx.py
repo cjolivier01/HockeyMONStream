@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2018 Kornia Team
+# SPDX-FileCopyrightText: 2023 ETH Zurich
+# SPDX-FileCopyrightText: 2023 Johan Edstedt
+# SPDX-FileCopyrightText: 2026 HStream contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# This exporter adapts Kornia 0.8.3's Apache-2.0 DeDoDe and LightGlue
+# implementations, which in turn derive from Johan Edstedt's MIT-licensed
+# DeDoDe and ETH Zurich's Apache-2.0 LightGlue projects. HStream modified the
+# upstream routines for deterministic fixed-shape ONNX export. The applicable
+# license texts and source revision notices are retained in
+# third_party/native_model_licenses/.
 """Export the fixed-shape DeDoDe-B + LightGlue calibration pipeline.
 
 The generated model is a build/release artifact, not a Python runtime

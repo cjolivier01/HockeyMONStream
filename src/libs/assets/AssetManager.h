@@ -70,10 +70,21 @@ class AssetManager {
       const std::vector<std::filesystem::path>& configs,
       const ConfigTransform& transform,
       const Limits& limits = {});
-  // Ensures explicitly selected assets, including assets marked on-demand.
-  static absl::Status EnsureNamed(
+  // Ensures explicitly selected assets, including assets marked on-demand,
+  // and returns the exact declarations whose targets were verified. Conflicting
+  // declarations with the same requested name are rejected.
+  static absl::StatusOr<std::vector<AssetSpec>> EnsureNamed(
       const std::vector<std::filesystem::path>& configs,
       const std::vector<std::string>& names,
+      const Limits& limits = {});
+  // Ensures or verifies one selected asset at the exact path a caller will
+  // consume. A declaration target may be downloaded; an alternate target
+  // (such as a packaged model) must already exist and match the declaration's
+  // SHA-256. The returned spec contains the exact verified target.
+  static absl::StatusOr<AssetSpec> EnsureNamedAtPath(
+      const std::vector<std::filesystem::path>& configs,
+      const std::string& name,
+      const std::filesystem::path& target,
       const Limits& limits = {});
   static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::Status VerifyPackageAssets(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});

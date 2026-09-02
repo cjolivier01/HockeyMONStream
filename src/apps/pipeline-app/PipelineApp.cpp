@@ -1284,10 +1284,13 @@ absl::Status PipelineApplication::configureInstances(
           std::vector<fs::path> asset_configs;
           for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
             asset_configs.emplace_back(cfg_files_[index]);
-          HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureNamed(asset_configs, {matcher_asset}));
-          auto model_path = hm::stitching::feature_matcher_model_path(matcher);
-          if (!model_path.ok())
-            return model_path.status();
+          fs::path runtime_target;
+          HM_ASSIGN_OR_RETURN(runtime_target, hm::stitching::feature_matcher_model_target_path(matcher));
+          hm::assets::AssetSpec verified_asset;
+          HM_ASSIGN_OR_RETURN(
+              verified_asset,
+              hm::assets::AssetManager::EnsureNamedAtPath(asset_configs, matcher_asset, runtime_target));
+          HM_RETURN_IF_ERROR(hm::stitching::bind_feature_matcher_model_path(matcher, verified_asset.target));
         }
       }
       std::optional<double> stitch_output_rotation;

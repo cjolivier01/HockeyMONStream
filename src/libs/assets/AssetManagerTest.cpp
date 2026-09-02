@@ -284,14 +284,77 @@ int main(int, char**) {
   ok &= expect(
       hm::assets::AssetManager::EnsureRequired({root / "configs" / "on-demand.yaml"}).ok(),
       "ordinary startup must skip an absent on-demand asset");
+  auto selected_asset =
+      hm::assets::AssetManager::EnsureNamed({root / "configs" / "on-demand.yaml"}, {"selected cached model"});
   ok &= expect(
-      hm::assets::AssetManager::EnsureNamed({root / "configs" / "on-demand.yaml"}, {"selected cached model"}).ok(),
-      "explicit selection must ensure the named on-demand asset");
+      selected_asset.ok() && selected_asset->size() == 1 &&
+          selected_asset->front().target == root / "pretrained" / "model.bin",
+      "explicit selection must return the exact verified target for the named on-demand asset");
   ok &= expect(
       !hm::assets::AssetManager::EnsureNamed(
            {root / "configs" / "on-demand.yaml"}, {"selected cached model", "missing model declaration"})
            .ok(),
       "explicit selection must fail when any requested asset declaration is missing");
+  {
+    std::ofstream duplicate(root / "configs" / "equivalent-duplicate.yaml");
+    duplicate << "pretrained-assets:\n"
+                 "  - name: selected cached model\n"
+                 "    on-demand: true\n"
+                 "    redistributable: true\n"
+                 "    url: https://example.invalid/model.bin\n"
+                 "    sha256: "
+              << (hash.ok() ? *hash : std::string(64, '0'))
+              << "\n"
+                 "    path: ../pretrained/model.bin\n";
+  }
+  ok &= expect(
+      hm::assets::AssetManager::EnsureNamed(
+          {root / "configs" / "on-demand.yaml", root / "configs" / "equivalent-duplicate.yaml"},
+          {"selected cached model"})
+          .ok(),
+      "equivalent declarations from layered configs must remain usable");
+  {
+    std::ofstream duplicate(root / "configs" / "conflicting-duplicate.yaml");
+    duplicate << "pretrained-assets:\n"
+                 "  - name: selected cached model\n"
+                 "    on-demand: true\n"
+                 "    redistributable: true\n"
+                 "    url: https://example.invalid/model.bin\n"
+                 "    sha256: "
+              << (hash.ok() ? *hash : std::string(64, '0'))
+              << "\n"
+                 "    path: ../pretrained/conflicting-model.bin\n";
+  }
+  {
+    std::ofstream conflicting_asset(root / "pretrained" / "conflicting-model.bin");
+    conflicting_asset << "native asset\n";
+  }
+  auto conflicting_declaration = hm::assets::AssetManager::EnsureNamed(
+      {root / "configs" / "on-demand.yaml", root / "configs" / "conflicting-duplicate.yaml"},
+      {"selected cached model"});
+  ok &= expect(
+      !conflicting_declaration.ok() && conflicting_declaration.status().code() == absl::StatusCode::kInvalidArgument,
+      "conflicting declarations with the same requested name must fail closed");
+  const fs::path packaged_model = root / "package-models" / "model.bin";
+  fs::create_directories(packaged_model.parent_path());
+  {
+    std::ofstream packaged(packaged_model);
+    packaged << "different packaged bytes\n";
+  }
+  auto mismatched_packaged_asset = hm::assets::AssetManager::EnsureNamedAtPath(
+      {root / "configs" / "on-demand.yaml"}, "selected cached model", packaged_model);
+  ok &= expect(
+      !mismatched_packaged_asset.ok() && mismatched_packaged_asset.status().code() == absl::StatusCode::kDataLoss,
+      "a packaged runtime target must match the named declaration checksum");
+  {
+    std::ofstream packaged(packaged_model);
+    packaged << "native asset\n";
+  }
+  auto packaged_asset = hm::assets::AssetManager::EnsureNamedAtPath(
+      {root / "configs" / "on-demand.yaml"}, "selected cached model", packaged_model);
+  ok &= expect(
+      packaged_asset.ok() && packaged_asset->target == fs::weakly_canonical(packaged_model),
+      "a matching packaged runtime target must be returned as the exact verified target");
   {
     std::ofstream child(root / "configs" / "program-assets.yaml");
     child << "pretrained-assets:\n  - name: program detector\n    url: https://example.invalid/detector.bin\n"
