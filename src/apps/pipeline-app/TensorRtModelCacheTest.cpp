@@ -138,6 +138,20 @@ int main(int argc, char** argv) {
     ok &= expect(
         hm::pipeline::PrepareTensorRtModelCache(home_pipeline, configs).ok(),
         "HOME-prefixed paths in inference configs must resolve to the user model cache");
+    const fs::path home_runtime = home_pipeline["primary-gie"]["config-file"].as<std::string>();
+    ok &= expect(
+        home_runtime != configs / home_config && fs::is_regular_file(home_runtime),
+        "HOME-prefixed paths must be republished for DeepStream instead of remaining literal");
+    if (fs::is_regular_file(home_runtime)) {
+      const YAML::Node expanded = YAML::LoadFile(home_runtime.string());
+      ok &= expect(
+          expanded["property"]["onnx-file"].as<std::string>() == (home_models / "home-detector.onnx").string(),
+          "the runtime inference config must contain an absolute HOME-expanded ONNX path");
+      ok &= expect(
+          expanded["property"]["model-engine-file"].as<std::string>() ==
+              (home_models / "home-detector.engine").string(),
+          "the runtime inference config must contain an absolute HOME-expanded engine path");
+    }
   }
 
   YAML::Node ini_pipeline = pipeline_for("infer.txt");

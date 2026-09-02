@@ -49,6 +49,9 @@ int main() {
   ::unsetenv("HM_LOFTR_ONNX_MODEL");
 
   bool ok = true;
+  ok &= expect(
+      !hm::stitching::feature_matcher_model_override_configured(hm::stitching::ControlPointMatcher::kDeDoDeLightGlue),
+      "the default user cache must not be mistaken for an explicit DeDoDe override");
   const auto rink_path = hm::stitching::rink_model_path();
   ok &= expect(
       rink_path.ok() && *rink_path == user_models / rink,
@@ -61,6 +64,10 @@ int main() {
   const fs::path explicit_models = root / "explicit-models";
   write_model(explicit_models / superpoint);
   ::setenv("HM_NATIVE_MODEL_DIR", explicit_models.c_str(), 1);
+  ok &= expect(
+      hm::stitching::feature_matcher_model_override_configured(
+          hm::stitching::ControlPointMatcher::kSuperPointLightGlue),
+      "the generic native-model directory must count as an explicit matcher override");
   const auto explicit_superpoint_path =
       hm::stitching::feature_matcher_model_path(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
   ok &= expect(
@@ -72,10 +79,41 @@ int main() {
   ok &= expect(
       dedode_path.ok() && *dedode_path == user_models / dedode,
       "non-redistributable DeDoDe must use the user cache even when packaged models exist");
+  ::setenv("HM_DEDODE_LIGHTGLUE_ONNX_MODEL", (user_models / dedode).c_str(), 1);
+  ok &= expect(
+      hm::stitching::feature_matcher_model_override_configured(hm::stitching::ControlPointMatcher::kDeDoDeLightGlue),
+      "a matcher-specific DeDoDe path must count as an explicit override");
+  const auto overridden_dedode_asset =
+      hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kDeDoDeLightGlue);
+  ok &= expect(
+      overridden_dedode_asset.ok() && overridden_dedode_asset->empty(),
+      "an existing explicit DeDoDe model must bypass automatic asset fetching");
+  ::unsetenv("HM_DEDODE_LIGHTGLUE_ONNX_MODEL");
   const auto loftr_path = hm::stitching::feature_matcher_model_path(hm::stitching::ControlPointMatcher::kLoFTR);
   ok &= expect(
       loftr_path.ok() && *loftr_path == package_models / loftr,
       "redistributable LoFTR must use the package model directory");
+
+  fs::remove(user_models / dedode);
+  const auto missing_dedode_asset =
+      hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kDeDoDeLightGlue);
+  ok &= expect(
+      !missing_dedode_asset.ok(),
+      "a missing DeDoDe graph must require local provisioning instead of selecting a download asset");
+  fs::remove(user_models / superpoint);
+  const auto missing_superpoint_asset =
+      hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kSuperPointLightGlue);
+  ok &= expect(
+      missing_superpoint_asset.ok() && *missing_superpoint_asset == "superpoint-lightglue",
+      "a missing stock SuperPoint graph must select its authorized on-demand asset");
+  ::setenv("HM_FEATURE_MATCHER_ONNX_MODEL", (root / "missing-superpoint.onnx").c_str(), 1);
+  ok &= expect(
+      !hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kSuperPointLightGlue).ok(),
+      "a missing explicit matcher override must fail instead of silently downloading the stock graph");
+  ::unsetenv("HM_FEATURE_MATCHER_ONNX_MODEL");
+  const auto akaze_asset =
+      hm::stitching::feature_matcher_asset_to_ensure(hm::stitching::ControlPointMatcher::kAkazeHamming);
+  ok &= expect(akaze_asset.ok() && akaze_asset->empty(), "AKAZE must never require a model asset");
 
   fs::remove_all(root);
   return ok ? 0 : 1;

@@ -476,7 +476,8 @@ cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # Source checkouts keep native models in a per-user cache. Installed configs
 # reference immutable package-owned copies for redistributable models. The
-# non-redistributable rink, SuperPoint, and DeDoDe graphs remain per-user downloads.
+# Non-redistributable rink and SuperPoint graphs remain per-user downloads;
+# DeDoDe must be locally supplied because HStream has no redistribution grant.
 for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yaml; do
   for packaged_native_model in \
       efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx; do

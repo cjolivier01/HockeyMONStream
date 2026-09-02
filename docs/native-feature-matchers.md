@@ -6,8 +6,12 @@ backends:
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph.
 - `dedode-lightglue` uses DeDoDe `L-C4-v2` detection, `B-upright`
   descriptors, and the `dedodeb` LightGlue weights in a fixed-shape ONNX
-  graph. `scripts/export_dedode_lightglue_onnx.py` reproduces the release
-  artifact from pinned checkpoint hashes.
+  graph. Because one embedded checkpoint has no recorded redistribution grant,
+  HStream does not host or automatically download this graph. A user who has
+  permission to use the checkpoint can run
+  `scripts/export_dedode_lightglue_onnx.py` with the three verified checkpoints
+  in the PyTorch hub cache, then set `HM_DEDODE_LIGHTGLUE_ONNX_MODEL` to the
+  exported graph (or place it at the documented user-cache filename).
 - `loftr` uses the Apache-2.0 EfficientLoFTR outdoor optimized ONNX graph from
   `SpatialHub/efficient-loftr-onnx` revision
   `2c4515cbfd4866663db0ca1b3e02c55163dc5a75`. The UI spells out that this is
@@ -19,11 +23,12 @@ backends:
 The DeDoDe and LightGlue source projects are MIT and Apache-2.0 respectively;
 Kornia and the EfficientLoFTR artifact are Apache-2.0. The DeDoDe graph also
 embeds a DeDoDe-B LightGlue checkpoint published from an external host without
-a model-specific redistribution grant, so HStream does not include that graph
-in binary packages. Model files are downloaded at runtime with pinned SHA-256
-values and are not stored in Git. Matcher models are on-demand assets: startup
-downloads only the graph selected by the layered
-`stitching.control_point_matcher` configuration.
+a model-specific redistribution grant, so HStream neither hosts nor packages
+that graph. Authorized SuperPoint and EfficientLoFTR model files are downloaded
+at runtime with pinned SHA-256 values and are not stored in Git. Matcher models
+are on-demand assets: startup downloads only the declared graph selected by the
+layered `stitching.control_point_matcher` configuration; an existing explicit
+matcher override is used without attempting a stock download.
 
 The upstream SuperPoint weights are covered by
 [Magic Leap's restrictive research license](https://github.com/magicleap/SuperPointPretrainedNetwork/blob/master/LICENSE):
@@ -31,10 +36,10 @@ internal, non-commercial use only, non-transferable, and no redistribution.
 HStream can download the graph into an individual user's cache when selected,
 but source and Debian releases do not redistribute it. Package builds stage
 only the redistributable EfficientLoFTR matcher graph, together with its notice
-in `third_party/native_model_licenses`. DeDoDe, rink, and hockey YOLO also
-remain per-user downloads until their model-rights records permit
-redistribution. Package eligibility is fail-closed: every packaged asset must
-declare `redistributable: true`.
+in `third_party/native_model_licenses`. Rink and hockey YOLO remain per-user
+downloads; DeDoDe must be locally exported or supplied until its model-rights
+record permits redistribution. Package eligibility is fail-closed: every
+packaged asset must declare `redistributable: true`.
 
 The sibling `video-stitcher` repository's CUDA AKAZE implementation has the
 desired tolerance-level CPU parity, but that implementation is distributed as

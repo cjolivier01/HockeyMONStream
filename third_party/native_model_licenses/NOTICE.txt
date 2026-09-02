@@ -12,8 +12,8 @@ The DeDoDe + LightGlue ONNX model is generated from:
 - The `dedodeb_lightglue.pth` checkpoint was introduced through Kornia PR
   https://github.com/kornia/kornia/pull/2769 and published at
   http://cmp.felk.cvut.cz/~mishkdmy/models/dedodeb_lightglue.pth. No
-  model-specific redistribution grant is recorded, so the combined DeDoDe +
-  LightGlue ONNX graph is excluded from HStream binary packages.
+  model-specific redistribution grant is recorded, so HStream neither hosts
+  nor packages the combined DeDoDe + LightGlue ONNX graph.
 - Kornia 0.8.3 DeDoDe and LightGlue implementations from
   https://github.com/kornia/kornia at commit
   d6bb4bf0d8a043c2bb8cef0c346a1b006d100930 (the commit referenced by

@@ -250,7 +250,6 @@ cc_library(
   srcs = ["FeatureMatcher.cpp"],
   hdrs = ["FeatureMatcher.h"],
   include_prefix = INCLUDE_PREFIX,
-  linkopts = ["-l:libopencv_features2d.so"],
   visibility = ["//visibility:public"],
   deps = [
     ":control_point_matcher",

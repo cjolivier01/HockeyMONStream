@@ -68,6 +68,7 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/pipeline_controller/GstPropertyService.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
+#include "hstream/src/libs/stitching/CalibrationModels.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/ControlPointMatcher.h"
 
@@ -84,7 +85,7 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
 
-absl::StatusOr<std::string> selected_stitching_matcher_asset(const YAML::Node& config) {
+absl::StatusOr<hm::stitching::ControlPointMatcher> selected_stitching_matcher(const YAML::Node& config) {
   std::string configured;
   try {
     configured = hm::get_node_value(config, "stitching.control_point_matcher", std::string("superpoint-lightglue"));
@@ -94,17 +95,7 @@ absl::StatusOr<std::string> selected_stitching_matcher_asset(const YAML::Node& c
   auto matcher = hm::stitching::ParseControlPointMatcher(configured);
   if (!matcher.ok())
     return matcher.status();
-  switch (*matcher) {
-    case hm::stitching::ControlPointMatcher::kSuperPointLightGlue:
-      return "superpoint-lightglue";
-    case hm::stitching::ControlPointMatcher::kDeDoDeLightGlue:
-      return "dedode-lightglue";
-    case hm::stitching::ControlPointMatcher::kLoFTR:
-      return "efficient-loftr-outdoor";
-    case hm::stitching::ControlPointMatcher::kAkazeHamming:
-      return std::string();
-  }
-  return absl::InvalidArgumentError("Unknown native control-point matcher");
+  return *matcher;
 }
 
 void emit_preview_protocol(const char* message) {
@@ -1256,16 +1247,23 @@ absl::Status PipelineApplication::configureInstances(
       }
 
       // Matcher graphs are optional and large. Resolve the layered matcher
-      // choice first, then fetch only its declared on-demand asset. AKAZE has
-      // no external model.
+      // choice first, honor an already available or explicitly overridden
+      // graph, then fetch only an authorized declared asset. DeDoDe must be
+      // locally exported/provided because its embedded LightGlue checkpoint
+      // has no recorded redistribution grant. AKAZE has no external model.
       if (!clean_only_requested) {
+        hm::stitching::ControlPointMatcher matcher;
+        HM_ASSIGN_OR_RETURN(matcher, selected_stitching_matcher(app_ctx->configurator().config()));
         std::string matcher_asset;
-        HM_ASSIGN_OR_RETURN(matcher_asset, selected_stitching_matcher_asset(app_ctx->configurator().config()));
+        HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher));
         if (!matcher_asset.empty()) {
           std::vector<fs::path> asset_configs;
           for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
             asset_configs.emplace_back(cfg_files_[index]);
           HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureNamed(asset_configs, {matcher_asset}));
+          auto model_path = hm::stitching::feature_matcher_model_path(matcher);
+          if (!model_path.ok())
+            return model_path.status();
         }
       }
 

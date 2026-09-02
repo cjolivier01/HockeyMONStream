@@ -24,13 +24,6 @@ pretrained-assets:
     url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v2.0/superpoint_lightglue_pipeline.onnx
     sha256: 228994cea8c010146fa2aef933baa3ffaa4bcdc522bc8aa560087fcff8134526
     path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx
-  - name: dedode-lightglue
-    on-demand: true
-    # The DeDoDe-B LightGlue checkpoint has no model-specific redistribution grant.
-    redistributable: false
-    url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/541752348
-    sha256: f8bd053e44d57a77adaf51a106fd2b307212c9299f198066f6daa7e7856e78a7
-    path: $HOME/.cache/hstream/models/dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx
   - name: efficient-loftr-outdoor
     on-demand: true
     redistributable: true

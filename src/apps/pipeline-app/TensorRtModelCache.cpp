@@ -124,6 +124,29 @@ std::string join_path_list(const std::vector<std::string>& paths) {
   return joined.str();
 }
 
+bool is_home_prefixed_path(const std::string& value) {
+  return value == "$HOME" || value == "${HOME}" || value == "~" || value.rfind("$HOME/", 0) == 0 ||
+      value.rfind("${HOME}/", 0) == 0 || value.rfind("~/", 0) == 0;
+}
+
+bool inference_paths_require_expansion(const YAML::Node& properties) {
+  if (!properties || !properties.IsMap())
+    return false;
+  for (const auto& property : properties) {
+    if (!property.first.IsScalar() || !property.second.IsScalar())
+      continue;
+    const InferencePropertyKind kind = inference_property_kind(property.first.as<std::string>());
+    if (kind == InferencePropertyKind::kOther)
+      continue;
+    const std::string value = property.second.as<std::string>();
+    const std::vector<std::string> paths =
+        kind == InferencePropertyKind::kPathList ? split_path_list(value) : std::vector<std::string>{value};
+    if (std::any_of(paths.begin(), paths.end(), is_home_prefixed_path))
+      return true;
+  }
+  return false;
+}
+
 bool is_loader_resolved_custom_library(const std::string& raw_key, const std::string& value) {
   return lowercase(raw_key) == "custom-lib-path" && !value.empty() && fs::path(value).parent_path().empty();
 }
@@ -499,11 +522,10 @@ absl::Status publish_yaml(const fs::path& target, const YAML::Node& config) {
   return absl::OkStatus();
 }
 
-absl::Status publish_custom_library_runtime_config(
+absl::Status publish_relocated_runtime_config(
     YAML::Node section,
     const YAML::Node& inference,
-    const fs::path& inference_path,
-    const fs::path& staged_library) {
+    const fs::path& inference_path) {
   auto root = cache_root();
   if (!root.ok())
     return root.status();
@@ -515,7 +537,7 @@ absl::Status publish_custom_library_runtime_config(
   if (!directory_status.ok())
     return directory_status;
   std::ostringstream identity;
-  identity << inference_path << '\n' << staged_library << '\n' << inference;
+  identity << inference_path << '\n' << inference;
   auto digest = hm::assets::AssetManager::Sha256Bytes(identity.str());
   if (!digest.ok())
     return digest.status();
@@ -550,19 +572,21 @@ absl::Status prepare_inference_config(
     staged_custom_library =
         staged_custom_library_path("custom-lib-path", properties["custom-lib-path"].as<std::string>());
   }
-  auto publish_staged_custom_library = [&]() -> absl::Status {
-    if (!staged_custom_library.has_value())
+  const bool relocated_runtime_config_required =
+      staged_custom_library.has_value() || inference_paths_require_expansion(properties);
+  auto publish_relocated_config = [&]() -> absl::Status {
+    if (!relocated_runtime_config_required)
       return absl::OkStatus();
-    // Moving a DeepStream inference config changes the base for every relative
-    // file property, not only the staged parser that required the move. Keep
-    // the model, engine, labels, and calibration inputs anchored to the
-    // original inference-config directory.
+    // DeepStream does not expand HOME spellings in inference YAML. Publishing
+    // a runtime config is also required for a staged parser. Moving either
+    // kind of config changes the base for every relative file property, so
+    // anchor all path inputs to the original inference-config directory.
     relocate_inference_paths(properties, inference_path.parent_path(), true);
-    return publish_custom_library_runtime_config(section, inference, inference_path, *staged_custom_library);
+    return publish_relocated_runtime_config(section, inference, inference_path);
   };
   if (!properties || !properties.IsMap() || !properties["onnx-file"] || !properties["model-engine-file"] ||
       !properties["onnx-file"].IsScalar() || !properties["model-engine-file"].IsScalar()) {
-    return publish_staged_custom_library();
+    return publish_relocated_config();
   }
 
   const fs::path onnx_path = resolve_path(properties["onnx-file"].as<std::string>(), inference_path.parent_path());
@@ -577,13 +601,13 @@ absl::Status prepare_inference_config(
     return absl::InvalidArgumentError("TensorRT model-engine-file must name an engine file");
   error.clear();
   if (fs::is_regular_file(configured_engine, error) && !error)
-    return publish_staged_custom_library();
+    return publish_relocated_config();
   if (lowercase(configured_engine.filename().string()).find("_bf16.engine") != std::string::npos) {
     return absl::NotFoundError(
         "Configured prebuilt BF16 TensorRT engine is unavailable: " + configured_engine.string());
   }
   if (::access(onnx_path.parent_path().c_str(), W_OK) == 0)
-    return publish_staged_custom_library();
+    return publish_relocated_config();
 
   auto build_digest = inference_build_digest(inference, section, pipeline, section_name, inference_path);
   if (!build_digest.ok())

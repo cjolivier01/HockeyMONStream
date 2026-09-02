@@ -107,8 +107,8 @@ pipeline:
         asset_names.insert(asset.name);
     }
     ok &= expect(
-        assets.ok() && assets->size() == 4 && asset_names.count("ice-rink-mask2former-swin-s") == 1 &&
-            asset_names.count("superpoint-lightglue") == 1 && asset_names.count("dedode-lightglue") == 1 &&
+        assets.ok() && assets->size() == 3 && asset_names.count("ice-rink-mask2former-swin-s") == 1 &&
+            asset_names.count("superpoint-lightglue") == 1 && asset_names.count("dedode-lightglue") == 0 &&
             asset_names.count("efficient-loftr-outdoor") == 1,
         "real calibration discovery must retain orientation/matching models and omit Program detector assets");
   }
