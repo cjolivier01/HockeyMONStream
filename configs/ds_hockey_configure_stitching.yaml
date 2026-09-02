@@ -26,7 +26,8 @@ pretrained-assets:
     path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx
   - name: dedode-lightglue
     on-demand: true
-    redistributable: true
+    # The DeDoDe-B LightGlue checkpoint has no model-specific redistribution grant.
+    redistributable: false
     url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/541752348
     sha256: f8bd053e44d57a77adaf51a106fd2b307212c9299f198066f6daa7e7856e78a7
     path: $HOME/.cache/hstream/models/dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx

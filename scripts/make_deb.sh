@@ -476,10 +476,9 @@ cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
 # Source checkouts keep native models in a per-user cache. Installed configs
 # reference immutable package-owned copies for redistributable models. The
-# non-redistributable rink and SuperPoint graphs remain per-user downloads.
+# non-redistributable rink, SuperPoint, and DeDoDe graphs remain per-user downloads.
 for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yaml; do
   for packaged_native_model in \
-      dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx \
       efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx; do
     sed -i \
       "s#\\\$HOME/.cache/hstream/models/${packaged_native_model}#${INSTALL_PREFIX}/pretrained/native-calibration/${packaged_native_model}#g" \

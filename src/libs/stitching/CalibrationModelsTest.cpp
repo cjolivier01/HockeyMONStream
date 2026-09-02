@@ -38,6 +38,7 @@ int main() {
   write_model(package_models / loftr);
   write_model(user_models / rink);
   write_model(user_models / superpoint);
+  write_model(user_models / dedode);
 
   ::setenv("HOME", (root / "home").c_str(), 1);
   ::unsetenv("HM_NATIVE_MODEL_DIR");
@@ -69,8 +70,8 @@ int main() {
   const auto dedode_path =
       hm::stitching::feature_matcher_model_path(hm::stitching::ControlPointMatcher::kDeDoDeLightGlue);
   ok &= expect(
-      dedode_path.ok() && *dedode_path == package_models / dedode,
-      "redistributable DeDoDe must use the package model directory");
+      dedode_path.ok() && *dedode_path == user_models / dedode,
+      "non-redistributable DeDoDe must use the user cache even when packaged models exist");
   const auto loftr_path = hm::stitching::feature_matcher_model_path(hm::stitching::ControlPointMatcher::kLoFTR);
   ok &= expect(
       loftr_path.ok() && *loftr_path == package_models / loftr,

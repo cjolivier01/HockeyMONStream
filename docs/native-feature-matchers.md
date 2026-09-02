@@ -16,10 +16,13 @@ backends:
   distance, a strict 0.75 Lowe ratio in both directions, and a mutual
   cross-check. It does not require a model asset.
 
-The DeDoDe and LightGlue projects are MIT and Apache-2.0 respectively; Kornia
-and the EfficientLoFTR artifact are Apache-2.0. Model files are downloaded at
-runtime with pinned SHA-256 values and are not stored in Git. Matcher models
-are on-demand assets: startup downloads only the graph selected by the layered
+The DeDoDe and LightGlue source projects are MIT and Apache-2.0 respectively;
+Kornia and the EfficientLoFTR artifact are Apache-2.0. The DeDoDe graph also
+embeds a DeDoDe-B LightGlue checkpoint published from an external host without
+a model-specific redistribution grant, so HStream does not include that graph
+in binary packages. Model files are downloaded at runtime with pinned SHA-256
+values and are not stored in Git. Matcher models are on-demand assets: startup
+downloads only the graph selected by the layered
 `stitching.control_point_matcher` configuration.
 
 The upstream SuperPoint weights are covered by
@@ -27,11 +30,11 @@ The upstream SuperPoint weights are covered by
 internal, non-commercial use only, non-transferable, and no redistribution.
 HStream can download the graph into an individual user's cache when selected,
 but source and Debian releases do not redistribute it. Package builds stage
-only the redistributable DeDoDe and EfficientLoFTR matcher graphs, together
-with their notices in `third_party/native_model_licenses`. The rink and hockey
-YOLO checkpoints also remain per-user downloads until their model-rights
-records permit redistribution. Package eligibility is fail-closed: every
-packaged asset must declare `redistributable: true`.
+only the redistributable EfficientLoFTR matcher graph, together with its notice
+in `third_party/native_model_licenses`. DeDoDe, rink, and hockey YOLO also
+remain per-user downloads until their model-rights records permit
+redistribution. Package eligibility is fail-closed: every packaged asset must
+declare `redistributable: true`.
 
 The sibling `video-stitcher` repository's CUDA AKAZE implementation has the
 desired tolerance-level CPU parity, but that implementation is distributed as

@@ -54,7 +54,8 @@ absl::StatusOr<std::filesystem::path> feature_matcher_model_path(ControlPointMat
     case ControlPointMatcher::kSuperPointLightGlue:
       return model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "superpoint-lightglue-pipeline-228994cea8c01014.onnx", false);
     case ControlPointMatcher::kDeDoDeLightGlue:
-      return model_path("HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx");
+      return model_path(
+          "HM_DEDODE_LIGHTGLUE_ONNX_MODEL", "dedode-lightglue-lc4v2-bupright-f8bd053e44d57a77.onnx", false);
     case ControlPointMatcher::kLoFTR:
       return model_path("HM_LOFTR_ONNX_MODEL", "efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx");
     case ControlPointMatcher::kAkazeHamming:
