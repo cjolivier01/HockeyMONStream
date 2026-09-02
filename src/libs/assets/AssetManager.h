@@ -26,7 +26,9 @@ struct AssetSpec {
   std::filesystem::path target;
   std::filesystem::path declaring_config;
   bool on_demand{false};
-  bool redistributable{true};
+  // Binary-package inclusion is fail-closed and requires an explicit true in
+  // the asset declaration.
+  bool redistributable{false};
 };
 
 struct Limits {

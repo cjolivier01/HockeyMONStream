@@ -28,7 +28,8 @@ internal, non-commercial use only, non-transferable, and no redistribution.
 HStream can download the graph into an individual user's cache when selected,
 but source and Debian releases do not redistribute it. Package builds stage
 only the redistributable rink, DeDoDe, and EfficientLoFTR graphs, together with
-their notices in `third_party/native_model_licenses`.
+their notices in `third_party/native_model_licenses`. Package eligibility is
+fail-closed: every packaged asset must declare `redistributable: true`.
 
 The sibling `video-stitcher` repository's CUDA AKAZE implementation has the
 desired tolerance-level CPU parity, but that implementation is distributed as

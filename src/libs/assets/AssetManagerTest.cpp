@@ -244,8 +244,24 @@ int main(int, char**) {
              << std::string(64, '0')
              << "\n"
                 "    path: ../pretrained/deferred.bin\n"
+                "  - name: undeclared package policy\n"
+                "    on-demand: true\n"
+                "    url: https://example.invalid/undeclared.bin\n"
+                "    sha256: "
+             << std::string(64, '0')
+             << "\n"
+                "    path: ../pretrained/undeclared.bin\n"
+                "  - name: misspelled package policy\n"
+                "    on-demand: true\n"
+                "    redistributible: true\n"
+                "    url: https://example.invalid/misspelled.bin\n"
+                "    sha256: "
+             << std::string(64, '0')
+             << "\n"
+                "    path: ../pretrained/misspelled.bin\n"
                 "  - name: selected cached model\n"
                 "    on-demand: true\n"
+                "    redistributable: true\n"
                 "    url: https://example.invalid/model.bin\n"
                 "    sha256: "
              << (hash.ok() ? *hash : std::string(64, '0'))
@@ -254,13 +270,14 @@ int main(int, char**) {
   }
   auto deferred = hm::assets::AssetManager::Discover({root / "configs" / "on-demand.yaml"});
   ok &= expect(
-      deferred.ok() && deferred->size() == 2 && deferred->front().on_demand && !deferred->front().redistributable,
+      deferred.ok() && deferred->size() == 4 && deferred->front().on_demand && !deferred->front().redistributable &&
+          !deferred->at(1).redistributable && !deferred->at(2).redistributable && deferred->back().redistributable,
       "runtime discovery must retain on-demand and redistribution metadata");
   auto package_assets = hm::assets::AssetManager::DiscoverPackageAssets({root / "configs" / "on-demand.yaml"});
   ok &= expect(
       package_assets.ok() && package_assets->size() == 1 && package_assets->front().name == "selected cached model" &&
           package_assets->front().redistributable,
-      "package discovery must exclude assets whose upstream terms forbid redistribution");
+      "package discovery must require an exact, explicit redistribution opt-in");
   ok &= expect(
       hm::assets::AssetManager::VerifyPackageAssets({root / "configs" / "on-demand.yaml"}).ok(),
       "package verification must ignore an absent non-redistributable asset");

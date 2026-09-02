@@ -1,8 +1,10 @@
 pretrained-assets:
   - property: onnx-file
+    redistributable: true
     url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/501508436
     sha256: d2d1a3a54383d136b0a4d16ae95b3539641f3aa44c76f7c06933959ecc8b45e8
   - property: labelfile-path
+    redistributable: true
     url: https://raw.githubusercontent.com/pjreddie/darknet/master/data/coco.names
     sha256: 634a1132eb33f8091d60f2c346ababe8b905ae08387037aed883953b7329af84
 
