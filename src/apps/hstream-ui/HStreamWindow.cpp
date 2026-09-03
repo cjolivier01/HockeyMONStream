@@ -7449,9 +7449,6 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
   }
 
   calibration_pending_ = true;
-  calibration_diagnostic_lines_.clear();
-  calibration_rejected_hypotheses_ = 0;
-  calibration_rejected_candidates_ = 0;
   updatePlaybackSeekControls();
   appendLog(QString("running pipeline discovered stitching calibration at stage %1; opening progress window")
                 .arg(active_calibration_start_stage_));
