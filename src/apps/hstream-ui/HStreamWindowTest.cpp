@@ -10626,7 +10626,9 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
   drivegpt_csv->setChecked(true);
   activate(start);
   for (int i = 0; i < 100 &&
-       (window->pipelineStateText() != "PLAYING" || !seek_slider->toolTip().contains("DriveGPT CSV capture"));
+       (window->pipelineStateText() != "PLAYING" ||
+        HStreamWindowTestAccess::playbackDurationNs(window) != 600'000'000'000LL ||
+        !seek_slider->toolTip().contains("DriveGPT CSV capture"));
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -10635,7 +10637,8 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
     return false;
   }
   if (!expect(
-          !seek_slider->isEnabled() && !seek_back->isEnabled() && !seek_forward->isEnabled() &&
+          HStreamWindowTestAccess::playbackDurationNs(window) == 600'000'000'000LL && !seek_slider->isEnabled() &&
+              !seek_back->isEnabled() && !seek_forward->isEnabled() &&
               seek_slider->toolTip().contains("DriveGPT CSV capture") &&
               seek_back->toolTip().contains("DriveGPT CSV capture") &&
               seek_forward->toolTip().contains("DriveGPT CSV capture"),
