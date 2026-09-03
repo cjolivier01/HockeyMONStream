@@ -72,6 +72,21 @@ pipeline:
   ok &= expect(
       hm::OnePassCalibrationRequiredForMode(true, true, false, true, false),
       "Program mode must still calibrate a missing rink mask");
+  ok &= expect(
+      hm::StitcherMatcherModelRequired(false, true, false, false),
+      "one-pass stitching must provision its matcher when stitching artifacts are missing");
+  ok &= expect(
+      !hm::StitcherMatcherModelRequired(false, true, true, false),
+      "one-pass stitching must not provision a matcher for already-valid stitching artifacts");
+  ok &= expect(
+      hm::StitcherMatcherModelRequired(true, false, false, false),
+      "configure-only stitching must provision its matcher when artifacts are missing");
+  ok &= expect(
+      hm::StitcherMatcherModelRequired(true, false, true, true),
+      "forced configure-only stitching must provision its matcher even when artifacts exist");
+  ok &= expect(
+      !hm::StitcherMatcherModelRequired(false, false, false, false),
+      "a non-stitching pipeline must never provision a matcher");
   const std::string completion_scope = hm::stitching::calibration_completion_scope("output-a", "owner-a", "17");
   ok &= expect(
       completion_scope == hm::stitching::calibration_completion_scope("output-a", "owner-a", "17") &&
@@ -107,8 +122,9 @@ pipeline:
         asset_names.insert(asset.name);
     }
     ok &= expect(
-        assets.ok() && assets->size() == 2 && asset_names.count("ice-rink-mask2former-swin-s") == 1 &&
-            asset_names.count("superpoint-lightglue") == 1,
+        assets.ok() && assets->size() == 3 && asset_names.count("ice-rink-mask2former-swin-s") == 1 &&
+            asset_names.count("superpoint-lightglue") == 1 && asset_names.count("dedode-lightglue") == 0 &&
+            asset_names.count("efficient-loftr-outdoor") == 1,
         "real calibration discovery must retain orientation/matching models and omit Program detector assets");
   }
   return ok ? 0 : 1;

@@ -54,6 +54,8 @@ class HuginProject {
     std::optional<StitchProjection> projection;
     std::optional<std::vector<double>> projection_parameters;
     std::optional<StitchProjectionFraming> projection_framing;
+    std::optional<ControlPointMatcher> control_point_matcher;
+    std::optional<std::string> akaze_calibration_fingerprint;
   };
 
   struct Options {
@@ -63,6 +65,7 @@ class HuginProject {
     double horizontal_fov{108.0};
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
+    ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
     MappingBackend mapping_backend{MappingBackend::kOpenCvMagsac};
     bool run_autooptimizer{false};
     std::optional<StitchProjection> projection;
@@ -70,6 +73,7 @@ class HuginProject {
     StitchProjectionFraming projection_framing;
     std::string expected_invalidation_id;
     std::optional<StitchingBackendChoices> expected_backend_choices;
+    AkazeMatchingCalibration akaze_calibration;
     ProgressCallback progress;
     std::function<bool()> is_cancelled;
   };
@@ -77,7 +81,8 @@ class HuginProject {
   // Pure helpers exposed for focused contract tests.
   static absl::StatusOr<std::string> InsertControlPoints(
       const std::string& pto,
-      const std::vector<FeatureMatch>& matches);
+      const std::vector<FeatureMatch>& matches,
+      size_t minimum_control_points = 16);
   static absl::StatusOr<std::pair<size_t, size_t>> ParseCanvasSize(const std::string& pto);
   static absl::StatusOr<int> ParseProjection(const std::string& pto);
   static absl::StatusOr<double> ParseHorizontalFov(const std::string& pto);

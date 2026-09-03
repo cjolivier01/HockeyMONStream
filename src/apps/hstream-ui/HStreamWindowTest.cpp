@@ -73,6 +73,18 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void appendLog(HStreamWindow* window, const QString& message) {
+    window->appendLog(message);
+  }
+
+  static void recordCalibrationDiagnostic(HStreamWindow* window, const QString& line) {
+    window->recordStitchingCalibrationDiagnostic(line);
+  }
+
+  static QString calibrationFailureAnalysis(HStreamWindow* window, const QString& message) {
+    return window->stitchingCalibrationFailureAnalysis(message);
+  }
+
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
     window->active_run_is_calibration_ = active;
     window->active_run_high_bit_depth_ = false;
@@ -857,9 +869,14 @@ bool write_fake_runner(const QString& path) {
   file.write("stitching_only = '--stitching-calibration-only' in sys.argv[1:]\n");
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    calibration_result = 'success'\n");
-  file.write("if calibration_result in ('success', 'failure', 'exit'):\n");
+  file.write("if calibration_result in ('success', 'failure', 'exit', 'diagnostic-exit'):\n");
   file.write("    time.sleep(float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS', '0')) / 1000.0)\n");
   file.write("    delay = float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS', '0')) / 1000.0\n");
+  file.write("    if os.environ.get('HSTREAM_UI_TEST_PRECALIBRATION_STDERR'):\n");
+  file.write("        print(os.environ['HSTREAM_UI_TEST_PRECALIBRATION_STDERR'], file=sys.stderr, flush=True)\n");
+  file.write(
+      "        time.sleep(float(os.environ.get('HSTREAM_UI_TEST_AFTER_PRECALIBRATION_STDERR_DELAY_MS', '0')) / "
+      "1000.0)\n");
   file.write("    events = []\n");
   file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
   file.write("        events = [\n");
@@ -878,6 +895,12 @@ bool write_fake_runner(const QString& path) {
   file.write("        time.sleep(delay)\n");
   file.write("    if calibration_result == 'exit':\n");
   file.write("        sys.exit(9)\n");
+  file.write("    if calibration_result == 'diagnostic-exit':\n");
+  file.write(
+      "        sys.stderr.write('Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has "
+      "unsafe canvas extent')\n");
+  file.write("        sys.stderr.flush()\n");
+  file.write("        sys.exit(12)\n");
   file.write("    events = []\n");
   file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
   file.write(
@@ -2226,6 +2249,23 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   }
   activate(ok);
 
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "diagnostic-exit");
+  activate(start);
+  for (int i = 0; i < 300 && (window->pipelineStateText() != "STOPPED" || !headline->text().contains("failed")); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(dialog->isVisible(), "A diagnostic calibration exit should leave the failure popup open") ||
+      !expect(
+          detail->text().contains("unsafe or implausibly large canvas") &&
+              detail->text().contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent") &&
+              detail->text().contains("1 frame-set candidate"),
+          "The failure popup must analyze a final stderr diagnostic that has no trailing newline")) {
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    return false;
+  }
+  activate(ok);
+
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS", "30");
   activate(start);
@@ -2328,6 +2368,11 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   mode->setCurrentIndex(mode->findData("program"));
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS", "40");
+  qputenv(
+      "HSTREAM_UI_TEST_PRECALIBRATION_STDERR",
+      "INVALID_ARGUMENT: unrelated pre-calibration runtime status\n"
+      "Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent");
+  qputenv("HSTREAM_UI_TEST_AFTER_PRECALIBRATION_STDERR_DELAY_MS", "40");
   activate(start);
   for (int i = 0; i < 200 && !dialog->isVisible(); ++i) {
     QApplication::processEvents();
@@ -2340,7 +2385,13 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
           "Program playback should use the same stitching calibration progress popup") &&
       expect(
           window->logText().contains("running pipeline discovered stitching calibration"),
-          "Program playback should log why it opened the calibration progress popup");
+          "Program playback should log why it opened the calibration progress popup") &&
+      expect(
+          HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
+                  .contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent") &&
+              !HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
+                   .contains("unrelated pre-calibration runtime status"),
+          "Runtime-discovered calibration must preserve stderr diagnostics received before its first milestone");
   for (int i = 0; i < 400 &&
        (dialog->isVisible() ||
         !window->logText().contains("one-pass stitching calibration complete; continuous program playback running"));
@@ -2368,6 +2419,8 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS");
+  qunsetenv("HSTREAM_UI_TEST_PRECALIBRATION_STDERR");
+  qunsetenv("HSTREAM_UI_TEST_AFTER_PRECALIBRATION_STDERR_DELAY_MS");
 
   if (!set_test_calibration_status(window, "complete"))
     return false;
@@ -2619,9 +2672,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   setup_preview_splitter->setSizes({240, 440});
   QApplication::processEvents();
-  const bool unimplemented_matchers_disabled = control_point_matcher->model() &&
-      !(control_point_matcher->model()->flags(control_point_matcher->model()->index(1, 0)) & Qt::ItemIsEnabled) &&
-      !(control_point_matcher->model()->flags(control_point_matcher->model()->index(2, 0)) & Qt::ItemIsEnabled);
+  bool all_matchers_enabled = control_point_matcher->model();
+  for (int index = 0; all_matchers_enabled && index < control_point_matcher->count(); ++index) {
+    all_matchers_enabled =
+        control_point_matcher->model()->flags(control_point_matcher->model()->index(index, 0)) & Qt::ItemIsEnabled;
+  }
   const QString original_mapping_backend = mapping_backend->currentData().toString();
   const QString original_projection = projection->currentData().toString();
   window->resize(1440, 900);
@@ -2818,10 +2873,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
               !run_autooptimizer->isChecked() && !run_autooptimizer->isEnabled() &&
-              mapping_backend->currentData().toString() == "opencv-magsac" && control_point_matcher->count() == 3 &&
+              mapping_backend->currentData().toString() == "opencv-magsac" && control_point_matcher->count() == 4 &&
               control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
               control_point_matcher->itemText(1) == "DeDoDe + LightGlue" &&
-              control_point_matcher->itemText(2) == "LoFTR" && unimplemented_matchers_disabled &&
+              control_point_matcher->itemText(2) == "LoFTR (EfficientLoFTR outdoor)" &&
+              control_point_matcher->itemText(3) == "AKAZE + M-LDB + Hamming" && all_matchers_enabled &&
               mapping_backend->count() == 3 && mapping_backend->itemText(0) == "NONA" &&
               mapping_backend->itemText(1) == "MAGSAC++" && mapping_backend->itemText(2) == "RANSAC" &&
               projection->findData("general-panini") >= 0 && all_nona_projections_enabled && only_rectilinear_enabled &&
@@ -4232,7 +4288,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   activate(pause);
   activate(pause);
   for (int i = 0; i < 100 &&
-       !window->logText().contains("playback speed reset was not acknowledged; using recovered adjacent-sample rate");
+       (!window->logText().contains(
+            "playback speed reset was not acknowledged; using recovered adjacent-sample rate") ||
+        window->logText().count("stdin:@reset-progress-rate") < reset_commands_before_timeout + 3);
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -7625,7 +7683,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     std::ofstream(config_path) << YAML::Dump(malformed) << '\n';
     activate(create);
     return expect(
-        control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+        control_point_matcher->currentData().toString() == "dedode-lightglue" &&
             mapping_backend->currentData().toString() == "opencv-magsac" &&
             projection->currentData().toString() == "rectilinear",
         message);
@@ -7646,7 +7704,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   std::ofstream(config_path) << YAML::Dump(invalid_previous_projection) << '\n';
   activate(create);
   const bool invalid_previous_projection_rejects_marker = expect(
-      control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+      control_point_matcher->currentData().toString() == "dedode-lightglue" &&
           mapping_backend->currentData().toString() == "opencv-magsac" &&
           projection->currentData().toString() == "rectilinear",
       "UI load must reject the entire generated marker when its previous projection scalar is malformed");
@@ -7687,21 +7745,21 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(create);
   const bool malformed_previous_autooptimizer_rejects_marker = worker_tuple_is_visible(
       "UI load must reject a malformed previous autooptimizer without aborting the current worker-tuple load");
-  YAML::Node unselectable_previous_matcher = YAML::Clone(generated_backend_alias);
-  unselectable_previous_matcher["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
+  YAML::Node selectable_previous_matcher = worker_tuple_fixture();
+  selectable_previous_matcher["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =
       "dedode-lightglue";
-  std::ofstream(config_path) << YAML::Dump(unselectable_previous_matcher) << '\n';
+  std::ofstream(config_path) << YAML::Dump(selectable_previous_matcher) << '\n';
   const int dedode_index = control_point_matcher->findData("dedode-lightglue");
-  control_point_matcher->setCurrentIndex(dedode_index);
-  const bool unselectable_stale_state_selected = expect(
-      dedode_index >= 0 && control_point_matcher->currentData().toString() == "dedode-lightglue",
-      "UI test setup must select a stale disabled matcher before loading generated provenance");
+  control_point_matcher->setCurrentIndex(control_point_matcher->findData("superpoint-lightglue"));
+  const bool alternate_matcher_state_selected = expect(
+      dedode_index >= 0 && control_point_matcher->currentData().toString() == "superpoint-lightglue",
+      "UI test setup must select an alternate matcher before loading generated provenance");
   activate(create);
-  const bool unselectable_previous_matcher_is_ignored = expect(
-      control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
+  const bool selectable_previous_matcher_is_restored = expect(
+      control_point_matcher->currentData().toString() == "dedode-lightglue" &&
           mapping_backend->currentData().toString() == "nona" &&
           projection->currentData().toString() == "general-panini",
-      "UI load must trust valid generated provenance while ignoring a previous matcher disabled in this UI");
+      "UI load must restore a generated-choice previous matcher that is now selectable");
 
   game_id->setText("ui-opencv-framing-roundtrip-game");
   activate(create);
@@ -7784,8 +7842,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       partial_previous_framing_inherits_defaults && absent_previous_framing_restores_defaults &&
       invalid_previous_matcher_rejects_marker && invalid_previous_backend_rejects_marker &&
       invalid_previous_projection_rejects_marker && incompatible_previous_tuple_rejects_marker &&
-      malformed_previous_autooptimizer_rejects_marker && unselectable_stale_state_selected &&
-      unselectable_previous_matcher_is_ignored && opencv_framing_starts_clean && nona_rectilinear_clamps_fov &&
+      malformed_previous_autooptimizer_rejects_marker && alternate_matcher_state_selected &&
+      selectable_previous_matcher_is_restored && opencv_framing_starts_clean && nona_rectilinear_clamps_fov &&
       inactive_opencv_framing_is_clean && projection_fov_does_not_leak_between_games &&
       projection_fov_reset_clears_cache && projection_parameters_do_not_leak_between_games &&
       projection_parameter_reset_clears_cache;
@@ -11328,6 +11386,114 @@ bool test_early_finalization_failure_retains_log_guard(HStreamWindow* window, co
 #endif
 }
 
+bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* window) {
+  auto* stitched_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+  auto* algorithms_scroll = require_child<QScrollArea>(window, "stitchingAlgorithmsScrollArea");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* max_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
+  auto* auto_canvas = require_child<QCheckBox>(window, "projectionAutoCanvasCheck");
+  auto* role_left = require_child<QRadioButton>(window, "videoRole_left");
+  auto* runtime_log = require_child<QTextEdit>(window, "runtimeLog");
+  if (!stitched_tabs || !algorithms_scroll || !mapping_backend || !max_width || !auto_canvas || !role_left ||
+      !runtime_log) {
+    return false;
+  }
+
+  const int original_tab = stitched_tabs->currentIndex();
+  stitched_tabs->setCurrentIndex(stitched_tabs->count() - 1);
+  QApplication::processEvents();
+  QScrollBar* pane_scroll = algorithms_scroll->verticalScrollBar();
+  pane_scroll->setValue(pane_scroll->minimum());
+  const int backend_before = mapping_backend->currentIndex();
+  QWheelEvent combo_wheel(
+      mapping_backend->rect().center(),
+      mapping_backend->mapToGlobal(mapping_backend->rect().center()),
+      QPoint(),
+      QPoint(0, -120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(mapping_backend, &combo_wheel);
+  QApplication::processEvents();
+  const bool combo_protected = mapping_backend->currentIndex() == backend_before;
+  const bool pane_scrolled =
+      pane_scroll->maximum() == pane_scroll->minimum() || pane_scroll->value() > pane_scroll->minimum();
+
+  const int width_before = max_width->value();
+  QWheelEvent spin_wheel(
+      max_width->rect().center(),
+      max_width->mapToGlobal(max_width->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(max_width, &spin_wheel);
+  const bool spin_protected = max_width->value() == width_before;
+
+  const bool canvas_before = auto_canvas->isChecked();
+  QWheelEvent check_wheel(
+      auto_canvas->rect().center(),
+      auto_canvas->mapToGlobal(auto_canvas->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(auto_canvas, &check_wheel);
+  const bool check_protected = auto_canvas->isChecked() == canvas_before;
+
+  const bool role_before = role_left->isChecked();
+  QWheelEvent radio_wheel(
+      role_left->rect().center(),
+      role_left->mapToGlobal(role_left->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(role_left, &radio_wheel);
+  const bool radio_protected = role_left->isChecked() == role_before;
+  stitched_tabs->setCurrentIndex(original_tab);
+
+  HStreamWindowTestAccess::clearLog(window);
+  for (int index = 0; index < 80; ++index)
+    HStreamWindowTestAccess::appendLog(window, QString("tail-follow fixture %1").arg(index));
+  QScrollBar* log_scroll = runtime_log->verticalScrollBar();
+  log_scroll->setValue(log_scroll->maximum());
+  HStreamWindowTestAccess::appendLog(window, "tail-follow newest");
+  const bool follows_tail = log_scroll->value() == log_scroll->maximum();
+  log_scroll->setValue(log_scroll->minimum());
+  HStreamWindowTestAccess::appendLog(window, "manual-scroll newest");
+  const bool preserves_manual_scroll = log_scroll->value() == log_scroll->minimum();
+  HStreamWindowTestAccess::clearLog(window);
+
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window, "Trying pooled stitching calibration across 4 frame pairs with 521 selected control points");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window, "Rejected calibrated MAGSAC hypothesis 1 with 84/521 inliers: FAILED_PRECONDITION: unsafe canvas extent");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window, "Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent");
+  const QString analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window, "No stitching calibration frame pair produced a usable solution after 2 candidate attempts");
+  const bool diagnosis_is_actionable = analysis.contains("Why it failed") &&
+      analysis.contains("unsafe or implausibly large canvas") && analysis.contains("What to try") &&
+      analysis.contains("Bounded fallback search") && analysis.contains("1 projective hypothesis") &&
+      analysis.contains("1 frame-set candidate") && analysis.contains("pressing Play is required");
+
+  return expect(
+             combo_protected && spin_protected && check_protected && radio_protected && pane_scrolled,
+             "Mouse-wheel input over value controls must scroll the pane without changing values") &&
+      expect(follows_tail && preserves_manual_scroll,
+             "Runtime log must follow new output only while the operator remains at the bottom") &&
+      expect(diagnosis_is_actionable,
+             "Calibration failures must explain the cause, bounded fallbacks, and corrective action");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -11374,6 +11540,11 @@ int main(int argc, char** argv) {
   }
   HStreamWindow window;
   window.show();
+
+  if (!test_wheel_routing_log_follow_and_calibration_analysis(&window)) {
+    std::cerr << "test_wheel_routing_log_follow_and_calibration_analysis failed\n";
+    return 1;
+  }
 
   if (!test_early_finalization_failure_retains_log_guard(&window, source_root.path())) {
     std::cerr << "test_early_finalization_failure_retains_log_guard failed\n";

@@ -661,8 +661,10 @@ int main() {
             (*provenance)->mapping_backend == hm::stitching::MappingBackend::kNona &&
             (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini &&
             (*provenance)->projection_parameters == std::vector<double>({100.0, 0.0, 0.0}) &&
-            (*provenance)->projection_framing == options.projection_framing,
-        "published Hugin provenance must record canvas, algorithm, projection parameters, and framing");
+            (*provenance)->projection_framing == options.projection_framing &&
+            (*provenance)->control_point_matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue &&
+            (*provenance)->akaze_calibration_fingerprint == "not-applicable",
+        "published Hugin provenance must record canvas, matcher, calibration, algorithm, parameters, and framing");
     provenance_lock->reset();
   }
 
@@ -966,6 +968,30 @@ int main() {
         "optimizer-disabled calibration must publish the generated Hugin project without modifying its geometry");
   }
 
+  hm::stitching::HuginProject::Options six_point_akaze_options;
+  six_point_akaze_options.control_point_matcher = hm::stitching::ControlPointMatcher::kAkazeHamming;
+  std::vector<hm::stitching::FeatureMatch> six_point_akaze_matches;
+  for (const int y : {6, 36}) {
+    for (const int x : {16, 36, 56}) {
+      six_point_akaze_matches.push_back(
+          {{static_cast<float>(x), static_cast<float>(y)},
+           {static_cast<float>(x - 8), static_cast<float>(y + 3)},
+           0.9f});
+    }
+  }
+  fs::create_directories(root / "six-point-akaze-game");
+  ::setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", 1);
+  const auto six_point_akaze = hm::stitching::HuginProject::Configure(
+      root / "six-point-akaze-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      six_point_akaze_matches,
+      six_point_akaze_options);
+  ::unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  if (!six_point_akaze.ok())
+    std::cerr << six_point_akaze << '\n';
+  ok &= expect(six_point_akaze.ok(), "native AKAZE mapping must honor its six-control-point minimum");
+
   hm::stitching::HuginProject::Options invalid_nona_options;
   invalid_nona_options.mapping_backend = hm::stitching::MappingBackend::kNona;
   const auto invalid_nona = hm::stitching::HuginProject::Configure(
@@ -978,6 +1004,28 @@ int main() {
       absl::IsInvalidArgument(invalid_nona) &&
           std::string(invalid_nona.message()).find("requires stitching.run_autooptimizer=true") != std::string::npos,
       "NONA must reject optimizer-disabled calibration instead of publishing unaligned camera geometry");
+
+  hm::stitching::HuginProject::Options calibrated_nona_options;
+  calibrated_nona_options.mapping_backend = hm::stitching::MappingBackend::kNona;
+  calibrated_nona_options.run_autooptimizer = true;
+  hm::stitching::FisheyeLensCalibration nona_lens;
+  nona_lens.resolution = {64, 48};
+  nona_lens.fx = 40.0;
+  nona_lens.fy = 40.0;
+  nona_lens.cx = 32.0;
+  nona_lens.cy = 24.0;
+  calibrated_nona_options.akaze_calibration = {.left = nona_lens, .right = nona_lens};
+  const auto calibrated_nona = hm::stitching::HuginProject::Configure(
+      root / "calibrated-nona-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      calibrated_nona_options);
+  ok &= expect(
+      absl::IsInvalidArgument(calibrated_nona) &&
+          std::string(calibrated_nona.message()).find("does not consume the GoPro KB4 lens profile") !=
+              std::string::npos,
+      "NONA must reject rectified calibrated AKAZE control points");
 
   const fs::path fallback_game = root / "fallback-game";
   fs::create_directories(fallback_game);

@@ -711,7 +711,8 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   const bool algorithm_aware = lines.size() == 11 && lines[0] == "version=3";
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
-  if (!input.eof() || (!legacy && !algorithm_aware && !parameter_aware && !framing_aware))
+  const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
+  if (!input.eof() || (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware))
     return absl::FailedPreconditionError("Invalid canvas provenance format");
   CanvasProvenance provenance;
   auto assign = [&](size_t* destination, size_t line, const char* key) -> absl::Status {
@@ -748,17 +749,17 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   }
   provenance.max_output_width_applied = width_applied != 0;
   provenance.max_canvas_dimension_applied = dimension_applied != 0;
-  if ((algorithm_aware || parameter_aware || framing_aware) &&
+  if ((algorithm_aware || parameter_aware || framing_aware || calibration_aware) &&
       (lines[9].rfind("mapping-backend=", 0) != 0 || lines[9].size() == std::strlen("mapping-backend=") ||
        lines[10].rfind("projection=", 0) != 0 || lines[10].size() == std::strlen("projection="))) {
     return absl::FailedPreconditionError("Invalid canvas provenance mapping algorithm fields");
   }
-  if ((parameter_aware || framing_aware) &&
+  if ((parameter_aware || framing_aware || calibration_aware) &&
       (lines[11].rfind("projection-parameters=", 0) != 0 ||
        lines[11].size() == std::strlen("projection-parameters="))) {
     return absl::FailedPreconditionError("Invalid canvas provenance projection parameter field");
   }
-  if (framing_aware) {
+  if (framing_aware || calibration_aware) {
     auto auto_fov = parse_provenance_value(lines[12], "projection-auto-fov");
     auto auto_canvas = parse_provenance_value(lines[14], "projection-auto-canvas");
     auto auto_crop = parse_provenance_value(lines[15], "projection-auto-crop");
@@ -767,11 +768,17 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
     std::istringstream fov_input(
         lines[13].rfind(fov_prefix, 0) == 0 ? lines[13].substr(fov_prefix.size()) : std::string());
     fov_input.imbue(std::locale::classic());
-    if (!auto_fov.ok() || !auto_canvas.ok() || !auto_crop.ok() || *auto_fov > 1 || *auto_canvas > 1 ||
-        *auto_crop > 1 || !(fov_input >> horizontal_fov) || !fov_input.eof() || !std::isfinite(horizontal_fov) ||
-        horizontal_fov <= 0.0 || horizontal_fov > 360.0) {
+    if (!auto_fov.ok() || !auto_canvas.ok() || !auto_crop.ok() || *auto_fov > 1 || *auto_canvas > 1 || *auto_crop > 1 ||
+        !(fov_input >> horizontal_fov) || !fov_input.eof() || !std::isfinite(horizontal_fov) || horizontal_fov <= 0.0 ||
+        horizontal_fov > 360.0) {
       return absl::FailedPreconditionError("Invalid canvas provenance projection framing fields");
     }
+  }
+  if (calibration_aware &&
+      (lines[16].rfind("control-point-matcher=", 0) != 0 || lines[16].size() == std::strlen("control-point-matcher=") ||
+       lines[17].rfind("akaze-calibration-fingerprint=", 0) != 0 ||
+       lines[17].size() == std::strlen("akaze-calibration-fingerprint="))) {
+    return absl::FailedPreconditionError("Invalid canvas provenance calibration fields");
   }
   return provenance;
 }

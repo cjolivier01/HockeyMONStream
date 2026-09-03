@@ -8,6 +8,7 @@
 #include <limits>
 #include <vector>
 
+#include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <tiffio.h>
 #include <unistd.h>
@@ -158,6 +159,149 @@ int main() {
         !y_map.empty() && y_map.type() == CV_16UC1 && y_map.size() == x_map.size(), "right Y remap should match X");
   }
 
+  fs::path calibrated_dir = root / "calibrated";
+  fs::create_directories(calibrated_dir);
+  hm::stitching::FisheyeLensCalibration lens;
+  lens.resolution = left.size();
+  lens.fx = 80.0;
+  lens.fy = 80.0;
+  lens.cx = 50.0;
+  lens.cy = 40.0;
+  lens.distortion = {0.05, -0.005, 0.0005, -0.00005};
+  auto calibrated = hm::stitching::CreateOpenCvMappingFiles(
+      calibrated_dir,
+      left,
+      right,
+      matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(calibrated.ok(), "calibrated AKAZE mapping should generate composed KB4 remaps");
+  if (calibrated.ok()) {
+    cv::Mat calibrated_left_x =
+        cv::imread((calibrated_dir / "mapping_0000_x.tif").string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
+    cv::Mat calibrated_left_y =
+        cv::imread((calibrated_dir / "mapping_0000_y.tif").string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
+    ok &= expect(
+        !calibrated_left_x.empty() && !calibrated_left_y.empty() && calibrated_left_x.at<uint16_t>(0, 0) > 0 &&
+            calibrated_left_y.at<uint16_t>(0, 0) > 0,
+        "calibrated output coordinates must be distorted back into original fisheye source pixels");
+    std::vector<cv::Point2d> normalized = {
+        {(10.0 - lens.cx) / lens.fx, (10.0 - lens.cy) / lens.fy},
+    };
+    std::vector<cv::Point2d> opencv_distorted;
+    const cv::Matx33d camera_matrix(lens.fx, 0.0, lens.cx, 0.0, lens.fy, lens.cy, 0.0, 0.0, 1.0);
+    const cv::Vec4d distortion(lens.distortion[0], lens.distortion[1], lens.distortion[2], lens.distortion[3]);
+    cv::fisheye::distortPoints(normalized, opencv_distorted, camera_matrix, distortion);
+    ok &= expect(
+        calibrated_left_x.at<uint16_t>(10, 10) == static_cast<uint16_t>(std::lround(opencv_distorted[0].x)) &&
+            calibrated_left_y.at<uint16_t>(10, 10) == static_cast<uint16_t>(std::lround(opencv_distorted[0].y)),
+        "KB4 remap composition must numerically match OpenCV fisheye distortion");
+  }
+
+  fs::path calibrated_projective_dir = root / "calibrated-projective";
+  fs::create_directories(calibrated_projective_dir);
+  const cv::Matx33d expected_projective(1.0, 0.025, 7.0, 0.015, 1.0, -2.0, 0.001, -0.0004, 1.0);
+  std::vector<hm::stitching::FeatureMatch> calibrated_projective_matches;
+  for (int y = 8; y <= 72; y += 16) {
+    for (int x = 8; x <= 92; x += 14) {
+      const cv::Vec3d transformed = expected_projective * cv::Vec3d(x, y, 1.0);
+      calibrated_projective_matches.push_back(
+          {{static_cast<float>(transformed[0] / transformed[2]), static_cast<float>(transformed[1] / transformed[2])},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  auto calibrated_projective = hm::stitching::CreateOpenCvMappingFiles(
+      calibrated_projective_dir,
+      left,
+      right,
+      calibrated_projective_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(calibrated_projective.ok(), "calibrated MAGSAC must fit genuinely projective rectified geometry");
+  if (calibrated_projective.ok()) {
+    const auto& fitted = calibrated_projective->right_to_left_homography;
+    ok &= expect(
+        std::abs(fitted[6] / fitted[8] - expected_projective(2, 0)) < 1e-4 &&
+            std::abs(fitted[7] / fitted[8] - expected_projective(2, 1)) < 1e-4,
+        "calibrated MAGSAC must preserve projective terms instead of silently fitting an affine transform");
+  }
+
+  fs::path alternate_hypothesis_dir = root / "alternate-projective-hypothesis";
+  fs::create_directories(alternate_hypothesis_dir);
+  std::vector<hm::stitching::FeatureMatch> alternate_hypothesis_matches;
+  const cv::Matx33d pole_transform(0.5, 0.0, 0.0, 0.0, 0.5, 0.0, -1.0 / 80.0, 0.0, 1.0);
+  for (const int y : {5, 10, 15, 20}) {
+    for (const int x : {10, 20, 30, 40, 50}) {
+      const cv::Vec3d transformed = pole_transform * cv::Vec3d(x, y, 1.0);
+      alternate_hypothesis_matches.push_back(
+          {{static_cast<float>(transformed[0] / transformed[2]), static_cast<float>(transformed[1] / transformed[2])},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  for (const int y : {40, 50, 60, 70}) {
+    for (const int x : {10, 35, 60, 85}) {
+      alternate_hypothesis_matches.push_back(
+          {{static_cast<float>(x + 5), static_cast<float>(y - 3)},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.8f});
+    }
+  }
+  auto alternate_hypothesis = hm::stitching::CreateOpenCvMappingFiles(
+      alternate_hypothesis_dir,
+      left,
+      right,
+      alternate_hypothesis_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      alternate_hypothesis.ok() && alternate_hypothesis->inlier_count == 16 &&
+          std::abs(alternate_hypothesis->right_to_left_homography[2] - 5.0) < 0.25,
+      "calibrated MAGSAC must recover a valid secondary projective consensus after rejecting a dominant pole");
+
+  fs::path small_alternate_dir = root / "small-alternate-projective-hypothesis";
+  fs::create_directories(small_alternate_dir);
+  std::vector<hm::stitching::FeatureMatch> small_alternate_matches;
+  const cv::Matx33d small_pole_transform(0.3, 0.0, 0.0, 0.0, 0.3, 0.0, -1.0 / 80.0, 0.0, 1.0);
+  for (const int y : {5, 20}) {
+    for (const int x : {10, 30, 50, 60}) {
+      const cv::Vec3d transformed = small_pole_transform * cv::Vec3d(x, y, 1.0);
+      small_alternate_matches.push_back(
+          {{static_cast<float>(transformed[0] / transformed[2]), static_cast<float>(transformed[1] / transformed[2])},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  size_t small_valid_index = 0;
+  for (const int y : {40, 70}) {
+    for (const int x : {10, 35, 60, 85}) {
+      const float noise = small_valid_index++ % 2 == 0 ? 0.15f : -0.15f;
+      small_alternate_matches.push_back(
+          {{static_cast<float>(90 - x) + noise, static_cast<float>(75 - y) - noise},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.8f});
+    }
+  }
+  const auto small_alternate = hm::stitching::CreateOpenCvMappingFiles(
+      small_alternate_dir,
+      left,
+      right,
+      small_alternate_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      small_alternate.ok() && small_alternate->inlier_count == 8,
+      "calibrated MAGSAC must peel a rejected eight-inlier hypothesis under the small-set consensus ramp");
+
   fs::path affine_dir = root / "affine";
   fs::create_directories(affine_dir);
   auto affine = hm::stitching::CreateOpenCvMappingFiles(
@@ -256,6 +400,76 @@ int main() {
            .ok(),
       "MAGSAC mapping should reject fewer than four control points");
 
+  fs::path clustered_six_calibrated_dir = root / "clustered-six-calibrated";
+  fs::create_directories(clustered_six_calibrated_dir);
+  std::vector<hm::stitching::FeatureMatch> clustered_six_calibrated_matches;
+  for (const int y : {30, 32}) {
+    for (const int x : {40, 42, 44}) {
+      clustered_six_calibrated_matches.push_back(
+          {{static_cast<float>(x + 12), static_cast<float>(y - 4)},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  auto clustered_six_calibrated = hm::stitching::CreateOpenCvMappingFiles(
+      clustered_six_calibrated_dir,
+      left,
+      right,
+      clustered_six_calibrated_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      !clustered_six_calibrated.ok() &&
+          std::string(clustered_six_calibrated.status().message()).find("inlier coverage") != std::string::npos,
+      "calibrated MAGSAC must reject a clustered six-point set despite meeting the AKAZE count minimum");
+
+  const auto calibrated_boundary_matches = [](size_t total, size_t translation_inliers) {
+    const std::array<cv::Point2f, 10> kSpread = {
+        cv::Point2f{5.0f, 8.0f},
+        cv::Point2f{30.0f, 8.0f},
+        cv::Point2f{60.0f, 8.0f},
+        cv::Point2f{90.0f, 8.0f},
+        cv::Point2f{5.0f, 70.0f},
+        cv::Point2f{30.0f, 70.0f},
+        cv::Point2f{60.0f, 70.0f},
+        cv::Point2f{90.0f, 70.0f},
+        cv::Point2f{20.0f, 38.0f},
+        cv::Point2f{75.0f, 42.0f},
+    };
+    std::vector<hm::stitching::FeatureMatch> result;
+    for (size_t index = 0; index < translation_inliers; ++index) {
+      const cv::Point2f point = kSpread[index];
+      result.push_back({{point.x + 5.0f, point.y - 3.0f}, point, 0.9f});
+    }
+    for (size_t index = translation_inliers; index < total; ++index) {
+      const float right_x = static_cast<float>((index * 29 + 13) % 93);
+      const float right_y = static_cast<float>((index * 47 + 9) % 73);
+      result.push_back(
+          {{static_cast<float>((index * 61 + 7) % 97), static_cast<float>((index * 31 + 17) % 79)},
+           {right_x, right_y},
+           0.2f});
+    }
+    return result;
+  };
+  for (const auto [total, translation_inliers] :
+       {std::pair<size_t, size_t>{15, 8}, std::pair<size_t, size_t>{16, 8}, std::pair<size_t, size_t>{20, 10}}) {
+    const fs::path boundary_dir = root / ("calibrated-boundary-" + std::to_string(total));
+    fs::create_directories(boundary_dir);
+    const auto boundary = hm::stitching::CreateOpenCvMappingFiles(
+        boundary_dir,
+        left,
+        right,
+        calibrated_boundary_matches(total, translation_inliers),
+        hm::stitching::MappingBackend::kOpenCvMagsac,
+        std::nullopt,
+        std::nullopt,
+        hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+    ok &=
+        expect(boundary.ok(), "calibrated MAGSAC consensus must remain continuous across the 15/16/20-match boundary");
+  }
+
   fs::path low_consensus_dir = root / "low-consensus";
   fs::create_directories(low_consensus_dir);
   std::vector<hm::stitching::FeatureMatch> low_consensus_matches = {
@@ -276,6 +490,21 @@ int main() {
       !low_consensus.ok() &&
           std::string(low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
       "MAGSAC mapping should reject a 16-point set supported by only four inliers");
+  fs::path calibrated_low_consensus_dir = root / "calibrated-low-consensus";
+  fs::create_directories(calibrated_low_consensus_dir);
+  auto calibrated_low_consensus = hm::stitching::CreateOpenCvMappingFiles(
+      calibrated_low_consensus_dir,
+      left,
+      right,
+      low_consensus_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      !calibrated_low_consensus.ok() &&
+          std::string(calibrated_low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
+      "calibrated MAGSAC must retain the robust mapping-consensus threshold");
 
   fs::path clustered_consensus_dir = root / "clustered-consensus";
   fs::create_directories(clustered_consensus_dir);

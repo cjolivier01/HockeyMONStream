@@ -234,6 +234,128 @@ int main(int, char**) {
     ok &= expect(
         discovered->front().target == root / "pretrained" / "model.bin", "relative target must resolve from config");
   {
+    std::ofstream deferred(root / "configs" / "on-demand.yaml");
+    deferred << "pretrained-assets:\n"
+                "  - name: deferred missing model\n"
+                "    on-demand: true\n"
+                "    redistributable: false\n"
+                "    url: https://example.invalid/deferred.bin\n"
+                "    sha256: "
+             << std::string(64, '0')
+             << "\n"
+                "    path: ../pretrained/deferred.bin\n"
+                "  - name: undeclared package policy\n"
+                "    on-demand: true\n"
+                "    url: https://example.invalid/undeclared.bin\n"
+                "    sha256: "
+             << std::string(64, '0')
+             << "\n"
+                "    path: ../pretrained/undeclared.bin\n"
+                "  - name: misspelled package policy\n"
+                "    on-demand: true\n"
+                "    redistributible: true\n"
+                "    url: https://example.invalid/misspelled.bin\n"
+                "    sha256: "
+             << std::string(64, '0')
+             << "\n"
+                "    path: ../pretrained/misspelled.bin\n"
+                "  - name: selected cached model\n"
+                "    on-demand: true\n"
+                "    redistributable: true\n"
+                "    url: https://example.invalid/model.bin\n"
+                "    sha256: "
+             << (hash.ok() ? *hash : std::string(64, '0'))
+             << "\n"
+                "    path: ../pretrained/model.bin\n";
+  }
+  auto deferred = hm::assets::AssetManager::Discover({root / "configs" / "on-demand.yaml"});
+  ok &= expect(
+      deferred.ok() && deferred->size() == 4 && deferred->front().on_demand && !deferred->front().redistributable &&
+          !deferred->at(1).redistributable && !deferred->at(2).redistributable && deferred->back().redistributable,
+      "runtime discovery must retain on-demand and redistribution metadata");
+  auto package_assets = hm::assets::AssetManager::DiscoverPackageAssets({root / "configs" / "on-demand.yaml"});
+  ok &= expect(
+      package_assets.ok() && package_assets->size() == 1 && package_assets->front().name == "selected cached model" &&
+          package_assets->front().redistributable,
+      "package discovery must require an exact, explicit redistribution opt-in");
+  ok &= expect(
+      hm::assets::AssetManager::VerifyPackageAssets({root / "configs" / "on-demand.yaml"}).ok(),
+      "package verification must ignore an absent non-redistributable asset");
+  ok &= expect(
+      hm::assets::AssetManager::EnsureRequired({root / "configs" / "on-demand.yaml"}).ok(),
+      "ordinary startup must skip an absent on-demand asset");
+  auto selected_asset =
+      hm::assets::AssetManager::EnsureNamed({root / "configs" / "on-demand.yaml"}, {"selected cached model"});
+  ok &= expect(
+      selected_asset.ok() && selected_asset->size() == 1 &&
+          selected_asset->front().target == root / "pretrained" / "model.bin",
+      "explicit selection must return the exact verified target for the named on-demand asset");
+  ok &= expect(
+      !hm::assets::AssetManager::EnsureNamed(
+           {root / "configs" / "on-demand.yaml"}, {"selected cached model", "missing model declaration"})
+           .ok(),
+      "explicit selection must fail when any requested asset declaration is missing");
+  {
+    std::ofstream duplicate(root / "configs" / "equivalent-duplicate.yaml");
+    duplicate << "pretrained-assets:\n"
+                 "  - name: selected cached model\n"
+                 "    on-demand: true\n"
+                 "    redistributable: true\n"
+                 "    url: https://example.invalid/model.bin\n"
+                 "    sha256: "
+              << (hash.ok() ? *hash : std::string(64, '0'))
+              << "\n"
+                 "    path: ../pretrained/model.bin\n";
+  }
+  ok &= expect(
+      hm::assets::AssetManager::EnsureNamed(
+          {root / "configs" / "on-demand.yaml", root / "configs" / "equivalent-duplicate.yaml"},
+          {"selected cached model"})
+          .ok(),
+      "equivalent declarations from layered configs must remain usable");
+  {
+    std::ofstream duplicate(root / "configs" / "conflicting-duplicate.yaml");
+    duplicate << "pretrained-assets:\n"
+                 "  - name: selected cached model\n"
+                 "    on-demand: true\n"
+                 "    redistributable: true\n"
+                 "    url: https://example.invalid/model.bin\n"
+                 "    sha256: "
+              << (hash.ok() ? *hash : std::string(64, '0'))
+              << "\n"
+                 "    path: ../pretrained/conflicting-model.bin\n";
+  }
+  {
+    std::ofstream conflicting_asset(root / "pretrained" / "conflicting-model.bin");
+    conflicting_asset << "native asset\n";
+  }
+  auto conflicting_declaration = hm::assets::AssetManager::EnsureNamed(
+      {root / "configs" / "on-demand.yaml", root / "configs" / "conflicting-duplicate.yaml"},
+      {"selected cached model"});
+  ok &= expect(
+      !conflicting_declaration.ok() && conflicting_declaration.status().code() == absl::StatusCode::kInvalidArgument,
+      "conflicting declarations with the same requested name must fail closed");
+  const fs::path packaged_model = root / "package-models" / "model.bin";
+  fs::create_directories(packaged_model.parent_path());
+  {
+    std::ofstream packaged(packaged_model);
+    packaged << "different packaged bytes\n";
+  }
+  auto mismatched_packaged_asset = hm::assets::AssetManager::EnsureNamedAtPath(
+      {root / "configs" / "on-demand.yaml"}, "selected cached model", packaged_model);
+  ok &= expect(
+      !mismatched_packaged_asset.ok() && mismatched_packaged_asset.status().code() == absl::StatusCode::kDataLoss,
+      "a packaged runtime target must match the named declaration checksum");
+  {
+    std::ofstream packaged(packaged_model);
+    packaged << "native asset\n";
+  }
+  auto packaged_asset = hm::assets::AssetManager::EnsureNamedAtPath(
+      {root / "configs" / "on-demand.yaml"}, "selected cached model", packaged_model);
+  ok &= expect(
+      packaged_asset.ok() && packaged_asset->target == fs::weakly_canonical(packaged_model),
+      "a matching packaged runtime target must be returned as the exact verified target");
+  {
     std::ofstream child(root / "configs" / "program-assets.yaml");
     child << "pretrained-assets:\n  - name: program detector\n    url: https://example.invalid/detector.bin\n"
              "    sha256: "

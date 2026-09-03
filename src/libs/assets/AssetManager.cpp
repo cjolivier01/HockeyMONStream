@@ -468,6 +468,26 @@ absl::StatusOr<AssetSpec> make_spec(const YAML::Node& node, const YAML::Node& co
   if (result.sha256.size() != 64 ||
       !std::all_of(result.sha256.begin(), result.sha256.end(), [](unsigned char c) { return std::isxdigit(c); }))
     return absl::InvalidArgumentError(path.string() + ": sha256 must contain 64 hexadecimal characters");
+  const YAML::Node on_demand = node["on-demand"] ? node["on-demand"] : node["on_demand"];
+  if (on_demand) {
+    if (!on_demand.IsScalar())
+      return absl::InvalidArgumentError(path.string() + ": asset on-demand must be a boolean scalar");
+    try {
+      result.on_demand = on_demand.as<bool>();
+    } catch (const YAML::Exception&) {
+      return absl::InvalidArgumentError(path.string() + ": asset on-demand must be a boolean scalar");
+    }
+  }
+  const YAML::Node redistributable = node["redistributable"];
+  if (redistributable) {
+    if (!redistributable.IsScalar())
+      return absl::InvalidArgumentError(path.string() + ": asset redistributable must be a boolean scalar");
+    try {
+      result.redistributable = redistributable.as<bool>();
+    } catch (const YAML::Exception&) {
+      return absl::InvalidArgumentError(path.string() + ": asset redistributable must be a boolean scalar");
+    }
+  }
 
   std::string raw_target;
   if (node["path"])
@@ -779,6 +799,18 @@ absl::StatusOr<std::vector<AssetSpec>> AssetManager::Discover(
   return discover_impl(configs, transform, limits);
 }
 
+absl::StatusOr<std::vector<AssetSpec>> AssetManager::DiscoverPackageAssets(
+    const std::vector<fs::path>& configs,
+    const Limits& limits) {
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  assets->erase(
+      std::remove_if(assets->begin(), assets->end(), [](const AssetSpec& spec) { return !spec.redistributable; }),
+      assets->end());
+  return assets;
+}
+
 absl::Status AssetManager::Ensure(const std::vector<fs::path>& configs, const Limits& limits) {
   auto assets = Discover(configs, limits);
   if (!assets.ok())
@@ -814,6 +846,180 @@ absl::Status AssetManager::Ensure(
   return absl::OkStatus();
 }
 
+absl::Status AssetManager::EnsureRequired(const std::vector<fs::path>& configs, const Limits& limits) {
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  size_t total = 0;
+  for (const AssetSpec& spec : *assets) {
+    if (spec.on_demand)
+      continue;
+    auto status = ensure_one(spec, limits, &total);
+    if (!status.ok())
+      return status;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::EnsureRequired(
+    const std::vector<fs::path>& configs,
+    const ConfigTransform& transform,
+    const Limits& limits) {
+  auto assets = Discover(configs, transform, limits);
+  if (!assets.ok())
+    return assets.status();
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  size_t total = 0;
+  for (const AssetSpec& spec : *assets) {
+    if (spec.on_demand)
+      continue;
+    auto status = ensure_one(spec, limits, &total);
+    if (!status.ok())
+      return status;
+  }
+  return absl::OkStatus();
+}
+
+namespace {
+
+bool equivalent_named_declaration(const AssetSpec& left, const AssetSpec& right) {
+  return left.name == right.name && left.url == right.url && left.sha256 == right.sha256 &&
+      left.target == right.target && left.on_demand == right.on_demand && left.redistributable == right.redistributable;
+}
+
+absl::StatusOr<std::map<std::string, AssetSpec>> select_named_assets(
+    const std::vector<AssetSpec>& assets,
+    const std::set<std::string>& requested) {
+  std::map<std::string, AssetSpec> selected;
+  for (const AssetSpec& spec : assets) {
+    if (!requested.count(spec.name))
+      continue;
+    const auto existing = selected.find(spec.name);
+    if (existing == selected.end()) {
+      selected.emplace(spec.name, spec);
+      continue;
+    }
+    if (!equivalent_named_declaration(existing->second, spec)) {
+      return absl::InvalidArgumentError(
+          "Conflicting pretrained asset declarations named " + spec.name + " in " +
+          existing->second.declaring_config.string() + " and " + spec.declaring_config.string());
+    }
+  }
+  std::ostringstream missing;
+  bool first = true;
+  for (const std::string& name : requested) {
+    if (selected.count(name))
+      continue;
+    if (!first)
+      missing << ", ";
+    missing << name;
+    first = false;
+  }
+  if (!first)
+    return absl::NotFoundError("Requested pretrained asset declarations were not found: " + missing.str());
+  return selected;
+}
+
+fs::path normalized_asset_path(const fs::path& path) {
+  fs::path result = fs::absolute(path).lexically_normal();
+  std::error_code error;
+  const fs::path canonical = fs::weakly_canonical(result, error);
+  if (!error)
+    result = canonical;
+  return result;
+}
+
+absl::Status verify_alternate_target(const AssetSpec& declaration, const fs::path& target) {
+  std::error_code error;
+  if (!fs::is_regular_file(target, error) || error)
+    return absl::NotFoundError("Required pretrained asset is unavailable: " + target.string());
+  auto hash = AssetManager::Sha256(target);
+  if (!hash.ok())
+    return hash.status();
+  if (*hash != declaration.sha256) {
+    return absl::DataLossError(
+        "Pretrained asset checksum mismatch for runtime target " + target.string() + " selected by " +
+        declaration.name);
+  }
+  return absl::OkStatus();
+}
+
+} // namespace
+
+absl::StatusOr<std::vector<AssetSpec>> AssetManager::EnsureNamed(
+    const std::vector<fs::path>& configs,
+    const std::vector<std::string>& names,
+    const Limits& limits) {
+  if (names.empty())
+    return std::vector<AssetSpec>();
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  const std::set<std::string> requested(names.begin(), names.end());
+  auto selected = select_named_assets(*assets, requested);
+  if (!selected.ok())
+    return selected.status();
+  static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    return absl::InternalError("Unable to initialize HTTPS asset manager");
+  size_t total = 0;
+  std::vector<AssetSpec> verified;
+  verified.reserve(selected->size());
+  std::set<std::string> ensured;
+  for (const std::string& name : names) {
+    if (!ensured.insert(name).second)
+      continue;
+    const AssetSpec& spec = selected->at(name);
+    auto status = ensure_one(spec, limits, &total);
+    if (!status.ok())
+      return status;
+    verified.push_back(spec);
+  }
+  return verified;
+}
+
+absl::StatusOr<AssetSpec> AssetManager::EnsureNamedAtPath(
+    const std::vector<fs::path>& configs,
+    const std::string& name,
+    const fs::path& target,
+    const Limits& limits) {
+  if (name.empty())
+    return absl::InvalidArgumentError("Requested pretrained asset name may not be empty");
+  if (target.empty())
+    return absl::InvalidArgumentError("Requested pretrained asset runtime target may not be empty");
+  auto assets = Discover(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  auto selected = select_named_assets(*assets, {name});
+  if (!selected.ok())
+    return selected.status();
+  AssetSpec verified = selected->at(name);
+  auto declaration_status = validate_target(verified);
+  if (!declaration_status.ok())
+    return declaration_status;
+  const fs::path runtime_target = normalized_asset_path(target);
+  if (runtime_target == normalized_asset_path(verified.target)) {
+    static const CURLcode initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+    if (initialized != CURLE_OK)
+      return absl::InternalError("Unable to initialize HTTPS asset manager");
+    size_t total = 0;
+    auto status = ensure_one(verified, limits, &total);
+    if (!status.ok())
+      return status;
+  } else {
+    auto status = verify_alternate_target(verified, runtime_target);
+    if (!status.ok())
+      return status;
+  }
+  verified.target = runtime_target;
+  return verified;
+}
+
 absl::Status AssetManager::Verify(const std::vector<fs::path>& configs, const Limits& limits) {
   auto assets = Discover(configs, limits);
   if (!assets.ok())
@@ -831,6 +1037,27 @@ absl::Status AssetManager::Verify(const std::vector<fs::path>& configs, const Li
       return hash.status();
     if (*hash != spec.sha256)
       return absl::DataLossError("Pretrained asset checksum mismatch for " + spec.target.string());
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AssetManager::VerifyPackageAssets(const std::vector<fs::path>& configs, const Limits& limits) {
+  auto assets = DiscoverPackageAssets(configs, limits);
+  if (!assets.ok())
+    return assets.status();
+  for (const AssetSpec& spec : *assets) {
+    auto status = validate_target(spec);
+    if (!status.ok())
+      return status;
+    std::error_code error;
+    if (!fs::is_regular_file(spec.target, error) || error) {
+      return absl::NotFoundError("Required package asset is unavailable: " + spec.target.string());
+    }
+    auto hash = Sha256(spec.target);
+    if (!hash.ok())
+      return hash.status();
+    if (*hash != spec.sha256)
+      return absl::DataLossError("Package asset checksum mismatch for " + spec.target.string());
   }
   return absl::OkStatus();
 }

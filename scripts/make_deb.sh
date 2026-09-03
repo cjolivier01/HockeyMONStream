@@ -236,6 +236,7 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/lib/gst-plugins" \
   "${STAGING}${INSTALL_PREFIX}/configs" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin" \
+  "${STAGING}${INSTALL_PREFIX}/share/licenses/native-calibration-models" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra" \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
@@ -421,6 +422,15 @@ fi
 install -m 0644 "${ORT_SOURCE}/LICENSE" "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime/LICENSE"
 install -m 0644 "${ORT_SOURCE}/ThirdPartyNotices.txt" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime/ThirdPartyNotices.txt"
+for native_model_notice in Apache-2.0-LICENSE.txt DeDoDe-LICENSE.txt NOTICE.txt; do
+  native_model_notice_source="${TOPDIR}/third_party/native_model_licenses/${native_model_notice}"
+  if [[ ! -f "${native_model_notice_source}" ]]; then
+    echo "ERROR: native calibration model notice is missing: ${native_model_notice_source}" >&2
+    exit 1
+  fi
+  install -m 0644 "${native_model_notice_source}" \
+    "${STAGING}${INSTALL_PREFIX}/share/licenses/native-calibration-models/${native_model_notice}"
+done
 install -m 0644 "${TOPDIR}/LICENSE.md" "${STAGING}/usr/share/doc/${PKG_NAME}/copyright"
 
 # ---------- HStream GStreamer plugins ----------
@@ -464,23 +474,40 @@ echo "[make_deb] Staging configs..."
 cp -r "${TOPDIR}/configs/." "${STAGING}${INSTALL_PREFIX}/configs/"
 # Remove the systemd unit files — those belong to a separate package/install step
 rm -rf "${STAGING}${INSTALL_PREFIX}/configs/systemd"
-# Source checkouts keep native models in a per-user cache.  Installed configs
-# instead reference the immutable package-owned copies staged below, so Play
-# works without a token, download, or writable model directory.
+# Source checkouts keep native models in a per-user cache. Installed configs
+# reference immutable package-owned copies for redistributable models. The
+# Non-redistributable rink and SuperPoint graphs remain per-user downloads;
+# DeDoDe must be locally supplied because HStream has no redistribution grant.
 for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yaml; do
-  sed -i \
-    "s#\\\$HOME/.cache/hstream/models/#${INSTALL_PREFIX}/pretrained/native-calibration/#g" \
-    "${STAGING}${INSTALL_PREFIX}/configs/${native_config}"
+  for packaged_native_model in \
+      efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx; do
+    sed -i \
+      "s#\\\$HOME/.cache/hstream/models/${packaged_native_model}#${INSTALL_PREFIX}/pretrained/native-calibration/${packaged_native_model}#g" \
+      "${STAGING}${INSTALL_PREFIX}/configs/${native_config}"
+  done
 done
+# The hockey YOLO checkpoint likewise has no recorded redistribution grant.
+# Keep the source-checkout path unchanged, but make the installed declaration
+# and TensorRT input use the same writable per-user download target.
+hockey_yolo_model="hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
+sed -i \
+  "s#onnx-file: ../pretrained/deepstream/yolov8/${hockey_yolo_model}#onnx-file: \$HOME/.cache/hstream/models/${hockey_yolo_model}#g" \
+  "${STAGING}${INSTALL_PREFIX}/configs/config_infer_yolov8_hockey.yaml"
+if ! grep -Fqx \
+    "  onnx-file: \$HOME/.cache/hstream/models/${hockey_yolo_model}" \
+    "${STAGING}${INSTALL_PREFIX}/configs/config_infer_yolov8_hockey.yaml"; then
+  echo "ERROR: installed hockey YOLO config does not preserve its per-user model path." >&2
+  exit 1
+fi
 
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."
 asset_manifest="$(mktemp)"
-if ! "${HSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+if ! "${HSTREAM_ASSETS}" --package-assets --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
   echo "ERROR: every package-owned pretrained asset must exist and match its declared SHA256." >&2
   exit 1
 fi
-"${HSTREAM_ASSETS}" --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
+"${HSTREAM_ASSETS}" --package-assets --print-targets "${TOPDIR}/configs/ds_hockey_app_config.yaml" \
   > "${asset_manifest}"
 pretrained_root="$(readlink -f "${TOPDIR}/pretrained" 2>/dev/null || true)"
 model_cache_root="$(readlink -f "${HOME}/.cache/hstream/models" 2>/dev/null || true)"
@@ -519,7 +546,7 @@ while IFS= read -r asset; do
 done < "${asset_manifest}"
 # Close the verification/copy window by confirming the sources still match the
 # declared manifest after every staged byte has been rehashed.
-if ! "${HSTREAM_ASSETS}" --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
+if ! "${HSTREAM_ASSETS}" --package-assets --verify "${TOPDIR}/configs/ds_hockey_app_config.yaml"; then
   echo "ERROR: a pretrained source changed during package staging." >&2
   exit 1
 fi

@@ -205,6 +205,8 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
+  void handlePipelineOutputLine(const QString& line, bool stderr_output);
+  void flushPipelineOutputFragments();
   bool handleStartupProgressOutput(const QString& line);
   bool handleHighBitDepthOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
@@ -348,7 +350,9 @@ class HStreamWindow : public QMainWindow {
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
   void addRtspOutput();
-  void appendLog(const QString& message);
+  void appendLog(const QString& message, bool stderr_output = false);
+  void recordStitchingCalibrationDiagnostic(const QString& line);
+  QString stitchingCalibrationFailureAnalysis(const QString& message) const;
   QString writePlaytrackerRuntimeConfig();
   void schedulePlaytrackerRuntimeControl(const QString& id, int value);
   void schedulePlaycropperRuntimeControl(const QString& id, int value);
@@ -581,6 +585,10 @@ class HStreamWindow : public QMainWindow {
   bool active_run_local_render_only_{false};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
+  QString calibration_failure_message_;
+  QStringList calibration_diagnostic_lines_;
+  int calibration_rejected_hypotheses_{0};
+  int calibration_rejected_candidates_{0};
   bool calibration_waiting_for_playback_restart_{false};
   bool calibration_playback_restart_observed_{false};
   bool preview_focus_mode_{false};

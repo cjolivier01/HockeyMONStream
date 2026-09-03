@@ -64,6 +64,14 @@ inline bool OnePassCalibrationRequiredForMode(
        (!calibrate_field_mask && calibration_completion_requested));
 }
 
+inline bool StitcherMatcherModelRequired(
+    bool configure_only,
+    bool one_pass_mode,
+    bool stitching_configured,
+    bool force) {
+  return (configure_only || one_pass_mode) && (!stitching_configured || force);
+}
+
 inline bool StitcherCalibratesFieldMask(const YAML::Node& pipeline) {
   if (!pipeline || !pipeline.IsMap()) {
     return true;

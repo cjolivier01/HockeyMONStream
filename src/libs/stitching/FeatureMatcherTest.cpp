@@ -3,9 +3,11 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <random>
 #include <vector>
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace {
 
@@ -27,6 +29,10 @@ int main() {
   ok &= expect(
       hm::stitching::ParseControlPointMatcher("dedode-lightglue").ok(), "HockeyMOM DeDoDe matcher must be accepted");
   ok &= expect(hm::stitching::ParseControlPointMatcher("loftr").ok(), "HockeyMOM LoFTR matcher must be accepted");
+  auto akaze_choice = hm::stitching::ParseControlPointMatcher("akaze-mldb-hamming");
+  ok &= expect(
+      akaze_choice.ok() && hm::stitching::ControlPointMatcherName(*akaze_choice) == std::string("akaze-hamming"),
+      "AKAZE M-LDB/Hamming spelling must canonicalize");
   auto dedode = hm::stitching::ParseControlPointMatcher("dedode-lightglue");
   ok &= expect(
       dedode.ok() && !hm::stitching::FeatureMatcher::Create("/tmp/missing.onnx", *dedode).ok(),
@@ -59,6 +65,23 @@ int main() {
     ok &= expect(
         std::abs(prepared16->tensor[second_image] - 4000.0f / 65535.0f) < 1e-6f,
         "second 16-bit image must use the same preprocessing");
+  }
+
+  auto loftr_prepared = hm::stitching::FeatureMatcher::PrepareLoFTR(left, right);
+  ok &= expect(loftr_prepared.ok(), "valid LoFTR images must preprocess");
+  if (loftr_prepared.ok()) {
+    ok &= expect(
+        loftr_prepared->resized_sizes[0] == cv::Size(160, 64) && loftr_prepared->resized_sizes[1] == cv::Size(96, 96) &&
+            loftr_prepared->tensor_size == cv::Size(160, 96),
+        "LoFTR inputs must align down to multiples of 32 and share a padded tensor size");
+    ok &= expect(
+        loftr_prepared->tensor.size() == static_cast<size_t>(2) * 160 * 96,
+        "LoFTR tensor must contain two shared-size grayscale planes");
+    ok &= expect(
+        std::abs(loftr_prepared->tensor[0] - 18.0f / 255.0f) < 1e-6f,
+        "LoFTR preprocessing must convert BGR to normalized grayscale");
+    ok &= expect(
+        loftr_prepared->tensor[static_cast<size_t>(64) * 160] == 0.0f, "LoFTR shared-size padding must remain zero");
   }
 
   hm::stitching::FeaturePairInput metadata;
@@ -136,5 +159,121 @@ int main() {
            2)
            .ok(),
       "invalid pair index must fail");
+
+  hm::stitching::FeaturePairInput dedode_metadata;
+  dedode_metadata.source_sizes[0] = {2048, 1152};
+  dedode_metadata.source_sizes[1] = {2048, 1152};
+  dedode_metadata.resized_sizes[0] = {1024, 576};
+  dedode_metadata.resized_sizes[1] = {1024, 576};
+  dedode_metadata.tensor_size = {1024, 576};
+  std::vector<float> dedode_keypoints(
+      static_cast<size_t>(2) * hm::stitching::FeatureMatcher::kKeypointsPerImage * 2, 0.0f);
+  std::vector<int64_t> dedode_matches(hm::stitching::FeatureMatcher::kKeypointsPerImage, -1);
+  std::vector<float> dedode_scores(hm::stitching::FeatureMatcher::kKeypointsPerImage, 0.0f);
+  dedode_keypoints[0] = 100.0f;
+  dedode_keypoints[1] = 80.0f;
+  const size_t dedode_right = static_cast<size_t>(hm::stitching::FeatureMatcher::kKeypointsPerImage) * 2;
+  dedode_keypoints[dedode_right] = 104.0f;
+  dedode_keypoints[dedode_right + 1] = 82.0f;
+  dedode_matches[0] = 0;
+  dedode_scores[0] = 0.9f;
+  auto dedode_result = hm::stitching::FeatureMatcher::PostprocessDeDoDe(
+      dedode_metadata,
+      dedode_keypoints.data(),
+      dedode_keypoints.size(),
+      dedode_matches.data(),
+      dedode_matches.size(),
+      dedode_scores.data(),
+      dedode_scores.size(),
+      8);
+  ok &= expect(
+      dedode_result.ok() && dedode_result->accepted.size() == 1 &&
+          std::abs(dedode_result->accepted[0].left.x - 200.0f) < 1e-6f,
+      "DeDoDe indexed matches must scale back to source coordinates");
+
+  hm::stitching::FeaturePairInput loftr_metadata;
+  loftr_metadata.source_sizes[0] = {3200, 1800};
+  loftr_metadata.source_sizes[1] = {1600, 900};
+  loftr_metadata.resized_sizes[0] = {1600, 896};
+  loftr_metadata.resized_sizes[1] = {1600, 896};
+  loftr_metadata.tensor_size = {1600, 896};
+  const float loftr_left[] = {800.0f, 448.0f, 100.0f, 100.0f};
+  const float loftr_right[] = {810.0f, 450.0f, 110.0f, 102.0f};
+  const float loftr_scores[] = {0.8f, 0.2f};
+  auto loftr_result = hm::stitching::FeatureMatcher::PostprocessLoFTR(
+      loftr_metadata, loftr_left, 4, loftr_right, 4, loftr_scores, 2, 8);
+  ok &= expect(
+      loftr_result.ok() && loftr_result->accepted.size() == 1 &&
+          std::abs(loftr_result->accepted[0].left.x - 1600.0f) < 1e-6f,
+      "LoFTR matches must apply the strict score threshold and source-coordinate scale");
+
+  auto akaze = hm::stitching::FeatureMatcher::Create("", hm::stitching::ControlPointMatcher::kAkazeHamming);
+  ok &= expect(akaze.ok(), "AKAZE must not require an ONNX model");
+  cv::Mat akaze_scene(360, 960, CV_8UC3, cv::Scalar::all(12));
+  std::mt19937 rng(7);
+  std::uniform_int_distribution<int> x_distribution(30, akaze_scene.cols - 40);
+  std::uniform_int_distribution<int> y_distribution(30, akaze_scene.rows - 40);
+  std::uniform_int_distribution<int> color_distribution(40, 255);
+  for (int marker = 0; marker < 240; ++marker) {
+    const cv::Point center(x_distribution(rng), y_distribution(rng));
+    const cv::Scalar color(color_distribution(rng), color_distribution(rng), color_distribution(rng));
+    cv::circle(akaze_scene, center, 3 + marker % 7, color, cv::FILLED);
+    cv::line(akaze_scene, center - cv::Point(8, 0), center + cv::Point(8, 0), cv::Scalar::all(255), 1);
+  }
+  const cv::Mat akaze_left = akaze_scene(cv::Rect(0, 0, 640, 360)).clone();
+  const cv::Mat akaze_right = akaze_scene(cv::Rect(320, 0, 640, 360)).clone();
+  if (akaze.ok()) {
+    auto akaze_result = (*akaze)->Infer(akaze_left, akaze_right, 64);
+    ok &= expect(
+        akaze_result.ok() && akaze_result->accepted_match_count >= 6,
+        "AKAZE M-LDB/Hamming must match the expected overlap between cropped views");
+    if (akaze_result.ok()) {
+      size_t translated = 0;
+      for (const auto& match : akaze_result->accepted) {
+        ok &= expect(
+            match.left.x >= 0.5f * akaze_left.cols && match.right.x <= 0.5f * akaze_right.cols &&
+                match.left.y >= 0.2f * akaze_left.rows && match.left.y <= 0.8f * akaze_left.rows &&
+                match.right.y >= 0.2f * akaze_right.rows && match.right.y <= 0.8f * akaze_right.rows,
+            "AKAZE matches must remain inside the expected overlap and vertical band");
+        if (std::abs((match.right.x - match.left.x) + 320.0f) < 1.0f && std::abs(match.right.y - match.left.y) < 1.0f) {
+          ++translated;
+        }
+      }
+      ok &= expect(
+          translated * 4 >= akaze_result->accepted.size() * 3,
+          "most AKAZE epipolar inliers must recover the synthetic crop offset");
+    }
+  }
+
+  hm::stitching::FisheyeLensCalibration lens;
+  lens.resolution = akaze_left.size();
+  lens.fx = 500.0;
+  lens.fy = 500.0;
+  lens.cx = 320.0;
+  lens.cy = 180.0;
+  lens.distortion = {1e-4, -1e-6, 1e-8, -1e-10};
+  auto calibrated_akaze = hm::stitching::FeatureMatcher::Create(
+      "",
+      hm::stitching::ControlPointMatcher::kAkazeHamming,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(calibrated_akaze.ok(), "AKAZE must accept valid paired KB4 lens calibration");
+  if (calibrated_akaze.ok()) {
+    auto calibrated_result = (*calibrated_akaze)->Infer(akaze_left, akaze_right, 64);
+    ok &= expect(
+        calibrated_result.ok() && calibrated_result->accepted_match_count >= 6,
+        "calibrated AKAZE must undistort detection and return geometrically filtered matches");
+    if (calibrated_result.ok()) {
+      for (const auto& match : calibrated_result->accepted) {
+        ok &= expect(
+            match.left.x >= 0.0f && match.left.x < akaze_left.cols && match.left.y >= 0.0f &&
+                match.left.y < akaze_left.rows && match.right.x >= 0.0f && match.right.x < akaze_right.cols &&
+                match.right.y >= 0.0f && match.right.y < akaze_right.rows,
+            "calibrated AKAZE must return rectified keypoints inside the source-sized mapping domain");
+      }
+    }
+  }
+  auto incomplete_calibration = hm::stitching::FeatureMatcher::Create(
+      "", hm::stitching::ControlPointMatcher::kAkazeHamming, hm::stitching::AkazeMatchingCalibration{.left = lens});
+  ok &= expect(!incomplete_calibration.ok(), "AKAZE must reject calibration for only one camera");
   return ok ? 0 : 1;
 }

@@ -251,7 +251,7 @@ int main(int argc, char** argv) {
 
   const cv::Mat left = cv::imread((game_dir / "left.png").string(), cv::IMREAD_COLOR);
   const cv::Mat right = cv::imread((game_dir / "right.png").string(), cv::IMREAD_COLOR);
-  auto matcher = hm::stitching::FeatureMatcher::Create(matcher_model.string());
+  auto matcher = hm::stitching::FeatureMatcher::CreateLegacyAlikedParity(matcher_model.string());
   if (!matcher.ok()) {
     std::cerr << "FAIL: native matcher model contract failed: " << matcher.status() << '\n';
     return 1;

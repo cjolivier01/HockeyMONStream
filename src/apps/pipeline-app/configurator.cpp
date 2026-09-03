@@ -5348,6 +5348,8 @@ absl::Status Configurator::setup_stitcher_and_masks(
       const char* calibration_pending = g_getenv("HSTREAM_CALIBRATION_PENDING");
       const bool calibration_completion_requested =
           calibration_pending && *calibration_pending && g_strcmp0(calibration_pending, "0") != 0;
+      stitching_matcher_model_required_ =
+          StitcherMatcherModelRequired(configure_only, one_pass_mode, is_configured, force);
       stitching_calibration_required_ = OnePassCalibrationRequiredForMode(
           one_pass_mode, is_configured, field_mask_configured, calibrate_field_mask, calibration_completion_requested);
       if (stitching_calibration_required_)
@@ -8452,6 +8454,7 @@ absl::Status Configurator::complete_configuration(
   stitching_calibration_start_stage_.clear();
   validated_stitching_artifacts_.reset();
   stitching_calibration_required_ = false;
+  stitching_matcher_model_required_ = false;
   scoreboard_perspective_materialized_from_rink_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
   const bool clean_from_control_points_only = clean_stitching_from_control_points && !clean_stitching_artifacts;

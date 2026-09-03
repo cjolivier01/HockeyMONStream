@@ -68,7 +68,9 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/pipeline_controller/GstPropertyService.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
+#include "hstream/src/libs/stitching/CalibrationModels.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/ControlPointMatcher.h"
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/strings/str_split.h"
@@ -82,6 +84,19 @@ namespace fs = std::filesystem;
 GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace {
+
+absl::StatusOr<hm::stitching::ControlPointMatcher> selected_stitching_matcher(const YAML::Node& config) {
+  std::string configured;
+  try {
+    configured = hm::get_node_value(config, "stitching.control_point_matcher", std::string("superpoint-lightglue"));
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid stitching.control_point_matcher setting: ") + error.what());
+  }
+  auto matcher = hm::stitching::ParseControlPointMatcher(configured);
+  if (!matcher.ok())
+    return matcher.status();
+  return *matcher;
+}
 
 void emit_preview_protocol(const char* message) {
   g_print("%s", message);
@@ -741,8 +756,8 @@ absl::Status configure_pipeline_runtime_environment(const char* argv0) {
   // keep any UI-selected private cache root coherent in the child process.
   setenv("HSTREAM_RUNTIME_CACHE_DIR", cache_root->c_str(), 1);
   const fs::path packaged_native_models = root / "pretrained/native-calibration";
-  if (!std::getenv("HM_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
-    setenv("HM_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
+  if (!std::getenv("HM_PACKAGED_NATIVE_MODEL_DIR") && fs::is_directory(packaged_native_models)) {
+    setenv("HM_PACKAGED_NATIVE_MODEL_DIR", packaged_native_models.c_str(), 1);
   }
   std::error_code ec;
   fs::path registry_dir = *cache_root / "gstreamer-1.0";
@@ -1253,6 +1268,30 @@ absl::Status PipelineApplication::configureInstances(
       }
       if (clean_only_requested) {
         return absl::FailedPreconditionError("Eligible stitching configuration did not complete clean-only setup");
+      }
+      // Matcher graphs are optional and large. Provision one only after
+      // configuration inspection proves that this launch will regenerate
+      // control points. Honor explicit local overrides before fetching an
+      // authorized declared asset. DeDoDe must be locally exported/provided
+      // because its embedded LightGlue checkpoint has no redistribution grant;
+      // AKAZE has no external model.
+      if (app_ctx->configurator().stitching_matcher_model_required()) {
+        hm::stitching::ControlPointMatcher matcher;
+        HM_ASSIGN_OR_RETURN(matcher, selected_stitching_matcher(app_ctx->configurator().config()));
+        std::string matcher_asset;
+        HM_ASSIGN_OR_RETURN(matcher_asset, hm::stitching::feature_matcher_asset_to_ensure(matcher));
+        if (!matcher_asset.empty()) {
+          std::vector<fs::path> asset_configs;
+          for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
+            asset_configs.emplace_back(cfg_files_[index]);
+          fs::path runtime_target;
+          HM_ASSIGN_OR_RETURN(runtime_target, hm::stitching::feature_matcher_model_target_path(matcher));
+          hm::assets::AssetSpec verified_asset;
+          HM_ASSIGN_OR_RETURN(
+              verified_asset,
+              hm::assets::AssetManager::EnsureNamedAtPath(asset_configs, matcher_asset, runtime_target));
+          HM_RETURN_IF_ERROR(hm::stitching::bind_feature_matcher_model_path(matcher, verified_asset.target));
+        }
       }
       std::optional<double> stitch_output_rotation;
       HM_ASSIGN_OR_RETURN(stitch_output_rotation, active_stitch_output_rotation(app_ctx->configurator().config()));
@@ -2984,15 +3023,15 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
       asset_configs.emplace_back(cfg_files_[index]);
     if (stitching_calibration_only_) {
-      // Prune Program child configs before discovery. The two native assets
-      // declared directly by the hockey config remain intentional: LightGlue
-      // matches features, and the rink model is also used to orient cameras
-      // when calibration starts before the features stage.
-      HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs, [](YAML::Node config) {
+      // Prune Program child configs before discovery. The rink model declared
+      // directly by the hockey config remains required for camera orientation;
+      // matcher graphs are marked on-demand and fetched after layered matcher
+      // selection has been resolved.
+      HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureRequired(asset_configs, [](YAML::Node config) {
         hm::pipeline_internal::configure_stitching_calibration_pipeline(config);
       }));
     } else {
-      HM_RETURN_IF_ERROR(hm::assets::AssetManager::Ensure(asset_configs));
+      HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureRequired(asset_configs));
     }
   }
 

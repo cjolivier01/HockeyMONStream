@@ -12,13 +12,24 @@
 
 pretrained-assets:
   - name: ice-rink-mask2former-swin-s
+    # Checkpoint redistribution is blocked pending a model-rights record.
+    redistributable: false
     url: https://api.github.com/repos/cjolivier01/hstream/releases/assets/501418054
     sha256: 2c231f9f4897779d19f5bd2c1a8f7c80b7dac01da6555ff0b9d1787f26c1bfeb
     path: $HOME/.cache/hstream/models/ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx
   - name: superpoint-lightglue
+    on-demand: true
+    # Upstream SuperPoint weights are not licensed for redistribution.
+    redistributable: false
     url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v2.0/superpoint_lightglue_pipeline.onnx
     sha256: 228994cea8c010146fa2aef933baa3ffaa4bcdc522bc8aa560087fcff8134526
     path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx
+  - name: efficient-loftr-outdoor
+    on-demand: true
+    redistributable: true
+    url: https://huggingface.co/SpatialHub/efficient-loftr-onnx/resolve/2c4515cbfd4866663db0ca1b3e02c55163dc5a75/eloftr_outdoor_opt.onnx?download=true
+    sha256: a2cbdcfef0ddb5cdab062ae34bf7b09da6cac79baf97fc5155033c8cb1eab602
+    path: $HOME/.cache/hstream/models/efficient-loftr-outdoor-opt-a2cbdcfef0ddb5cd.onnx
 
 application:
   stage: -1

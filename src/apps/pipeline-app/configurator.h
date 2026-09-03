@@ -144,6 +144,9 @@ class Configurator {
   bool stitching_calibration_required() const {
     return stitching_calibration_required_;
   }
+  bool stitching_matcher_model_required() const {
+    return stitching_matcher_model_required_;
+  }
   const std::string& active_stitching_invalidation_id() const {
     return active_stitching_invalidation_id_;
   }
@@ -273,6 +276,7 @@ class Configurator {
   std::string active_stitching_invalidation_id_;
   std::string stitching_calibration_start_stage_;
   bool stitching_calibration_required_{false};
+  bool stitching_matcher_model_required_{false};
   bool scoreboard_perspective_materialized_from_rink_{false};
   bool loaded_generated_stitching_backend_choices_{false};
   mutable std::map<std::string, int> archive_lock_fds_;

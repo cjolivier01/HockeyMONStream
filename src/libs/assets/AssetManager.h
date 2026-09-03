@@ -25,6 +25,10 @@ struct AssetSpec {
   std::string sha256;
   std::filesystem::path target;
   std::filesystem::path declaring_config;
+  bool on_demand{false};
+  // Binary-package inclusion is fail-closed and requires an explicit true in
+  // the asset declaration.
+  bool redistributable{false};
 };
 
 struct Limits {
@@ -49,12 +53,41 @@ class AssetManager {
       const std::vector<std::filesystem::path>& configs,
       const ConfigTransform& transform,
       const Limits& limits = {});
+  // Returns only assets whose declarations permit redistribution in a binary
+  // package. Runtime discovery still retains non-redistributable assets so
+  // they can be downloaded into the user's cache on demand.
+  static absl::StatusOr<std::vector<AssetSpec>> DiscoverPackageAssets(
+      const std::vector<std::filesystem::path>& configs,
+      const Limits& limits = {});
   static absl::Status Ensure(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::Status Ensure(
       const std::vector<std::filesystem::path>& configs,
       const ConfigTransform& transform,
       const Limits& limits = {});
+  // Ensures startup-required assets while leaving on-demand assets deferred.
+  static absl::Status EnsureRequired(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
+  static absl::Status EnsureRequired(
+      const std::vector<std::filesystem::path>& configs,
+      const ConfigTransform& transform,
+      const Limits& limits = {});
+  // Ensures explicitly selected assets, including assets marked on-demand,
+  // and returns the exact declarations whose targets were verified. Conflicting
+  // declarations with the same requested name are rejected.
+  static absl::StatusOr<std::vector<AssetSpec>> EnsureNamed(
+      const std::vector<std::filesystem::path>& configs,
+      const std::vector<std::string>& names,
+      const Limits& limits = {});
+  // Ensures or verifies one selected asset at the exact path a caller will
+  // consume. A declaration target may be downloaded; an alternate target
+  // (such as a packaged model) must already exist and match the declaration's
+  // SHA-256. The returned spec contains the exact verified target.
+  static absl::StatusOr<AssetSpec> EnsureNamedAtPath(
+      const std::vector<std::filesystem::path>& configs,
+      const std::string& name,
+      const std::filesystem::path& target,
+      const Limits& limits = {});
   static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
+  static absl::Status VerifyPackageAssets(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::StatusOr<std::string> Sha256(const std::filesystem::path& path);
   static absl::StatusOr<std::string> Sha256Bytes(std::string_view contents);
 };

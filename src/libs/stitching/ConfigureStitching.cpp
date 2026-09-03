@@ -50,6 +50,7 @@
 #include <fcntl.h>
 #include <linux/fs.h>
 #include <opencv2/opencv.hpp>
+#include <openssl/evp.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
@@ -93,7 +94,131 @@ constexpr uint64_t kMaximumParserPlacementTiffBytes = kHardMaximumArtifactPixels
 constexpr uint64_t kMaximumParserSeamPngBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr size_t kMaximumAkazeCalibrationBytes = 1024ULL * 1024ULL;
 constexpr std::string_view kControlMaskSnapshotPrefix = ".hstream-control-mask-snapshot-";
+
+struct AkazeCalibrationProfile {
+  std::string contents;
+  std::string fingerprint;
+};
+
+absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_profile(const fs::path& game_dir) {
+  const fs::path path = game_dir / "left_calibration.json";
+  // Calibration-matrix isolation uses a symlink to the source game's small profile. Follow it once through open(),
+  // then pin and validate the resulting descriptor so path replacement cannot redirect subsequent reads.
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return std::nullopt;
+    return absl::InternalError(
+        TO_STRING("Unable to open AKAZE lens calibration " << path.string() << ": " << std::strerror(errno)));
+  }
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat before{};
+  if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
+      static_cast<uint64_t>(before.st_size) > kMaximumAkazeCalibrationBytes) {
+    return absl::FailedPreconditionError(
+        "AKAZE lens calibration must be a non-empty bounded regular file: " + path.string());
+  }
+  AkazeCalibrationProfile profile;
+  profile.contents.resize(static_cast<size_t>(before.st_size));
+  size_t offset = 0;
+  while (offset < profile.contents.size()) {
+    const ssize_t count = ::read(descriptor, profile.contents.data() + offset, profile.contents.size() - offset);
+    if (count < 0) {
+      if (errno == EINTR)
+        continue;
+      return absl::InternalError("Unable to read AKAZE lens calibration: " + path.string());
+    }
+    if (count == 0)
+      return absl::AbortedError("AKAZE lens calibration changed while being read: " + path.string());
+    offset += static_cast<size_t>(count);
+  }
+  struct stat after{};
+  if (::fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+      before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
+      before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
+      before.st_ctim.tv_nsec != after.st_ctim.tv_nsec) {
+    return absl::AbortedError("AKAZE lens calibration changed while being read: " + path.string());
+  }
+  EVP_MD_CTX* context = EVP_MD_CTX_new();
+  if (context == nullptr)
+    return absl::InternalError("Unable to initialize AKAZE calibration fingerprint");
+  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+  unsigned int digest_size = 0;
+  const bool hashed = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1 &&
+      EVP_DigestUpdate(context, profile.contents.data(), profile.contents.size()) == 1 &&
+      EVP_DigestFinal_ex(context, digest.data(), &digest_size) == 1;
+  EVP_MD_CTX_free(context);
+  if (!hashed || digest_size != 32)
+    return absl::InternalError("Unable to fingerprint AKAZE lens calibration");
+  static constexpr char kHex[] = "0123456789abcdef";
+  profile.fingerprint.reserve(digest_size * 2);
+  for (unsigned int index = 0; index < digest_size; ++index) {
+    profile.fingerprint.push_back(kHex[digest[index] >> 4]);
+    profile.fingerprint.push_back(kHex[digest[index] & 0x0f]);
+  }
+  return profile;
+}
+
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(const fs::path& game_dir) {
+  const fs::path calibration_path = game_dir / "left_calibration.json";
+  std::optional<AkazeCalibrationProfile> profile;
+  HM_ASSIGN_OR_RETURN(profile, read_akaze_calibration_profile(game_dir));
+  if (!profile.has_value()) {
+    std::cerr << "AKAZE lens calibration not found at " << calibration_path
+              << "; matching original camera frames without undistortion" << std::endl;
+    return AkazeMatchingCalibration{};
+  }
+
+  try {
+    const YAML::Node document = YAML::Load(profile->contents);
+    if (!document.IsMap())
+      return absl::InvalidArgumentError("AKAZE lens calibration root must be an object");
+    const auto parse_camera = [&](const char* key) -> absl::StatusOr<FisheyeLensCalibration> {
+      const YAML::Node node = document[key];
+      if (!node || !node.IsMap()) {
+        return absl::InvalidArgumentError(TO_STRING("AKAZE lens calibration is missing object " << key));
+      }
+      const YAML::Node distortion = node["d"];
+      if (!distortion || !distortion.IsSequence() || distortion.size() != 4) {
+        return absl::InvalidArgumentError(TO_STRING("AKAZE lens calibration " << key << ".d must contain four values"));
+      }
+      FisheyeLensCalibration result;
+      result.resolution = {node["width"].as<int>(), node["height"].as<int>()};
+      result.fx = node["fx"].as<double>();
+      result.fy = node["fy"].as<double>();
+      result.cx = node["cx"].as<double>();
+      result.cy = node["cy"].as<double>();
+      for (size_t index = 0; index < result.distortion.size(); ++index)
+        result.distortion[index] = distortion[index].as<double>();
+      if (result.resolution.width <= 0 || result.resolution.height <= 0 || !std::isfinite(result.fx) ||
+          !std::isfinite(result.fy) || !std::isfinite(result.cx) || !std::isfinite(result.cy) || result.fx <= 0.0 ||
+          result.fy <= 0.0 || !std::all_of(result.distortion.begin(), result.distortion.end(), [](double value) {
+            return std::isfinite(value);
+          })) {
+        return absl::InvalidArgumentError(TO_STRING("AKAZE lens calibration " << key << " contains invalid values"));
+      }
+      return result;
+    };
+
+    AkazeMatchingCalibration result;
+    HM_ASSIGN_OR_RETURN(result.left, parse_camera("left_uniforms"));
+    HM_ASSIGN_OR_RETURN(result.right, parse_camera("right_uniforms"));
+    result.source_profile_fingerprint = std::move(profile->fingerprint);
+    std::cerr << "Using fisheye lens calibration from " << calibration_path << " for AKAZE feature detection"
+              << std::endl;
+    return result;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        TO_STRING("Failed to parse AKAZE lens calibration " << calibration_path.string() << ": " << exception.what()));
+  }
+}
 
 constexpr std::array<const char*, 7> kControlMaskLoadArtifacts = {
     "mapping_0000.tif",
@@ -1408,6 +1533,10 @@ absl::Status preflight_stitched_snapshot_generation(
 
 } // namespace
 
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const fs::path& game_dir) {
+  return load_akaze_matching_calibration_impl(game_dir);
+}
+
 absl::Status save_stitched_image(
     const std::string& game_dir,
     surface::Surface surface,
@@ -1641,6 +1770,7 @@ enum class SeamValidationMode {
 };
 
 struct ConfiguredStitchAlgorithms {
+  ControlPointMatcher control_point_matcher;
   MappingBackend mapping_backend;
   StitchProjection projection;
   std::vector<double> projection_parameters;
@@ -1665,15 +1795,21 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
       return std::nullopt;
     if (!stitching.IsMap())
       return absl::InvalidArgumentError("stitching must be a map");
+    const YAML::Node matcher_node = stitching["control_point_matcher"];
     const YAML::Node backend_node = stitching["mapping_backend"];
     const YAML::Node projection_node = stitching["projection"];
+    const bool matcher_present = matcher_node && !matcher_node.IsNull();
     const bool backend_present = backend_node && !backend_node.IsNull();
     const bool projection_present = projection_node && !projection_node.IsNull();
-    if (!backend_present && !projection_present)
+    if (!matcher_present && !backend_present && !projection_present)
       return std::nullopt;
-    if ((backend_present && !backend_node.IsScalar()) || (projection_present && !projection_node.IsScalar())) {
-      return absl::InvalidArgumentError("stitching mapping backend and projection must be scalar values");
+    if ((matcher_present && !matcher_node.IsScalar()) || (backend_present && !backend_node.IsScalar()) ||
+        (projection_present && !projection_node.IsScalar())) {
+      return absl::InvalidArgumentError("stitching matcher, mapping backend, and projection must be scalar values");
     }
+    ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue;
+    if (matcher_present)
+      HM_ASSIGN_OR_RETURN(matcher, ParseControlPointMatcher(matcher_node.as<std::string>()));
     MappingBackend backend = MappingBackend::kOpenCvMagsac;
     if (backend_present)
       HM_ASSIGN_OR_RETURN(backend, ParseMappingBackend(backend_node.as<std::string>()));
@@ -1689,6 +1825,7 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     if (backend == MappingBackend::kNona)
       HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
     return ConfiguredStitchAlgorithms{
+        .control_point_matcher = matcher,
         .mapping_backend = backend,
         .projection = projection,
         .projection_parameters = std::move(projection_parameters),
@@ -1709,6 +1846,20 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     return CanvasProvenanceCompatibility{
         false, "mapping algorithm provenance is missing; the selected backend and projection cannot be verified"};
   }
+  if (!provenance->control_point_matcher.has_value() || !provenance->akaze_calibration_fingerprint.has_value()) {
+    return CanvasProvenanceCompatibility{
+        false, "control-point matcher provenance is missing; calibration inputs cannot be verified"};
+  }
+  if (*provenance->control_point_matcher != configured->control_point_matcher)
+    return CanvasProvenanceCompatibility{false, "the selected control-point matcher changed"};
+  std::string expected_calibration = "not-applicable";
+  if (configured->control_point_matcher == ControlPointMatcher::kAkazeHamming) {
+    std::optional<AkazeCalibrationProfile> profile;
+    HM_ASSIGN_OR_RETURN(profile, read_akaze_calibration_profile(game_dir));
+    expected_calibration = profile.has_value() ? "sha256:" + profile->fingerprint : "absent";
+  }
+  if (*provenance->akaze_calibration_fingerprint != expected_calibration)
+    return CanvasProvenanceCompatibility{false, "the AKAZE lens calibration profile changed"};
   if (*provenance->mapping_backend != configured->mapping_backend) {
     return CanvasProvenanceCompatibility{false, "the selected mapping backend changed"};
   }
@@ -2510,15 +2661,28 @@ absl::Status create_control_points(
       TO_STRING(
           "Looking for control points in " << input_files.size() << " synchronized camera frame pair"
                                            << (input_files.size() == 1 ? "" : "s")));
-  fs::path model_path;
-  HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path());
   std::unique_ptr<FeatureMatcher> matcher;
   ControlPointMatcher control_point_matcher;
   HM_ASSIGN_OR_RETURN(control_point_matcher, ParseControlPointMatcher(backend_choices.control_point_matcher));
-  HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher));
+  fs::path model_path;
+  HM_ASSIGN_OR_RETURN(model_path, feature_matcher_model_path(control_point_matcher));
+  AkazeMatchingCalibration akaze_calibration;
+  if (control_point_matcher == ControlPointMatcher::kAkazeHamming)
+    HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir));
+  MappingBackend mapping_backend;
+  HM_ASSIGN_OR_RETURN(mapping_backend, ParseMappingBackend(backend_choices.mapping_backend));
+  if (mapping_backend == MappingBackend::kNona && akaze_calibration.left.has_value()) {
+    return absl::InvalidArgumentError(
+        "Calibrated AKAZE control points are rectified and require an OpenCV mapping backend; NONA does not consume "
+        "the GoPro KB4 lens profile");
+  }
+  HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher, akaze_calibration));
+  const size_t minimum_matches =
+      control_point_matcher == ControlPointMatcher::kAkazeHamming && mapping_backend != MappingBackend::kNona ? 6 : 16;
   struct CandidateFramePair {
     size_t index{0};
     std::vector<FeatureMatch> accepted;
+    bool pooled{false};
   };
   std::vector<FeatureMatch> pooled_accepted;
   std::vector<CandidateFramePair> candidates;
@@ -2551,7 +2715,7 @@ absl::Status create_control_points(
       }
       return frame_matches_or.status();
     }
-    const FeatureMatchResult frame_matches = std::move(*frame_matches_or);
+    FeatureMatchResult frame_matches = std::move(*frame_matches_or);
     ++matched_frame_pairs;
     candidates.push_back(CandidateFramePair{.index = index, .accepted = frame_matches.accepted});
     pooled_accepted.insert(pooled_accepted.end(), frame_matches.accepted.begin(), frame_matches.accepted.end());
@@ -2566,25 +2730,35 @@ absl::Status create_control_points(
   if (is_cancelled && is_cancelled()) {
     return absl::CancelledError("Stitching calibration cancelled");
   }
-  if (pooled_accepted.size() < 16) {
+  if (matched_frame_pairs == 0) {
+    return absl::FailedPreconditionError("No stitching calibration frame pair produced usable matches");
+  }
+  if (pooled_accepted.size() < minimum_matches) {
     return absl::FailedPreconditionError(TO_STRING(
         "Native feature matcher produced only " << pooled_accepted.size() << " usable matches across "
                                                 << matched_frame_pairs << "/" << input_files.size()
-                                                << " frame pairs; at least 16 are required"));
-  }
-  if (matched_frame_pairs == 0) {
-    return absl::FailedPreconditionError("No stitching calibration frame pair produced usable matches");
+                                                << " frame pairs; at least " << minimum_matches << " are required"));
   }
   std::stable_sort(
       candidates.begin(), candidates.end(), [](const CandidateFramePair& lhs, const CandidateFramePair& rhs) {
         return lhs.accepted.size() > rhs.accepted.size();
       });
+  const size_t pooled_match_count = pooled_accepted.size();
+  if (candidates.size() > 1) {
+    candidates.insert(
+        candidates.begin(),
+        CandidateFramePair{
+            .index = candidates.front().index,
+            .accepted = std::move(pooled_accepted),
+            .pooled = true,
+        });
+  }
   report_calibration_progress(
       "matching",
       "complete",
       TO_STRING(
-          "Matched candidates from " << pooled_accepted.size() << " usable control points across "
-                                     << matched_frame_pairs << "/" << input_files.size() << " frame pair"
+          "Matched candidates from " << pooled_match_count << " usable control points across " << matched_frame_pairs
+                                     << "/" << input_files.size() << " frame pair"
                                      << (input_files.size() == 1 ? "" : "s")
                                      << (skipped_frame_pairs == 0 ? "" : TO_STRING(", skipped " << skipped_frame_pairs))
                                      << ")"));
@@ -2592,8 +2766,7 @@ absl::Status create_control_points(
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
-  MappingBackend mapping_backend;
-  HM_ASSIGN_OR_RETURN(mapping_backend, ParseMappingBackend(backend_choices.mapping_backend));
+  options.control_point_matcher = control_point_matcher;
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;
@@ -2603,13 +2776,14 @@ absl::Status create_control_points(
   options.projection_framing = backend_choices.projection_framing;
   options.expected_invalidation_id = expected_invalidation_id;
   options.expected_backend_choices = backend_choices;
+  options.akaze_calibration = std::move(akaze_calibration);
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
   absl::Status last_candidate_status =
       absl::FailedPreconditionError("No stitching calibration frame pair had enough usable matches");
   size_t attempted_candidates = 0;
   for (const CandidateFramePair& candidate : candidates) {
-    if (candidate.accepted.size() < 16) {
+    if (candidate.accepted.size() < minimum_matches) {
       continue;
     }
     auto selected_or = FeatureMatcher::SelectControlPoints(candidate.accepted, left_source_size, max_control_points);
@@ -2629,7 +2803,11 @@ absl::Status create_control_points(
       }
     }
     ++attempted_candidates;
-    std::cerr << "Trying stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()
+    std::cerr << "Trying "
+              << (candidate.pooled
+                      ? TO_STRING("pooled stitching calibration across " << matched_frame_pairs << " frame pairs")
+                      : TO_STRING(
+                            "stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()))
               << " with " << selected.size() << " selected control points" << std::endl;
     absl::Status configure_status = HuginProject::Configure(
         game_dir, input_files[candidate.index].first, input_files[candidate.index].second, selected, options);
@@ -2645,7 +2823,11 @@ absl::Status create_control_points(
     if (!absl::IsFailedPrecondition(configure_status) && !absl::IsNotFound(configure_status)) {
       return configure_status;
     }
-    std::cerr << "Skipping stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()
+    std::cerr << "Skipping "
+              << (candidate.pooled
+                      ? "pooled stitching calibration"
+                      : TO_STRING(
+                            "stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()))
               << ": " << configure_status << std::endl;
   }
   return absl::FailedPreconditionError(TO_STRING(
