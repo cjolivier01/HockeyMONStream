@@ -874,6 +874,9 @@ bool write_fake_runner(const QString& path) {
   file.write("    delay = float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS', '0')) / 1000.0\n");
   file.write("    if os.environ.get('HSTREAM_UI_TEST_PRECALIBRATION_STDERR'):\n");
   file.write("        print(os.environ['HSTREAM_UI_TEST_PRECALIBRATION_STDERR'], file=sys.stderr, flush=True)\n");
+  file.write(
+      "        time.sleep(float(os.environ.get('HSTREAM_UI_TEST_AFTER_PRECALIBRATION_STDERR_DELAY_MS', '0')) / "
+      "1000.0)\n");
   file.write("    events = []\n");
   file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
   file.write("        events = [\n");
@@ -2367,7 +2370,9 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS", "40");
   qputenv(
       "HSTREAM_UI_TEST_PRECALIBRATION_STDERR",
+      "INVALID_ARGUMENT: unrelated pre-calibration runtime status\n"
       "Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent");
+  qputenv("HSTREAM_UI_TEST_AFTER_PRECALIBRATION_STDERR_DELAY_MS", "40");
   activate(start);
   for (int i = 0; i < 200 && !dialog->isVisible(); ++i) {
     QApplication::processEvents();
@@ -2383,7 +2388,9 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
           "Program playback should log why it opened the calibration progress popup") &&
       expect(
           HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
-              .contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent"),
+                  .contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent") &&
+              !HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
+                   .contains("unrelated pre-calibration runtime status"),
           "Runtime-discovered calibration must preserve stderr diagnostics received before its first milestone");
   for (int i = 0; i < 400 &&
        (dialog->isVisible() ||
@@ -2413,6 +2420,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS");
   qunsetenv("HSTREAM_UI_TEST_PRECALIBRATION_STDERR");
+  qunsetenv("HSTREAM_UI_TEST_AFTER_PRECALIBRATION_STDERR_DELAY_MS");
 
   if (!set_test_calibration_status(window, "complete"))
     return false;

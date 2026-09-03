@@ -8905,7 +8905,13 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   trimmed = trimmed.trimmed();
   if (trimmed.isEmpty())
     return;
-  recordStitchingCalibrationDiagnostic(trimmed);
+  const bool calibration_preamble = trimmed.startsWith("Rejected calibrated MAGSAC hypothesis") ||
+      trimmed.startsWith("Skipping pooled stitching calibration") ||
+      trimmed.startsWith("Skipping stitching calibration frame pair") ||
+      trimmed.startsWith("Trying pooled stitching calibration") ||
+      trimmed.startsWith("Trying stitching calibration frame pair");
+  if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION") || calibration_preamble)
+    recordStitchingCalibrationDiagnostic(trimmed);
   if (handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
       handlePreviewOverlayResponse(trimmed) ||
