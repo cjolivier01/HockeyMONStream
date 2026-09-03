@@ -37,6 +37,7 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QStyleOptionSlider>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QTimeEdit>
@@ -140,6 +141,18 @@ struct HStreamWindowTestAccess {
     window->updateRunControls();
   }
 
+  static void refreshPlaybackSeekControls(HStreamWindow* window) {
+    window->updatePlaybackSeekControls();
+  }
+
+  static qint64 playbackPositionNs(HStreamWindow* window) {
+    return window->playback_position_ns_;
+  }
+
+  static qint64 playbackDurationNs(HStreamWindow* window) {
+    return window->playback_duration_ns_;
+  }
+
   static void clearLog(HStreamWindow* window) {
     if (window->log_)
       window->log_->clear();
@@ -173,6 +186,43 @@ bool expect(bool condition, const std::string& message) {
     return false;
   }
   return true;
+}
+
+struct SliderStyleGeometry {
+  int available_span{0};
+  QPoint handle_center;
+};
+
+SliderStyleGeometry slider_style_geometry(const QSlider* slider) {
+  if (!slider)
+    return {};
+  QStyleOptionSlider option;
+  option.initFrom(slider);
+  option.orientation = slider->orientation();
+  option.minimum = slider->minimum();
+  option.maximum = slider->maximum();
+  option.sliderPosition = slider->sliderPosition();
+  option.sliderValue = slider->value();
+  option.singleStep = slider->singleStep();
+  option.pageStep = slider->pageStep();
+  option.tickPosition = slider->tickPosition();
+  option.tickInterval = slider->tickInterval();
+  option.upsideDown = slider->orientation() == Qt::Horizontal
+      ? slider->invertedAppearance() != (option.direction == Qt::RightToLeft)
+      : !slider->invertedAppearance();
+  if (slider->orientation() == Qt::Horizontal)
+    option.state |= QStyle::State_Horizontal;
+  else
+    option.state &= ~QStyle::State_Horizontal;
+  const QRect handle =
+      slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, slider);
+  const QPoint handle_center = slider->orientation() == Qt::Horizontal
+      ? QPoint(handle.left() + handle.width() / 2, handle.center().y())
+      : QPoint(handle.center().x(), handle.top() + handle.height() / 2);
+  return {
+      slider->style()->pixelMetric(QStyle::PM_SliderSpaceAvailable, &option, slider),
+      handle_center,
+  };
 }
 
 bool write_tiff_fixture(const fs::path& path) {
@@ -3549,8 +3599,41 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   seek_slider->setLayoutDirection(Qt::LeftToRight);
   seek_slider->setInvertedAppearance(false);
+  const SliderStyleGeometry default_seek_geometry = slider_style_geometry(seek_slider);
+  if (!expect(default_seek_geometry.available_span > 4, "The seek slider must expose an interior handle travel span"))
+    return false;
+  seek_slider->setRange(0, default_seek_geometry.available_span);
+  const int known_interior_seek_value = default_seek_geometry.available_span / 3;
+  seek_slider->setValue(known_interior_seek_value);
+  const QPoint known_interior_handle_center = slider_style_geometry(seek_slider).handle_center;
+  const int interior_seek_commands_before = window->logText().count("stdin:@seek ");
+  QTest::mousePress(
+      seek_slider, Qt::LeftButton, Qt::NoModifier, QPoint(seek_slider->width() - 1, seek_slider->height() / 2), 0);
+  QTest::mouseMove(seek_slider, QPoint(seek_slider->width() * 4 / 5, seek_slider->height() / 2), 0);
+  const bool interior_release_differs_from_last_motion = seek_slider->value() != known_interior_seek_value;
+  const qint64 known_interior_seek_target_ns = static_cast<qint64>(
+      static_cast<long double>(known_interior_seek_value) * 600'000'000'000.0L /
+      static_cast<long double>(default_seek_geometry.available_span));
+  QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, known_interior_handle_center, 0);
+  const QString known_interior_seek_command = QString("stdin:@seek %1 ").arg(known_interior_seek_target_ns);
+  for (int i = 0; i < 100 &&
+       (window->logText().count("stdin:@seek ") == interior_seek_commands_before ||
+        !window->logText().contains(known_interior_seek_command) || !seek_slider->isEnabled());
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          seek_slider->rect().contains(known_interior_handle_center) && interior_release_differs_from_last_motion &&
+              window->logText().count("stdin:@seek ") == interior_seek_commands_before + 1 &&
+              window->logText().contains(known_interior_seek_command),
+          "Releasing at a known styled interior handle center must override the last motion and issue exactly one "
+          "seek to that known value")) {
+    return false;
+  }
+  seek_slider->setRange(0, 100000);
+  HStreamWindowTestAccess::refreshPlaybackSeekControls(window);
   const int absolute_seek_commands_before_drag = window->logText().count("stdin:@seek ");
-  const int displayed_seek_value_before_drag = seek_slider->value();
   const QPoint seek_drag_start(seek_slider->width() / 5, seek_slider->height() / 2);
   const QPoint seek_drag_finish(seek_slider->width() * 3 / 4, seek_slider->height() / 2);
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
@@ -3568,8 +3651,15 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QTest::mouseRelease(
       seek_slider, Qt::LeftButton, Qt::NoModifier, QPoint(seek_slider->width() + 20, seek_slider->height() / 2), 0);
   QApplication::processEvents();
+  const qint64 displayed_playback_position_ns = HStreamWindowTestAccess::playbackPositionNs(window);
+  const qint64 displayed_playback_duration_ns = HStreamWindowTestAccess::playbackDurationNs(window);
+  const int expected_restored_seek_value = displayed_playback_duration_ns > 0
+      ? static_cast<int>(std::llround(
+            static_cast<long double>(displayed_playback_position_ns) * seek_slider->maximum() /
+            static_cast<long double>(displayed_playback_duration_ns)))
+      : seek_slider->minimum();
   const bool outside_release_cancelled =
-      !seek_slider->isSliderDown() && seek_slider->value() == displayed_seek_value_before_drag &&
+      !seek_slider->isSliderDown() && seek_slider->value() == expected_restored_seek_value &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
