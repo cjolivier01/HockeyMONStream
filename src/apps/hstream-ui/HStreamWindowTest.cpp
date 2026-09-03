@@ -123,6 +123,24 @@ struct HStreamWindowTestAccess {
     window->handlePipelineError(error);
   }
 
+  static void beginPendingResumedPlaybackSeek(HStreamWindow* window, quint64 generation) {
+    beginPendingPlaybackSeek(window, generation);
+    window->playback_warming_after_resume_ = true;
+    window->resume_progress_reset_waiting_for_seek_ = true;
+  }
+
+  static quint64 playbackResetGeneration(HStreamWindow* window) {
+    return window->playback_reset_generation_;
+  }
+
+  static bool resumeProgressResetWaitingForSeek(HStreamWindow* window) {
+    return window->resume_progress_reset_waiting_for_seek_;
+  }
+
+  static bool handlePlaybackProgressOutput(HStreamWindow* window, const QString& line) {
+    return window->handlePlaybackProgressOutput(line);
+  }
+
   static void beginTimedOutPlaybackSeekRecovery(HStreamWindow* window, quint64 generation) {
     beginPendingPlaybackSeek(window, generation);
     window->handlePlaybackSeekOutput(
@@ -4392,8 +4410,64 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "A paused +10s request must replace the deferred slider target without contacting the backend")) {
     return false;
   }
+  pipeline_process->write("@test-stall-seek\n");
+  const quint64 progress_generation_before_resumed_seek = HStreamWindowTestAccess::playbackResetGeneration(window);
+  const int progress_reset_commands_before_resumed_seek = window->logText().count("stdin:@reset-progress-rate");
+  activate(pause);
+  const QString resumed_seek_command = QString("stdin:@seek %1 ").arg(replaced_paused_seek_target_ns);
+  for (int i = 0; i < 100 &&
+       (!window->logText().contains("test seek acknowledgement stalled") ||
+        window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag ||
+        !window->logText().contains(resumed_seek_command));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool accepted_resumed_progress = HStreamWindowTestAccess::handlePlaybackProgressOutput(
+      window,
+      QString(
+          "HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
+          "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
+          "generation=%1")
+          .arg(progress_generation_before_resumed_seek));
+  QApplication::processEvents();
+  if (!expect(
+          accepted_resumed_progress && !pause->isEnabled() &&
+              window->logText().count("stdin:@reset-progress-rate") == progress_reset_commands_before_resumed_seek &&
+              playback_progress->toolTip().contains("Pipeline: PLAYING") &&
+              playback_progress->toolTip().contains("ETA: Warming up") &&
+              playback_progress->toolTip().contains("Processing speed: Warming up") &&
+              !playback_progress->toolTip().contains("ETA: 00:18:34") &&
+              !playback_progress->toolTip().contains("Processing speed: 0.50x"),
+          "Progress arriving between Resume and its deferred seek acknowledgement must remain warming and must not "
+          "expose a cross-pause rate")) {
+    return false;
+  }
+  pipeline_process->write("@test-complete-seek\n");
+  for (int i = 0; i < 100 &&
+       (!window->logText().contains("playback seek complete at 00:00:10") || !pause->isEnabled() ||
+        window->logText().count("stdin:@reset-progress-rate") <= progress_reset_commands_before_resumed_seek);
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          window->logText().contains("playback seek complete at 00:00:10") && pause->isEnabled() &&
+              window->logText().count("stdin:@reset-progress-rate") == progress_reset_commands_before_resumed_seek + 1,
+          "Completing a stalled deferred seek must issue exactly one progress-rate reset and restore transport "
+          "controls")) {
+    return false;
+  }
+
+  activate(pause);
+  const qint64 rejected_paused_seek_base_ns = HStreamWindowTestAccess::playbackPositionNs(window);
+  activate(seek_forward);
+  QApplication::processEvents();
+  const qint64 rejected_paused_seek_target_ns =
+      std::min<qint64>(600'000'000'000LL, rejected_paused_seek_base_ns + 10'000'000'000LL);
+  const int seek_commands_before_rejected_resume = window->logText().count("stdin:@seek ");
   pipeline_process->write("@test-reject-seek\n");
-  const int progress_reset_commands_before_resume = window->logText().count("stdin:@reset-progress-rate");
+  const int progress_reset_commands_before_rejected_resume = window->logText().count("stdin:@reset-progress-rate");
   QTest::mouseClick(render_video, Qt::LeftButton);
   for (int i = 0;
        i < 20 && preview_status->text() != "GPU preview will finish disabling when the paused pipeline resumes";
@@ -4411,21 +4485,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   activate(pause);
-  const QString resumed_seek_command = QString("stdin:@seek %1 ").arg(replaced_paused_seek_target_ns);
+  const QString rejected_resumed_seek_command = QString("stdin:@seek %1 ").arg(rejected_paused_seek_target_ns);
   for (int i = 0; i < 100 &&
-       (window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag ||
-        !window->logText().contains(resumed_seek_command) ||
+       (window->logText().count("stdin:@seek ") == seek_commands_before_rejected_resume ||
+        !window->logText().contains(rejected_resumed_seek_command) ||
         !window->logText().contains("playback seek rejected: nonlocal-output-active") ||
-        window->logText().count("stdin:@reset-progress-rate") <= progress_reset_commands_before_resume);
+        window->logText().count("stdin:@reset-progress-rate") <= progress_reset_commands_before_rejected_resume);
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(
-          window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag + 1 &&
-              window->logText().contains(resumed_seek_command) &&
+          window->logText().count("stdin:@seek ") == seek_commands_before_rejected_resume + 1 &&
+              window->logText().contains(rejected_resumed_seek_command) &&
               window->logText().contains("playback seek rejected: nonlocal-output-active") &&
-              window->logText().count("stdin:@reset-progress-rate") == progress_reset_commands_before_resume + 1 &&
+              window->logText().count("stdin:@reset-progress-rate") ==
+                  progress_reset_commands_before_rejected_resume + 1 &&
               playback_progress->toolTip().contains("Pipeline: PLAYING") &&
               playback_progress->toolTip().contains("ETA: Warming up") &&
               playback_progress->toolTip().contains("Processing speed: Warming up") &&
@@ -10522,7 +10597,8 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
   if (!expect(window->pipelineStateText() == "PLAYING", "Close-event test pipeline should start")) {
     return false;
   }
-  HStreamWindowTestAccess::beginPendingPlaybackSeek(window, 999);
+  const quint64 reset_generation_before_write_error = HStreamWindowTestAccess::playbackResetGeneration(window);
+  HStreamWindowTestAccess::beginPendingResumedPlaybackSeek(window, 999);
   if (!expect(!pause->isEnabled(), "A pending playback seek should disable Pause before channel failure")) {
     return false;
   }
@@ -10535,11 +10611,27 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
       !expect(
           !seek_slider->isEnabled() && !seek_forward->isEnabled() &&
               seek_slider->toolTip().contains("command channel failed"),
-          "A command-channel write failure should permanently disable seeking for the run")) {
+          "A command-channel write failure should permanently disable seeking for the run") ||
+      !expect(
+          HStreamWindowTestAccess::playbackResetGeneration(window) == reset_generation_before_write_error + 1 &&
+              !HStreamWindowTestAccess::resumeProgressResetWaitingForSeek(window),
+          "A command-channel write failure must fulfill a resumed seek's deferred progress-reset obligation")) {
     return false;
   }
 
-  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1000);
+  const quint64 reset_generation_before_read_error = HStreamWindowTestAccess::playbackResetGeneration(window);
+  HStreamWindowTestAccess::beginPendingResumedPlaybackSeek(window, 1000);
+  HStreamWindowTestAccess::reportPipelineError(window, QProcess::ReadError);
+  QApplication::processEvents();
+  if (!expect(
+          window->logText().contains("playback seek failed: pipeline command channel read error") &&
+              HStreamWindowTestAccess::playbackResetGeneration(window) == reset_generation_before_read_error + 1 &&
+              !HStreamWindowTestAccess::resumeProgressResetWaitingForSeek(window),
+          "A command-channel read failure must fulfill a resumed seek's deferred progress-reset obligation")) {
+    return false;
+  }
+
+  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1001);
   if (!expect(
           !pause->isEnabled() && !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
           "A timed-out reconstruction should keep transport and tuning disabled before command-channel failure")) {
@@ -10558,7 +10650,7 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
     return false;
   }
 
-  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1001);
+  HStreamWindowTestAccess::beginTimedOutPlaybackSeekRecovery(window, 1002);
   if (!expect(
           !pause->isEnabled() && !program_control_tabs->isEnabled() && !stitched_control_tabs->isEnabled(),
           "A second timed-out reconstruction should lock controls before process completion")) {

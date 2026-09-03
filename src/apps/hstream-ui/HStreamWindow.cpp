@@ -8540,6 +8540,7 @@ void HStreamWindow::pauseOrResumePipeline() {
     if (deferred_playback_seek_ns_.has_value()) {
       const qint64 target_ns = *deferred_playback_seek_ns_;
       deferred_playback_seek_ns_.reset();
+      playback_warming_after_resume_ = true;
       resume_progress_reset_waiting_for_seek_ = true;
       sendPlaybackSeek(target_ns);
       if (pending_playback_seek_generation_ == 0) {
@@ -8890,6 +8891,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
                                     .arg(pipeline_process_ ? pipeline_process_->errorString() : QString());
   if (error != QProcess::FailedToStart && error != QProcess::Crashed) {
     if (error == QProcess::WriteError || error == QProcess::ReadError) {
+      const bool reset_progress_after_resumed_seek = resume_progress_reset_waiting_for_seek_;
       const bool unresolved_live_rotation =
           std::any_of(runtime_control_batches_.begin(), runtime_control_batches_.end(), [](const auto& entry) {
             return entry.second.live_rotation_authorization.has_value();
@@ -8906,6 +8908,9 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
       pending_playback_seek_target_ns_.reset();
       resume_progress_reset_waiting_for_seek_ = false;
       playback_seek_channel_available_ = false;
+      if (reset_progress_after_resumed_seek) {
+        beginPlaybackProgressReset();
+      }
       if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked() &&
           pending_preview_channel_ == "none" && pending_preview_generation_ != 0) {
         recoverPreviewDisableFailure("the pipeline command channel reported a write error");
