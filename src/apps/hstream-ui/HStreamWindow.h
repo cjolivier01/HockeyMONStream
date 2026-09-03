@@ -218,6 +218,7 @@ class HStreamWindow : public QMainWindow {
   void updatePlaybackSeekControls();
   void requestPlaybackSeek(qint64 target_ns);
   void requestPlaybackSeekRelative(qint64 delta_ns);
+  void sendPlaybackSeek(qint64 target_ns);
   void beginPlaybackProgressReset();
   void sendPlaybackProgressReset(quint64 generation);
   int playbackProgressResetTimeoutMs() const;
@@ -578,6 +579,8 @@ class HStreamWindow : public QMainWindow {
   int playback_reset_attempts_{0};
   qint64 playback_position_ns_{0};
   qint64 playback_duration_ns_{0};
+  std::optional<qint64> deferred_playback_seek_ns_;
+  std::optional<qint64> pending_playback_seek_target_ns_;
   quint64 playback_seek_generation_{0};
   quint64 pending_playback_seek_generation_{0};
   quint64 playback_seek_recovery_generation_{0};

@@ -3533,6 +3533,46 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "The explicit reconstruction recovery event must safely restore transport and live tuning")) {
     return false;
   }
+  const int absolute_seek_commands_before_drag = window->logText().count("stdin:@seek ");
+  const QPoint seek_drag_start(seek_slider->width() / 5, seek_slider->height() / 2);
+  const QPoint seek_drag_finish(seek_slider->width() * 3 / 4, seek_slider->height() / 2);
+  QElapsedTimer seek_drag_timer;
+  seek_drag_timer.start();
+  QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
+  for (int index = 0; index < 500; ++index) {
+    const int x = 1 + (index * std::max(1, seek_slider->width() - 2) / 499);
+    QTest::mouseMove(seek_slider, QPoint(x, seek_slider->height() / 2), 0);
+  }
+  const bool drag_remained_local =
+      seek_drag_timer.elapsed() < 2000 && window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
+  QTest::mouseRelease(
+      seek_slider, Qt::LeftButton, Qt::NoModifier, QPoint(seek_slider->width() + 20, seek_slider->height() / 2), 0);
+  QApplication::processEvents();
+  const bool outside_release_cancelled =
+      !seek_slider->isSliderDown() && window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
+  QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
+  QTest::mouseMove(seek_slider, seek_drag_finish, 0);
+  const int released_seek_value = seek_slider->value();
+  const qint64 released_seek_target_ns = static_cast<qint64>(
+      static_cast<long double>(released_seek_value) * 600'000'000'000.0L /
+      static_cast<long double>(seek_slider->maximum()));
+  QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
+  const QString released_seek_command = QString("stdin:@seek %1 ").arg(released_seek_target_ns);
+  for (int i = 0; i < 100 &&
+       (window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag ||
+        !window->logText().contains(released_seek_command));
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          drag_remained_local && outside_release_cancelled &&
+              window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag + 1 &&
+              window->logText().contains(released_seek_command),
+          "Slider motion must remain responsive without backend work, release outside must cancel, and release "
+          "over the slider must issue exactly one seek at that X position")) {
+    return false;
+  }
   const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   const YAML::Node fresh_program_saved = YAML::LoadFile(fresh_program_config.string());
   YAML::Node fresh_program_status;
@@ -4194,6 +4234,24 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               !playback_progress->toolTip().contains("Processing speed: 2.00x"),
           "Pausing should retain progress without presenting stale ETA or speed"))
     return false;
+  const int seek_commands_before_paused_drag = window->logText().count("stdin:@seek ");
+  const QPoint paused_seek_position(seek_slider->width() * 2 / 5, seek_slider->height() / 2);
+  QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_slider->rect().center(), 0);
+  QTest::mouseMove(seek_slider, paused_seek_position, 0);
+  const int paused_seek_value = seek_slider->value();
+  const qint64 paused_seek_target_ns = static_cast<qint64>(
+      static_cast<long double>(paused_seek_value) * 600'000'000'000.0L /
+      static_cast<long double>(seek_slider->maximum()));
+  QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, paused_seek_position, 0);
+  QApplication::processEvents();
+  if (!expect(
+          seek_slider->isEnabled() && seek_back->isEnabled() && seek_forward->isEnabled() &&
+              window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag &&
+              window->logText().contains("playback seek queued for resume") &&
+              seek_slider->toolTip().contains("will be applied when playback resumes"),
+          "Paused playback must accept and display a slider target without sending backend work")) {
+    return false;
+  }
   QTest::mouseClick(render_video, Qt::LeftButton);
   for (int i = 0;
        i < 20 && preview_status->text() != "GPU preview will finish disabling when the paused pipeline resumes";
@@ -4211,17 +4269,24 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   activate(pause);
-  for (int i = 0; i < 100 && !window->logText().contains("stdin:@reset-progress-rate"); ++i) {
+  const QString resumed_seek_command = QString("stdin:@seek %1 ").arg(paused_seek_target_ns);
+  for (int i = 0; i < 100 &&
+       (window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag ||
+        !window->logText().contains(resumed_seek_command));
+       ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(
-          window->logText().contains("stdin:@reset-progress-rate") &&
+          window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag + 1 &&
+              window->logText().contains(resumed_seek_command) &&
+              window->logText().contains("stdin:@reset-progress-rate") &&
               playback_progress->toolTip().contains("Pipeline: PLAYING") &&
               playback_progress->toolTip().contains("ETA: Warming up") &&
               playback_progress->toolTip().contains("Processing speed: Warming up") &&
               !playback_progress->toolTip().contains("Processing speed: 0.50x"),
-          "Resuming should reset every backend rate and suppress contaminated multi-pipeline samples")) {
+          "Resuming should issue the one deferred seek, reset every backend rate, and suppress contaminated "
+          "multi-pipeline samples")) {
     return false;
   }
   for (int i = 0;
