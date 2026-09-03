@@ -216,6 +216,8 @@ class HStreamWindow : public QMainWindow {
   void setPlaybackProgressState(PlaybackProgressState state, const QString& detail = {});
   void updatePlaybackProgressPresentation();
   void updatePlaybackSeekControls();
+  qint64 playbackSeekPositionForSliderValue(int value) const;
+  void updatePlaybackSeekPositionPresentation();
   void requestPlaybackSeek(qint64 target_ns);
   void requestPlaybackSeekRelative(qint64 delta_ns);
   void sendPlaybackSeek(qint64 target_ns);

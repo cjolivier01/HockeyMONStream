@@ -4995,6 +4995,10 @@ void HStreamWindow::buildUi() {
   playback_seek_slider_->setObjectName("playbackSeekSlider");
   playback_seek_slider_->setAccessibleName("Video playback position");
   playback_seek_slider_->setRange(0, 100000);
+  connect(
+      playback_seek_slider_, &QSlider::sliderMoved, this, [this](int) { updatePlaybackSeekPositionPresentation(); });
+  connect(
+      playback_seek_slider_, &QSlider::sliderReleased, this, [this]() { updatePlaybackSeekPositionPresentation(); });
   playback_seek_forward_button_ = new QPushButton("+10s", playback_seek_controls_);
   playback_seek_forward_button_->setObjectName("playbackSeekForward10Button");
   playback_seek_position_ = new QLabel("00:00:00 / --:--:--", playback_seek_controls_);
@@ -5018,9 +5022,7 @@ void HStreamWindow::buildUi() {
     }
     if (!playback_seek_slider_ || playback_duration_ns_ <= 0 || playback_seek_slider_->maximum() <= 0)
       return;
-    const long double fraction =
-        static_cast<long double>(*value) / static_cast<long double>(playback_seek_slider_->maximum());
-    requestPlaybackSeek(static_cast<qint64>(fraction * static_cast<long double>(playback_duration_ns_)));
+    requestPlaybackSeek(playbackSeekPositionForSliderValue(*value));
   });
   playback_transport_layout->addWidget(playback_seek_controls_, 2);
   root->addWidget(playback_transport);
@@ -5358,10 +5360,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   drivegpt_csv_toggle_ = new QCheckBox("DriveGPT CSV");
   drivegpt_csv_toggle_->setObjectName("drivegptCsvCheck");
-  drivegpt_csv_toggle_->setChecked(true);
+  drivegpt_csv_toggle_->setChecked(false);
   drivegpt_csv_toggle_->setToolTip(
       "Save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv metadata in working storage, "
-      "then copy the completed CSV set beside the finalized Program video");
+      "then copy the completed CSV set beside the finalized Program video. Lossless CSV capture disables seeking "
+      "for that run.");
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
@@ -5817,7 +5820,8 @@ void HStreamWindow::configureControlHelp() {
       "drivegptCsvCheck",
       "For the next Program run, save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv "
       "in HStream working storage, plus timestamp/config sidecars. After a completed archive is finalized, non-hidden "
-      "copies are placed in the game directory with the video's suffix. Only metadata is copied; video pixels remain on the GPU.");
+      "copies are placed in the game directory with the video's suffix. Only metadata is copied; video pixels remain "
+      "on the GPU. Lossless DriveGPT CSV capture disables seeking for that run.");
   help(
       "startPipelineButton",
       "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run.");
@@ -9365,6 +9369,34 @@ void HStreamWindow::requestPlaybackSeekRelative(qint64 delta_ns) {
   updatePlaybackSeekControls();
 }
 
+qint64 HStreamWindow::playbackSeekPositionForSliderValue(int value) const {
+  if (!playback_seek_slider_ || playback_duration_ns_ <= 0)
+    return 0;
+  const int minimum = playback_seek_slider_->minimum();
+  const int maximum = playback_seek_slider_->maximum();
+  if (maximum <= minimum)
+    return 0;
+  const int clamped_value = std::clamp(value, minimum, maximum);
+  const long double fraction =
+      static_cast<long double>(clamped_value - minimum) / static_cast<long double>(maximum - minimum);
+  return static_cast<qint64>(fraction * static_cast<long double>(playback_duration_ns_));
+}
+
+void HStreamWindow::updatePlaybackSeekPositionPresentation() {
+  if (!playback_seek_position_)
+    return;
+  qint64 displayed_position_ns =
+      deferred_playback_seek_ns_.value_or(pending_playback_seek_target_ns_.value_or(playback_position_ns_));
+  if (playback_seek_slider_ && playback_seek_slider_->isSliderDown()) {
+    displayed_position_ns = playbackSeekPositionForSliderValue(playback_seek_slider_->sliderPosition());
+  }
+  playback_seek_position_->setText(
+      playback_duration_ns_ > 0
+          ? QString("%1 / %2").arg(
+                format_video_time_ns(displayed_position_ns), format_video_time_ns(playback_duration_ns_))
+          : "00:00:00 / --:--:--");
+}
+
 void HStreamWindow::updatePlaybackSeekControls() {
   if (!playback_seek_controls_ || !playback_seek_slider_) {
     return;
@@ -9388,8 +9420,8 @@ void HStreamWindow::updatePlaybackSeekControls() {
   }
   const bool rendering = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool allowed = running && active_run_local_render_only_ && !active_run_is_calibration_ &&
-      !calibration_pending_ && rendering && playback_seek_channel_available_ && playback_duration_ns_ > 0 &&
-      pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
+      !active_run_telemetry_requested_ && !calibration_pending_ && rendering && playback_seek_channel_available_ &&
+      playback_duration_ns_ > 0 && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
   playback_seek_slider_->setEnabled(allowed);
   if (playback_seek_back_button_)
     playback_seek_back_button_->setEnabled(allowed);
@@ -9406,22 +9438,18 @@ void HStreamWindow::updatePlaybackSeekControls() {
         static_cast<int>(std::llround(fraction * static_cast<long double>(playback_seek_slider_->maximum()))));
     playback_seek_slider_->blockSignals(blocked);
   }
-  if (playback_seek_position_) {
-    playback_seek_position_->setText(
-        playback_duration_ns_ > 0
-            ? QString("%1 / %2").arg(
-                  format_video_time_ns(displayed_position_ns), format_video_time_ns(playback_duration_ns_))
-            : "00:00:00 / --:--:--");
-  }
+  updatePlaybackSeekPositionPresentation();
   QString reason;
   if (!running) {
     reason = "Start a Program run with only Render video enabled to seek.";
+  } else if (!playback_seek_channel_available_) {
+    reason = "Seeking is unavailable because the pipeline command channel failed.";
+  } else if (active_run_telemetry_requested_) {
+    reason = "Seeking is disabled because lossless DriveGPT CSV capture is active for this run.";
   } else if (!active_run_local_render_only_ || active_run_is_calibration_) {
     reason = "Seeking is disabled because this run includes a nonlocal output or is not Program playback.";
   } else if (!rendering) {
     reason = "Enable Render video to seek.";
-  } else if (!playback_seek_channel_available_) {
-    reason = "Seeking is unavailable because the pipeline command channel failed.";
   } else if (calibration_pending_) {
     reason = "Seeking becomes available after one-pass stitching calibration finishes.";
   } else if (playback_duration_ns_ <= 0) {
@@ -9442,6 +9470,8 @@ void HStreamWindow::updatePlaybackSeekControls() {
   }
   set_control_help(playback_seek_controls_, reason);
   set_control_help(playback_seek_slider_, reason);
+  set_control_help(playback_seek_back_button_, reason);
+  set_control_help(playback_seek_forward_button_, reason);
 }
 
 void HStreamWindow::setPlaybackStartupStage(const QString& stage, const QString& detail) {

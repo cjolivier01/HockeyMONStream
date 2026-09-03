@@ -206,6 +206,18 @@ bool expect(bool condition, const std::string& message) {
   return true;
 }
 
+QString format_test_video_time_ns(qint64 nanoseconds) {
+  qint64 total_seconds = std::max<qint64>(0, nanoseconds) / 1000000000LL;
+  const qint64 hours = total_seconds / 3600;
+  total_seconds %= 3600;
+  const qint64 minutes = total_seconds / 60;
+  const qint64 seconds = total_seconds % 60;
+  return QString("%1:%2:%3")
+      .arg(hours, 2, 10, QLatin1Char('0'))
+      .arg(minutes, 2, 10, QLatin1Char('0'))
+      .arg(seconds, 2, 10, QLatin1Char('0'));
+}
+
 struct SliderStyleGeometry {
   int available_span{0};
   QPoint handle_center;
@@ -3172,10 +3184,22 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   game_id->setText(valid_game_id);
-  if (!expect(drivegpt_csv->isChecked(), "DriveGPT CSV export must default on")) {
+  if (!expect(!drivegpt_csv->isChecked(), "DriveGPT CSV export must default off so Program seeking is available")) {
     return false;
   }
   const QString telemetry_option_prefix = "--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=";
+  const QStringList telemetry_disabled_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+  if (!expect(
+          std::none_of(
+              telemetry_disabled_arguments.cbegin(),
+              telemetry_disabled_arguments.cend(),
+              [&telemetry_option_prefix](const QString& argument) {
+                return argument.startsWith(telemetry_option_prefix);
+              }),
+          "The default Program run must leave DriveGPT CSV disabled so seeking remains available")) {
+    return false;
+  }
+  drivegpt_csv->setChecked(true);
   const QStringList telemetry_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   const auto telemetry_argument = std::find_if(
       telemetry_arguments.cbegin(), telemetry_arguments.cend(), [&telemetry_option_prefix](const QString& argument) {
@@ -3192,17 +3216,6 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   drivegpt_csv->setChecked(false);
-  const QStringList telemetry_disabled_arguments = HStreamWindowTestAccess::pipelineArguments(window);
-  if (!expect(
-          std::none_of(
-              telemetry_disabled_arguments.cbegin(),
-              telemetry_disabled_arguments.cend(),
-              [&telemetry_option_prefix](const QString& argument) {
-                return argument.startsWith(telemetry_option_prefix);
-              }),
-          "Explicitly unchecking DriveGPT CSV must disable telemetry for the next run")) {
-    return false;
-  }
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500") ||
       !expect(
           stitch_frame_time->time() == QTime(0, 0, 0) &&
@@ -3657,13 +3670,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   bool drag_reached_left_endpoint = false;
   bool drag_reached_right_endpoint = false;
+  bool drag_preview_reached_left_endpoint = false;
+  bool drag_preview_reached_right_endpoint = false;
   for (int index = 0; index < 500; ++index) {
     const int x = 1 + (index * std::max(1, seek_slider->width() - 2) / 499);
     QTest::mouseMove(seek_slider, QPoint(x, seek_slider->height() / 2), 0);
-    if (index == 0)
+    if (index == 0) {
       drag_reached_left_endpoint = seek_slider->value() == seek_slider->minimum();
-    if (index == 499)
+      drag_preview_reached_left_endpoint = seek_position->text() == "00:00:00 / 00:10:00";
+    }
+    if (index == 499) {
       drag_reached_right_endpoint = seek_slider->value() == seek_slider->maximum();
+      drag_preview_reached_right_endpoint = seek_position->text() == "00:10:00 / 00:10:00";
+    }
   }
   const bool drag_remained_local = window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mouseRelease(
@@ -3676,8 +3695,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             static_cast<long double>(displayed_playback_position_ns) * seek_slider->maximum() /
             static_cast<long double>(displayed_playback_duration_ns)))
       : seek_slider->minimum();
-  const bool outside_release_cancelled =
-      !seek_slider->isSliderDown() && seek_slider->value() == expected_restored_seek_value &&
+  const QString expected_restored_seek_text = displayed_playback_duration_ns > 0
+      ? QString("%1 / %2").arg(
+            format_test_video_time_ns(displayed_playback_position_ns),
+            format_test_video_time_ns(displayed_playback_duration_ns))
+      : "00:00:00 / --:--:--";
+  const bool outside_release_cancelled = !seek_slider->isSliderDown() &&
+      seek_slider->value() == expected_restored_seek_value && seek_position->text() == expected_restored_seek_text &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
@@ -3686,7 +3710,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   seek_slider->setEnabled(true);
   QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
   QApplication::processEvents();
-  const bool disabled_drag_sent_no_seek =
+  const bool disabled_drag_sent_no_seek = seek_position->text() == expected_restored_seek_text &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
@@ -3695,7 +3719,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const bool ungrab_cancelled_drag = !seek_slider->isSliderDown();
   QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
   QApplication::processEvents();
-  const bool ungrabbed_drag_sent_no_seek =
+  const bool ungrabbed_drag_sent_no_seek = seek_position->text() == expected_restored_seek_text &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
@@ -3713,8 +3737,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect(
           drag_remained_local && drag_reached_left_endpoint && drag_reached_right_endpoint &&
-              outside_release_cancelled && disable_cancelled_drag && disabled_drag_sent_no_seek &&
-              ungrab_cancelled_drag && ungrabbed_drag_sent_no_seek && release_position_differs_from_last_motion &&
+              drag_preview_reached_left_endpoint && drag_preview_reached_right_endpoint && outside_release_cancelled &&
+              disable_cancelled_drag && disabled_drag_sent_no_seek && ungrab_cancelled_drag &&
+              ungrabbed_drag_sent_no_seek && release_position_differs_from_last_motion &&
               window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag + 1 &&
               window->logText().contains(released_seek_command),
           "Slider motion must remain local, release outside/disable/ungrab must cancel safely, and release over the "
@@ -10581,20 +10606,40 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* pause = require_child<QPushButton>(window, "pausePipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
+  auto* render_video = require_child<QCheckBox>(window, "renderVideoCheck");
   auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
+  auto* seek_back = require_child<QPushButton>(window, "playbackSeekBack10Button");
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
   auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
   auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
-  if (!start || !pause || !mode || !seek_slider || !seek_forward || !program_control_tabs || !stitched_control_tabs) {
+  if (!start || !pause || !mode || !drivegpt_csv || !render_video || !seek_slider || !seek_back || !seek_forward ||
+      !program_control_tabs || !stitched_control_tabs) {
     return false;
   }
   mode->setCurrentIndex(mode->findData("program"));
+  for (QCheckBox* toggle : window->findChildren<QCheckBox*>()) {
+    if (toggle->objectName().startsWith("outputToggle_"))
+      toggle->setChecked(false);
+  }
+  render_video->setChecked(true);
+  drivegpt_csv->setChecked(true);
   activate(start);
-  for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
+  for (int i = 0; i < 100 &&
+       (window->pipelineStateText() != "PLAYING" || !seek_slider->toolTip().contains("DriveGPT CSV capture"));
+       ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(window->pipelineStateText() == "PLAYING", "Close-event test pipeline should start")) {
+    return false;
+  }
+  if (!expect(
+          !seek_slider->isEnabled() && !seek_back->isEnabled() && !seek_forward->isEnabled() &&
+              seek_slider->toolTip().contains("DriveGPT CSV capture") &&
+              seek_back->toolTip().contains("DriveGPT CSV capture") &&
+              seek_forward->toolTip().contains("DriveGPT CSV capture"),
+          "Lossless DriveGPT capture must disable every seek control and explain the reason on hover")) {
     return false;
   }
   const quint64 reset_generation_before_write_error = HStreamWindowTestAccess::playbackResetGeneration(window);
