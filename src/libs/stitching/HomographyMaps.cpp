@@ -116,8 +116,12 @@ absl::Status validate_magsac_consensus(
   if (!robust_set && !validate_small_set_coverage)
     return absl::OkStatus();
 
-  const double effective_ratio = robust_set ? minimum_inlier_ratio : kMinimumMagsacInlierRatio;
-  const size_t effective_minimum = robust_set ? minimum_inlier_count : 4;
+  // The calibrated small-set contract starts at four inliers and 50%. Keep that ratio until it naturally reaches
+  // the 16-inlier large-set floor, avoiding a discontinuity where 15 matches permit eight inliers but 16 require all.
+  const bool calibrated_small_set_ramp = validate_small_set_coverage && matches.size() < 32;
+  const double effective_ratio =
+      calibrated_small_set_ramp || !robust_set ? kMinimumMagsacInlierRatio : minimum_inlier_ratio;
+  const size_t effective_minimum = calibrated_small_set_ramp || !robust_set ? 4 : minimum_inlier_count;
   const size_t ratio_inliers = static_cast<size_t>(std::ceil(effective_ratio * static_cast<double>(matches.size())));
   const size_t required_inliers = std::max(effective_minimum, ratio_inliers);
   if (inlier_count < required_inliers) {

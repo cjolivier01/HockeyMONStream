@@ -1920,6 +1920,18 @@ bool expect_akaze_calibration_loading_contract(const fs::path& tmpdir) {
     std::cerr << "valid paired AKAZE calibration was not loaded: " << loaded.status() << std::endl;
     return false;
   }
+  const fs::path isolated = tmpdir / "symlinked-akaze-calibration";
+  fs::create_directories(isolated);
+  std::error_code symlink_error;
+  fs::create_symlink(valid / "left_calibration.json", isolated / "left_calibration.json", symlink_error);
+  const auto symlinked = symlink_error ? decltype(loaded)(absl::InternalError(symlink_error.message()))
+                                       : hm::stitching::load_akaze_matching_calibration(isolated);
+  if (!symlinked.ok() || !symlinked->left.has_value() ||
+      symlinked->source_profile_fingerprint != loaded->source_profile_fingerprint) {
+    std::cerr << "isolated games must load and fingerprint their symlinked AKAZE profile: " << symlinked.status()
+              << std::endl;
+    return false;
+  }
   return true;
 }
 

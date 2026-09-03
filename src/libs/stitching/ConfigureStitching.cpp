@@ -104,7 +104,9 @@ struct AkazeCalibrationProfile {
 
 absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_profile(const fs::path& game_dir) {
   const fs::path path = game_dir / "left_calibration.json";
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  // Calibration-matrix isolation uses a symlink to the source game's small profile. Follow it once through open(),
+  // then pin and validate the resulting descriptor so path replacement cannot redirect subsequent reads.
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
   if (descriptor < 0) {
     if (errno == ENOENT)
       return std::nullopt;

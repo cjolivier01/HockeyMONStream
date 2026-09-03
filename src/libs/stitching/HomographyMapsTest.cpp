@@ -389,6 +389,51 @@ int main() {
           std::string(clustered_six_calibrated.status().message()).find("inlier coverage") != std::string::npos,
       "calibrated MAGSAC must reject a clustered six-point set despite meeting the AKAZE count minimum");
 
+  const auto calibrated_boundary_matches = [](size_t total, size_t translation_inliers) {
+    const std::array<cv::Point2f, 10> kSpread = {
+        cv::Point2f{5.0f, 8.0f},
+        cv::Point2f{30.0f, 8.0f},
+        cv::Point2f{60.0f, 8.0f},
+        cv::Point2f{90.0f, 8.0f},
+        cv::Point2f{5.0f, 70.0f},
+        cv::Point2f{30.0f, 70.0f},
+        cv::Point2f{60.0f, 70.0f},
+        cv::Point2f{90.0f, 70.0f},
+        cv::Point2f{20.0f, 38.0f},
+        cv::Point2f{75.0f, 42.0f},
+    };
+    std::vector<hm::stitching::FeatureMatch> result;
+    for (size_t index = 0; index < translation_inliers; ++index) {
+      const cv::Point2f point = kSpread[index];
+      result.push_back({{point.x + 5.0f, point.y - 3.0f}, point, 0.9f});
+    }
+    for (size_t index = translation_inliers; index < total; ++index) {
+      const float right_x = static_cast<float>((index * 29 + 13) % 93);
+      const float right_y = static_cast<float>((index * 47 + 9) % 73);
+      result.push_back(
+          {{static_cast<float>((index * 61 + 7) % 97), static_cast<float>((index * 31 + 17) % 79)},
+           {right_x, right_y},
+           0.2f});
+    }
+    return result;
+  };
+  for (const auto [total, translation_inliers] :
+       {std::pair<size_t, size_t>{15, 8}, std::pair<size_t, size_t>{16, 8}, std::pair<size_t, size_t>{20, 10}}) {
+    const fs::path boundary_dir = root / ("calibrated-boundary-" + std::to_string(total));
+    fs::create_directories(boundary_dir);
+    const auto boundary = hm::stitching::CreateOpenCvMappingFiles(
+        boundary_dir,
+        left,
+        right,
+        calibrated_boundary_matches(total, translation_inliers),
+        hm::stitching::MappingBackend::kOpenCvMagsac,
+        std::nullopt,
+        std::nullopt,
+        hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+    ok &=
+        expect(boundary.ok(), "calibrated MAGSAC consensus must remain continuous across the 15/16/20-match boundary");
+  }
+
   fs::path low_consensus_dir = root / "low-consensus";
   fs::create_directories(low_consensus_dir);
   std::vector<hm::stitching::FeatureMatch> low_consensus_matches = {
