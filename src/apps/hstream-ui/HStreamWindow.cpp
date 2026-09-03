@@ -40,8 +40,11 @@
 #include <QtGui/qguiapplication_platform.h>
 #include <xcb/xcb.h>
 #endif
+#include <QtWidgets/QAbstractSlider>
+#include <QtWidgets/QAbstractSpinBox>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QFileDialog>
@@ -54,6 +57,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QScrollArea>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSizePolicy>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
@@ -4403,8 +4407,11 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
   development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application_path);
   setWindowIcon(hm::ui_internal::application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
+  // Value controls live inside scrolling control panes.  An application-level
+  // filter catches controls created later as well as the initial widgets.
+  qApp->installEventFilter(this);
   pipeline_process_ = new QProcess(this);
-  pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
+  pipeline_process_->setProcessChannelMode(QProcess::SeparateChannels);
   connect(pipeline_process_, &QProcess::started, this, [this]() { handlePipelineStarted(); });
   connect(
       pipeline_process_,
@@ -4695,6 +4702,7 @@ void HStreamWindow::loadBaselineDefaults() {
 }
 
 HStreamWindow::~HStreamWindow() {
+  qApp->removeEventFilter(this);
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
   finishArchiveJobLog();
@@ -4703,6 +4711,36 @@ HStreamWindow::~HStreamWindow() {
 }
 
 bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (event && event->type() == QEvent::Wheel) {
+    auto* widget = qobject_cast<QWidget*>(watched);
+    const bool belongs_to_window = widget && (widget == this || isAncestorOf(widget));
+    const bool changes_value = qobject_cast<QAbstractSpinBox*>(widget) || qobject_cast<QComboBox*>(widget) ||
+        (qobject_cast<QAbstractSlider*>(widget) && !qobject_cast<QScrollBar*>(widget)) ||
+        qobject_cast<QLineEdit*>(widget) || qobject_cast<QRadioButton*>(widget) || qobject_cast<QCheckBox*>(widget) ||
+        qobject_cast<QTabBar*>(widget);
+    if (belongs_to_window && changes_value) {
+      auto* wheel = static_cast<QWheelEvent*>(event);
+      QAbstractScrollArea* scroll_area = nullptr;
+      for (QWidget* parent = widget->parentWidget(); parent && !scroll_area; parent = parent->parentWidget())
+        scroll_area = qobject_cast<QAbstractScrollArea*>(parent);
+      if (scroll_area) {
+        const QPoint pixels = wheel->pixelDelta();
+        const QPoint angles = wheel->angleDelta();
+        const bool horizontal = std::abs(pixels.x()) > std::abs(pixels.y()) ||
+            (pixels.isNull() && std::abs(angles.x()) > std::abs(angles.y()));
+        QScrollBar* bar = horizontal ? scroll_area->horizontalScrollBar() : scroll_area->verticalScrollBar();
+        const int raw_delta =
+            horizontal ? (pixels.x() != 0 ? pixels.x() : angles.x()) : (pixels.y() != 0 ? pixels.y() : angles.y());
+        if (bar && raw_delta != 0) {
+          const bool pixel_scroll = horizontal ? pixels.x() != 0 : pixels.y() != 0;
+          const int delta = pixel_scroll ? raw_delta : raw_delta * std::max(1, bar->singleStep()) / 40;
+          bar->setValue(bar->value() - delta);
+        }
+      }
+      wheel->accept();
+      return true;
+    }
+  }
   if (watched == stitch_frame_time_edit_ && event) {
     if (event->type() == QEvent::FocusIn) {
       stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFractionalFormat);
@@ -5801,9 +5839,12 @@ void HStreamWindow::configureControlHelp() {
       {"Max_Accel_Y_x10",
        "Vertical tracking acceleration override in tenths; zero keeps the underlying configured value."},
       {"Stitch_Rotate_Degrees",
-       "Rotate the stitched canvas before play tracking. The default display value of 90 corresponds to no additional configured rotation."},
+       "Rotate the completed stitched canvas after mapping and blending, before play tracking. This does not rotate "
+       "either source camera or change calibration geometry. The default display value of 90 corresponds to no "
+       "additional configured rotation."},
       {"Link_Fixed_Edge_Rotation_Left_Right",
-       "Keep the left and right fixed-edge crop rotations equal when enabled; disable it to tune each side independently."},
+       "Keep the left and right Program fixed-edge crop rotations equal when enabled; disable it to tune each crop "
+       "independently. These controls do not rotate either source before stitching."},
       {"Left_Fixed_Edge_Rotation_Angle_x10",
        "Left fixed-edge crop rotation in tenths of a degree; 250 means 25.0 degrees."},
       {"Right_Fixed_Edge_Rotation_Angle_x10",
@@ -5946,7 +5987,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       {"Exposure_x100", "Exposure x100", 0, 130, 0},
   };
   const std::vector<CameraSliderSpec> stitch_controls = {
-      {"Stitch_Rotate_Degrees", "Stitch rotate degrees", 0, 180, default_value("Stitch_Rotate_Degrees")},
+      {"Stitch_Rotate_Degrees", "Final stitched-output rotation", 0, 180, default_value("Stitch_Rotate_Degrees")},
       {"Link_Fixed_Edge_Rotation_Left_Right",
        "Link left/right fixed-edge rotation",
        0,
@@ -7408,6 +7449,9 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
   }
 
   calibration_pending_ = true;
+  calibration_diagnostic_lines_.clear();
+  calibration_rejected_hypotheses_ = 0;
+  calibration_rejected_candidates_ = 0;
   updatePlaybackSeekControls();
   appendLog(QString("running pipeline discovered stitching calibration at stage %1; opening progress window")
                 .arg(active_calibration_start_stage_));
@@ -7513,6 +7557,149 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
     return;
   }
   setStitchingCalibrationStage(stage, status, message);
+}
+
+void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
+  const QString diagnostic = line.trimmed();
+  if (diagnostic.isEmpty())
+    return;
+  const bool rejected_hypothesis = diagnostic.startsWith("Rejected calibrated MAGSAC hypothesis");
+  const bool rejected_candidate = diagnostic.startsWith("Skipping pooled stitching calibration") ||
+      diagnostic.startsWith("Skipping stitching calibration frame pair");
+  const bool useful = rejected_hypothesis || rejected_candidate || diagnostic.startsWith("Trying ") ||
+      diagnostic.startsWith("OpenCV mapping backend ") || diagnostic.contains("FAILED_PRECONDITION:") ||
+      diagnostic.contains("INVALID_ARGUMENT:") || diagnostic.contains("RESOURCE_EXHAUSTED:") ||
+      diagnostic.contains("INTERNAL:") || diagnostic.contains("HSTREAM_CALIBRATION") ||
+      diagnostic.contains("enblend", Qt::CaseInsensitive) || diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
+  if (!useful)
+    return;
+  if (rejected_hypothesis)
+    ++calibration_rejected_hypotheses_;
+  if (rejected_candidate)
+    ++calibration_rejected_candidates_;
+  if (calibration_diagnostic_lines_.isEmpty() || calibration_diagnostic_lines_.back() != diagnostic)
+    calibration_diagnostic_lines_.append(diagnostic);
+  constexpr int kMaximumCalibrationDiagnostics = 24;
+  while (calibration_diagnostic_lines_.size() > kMaximumCalibrationDiagnostics)
+    calibration_diagnostic_lines_.removeFirst();
+
+  if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && !calibration_dialog_failed_) {
+    calibration_detail_->setText(
+        QString(
+            "An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
+            "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
+            .arg(calibration_rejected_hypotheses_)
+            .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
+            .arg(calibration_rejected_candidates_)
+            .arg(calibration_rejected_candidates_ == 1 ? "" : "s"));
+  }
+}
+
+QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& message) const {
+  QString root_cause = message.trimmed();
+  for (auto diagnostic = calibration_diagnostic_lines_.crbegin(); diagnostic != calibration_diagnostic_lines_.crend();
+       ++diagnostic) {
+    if (!diagnostic->startsWith("HSTREAM_CALIBRATION") &&
+        (diagnostic->contains("FAILED_PRECONDITION:") || diagnostic->contains("INVALID_ARGUMENT:") ||
+         diagnostic->contains("RESOURCE_EXHAUSTED:") || diagnostic->contains("INTERNAL:"))) {
+      root_cause = *diagnostic;
+      break;
+    }
+  }
+  if (root_cause.isEmpty())
+    root_cause = "The calibration process ended without reporting a specific cause.";
+
+  const QString evidence = root_cause.toLower();
+  QString explanation;
+  QString action;
+  if (evidence.contains("insufficient consensus") || evidence.contains("usable match") ||
+      evidence.contains("control point") || evidence.contains("no stitching calibration frame pair")) {
+    explanation =
+        "The cameras did not produce enough geometrically consistent overlap. Repeated rink markings can create "
+        "many descriptor matches while still leaving too few matches for one safe transform.";
+    action =
+        "Choose a stitch frame with players, boards, or other unique detail in the overlap; increase Frames; verify "
+        "the Left/Right assignments and lens profile; then press Play to retry.";
+  } else if (
+      evidence.contains("unsafe") || evidence.contains("pole") || evidence.contains("canvas extent") ||
+      evidence.contains("canvas dimension") || evidence.contains("output surface is smaller")) {
+    explanation =
+        "The fitted transform projected the cameras to an unsafe or implausibly large canvas. HStream rejected it "
+        "instead of allocating that canvas.";
+    action =
+        "Choose a frame with more unique overlap detail or increase Frames. Also verify the Mission lens profile; "
+        "Max stitched width can limit memory, but it cannot repair an incorrect transform.";
+  } else if (
+      evidence.contains("left_calibration.json") || evidence.contains("lens profile") || evidence.contains("kb4") ||
+      evidence.contains("calibrated akaze")) {
+    explanation = "The calibrated AKAZE path could not load or consistently apply both camera lens profiles.";
+    action =
+        "Verify left_calibration.json is a regular, readable Mission KB4 profile for these recordings and that "
+        "AKAZE is paired with MAGSAC++ and Rectilinear.";
+  } else if (evidence.contains("enblend") || evidence.contains("seam_file")) {
+    explanation = "Alignment completed, but the seam/panorama generation step failed.";
+    action = "Check the enblend diagnostic below, available disk space, and write access to the game directory.";
+  } else if (
+      evidence.contains("resource_exhausted") || evidence.contains("allocate") || evidence.contains("out of memory") ||
+      (evidence.contains("cuda") && evidence.contains("memory"))) {
+    explanation = "Calibration exhausted CPU/GPU memory while building the mapping canvas.";
+    action = "Set a lower Max stitched width, close other GPU workloads, and press Play to retry.";
+  } else if (evidence.contains("autooptimiser")) {
+    explanation = "Hugin's panorama optimizer rejected the selected control-point geometry.";
+    action =
+        "Try a frame with clearer overlap or use AKAZE + MAGSAC++ + Rectilinear, which does not depend on Hugin "
+        "autooptimization.";
+  } else {
+    explanation = "The active calibration stage returned a terminal error.";
+    action =
+        "Review the diagnostic lines below, correct the reported input/configuration problem, and press Play to retry.";
+  }
+
+  QString stage = active_calibration_stage_.isEmpty() ? QString("calibration") : active_calibration_stage_;
+  const auto stage_label = calibration_stage_labels_.find(stage);
+  if (stage_label != calibration_stage_labels_.end() && stage_label->second)
+    stage = stage_label->second->text();
+  auto selected_label = [](QComboBox* combo, const QString& value) {
+    if (!combo)
+      return value;
+    const int index = combo->findData(value);
+    return index >= 0 ? combo->itemText(index) : value;
+  };
+  const QString matcher = selected_label(control_point_matcher_combo_, active_control_point_matcher_);
+  const QString backend = selected_label(mapping_backend_combo_, active_mapping_backend_);
+  const QString projection = selected_label(projection_combo_, active_projection_);
+
+  QString result = QString(
+                       "Failed stage: %1\nConfiguration: %2 · %3 · %4 · %5 sampled frame%6\n\n"
+                       "Why it failed\n%7\n\nReported cause\n%8\n\nWhat to try\n%9")
+                       .arg(stage)
+                       .arg(matcher.isEmpty() ? "unknown matcher" : matcher)
+                       .arg(backend.isEmpty() ? "unknown mapping backend" : backend)
+                       .arg(projection.isEmpty() ? "unknown projection" : projection)
+                       .arg(active_calibration_frame_count_)
+                       .arg(active_calibration_frame_count_ == 1 ? "" : "s")
+                       .arg(explanation, root_cause, action);
+  if (calibration_rejected_hypotheses_ > 0 || calibration_rejected_candidates_ > 0) {
+    result += QString(
+                  "\n\nBounded fallback search\nHStream rejected %1 projective hypothesis%2 and %3 frame-set "
+                  "candidate%4 before stopping. These rejections are expected safety fallbacks, not automatic "
+                  "restarts; pressing Play is required for a new calibration run.")
+                  .arg(calibration_rejected_hypotheses_)
+                  .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
+                  .arg(calibration_rejected_candidates_)
+                  .arg(calibration_rejected_candidates_ == 1 ? "" : "s");
+  }
+  QStringList recent;
+  for (auto diagnostic = calibration_diagnostic_lines_.crbegin();
+       diagnostic != calibration_diagnostic_lines_.crend() && recent.size() < 6;
+       ++diagnostic) {
+    if (!diagnostic->startsWith("HSTREAM_CALIBRATION"))
+      recent.prepend(*diagnostic);
+  }
+  if (!recent.isEmpty())
+    result += "\n\nRecent diagnostics\n• " + recent.join("\n• ");
+  result += "\n\nThe runtime log contains the complete output.";
+  return result;
 }
 
 void HStreamWindow::completeStitchingCalibration() {
@@ -7624,9 +7811,7 @@ void HStreamWindow::failStitchingCalibration(const QString& message) {
   calibration_headline_->setProperty("calibrationState", "failed");
   calibration_headline_->style()->unpolish(calibration_headline_);
   calibration_headline_->style()->polish(calibration_headline_);
-  calibration_detail_->setText(
-      QString("%1\n\nThe pipeline log has the full diagnostic details.")
-          .arg(message.isEmpty() ? "The native stitching calibration did not complete." : message));
+  calibration_detail_->setText(stitchingCalibrationFailureAnalysis(message));
   calibration_progress_->setVisible(false);
   calibration_cancel_button_->setVisible(false);
   calibration_ok_button_->setVisible(true);
@@ -7861,6 +8046,9 @@ void HStreamWindow::startPipeline() {
   active_projection_framing_ = stitchProjectionFraming();
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
+  calibration_diagnostic_lines_.clear();
+  calibration_rejected_hypotheses_ = 0;
+  calibration_rejected_candidates_ = 0;
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
   calibration_restart_requested_ = false;
   scoreboard_selector_url_.clear();
@@ -8370,7 +8558,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     pipeline_stdout_buffer_.clear();
   }
   if (!pipeline_stderr_buffer_.isEmpty()) {
-    appendLog(pipeline_stderr_buffer_.trimmed());
+    appendLog(pipeline_stderr_buffer_.trimmed(), true);
     pipeline_stderr_buffer_.clear();
   }
   if (pipeline_inspector_)
@@ -8686,7 +8874,7 @@ void HStreamWindow::readPipelineOutput() {
   if (!pipeline_process_) {
     return;
   }
-  auto drain = [this](QByteArray output, QString* buffer) {
+  auto drain = [this](QByteArray output, QString* buffer, bool stderr_output) {
     if (output.isEmpty() || !buffer) {
       return;
     }
@@ -8701,6 +8889,8 @@ void HStreamWindow::readPipelineOutput() {
       line.remove('\r');
       if (!line.trimmed().isEmpty()) {
         const QString trimmed = line.trimmed();
+        if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION"))
+          recordStitchingCalibrationDiagnostic(trimmed);
         if (handleStartupProgressOutput(trimmed)) {
           continue;
         }
@@ -8724,16 +8914,16 @@ void HStreamWindow::readPipelineOutput() {
         }
         handleTelemetryOutputStatus(trimmed);
         handleArchiveOutputStatus(trimmed);
-        appendLog(trimmed);
+        appendLog(trimmed, stderr_output);
         handleRuntimeControlResponse(trimmed);
         handleScoreboardSelectorOutput(trimmed);
         handleStitchingCalibrationOutput(trimmed);
       }
     }
   };
-  drain(pipeline_process_->readAllStandardOutput(), &pipeline_stdout_buffer_);
+  drain(pipeline_process_->readAllStandardOutput(), &pipeline_stdout_buffer_, false);
   if (pipeline_process_->processChannelMode() != QProcess::MergedChannels) {
-    drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_);
+    drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_, true);
   }
 }
 
@@ -15747,9 +15937,14 @@ void HStreamWindow::addRtspOutput() {
   appendLog(QString("rtsp server mount /dynamic%1 enabled for the next pipeline start").arg(dynamic_rtsp_count_));
 }
 
-void HStreamWindow::appendLog(const QString& message) {
+void HStreamWindow::appendLog(const QString& message, bool stderr_output) {
   const QString entry_timestamp = timestamp();
   const QByteArray plain_entry = QString("%1 %2\n").arg(entry_timestamp, message).toUtf8();
+  FILE* console = stderr_output ? stderr : stdout;
+  if (console) {
+    (void)std::fwrite(plain_entry.constData(), 1, static_cast<size_t>(plain_entry.size()), console);
+    std::fflush(console);
+  }
   QString archive_log_error;
 #ifdef Q_OS_UNIX
   if (archive_job_log_enabled_ && archive_job_log_.isOpen() &&
@@ -15787,7 +15982,12 @@ void HStreamWindow::appendLog(const QString& message) {
   }
   const QString html =
       QString("<span style=\"color:#667085\">%1</span> %2").arg(entry_timestamp.toHtmlEscaped(), ansi_to_html(message));
+  QScrollBar* scroll_bar = log_ ? log_->verticalScrollBar() : nullptr;
+  const int previous_scroll_value = scroll_bar ? scroll_bar->value() : 0;
+  const bool follow_tail = !scroll_bar || scroll_bar->value() >= scroll_bar->maximum() - 2;
   log_->append(html);
+  if (scroll_bar)
+    scroll_bar->setValue(follow_tail ? scroll_bar->maximum() : previous_scroll_value);
   if (!archive_log_error.isEmpty())
     appendLog(QString("archive job log write failed; file logging stopped: %1").arg(archive_log_error));
 }

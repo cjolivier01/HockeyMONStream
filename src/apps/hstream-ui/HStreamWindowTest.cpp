@@ -73,6 +73,18 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void appendLog(HStreamWindow* window, const QString& message) {
+    window->appendLog(message);
+  }
+
+  static void recordCalibrationDiagnostic(HStreamWindow* window, const QString& line) {
+    window->recordStitchingCalibrationDiagnostic(line);
+  }
+
+  static QString calibrationFailureAnalysis(HStreamWindow* window, const QString& message) {
+    return window->stitchingCalibrationFailureAnalysis(message);
+  }
+
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
     window->active_run_is_calibration_ = active;
     window->active_run_high_bit_depth_ = false;
@@ -4235,7 +4247,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   activate(pause);
   activate(pause);
   for (int i = 0; i < 100 &&
-       !window->logText().contains("playback speed reset was not acknowledged; using recovered adjacent-sample rate");
+       (!window->logText().contains(
+            "playback speed reset was not acknowledged; using recovered adjacent-sample rate") ||
+        window->logText().count("stdin:@reset-progress-rate") < reset_commands_before_timeout + 3);
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -11331,6 +11345,114 @@ bool test_early_finalization_failure_retains_log_guard(HStreamWindow* window, co
 #endif
 }
 
+bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* window) {
+  auto* stitched_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+  auto* algorithms_scroll = require_child<QScrollArea>(window, "stitchingAlgorithmsScrollArea");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* max_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
+  auto* auto_canvas = require_child<QCheckBox>(window, "projectionAutoCanvasCheck");
+  auto* role_left = require_child<QRadioButton>(window, "videoRole_left");
+  auto* runtime_log = require_child<QTextEdit>(window, "runtimeLog");
+  if (!stitched_tabs || !algorithms_scroll || !mapping_backend || !max_width || !auto_canvas || !role_left ||
+      !runtime_log) {
+    return false;
+  }
+
+  const int original_tab = stitched_tabs->currentIndex();
+  stitched_tabs->setCurrentIndex(stitched_tabs->count() - 1);
+  QApplication::processEvents();
+  QScrollBar* pane_scroll = algorithms_scroll->verticalScrollBar();
+  pane_scroll->setValue(pane_scroll->minimum());
+  const int backend_before = mapping_backend->currentIndex();
+  QWheelEvent combo_wheel(
+      mapping_backend->rect().center(),
+      mapping_backend->mapToGlobal(mapping_backend->rect().center()),
+      QPoint(),
+      QPoint(0, -120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(mapping_backend, &combo_wheel);
+  QApplication::processEvents();
+  const bool combo_protected = mapping_backend->currentIndex() == backend_before;
+  const bool pane_scrolled =
+      pane_scroll->maximum() == pane_scroll->minimum() || pane_scroll->value() > pane_scroll->minimum();
+
+  const int width_before = max_width->value();
+  QWheelEvent spin_wheel(
+      max_width->rect().center(),
+      max_width->mapToGlobal(max_width->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(max_width, &spin_wheel);
+  const bool spin_protected = max_width->value() == width_before;
+
+  const bool canvas_before = auto_canvas->isChecked();
+  QWheelEvent check_wheel(
+      auto_canvas->rect().center(),
+      auto_canvas->mapToGlobal(auto_canvas->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(auto_canvas, &check_wheel);
+  const bool check_protected = auto_canvas->isChecked() == canvas_before;
+
+  const bool role_before = role_left->isChecked();
+  QWheelEvent radio_wheel(
+      role_left->rect().center(),
+      role_left->mapToGlobal(role_left->rect().center()),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::ScrollUpdate,
+      false);
+  QApplication::sendEvent(role_left, &radio_wheel);
+  const bool radio_protected = role_left->isChecked() == role_before;
+  stitched_tabs->setCurrentIndex(original_tab);
+
+  HStreamWindowTestAccess::clearLog(window);
+  for (int index = 0; index < 80; ++index)
+    HStreamWindowTestAccess::appendLog(window, QString("tail-follow fixture %1").arg(index));
+  QScrollBar* log_scroll = runtime_log->verticalScrollBar();
+  log_scroll->setValue(log_scroll->maximum());
+  HStreamWindowTestAccess::appendLog(window, "tail-follow newest");
+  const bool follows_tail = log_scroll->value() == log_scroll->maximum();
+  log_scroll->setValue(log_scroll->minimum());
+  HStreamWindowTestAccess::appendLog(window, "manual-scroll newest");
+  const bool preserves_manual_scroll = log_scroll->value() == log_scroll->minimum();
+  HStreamWindowTestAccess::clearLog(window);
+
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window, "Trying pooled stitching calibration across 4 frame pairs with 521 selected control points");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window, "Rejected calibrated MAGSAC hypothesis 1 with 84/521 inliers: FAILED_PRECONDITION: unsafe canvas extent");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window, "Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent");
+  const QString analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window, "No stitching calibration frame pair produced a usable solution after 2 candidate attempts");
+  const bool diagnosis_is_actionable = analysis.contains("Why it failed") &&
+      analysis.contains("unsafe or implausibly large canvas") && analysis.contains("What to try") &&
+      analysis.contains("Bounded fallback search") && analysis.contains("1 projective hypothesis") &&
+      analysis.contains("1 frame-set candidate") && analysis.contains("pressing Play is required");
+
+  return expect(
+             combo_protected && spin_protected && check_protected && radio_protected && pane_scrolled,
+             "Mouse-wheel input over value controls must scroll the pane without changing values") &&
+      expect(follows_tail && preserves_manual_scroll,
+             "Runtime log must follow new output only while the operator remains at the bottom") &&
+      expect(diagnosis_is_actionable,
+             "Calibration failures must explain the cause, bounded fallbacks, and corrective action");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -11377,6 +11499,11 @@ int main(int argc, char** argv) {
   }
   HStreamWindow window;
   window.show();
+
+  if (!test_wheel_routing_log_follow_and_calibration_analysis(&window)) {
+    std::cerr << "test_wheel_routing_log_follow_and_calibration_analysis failed\n";
+    return 1;
+  }
 
   if (!test_early_finalization_failure_retains_log_guard(&window, source_root.path())) {
     std::cerr << "test_early_finalization_failure_retains_log_guard failed\n";
