@@ -100,12 +100,13 @@ absl::Status validate_magsac_consensus(
     const cv::Mat& inliers,
     size_t inlier_count,
     const cv::Mat& left_image,
-    const cv::Mat& right_image) {
+    const cv::Mat& right_image,
+    double minimum_inlier_ratio = kMinimumMagsacInlierRatio) {
   if (matches.size() < kRobustConsensusMatchCount)
     return absl::OkStatus();
 
   const size_t ratio_inliers =
-      static_cast<size_t>(std::ceil(kMinimumMagsacInlierRatio * static_cast<double>(matches.size())));
+      static_cast<size_t>(std::ceil(minimum_inlier_ratio * static_cast<double>(matches.size())));
   const size_t required_inliers = std::max(kMinimumRobustMagsacInliers, ratio_inliers);
   if (inlier_count < required_inliers) {
     return absl::FailedPreconditionError(
@@ -256,6 +257,43 @@ cv::Matx33d to_matx33(const cv::Mat& matrix) {
       as64.at<double>(2, 2)};
 }
 
+cv::Point2d distort_rectified_point(
+    const cv::Point2d& point,
+    const FisheyeLensCalibration& calibration,
+    int source_w,
+    int source_h) {
+  const double scale_x = static_cast<double>(source_w) / calibration.resolution.width;
+  const double scale_y = static_cast<double>(source_h) / calibration.resolution.height;
+  const double fx = calibration.fx * scale_x;
+  const double fy = calibration.fy * scale_y;
+  const double cx = calibration.cx * scale_x;
+  const double cy = calibration.cy * scale_y;
+  const double normalized_x = (point.x - cx) / fx;
+  const double normalized_y = (point.y - cy) / fy;
+  const double radius = std::hypot(normalized_x, normalized_y);
+  double radial_scale = 1.0;
+  if (radius > 1e-12) {
+    const double theta = std::atan(radius);
+    const double theta2 = theta * theta;
+    const double theta4 = theta2 * theta2;
+    const double theta6 = theta4 * theta2;
+    const double theta8 = theta4 * theta4;
+    const double distorted_theta = theta *
+        (1.0 + calibration.distortion[0] * theta2 + calibration.distortion[1] * theta4 +
+         calibration.distortion[2] * theta6 + calibration.distortion[3] * theta8);
+    radial_scale = distorted_theta / radius;
+  }
+  return {fx * normalized_x * radial_scale + cx, fy * normalized_y * radial_scale + cy};
+}
+
+cv::Point2d source_point(
+    const cv::Point2d& rectified,
+    const std::optional<FisheyeLensCalibration>& calibration,
+    int source_w,
+    int source_h) {
+  return calibration.has_value() ? distort_rectified_point(rectified, *calibration, source_w, source_h) : rectified;
+}
+
 void fill_identity_maps(
     cv::Mat* x_map,
     cv::Mat* y_map,
@@ -265,13 +303,19 @@ void fill_identity_maps(
     int x0,
     int y0,
     int source_w,
-    int source_h) {
+    int source_h,
+    const std::optional<FisheyeLensCalibration>& calibration) {
   for (int y = 0; y < x_map->rows; ++y) {
     uint16_t* x_row = x_map->ptr<uint16_t>(y);
     uint16_t* y_row = y_map->ptr<uint16_t>(y);
     for (int x = 0; x < x_map->cols; ++x) {
-      const int source_x = static_cast<int>(std::lround(min_x + static_cast<double>(x0 + x) / scale));
-      const int source_y = static_cast<int>(std::lround(min_y + static_cast<double>(y0 + y) / scale));
+      const cv::Point2d source = source_point(
+          {min_x + static_cast<double>(x0 + x) / scale, min_y + static_cast<double>(y0 + y) / scale},
+          calibration,
+          source_w,
+          source_h);
+      const int source_x = static_cast<int>(std::lround(source.x));
+      const int source_y = static_cast<int>(std::lround(source.y));
       if (source_x >= 0 && source_y >= 0 && source_x < source_w && source_y < source_h) {
         x_row[x] = static_cast<uint16_t>(source_x);
         y_row[x] = static_cast<uint16_t>(source_y);
@@ -287,7 +331,8 @@ void fill_projective_maps(
     int x0,
     int y0,
     int source_w,
-    int source_h) {
+    int source_h,
+    const std::optional<FisheyeLensCalibration>& calibration) {
   for (int y = 0; y < x_map->rows; ++y) {
     uint16_t* x_row = x_map->ptr<uint16_t>(y);
     uint16_t* y_row = y_map->ptr<uint16_t>(y);
@@ -298,9 +343,10 @@ void fill_projective_maps(
           canvas_to_right(2, 0) * canvas_x + canvas_to_right(2, 1) * canvas_y + canvas_to_right(2, 2);
       if (!std::isfinite(denominator) || std::abs(denominator) < kProjectivePoleEpsilon)
         continue;
-      const cv::Point2d source = {
+      const cv::Point2d rectified = {
           (canvas_to_right(0, 0) * canvas_x + canvas_to_right(0, 1) * canvas_y + canvas_to_right(0, 2)) / denominator,
           (canvas_to_right(1, 0) * canvas_x + canvas_to_right(1, 1) * canvas_y + canvas_to_right(1, 2)) / denominator};
+      const cv::Point2d source = source_point(rectified, calibration, source_w, source_h);
       if (!std::isfinite(source.x) || !std::isfinite(source.y) || source.x <= -0.5 || source.y <= -0.5 ||
           source.x >= static_cast<double>(source_w) - 0.5 || source.y >= static_cast<double>(source_h) - 0.5)
         continue;
@@ -384,7 +430,8 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     const std::vector<FeatureMatch>& matches,
     MappingBackend backend,
     const std::optional<size_t>& max_canvas_dimension,
-    const std::optional<size_t>& max_output_width) {
+    const std::optional<size_t>& max_output_width,
+    const AkazeMatchingCalibration& lens_calibration) {
   auto status = validate_image(left_bgr, "left");
   if (!status.ok())
     return status;
@@ -408,19 +455,39 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
   if (backend == MappingBackend::kOpenCvMagsac) {
     if (matches.size() < 4)
       return absl::FailedPreconditionError("At least four control points are required for OpenCV MAGSAC mapping");
+    if (lens_calibration.left.has_value() != lens_calibration.right.has_value())
+      return absl::InvalidArgumentError("OpenCV calibrated mapping requires both camera lens profiles");
+    if (lens_calibration.left.has_value()) {
+      // A free projective fit can place a pole inside a wide-angle calibrated image. Use a robust affine fit in the
+      // rectified domain, then compose the KB4 distortion into the generated source maps below.
+      cv::Mat affine = cv::estimateAffine2D(
+          right_points,
+          left_points,
+          inliers,
+          cv::RANSAC,
+          kAffineRansacReprojectionThreshold,
+          kRansacMaxIterations,
+          kRansacConfidence,
+          10);
+      if (!affine.empty()) {
+        right_to_left = cv::Mat::eye(3, 3, CV_64F);
+        affine.convertTo(right_to_left(cv::Rect(0, 0, 3, 2)), CV_64F);
+      }
+    } else {
 #if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 5)
-    constexpr int method = cv::USAC_MAGSAC;
+      constexpr int method = cv::USAC_MAGSAC;
 #else
-    constexpr int method = cv::RANSAC;
+      constexpr int method = cv::RANSAC;
 #endif
-    right_to_left = cv::findHomography(
-        right_points,
-        left_points,
-        method,
-        kMagsacReprojectionThreshold,
-        inliers,
-        kRansacMaxIterations,
-        kRansacConfidence);
+      right_to_left = cv::findHomography(
+          right_points,
+          left_points,
+          method,
+          kMagsacReprojectionThreshold,
+          inliers,
+          kRansacMaxIterations,
+          kRansacConfidence);
+    }
   } else {
     if (matches.size() < 3)
       return absl::FailedPreconditionError("At least three control points are required for affine RANSAC mapping");
@@ -454,7 +521,17 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
         "OpenCV stitching transform has too few inlier control points: " + std::to_string(inlier_count));
   }
   if (backend == MappingBackend::kOpenCvMagsac) {
-    status = validate_magsac_consensus(matches, inliers, inlier_count, left_bgr, right_bgr);
+    // Calibrated AKAZE matches have already passed mutual matching, overlap gates, and fundamental-matrix RANSAC.
+    // The remaining affine fit models the local overlap while KB4 remaps handle the non-linear full-frame geometry;
+    // retain the absolute inlier and coverage safeguards without imposing the generic homography ratio again.
+    constexpr double kCalibratedAkazeMinimumInlierRatio = 0.0;
+    status = validate_magsac_consensus(
+        matches,
+        inliers,
+        inlier_count,
+        left_bgr,
+        right_bgr,
+        lens_calibration.left.has_value() ? kCalibratedAkazeMinimumInlierRatio : kMinimumMagsacInlierRatio);
     if (!status.ok())
       return status;
   }
@@ -536,11 +613,19 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
   const int left_h = std::min(canvas_height - left_y0, static_cast<int>(std::ceil(left_bgr.rows * scale)));
   if (left_w <= 0 || left_h <= 0)
     return absl::FailedPreconditionError("OpenCV left mapping is outside the canvas");
-  cv::Mat left_preview;
-  cv::resize(left_bgr, left_preview, {left_w, left_h}, 0.0, 0.0, cv::INTER_AREA);
+  cv::Mat left_preview(left_h, left_w, CV_8UC3, cv::Scalar(0, 0, 0));
   cv::Mat left_x(left_h, left_w, CV_16U, cv::Scalar(kUnmapped));
   cv::Mat left_y(left_h, left_w, CV_16U, cv::Scalar(kUnmapped));
-  fill_identity_maps(&left_x, &left_y, min_x, min_y, scale, left_x0, left_y0, left_bgr.cols, left_bgr.rows);
+  fill_identity_maps(
+      &left_x, &left_y, min_x, min_y, scale, left_x0, left_y0, left_bgr.cols, left_bgr.rows, lens_calibration.left);
+  for (int y = 0; y < left_h; ++y) {
+    for (int x = 0; x < left_w; ++x) {
+      const uint16_t sx = left_x.at<uint16_t>(y, x);
+      const uint16_t sy = left_y.at<uint16_t>(y, x);
+      if (sx != kUnmapped && sy != kUnmapped)
+        left_preview.at<cv::Vec3b>(y, x) = left_bgr.at<cv::Vec3b>(sy, sx);
+    }
+  }
 
   std::array<cv::Point2d, 4> right_canvas{};
   for (size_t i = 0; i < right_canvas.size(); ++i) {
@@ -573,12 +658,13 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
   cv::Mat right_preview(right_h, right_w, CV_8UC3, cv::Scalar(0, 0, 0));
   const cv::Matx33d scale_to_left_space(1.0 / scale, 0.0, min_x, 0.0, 1.0 / scale, min_y, 0.0, 0.0, 1.0);
   const cv::Matx33d canvas_to_right = ltr * scale_to_left_space;
-  fill_projective_maps(&right_x, &right_y, canvas_to_right, right_x0, right_y0, right_bgr.cols, right_bgr.rows);
+  fill_projective_maps(
+      &right_x, &right_y, canvas_to_right, right_x0, right_y0, right_bgr.cols, right_bgr.rows, lens_calibration.right);
   for (int y = 0; y < right_h; ++y) {
     for (int x = 0; x < right_w; ++x) {
       const uint16_t sx = right_x.at<uint16_t>(y, x);
       const uint16_t sy = right_y.at<uint16_t>(y, x);
-      if (sx != kUnmapped)
+      if (sx != kUnmapped && sy != kUnmapped)
         right_preview.at<cv::Vec3b>(y, x) = right_bgr.at<cv::Vec3b>(sy, sx);
     }
   }

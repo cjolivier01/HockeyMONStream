@@ -2164,7 +2164,14 @@ absl::Status HuginProject::Configure(
     const cv::Mat left = cv::imread((staging / "left.png").string(), cv::IMREAD_COLOR);
     const cv::Mat right = cv::imread((staging / "right.png").string(), cv::IMREAD_COLOR);
     auto maps = CreateOpenCvMappingFiles(
-        staging, left, right, matches, options.mapping_backend, options.max_canvas_dimension, options.max_output_width);
+        staging,
+        left,
+        right,
+        matches,
+        options.mapping_backend,
+        options.max_canvas_dimension,
+        options.max_output_width,
+        options.akaze_calibration);
     if (!maps.ok())
       return maps.status();
     source_canvas = {maps->source_canvas_width, maps->source_canvas_height};

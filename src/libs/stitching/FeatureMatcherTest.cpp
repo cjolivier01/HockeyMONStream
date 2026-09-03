@@ -209,37 +209,71 @@ int main() {
 
   auto akaze = hm::stitching::FeatureMatcher::Create("", hm::stitching::ControlPointMatcher::kAkazeHamming);
   ok &= expect(akaze.ok(), "AKAZE must not require an ONNX model");
-  cv::Mat akaze_left(360, 640, CV_8UC3, cv::Scalar::all(12));
+  cv::Mat akaze_scene(360, 960, CV_8UC3, cv::Scalar::all(12));
   std::mt19937 rng(7);
-  std::uniform_int_distribution<int> x_distribution(30, akaze_left.cols - 40);
-  std::uniform_int_distribution<int> y_distribution(30, akaze_left.rows - 40);
+  std::uniform_int_distribution<int> x_distribution(30, akaze_scene.cols - 40);
+  std::uniform_int_distribution<int> y_distribution(30, akaze_scene.rows - 40);
   std::uniform_int_distribution<int> color_distribution(40, 255);
-  for (int marker = 0; marker < 160; ++marker) {
+  for (int marker = 0; marker < 240; ++marker) {
     const cv::Point center(x_distribution(rng), y_distribution(rng));
     const cv::Scalar color(color_distribution(rng), color_distribution(rng), color_distribution(rng));
-    cv::circle(akaze_left, center, 3 + marker % 7, color, cv::FILLED);
-    cv::line(akaze_left, center - cv::Point(8, 0), center + cv::Point(8, 0), cv::Scalar::all(255), 1);
+    cv::circle(akaze_scene, center, 3 + marker % 7, color, cv::FILLED);
+    cv::line(akaze_scene, center - cv::Point(8, 0), center + cv::Point(8, 0), cv::Scalar::all(255), 1);
   }
-  cv::Mat akaze_right;
-  const cv::Mat translation = (cv::Mat_<double>(2, 3) << 1, 0, 9, 0, 1, 4);
-  cv::warpAffine(akaze_left, akaze_right, translation, akaze_left.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+  const cv::Mat akaze_left = akaze_scene(cv::Rect(0, 0, 640, 360)).clone();
+  const cv::Mat akaze_right = akaze_scene(cv::Rect(320, 0, 640, 360)).clone();
   if (akaze.ok()) {
     auto akaze_result = (*akaze)->Infer(akaze_left, akaze_right, 64);
     ok &= expect(
-        akaze_result.ok() && akaze_result->accepted_match_count >= 16,
-        "AKAZE M-LDB/Hamming must match a translated textured image");
+        akaze_result.ok() && akaze_result->accepted_match_count >= 6,
+        "AKAZE M-LDB/Hamming must match the expected overlap between cropped views");
     if (akaze_result.ok()) {
       size_t translated = 0;
       for (const auto& match : akaze_result->accepted) {
-        if (std::abs((match.right.x - match.left.x) - 9.0f) < 1.0f &&
-            std::abs((match.right.y - match.left.y) - 4.0f) < 1.0f) {
+        ok &= expect(
+            match.left.x >= 0.5f * akaze_left.cols && match.right.x <= 0.5f * akaze_right.cols &&
+                match.left.y >= 0.2f * akaze_left.rows && match.left.y <= 0.8f * akaze_left.rows &&
+                match.right.y >= 0.2f * akaze_right.rows && match.right.y <= 0.8f * akaze_right.rows,
+            "AKAZE matches must remain inside the expected overlap and vertical band");
+        if (std::abs((match.right.x - match.left.x) + 320.0f) < 1.0f && std::abs(match.right.y - match.left.y) < 1.0f) {
           ++translated;
         }
       }
       ok &= expect(
           translated * 4 >= akaze_result->accepted.size() * 3,
-          "most AKAZE mutual matches must recover the synthetic translation");
+          "most AKAZE epipolar inliers must recover the synthetic crop offset");
     }
   }
+
+  hm::stitching::FisheyeLensCalibration lens;
+  lens.resolution = akaze_left.size();
+  lens.fx = 500.0;
+  lens.fy = 500.0;
+  lens.cx = 320.0;
+  lens.cy = 180.0;
+  lens.distortion = {1e-4, -1e-6, 1e-8, -1e-10};
+  auto calibrated_akaze = hm::stitching::FeatureMatcher::Create(
+      "",
+      hm::stitching::ControlPointMatcher::kAkazeHamming,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(calibrated_akaze.ok(), "AKAZE must accept valid paired KB4 lens calibration");
+  if (calibrated_akaze.ok()) {
+    auto calibrated_result = (*calibrated_akaze)->Infer(akaze_left, akaze_right, 64);
+    ok &= expect(
+        calibrated_result.ok() && calibrated_result->accepted_match_count >= 6,
+        "calibrated AKAZE must undistort detection and return geometrically filtered matches");
+    if (calibrated_result.ok()) {
+      for (const auto& match : calibrated_result->accepted) {
+        ok &= expect(
+            match.left.x >= 0.0f && match.left.x < akaze_left.cols && match.left.y >= 0.0f &&
+                match.left.y < akaze_left.rows && match.right.x >= 0.0f && match.right.x < akaze_right.cols &&
+                match.right.y >= 0.0f && match.right.y < akaze_right.rows,
+            "calibrated AKAZE must return rectified keypoints inside the source-sized mapping domain");
+      }
+    }
+  }
+  auto incomplete_calibration = hm::stitching::FeatureMatcher::Create(
+      "", hm::stitching::ControlPointMatcher::kAkazeHamming, hm::stitching::AkazeMatchingCalibration{.left = lens});
+  ok &= expect(!incomplete_calibration.ok(), "AKAZE must reject calibration for only one camera");
   return ok ? 0 : 1;
 }

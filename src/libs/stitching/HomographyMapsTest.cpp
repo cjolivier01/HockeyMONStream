@@ -158,6 +158,36 @@ int main() {
         !y_map.empty() && y_map.type() == CV_16UC1 && y_map.size() == x_map.size(), "right Y remap should match X");
   }
 
+  fs::path calibrated_dir = root / "calibrated";
+  fs::create_directories(calibrated_dir);
+  hm::stitching::FisheyeLensCalibration lens;
+  lens.resolution = left.size();
+  lens.fx = 80.0;
+  lens.fy = 80.0;
+  lens.cx = 50.0;
+  lens.cy = 40.0;
+  lens.distortion = {0.05, -0.005, 0.0005, -0.00005};
+  auto calibrated = hm::stitching::CreateOpenCvMappingFiles(
+      calibrated_dir,
+      left,
+      right,
+      matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(calibrated.ok(), "calibrated AKAZE mapping should generate composed KB4 remaps");
+  if (calibrated.ok()) {
+    cv::Mat calibrated_left_x =
+        cv::imread((calibrated_dir / "mapping_0000_x.tif").string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
+    cv::Mat calibrated_left_y =
+        cv::imread((calibrated_dir / "mapping_0000_y.tif").string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_GRAYSCALE);
+    ok &= expect(
+        !calibrated_left_x.empty() && !calibrated_left_y.empty() && calibrated_left_x.at<uint16_t>(0, 0) > 0 &&
+            calibrated_left_y.at<uint16_t>(0, 0) > 0,
+        "calibrated output coordinates must be distorted back into original fisheye source pixels");
+  }
+
   fs::path affine_dir = root / "affine";
   fs::create_directories(affine_dir);
   auto affine = hm::stitching::CreateOpenCvMappingFiles(

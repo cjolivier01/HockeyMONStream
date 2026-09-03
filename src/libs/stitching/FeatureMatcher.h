@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -37,6 +38,20 @@ struct FeatureMatchResult {
   std::vector<FeatureMatch> selected;
 };
 
+struct FisheyeLensCalibration {
+  cv::Size resolution;
+  double fx{0.0};
+  double fy{0.0};
+  double cx{0.0};
+  double cy{0.0};
+  std::array<double, 4> distortion{};
+};
+
+struct AkazeMatchingCalibration {
+  std::optional<FisheyeLensCalibration> left;
+  std::optional<FisheyeLensCalibration> right;
+};
+
 class FeatureMatcher {
  public:
   static constexpr int kInputWidth = 1024;
@@ -53,7 +68,8 @@ class FeatureMatcher {
 
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> Create(
       const std::string& model_path,
-      ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue);
+      ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue,
+      AkazeMatchingCalibration akaze_calibration = {});
   // The release qualification oracle predates the selectable production
   // backends and uses a frozen RGB RaCo-ALIKED k2048 graph. Keep its contract
   // explicit so it cannot be mistaken for the production SuperPoint graph.
@@ -105,7 +121,8 @@ class FeatureMatcher {
       std::unique_ptr<hm::onnx::Session> session = {},
       int input_channels = 0,
       size_t sparse_keypoints_per_image = kKeypointsPerImage,
-      bool sparse_keypoints_are_float = false);
+      bool sparse_keypoints_are_float = false,
+      AkazeMatchingCalibration akaze_calibration = {});
   static absl::StatusOr<FeatureMatchResult> PostprocessSparse(
       const FeaturePairInput& input,
       const float* keypoints,
@@ -128,6 +145,7 @@ class FeatureMatcher {
   int input_channels_{0};
   size_t sparse_keypoints_per_image_{kKeypointsPerImage};
   bool sparse_keypoints_are_float_{false};
+  AkazeMatchingCalibration akaze_calibration_;
 };
 
 } // namespace hm::stitching

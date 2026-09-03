@@ -9,6 +9,7 @@
 #include <tuple>
 #include <utility>
 
+#include <opencv2/calib3d.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -190,9 +191,27 @@ struct AkazeFeatures {
   cv::Mat descriptors;
   cv::Size source_size;
   cv::Size detector_size;
+  std::optional<cv::Matx33d> camera_matrix;
+  std::optional<cv::Vec4d> distortion;
 };
 
-absl::StatusOr<AkazeFeatures> detect_akaze(const cv::Mat& source) {
+absl::Status validate_lens_calibration(const FisheyeLensCalibration& calibration) {
+  if (calibration.resolution.width <= 0 || calibration.resolution.height <= 0 || !std::isfinite(calibration.fx) ||
+      !std::isfinite(calibration.fy) || !std::isfinite(calibration.cx) || !std::isfinite(calibration.cy) ||
+      calibration.fx <= 0.0 || calibration.fy <= 0.0) {
+    return absl::InvalidArgumentError("AKAZE fisheye calibration has invalid camera intrinsics");
+  }
+  for (double coefficient : calibration.distortion) {
+    if (!std::isfinite(coefficient))
+      return absl::InvalidArgumentError("AKAZE fisheye calibration has a non-finite distortion coefficient");
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<AkazeFeatures> detect_akaze(
+    const cv::Mat& source,
+    bool left_camera,
+    const std::optional<FisheyeLensCalibration>& calibration) {
   AkazeFeatures result;
   result.source_size = source.size();
   cv::Mat gray = grayscale_u8(source);
@@ -205,13 +224,61 @@ absl::StatusOr<AkazeFeatures> detect_akaze(const cv::Mat& source) {
   if (result.detector_size != gray.size()) {
     cv::resize(gray, gray, result.detector_size, 0.0, 0.0, cv::INTER_AREA);
   }
+  if (calibration.has_value()) {
+    auto calibration_status = validate_lens_calibration(*calibration);
+    if (!calibration_status.ok())
+      return calibration_status;
+    const double scale_x = static_cast<double>(result.detector_size.width) / calibration->resolution.width;
+    const double scale_y = static_cast<double>(result.detector_size.height) / calibration->resolution.height;
+    result.camera_matrix = cv::Matx33d(
+        calibration->fx * scale_x,
+        0.0,
+        calibration->cx * scale_x,
+        0.0,
+        calibration->fy * scale_y,
+        calibration->cy * scale_y,
+        0.0,
+        0.0,
+        1.0);
+    result.distortion = cv::Vec4d(
+        calibration->distortion[0], calibration->distortion[1], calibration->distortion[2], calibration->distortion[3]);
+    cv::Mat map_x;
+    cv::Mat map_y;
+    cv::fisheye::initUndistortRectifyMap(
+        *result.camera_matrix,
+        *result.distortion,
+        cv::Matx33d::eye(),
+        *result.camera_matrix,
+        result.detector_size,
+        CV_32FC1,
+        map_x,
+        map_y);
+    cv::Mat undistorted;
+    cv::remap(gray, undistorted, map_x, map_y, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+    gray = std::move(undistorted);
+  }
+  cv::Mat detection_mask(result.detector_size, CV_8UC1, cv::Scalar::all(0));
+  constexpr double kDetectionYMinimum = 0.05;
+  constexpr double kDetectionYMaximum = 0.95;
+  const int x_begin = left_camera ? result.detector_size.width / 2 : 0;
+  const int x_end = left_camera ? result.detector_size.width : (result.detector_size.width + 1) / 2;
+  const int y_begin = static_cast<int>(std::floor(kDetectionYMinimum * result.detector_size.height));
+  const int y_end = static_cast<int>(std::ceil(kDetectionYMaximum * result.detector_size.height));
+  detection_mask(cv::Rect(x_begin, y_begin, x_end - x_begin, y_end - y_begin)).setTo(cv::Scalar::all(255));
   auto detector =
       cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB, 0, 3, FeatureMatcher::kAkazeThreshold, 4, 4, cv::KAZE::DIFF_PM_G2);
-  detector->detect(gray, result.keypoints);
+  detector->detect(gray, result.keypoints, detection_mask);
   retain_strongest_keypoints(&result.keypoints, FeatureMatcher::kAkazeMaximumKeypoints);
   if (!result.keypoints.empty())
     detector->compute(gray, result.keypoints, result.descriptors);
   return result;
+}
+
+cv::Point2f akaze_rectified_source_point(const AkazeFeatures& features, const cv::Point2f& detector_point) {
+  return {
+      detector_point.x * features.source_size.width / features.detector_size.width,
+      detector_point.y * features.source_size.height / features.detector_size.height,
+  };
 }
 
 } // namespace
@@ -221,18 +288,33 @@ FeatureMatcher::FeatureMatcher(
     std::unique_ptr<hm::onnx::Session> session,
     int input_channels,
     size_t sparse_keypoints_per_image,
-    bool sparse_keypoints_are_float)
+    bool sparse_keypoints_are_float,
+    AkazeMatchingCalibration akaze_calibration)
     : matcher_(matcher),
       session_(std::move(session)),
       input_channels_(input_channels),
       sparse_keypoints_per_image_(sparse_keypoints_per_image),
-      sparse_keypoints_are_float_(sparse_keypoints_are_float) {}
+      sparse_keypoints_are_float_(sparse_keypoints_are_float),
+      akaze_calibration_(std::move(akaze_calibration)) {}
 
 absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     const std::string& model_path,
-    ControlPointMatcher matcher) {
+    ControlPointMatcher matcher,
+    AkazeMatchingCalibration akaze_calibration) {
   if (matcher == ControlPointMatcher::kAkazeHamming) {
-    return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher));
+    if (akaze_calibration.left.has_value() != akaze_calibration.right.has_value()) {
+      return absl::InvalidArgumentError("AKAZE lens calibration must contain both cameras or neither camera");
+    }
+    if (akaze_calibration.left.has_value()) {
+      auto status = validate_lens_calibration(*akaze_calibration.left);
+      if (!status.ok())
+        return status;
+      status = validate_lens_calibration(*akaze_calibration.right);
+      if (!status.ok())
+        return status;
+    }
+    return std::unique_ptr<FeatureMatcher>(
+        new FeatureMatcher(matcher, {}, 0, kKeypointsPerImage, false, std::move(akaze_calibration)));
   }
   if (model_path.empty()) {
     return absl::InvalidArgumentError(
@@ -750,12 +832,12 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
   status = validate_source_image(right_bgr, "Right");
   if (!status.ok())
     return status;
-  auto left = detect_akaze(left_bgr);
+  auto left = detect_akaze(left_bgr, true, akaze_calibration_.left);
   if (!left.ok())
     return left.status();
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("AKAZE feature matching cancelled after left-image detection");
-  auto right = detect_akaze(right_bgr);
+  auto right = detect_akaze(right_bgr, false, akaze_calibration_.right);
   if (!right.ok())
     return right.status();
   if (is_cancelled && is_cancelled())
@@ -771,8 +853,15 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
       right_to_left[match.query] = match.train;
   }
   const float descriptor_bits = static_cast<float>(left->descriptors.cols * 8);
-  std::vector<FeatureMatch> accepted;
-  accepted.reserve(forward.size());
+  struct CandidateMatch {
+    cv::Point2f left;
+    cv::Point2f right;
+    float score;
+    int left_index;
+    int right_index;
+  };
+  std::vector<CandidateMatch> candidates;
+  candidates.reserve(forward.size());
   for (const auto& match : forward) {
     if (match.train < 0 || static_cast<size_t>(match.train) >= right_to_left.size() ||
         right_to_left[match.train] != match.query) {
@@ -780,15 +869,56 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
     }
     const cv::Point2f left_point = left->keypoints[match.query].pt;
     const cv::Point2f right_point = right->keypoints[match.train].pt;
-    accepted.push_back({
-        {left_point.x * left->source_size.width / left->detector_size.width,
-         left_point.y * left->source_size.height / left->detector_size.height},
-        {right_point.x * right->source_size.width / right->detector_size.width,
-         right_point.y * right->source_size.height / right->detector_size.height},
+    const float left_x = left_point.x / left->detector_size.width;
+    const float right_x = right_point.x / right->detector_size.width;
+    const float left_y = left_point.y / left->detector_size.height;
+    const float right_y = right_point.y / right->detector_size.height;
+    if (left_x < 0.5f || right_x > 0.5f || left_y < 0.2f || left_y > 0.8f || right_y < 0.2f || right_y > 0.8f ||
+        std::abs(left_y - right_y) > 0.08f) {
+      continue;
+    }
+    candidates.push_back({
+        left_point,
+        right_point,
         1.0f - static_cast<float>(match.distance) / descriptor_bits,
         match.query,
         match.train,
     });
+  }
+  if (candidates.size() < 8) {
+    return absl::NotFoundError("AKAZE produced fewer than eight mutual overlap matches for epipolar filtering");
+  }
+
+  std::vector<cv::Point2f> left_points;
+  std::vector<cv::Point2f> right_points;
+  left_points.reserve(candidates.size());
+  right_points.reserve(candidates.size());
+  for (const CandidateMatch& candidate : candidates) {
+    left_points.push_back(candidate.left);
+    right_points.push_back(candidate.right);
+  }
+  cv::Mat inlier_mask;
+  const cv::Mat fundamental =
+      cv::findFundamentalMat(left_points, right_points, cv::FM_RANSAC, 1.0, 0.99, 2000, inlier_mask);
+  if (fundamental.empty() || inlier_mask.total() != candidates.size()) {
+    return absl::NotFoundError("AKAZE could not estimate a fundamental matrix for overlap matches");
+  }
+  std::vector<FeatureMatch> accepted;
+  accepted.reserve(candidates.size());
+  for (size_t index = 0; index < candidates.size(); ++index) {
+    if (inlier_mask.ptr<unsigned char>()[index] == 0)
+      continue;
+    const CandidateMatch& candidate = candidates[index];
+    accepted.push_back({
+        akaze_rectified_source_point(*left, candidate.left),
+        akaze_rectified_source_point(*right, candidate.right),
+        candidate.score,
+        candidate.left_index,
+        candidate.right_index,
+    });
+  }
+  if (accepted.size() < 6) {
+    return absl::NotFoundError("AKAZE fundamental-matrix filtering retained fewer than six matches");
   }
   std::stable_sort(
       accepted.begin(), accepted.end(), [](const FeatureMatch& left_match, const FeatureMatch& right_match) {

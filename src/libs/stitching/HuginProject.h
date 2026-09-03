@@ -70,6 +70,7 @@ class HuginProject {
     StitchProjectionFraming projection_framing;
     std::string expected_invalidation_id;
     std::optional<StitchingBackendChoices> expected_backend_choices;
+    AkazeMatchingCalibration akaze_calibration;
     ProgressCallback progress;
     std::function<bool()> is_cancelled;
   };
