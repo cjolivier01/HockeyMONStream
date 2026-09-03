@@ -6,8 +6,10 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <locale>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,8 @@ constexpr size_t kMinimumRobustMagsacInliers = 8;
 constexpr double kMinimumMagsacInlierRatio = 0.5;
 constexpr double kMinimumMagsacSourceSpanRatio = 0.1;
 constexpr double kMinimumMagsacSourceAreaRatio = 0.01;
+constexpr size_t kMinimumCalibratedAkazeMagsacInliers = 16;
+constexpr double kMinimumCalibratedAkazeMagsacInlierRatio = 0.15;
 constexpr double kMinimumCalibratedAkazeSourceSpanRatio = 0.04;
 constexpr double kMinimumCalibratedAkazeSourceAreaRatio = 0.0025;
 
@@ -104,14 +108,18 @@ absl::Status validate_magsac_consensus(
     const cv::Mat& left_image,
     const cv::Mat& right_image,
     double minimum_inlier_ratio = kMinimumMagsacInlierRatio,
+    size_t minimum_inlier_count = kMinimumRobustMagsacInliers,
     double minimum_span_ratio = kMinimumMagsacSourceSpanRatio,
-    double minimum_area_ratio = kMinimumMagsacSourceAreaRatio) {
-  if (matches.size() < kRobustConsensusMatchCount)
+    double minimum_area_ratio = kMinimumMagsacSourceAreaRatio,
+    bool validate_small_set_coverage = false) {
+  const bool robust_set = matches.size() >= kRobustConsensusMatchCount;
+  if (!robust_set && !validate_small_set_coverage)
     return absl::OkStatus();
 
-  const size_t ratio_inliers =
-      static_cast<size_t>(std::ceil(minimum_inlier_ratio * static_cast<double>(matches.size())));
-  const size_t required_inliers = std::max(kMinimumRobustMagsacInliers, ratio_inliers);
+  const double effective_ratio = robust_set ? minimum_inlier_ratio : kMinimumMagsacInlierRatio;
+  const size_t effective_minimum = robust_set ? minimum_inlier_count : 4;
+  const size_t ratio_inliers = static_cast<size_t>(std::ceil(effective_ratio * static_cast<double>(matches.size())));
+  const size_t required_inliers = std::max(effective_minimum, ratio_inliers);
   if (inlier_count < required_inliers) {
     return absl::FailedPreconditionError(
         "OpenCV MAGSAC stitching transform has insufficient consensus: " + std::to_string(inlier_count) +
@@ -133,9 +141,7 @@ absl::Status validate_magsac_consensus(
   }
 
   const auto validate_coverage = [minimum_span_ratio, minimum_area_ratio](
-                                     const std::vector<cv::Point2f>& points,
-                                     const cv::Mat& image,
-                                     const char* label) {
+                                     const std::vector<cv::Point2f>& points, const cv::Mat& image, const char* label) {
     float minimum_x = points.front().x;
     float maximum_x = minimum_x;
     float minimum_y = points.front().y;
@@ -153,8 +159,7 @@ absl::Status validate_magsac_consensus(
     const double x_span_ratio = (maximum_x - minimum_x) / image.cols;
     const double y_span_ratio = (maximum_y - minimum_y) / image.rows;
     const double area_ratio = covered_area / image_area;
-    if (x_span_ratio < minimum_span_ratio || y_span_ratio < minimum_span_ratio ||
-        area_ratio < minimum_area_ratio) {
+    if (x_span_ratio < minimum_span_ratio || y_span_ratio < minimum_span_ratio || area_ratio < minimum_area_ratio) {
       return absl::FailedPreconditionError(
           std::string("OpenCV MAGSAC stitching transform has insufficient inlier coverage across the ") + label +
           " image: x-span=" + std::to_string(x_span_ratio) + ", y-span=" + std::to_string(y_span_ratio) +
@@ -265,6 +270,55 @@ cv::Matx33d to_matx33(const cv::Mat& matrix) {
       as64.at<double>(2, 0),
       as64.at<double>(2, 1),
       as64.at<double>(2, 2)};
+}
+
+absl::Status validate_projective_candidate_canvas(
+    const cv::Mat& matrix,
+    const cv::Mat& left_image,
+    const cv::Mat& right_image,
+    const std::optional<size_t>& max_canvas_dimension,
+    const std::optional<size_t>& max_output_width) {
+  if (matrix.empty() || !finite_matrix(matrix))
+    return absl::FailedPreconditionError("OpenCV failed to estimate a finite stitching transform");
+  cv::Mat matrix64;
+  matrix.convertTo(matrix64, CV_64F);
+  const double determinant = cv::determinant(matrix64);
+  if (!std::isfinite(determinant) || std::abs(determinant) < 1e-12)
+    return absl::FailedPreconditionError("OpenCV stitching transform is not invertible");
+  const cv::Matx33d transform = to_matx33(matrix64);
+  const absl::Status domain = validate_projective_domain(transform, right_image);
+  if (!domain.ok())
+    return domain;
+  std::vector<cv::Point2d> points;
+  for (const cv::Point2d& point : image_corners(left_image))
+    points.push_back(point);
+  for (const cv::Point2d& point : image_corners(right_image)) {
+    auto transformed = transform_point(transform, point);
+    if (!transformed.ok())
+      return transformed.status();
+    points.push_back(*transformed);
+  }
+  double minimum_x = points.front().x;
+  double maximum_x = minimum_x;
+  double minimum_y = points.front().y;
+  double maximum_y = minimum_y;
+  for (const cv::Point2d& point : points) {
+    minimum_x = std::min(minimum_x, point.x);
+    maximum_x = std::max(maximum_x, point.x);
+    minimum_y = std::min(minimum_y, point.y);
+    maximum_y = std::max(maximum_y, point.y);
+  }
+  const double raw_width = std::ceil(maximum_x - minimum_x + 1.0);
+  const double raw_height = std::ceil(maximum_y - minimum_y + 1.0);
+  double scale = 1.0;
+  if (max_output_width.has_value() && raw_width > static_cast<double>(*max_output_width))
+    scale = std::min(scale, static_cast<double>(*max_output_width) / raw_width);
+  if (max_canvas_dimension.has_value()) {
+    const double longest = std::max(raw_width, raw_height);
+    if (longest > static_cast<double>(*max_canvas_dimension))
+      scale = std::min(scale, static_cast<double>(*max_canvas_dimension) / longest);
+  }
+  return validate_output_size(std::ceil(raw_width * scale), std::ceil(raw_height * scale));
 }
 
 cv::Point2d distort_rectified_point(
@@ -462,6 +516,7 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
 
   cv::Mat inliers;
   cv::Mat right_to_left;
+  bool magsac_consensus_validated = false;
   if (backend == MappingBackend::kOpenCvMagsac) {
     if (matches.size() < 4)
       return absl::FailedPreconditionError("At least four control points are required for OpenCV MAGSAC mapping");
@@ -483,14 +538,85 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
           static_cast<double>(std::max({left_bgr.cols, left_bgr.rows, right_bgr.cols, right_bgr.rows})) /
               FeatureMatcher::kAkazeMaximumDimension);
     }
-    right_to_left = cv::findHomography(
-        right_points,
-        left_points,
-        method,
-        reprojection_threshold,
-        inliers,
-        kRansacMaxIterations,
-        kRansacConfidence);
+    if (!lens_calibration.left.has_value()) {
+      right_to_left = cv::findHomography(
+          right_points, left_points, method, reprojection_threshold, inliers, kRansacMaxIterations, kRansacConfidence);
+    } else {
+      // Repeated rink markings can support a numerically strong but physically unusable homography. Search subsequent
+      // projective consensus groups when the leading MAGSAC hypothesis has a pole, unsafe canvas, or inadequate
+      // overlap coverage. Every hypothesis is still checked against the original match count, so peeling a rejected
+      // group cannot manufacture a high consensus ratio.
+      std::vector<size_t> remaining(matches.size());
+      std::iota(remaining.begin(), remaining.end(), 0);
+      absl::Status last_rejection = absl::FailedPreconditionError("OpenCV failed to estimate a stitching transform");
+      constexpr size_t kMaximumProjectiveHypotheses = 12;
+      for (size_t attempt = 0; attempt < kMaximumProjectiveHypotheses && remaining.size() >= 4; ++attempt) {
+        std::vector<cv::Point2f> candidate_left;
+        std::vector<cv::Point2f> candidate_right;
+        candidate_left.reserve(remaining.size());
+        candidate_right.reserve(remaining.size());
+        for (size_t index : remaining) {
+          candidate_left.push_back(left_points[index]);
+          candidate_right.push_back(right_points[index]);
+        }
+        cv::Mat candidate_inliers;
+        cv::Mat candidate = cv::findHomography(
+            candidate_right,
+            candidate_left,
+            method,
+            reprojection_threshold,
+            candidate_inliers,
+            kRansacMaxIterations,
+            kRansacConfidence);
+        if (candidate.empty() || candidate_inliers.total() != remaining.size())
+          break;
+        cv::Mat full_inliers = cv::Mat::zeros(static_cast<int>(matches.size()), 1, CV_8U);
+        size_t candidate_inlier_count = 0;
+        for (size_t index = 0; index < remaining.size(); ++index) {
+          if (candidate_inliers.ptr<unsigned char>()[index] != 0) {
+            full_inliers.at<unsigned char>(static_cast<int>(remaining[index]), 0) = 1;
+            ++candidate_inlier_count;
+          }
+        }
+        absl::Status candidate_status = validate_magsac_consensus(
+            matches,
+            full_inliers,
+            candidate_inlier_count,
+            left_bgr,
+            right_bgr,
+            kMinimumCalibratedAkazeMagsacInlierRatio,
+            kMinimumCalibratedAkazeMagsacInliers,
+            kMinimumCalibratedAkazeSourceSpanRatio,
+            kMinimumCalibratedAkazeSourceAreaRatio,
+            true);
+        if (candidate_status.ok()) {
+          candidate_status = validate_projective_candidate_canvas(
+              candidate, left_bgr, right_bgr, max_canvas_dimension, max_output_width);
+        }
+        if (candidate_status.ok()) {
+          right_to_left = std::move(candidate);
+          inliers = std::move(full_inliers);
+          magsac_consensus_validated = true;
+          break;
+        }
+        last_rejection = candidate_status;
+        std::cerr << "Rejected calibrated MAGSAC hypothesis " << (attempt + 1) << " with " << candidate_inlier_count
+                  << "/" << matches.size() << " inliers: " << candidate_status << '\n';
+        if (candidate_inlier_count < kMinimumCalibratedAkazeMagsacInliers)
+          break;
+        std::vector<size_t> next;
+        next.reserve(remaining.size() - candidate_inlier_count);
+        for (size_t index = 0; index < remaining.size(); ++index) {
+          if (candidate_inliers.ptr<unsigned char>()[index] == 0)
+            next.push_back(remaining[index]);
+        }
+        if (next.size() == remaining.size())
+          break;
+        remaining = std::move(next);
+      }
+      if (right_to_left.empty())
+        return last_rejection;
+    }
   } else {
     if (matches.size() < 3)
       return absl::FailedPreconditionError("At least three control points are required for affine RANSAC mapping");
@@ -523,9 +649,9 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
     return absl::FailedPreconditionError(
         "OpenCV stitching transform has too few inlier control points: " + std::to_string(inlier_count));
   }
-  if (backend == MappingBackend::kOpenCvMagsac) {
-    // Calibrated AKAZE deliberately searches only the facing half and central vertical band of each image. Use an
-    // overlap-specific coverage floor while retaining the same 50% transform consensus and bounded-canvas checks.
+  if (backend == MappingBackend::kOpenCvMagsac && !magsac_consensus_validated) {
+    // Calibrated AKAZE deliberately searches only the facing half and central vertical band of each image. Use its
+    // overlap-specific consensus and coverage floors while retaining the same bounded-canvas checks.
     const bool calibrated_akaze = lens_calibration.left.has_value();
     status = validate_magsac_consensus(
         matches,
@@ -533,9 +659,11 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
         inlier_count,
         left_bgr,
         right_bgr,
-        kMinimumMagsacInlierRatio,
+        calibrated_akaze ? kMinimumCalibratedAkazeMagsacInlierRatio : kMinimumMagsacInlierRatio,
+        calibrated_akaze ? kMinimumCalibratedAkazeMagsacInliers : kMinimumRobustMagsacInliers,
         calibrated_akaze ? kMinimumCalibratedAkazeSourceSpanRatio : kMinimumMagsacSourceSpanRatio,
-        calibrated_akaze ? kMinimumCalibratedAkazeSourceAreaRatio : kMinimumMagsacSourceAreaRatio);
+        calibrated_akaze ? kMinimumCalibratedAkazeSourceAreaRatio : kMinimumMagsacSourceAreaRatio,
+        calibrated_akaze);
     if (!status.ok())
       return status;
   }

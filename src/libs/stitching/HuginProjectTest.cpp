@@ -661,8 +661,10 @@ int main() {
             (*provenance)->mapping_backend == hm::stitching::MappingBackend::kNona &&
             (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini &&
             (*provenance)->projection_parameters == std::vector<double>({100.0, 0.0, 0.0}) &&
-            (*provenance)->projection_framing == options.projection_framing,
-        "published Hugin provenance must record canvas, algorithm, projection parameters, and framing");
+            (*provenance)->projection_framing == options.projection_framing &&
+            (*provenance)->control_point_matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue &&
+            (*provenance)->akaze_calibration_fingerprint == "not-applicable",
+        "published Hugin provenance must record canvas, matcher, calibration, algorithm, parameters, and framing");
     provenance_lock->reset();
   }
 

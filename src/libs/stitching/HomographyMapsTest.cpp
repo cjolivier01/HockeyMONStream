@@ -231,6 +231,41 @@ int main() {
         "calibrated MAGSAC must preserve projective terms instead of silently fitting an affine transform");
   }
 
+  fs::path alternate_hypothesis_dir = root / "alternate-projective-hypothesis";
+  fs::create_directories(alternate_hypothesis_dir);
+  std::vector<hm::stitching::FeatureMatch> alternate_hypothesis_matches;
+  const cv::Matx33d pole_transform(0.5, 0.0, 0.0, 0.0, 0.5, 0.0, -1.0 / 80.0, 0.0, 1.0);
+  for (const int y : {5, 10, 15, 20}) {
+    for (const int x : {10, 20, 30, 40, 50}) {
+      const cv::Vec3d transformed = pole_transform * cv::Vec3d(x, y, 1.0);
+      alternate_hypothesis_matches.push_back(
+          {{static_cast<float>(transformed[0] / transformed[2]), static_cast<float>(transformed[1] / transformed[2])},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  for (const int y : {40, 50, 60, 70}) {
+    for (const int x : {10, 35, 60, 85}) {
+      alternate_hypothesis_matches.push_back(
+          {{static_cast<float>(x + 5), static_cast<float>(y - 3)},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.8f});
+    }
+  }
+  auto alternate_hypothesis = hm::stitching::CreateOpenCvMappingFiles(
+      alternate_hypothesis_dir,
+      left,
+      right,
+      alternate_hypothesis_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      alternate_hypothesis.ok() && alternate_hypothesis->inlier_count == 16 &&
+          std::abs(alternate_hypothesis->right_to_left_homography[2] - 5.0) < 0.25,
+      "calibrated MAGSAC must recover a valid secondary projective consensus after rejecting a dominant pole");
+
   fs::path affine_dir = root / "affine";
   fs::create_directories(affine_dir);
   auto affine = hm::stitching::CreateOpenCvMappingFiles(
@@ -328,6 +363,31 @@ int main() {
            root / "three-point-magsac", left, right, three_point_matches, hm::stitching::MappingBackend::kOpenCvMagsac)
            .ok(),
       "MAGSAC mapping should reject fewer than four control points");
+
+  fs::path clustered_six_calibrated_dir = root / "clustered-six-calibrated";
+  fs::create_directories(clustered_six_calibrated_dir);
+  std::vector<hm::stitching::FeatureMatch> clustered_six_calibrated_matches;
+  for (const int y : {30, 32}) {
+    for (const int x : {40, 42, 44}) {
+      clustered_six_calibrated_matches.push_back(
+          {{static_cast<float>(x + 12), static_cast<float>(y - 4)},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  auto clustered_six_calibrated = hm::stitching::CreateOpenCvMappingFiles(
+      clustered_six_calibrated_dir,
+      left,
+      right,
+      clustered_six_calibrated_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      !clustered_six_calibrated.ok() &&
+          std::string(clustered_six_calibrated.status().message()).find("inlier coverage") != std::string::npos,
+      "calibrated MAGSAC must reject a clustered six-point set despite meeting the AKAZE count minimum");
 
   fs::path low_consensus_dir = root / "low-consensus";
   fs::create_directories(low_consensus_dir);

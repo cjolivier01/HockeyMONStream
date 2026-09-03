@@ -49,7 +49,9 @@ bool write_canvas_provenance(
     const std::string& mapping_backend = {},
     const std::string& projection = {},
     const std::string& projection_parameters = {},
-    const hm::stitching::StitchProjectionFraming& projection_framing = {}) {
+    const hm::stitching::StitchProjectionFraming& projection_framing = {},
+    const std::string& control_point_matcher = "superpoint-lightglue",
+    const std::string& akaze_calibration_fingerprint = "not-applicable") {
   source_width = source_width == 0 ? width : source_width;
   source_height = source_height == 0 ? height : source_height;
   const bool algorithm_aware = !mapping_backend.empty() || !projection.empty();
@@ -60,19 +62,20 @@ bool write_canvas_provenance(
     return false;
   return write_text_file(
       dir / "stitching_canvas_provenance",
-      std::string(algorithm_aware ? "version=5\n" : "version=2\n") +
-          "max-output-width=" + std::to_string(max_output_width) + "\nmax-canvas-dimension=" +
-          std::to_string(max_canvas_dimension) + "\nsource-canvas-width=" + std::to_string(source_width) +
+      std::string(algorithm_aware ? "version=6\n" : "version=2\n") + "max-output-width=" +
+          std::to_string(max_output_width) + "\nmax-canvas-dimension=" + std::to_string(max_canvas_dimension) +
+          "\nsource-canvas-width=" + std::to_string(source_width) +
           "\nsource-canvas-height=" + std::to_string(source_height) + "\ncanvas-width=" + std::to_string(width) +
           "\ncanvas-height=" + std::to_string(height) +
           "\nmax-output-width-applied=" + std::to_string(max_output_width_applied ? 1 : 0) +
           "\nmax-canvas-dimension-applied=" + std::to_string(max_canvas_dimension_applied ? 1 : 0) + "\n" +
           (algorithm_aware ? "mapping-backend=" + mapping_backend + "\nprojection=" + projection +
-                  "\nprojection-parameters=" + (parameter_aware ? projection_parameters : "none") +
-                  "\nprojection-auto-fov=" + (projection_framing.auto_fov ? "1" : "0") +
-                  "\nprojection-horizontal-fov=" + std::to_string(projection_framing.horizontal_fov) +
-                  "\nprojection-auto-canvas=" + (projection_framing.auto_canvas ? "1" : "0") +
-                  "\nprojection-auto-crop=" + (projection_framing.auto_crop ? "1" : "0") + "\n"
+                   "\nprojection-parameters=" + (parameter_aware ? projection_parameters : "none") +
+                   "\nprojection-auto-fov=" + (projection_framing.auto_fov ? "1" : "0") +
+                   "\nprojection-horizontal-fov=" + std::to_string(projection_framing.horizontal_fov) +
+                   "\nprojection-auto-canvas=" + (projection_framing.auto_canvas ? "1" : "0") +
+                   "\nprojection-auto-crop=" + (projection_framing.auto_crop ? "1" : "0") + "\ncontrol-point-matcher=" +
+                   control_point_matcher + "\nakaze-calibration-fingerprint=" + akaze_calibration_fingerprint + "\n"
                            : ""));
 }
 
@@ -398,6 +401,79 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   return expect_configured(dir, false, "a direct YAML mapping backend change must invalidate existing maps");
 }
 
+bool expect_akaze_profile_changes_require_regeneration(const fs::path& tmpdir) {
+  constexpr const char* kProfileA = R"({
+    "left_uniforms":{"width":7680,"height":4320,"fx":4975.75,"fy":4983.25,"cx":3824.5,"cy":2173.5,"d":[0.217,0.103,0.205,0.112]},
+    "right_uniforms":{"width":7680,"height":4320,"fx":4975.75,"fy":4983.25,"cx":3824.5,"cy":2173.5,"d":[0.217,0.103,0.205,0.112]}
+  })";
+  constexpr const char* kProfileB = R"({
+    "left_uniforms":{"width":7680,"height":4320,"fx":4976.75,"fy":4983.25,"cx":3824.5,"cy":2173.5,"d":[0.217,0.103,0.205,0.112]},
+    "right_uniforms":{"width":7680,"height":4320,"fx":4975.75,"fy":4983.25,"cx":3824.5,"cy":2173.5,"d":[0.217,0.103,0.205,0.112]}
+  })";
+  YAML::Node config;
+  config["stitching"]["control_point_matcher"] = "akaze-hamming";
+  config["stitching"]["mapping_backend"] = "opencv-magsac";
+  config["stitching"]["projection"] = "rectilinear";
+
+  const auto write_akaze_provenance = [&](const fs::path& dir, const std::string& fingerprint) {
+    return write_canvas_provenance(
+        dir,
+        /*max_output_width=*/0,
+        /*width=*/160,
+        /*height=*/32,
+        /*source_width=*/0,
+        /*source_height=*/0,
+        /*max_canvas_dimension=*/0,
+        /*max_output_width_applied=*/false,
+        /*max_canvas_dimension_applied=*/false,
+        "opencv-magsac",
+        "rectilinear",
+        "none",
+        {},
+        "akaze-hamming",
+        fingerprint);
+  };
+
+  const fs::path added = tmpdir / "akaze-profile-added";
+  if (!write_valid_stitching_artifacts(added) || !write_text_file(added / "config.yaml", YAML::Dump(config) + "\n") ||
+      !write_akaze_provenance(added, "absent") ||
+      !expect_configured(added, true, "AKAZE artifacts without an optional profile must remain usable") ||
+      !write_text_file(added / "left_calibration.json", kProfileA) ||
+      !expect_configured(added, false, "adding an AKAZE lens profile must invalidate existing maps")) {
+    return false;
+  }
+
+  const fs::path changed = tmpdir / "akaze-profile-changed";
+  if (!write_valid_stitching_artifacts(changed) ||
+      !write_text_file(changed / "config.yaml", YAML::Dump(config) + "\n") ||
+      !write_text_file(changed / "left_calibration.json", kProfileA)) {
+    return false;
+  }
+  const auto loaded = hm::stitching::load_akaze_matching_calibration(changed);
+  if (!loaded.ok() || !loaded->source_profile_fingerprint.has_value() ||
+      !write_akaze_provenance(changed, "sha256:" + *loaded->source_profile_fingerprint) ||
+      !expect_configured(changed, true, "matching AKAZE profile provenance must be reusable") ||
+      !write_text_file(changed / "left_calibration.json", kProfileB) ||
+      !expect_configured(changed, false, "editing an AKAZE lens profile must invalidate existing maps")) {
+    return false;
+  }
+
+  const fs::path removed = tmpdir / "akaze-profile-removed";
+  if (!write_valid_stitching_artifacts(removed) ||
+      !write_text_file(removed / "config.yaml", YAML::Dump(config) + "\n") ||
+      !write_text_file(removed / "left_calibration.json", kProfileA)) {
+    return false;
+  }
+  const auto removed_loaded = hm::stitching::load_akaze_matching_calibration(removed);
+  if (!removed_loaded.ok() || !removed_loaded->source_profile_fingerprint.has_value() ||
+      !write_akaze_provenance(removed, "sha256:" + *removed_loaded->source_profile_fingerprint) ||
+      !expect_configured(removed, true, "matching AKAZE profile provenance must be reusable before removal")) {
+    return false;
+  }
+  fs::remove(removed / "left_calibration.json");
+  return expect_configured(removed, false, "removing an AKAZE lens profile must invalidate existing maps");
+}
+
 bool expect_backend_choice_reader_preserves_document() {
   YAML::Node config(YAML::NodeType::Map);
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
@@ -411,8 +487,8 @@ bool expect_backend_choice_reader_preserves_document() {
   const std::string before = YAML::Dump(config);
   auto choices = hm::stitching::read_stitching_backend_choices(config);
   const bool matches = choices.ok() && choices->control_point_matcher == "superpoint-lightglue" &&
-      choices->mapping_backend == "nona" && choices->projection == "general-panini" &&
-      choices->run_autooptimizer && choices->projection_parameters == std::vector<double>({100.0, 0.0, 0.0});
+      choices->mapping_backend == "nona" && choices->projection == "general-panini" && choices->run_autooptimizer &&
+      choices->projection_parameters == std::vector<double>({100.0, 0.0, 0.0});
   if (!matches || YAML::Dump(config) != before) {
     std::cerr << "backend choice reader must resolve the complete tuple without mutating its YAML document: "
               << choices.status() << std::endl;
@@ -1839,6 +1915,7 @@ bool expect_akaze_calibration_loading_contract(const fs::path& tmpdir) {
   }
   const auto loaded = hm::stitching::load_akaze_matching_calibration(valid);
   if (!loaded.ok() || !loaded->left.has_value() || !loaded->right.has_value() ||
+      !loaded->source_profile_fingerprint.has_value() || loaded->source_profile_fingerprint->size() != 64 ||
       loaded->left->resolution != cv::Size(7680, 4320) || std::abs(loaded->right->fy - 4983.25) > 1e-9) {
     std::cerr << "valid paired AKAZE calibration was not loaded: " << loaded.status() << std::endl;
     return false;
@@ -1889,6 +1966,10 @@ int main() {
 
   if (!expect_mapping_algorithm_changes_require_regeneration(tmpdir)) {
     finish(tmpdir, 48);
+  }
+
+  if (!expect_akaze_profile_changes_require_regeneration(tmpdir)) {
+    finish(tmpdir, 50);
   }
 
   if (!expect_backend_choice_reader_preserves_document()) {

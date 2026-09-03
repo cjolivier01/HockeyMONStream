@@ -54,6 +54,8 @@ class HuginProject {
     std::optional<StitchProjection> projection;
     std::optional<std::vector<double>> projection_parameters;
     std::optional<StitchProjectionFraming> projection_framing;
+    std::optional<ControlPointMatcher> control_point_matcher;
+    std::optional<std::string> akaze_calibration_fingerprint;
   };
 
   struct Options {

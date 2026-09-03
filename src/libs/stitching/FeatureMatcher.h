@@ -50,6 +50,9 @@ struct FisheyeLensCalibration {
 struct AkazeMatchingCalibration {
   std::optional<FisheyeLensCalibration> left;
   std::optional<FisheyeLensCalibration> right;
+  // SHA-256 of the exact bounded profile contents used to produce left/right.
+  // Missing profiles intentionally leave this empty.
+  std::optional<std::string> source_profile_fingerprint;
 };
 
 class FeatureMatcher {

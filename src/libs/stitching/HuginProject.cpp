@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <charconv>
 #include <cmath>
@@ -203,7 +204,8 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   const bool algorithm_aware = lines.size() == 11 && lines[0] == "version=3";
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
-  if (!legacy && !algorithm_aware && !parameter_aware && !framing_aware)
+  const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
+  if (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware)
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
   HM_ASSIGN_OR_RETURN(provenance.max_output_width, parse_canvas_provenance_value(lines[1], "max-output-width"));
@@ -229,7 +231,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   }
   provenance.max_output_width_applied = max_output_width_applied != 0;
   provenance.max_canvas_dimension_applied = max_canvas_dimension_applied != 0;
-  if (algorithm_aware || parameter_aware || framing_aware) {
+  if (algorithm_aware || parameter_aware || framing_aware || calibration_aware) {
     std::string mapping_backend;
     std::string projection;
     HM_ASSIGN_OR_RETURN(mapping_backend, parse_canvas_provenance_string(lines[9], "mapping-backend"));
@@ -237,7 +239,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
     HM_ASSIGN_OR_RETURN(provenance.mapping_backend, ParseMappingBackend(mapping_backend));
     HM_ASSIGN_OR_RETURN(provenance.projection, ParseStitchProjection(projection));
     HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(*provenance.mapping_backend, *provenance.projection));
-    if (parameter_aware || framing_aware) {
+    if (parameter_aware || framing_aware || calibration_aware) {
       std::string parameters;
       HM_ASSIGN_OR_RETURN(parameters, parse_canvas_provenance_string(lines[11], "projection-parameters"));
       if (parameters == "none") {
@@ -248,7 +250,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
       }
       HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*provenance.projection, *provenance.projection_parameters));
     }
-    if (framing_aware) {
+    if (framing_aware || calibration_aware) {
       size_t auto_fov = 0;
       size_t auto_canvas = 0;
       size_t auto_crop = 0;
@@ -266,10 +268,29 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
       framing.auto_canvas = auto_canvas != 0;
       framing.auto_crop = auto_crop != 0;
       if (*provenance.mapping_backend == MappingBackend::kNona) {
-        HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(
-            *provenance.projection, *provenance.projection_parameters, framing));
+        HM_RETURN_IF_ERROR(
+            ValidateStitchProjectionFraming(*provenance.projection, *provenance.projection_parameters, framing));
       }
       provenance.projection_framing = framing;
+    }
+    if (calibration_aware) {
+      std::string matcher;
+      HM_ASSIGN_OR_RETURN(matcher, parse_canvas_provenance_string(lines[16], "control-point-matcher"));
+      HM_ASSIGN_OR_RETURN(provenance.control_point_matcher, ParseControlPointMatcher(matcher));
+      HM_ASSIGN_OR_RETURN(
+          provenance.akaze_calibration_fingerprint,
+          parse_canvas_provenance_string(lines[17], "akaze-calibration-fingerprint"));
+      const std::string& fingerprint = *provenance.akaze_calibration_fingerprint;
+      const bool sha256 = fingerprint.size() == 71 && fingerprint.rfind("sha256:", 0) == 0 &&
+          std::all_of(fingerprint.begin() + 7, fingerprint.end(), [](unsigned char value) {
+                            return std::isxdigit(value) != 0 && (value < 'A' || value > 'F');
+                          });
+      if ((*provenance.control_point_matcher == ControlPointMatcher::kAkazeHamming && fingerprint != "absent" &&
+           !sha256) ||
+          (*provenance.control_point_matcher != ControlPointMatcher::kAkazeHamming &&
+           fingerprint != "not-applicable")) {
+        return absl::FailedPreconditionError("Invalid AKAZE calibration provenance state");
+      }
     }
   }
   return provenance;
@@ -1671,8 +1692,7 @@ absl::Status HuginProject::ApplyProjection(
 
   std::ostringstream configured_fov;
   configured_fov.imbue(std::locale::classic());
-  configured_fov << std::setprecision(std::numeric_limits<double>::max_digits10)
-                 << projection_framing.horizontal_fov;
+  configured_fov << std::setprecision(std::numeric_limits<double>::max_digits10) << projection_framing.horizontal_fov;
   auto convert_project = [&](const std::optional<std::string>& canvas) -> absl::Status {
     std::error_code remove_error;
     fs::remove(temporary_path, remove_error);
@@ -1682,8 +1702,7 @@ absl::Status HuginProject::ApplyProjection(
       command.emplace_back(
           "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
     }
-    command.emplace_back(
-        projection_framing.auto_fov ? "--fov=AUTO" : "--fov=" + configured_fov.str());
+    command.emplace_back(projection_framing.auto_fov ? "--fov=AUTO" : "--fov=" + configured_fov.str());
     if (canvas.has_value())
       command.emplace_back("--canvas=" + *canvas);
     command.emplace_back(projection_framing.auto_crop ? "--crop=AUTO" : "--crop=0,100,0,100%");
@@ -1778,8 +1797,8 @@ absl::Status HuginProject::ApplyProjection(
     return effective_size;
   };
 
-  HM_RETURN_IF_ERROR(convert_project(projection_framing.auto_canvas ? std::optional<std::string>("AUTO")
-                                                                    : std::nullopt));
+  HM_RETURN_IF_ERROR(
+      convert_project(projection_framing.auto_canvas ? std::optional<std::string>("AUTO") : std::nullopt));
   std::pair<size_t, size_t> effective_size;
   HM_ASSIGN_OR_RETURN(effective_size, validate_converted_project());
   const size_t width_limit = original_canvas->first;
@@ -2019,13 +2038,8 @@ absl::Status HuginProject::Configure(
           "started",
           "Applying " + std::string(StitchProjectionDetails(*options.projection).display_name) + " projection");
     }
-    HM_RETURN_IF_ERROR(
-        ApplyProjection(
-            staging,
-            *options.projection,
-            options.projection_parameters,
-            options.projection_framing,
-            options.is_cancelled));
+    HM_RETURN_IF_ERROR(ApplyProjection(
+        staging, *options.projection, options.projection_parameters, options.projection_framing, options.is_cancelled));
     if (options.progress)
       options.progress("projection", "complete", "Projection-aware canvas and crop are ready");
   }
@@ -2261,8 +2275,7 @@ absl::Status HuginProject::Configure(
       : options.projection_parameters;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
   provenance.imbue(std::locale::classic());
-  provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
-             << "version=5\n"
+  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=6\n"
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -2281,7 +2294,18 @@ absl::Status HuginProject::Configure(
              << "projection-auto-fov=" << (options.projection_framing.auto_fov ? 1 : 0) << '\n'
              << "projection-horizontal-fov=" << options.projection_framing.horizontal_fov << '\n'
              << "projection-auto-canvas=" << (options.projection_framing.auto_canvas ? 1 : 0) << '\n'
-             << "projection-auto-crop=" << (options.projection_framing.auto_crop ? 1 : 0) << '\n';
+             << "projection-auto-crop=" << (options.projection_framing.auto_crop ? 1 : 0) << '\n'
+             << "control-point-matcher=" << ControlPointMatcherName(options.control_point_matcher) << '\n'
+             << "akaze-calibration-fingerprint=";
+  if (options.control_point_matcher != ControlPointMatcher::kAkazeHamming) {
+    provenance << "not-applicable\n";
+  } else if (!options.akaze_calibration.left.has_value()) {
+    provenance << "absent\n";
+  } else if (options.akaze_calibration.source_profile_fingerprint.has_value()) {
+    provenance << "sha256:" << *options.akaze_calibration.source_profile_fingerprint << '\n';
+  } else {
+    return absl::InvalidArgumentError("Calibrated AKAZE requires source profile fingerprint provenance");
+  }
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;

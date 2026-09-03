@@ -920,37 +920,6 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
   if (accepted.size() < 6) {
     return absl::NotFoundError("AKAZE fundamental-matrix filtering retained fewer than six matches");
   }
-
-  left_points.clear();
-  right_points.clear();
-  left_points.reserve(accepted.size());
-  right_points.reserve(accepted.size());
-  for (const FeatureMatch& match : accepted) {
-    left_points.push_back(match.left);
-    right_points.push_back(match.right);
-  }
-  cv::Mat mapping_inlier_mask;
-  const double source_coordinate_scale = std::max(
-      {1.0,
-       static_cast<double>(left->source_size.width) / left->detector_size.width,
-       static_cast<double>(left->source_size.height) / left->detector_size.height,
-       static_cast<double>(right->source_size.width) / right->detector_size.width,
-       static_cast<double>(right->source_size.height) / right->detector_size.height});
-  const cv::Mat affine = cv::estimateAffine2D(
-      right_points, left_points, mapping_inlier_mask, cv::RANSAC, 2.5 * source_coordinate_scale, 2000, 0.999, 10);
-  if (affine.empty() || mapping_inlier_mask.total() != accepted.size()) {
-    return absl::NotFoundError("AKAZE could not isolate a mapping-coherent set of epipolar inliers");
-  }
-  std::vector<FeatureMatch> mapping_inliers;
-  mapping_inliers.reserve(accepted.size());
-  for (size_t index = 0; index < accepted.size(); ++index) {
-    if (mapping_inlier_mask.ptr<unsigned char>()[index] != 0)
-      mapping_inliers.push_back(accepted[index]);
-  }
-  if (mapping_inliers.size() < 6) {
-    return absl::NotFoundError("AKAZE mapping-coherence filtering retained fewer than six matches");
-  }
-  accepted = std::move(mapping_inliers);
   std::stable_sort(
       accepted.begin(), accepted.end(), [](const FeatureMatch& left_match, const FeatureMatch& right_match) {
         return std::make_tuple(-left_match.score, left_match.left_index, left_match.right_index) <
