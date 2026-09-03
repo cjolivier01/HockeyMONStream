@@ -581,6 +581,7 @@ class HStreamWindow : public QMainWindow {
   qint64 playback_duration_ns_{0};
   std::optional<qint64> deferred_playback_seek_ns_;
   std::optional<qint64> pending_playback_seek_target_ns_;
+  bool resume_progress_reset_waiting_for_seek_{false};
   quint64 playback_seek_generation_{0};
   quint64 pending_playback_seek_generation_{0};
   quint64 playback_seek_recovery_generation_{0};

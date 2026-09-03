@@ -37,6 +37,7 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QStyleOptionSlider>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QTimeEdit>
@@ -173,6 +174,39 @@ bool expect(bool condition, const std::string& message) {
     return false;
   }
   return true;
+}
+
+int expected_slider_value_at(const QSlider* slider, const QPoint& position) {
+  if (!slider)
+    return 0;
+  QStyleOptionSlider option;
+  option.initFrom(slider);
+  option.orientation = slider->orientation();
+  option.minimum = slider->minimum();
+  option.maximum = slider->maximum();
+  option.sliderPosition = slider->sliderPosition();
+  option.sliderValue = slider->value();
+  option.singleStep = slider->singleStep();
+  option.pageStep = slider->pageStep();
+  option.tickPosition = slider->tickPosition();
+  option.upsideDown = slider->orientation() == Qt::Horizontal
+      ? slider->invertedAppearance() != (option.direction == Qt::RightToLeft)
+      : !slider->invertedAppearance();
+  const QRect groove =
+      slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, slider);
+  const QRect handle =
+      slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, slider);
+  const bool horizontal = slider->orientation() == Qt::Horizontal;
+  const int handle_length = horizontal ? handle.width() : handle.height();
+  const int travel_min = horizontal ? groove.left() : groove.top();
+  const int travel_max = (horizontal ? groove.right() : groove.bottom()) - handle_length + 1;
+  if (handle_length <= 0 || travel_max <= travel_min)
+    return slider->minimum();
+  const int pointer_position = horizontal ? position.x() : position.y();
+  const int slider_position =
+      std::clamp(pointer_position - handle_length / 2, travel_min, travel_max) - travel_min;
+  return QStyle::sliderValueFromPosition(
+      slider->minimum(), slider->maximum(), slider_position, travel_max - travel_min, option.upsideDown);
 }
 
 bool write_tiff_fixture(const fs::path& path) {
@@ -960,8 +994,9 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "    global preview_activation_count, preview_disable_stalled, stall_next_progress_reset, "
       "delayed_progress_generation, drop_progress_resets, stall_next_seek, delayed_seek_position, "
-      "delayed_seek_generation, timeout_next_seek, backend_seek_position, reject_next_preview_overlays, "
-      "delay_next_preview_overlays, delayed_preview_overlay_responses, runtime_control_delay_seconds, "
+      "delayed_seek_generation, timeout_next_seek, reject_next_seek, backend_seek_position, "
+      "reject_next_preview_overlays, delay_next_preview_overlays, delayed_preview_overlay_responses, "
+      "runtime_control_delay_seconds, "
       "reject_next_runtime_control\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
   file.write("    if line.startswith('@test-exit'):\n");
@@ -1014,6 +1049,10 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-timeout-seek'):\n");
   file.write("        timeout_next_seek = True\n");
   file.write("        print('test seek reconstruction timeout armed', flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-reject-seek'):\n");
+  file.write("        reject_next_seek = True\n");
+  file.write("        print('test seek rejection armed', flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-set-backend-position '):\n");
   file.write("        backend_seek_position = int(line.rstrip('\\n').split(' ', 1)[1])\n");
@@ -1089,7 +1128,8 @@ bool write_fake_runner(const QString& path) {
   file.write("            delayed_seek_position = position_ns\n");
   file.write("            delayed_seek_generation = generation\n");
   file.write("            return\n");
-  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
+  file.write("        if reject_next_seek or os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
+  file.write("            reject_next_seek = False\n");
   file.write(
       "            print('HSTREAM_SEEK status=rejected generation=' + generation + "
       "' reason=nonlocal-output-active', flush=True)\n");
@@ -1116,7 +1156,8 @@ bool write_fake_runner(const QString& path) {
   file.write("            delayed_seek_position = position_ns\n");
   file.write("            delayed_seek_generation = generation\n");
   file.write("            return\n");
-  file.write("        if os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
+  file.write("        if reject_next_seek or os.environ.get('HSTREAM_UI_TEST_REJECT_SEEK') == '1':\n");
+  file.write("            reject_next_seek = False\n");
   file.write(
       "            print('HSTREAM_SEEK status=rejected generation=' + generation + "
       "' reason=nonlocal-output-active', flush=True)\n");
@@ -1192,6 +1233,7 @@ bool write_fake_runner(const QString& path) {
   file.write("delayed_seek_position = ''\n");
   file.write("delayed_seek_generation = ''\n");
   file.write("timeout_next_seek = False\n");
+  file.write("reject_next_seek = False\n");
   file.write("backend_seek_position = 42000000000\n");
   file.write("reject_next_preview_overlays = False\n");
   file.write("reject_next_runtime_control = False\n");
@@ -3536,15 +3578,18 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const int absolute_seek_commands_before_drag = window->logText().count("stdin:@seek ");
   const QPoint seek_drag_start(seek_slider->width() / 5, seek_slider->height() / 2);
   const QPoint seek_drag_finish(seek_slider->width() * 3 / 4, seek_slider->height() / 2);
-  QElapsedTimer seek_drag_timer;
-  seek_drag_timer.start();
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
+  bool drag_reached_left_endpoint = false;
+  bool drag_reached_right_endpoint = false;
   for (int index = 0; index < 500; ++index) {
     const int x = 1 + (index * std::max(1, seek_slider->width() - 2) / 499);
     QTest::mouseMove(seek_slider, QPoint(x, seek_slider->height() / 2), 0);
+    if (index == 0)
+      drag_reached_left_endpoint = seek_slider->value() == seek_slider->minimum();
+    if (index == 499)
+      drag_reached_right_endpoint = seek_slider->value() == seek_slider->maximum();
   }
-  const bool drag_remained_local =
-      seek_drag_timer.elapsed() < 2000 && window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
+  const bool drag_remained_local = window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mouseRelease(
       seek_slider, Qt::LeftButton, Qt::NoModifier, QPoint(seek_slider->width() + 20, seek_slider->height() / 2), 0);
   QApplication::processEvents();
@@ -3552,7 +3597,26 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !seek_slider->isSliderDown() && window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
-  const int released_seek_value = seek_slider->value();
+  seek_slider->setEnabled(false);
+  const bool disable_cancelled_drag = !seek_slider->isSliderDown();
+  seek_slider->setEnabled(true);
+  QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
+  QApplication::processEvents();
+  const bool disabled_drag_sent_no_seek =
+      window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
+  QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
+  QTest::mouseMove(seek_slider, seek_drag_finish, 0);
+  QEvent ungrab_event(QEvent::UngrabMouse);
+  QApplication::sendEvent(seek_slider, &ungrab_event);
+  const bool ungrab_cancelled_drag = !seek_slider->isSliderDown();
+  QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
+  QApplication::processEvents();
+  const bool ungrabbed_drag_sent_no_seek =
+      window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
+  QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
+  QTest::mouseMove(seek_slider, seek_drag_finish, 0);
+  const int released_seek_value = expected_slider_value_at(seek_slider, seek_drag_finish);
+  const bool release_position_mapped_to_style_geometry = seek_slider->value() == released_seek_value;
   const qint64 released_seek_target_ns = static_cast<qint64>(
       static_cast<long double>(released_seek_value) * 600'000'000'000.0L /
       static_cast<long double>(seek_slider->maximum()));
@@ -3566,11 +3630,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::qWait(10);
   }
   if (!expect(
-          drag_remained_local && outside_release_cancelled &&
+          drag_remained_local && drag_reached_left_endpoint && drag_reached_right_endpoint &&
+              outside_release_cancelled && disable_cancelled_drag && disabled_drag_sent_no_seek &&
+              ungrab_cancelled_drag && ungrabbed_drag_sent_no_seek && release_position_mapped_to_style_geometry &&
               window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag + 1 &&
               window->logText().contains(released_seek_command),
-          "Slider motion must remain responsive without backend work, release outside must cancel, and release "
-          "over the slider must issue exactly one seek at that X position")) {
+          "Slider motion must remain local, release outside/disable/ungrab must cancel safely, and release over the "
+          "slider must issue exactly one seek at the style-mapped X position")) {
     return false;
   }
   const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
@@ -4238,7 +4304,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const QPoint paused_seek_position(seek_slider->width() * 2 / 5, seek_slider->height() / 2);
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_slider->rect().center(), 0);
   QTest::mouseMove(seek_slider, paused_seek_position, 0);
-  const int paused_seek_value = seek_slider->value();
+  const int paused_seek_value = expected_slider_value_at(seek_slider, paused_seek_position);
   const qint64 paused_seek_target_ns = static_cast<qint64>(
       static_cast<long double>(paused_seek_value) * 600'000'000'000.0L /
       static_cast<long double>(seek_slider->maximum()));
@@ -4252,6 +4318,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Paused playback must accept and display a slider target without sending backend work")) {
     return false;
   }
+  const int queued_seek_logs_before_relative = window->logText().count("playback seek queued for resume");
+  activate(seek_forward);
+  QApplication::processEvents();
+  const qint64 replaced_paused_seek_target_ns =
+      std::min<qint64>(600'000'000'000LL, paused_seek_target_ns + 10'000'000'000LL);
+  if (!expect(
+          window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag &&
+              window->logText().count("playback seek queued for resume") == queued_seek_logs_before_relative + 1,
+          "A paused +10s request must replace the deferred slider target without contacting the backend")) {
+    return false;
+  }
+  pipeline_process->write("@test-reject-seek\n");
+  const int progress_reset_commands_before_resume = window->logText().count("stdin:@reset-progress-rate");
   QTest::mouseClick(render_video, Qt::LeftButton);
   for (int i = 0;
        i < 20 && preview_status->text() != "GPU preview will finish disabling when the paused pipeline resumes";
@@ -4269,10 +4348,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   activate(pause);
-  const QString resumed_seek_command = QString("stdin:@seek %1 ").arg(paused_seek_target_ns);
+  const QString resumed_seek_command = QString("stdin:@seek %1 ").arg(replaced_paused_seek_target_ns);
   for (int i = 0; i < 100 &&
        (window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag ||
-        !window->logText().contains(resumed_seek_command));
+        !window->logText().contains(resumed_seek_command) ||
+        !window->logText().contains("playback seek rejected: nonlocal-output-active") ||
+        window->logText().count("stdin:@reset-progress-rate") <= progress_reset_commands_before_resume);
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -4280,13 +4361,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           window->logText().count("stdin:@seek ") == seek_commands_before_paused_drag + 1 &&
               window->logText().contains(resumed_seek_command) &&
-              window->logText().contains("stdin:@reset-progress-rate") &&
+              window->logText().contains("playback seek rejected: nonlocal-output-active") &&
+              window->logText().count("stdin:@reset-progress-rate") == progress_reset_commands_before_resume + 1 &&
               playback_progress->toolTip().contains("Pipeline: PLAYING") &&
               playback_progress->toolTip().contains("ETA: Warming up") &&
               playback_progress->toolTip().contains("Processing speed: Warming up") &&
               !playback_progress->toolTip().contains("Processing speed: 0.50x"),
-          "Resuming should issue the one deferred seek, reset every backend rate, and suppress contaminated "
-          "multi-pipeline samples")) {
+          "Resuming must issue only the latest deferred seek and reset backend rate sampling even when it is "
+          "rejected")) {
     return false;
   }
   for (int i = 0;

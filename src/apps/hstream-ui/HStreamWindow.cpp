@@ -347,6 +347,18 @@ class PlaybackSeekSlider : public WheelPassthroughSlider {
   }
 
  protected:
+  bool event(QEvent* event) override {
+    if (event && event->type() == QEvent::UngrabMouse && drag_active_)
+      cancelDrag(/*notify=*/true);
+    return WheelPassthroughSlider::event(event);
+  }
+
+  void changeEvent(QEvent* event) override {
+    if (event && event->type() == QEvent::EnabledChange && !isEnabled() && drag_active_)
+      cancelDrag(/*notify=*/false);
+    WheelPassthroughSlider::changeEvent(event);
+  }
+
   void mousePressEvent(QMouseEvent* event) override {
     if (!event || event->button() != Qt::LeftButton) {
       WheelPassthroughSlider::mousePressEvent(event);
@@ -395,14 +407,26 @@ class PlaybackSeekSlider : public WheelPassthroughSlider {
   int valueAt(const QPoint& position) const {
     QStyleOptionSlider option;
     initStyleOption(&option);
-    if (orientation() == Qt::Horizontal) {
-      const int span = std::max(1, width() - 1);
-      return QStyle::sliderValueFromPosition(
-          minimum(), maximum(), std::clamp(position.x(), 0, span), span, option.upsideDown);
-    }
-    const int span = std::max(1, height() - 1);
+    const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+    const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+    const bool horizontal = orientation() == Qt::Horizontal;
+    const int handle_length = horizontal ? handle.width() : handle.height();
+    const int slider_min = horizontal ? groove.left() : groove.top();
+    const int slider_max = (horizontal ? groove.right() : groove.bottom()) - handle_length + 1;
+    if (handle_length <= 0 || slider_max <= slider_min)
+      return minimum();
+    const int pointer_position = horizontal ? position.x() : position.y();
+    const int slider_position =
+        std::clamp(pointer_position - handle_length / 2, slider_min, slider_max) - slider_min;
     return QStyle::sliderValueFromPosition(
-        minimum(), maximum(), std::clamp(position.y(), 0, span), span, option.upsideDown);
+        minimum(), maximum(), slider_position, slider_max - slider_min, option.upsideDown);
+  }
+
+  void cancelDrag(bool notify) {
+    drag_active_ = false;
+    setSliderDown(false);
+    if (notify && release_handler_)
+      release_handler_(std::nullopt);
   }
 
   ReleaseHandler release_handler_;
@@ -8516,9 +8540,12 @@ void HStreamWindow::pauseOrResumePipeline() {
     if (deferred_playback_seek_ns_.has_value()) {
       const qint64 target_ns = *deferred_playback_seek_ns_;
       deferred_playback_seek_ns_.reset();
+      resume_progress_reset_waiting_for_seek_ = true;
       sendPlaybackSeek(target_ns);
-      if (pending_playback_seek_generation_ == 0)
+      if (pending_playback_seek_generation_ == 0) {
+        resume_progress_reset_waiting_for_seek_ = false;
         beginPlaybackProgressReset();
+      }
     } else {
       beginPlaybackProgressReset();
     }
@@ -8535,6 +8562,7 @@ void HStreamWindow::stopPipeline() {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     deferred_playback_seek_ns_.reset();
     pending_playback_seek_target_ns_.reset();
+    resume_progress_reset_waiting_for_seek_ = false;
     closeStitchingCalibrationDialog();
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline stopped");
@@ -8548,6 +8576,7 @@ void HStreamWindow::stopPipeline() {
   pipeline_stop_requested_ = true;
   deferred_playback_seek_ns_.reset();
   pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   if (calibration_pending_ && calibration_detail_ && !calibration_dialog_failed_)
     calibration_detail_->setText("Stopping calibration…");
 #ifdef Q_OS_UNIX
@@ -8648,6 +8677,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   playback_seek_recovery_generation_ = 0;
   deferred_playback_seek_ns_.reset();
   pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   playback_seek_channel_available_ = false;
   readPipelineOutput();
   flushPipelineOutputFragments();
@@ -8874,6 +8904,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
       playback_seek_recovery_generation_ = 0;
       deferred_playback_seek_ns_.reset();
       pending_playback_seek_target_ns_.reset();
+      resume_progress_reset_waiting_for_seek_ = false;
       playback_seek_channel_available_ = false;
       if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked() &&
           pending_preview_channel_ == "none" && pending_preview_generation_ != 0) {
@@ -8910,6 +8941,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   playback_seek_recovery_generation_ = 0;
   deferred_playback_seek_ns_.reset();
   pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   playback_seek_channel_available_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
@@ -9221,6 +9253,7 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
       return true;
     }
     playback_seek_recovery_generation_ = 0;
+    resume_progress_reset_waiting_for_seek_ = false;
     appendLog("playback recovered after a timed-out seek reconstruction");
     beginPlaybackProgressReset();
     updatePlaybackSeekControls();
@@ -9235,6 +9268,7 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
   pending_playback_seek_target_ns_.reset();
   const QString status = fields["status"];
   if (status == "ok") {
+    resume_progress_reset_waiting_for_seek_ = false;
     bool position_ok = false;
     const quint64 position = fields["position_ns"].toULongLong(&position_ok);
     if (position_ok) {
@@ -9245,6 +9279,9 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
   } else {
     if (fields["reason"] == "pipeline-recreate-timeout") {
       playback_seek_recovery_generation_ = generation;
+    } else if (resume_progress_reset_waiting_for_seek_) {
+      resume_progress_reset_waiting_for_seek_ = false;
+      beginPlaybackProgressReset();
     }
     appendLog(QString("playback seek %1: %2").arg(status, fields["reason"]));
   }
@@ -9473,6 +9510,7 @@ void HStreamWindow::resetPlaybackProgress(bool starting) {
   playback_duration_ns_ = 0;
   deferred_playback_seek_ns_.reset();
   pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   pending_playback_seek_generation_ = 0;
   playback_seek_recovery_generation_ = 0;
   playback_seek_channel_available_ = starting;
