@@ -1492,11 +1492,12 @@ absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::Read
 
 absl::StatusOr<std::string> HuginProject::InsertControlPoints(
     const std::string& pto,
-    const std::vector<FeatureMatch>& matches) {
-  if (matches.size() < kMinimumUsableMatches) {
+    const std::vector<FeatureMatch>& matches,
+    size_t minimum_control_points) {
+  if (matches.size() < minimum_control_points) {
     return absl::FailedPreconditionError(
         "Feature matcher produced " + std::to_string(matches.size()) + ", fewer than the required " +
-        std::to_string(kMinimumUsableMatches) + " control points");
+        std::to_string(minimum_control_points) + " control points");
   }
   std::ostringstream points;
   points.imbue(std::locale::classic());
@@ -1905,7 +1906,11 @@ absl::Status HuginProject::Configure(
         "Calibrated AKAZE control points are rectified and require an OpenCV mapping backend; NONA does not consume "
         "the GoPro KB4 lens profile");
   }
-  if (matches.size() < kMinimumUsableMatches) {
+  const size_t minimum_usable_matches = options.control_point_matcher == ControlPointMatcher::kAkazeHamming &&
+          options.mapping_backend != MappingBackend::kNona
+      ? 6
+      : kMinimumUsableMatches;
+  if (matches.size() < minimum_usable_matches) {
     return absl::FailedPreconditionError("Insufficient control points for Hugin optimization");
   }
   if (options.mapping_backend == MappingBackend::kNona && !options.run_autooptimizer) {
@@ -1975,7 +1980,7 @@ absl::Status HuginProject::Configure(
   auto project = read_file(staging / "hm_project.pto");
   if (!project.ok())
     return project.status();
-  auto with_points = InsertControlPoints(*project, matches);
+  auto with_points = InsertControlPoints(*project, matches, minimum_usable_matches);
   if (!with_points.ok())
     return with_points.status();
   status = write_file(staging / "hm_project.pto", *with_points);

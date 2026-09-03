@@ -2587,7 +2587,10 @@ absl::Status create_control_points(
         "the GoPro KB4 lens profile");
   }
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher, akaze_calibration));
-  const size_t minimum_matches = control_point_matcher == ControlPointMatcher::kAkazeHamming ? 6 : 16;
+  const size_t minimum_matches = control_point_matcher == ControlPointMatcher::kAkazeHamming &&
+          mapping_backend != MappingBackend::kNona
+      ? 6
+      : 16;
   struct CandidateFramePair {
     size_t index{0};
     std::vector<FeatureMatch> accepted;
@@ -2675,6 +2678,7 @@ absl::Status create_control_points(
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
+  options.control_point_matcher = control_point_matcher;
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;

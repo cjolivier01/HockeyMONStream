@@ -966,6 +966,30 @@ int main() {
         "optimizer-disabled calibration must publish the generated Hugin project without modifying its geometry");
   }
 
+  hm::stitching::HuginProject::Options six_point_akaze_options;
+  six_point_akaze_options.control_point_matcher = hm::stitching::ControlPointMatcher::kAkazeHamming;
+  std::vector<hm::stitching::FeatureMatch> six_point_akaze_matches;
+  for (const int y : {6, 36}) {
+    for (const int x : {16, 36, 56}) {
+      six_point_akaze_matches.push_back(
+          {{static_cast<float>(x), static_cast<float>(y)},
+           {static_cast<float>(x - 8), static_cast<float>(y + 3)},
+           0.9f});
+    }
+  }
+  fs::create_directories(root / "six-point-akaze-game");
+  ::setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", 1);
+  const auto six_point_akaze = hm::stitching::HuginProject::Configure(
+      root / "six-point-akaze-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      six_point_akaze_matches,
+      six_point_akaze_options);
+  ::unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
+  if (!six_point_akaze.ok())
+    std::cerr << six_point_akaze << '\n';
+  ok &= expect(six_point_akaze.ok(), "native AKAZE mapping must honor its six-control-point minimum");
+
   hm::stitching::HuginProject::Options invalid_nona_options;
   invalid_nona_options.mapping_backend = hm::stitching::MappingBackend::kNona;
   const auto invalid_nona = hm::stitching::HuginProject::Configure(

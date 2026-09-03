@@ -35,6 +35,8 @@ constexpr size_t kMinimumRobustMagsacInliers = 8;
 constexpr double kMinimumMagsacInlierRatio = 0.5;
 constexpr double kMinimumMagsacSourceSpanRatio = 0.1;
 constexpr double kMinimumMagsacSourceAreaRatio = 0.01;
+constexpr double kMinimumCalibratedAkazeSourceSpanRatio = 0.04;
+constexpr double kMinimumCalibratedAkazeSourceAreaRatio = 0.0025;
 
 absl::Status validate_image(const cv::Mat& image, const char* name) {
   if (image.empty() || image.type() != CV_8UC3)
@@ -101,7 +103,9 @@ absl::Status validate_magsac_consensus(
     size_t inlier_count,
     const cv::Mat& left_image,
     const cv::Mat& right_image,
-    double minimum_inlier_ratio = kMinimumMagsacInlierRatio) {
+    double minimum_inlier_ratio = kMinimumMagsacInlierRatio,
+    double minimum_span_ratio = kMinimumMagsacSourceSpanRatio,
+    double minimum_area_ratio = kMinimumMagsacSourceAreaRatio) {
   if (matches.size() < kRobustConsensusMatchCount)
     return absl::OkStatus();
 
@@ -128,7 +132,10 @@ absl::Status validate_magsac_consensus(
     }
   }
 
-  const auto validate_coverage = [](const std::vector<cv::Point2f>& points, const cv::Mat& image, const char* label) {
+  const auto validate_coverage = [minimum_span_ratio, minimum_area_ratio](
+                                     const std::vector<cv::Point2f>& points,
+                                     const cv::Mat& image,
+                                     const char* label) {
     float minimum_x = points.front().x;
     float maximum_x = minimum_x;
     float minimum_y = points.front().y;
@@ -143,12 +150,15 @@ absl::Status validate_magsac_consensus(
     cv::convexHull(points, hull);
     const double covered_area = std::abs(cv::contourArea(hull));
     const double image_area = static_cast<double>(image.cols) * image.rows;
-    if (maximum_x - minimum_x < kMinimumMagsacSourceSpanRatio * image.cols ||
-        maximum_y - minimum_y < kMinimumMagsacSourceSpanRatio * image.rows ||
-        covered_area < kMinimumMagsacSourceAreaRatio * image_area) {
+    const double x_span_ratio = (maximum_x - minimum_x) / image.cols;
+    const double y_span_ratio = (maximum_y - minimum_y) / image.rows;
+    const double area_ratio = covered_area / image_area;
+    if (x_span_ratio < minimum_span_ratio || y_span_ratio < minimum_span_ratio ||
+        area_ratio < minimum_area_ratio) {
       return absl::FailedPreconditionError(
           std::string("OpenCV MAGSAC stitching transform has insufficient inlier coverage across the ") + label +
-          " image");
+          " image: x-span=" + std::to_string(x_span_ratio) + ", y-span=" + std::to_string(y_span_ratio) +
+          ", area=" + std::to_string(area_ratio));
     }
     return absl::OkStatus();
   };
@@ -464,11 +474,20 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
 #endif
     // Calibrated AKAZE supplies rectified points. Preserve the selected projective backend here and compose the KB4
     // distortion into the generated source remaps below.
+    double reprojection_threshold = kMagsacReprojectionThreshold;
+    if (lens_calibration.left.has_value()) {
+      // AKAZE detects on an at-most-1920px image and returns source-sized coordinates. Allow at least one detector
+      // pixel of localization error without loosening the standard three-pixel MAGSAC floor.
+      reprojection_threshold = std::max(
+          reprojection_threshold,
+          static_cast<double>(std::max({left_bgr.cols, left_bgr.rows, right_bgr.cols, right_bgr.rows})) /
+              FeatureMatcher::kAkazeMaximumDimension);
+    }
     right_to_left = cv::findHomography(
         right_points,
         left_points,
         method,
-        kMagsacReprojectionThreshold,
+        reprojection_threshold,
         inliers,
         kRansacMaxIterations,
         kRansacConfidence);
@@ -505,7 +524,18 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
         "OpenCV stitching transform has too few inlier control points: " + std::to_string(inlier_count));
   }
   if (backend == MappingBackend::kOpenCvMagsac) {
-    status = validate_magsac_consensus(matches, inliers, inlier_count, left_bgr, right_bgr);
+    // Calibrated AKAZE deliberately searches only the facing half and central vertical band of each image. Use an
+    // overlap-specific coverage floor while retaining the same 50% transform consensus and bounded-canvas checks.
+    const bool calibrated_akaze = lens_calibration.left.has_value();
+    status = validate_magsac_consensus(
+        matches,
+        inliers,
+        inlier_count,
+        left_bgr,
+        right_bgr,
+        kMinimumMagsacInlierRatio,
+        calibrated_akaze ? kMinimumCalibratedAkazeSourceSpanRatio : kMinimumMagsacSourceSpanRatio,
+        calibrated_akaze ? kMinimumCalibratedAkazeSourceAreaRatio : kMinimumMagsacSourceAreaRatio);
     if (!status.ok())
       return status;
   }
