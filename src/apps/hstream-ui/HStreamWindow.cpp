@@ -7583,6 +7583,10 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   while (calibration_diagnostic_lines_.size() > kMaximumCalibrationDiagnostics)
     calibration_diagnostic_lines_.removeFirst();
 
+  if (calibration_dialog_failed_ && calibration_detail_ && !calibration_failure_message_.isEmpty()) {
+    calibration_detail_->setText(stitchingCalibrationFailureAnalysis(calibration_failure_message_));
+  }
+
   if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && !calibration_dialog_failed_) {
     calibration_detail_->setText(
         QString(
@@ -7811,7 +7815,8 @@ void HStreamWindow::failStitchingCalibration(const QString& message) {
   calibration_headline_->setProperty("calibrationState", "failed");
   calibration_headline_->style()->unpolish(calibration_headline_);
   calibration_headline_->style()->polish(calibration_headline_);
-  calibration_detail_->setText(stitchingCalibrationFailureAnalysis(message));
+  calibration_failure_message_ = message;
+  calibration_detail_->setText(stitchingCalibrationFailureAnalysis(calibration_failure_message_));
   calibration_progress_->setVisible(false);
   calibration_cancel_button_->setVisible(false);
   calibration_ok_button_->setVisible(true);
@@ -8046,6 +8051,7 @@ void HStreamWindow::startPipeline() {
   active_projection_framing_ = stitchProjectionFraming();
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
+  calibration_failure_message_.clear();
   calibration_diagnostic_lines_.clear();
   calibration_rejected_hypotheses_ = 0;
   calibration_rejected_candidates_ = 0;
@@ -8553,14 +8559,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   playback_seek_recovery_generation_ = 0;
   playback_seek_channel_available_ = false;
   readPipelineOutput();
-  if (!pipeline_stdout_buffer_.isEmpty()) {
-    appendLog(pipeline_stdout_buffer_.trimmed());
-    pipeline_stdout_buffer_.clear();
-  }
-  if (!pipeline_stderr_buffer_.isEmpty()) {
-    appendLog(pipeline_stderr_buffer_.trimmed(), true);
-    pipeline_stderr_buffer_.clear();
-  }
+  flushPipelineOutputFragments();
   if (pipeline_inspector_)
     pipeline_inspector_->setPipelineRunning(false);
   const bool stopped_by_user = pipeline_stop_requested_;
@@ -8803,6 +8802,14 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     appendLog(error_message + "; pipeline is stopping at the user's request");
     return;
   }
+  if (error == QProcess::Crashed && calibration_pending_) {
+    // QProcess emits errorOccurred(Crashed) before finished(). Keep the
+    // calibration state intact until finished() drains and processes the last
+    // stdout/stderr bytes, so the failure dialog can report the real cause.
+    readPipelineOutput();
+    appendLog(error_message + "; collecting final calibration diagnostics");
+    return;
+  }
   if (calibration_pending_ && !calibration_dialog_failed_)
     failStitchingCalibration(QString("The calibration process could not continue: %1").arg(error_message));
   pipeline_paused_ = false;
@@ -8886,45 +8893,49 @@ void HStreamWindow::readPipelineOutput() {
       }
       QString line = buffer->left(newline);
       buffer->remove(0, newline + 1);
-      line.remove('\r');
-      if (!line.trimmed().isEmpty()) {
-        const QString trimmed = line.trimmed();
-        if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION"))
-          recordStitchingCalibrationDiagnostic(trimmed);
-        if (handleStartupProgressOutput(trimmed)) {
-          continue;
-        }
-        if (handleHighBitDepthOutput(trimmed)) {
-          continue;
-        }
-        if (handlePlaybackProgressOutput(trimmed)) {
-          continue;
-        }
-        if (handlePlaybackSeekOutput(trimmed)) {
-          continue;
-        }
-        if (handleGpuPreviewStatus(trimmed)) {
-          continue;
-        }
-        if (handlePreviewOverlayResponse(trimmed)) {
-          continue;
-        }
-        if (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed)) {
-          continue;
-        }
-        handleTelemetryOutputStatus(trimmed);
-        handleArchiveOutputStatus(trimmed);
-        appendLog(trimmed, stderr_output);
-        handleRuntimeControlResponse(trimmed);
-        handleScoreboardSelectorOutput(trimmed);
-        handleStitchingCalibrationOutput(trimmed);
-      }
+      handlePipelineOutputLine(line, stderr_output);
     }
   };
-  drain(pipeline_process_->readAllStandardOutput(), &pipeline_stdout_buffer_, false);
   if (pipeline_process_->processChannelMode() != QProcess::MergedChannels) {
     drain(pipeline_process_->readAllStandardError(), &pipeline_stderr_buffer_, true);
   }
+  drain(pipeline_process_->readAllStandardOutput(), &pipeline_stdout_buffer_, false);
+}
+
+void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_output) {
+  QString trimmed = line;
+  trimmed.remove('\r');
+  trimmed = trimmed.trimmed();
+  if (trimmed.isEmpty())
+    return;
+  recordStitchingCalibrationDiagnostic(trimmed);
+  if (handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
+      handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
+      handlePreviewOverlayResponse(trimmed) ||
+      (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
+    return;
+  }
+  handleTelemetryOutputStatus(trimmed);
+  handleArchiveOutputStatus(trimmed);
+  appendLog(trimmed, stderr_output);
+  handleRuntimeControlResponse(trimmed);
+  handleScoreboardSelectorOutput(trimmed);
+  handleStitchingCalibrationOutput(trimmed);
+}
+
+void HStreamWindow::flushPipelineOutputFragments() {
+  auto flush = [this](QString* buffer, bool stderr_output) {
+    if (!buffer || buffer->isEmpty())
+      return;
+    const QString fragment = *buffer;
+    buffer->clear();
+    handlePipelineOutputLine(fragment, stderr_output);
+  };
+  // Failure details are conventionally written to stderr while the structured
+  // terminal calibration event is written to stdout. Process stderr first so
+  // the first rendered failure analysis already contains the detailed cause.
+  flush(&pipeline_stderr_buffer_, true);
+  flush(&pipeline_stdout_buffer_, false);
 }
 
 bool HStreamWindow::handleStartupProgressOutput(const QString& line) {

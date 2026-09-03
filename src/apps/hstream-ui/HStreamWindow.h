@@ -205,6 +205,8 @@ class HStreamWindow : public QMainWindow {
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
+  void handlePipelineOutputLine(const QString& line, bool stderr_output);
+  void flushPipelineOutputFragments();
   bool handleStartupProgressOutput(const QString& line);
   bool handleHighBitDepthOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
@@ -583,6 +585,7 @@ class HStreamWindow : public QMainWindow {
   bool active_run_local_render_only_{false};
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
+  QString calibration_failure_message_;
   QStringList calibration_diagnostic_lines_;
   int calibration_rejected_hypotheses_{0};
   int calibration_rejected_candidates_{0};

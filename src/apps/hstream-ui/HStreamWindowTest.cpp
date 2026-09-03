@@ -869,7 +869,7 @@ bool write_fake_runner(const QString& path) {
   file.write("stitching_only = '--stitching-calibration-only' in sys.argv[1:]\n");
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    calibration_result = 'success'\n");
-  file.write("if calibration_result in ('success', 'failure', 'exit'):\n");
+  file.write("if calibration_result in ('success', 'failure', 'exit', 'diagnostic-exit'):\n");
   file.write("    time.sleep(float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS', '0')) / 1000.0)\n");
   file.write("    delay = float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS', '0')) / 1000.0\n");
   file.write("    events = []\n");
@@ -890,6 +890,12 @@ bool write_fake_runner(const QString& path) {
   file.write("        time.sleep(delay)\n");
   file.write("    if calibration_result == 'exit':\n");
   file.write("        sys.exit(9)\n");
+  file.write("    if calibration_result == 'diagnostic-exit':\n");
+  file.write(
+      "        sys.stderr.write('Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has "
+      "unsafe canvas extent')\n");
+  file.write("        sys.stderr.flush()\n");
+  file.write("        sys.exit(12)\n");
   file.write("    events = []\n");
   file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
   file.write(
@@ -2233,6 +2239,23 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
           detail->text().contains("ended before it finished") && detail->text().contains("exit 9"),
           "An early exit should show its exit diagnostics") ||
       !expect(ok->isVisible(), "An early-exit failure should be dismissible with OK")) {
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    return false;
+  }
+  activate(ok);
+
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "diagnostic-exit");
+  activate(start);
+  for (int i = 0; i < 300 && (window->pipelineStateText() != "STOPPED" || !headline->text().contains("failed")); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(dialog->isVisible(), "A diagnostic calibration exit should leave the failure popup open") ||
+      !expect(
+          detail->text().contains("unsafe or implausibly large canvas") &&
+              detail->text().contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent") &&
+              detail->text().contains("1 frame-set candidate"),
+          "The failure popup must analyze a final stderr diagnostic that has no trailing newline")) {
     qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
     return false;
   }
