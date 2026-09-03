@@ -1,8 +1,15 @@
-# hstream
+# HockeyMONStream
 
-High-performance hockey video processing pipeline built on NVIDIA DeepStream + GStreamer.
+High-performance hockey video production pipeline built on NVIDIA DeepStream and GStreamer.
 
-This repo contains a DeepStream-style C++ app (`pipeline-app`) plus custom GStreamer plugins for dual-camera stitching, rink masking, and play tracking. It is the performance-oriented counterpart to the Python implementation in the sibling `hm` repo. Production calibration is native C++/ONNX; Python is used only by an explicit, source-checkout parity test when HockeyMOM is installed.
+HockeyMONStream contains a DeepStream-style C++ app (`pipeline-app`) plus custom GStreamer plugins for dual-camera stitching, rink masking, play tracking, live routing, and archive output. It is the performance-oriented counterpart to the Python HockeyMON project. Production calibration uses native C++/ONNX and does not invoke Python; its explicit parity test requires the pinned HockeyMON Git checkout and declared parity dependencies.
+
+The repository and public product are named HockeyMONStream. Existing runtime
+and packaging identifiers retain their legacy HStream names for compatibility:
+the `hstream`, `hstream-cli`, `hstream-ui`, and `hstream-assets` executables;
+the `hstream` Debian package; HStream UI and installer labels;
+`~/.hstream/hstream.yaml` and `HM_*` configuration interfaces; and the
+`/opt/hstream` install root.
 
 This repo also includes DeepStream-Yolo-derived model conversion/config docs under `docs/` and DeepStream config snippets under `configs/deepstream/`.
 
@@ -22,7 +29,7 @@ This repo also includes DeepStream-Yolo-derived model conversion/config docs und
 3. Prepare a game directory:
    - Default: `$HOME/Videos/<game_id>`
    - Override: set `HM_GAME_DIR=/path/to/games_root` and it will use `${HM_GAME_DIR}/<game_id>`
-   - Expected camera layout matches HockeyMOM video discovery:
+   - Expected camera layout matches HockeyMON video discovery:
      - `${game_dir}/cam1/*.mp4`
      - `${game_dir}/cam2/*.mp4`
      - (GoPro and Insta360 chapter naming patterns supported)
@@ -60,7 +67,7 @@ Runtime behavior is controlled by YAML configs in `configs/` and CLI overrides:
 
 Configuration layers are applied in this order: the bundled `configs/baseline.yaml`, the
 per-user `~/.hstream/hstream.yaml` overlay, the game's private `config.yaml`,
-then command-line overrides. On first use HStream creates the user overlay with:
+then command-line overrides. On first use HockeyMONStream creates the user overlay with:
 
 ```yaml
 paths:
@@ -76,20 +83,21 @@ Successful UI archive runs are losslessly remuxed (not re-encoded) into the
 game directory as `<game-id>-tracking_output-with-audio.mp4`. The final MP4 is
 published only after ffmpeg completes its fast-start compatibility pass.
 
-The bundled baseline is an exact copy of HockeyMOM's `hmlib/config/baseline.yaml`
-at commit `242f45c148cc5fbc6a6c7255e9f65b2034d75a4c`. It is the default for source,
+The bundled baseline is an exact copy of HockeyMON's `hmlib/config/baseline.yaml`
+at the revision pinned in `scripts/hmlib-runtime-revision` (currently
+`cdaf03b13d23f5188e73dd938c3adf341070c972`). It is the default for source,
 Bazel/runfiles, and `/opt/hstream` package runs. Native play-tracker settings
 are materialized from the fully merged configuration, so lower-level plugin
 files do not maintain a second set of baseline defaults.
 
-Every baseline field with a native HStream consumer is translated from that
+Every baseline field with a native HockeyMONStream consumer is translated from that
 same merged configuration. This includes stitching enable/blend/precision and
 rotation, play-crop and plotting controls, tracker tuning, scoreboard geometry,
 and archive bitrate/path/dimensions. Structural app YAML describes pipeline
 topology and may provide an intentional native value; an explicit canonical
 user, game, or CLI value overrides lower layers. At the same explicit layer, a
 direct native property wins. Baseline fields for features that exist only in
-HockeyMOM/Aspen remain present in the merged YAML but have no invented HStream
+HockeyMON/Aspen remain present in the merged YAML but have no invented HockeyMONStream
 mapping until a native consumer exists.
 
 `HM_CONFIG_ROOT=/path/to/config` is an explicit diagnostic/development
