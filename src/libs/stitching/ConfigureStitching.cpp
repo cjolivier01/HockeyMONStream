@@ -106,7 +106,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
   const fs::path path = game_dir / "left_calibration.json";
   // Calibration-matrix isolation uses a symlink to the source game's small profile. Follow it once through open(),
   // then pin and validate the resulting descriptor so path replacement cannot redirect subsequent reads.
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   if (descriptor < 0) {
     if (errno == ENOENT)
       return std::nullopt;
@@ -142,7 +142,8 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
   struct stat after{};
   if (::fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
       before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
-      before.st_mtim.tv_nsec != after.st_mtim.tv_nsec) {
+      before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
+      before.st_ctim.tv_nsec != after.st_ctim.tv_nsec) {
     return absl::AbortedError("AKAZE lens calibration changed while being read: " + path.string());
   }
   EVP_MD_CTX* context = EVP_MD_CTX_new();

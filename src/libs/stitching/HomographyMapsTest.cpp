@@ -266,6 +266,42 @@ int main() {
           std::abs(alternate_hypothesis->right_to_left_homography[2] - 5.0) < 0.25,
       "calibrated MAGSAC must recover a valid secondary projective consensus after rejecting a dominant pole");
 
+  fs::path small_alternate_dir = root / "small-alternate-projective-hypothesis";
+  fs::create_directories(small_alternate_dir);
+  std::vector<hm::stitching::FeatureMatch> small_alternate_matches;
+  const cv::Matx33d small_pole_transform(0.3, 0.0, 0.0, 0.0, 0.3, 0.0, -1.0 / 80.0, 0.0, 1.0);
+  for (const int y : {5, 20}) {
+    for (const int x : {10, 30, 50, 60}) {
+      const cv::Vec3d transformed = small_pole_transform * cv::Vec3d(x, y, 1.0);
+      small_alternate_matches.push_back(
+          {{static_cast<float>(transformed[0] / transformed[2]), static_cast<float>(transformed[1] / transformed[2])},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  size_t small_valid_index = 0;
+  for (const int y : {40, 70}) {
+    for (const int x : {10, 35, 60, 85}) {
+      const float noise = small_valid_index++ % 2 == 0 ? 0.15f : -0.15f;
+      small_alternate_matches.push_back(
+          {{static_cast<float>(90 - x) + noise, static_cast<float>(75 - y) - noise},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.8f});
+    }
+  }
+  const auto small_alternate = hm::stitching::CreateOpenCvMappingFiles(
+      small_alternate_dir,
+      left,
+      right,
+      small_alternate_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      small_alternate.ok() && small_alternate->inlier_count == 8,
+      "calibrated MAGSAC must peel a rejected eight-inlier hypothesis under the small-set consensus ramp");
+
   fs::path affine_dir = root / "affine";
   fs::create_directories(affine_dir);
   auto affine = hm::stitching::CreateOpenCvMappingFiles(

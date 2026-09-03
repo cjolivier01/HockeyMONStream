@@ -101,6 +101,22 @@ bool finite_matrix(const cv::Mat& matrix) {
   return true;
 }
 
+size_t required_magsac_inlier_count(
+    size_t match_count,
+    double minimum_inlier_ratio,
+    size_t minimum_inlier_count,
+    bool validate_small_set_coverage) {
+  const bool robust_set = match_count >= kRobustConsensusMatchCount;
+  // The calibrated small-set contract starts at four inliers and 50%. Keep that ratio until it naturally reaches
+  // the 16-inlier large-set floor, avoiding a discontinuity where 15 matches permit eight inliers but 16 require all.
+  const bool calibrated_small_set_ramp = validate_small_set_coverage && match_count < 32;
+  const double effective_ratio =
+      calibrated_small_set_ramp || !robust_set ? kMinimumMagsacInlierRatio : minimum_inlier_ratio;
+  const size_t effective_minimum = calibrated_small_set_ramp || !robust_set ? 4 : minimum_inlier_count;
+  return std::max(
+      effective_minimum, static_cast<size_t>(std::ceil(effective_ratio * static_cast<double>(match_count))));
+}
+
 absl::Status validate_magsac_consensus(
     const std::vector<FeatureMatch>& matches,
     const cv::Mat& inliers,
@@ -116,14 +132,8 @@ absl::Status validate_magsac_consensus(
   if (!robust_set && !validate_small_set_coverage)
     return absl::OkStatus();
 
-  // The calibrated small-set contract starts at four inliers and 50%. Keep that ratio until it naturally reaches
-  // the 16-inlier large-set floor, avoiding a discontinuity where 15 matches permit eight inliers but 16 require all.
-  const bool calibrated_small_set_ramp = validate_small_set_coverage && matches.size() < 32;
-  const double effective_ratio =
-      calibrated_small_set_ramp || !robust_set ? kMinimumMagsacInlierRatio : minimum_inlier_ratio;
-  const size_t effective_minimum = calibrated_small_set_ramp || !robust_set ? 4 : minimum_inlier_count;
-  const size_t ratio_inliers = static_cast<size_t>(std::ceil(effective_ratio * static_cast<double>(matches.size())));
-  const size_t required_inliers = std::max(effective_minimum, ratio_inliers);
+  const size_t required_inliers = required_magsac_inlier_count(
+      matches.size(), minimum_inlier_ratio, minimum_inlier_count, validate_small_set_coverage);
   if (inlier_count < required_inliers) {
     return absl::FailedPreconditionError(
         "OpenCV MAGSAC stitching transform has insufficient consensus: " + std::to_string(inlier_count) +
@@ -606,7 +616,9 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
         last_rejection = candidate_status;
         std::cerr << "Rejected calibrated MAGSAC hypothesis " << (attempt + 1) << " with " << candidate_inlier_count
                   << "/" << matches.size() << " inliers: " << candidate_status << '\n';
-        if (candidate_inlier_count < kMinimumCalibratedAkazeMagsacInliers)
+        const size_t required_inliers = required_magsac_inlier_count(
+            matches.size(), kMinimumCalibratedAkazeMagsacInlierRatio, kMinimumCalibratedAkazeMagsacInliers, true);
+        if (candidate_inlier_count < required_inliers)
           break;
         std::vector<size_t> next;
         next.reserve(remaining.size() - candidate_inlier_count);

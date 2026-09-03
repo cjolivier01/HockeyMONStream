@@ -8,6 +8,7 @@
 #include <tiffio.h>
 #include <yaml-cpp/yaml.h>
 
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <atomic>
@@ -1929,6 +1930,22 @@ bool expect_akaze_calibration_loading_contract(const fs::path& tmpdir) {
   if (!symlinked.ok() || !symlinked->left.has_value() ||
       symlinked->source_profile_fingerprint != loaded->source_profile_fingerprint) {
     std::cerr << "isolated games must load and fingerprint their symlinked AKAZE profile: " << symlinked.status()
+              << std::endl;
+    return false;
+  }
+  const fs::path fifo_game = tmpdir / "fifo-akaze-calibration";
+  fs::create_directories(fifo_game);
+  const fs::path fifo = tmpdir / "calibration-profile-fifo";
+  if (::mkfifo(fifo.c_str(), 0600) != 0) {
+    std::cerr << "failed to create AKAZE FIFO fixture" << std::endl;
+    return false;
+  }
+  symlink_error.clear();
+  fs::create_symlink(fifo, fifo_game / "left_calibration.json", symlink_error);
+  const auto fifo_profile = symlink_error ? decltype(loaded)(absl::InternalError(symlink_error.message()))
+                                          : hm::stitching::load_akaze_matching_calibration(fifo_game);
+  if (!absl::IsFailedPrecondition(fifo_profile.status())) {
+    std::cerr << "AKAZE profile reader must reject a symlinked FIFO without blocking: " << fifo_profile.status()
               << std::endl;
     return false;
   }
