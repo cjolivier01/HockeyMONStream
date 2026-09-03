@@ -1900,6 +1900,11 @@ absl::Status HuginProject::Configure(
   }
   if (options.projection.has_value())
     HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(options.mapping_backend, *options.projection));
+  if (options.mapping_backend == MappingBackend::kNona && options.akaze_calibration.left.has_value()) {
+    return absl::InvalidArgumentError(
+        "Calibrated AKAZE control points are rectified and require an OpenCV mapping backend; NONA does not consume "
+        "the GoPro KB4 lens profile");
+  }
   if (matches.size() < kMinimumUsableMatches) {
     return absl::FailedPreconditionError("Insufficient control points for Hugin optimization");
   }

@@ -8,6 +8,7 @@
 #include <limits>
 #include <vector>
 
+#include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <tiffio.h>
 #include <unistd.h>
@@ -186,6 +187,48 @@ int main() {
         !calibrated_left_x.empty() && !calibrated_left_y.empty() && calibrated_left_x.at<uint16_t>(0, 0) > 0 &&
             calibrated_left_y.at<uint16_t>(0, 0) > 0,
         "calibrated output coordinates must be distorted back into original fisheye source pixels");
+    std::vector<cv::Point2d> normalized = {
+        {(10.0 - lens.cx) / lens.fx, (10.0 - lens.cy) / lens.fy},
+    };
+    std::vector<cv::Point2d> opencv_distorted;
+    const cv::Matx33d camera_matrix(lens.fx, 0.0, lens.cx, 0.0, lens.fy, lens.cy, 0.0, 0.0, 1.0);
+    const cv::Vec4d distortion(lens.distortion[0], lens.distortion[1], lens.distortion[2], lens.distortion[3]);
+    cv::fisheye::distortPoints(normalized, opencv_distorted, camera_matrix, distortion);
+    ok &= expect(
+        calibrated_left_x.at<uint16_t>(10, 10) == static_cast<uint16_t>(std::lround(opencv_distorted[0].x)) &&
+            calibrated_left_y.at<uint16_t>(10, 10) == static_cast<uint16_t>(std::lround(opencv_distorted[0].y)),
+        "KB4 remap composition must numerically match OpenCV fisheye distortion");
+  }
+
+  fs::path calibrated_projective_dir = root / "calibrated-projective";
+  fs::create_directories(calibrated_projective_dir);
+  const cv::Matx33d expected_projective(1.0, 0.025, 7.0, 0.015, 1.0, -2.0, 0.001, -0.0004, 1.0);
+  std::vector<hm::stitching::FeatureMatch> calibrated_projective_matches;
+  for (int y = 8; y <= 72; y += 16) {
+    for (int x = 8; x <= 92; x += 14) {
+      const cv::Vec3d transformed = expected_projective * cv::Vec3d(x, y, 1.0);
+      calibrated_projective_matches.push_back(
+          {{static_cast<float>(transformed[0] / transformed[2]), static_cast<float>(transformed[1] / transformed[2])},
+           {static_cast<float>(x), static_cast<float>(y)},
+           0.9f});
+    }
+  }
+  auto calibrated_projective = hm::stitching::CreateOpenCvMappingFiles(
+      calibrated_projective_dir,
+      left,
+      right,
+      calibrated_projective_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(calibrated_projective.ok(), "calibrated MAGSAC must fit genuinely projective rectified geometry");
+  if (calibrated_projective.ok()) {
+    const auto& fitted = calibrated_projective->right_to_left_homography;
+    ok &= expect(
+        std::abs(fitted[6] / fitted[8] - expected_projective(2, 0)) < 1e-4 &&
+            std::abs(fitted[7] / fitted[8] - expected_projective(2, 1)) < 1e-4,
+        "calibrated MAGSAC must preserve projective terms instead of silently fitting an affine transform");
   }
 
   fs::path affine_dir = root / "affine";
@@ -306,6 +349,21 @@ int main() {
       !low_consensus.ok() &&
           std::string(low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
       "MAGSAC mapping should reject a 16-point set supported by only four inliers");
+  fs::path calibrated_low_consensus_dir = root / "calibrated-low-consensus";
+  fs::create_directories(calibrated_low_consensus_dir);
+  auto calibrated_low_consensus = hm::stitching::CreateOpenCvMappingFiles(
+      calibrated_low_consensus_dir,
+      left,
+      right,
+      low_consensus_matches,
+      hm::stitching::MappingBackend::kOpenCvMagsac,
+      std::nullopt,
+      std::nullopt,
+      hm::stitching::AkazeMatchingCalibration{.left = lens, .right = lens});
+  ok &= expect(
+      !calibrated_low_consensus.ok() &&
+          std::string(calibrated_low_consensus.status().message()).find("insufficient consensus") != std::string::npos,
+      "calibrated MAGSAC must retain the robust mapping-consensus threshold");
 
   fs::path clustered_consensus_dir = root / "clustered-consensus";
   fs::create_directories(clustered_consensus_dir);

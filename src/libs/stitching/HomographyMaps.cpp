@@ -457,37 +457,21 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
       return absl::FailedPreconditionError("At least four control points are required for OpenCV MAGSAC mapping");
     if (lens_calibration.left.has_value() != lens_calibration.right.has_value())
       return absl::InvalidArgumentError("OpenCV calibrated mapping requires both camera lens profiles");
-    if (lens_calibration.left.has_value()) {
-      // A free projective fit can place a pole inside a wide-angle calibrated image. Use a robust affine fit in the
-      // rectified domain, then compose the KB4 distortion into the generated source maps below.
-      cv::Mat affine = cv::estimateAffine2D(
-          right_points,
-          left_points,
-          inliers,
-          cv::RANSAC,
-          kAffineRansacReprojectionThreshold,
-          kRansacMaxIterations,
-          kRansacConfidence,
-          10);
-      if (!affine.empty()) {
-        right_to_left = cv::Mat::eye(3, 3, CV_64F);
-        affine.convertTo(right_to_left(cv::Rect(0, 0, 3, 2)), CV_64F);
-      }
-    } else {
 #if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 5)
-      constexpr int method = cv::USAC_MAGSAC;
+    constexpr int method = cv::USAC_MAGSAC;
 #else
-      constexpr int method = cv::RANSAC;
+    constexpr int method = cv::RANSAC;
 #endif
-      right_to_left = cv::findHomography(
-          right_points,
-          left_points,
-          method,
-          kMagsacReprojectionThreshold,
-          inliers,
-          kRansacMaxIterations,
-          kRansacConfidence);
-    }
+    // Calibrated AKAZE supplies rectified points. Preserve the selected projective backend here and compose the KB4
+    // distortion into the generated source remaps below.
+    right_to_left = cv::findHomography(
+        right_points,
+        left_points,
+        method,
+        kMagsacReprojectionThreshold,
+        inliers,
+        kRansacMaxIterations,
+        kRansacConfidence);
   } else {
     if (matches.size() < 3)
       return absl::FailedPreconditionError("At least three control points are required for affine RANSAC mapping");
@@ -521,17 +505,7 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
         "OpenCV stitching transform has too few inlier control points: " + std::to_string(inlier_count));
   }
   if (backend == MappingBackend::kOpenCvMagsac) {
-    // Calibrated AKAZE matches have already passed mutual matching, overlap gates, and fundamental-matrix RANSAC.
-    // The remaining affine fit models the local overlap while KB4 remaps handle the non-linear full-frame geometry;
-    // retain the absolute inlier and coverage safeguards without imposing the generic homography ratio again.
-    constexpr double kCalibratedAkazeMinimumInlierRatio = 0.0;
-    status = validate_magsac_consensus(
-        matches,
-        inliers,
-        inlier_count,
-        left_bgr,
-        right_bgr,
-        lens_calibration.left.has_value() ? kCalibratedAkazeMinimumInlierRatio : kMinimumMagsacInlierRatio);
+    status = validate_magsac_consensus(matches, inliers, inlier_count, left_bgr, right_bgr);
     if (!status.ok())
       return status;
   }

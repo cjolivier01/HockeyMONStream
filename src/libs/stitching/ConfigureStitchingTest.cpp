@@ -1806,6 +1806,46 @@ bool expect_unreliable_load_refreshes_legacy_identity_revision(const fs::path& t
   return true;
 }
 
+bool expect_akaze_calibration_loading_contract(const fs::path& tmpdir) {
+  const fs::path missing = tmpdir / "missing-akaze-calibration";
+  fs::create_directories(missing);
+  const auto absent = hm::stitching::load_akaze_matching_calibration(missing);
+  if (!absent.ok() || absent->left.has_value() || absent->right.has_value()) {
+    std::cerr << "missing AKAZE calibration must remain optional: " << absent.status() << std::endl;
+    return false;
+  }
+
+  const fs::path malformed = tmpdir / "malformed-akaze-calibration";
+  fs::create_directories(malformed);
+  if (!write_text_file(malformed / "left_calibration.json", "{not-valid-json"))
+    return false;
+  const auto invalid = hm::stitching::load_akaze_matching_calibration(malformed);
+  if (!absl::IsInvalidArgument(invalid.status())) {
+    std::cerr << "malformed AKAZE calibration must fail closed: " << invalid.status() << std::endl;
+    return false;
+  }
+
+  const fs::path valid = tmpdir / "valid-akaze-calibration";
+  fs::create_directories(valid);
+  constexpr const char* kCamera = R"({
+    "width": 7680, "height": 4320,
+    "fx": 4975.75, "fy": 4983.25, "cx": 3824.5, "cy": 2173.5,
+    "d": [0.217, 0.103, 0.205, 0.112]
+  })";
+  if (!write_text_file(
+          valid / "left_calibration.json",
+          std::string("{\"left_uniforms\":") + kCamera + ",\"right_uniforms\":" + kCamera + "}")) {
+    return false;
+  }
+  const auto loaded = hm::stitching::load_akaze_matching_calibration(valid);
+  if (!loaded.ok() || !loaded->left.has_value() || !loaded->right.has_value() ||
+      loaded->left->resolution != cv::Size(7680, 4320) || std::abs(loaded->right->fy - 4983.25) > 1e-9) {
+    std::cerr << "valid paired AKAZE calibration was not loaded: " << loaded.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -1818,6 +1858,10 @@ int main() {
   const fs::path tmpdir =
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
+  fs::create_directories(tmpdir);
+  if (!expect_akaze_calibration_loading_contract(tmpdir)) {
+    finish(tmpdir, 47);
+  }
   if (!write_valid_stitching_artifacts(tmpdir)) {
     finish(tmpdir, 1);
   }

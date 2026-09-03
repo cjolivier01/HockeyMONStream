@@ -95,7 +95,7 @@ constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
 constexpr std::string_view kControlMaskSnapshotPrefix = ".hstream-control-mask-snapshot-";
 
-absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const fs::path& game_dir) {
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(const fs::path& game_dir) {
   const fs::path calibration_path = game_dir / "left_calibration.json";
   std::error_code error;
   const bool exists = fs::exists(calibration_path, error);
@@ -1465,6 +1465,10 @@ absl::Status preflight_stitched_snapshot_generation(
 
 } // namespace
 
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const fs::path& game_dir) {
+  return load_akaze_matching_calibration_impl(game_dir);
+}
+
 absl::Status save_stitched_image(
     const std::string& game_dir,
     surface::Surface surface,
@@ -2575,6 +2579,13 @@ absl::Status create_control_points(
   AkazeMatchingCalibration akaze_calibration;
   if (control_point_matcher == ControlPointMatcher::kAkazeHamming)
     HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir));
+  MappingBackend mapping_backend;
+  HM_ASSIGN_OR_RETURN(mapping_backend, ParseMappingBackend(backend_choices.mapping_backend));
+  if (mapping_backend == MappingBackend::kNona && akaze_calibration.left.has_value()) {
+    return absl::InvalidArgumentError(
+        "Calibrated AKAZE control points are rectified and require an OpenCV mapping backend; NONA does not consume "
+        "the GoPro KB4 lens profile");
+  }
   HM_ASSIGN_OR_RETURN(matcher, FeatureMatcher::Create(model_path.string(), control_point_matcher, akaze_calibration));
   const size_t minimum_matches = control_point_matcher == ControlPointMatcher::kAkazeHamming ? 6 : 16;
   struct CandidateFramePair {
@@ -2664,8 +2675,6 @@ absl::Status create_control_points(
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
-  MappingBackend mapping_backend;
-  HM_ASSIGN_OR_RETURN(mapping_backend, ParseMappingBackend(backend_choices.mapping_backend));
   StitchProjection projection;
   HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(backend_choices.projection));
   options.mapping_backend = mapping_backend;

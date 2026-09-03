@@ -979,6 +979,28 @@ int main() {
           std::string(invalid_nona.message()).find("requires stitching.run_autooptimizer=true") != std::string::npos,
       "NONA must reject optimizer-disabled calibration instead of publishing unaligned camera geometry");
 
+  hm::stitching::HuginProject::Options calibrated_nona_options;
+  calibrated_nona_options.mapping_backend = hm::stitching::MappingBackend::kNona;
+  calibrated_nona_options.run_autooptimizer = true;
+  hm::stitching::FisheyeLensCalibration nona_lens;
+  nona_lens.resolution = {64, 48};
+  nona_lens.fx = 40.0;
+  nona_lens.fy = 40.0;
+  nona_lens.cx = 32.0;
+  nona_lens.cy = 24.0;
+  calibrated_nona_options.akaze_calibration = {.left = nona_lens, .right = nona_lens};
+  const auto calibrated_nona = hm::stitching::HuginProject::Configure(
+      root / "calibrated-nona-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      calibrated_nona_options);
+  ok &= expect(
+      absl::IsInvalidArgument(calibrated_nona) &&
+          std::string(calibrated_nona.message()).find("does not consume the GoPro KB4 lens profile") !=
+              std::string::npos,
+      "NONA must reject rectified calibrated AKAZE control points");
+
   const fs::path fallback_game = root / "fallback-game";
   fs::create_directories(fallback_game);
   ok &= expect(write_tool(enblend, "exit 44\n"), "failing fake enblend must be created");

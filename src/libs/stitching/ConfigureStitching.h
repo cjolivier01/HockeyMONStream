@@ -139,6 +139,10 @@ absl::StatusOr<LockedCanvasRegenerationCheck> lock_canvas_regeneration_check(
 
 bool can_configure_stitching(const YAML::Node& config);
 
+// Loads paired GoPro Mission KB4 lens profiles for calibration-time AKAZE matching. A missing profile is optional;
+// malformed or incomplete existing profiles fail closed.
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const std::filesystem::path& game_dir);
+
 // Resolves the immutable backend tuple consumed by a calibration worker. This
 // reader must not mutate the shared yaml-cpp document while traversing it.
 absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAML::Node& config);
