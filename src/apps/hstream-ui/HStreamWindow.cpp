@@ -62,6 +62,7 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
 #include <QtWidgets/QStyle>
+#include <QtWidgets/QStyleOptionSlider>
 #include <QtWidgets/QTabBar>
 #include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QToolButton>
@@ -332,6 +333,104 @@ class WheelPassthroughSlider : public QSlider {
   void wheelEvent(QWheelEvent* event) override {
     event->ignore();
   }
+};
+
+class PlaybackSeekSlider : public WheelPassthroughSlider {
+ public:
+  using ReleaseHandler = std::function<void(std::optional<int>)>;
+
+  explicit PlaybackSeekSlider(Qt::Orientation orientation, QWidget* parent = nullptr)
+      : WheelPassthroughSlider(orientation, parent) {}
+
+  void setReleaseHandler(ReleaseHandler handler) {
+    release_handler_ = std::move(handler);
+  }
+
+ protected:
+  bool event(QEvent* event) override {
+    if (event && event->type() == QEvent::UngrabMouse && drag_active_)
+      cancelDrag(/*notify=*/true);
+    return WheelPassthroughSlider::event(event);
+  }
+
+  void changeEvent(QEvent* event) override {
+    if (event && event->type() == QEvent::EnabledChange && !isEnabled() && drag_active_)
+      cancelDrag(/*notify=*/false);
+    WheelPassthroughSlider::changeEvent(event);
+  }
+
+  void mousePressEvent(QMouseEvent* event) override {
+    if (!event || event->button() != Qt::LeftButton) {
+      WheelPassthroughSlider::mousePressEvent(event);
+      return;
+    }
+    drag_active_ = true;
+    setSliderDown(true);
+    setSliderPosition(valueAt(eventPosition(event)));
+    event->accept();
+  }
+
+  void mouseMoveEvent(QMouseEvent* event) override {
+    if (!event || !drag_active_) {
+      WheelPassthroughSlider::mouseMoveEvent(event);
+      return;
+    }
+    setSliderPosition(valueAt(eventPosition(event)));
+    event->accept();
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (!event || !drag_active_ || event->button() != Qt::LeftButton) {
+      WheelPassthroughSlider::mouseReleaseEvent(event);
+      return;
+    }
+    const QPoint position = eventPosition(event);
+    const bool commit = rect().contains(position);
+    if (commit)
+      setSliderPosition(valueAt(position));
+    drag_active_ = false;
+    setSliderDown(false);
+    event->accept();
+    if (release_handler_)
+      release_handler_(commit ? std::optional<int>(sliderPosition()) : std::nullopt);
+  }
+
+ private:
+  static QPoint eventPosition(const QMouseEvent* event) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->position().toPoint();
+#else
+    return event->pos();
+#endif
+  }
+
+  int valueAt(const QPoint& position) const {
+    QStyleOptionSlider option;
+    initStyleOption(&option);
+    const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+    const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+    const bool horizontal = orientation() == Qt::Horizontal;
+    const int handle_length = horizontal ? handle.width() : handle.height();
+    const int slider_min = horizontal ? groove.left() : groove.top();
+    const int slider_max = (horizontal ? groove.right() : groove.bottom()) - handle_length + 1;
+    if (handle_length <= 0 || slider_max <= slider_min)
+      return minimum();
+    const int pointer_position = horizontal ? position.x() : position.y();
+    const int slider_position =
+        std::clamp(pointer_position - handle_length / 2, slider_min, slider_max) - slider_min;
+    return QStyle::sliderValueFromPosition(
+        minimum(), maximum(), slider_position, slider_max - slider_min, option.upsideDown);
+  }
+
+  void cancelDrag(bool notify) {
+    drag_active_ = false;
+    setSliderDown(false);
+    if (notify && release_handler_)
+      release_handler_(std::nullopt);
+  }
+
+  ReleaseHandler release_handler_;
+  bool drag_active_{false};
 };
 
 class StitchingCalibrationDialog : public QDialog {
@@ -4891,10 +4990,15 @@ void HStreamWindow::buildUi() {
   seek_layout->setSpacing(8);
   playback_seek_back_button_ = new QPushButton("−10s", playback_seek_controls_);
   playback_seek_back_button_->setObjectName("playbackSeekBack10Button");
-  playback_seek_slider_ = new WheelPassthroughSlider(Qt::Horizontal, playback_seek_controls_);
+  auto* playback_seek_slider = new PlaybackSeekSlider(Qt::Horizontal, playback_seek_controls_);
+  playback_seek_slider_ = playback_seek_slider;
   playback_seek_slider_->setObjectName("playbackSeekSlider");
   playback_seek_slider_->setAccessibleName("Video playback position");
   playback_seek_slider_->setRange(0, 100000);
+  connect(
+      playback_seek_slider_, &QSlider::sliderMoved, this, [this](int) { updatePlaybackSeekPositionPresentation(); });
+  connect(
+      playback_seek_slider_, &QSlider::sliderReleased, this, [this]() { updatePlaybackSeekPositionPresentation(); });
   playback_seek_forward_button_ = new QPushButton("+10s", playback_seek_controls_);
   playback_seek_forward_button_->setObjectName("playbackSeekForward10Button");
   playback_seek_position_ = new QLabel("00:00:00 / --:--:--", playback_seek_controls_);
@@ -4911,12 +5015,14 @@ void HStreamWindow::buildUi() {
   connect(playback_seek_forward_button_, &QPushButton::clicked, this, [this]() {
     requestPlaybackSeekRelative(10LL * 1000000000LL);
   });
-  connect(playback_seek_slider_, &QSlider::sliderReleased, this, [this]() {
-    if (!playback_seek_slider_ || playback_duration_ns_ <= 0)
+  playback_seek_slider->setReleaseHandler([this](std::optional<int> value) {
+    if (!value.has_value()) {
+      updatePlaybackSeekControls();
       return;
-    const long double fraction = static_cast<long double>(playback_seek_slider_->value()) /
-        static_cast<long double>(playback_seek_slider_->maximum());
-    requestPlaybackSeek(static_cast<qint64>(fraction * static_cast<long double>(playback_duration_ns_)));
+    }
+    if (!playback_seek_slider_ || playback_duration_ns_ <= 0 || playback_seek_slider_->maximum() <= 0)
+      return;
+    requestPlaybackSeek(playbackSeekPositionForSliderValue(*value));
   });
   playback_transport_layout->addWidget(playback_seek_controls_, 2);
   root->addWidget(playback_transport);
@@ -5254,10 +5360,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   drivegpt_csv_toggle_ = new QCheckBox("DriveGPT CSV");
   drivegpt_csv_toggle_->setObjectName("drivegptCsvCheck");
-  drivegpt_csv_toggle_->setChecked(true);
+  drivegpt_csv_toggle_->setChecked(false);
   drivegpt_csv_toggle_->setToolTip(
       "Save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv metadata in working storage, "
-      "then copy the completed CSV set beside the finalized Program video");
+      "then copy the completed CSV set beside the finalized Program video. Lossless CSV capture disables seeking "
+      "for that run.");
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
@@ -5713,7 +5820,8 @@ void HStreamWindow::configureControlHelp() {
       "drivegptCsvCheck",
       "For the next Program run, save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv "
       "in HStream working storage, plus timestamp/config sidecars. After a completed archive is finalized, non-hidden "
-      "copies are placed in the game directory with the video's suffix. Only metadata is copied; video pixels remain on the GPU.");
+      "copies are placed in the game directory with the video's suffix. Only metadata is copied; video pixels remain "
+      "on the GPU. Lossless DriveGPT CSV capture disables seeking for that run.");
   help(
       "startPipelineButton",
       "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run.");
@@ -8433,7 +8541,19 @@ void HStreamWindow::pauseOrResumePipeline() {
   if (!pipeline_paused_) {
     playback_eta_ = "Warming up";
     playback_speed_ = "Warming up";
-    beginPlaybackProgressReset();
+    if (deferred_playback_seek_ns_.has_value()) {
+      const qint64 target_ns = *deferred_playback_seek_ns_;
+      deferred_playback_seek_ns_.reset();
+      playback_warming_after_resume_ = true;
+      resume_progress_reset_waiting_for_seek_ = true;
+      sendPlaybackSeek(target_ns);
+      if (pending_playback_seek_generation_ == 0) {
+        resume_progress_reset_waiting_for_seek_ = false;
+        beginPlaybackProgressReset();
+      }
+    } else {
+      beginPlaybackProgressReset();
+    }
   }
   preview_status_->setText(pipeline_paused_ ? "Pipeline paused" : "Pipeline resumed");
   appendLog(pipeline_paused_ ? "pipeline paused" : "pipeline resumed");
@@ -8445,6 +8565,9 @@ void HStreamWindow::pauseOrResumePipeline() {
 
 void HStreamWindow::stopPipeline() {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    deferred_playback_seek_ns_.reset();
+    pending_playback_seek_target_ns_.reset();
+    resume_progress_reset_waiting_for_seek_ = false;
     closeStitchingCalibrationDialog();
     pipeline_state_->setText("STOPPED");
     preview_status_->setText("Pipeline stopped");
@@ -8456,6 +8579,9 @@ void HStreamWindow::stopPipeline() {
   }
   appendLog("pipeline stop requested");
   pipeline_stop_requested_ = true;
+  deferred_playback_seek_ns_.reset();
+  pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   if (calibration_pending_ && calibration_detail_ && !calibration_dialog_failed_)
     calibration_detail_->setText("Stopping calibration…");
 #ifdef Q_OS_UNIX
@@ -8554,6 +8680,9 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   publishing_playtracker_force_all_targets_ = false;
   pending_playback_seek_generation_ = 0;
   playback_seek_recovery_generation_ = 0;
+  deferred_playback_seek_ns_.reset();
+  pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   playback_seek_channel_available_ = false;
   readPipelineOutput();
   flushPipelineOutputFragments();
@@ -8766,6 +8895,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
                                     .arg(pipeline_process_ ? pipeline_process_->errorString() : QString());
   if (error != QProcess::FailedToStart && error != QProcess::Crashed) {
     if (error == QProcess::WriteError || error == QProcess::ReadError) {
+      const bool reset_progress_after_resumed_seek = resume_progress_reset_waiting_for_seek_;
       const bool unresolved_live_rotation =
           std::any_of(runtime_control_batches_.begin(), runtime_control_batches_.end(), [](const auto& entry) {
             return entry.second.live_rotation_authorization.has_value();
@@ -8778,7 +8908,13 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
       }
       pending_playback_seek_generation_ = 0;
       playback_seek_recovery_generation_ = 0;
+      deferred_playback_seek_ns_.reset();
+      pending_playback_seek_target_ns_.reset();
+      resume_progress_reset_waiting_for_seek_ = false;
       playback_seek_channel_available_ = false;
+      if (reset_progress_after_resumed_seek) {
+        beginPlaybackProgressReset();
+      }
       if (error == QProcess::WriteError && render_video_toggle_ && !render_video_toggle_->isChecked() &&
           pending_preview_channel_ == "none" && pending_preview_generation_ != 0) {
         recoverPreviewDisableFailure("the pipeline command channel reported a write error");
@@ -8812,6 +8948,9 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_paused_ = false;
   pending_playback_seek_generation_ = 0;
   playback_seek_recovery_generation_ = 0;
+  deferred_playback_seek_ns_.reset();
+  pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   playback_seek_channel_available_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
@@ -9123,6 +9262,7 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
       return true;
     }
     playback_seek_recovery_generation_ = 0;
+    resume_progress_reset_waiting_for_seek_ = false;
     appendLog("playback recovered after a timed-out seek reconstruction");
     beginPlaybackProgressReset();
     updatePlaybackSeekControls();
@@ -9134,8 +9274,10 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
     return true;
   }
   pending_playback_seek_generation_ = 0;
+  pending_playback_seek_target_ns_.reset();
   const QString status = fields["status"];
   if (status == "ok") {
+    resume_progress_reset_waiting_for_seek_ = false;
     bool position_ok = false;
     const quint64 position = fields["position_ns"].toULongLong(&position_ok);
     if (position_ok) {
@@ -9146,6 +9288,9 @@ bool HStreamWindow::handlePlaybackSeekOutput(const QString& line) {
   } else {
     if (fields["reason"] == "pipeline-recreate-timeout") {
       playback_seek_recovery_generation_ = generation;
+    } else if (resume_progress_reset_waiting_for_seek_) {
+      resume_progress_reset_waiting_for_seek_ = false;
+      beginPlaybackProgressReset();
     }
     appendLog(QString("playback seek %1: %2").arg(status, fields["reason"]));
   }
@@ -9164,11 +9309,26 @@ void HStreamWindow::requestPlaybackSeek(qint64 target_ns) {
     return;
   }
   target_ns = std::clamp<qint64>(target_ns, 0, playback_duration_ns_);
+  if (pipeline_paused_) {
+    deferred_playback_seek_ns_ = target_ns;
+    appendLog(QString("playback seek queued for resume at %1").arg(format_video_time_ns(target_ns)));
+    updatePlaybackSeekControls();
+    return;
+  }
+  sendPlaybackSeek(target_ns);
+}
+
+void HStreamWindow::sendPlaybackSeek(qint64 target_ns) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning)
+    return;
+  target_ns = std::clamp<qint64>(target_ns, 0, playback_duration_ns_);
   const quint64 generation = ++playback_seek_generation_;
   pending_playback_seek_generation_ = generation;
+  pending_playback_seek_target_ns_ = target_ns;
   const QByteArray command = QString("@seek %1 %2\n").arg(target_ns).arg(generation).toUtf8();
   if (pipeline_process_->write(command) != command.size()) {
     pending_playback_seek_generation_ = 0;
+    pending_playback_seek_target_ns_.reset();
     appendLog("playback seek failed because the pipeline command could not be written");
     updatePlaybackSeekControls();
     return;
@@ -9187,6 +9347,15 @@ void HStreamWindow::requestPlaybackSeekRelative(qint64 delta_ns) {
   if (delta_ns == 0) {
     return;
   }
+  if (pipeline_paused_) {
+    const qint64 base_ns =
+        std::clamp<qint64>(deferred_playback_seek_ns_.value_or(playback_position_ns_), 0, playback_duration_ns_);
+    const qint64 target_ns = delta_ns > 0
+        ? (delta_ns >= playback_duration_ns_ - base_ns ? playback_duration_ns_ : base_ns + delta_ns)
+        : (delta_ns <= -base_ns ? 0 : base_ns + delta_ns);
+    requestPlaybackSeek(target_ns);
+    return;
+  }
   const quint64 generation = ++playback_seek_generation_;
   pending_playback_seek_generation_ = generation;
   const QByteArray command = QString("@seek-relative %1 %2\n").arg(delta_ns).arg(generation).toUtf8();
@@ -9198,6 +9367,34 @@ void HStreamWindow::requestPlaybackSeekRelative(qint64 delta_ns) {
   }
   appendLog(QString("playback jump requested %1 seconds").arg(static_cast<double>(delta_ns) / 1000000000.0));
   updatePlaybackSeekControls();
+}
+
+qint64 HStreamWindow::playbackSeekPositionForSliderValue(int value) const {
+  if (!playback_seek_slider_ || playback_duration_ns_ <= 0)
+    return 0;
+  const int minimum = playback_seek_slider_->minimum();
+  const int maximum = playback_seek_slider_->maximum();
+  if (maximum <= minimum)
+    return 0;
+  const int clamped_value = std::clamp(value, minimum, maximum);
+  const long double fraction =
+      static_cast<long double>(clamped_value - minimum) / static_cast<long double>(maximum - minimum);
+  return static_cast<qint64>(fraction * static_cast<long double>(playback_duration_ns_));
+}
+
+void HStreamWindow::updatePlaybackSeekPositionPresentation() {
+  if (!playback_seek_position_)
+    return;
+  qint64 displayed_position_ns =
+      deferred_playback_seek_ns_.value_or(pending_playback_seek_target_ns_.value_or(playback_position_ns_));
+  if (playback_seek_slider_ && playback_seek_slider_->isSliderDown()) {
+    displayed_position_ns = playbackSeekPositionForSliderValue(playback_seek_slider_->sliderPosition());
+  }
+  playback_seek_position_->setText(
+      playback_duration_ns_ > 0
+          ? QString("%1 / %2").arg(
+                format_video_time_ns(displayed_position_ns), format_video_time_ns(playback_duration_ns_))
+          : "00:00:00 / --:--:--");
 }
 
 void HStreamWindow::updatePlaybackSeekControls() {
@@ -9222,39 +9419,37 @@ void HStreamWindow::updatePlaybackSeekControls() {
     transport->setVisible(running || (playback_progress_ && !playback_progress_->isHidden()));
   }
   const bool rendering = !render_video_toggle_ || render_video_toggle_->isChecked();
-  const bool allowed = running && !pipeline_paused_ && active_run_local_render_only_ && !active_run_is_calibration_ &&
-      !calibration_pending_ && rendering && playback_seek_channel_available_ && playback_duration_ns_ > 0 &&
-      pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
+  const bool allowed = running && active_run_local_render_only_ && !active_run_is_calibration_ &&
+      !active_run_telemetry_requested_ && !calibration_pending_ && rendering && playback_seek_channel_available_ &&
+      playback_duration_ns_ > 0 && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
   playback_seek_slider_->setEnabled(allowed);
   if (playback_seek_back_button_)
     playback_seek_back_button_->setEnabled(allowed);
   if (playback_seek_forward_button_)
     playback_seek_forward_button_->setEnabled(allowed);
+  const qint64 displayed_position_ns =
+      deferred_playback_seek_ns_.value_or(pending_playback_seek_target_ns_.value_or(playback_position_ns_));
   if (!playback_seek_slider_->isSliderDown() && playback_duration_ns_ > 0) {
     const long double fraction =
-        static_cast<long double>(std::clamp<qint64>(playback_position_ns_, 0, playback_duration_ns_)) /
+        static_cast<long double>(std::clamp<qint64>(displayed_position_ns, 0, playback_duration_ns_)) /
         static_cast<long double>(playback_duration_ns_);
     const bool blocked = playback_seek_slider_->blockSignals(true);
     playback_seek_slider_->setValue(
         static_cast<int>(std::llround(fraction * static_cast<long double>(playback_seek_slider_->maximum()))));
     playback_seek_slider_->blockSignals(blocked);
   }
-  if (playback_seek_position_) {
-    playback_seek_position_->setText(
-        playback_duration_ns_ > 0
-            ? QString("%1 / %2").arg(
-                  format_video_time_ns(playback_position_ns_), format_video_time_ns(playback_duration_ns_))
-            : "00:00:00 / --:--:--");
-  }
+  updatePlaybackSeekPositionPresentation();
   QString reason;
   if (!running) {
     reason = "Start a Program run with only Render video enabled to seek.";
+  } else if (!playback_seek_channel_available_) {
+    reason = "Seeking is unavailable because the pipeline command channel failed.";
+  } else if (active_run_telemetry_requested_) {
+    reason = "Seeking is disabled because lossless DriveGPT CSV capture is active for this run.";
   } else if (!active_run_local_render_only_ || active_run_is_calibration_) {
     reason = "Seeking is disabled because this run includes a nonlocal output or is not Program playback.";
   } else if (!rendering) {
     reason = "Enable Render video to seek.";
-  } else if (!playback_seek_channel_available_) {
-    reason = "Seeking is unavailable because the pipeline command channel failed.";
   } else if (calibration_pending_) {
     reason = "Seeking becomes available after one-pass stitching calibration finishes.";
   } else if (playback_duration_ns_ <= 0) {
@@ -9263,8 +9458,11 @@ void HStreamWindow::updatePlaybackSeekControls() {
     reason = "Waiting for the current seek to finish.";
   } else if (playback_seek_recovery_generation_ != 0) {
     reason = "The seek timed out; waiting for the backend reconstruction worker to return safely.";
+  } else if (pipeline_paused_ && deferred_playback_seek_ns_.has_value()) {
+    reason =
+        "This position is queued and will be applied when playback resumes; choose another position to replace it.";
   } else if (pipeline_paused_) {
-    reason = "Resume playback before seeking.";
+    reason = "Choose a position now; the pipeline will seek when playback resumes.";
   } else {
     reason =
         "Drag to seek relative to the configured run start, or jump ten seconds backward or forward. Local "
@@ -9272,6 +9470,8 @@ void HStreamWindow::updatePlaybackSeekControls() {
   }
   set_control_help(playback_seek_controls_, reason);
   set_control_help(playback_seek_slider_, reason);
+  set_control_help(playback_seek_back_button_, reason);
+  set_control_help(playback_seek_forward_button_, reason);
 }
 
 void HStreamWindow::setPlaybackStartupStage(const QString& stage, const QString& detail) {
@@ -9343,6 +9543,9 @@ void HStreamWindow::resetPlaybackProgress(bool starting) {
   playback_reset_attempts_ = 0;
   playback_position_ns_ = 0;
   playback_duration_ns_ = 0;
+  deferred_playback_seek_ns_.reset();
+  pending_playback_seek_target_ns_.reset();
+  resume_progress_reset_waiting_for_seek_ = false;
   pending_playback_seek_generation_ = 0;
   playback_seek_recovery_generation_ = 0;
   playback_seek_channel_available_ = starting;
