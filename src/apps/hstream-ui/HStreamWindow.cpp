@@ -127,6 +127,17 @@ constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
     "pipeline.streammux.frame-num-reset-on-eos=0,pipeline.hmstitcher.show=0";
 
+template <typename Receiver, typename Slot>
+QMetaObject::Connection connect_check_state_changed(QCheckBox* checkbox, Receiver* receiver, Slot&& slot) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+  return QObject::connect(checkbox, &QCheckBox::checkStateChanged, receiver, std::forward<Slot>(slot));
+#else
+  return QObject::connect(checkbox, &QCheckBox::stateChanged, receiver, [slot = std::forward<Slot>(slot)](int state) {
+    slot(static_cast<Qt::CheckState>(state));
+  });
+#endif
+}
+
 struct CalibrationStageSpec {
   const char* id;
   const char* label;
@@ -6012,12 +6023,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       checkbox->setTristate(canonical->second->isTristate());
       checkbox->setCheckState(canonical->second->checkState());
       stitched_color_checkboxes_[id] = checkbox;
-      connect(
-          checkbox,
-          &QCheckBox::checkStateChanged,
-          canonical->second,
-          [canonical_checkbox = canonical->second](Qt::CheckState state) { canonical_checkbox->setCheckState(state); });
-      connect(canonical->second, &QCheckBox::checkStateChanged, this, [this, checkbox, id](Qt::CheckState state) {
+      connect_check_state_changed(checkbox, canonical->second, [canonical_checkbox = canonical->second](Qt::CheckState state) {
+        canonical_checkbox->setCheckState(state);
+      });
+      connect_check_state_changed(canonical->second, this, [this, checkbox, id](Qt::CheckState state) {
         const QSignalBlocker blocker(checkbox);
         checkbox->setCheckState(state);
         if (id == "Use_10_Bit_Grading")
@@ -16738,7 +16747,7 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
   }
   camera_checkboxes_[id] = checkbox;
   camera_defaults_[id] = checked ? 1 : 0;
-  connect(checkbox, &QCheckBox::checkStateChanged, this, [this, id](Qt::CheckState state) {
+  connect_check_state_changed(checkbox, this, [this, id](Qt::CheckState state) {
     const int new_value = state == Qt::Checked ? 1 : 0;
     const bool sent_live = sendLiveCameraControl(id, new_value);
     if (sent_live) {
