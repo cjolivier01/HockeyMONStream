@@ -3768,6 +3768,34 @@ bool remove_yaml_path(YAML::Node root, const QString& dotted_path) {
   return remove_yaml_path_at(root, path, 0);
 }
 
+int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
+  int removed = 0;
+  removed += remove_yaml_path(config, {"stitching", "frame_offsets"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"game", "stitching", "frame_offsets"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"stitching", "control_points"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"game", "stitching", "control_points"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_authorization_id"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_owner_process"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "scoreboard", "perspective_polygon"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "status"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "rink_mask_status"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "stale_from"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "invalidation_id"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "backend_generation"}) ? 1 : 0;
+  return removed;
+}
+
 bool lookup_yaml_path_at(const YAML::Node& node, const QStringList& parts, int index, YAML::Node* value) {
   if (index >= parts.size()) {
     if (value) {
@@ -5053,7 +5081,9 @@ void HStreamWindow::buildUi() {
 
   setCentralWidget(central);
   configureControlHelp();
+  updateStitchFrameTimeAvailability();
   captureSavedControlState();
+  updateRunControls();
 }
 
 void HStreamWindow::buildTopBar(QVBoxLayout* root) {
@@ -5107,8 +5137,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       run_autooptimizer_check_->setEnabled(!running && mappingBackend() == "nona");
     }
     if (stitch_frame_time_edit_) {
-      const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-      stitch_frame_time_edit_->setEnabled(!running);
+      updateStitchFrameTimeAvailability();
     }
     if (stitched_status_ && isCalibrationRun()) {
       stitched_status_->setText("Stitching calibration preview");
@@ -5140,7 +5169,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
   control_points_spin_->setEnabled(true);
   control_points_spin_->setPrefix("CP ");
-  control_points_spin_->setFixedWidth(64);
+  control_points_spin_->setMinimumWidth(96);
   control_points_spin_->setToolTip(
       "Control-point limit for stitching calibration. Changing this in Program mode recalibrates stitching before "
       "the full pipeline continues.");
@@ -5153,10 +5182,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   calibration_frame_count_spin_->setValue(kDefaultStitchCalibrationFrameCount);
   calibration_frame_count_spin_->setEnabled(true);
   calibration_frame_count_spin_->setPrefix("Frames ");
-  calibration_frame_count_spin_->setFixedWidth(86);
+  calibration_frame_count_spin_->setMinimumWidth(112);
   calibration_frame_count_spin_->setToolTip(
       "Synchronized frame pairs to use for stitching calibration. Changing this captures new calibration inputs.");
-  connect(calibration_frame_count_spin_, &QSpinBox::valueChanged, this, [this]() { updatePresetDirtyState(); });
+  connect(calibration_frame_count_spin_, &QSpinBox::valueChanged, this, [this]() {
+    updateStitchFrameTimeAvailability();
+    updatePresetDirtyState();
+  });
 
   stitch_max_output_width_spin_ = new QSpinBox();
   stitch_max_output_width_spin_->setObjectName("stitchMaxOutputWidthSpin");
@@ -5315,7 +5347,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   stitch_frame_time_edit_ = new QTimeEdit();
   stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
-  stitch_frame_time_edit_->setFixedWidth(70);
+  stitch_frame_time_edit_->setMinimumWidth(96);
   stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
   stitch_frame_time_edit_->setTime(*parse_stitch_frame_time(default_stitch_frame_time_));
   stitch_frame_time_edit_->setWrapping(false);
@@ -5328,6 +5360,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
                                                                   : kStitchFrameTimeFractionalFormat);
     updatePresetDirtyState();
   });
+  updateStitchFrameTimeAvailability();
 
   render_video_toggle_ = new QCheckBox("Render video");
   render_video_toggle_->setObjectName("renderVideoCheck");
@@ -5374,7 +5407,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   restart->setObjectName("restartStageButton");
   save_preset_button_ = new QPushButton(style()->standardIcon(QStyle::SP_DialogSaveButton), "Save Preset");
   save_preset_button_->setObjectName("savePresetButton");
-  auto* reset = new QPushButton("Reset Camera");
+  auto* reset = new QPushButton("Reset Controls");
   reset->setObjectName("resetCameraButton");
   stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), "Stop");
   stop_button_->setObjectName("stopPipelineButton");
@@ -5393,9 +5426,6 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   status_bar->addWidget(backend_mode_);
   status_bar->addStretch(1);
   status_bar->addWidget(run_mode_selector_);
-  status_bar->addWidget(control_points_spin_);
-  status_bar->addWidget(calibration_frame_count_spin_);
-  status_bar->addWidget(stitch_frame_time_edit_);
   status_bar->addWidget(render_video_toggle_);
   status_bar->addWidget(show_player_tracking_toggle_);
   status_bar->addWidget(show_play_tracking_toggle_);
@@ -5470,6 +5500,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
     updateArchiveOutputPathLabel();
     updatePresetDirtyState();
+    updateRunControls();
   });
   connect(game_id_edit_, &QLineEdit::editingFinished, this, [this]() {
     game_id_edit_->setText(sanitized_game_id(game_id_edit_->text()));
@@ -5603,6 +5634,12 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   auto* program = new QWidget();
   auto* layout = new QVBoxLayout(program);
+  auto* program_splitter = new QSplitter(Qt::Horizontal, program);
+  program_splitter->setObjectName("programPreviewControlsSplitter");
+  program_splitter->setChildrenCollapsible(true);
+  auto* program_preview = new QWidget(program_splitter);
+  auto* program_preview_layout = new QVBoxLayout(program_preview);
+  program_preview_layout->setContentsMargins(0, 0, 0, 0);
   auto* preview_host = new LetterboxRenderHost(16.0 / 9.0);
   preview_host->setObjectName("programLetterboxHost");
   configure_host(preview_host, 0, "programFocusButton");
@@ -5624,17 +5661,35 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_status_->setObjectName("previewStatusLabel");
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
-  layout->addWidget(preview_host, 1);
-  layout->addLayout(program_footer);
-  auto* program_controls = new QWidget();
+  program_preview_layout->addWidget(preview_host, 1);
+  program_preview_layout->addLayout(program_footer);
+  auto* program_controls_column = new QWidget(program_splitter);
+  program_controls_column->setObjectName("programControlsPane");
+  auto* program_controls_column_layout = new QVBoxLayout(program_controls_column);
+  program_controls_column_layout->setContentsMargins(0, 0, 0, 0);
+  auto* program_controls = new QWidget(program_controls_column);
   program_controls->setObjectName("programAssociatedControls");
   auto* program_controls_layout = new QVBoxLayout(program_controls);
   program_controls_layout->setContentsMargins(0, 0, 0, 0);
   buildCameraControls(program_controls_layout, true);
-  add_controls_drawer(layout, program_controls, "Program Controls", "programControlsToggle");
+  add_controls_drawer(program_controls_column_layout, program_controls, "Program Controls", "programControlsToggle");
+  program_splitter->addWidget(program_preview);
+  program_splitter->addWidget(program_controls_column);
+  program_splitter->setStretchFactor(0, 4);
+  program_splitter->setStretchFactor(1, 1);
+  program_splitter->setCollapsible(0, false);
+  program_splitter->setCollapsible(1, true);
+  program_splitter->setSizes({960, 320});
+  layout->addWidget(program_splitter, 1);
 
   auto* stitched = new QWidget();
   auto* stitched_layout = new QVBoxLayout(stitched);
+  auto* stitched_splitter = new QSplitter(Qt::Horizontal, stitched);
+  stitched_splitter->setObjectName("stitchedPreviewControlsSplitter");
+  stitched_splitter->setChildrenCollapsible(true);
+  auto* stitched_preview = new QWidget(stitched_splitter);
+  auto* stitched_preview_layout = new QVBoxLayout(stitched_preview);
+  stitched_preview_layout->setContentsMargins(0, 0, 0, 0);
   auto* stitched_host = new LetterboxRenderHost(16.0 / 9.0);
   stitched_host->setObjectName("stitchedLetterboxHost");
   configure_host(stitched_host, 1, "stitchedFocusButton");
@@ -5655,14 +5710,26 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
   auto* stitched_footer = new QHBoxLayout();
   stitched_footer->addWidget(stitched_status_, 1);
-  stitched_layout->addWidget(stitched_host, 1);
-  stitched_layout->addLayout(stitched_footer);
-  auto* stitched_controls = new QWidget();
+  stitched_preview_layout->addWidget(stitched_host, 1);
+  stitched_preview_layout->addLayout(stitched_footer);
+  auto* stitched_controls_column = new QWidget(stitched_splitter);
+  stitched_controls_column->setObjectName("stitchedControlsPane");
+  auto* stitched_controls_column_layout = new QVBoxLayout(stitched_controls_column);
+  stitched_controls_column_layout->setContentsMargins(0, 0, 0, 0);
+  auto* stitched_controls = new QWidget(stitched_controls_column);
   stitched_controls->setObjectName("stitchedAssociatedControls");
   auto* stitched_controls_layout = new QVBoxLayout(stitched_controls);
   stitched_controls_layout->setContentsMargins(0, 0, 0, 0);
   buildCameraControls(stitched_controls_layout, false);
-  add_controls_drawer(stitched_layout, stitched_controls, "Stitched Controls", "stitchedControlsToggle");
+  add_controls_drawer(stitched_controls_column_layout, stitched_controls, "Stitched Controls", "stitchedControlsToggle");
+  stitched_splitter->addWidget(stitched_preview);
+  stitched_splitter->addWidget(stitched_controls_column);
+  stitched_splitter->setStretchFactor(0, 4);
+  stitched_splitter->setStretchFactor(1, 1);
+  stitched_splitter->setCollapsible(0, false);
+  stitched_splitter->setCollapsible(1, true);
+  stitched_splitter->setSizes({960, 320});
+  stitched_layout->addWidget(stitched_splitter, 1);
 
   preview_tabs_->addTab(program, "Program");
   preview_tabs_->addTab(stitched, "Stitched");
@@ -5809,10 +5876,11 @@ void HStreamWindow::configureControlHelp() {
       "simultaneously record the full stitched canvas.");
   help(
       "controlPointsSpin",
-      "Set the maximum number of feature control points used during stitching calibration. Changing it makes Program recalibrate stale stitching before continuing.");
+      "Set the maximum number of feature control points used during stitching calibration. Changing it makes "
+      "Program recalibrate stale stitching before continuing.");
   help(
       "stitchFrameTimeEdit",
-      "Choose the video timestamp used as the stitching calibration reference frame. Playback returns to its normal start after one-pass calibration completes.");
+      "Choose the video timestamp used when stitching calibration is configured for a single reference frame.");
   help(
       "renderVideoCheck",
       "Show GPU video previews and local monitor audio. This can be toggled while running without stopping the processing pipeline.");
@@ -5840,7 +5908,12 @@ void HStreamWindow::configureControlHelp() {
       "Stop the current pipeline and start the selected mode again, preserving the current game, controls, and output-route selections.");
   help(
       "resetCameraButton",
-      "Restore all Program and Stitched camera controls to their built-in defaults. Use Save Preset afterward if those defaults should persist for this game.");
+      "Restore all Program and Stitched controls to their built-in defaults. Use Save Preset afterward if those "
+      "defaults should persist for this game.");
+  help(
+      "cleanStitchingButton",
+      "Remove stitching calibration artifacts and calibration-derived config.yaml state for this game while preserving "
+      "user-authored stitching settings such as rotation and backend choices.");
   help(
       "stopPipelineButton",
       "Request a graceful stop of the running pipeline. Partial archive work is retained rather than presented as a completed video.");
@@ -5988,7 +6061,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
   };
   auto* group = new QGroupBox(program_stage ? "Program Controls" : "Stitched Controls");
   group->setObjectName(program_stage ? "programControlsGroup" : "stitchedControlsGroup");
-  group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   auto* layout = new QVBoxLayout(group);
   auto* association = new QLabel(
       program_stage
@@ -6003,12 +6076,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
 
   auto* control_tabs = new QTabWidget();
   control_tabs->setObjectName(program_stage ? "programControlTabs" : "stitchedControlTabs");
-  control_tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  // Keep the live controls comfortably legible below the preview, including
-  // the projection-framing rows. These bounds are 15% taller than the
-  // original 92/180 px allocation.
-  control_tabs->setMinimumHeight(106);
-  control_tabs->setMaximumHeight(207);
+  control_tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  control_tabs->setMinimumHeight(220);
   if (program_stage)
     program_control_tabs_ = control_tabs;
   else
@@ -6208,6 +6277,15 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* algorithms_layout = new QGridLayout(algorithms_page);
     algorithms_layout->setContentsMargins(8, 8, 8, 8);
     algorithms_layout->setColumnStretch(1, 1);
+    auto* control_points_label = new QLabel("Control points");
+    control_points_label->setObjectName("controlPointsLabel");
+    control_points_label->setBuddy(control_points_spin_);
+    auto* frame_count_label = new QLabel("Frames");
+    frame_count_label->setObjectName("calibrationFrameCountLabel");
+    frame_count_label->setBuddy(calibration_frame_count_spin_);
+    auto* stitch_frame_time_label = new QLabel("Reference frame");
+    stitch_frame_time_label->setObjectName("stitchFrameTimeLabel");
+    stitch_frame_time_label->setBuddy(stitch_frame_time_edit_);
     auto* matcher_label = new QLabel("Control-point matcher");
     matcher_label->setObjectName("controlPointMatcherLabel");
     matcher_label->setBuddy(control_point_matcher_combo_);
@@ -6240,26 +6318,40 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     projection_fov_controls->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     projection_auto_canvas_check_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     projection_auto_crop_check_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    control_points_spin_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    calibration_frame_count_spin_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    stitch_frame_time_edit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     stitch_max_output_width_spin_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     run_autooptimizer_check_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    algorithms_layout->addWidget(matcher_label, 0, 0);
-    algorithms_layout->addWidget(control_point_matcher_combo_, 0, 1);
-    algorithms_layout->addWidget(mapping_label, 1, 0);
-    algorithms_layout->addWidget(mapping_backend_combo_, 1, 1);
-    algorithms_layout->addWidget(projection_label, 2, 0);
-    algorithms_layout->addWidget(projection_combo_, 2, 1);
+    clean_stitching_button_ = new QPushButton(style()->standardIcon(QStyle::SP_TrashIcon), "Clean Stitching");
+    clean_stitching_button_->setObjectName("cleanStitchingButton");
+    clean_stitching_button_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    connect(clean_stitching_button_, &QPushButton::clicked, this, [this]() { cleanStitchingCalibration(); });
+    algorithms_layout->addWidget(control_points_label, 0, 0);
+    algorithms_layout->addWidget(control_points_spin_, 0, 1);
+    algorithms_layout->addWidget(frame_count_label, 1, 0);
+    algorithms_layout->addWidget(calibration_frame_count_spin_, 1, 1);
+    algorithms_layout->addWidget(stitch_frame_time_label, 2, 0);
+    algorithms_layout->addWidget(stitch_frame_time_edit_, 2, 1);
+    algorithms_layout->addWidget(matcher_label, 3, 0);
+    algorithms_layout->addWidget(control_point_matcher_combo_, 3, 1);
+    algorithms_layout->addWidget(mapping_label, 4, 0);
+    algorithms_layout->addWidget(mapping_backend_combo_, 4, 1);
+    algorithms_layout->addWidget(projection_label, 5, 0);
+    algorithms_layout->addWidget(projection_combo_, 5, 1);
     for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
-      algorithms_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 3, 0);
-      algorithms_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 3, 1);
+      algorithms_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 6, 0);
+      algorithms_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 6, 1);
     }
-    algorithms_layout->addWidget(projection_fov_label, 6, 0);
-    algorithms_layout->addWidget(projection_fov_controls, 6, 1);
-    algorithms_layout->addWidget(projection_auto_canvas_check_, 7, 0, 1, 2);
-    algorithms_layout->addWidget(projection_auto_crop_check_, 8, 0, 1, 2);
-    algorithms_layout->addWidget(max_width_label, 9, 0);
-    algorithms_layout->addWidget(stitch_max_output_width_spin_, 9, 1);
-    algorithms_layout->addWidget(run_autooptimizer_check_, 10, 0, 1, 2);
-    algorithms_layout->setRowStretch(11, 1);
+    algorithms_layout->addWidget(projection_fov_label, 9, 0);
+    algorithms_layout->addWidget(projection_fov_controls, 9, 1);
+    algorithms_layout->addWidget(projection_auto_canvas_check_, 10, 0, 1, 2);
+    algorithms_layout->addWidget(projection_auto_crop_check_, 11, 0, 1, 2);
+    algorithms_layout->addWidget(max_width_label, 12, 0);
+    algorithms_layout->addWidget(stitch_max_output_width_spin_, 12, 1);
+    algorithms_layout->addWidget(run_autooptimizer_check_, 13, 0, 1, 2);
+    algorithms_layout->addWidget(clean_stitching_button_, 14, 0, 1, 2);
+    algorithms_layout->setRowStretch(15, 1);
     algorithms_scroll->setWidget(algorithms_page);
     control_tabs->addTab(algorithms_scroll, "Algorithms");
     updateProjectionParameterControls();
@@ -6663,8 +6755,7 @@ void HStreamWindow::updateProjectionParameterControls() {
 
 void HStreamWindow::updateProjectionFramingControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  const bool finalizing = (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      telemetry_publication_worker_;
+  const bool finalizing = isArchiveFinalizing();
   const bool nona = mappingBackend() == "nona";
   double maximum_fov = 360.0;
   QString projection_display_name = stitchProjection();
@@ -10368,6 +10459,11 @@ void HStreamWindow::finishArchiveJobLogAfterFinalizationFailure() {
   finishArchiveJobLog(!archive_work_path_needs_backend_recovery(archive_finalize_source_path_));
 }
 
+bool HStreamWindow::isArchiveFinalizing() const {
+  return (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
+      !pending_archive_finalizations_.empty() || telemetry_publication_worker_;
+}
+
 void HStreamWindow::updateArchiveOutputPathLabel() {
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled =
@@ -13204,6 +13300,20 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
         focus_hidden_widgets_.push_back(widget);
       widget->hide();
     };
+    std::function<void(QWidget*, QWidget*)> hide_host_siblings_for_focus =
+        [&](QWidget* container, QWidget* host) {
+          if (!container)
+            return;
+          for (QWidget* child : container->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+            if (child == host)
+              continue;
+            if (host && child->isAncestorOf(host)) {
+              hide_host_siblings_for_focus(child, host);
+              continue;
+            }
+            hide_for_focus(child);
+          }
+        };
     hide_for_focus(top_bar_);
     hide_for_focus(log_panel_);
     if (setup_panel_)
@@ -13212,10 +13322,7 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
     for (int page_index = 0; page_index < preview_tabs_->count(); ++page_index) {
       QWidget* page = preview_tabs_->widget(page_index);
       QWidget* host = page_index < static_cast<int>(preview_hosts_.size()) ? preview_hosts_[page_index] : nullptr;
-      for (QWidget* child : page->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
-        if (child != host)
-          hide_for_focus(child);
-      }
+      hide_host_siblings_for_focus(page, host);
     }
   } else {
     for (QWidget* widget : focus_hidden_widgets_) {
@@ -13252,8 +13359,7 @@ void HStreamWindow::setPreviewFocusMode(bool focused, int tab_index) {
 
 void HStreamWindow::updateRunControls() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  const bool finalizing = (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      !pending_archive_finalizations_.empty() || telemetry_publication_worker_;
+  const bool finalizing = isArchiveFinalizing();
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
   if (archive_recovery_was_cleared) {
@@ -13337,7 +13443,11 @@ void HStreamWindow::updateRunControls() {
     run_autooptimizer_check_->setEnabled(!running && !finalizing && mappingBackend() == "nona");
   }
   if (stitch_frame_time_edit_) {
-    stitch_frame_time_edit_->setEnabled(!running && !finalizing);
+    updateStitchFrameTimeAvailability();
+  }
+  if (clean_stitching_button_) {
+    const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+    clean_stitching_button_->setEnabled(!running && !finalizing && !game_id.isEmpty());
   }
   if (render_video_toggle_) {
     render_video_toggle_->setEnabled(!running || pipeline_render_embedded_);
@@ -13370,8 +13480,7 @@ void HStreamWindow::restartStage() {
 void HStreamWindow::maybeStartDeferredRestart() {
   if (!deferred_restart_requested_ || live_rotation_authorization_pending_ ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) ||
-      (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      !pending_archive_finalizations_.empty() || telemetry_publication_worker_) {
+      isArchiveFinalizing()) {
     return;
   }
   const bool request_is_current = deferred_restart_pipeline_generation_ == pipeline_run_generation_ && game_id_edit_ &&
@@ -13682,7 +13791,92 @@ void HStreamWindow::resetCameraControls() {
     scheduled_playtracker_force_all_targets_ = true;
   }
   appendLog("camera controls reset to defaults");
+  updateStitchFrameTimeAvailability();
   updatePresetDirtyState();
+}
+
+void HStreamWindow::cleanStitchingCalibration() {
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  const bool finalizing = isArchiveFinalizing();
+  if (running || finalizing) {
+    appendLog("stop the pipeline before cleaning stitching calibration");
+    return;
+  }
+  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  if (game_id.isEmpty()) {
+    appendLog("select or create a game before cleaning stitching calibration");
+    return;
+  }
+  const fs::path game_dir = fs::path(gameDirectory(game_id).toStdString());
+  appendLog(QString("cleaning stitching calibration artifacts in %1").arg(QString::fromStdString(game_dir.string())));
+  const QString runner = pipelineRunnerPath();
+  if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
+    appendLog(QString("stitching calibration clean failed: missing runner %1").arg(runner));
+    return;
+  }
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  const QString working_dir = pipelineWorkingDirectory();
+  if (!baseline_config_root_.isEmpty())
+    env.insert("HM_CONFIG_ROOT", baseline_config_root_);
+  const QString runtime_error = configure_pipeline_runtime_environment(env, working_dir, development_bazel_bin_);
+  if (!runtime_error.isEmpty()) {
+    appendLog(runtime_error);
+    return;
+  }
+  if (!runStitchingClean(runner, working_dir, env, /*from_control_points=*/false, QString())) {
+    return;
+  }
+
+  const fs::path config_path = game_dir / "config.yaml";
+  if (!fs::exists(config_path)) {
+    appendLog("stitching calibration clean complete; no game config to prune");
+    loadSavedControlConfig();
+    return;
+  }
+  int removed_config_keys = 0;
+  {
+    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(game_dir);
+    if (!config_lock.ok()) {
+      appendLog(QString("could not lock cleaned stitching config: %1").arg(config_lock.status().ToString().c_str()));
+      return;
+    }
+    YAML::Node config(YAML::NodeType::Map);
+    try {
+      config = YAML::LoadFile(config_path.string());
+      if (!yaml_defined(config) || config.IsNull()) {
+        config = YAML::Node(YAML::NodeType::Map);
+      }
+    } catch (const std::exception& exc) {
+      appendLog(QString("could not prune cleaned stitching config: %1").arg(exc.what()));
+      return;
+    }
+    removed_config_keys = remove_manual_stitching_clean_config_keys(config);
+    if (removed_config_keys > 0) {
+      const auto publish = publish_yaml_config(config_path, config);
+      if (!publish.ok()) {
+        appendLog(QString("failed to publish cleaned stitching config: %1").arg(publish.ToString().c_str()));
+        return;
+      }
+    }
+  }
+  appendLog(
+      QString("stitching calibration clean complete; removed %1 calibration state key(s)").arg(removed_config_keys));
+  loadSavedControlConfig();
+}
+
+void HStreamWindow::updateStitchFrameTimeAvailability() {
+  if (!stitch_frame_time_edit_)
+    return;
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  const bool finalizing = isArchiveFinalizing();
+  const bool single_frame = calibration_frame_count_spin_ && calibration_frame_count_spin_->value() == 1;
+  stitch_frame_time_edit_->setEnabled(!running && !finalizing && single_frame);
+  set_control_help(
+      stitch_frame_time_edit_,
+      single_frame
+          ? "Choose the video timestamp used as the single stitching calibration reference frame."
+          : "Reference frame is editable only when stitching calibration uses one frame; multi-frame calibration "
+            "samples synchronized frames automatically.");
 }
 
 void HStreamWindow::captureSavedControlState() {
@@ -13855,6 +14049,7 @@ void HStreamWindow::loadSavedControlConfig() {
     return;
   }
   if (!loaded_config->has_value()) {
+    updateStitchFrameTimeAvailability();
     captureSavedControlState();
     return;
   }
@@ -14372,6 +14567,7 @@ void HStreamWindow::loadSavedControlConfig() {
       const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
       run_autooptimizer_check_->setEnabled(!running && mappingBackend() == "nona");
     }
+    updateStitchFrameTimeAvailability();
     for (const auto& [id, value] : staged_controls) {
       const auto slider_it = camera_sliders_.find(id);
       if (slider_it == camera_sliders_.end() || !slider_it->second) {
