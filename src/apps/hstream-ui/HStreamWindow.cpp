@@ -5632,9 +5632,34 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         set_control_help(
             toggle,
             "Show or hide the controls associated with this video stage to trade control space for a larger preview.");
-        connect(toggle, &QToolButton::toggled, controls, [toggle, controls](bool expanded) {
-          controls->setVisible(expanded);
+        connect(toggle, &QToolButton::toggled, controls, [toggle, controls, label](bool expanded) {
+          QWidget* controls_column = controls ? controls->parentWidget() : nullptr;
+          auto* splitter = controls_column ? qobject_cast<QSplitter*>(controls_column->parentWidget()) : nullptr;
+          const QList<int> previous_sizes = splitter ? splitter->sizes() : QList<int>();
+          if (!expanded && controls_column && previous_sizes.size() >= 2 && previous_sizes.at(1) > 0)
+            controls_column->setProperty("hstreamExpandedControlsWidth", previous_sizes.at(1));
+
           toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+          toggle->setToolButtonStyle(expanded ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+          toggle->setText(expanded ? label : QString());
+          controls->setVisible(expanded);
+          if (controls_column && splitter && previous_sizes.size() >= 2) {
+            int total = std::max(splitter->width(), previous_sizes.at(0) + previous_sizes.at(1));
+            total = std::max(total, 1);
+            if (expanded) {
+              controls_column->setMaximumWidth(QWIDGETSIZE_MAX);
+              bool saved_width_valid = false;
+              int controls_width = controls_column->property("hstreamExpandedControlsWidth").toInt(&saved_width_valid);
+              if (!saved_width_valid || controls_width <= 0)
+                controls_width = controls_column->sizeHint().width();
+              controls_width = std::clamp(controls_width, 1, std::max(1, total - 1));
+              splitter->setSizes({std::max(1, total - controls_width), controls_width});
+            } else {
+              const int collapsed_width = std::clamp(toggle->sizeHint().width(), 1, total);
+              controls_column->setMaximumWidth(collapsed_width);
+              splitter->setSizes({std::max(1, total - collapsed_width), collapsed_width});
+            }
+          }
           set_control_help(
               toggle,
               expanded ? "Hide the controls associated with this video stage to give the preview more space."
@@ -9166,7 +9191,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
     recordStitchingCalibrationDiagnostic(trimmed);
   if (handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
-      handlePreviewOverlayResponse(trimmed) ||
+      handlePreviewOverlayDiagnostic(trimmed) || handlePreviewOverlayResponse(trimmed) ||
       (pipeline_inspector_ && pipeline_inspector_->handleBackendLine(trimmed))) {
     return;
   }
@@ -12619,6 +12644,37 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       if (surface)
         surface->hide();
     }
+  }
+  return true;
+}
+
+bool HStreamWindow::handlePreviewOverlayDiagnostic(const QString& line) {
+  static const QRegularExpression pattern(
+      R"(^HSTREAM_PREVIEW_OVERLAY channel=(\S+) rink-mask=(.*?) status=(loaded|validation-failed|texture-upload-failed)(?: retry=(\d+)s)?(?: message=(.*))?$)");
+  const QRegularExpressionMatch match = pattern.match(line);
+  if (!match.hasMatch())
+    return false;
+
+  const QString channel = match.captured(1);
+  const QString path = match.captured(2);
+  const QString status = match.captured(3);
+  const QString retry = match.captured(4);
+  const QString message = match.captured(5);
+  if (status == "loaded") {
+    appendLog(QString("rink mask overlay loaded channel=%1 file=%2").arg(channel, path));
+    return true;
+  }
+
+  QString detail = status == "texture-upload-failed" ? "texture upload failed" : message;
+  if (detail.isEmpty())
+    detail = "validation failed";
+  QString summary = QString("rink mask overlay unavailable channel=%1 file=%2 reason=%3").arg(channel, path, detail);
+  if (!retry.isEmpty())
+    summary += QString(" retry=%1s").arg(retry);
+  appendLog(summary, true);
+  if (show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked() &&
+      (channel == active_preview_channel_ || channel == selectedPipelinePreviewChannel()) && preview_status_) {
+    preview_status_->setText("Rink mask overlay unavailable");
   }
   return true;
 }

@@ -1081,6 +1081,9 @@ bool write_fake_runner(const QString& path) {
   file.write("        if delayed_preview_overlay_responses:\n");
   file.write("            print(delayed_preview_overlay_responses.pop(0), flush=True)\n");
   file.write("        return\n");
+  file.write("    if line.startswith('@test-preview-overlay-diagnostic '):\n");
+  file.write("        print(line.rstrip('\\n').split(' ', 1)[1], flush=True)\n");
+  file.write("        return\n");
   file.write("    if line.startswith('@test-delay-runtime-control '):\n");
   file.write("        runtime_control_delay_seconds = float(line.rstrip('\\n').split(' ')[1]) / 1000.0\n");
   file.write("        print('test runtime control delay armed', flush=True)\n");
@@ -2667,6 +2670,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* program_controls = require_child<QWidget>(window, "programAssociatedControls");
   auto* program_controls_toggle = require_child<QToolButton>(window, "programControlsToggle");
   auto* stitched_controls = require_child<QWidget>(window, "stitchedAssociatedControls");
+  auto* stitched_controls_toggle = require_child<QToolButton>(window, "stitchedControlsToggle");
   auto* stitched_bring_up_shadows = require_child<QSlider>(window, "stitchedCameraSlider_Bring_Up_Shadows");
   auto* stitched_exposure = require_child<QSlider>(window, "stitchedCameraSlider_Exposure_x100");
   auto* stitched_lift_black_point = require_child<QCheckBox>(window, "stitchedCameraCheck_Lift_Shadow_Black_Point");
@@ -2704,10 +2708,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !camera1_surface || !camera1_target || !camera1_focus || !camera2_host || !camera2_surface || !camera2_target ||
       !camera2_focus || !camera3_host || !camera3_surface || !camera3_target || !camera3_focus || !external_notice ||
       !camera1_notice || !stitched_status || !preview_status || !program_controls || !program_controls_toggle ||
-      !stitched_controls || !stitched_bring_up_shadows || !stitched_exposure || !stitched_lift_black_point ||
-      !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll || !algorithms_page ||
-      !program_control_tabs || !stitched_control_tabs || !program_controls_splitter || !stitched_controls_splitter ||
-      !program_focus || !stitched_focus || !top_bar || !setup_row || !log_panel || !playback_progress ||
+      !stitched_controls || !stitched_controls_toggle || !stitched_bring_up_shadows || !stitched_exposure ||
+      !stitched_lift_black_point || !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll ||
+      !algorithms_page || !program_control_tabs || !stitched_control_tabs || !program_controls_splitter ||
+      !stitched_controls_splitter || !program_focus || !stitched_focus || !top_bar || !setup_row || !log_panel ||
+      !playback_progress ||
       !seek_slider || !seek_back ||
       !seek_forward || !seek_position || !pipeline_process) {
     return false;
@@ -3048,6 +3053,48 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "their pipeline stage")) {
     return false;
   }
+  auto controls_drawer_reclaims_preview_space = [&](int tab_index,
+                                                    QSplitter* splitter,
+                                                    QWidget* controls,
+                                                    QToolButton* toggle,
+                                                    const char* label) {
+    preview_tabs->setCurrentIndex(tab_index);
+    QApplication::processEvents();
+    if (!toggle->isChecked()) {
+      QTest::mouseClick(toggle, Qt::LeftButton);
+      QApplication::processEvents();
+    }
+    const QList<int> expanded_sizes = splitter->sizes();
+    QTest::mouseClick(toggle, Qt::LeftButton);
+    QApplication::processEvents();
+    const QList<int> collapsed_sizes = splitter->sizes();
+    const bool collapsed = !toggle->isChecked() && controls->isHidden() && expanded_sizes.size() == 2 &&
+        collapsed_sizes.size() == 2 && collapsed_sizes.at(0) > expanded_sizes.at(0) &&
+        collapsed_sizes.at(1) <= toggle->sizeHint().width() + 24;
+    QTest::mouseClick(toggle, Qt::LeftButton);
+    QApplication::processEvents();
+    const QList<int> restored_sizes = splitter->sizes();
+    const bool restored = toggle->isChecked() && !controls->isHidden() && restored_sizes.size() == 2 &&
+        restored_sizes.at(1) >= std::max(1, expanded_sizes.at(1) / 2) &&
+        restored_sizes.at(0) < collapsed_sizes.at(0);
+    if (!collapsed || !restored) {
+      std::cerr << label << " drawer sizes: expanded=" << expanded_sizes.value(0) << ','
+                << expanded_sizes.value(1) << " collapsed=" << collapsed_sizes.value(0) << ','
+                << collapsed_sizes.value(1) << " restored=" << restored_sizes.value(0) << ','
+                << restored_sizes.value(1) << " toggle-hint=" << toggle->sizeHint().width() << '\n';
+    }
+    return collapsed && restored;
+  };
+  if (!expect(
+          controls_drawer_reclaims_preview_space(
+              0, program_controls_splitter, program_controls, program_controls_toggle, "Program") &&
+              controls_drawer_reclaims_preview_space(
+                  1, stitched_controls_splitter, stitched_controls, stitched_controls_toggle, "Stitched"),
+          "Collapsing Program or Stitched controls should return the side-pane width to the preview")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(0);
+  QApplication::processEvents();
   const bool save_enabled_before_inactive_optimizer_toggle = save_preset_button->isEnabled();
   run_autooptimizer->setChecked(true);
   QApplication::processEvents();
@@ -4003,6 +4050,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains("stdin:@set-preview-overlays 4 1 1 1") &&
               window->logText().contains("preview overlays players=1 play=1 rink=1 apply=live"),
           "Live overlay checkboxes must use the topology-independent backend command and confirm applied state")) {
+    return false;
+  }
+  pipeline_process->write(
+      "@test-preview-overlay-diagnostic HSTREAM_PREVIEW_OVERLAY channel=program "
+      "rink-mask=/tmp/rink_mask_0.png status=validation-failed retry=2s "
+      "message=field mask dimensions do not exactly match the live stitched canvas\n");
+  for (int i = 0; i < 100 && !window->logText().contains("rink mask overlay unavailable channel=program"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          preview_status->text() == "Rink mask overlay unavailable" &&
+              window->logText().contains("field mask dimensions do not exactly match the live stitched canvas"),
+          "Renderer-side rink-mask validation failures should be visible in hstream-ui instead of looking like a "
+          "dead checkbox")) {
     return false;
   }
   QTest::mouseClick(render_video, Qt::LeftButton);

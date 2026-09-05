@@ -277,6 +277,7 @@ class HStreamWindow : public QMainWindow {
   void clearPreviewFrames();
   void updatePreviewTabResolution(const QString& channel, int width, int height);
   bool handleGpuPreviewStatus(const QString& line);
+  bool handlePreviewOverlayDiagnostic(const QString& line);
   bool handlePreviewOverlayResponse(const QString& line);
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;

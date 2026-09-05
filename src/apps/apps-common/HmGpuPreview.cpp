@@ -1249,8 +1249,20 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
 
 void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   RendererState* state = self->state;
-  if (!overlays.diagnostic_coordinates_valid || !state->show_rink_mask.load() ||
-      !ensure_rink_mask_texture(self, overlays))
+  if (!state->show_rink_mask.load())
+    return;
+  if (!overlays.diagnostic_coordinates_valid) {
+    if (!state->rink_mask_failure_reported) {
+      g_printerr(
+          "HSTREAM_PREVIEW_OVERLAY channel=%s rink-mask=%s status=validation-failed "
+          "message=preview diagnostic coordinate transform unavailable\n",
+          state->channel.c_str(),
+          state->rink_mask_file.c_str());
+      state->rink_mask_failure_reported = true;
+    }
+    return;
+  }
+  if (!ensure_rink_mask_texture(self, overlays))
     return;
   std::array<hm::preview_overlay::Point, 4> texture_points = {
       hm::preview_overlay::Point{0.0F, overlays.stitched_surface_height},
@@ -1276,7 +1288,7 @@ void draw_rink_mask(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) 
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glEnable(GL_TEXTURE_2D);
   glBindTexture(GL_TEXTURE_2D, state->rink_mask_texture);
-  glColor4f(0.0F, 1.0F, 0.0F, 0.10F);
+  glColor4f(0.0F, 1.0F, 0.0F, 0.28F);
   glBegin(GL_QUADS);
   constexpr std::array<std::array<float, 2>, 4> vertices = {
       std::array<float, 2>{-1.0F, -1.0F},

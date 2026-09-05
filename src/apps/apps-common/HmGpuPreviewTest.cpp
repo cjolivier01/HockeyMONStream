@@ -12,6 +12,7 @@
 #include <nvdsmeta.h>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <tiffio.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -690,21 +691,61 @@ bool run_callback_exception_boundary_test() {
   return true;
 }
 
+bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_position) {
+  TIFF* tiff = TIFFOpen(path.c_str(), "w");
+  if (!tiff)
+    return false;
+  TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, width);
+  TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, height);
+  TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
+  TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 8);
+  TIFFSetField(tiff, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+  TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  TIFFSetField(tiff, TIFFTAG_ROWSPERSTRIP, height);
+  TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
+  TIFFSetField(tiff, TIFFTAG_XPOSITION, x_position);
+  TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
+  std::vector<uint8_t> row(width, 0);
+  bool ok = true;
+  for (uint32_t y = 0; y < height; ++y)
+    ok = ok && TIFFWriteScanline(tiff, row.data(), y, 0) >= 0;
+  TIFFClose(tiff);
+  return ok;
+}
+
+bool write_remap_pair(const fs::path& directory, const std::string& prefix, int width, int height) {
+  cv::Mat x(height, width, CV_16U);
+  cv::Mat y(height, width, CV_16U);
+  for (int row = 0; row < height; ++row) {
+    for (int column = 0; column < width; ++column) {
+      x.at<uint16_t>(row, column) = static_cast<uint16_t>(column);
+      y.at<uint16_t>(row, column) = static_cast<uint16_t>(row);
+    }
+  }
+  return cv::imwrite((directory / (prefix + "_x.tif")).string(), x) &&
+      cv::imwrite((directory / (prefix + "_y.tif")).string(), y);
+}
+
 bool make_rink_mask_fixture(const fs::path& root, std::string* output_generation) {
   if (!output_generation)
     return false;
   for (const char* name : {
            "hm_project.pto",
            "autooptimiser_out.pto",
-           "mapping_0000.tif",
-           "mapping_0000_x.tif",
-           "mapping_0000_y.tif",
-           "mapping_0001.tif",
-           "mapping_0001_x.tif",
-           "mapping_0001_y.tif",
-           "seam_file.png",
        }) {
     std::ofstream(root / name, std::ios::binary) << "preview-rink-mask-reactivation-fixture\n";
+  }
+  if (!write_mapping_tiff(root / "mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(root / "mapping_0001.tif", 64, 32, 32.0f) ||
+      !write_remap_pair(root, "mapping_0000", 64, 32) || !write_remap_pair(root, "mapping_0001", 64, 32)) {
+    std::cerr << "Could not write valid Hugin mapping TIFF fixtures\n";
+    return false;
+  }
+  if (!cv::imwrite((root / "seam_file.png").string(), cv::Mat(32, 96, CV_8U, cv::Scalar(255)))) {
+    std::cerr << "Could not write valid seam PNG fixture\n";
+    return false;
   }
   auto lock = hm::stitching::HuginProject::RecoverAndLock(root);
   if (!lock.ok()) {
@@ -857,6 +898,22 @@ bool run_rink_mask_reactivation_test(Window window) {
       wait_for_condition(
           [&] { return hm::gpu_preview::renderer_rink_mask_loaded_for_test(sink, output_generation, 640, 360); },
           std::chrono::seconds(10));
+  std::vector<std::uint8_t> rink_rgba;
+  unsigned rink_width = 0;
+  unsigned rink_height = 0;
+  std::string rink_capture_error;
+  const bool rink_captured =
+      initially_loaded &&
+      hm::gpu_preview::capture_presented_frame(sink, &rink_rgba, &rink_width, &rink_height, &rink_capture_error);
+  bool rink_visible = false;
+  if (rink_captured && rink_width > 0 && rink_height > 0 &&
+      rink_rgba.size() >= static_cast<size_t>(rink_width) * rink_height * 4U) {
+    const size_t center = (static_cast<size_t>(rink_height / 2) * rink_width + rink_width / 2) * 4U;
+    const auto red = rink_rgba[center + 0];
+    const auto green = rink_rgba[center + 1];
+    const auto blue = rink_rgba[center + 2];
+    rink_visible = green > 40 && green > red + 20 && green > blue + 20;
+  }
 
   hm::gpu_preview::set_isolation_active(gate, false, 17);
   const bool quiesced = hm::gpu_preview::quiesce(sink, 17);
@@ -877,11 +934,12 @@ bool run_rink_mask_reactivation_test(Window window) {
     g_setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", saved_invalidation.c_str(), TRUE);
   else
     g_unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
-  const bool passed = initially_loaded && quiesced && cache_cleared && reloaded;
+  const bool passed = initially_loaded && rink_captured && rink_visible && quiesced && cache_cleared && reloaded;
   if (!passed) {
     std::cerr << "Rink mask did not reload after same-generation renderer quiesce/reactivation: initial="
-              << initially_loaded << " quiesced=" << quiesced << " cleared=" << cache_cleared
-              << " reloaded=" << reloaded << '\n';
+              << initially_loaded << " captured=" << rink_captured << " visible=" << rink_visible
+              << " capture-size=" << rink_width << 'x' << rink_height << " capture-error=" << rink_capture_error
+              << " quiesced=" << quiesced << " cleared=" << cache_cleared << " reloaded=" << reloaded << '\n';
   }
   return passed;
 }
