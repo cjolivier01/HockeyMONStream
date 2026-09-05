@@ -487,8 +487,8 @@ for native_config in ds_hockey_app_config.yaml ds_hockey_configure_stitching.yam
   done
 done
 # The hockey YOLO checkpoint likewise has no recorded redistribution grant.
-# Keep the source-checkout path unchanged, but make the installed declaration
-# and TensorRT input use the same writable per-user download target.
+# Keep the source-checkout and installed configs on the same writable per-user
+# download target for the nonredistributable hockey YOLO checkpoint.
 hockey_yolo_model="hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
 sed -i \
   "s#onnx-file: ../pretrained/deepstream/yolov8/${hockey_yolo_model}#onnx-file: \$HOME/.cache/hstream/models/${hockey_yolo_model}#g" \
