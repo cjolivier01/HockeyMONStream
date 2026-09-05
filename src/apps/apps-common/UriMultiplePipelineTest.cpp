@@ -645,18 +645,21 @@ int run_headless_render_video_sink() {
 }
 
 int run_scaled_render_sink_caps() {
-#ifdef IS_TEGRA
-  return 0;
-#else
+#ifndef IS_TEGRA
   const char* previous_render_sink = g_getenv("HM_RENDER_SINK");
   const bool restore_render_sink = previous_render_sink != nullptr;
   const std::string saved_render_sink = restore_render_sink ? previous_render_sink : "";
   g_setenv("HM_RENDER_SINK", "nv3dsink", TRUE);
+#endif
 
   NvDsSinkSubBinConfig sink_config{};
   sink_config.enable = TRUE;
   sink_config.source_id = 0;
+#ifndef IS_TEGRA
   sink_config.type = NV_DS_SINK_RENDER_EGL;
+#else
+  sink_config.type = NV_DS_SINK_RENDER_3D;
+#endif
   sink_config.sync = FALSE;
   sink_config.render_config.gpu_id = 0;
   sink_config.render_config.width = 1600;
@@ -665,13 +668,15 @@ int run_scaled_render_sink_caps() {
   NvDsSinkBin sink_bin{};
   const bool created = create_sink_bin(1, &sink_config, &sink_bin, 0);
 
+#ifndef IS_TEGRA
   if (restore_render_sink) {
     g_setenv("HM_RENDER_SINK", saved_render_sink.c_str(), TRUE);
   } else {
     g_unsetenv("HM_RENDER_SINK");
   }
+#endif
 
-  if (!created || !sink_bin.sub_bins[0].cap_filter) {
+  if (!created || !sink_bin.sub_bins[0].cap_filter || !sink_bin.sub_bins[0].transform) {
     std::cerr << "Failed to construct a scaled render sink fixture\n";
     if (sink_bin.bin) {
       gst_object_unref(GST_OBJECT(sink_bin.bin));
@@ -697,7 +702,6 @@ int run_scaled_render_sink_caps() {
     return 3;
   }
   return 0;
-#endif
 }
 
 int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_muted) {

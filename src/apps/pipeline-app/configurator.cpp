@@ -995,35 +995,49 @@ long scaled_render_dimension(long value, double scale) {
   return round_down_even(std::max<long>(scaled, 2));
 }
 
-std::optional<std::pair<long, long>> get_default_render_base_size(const YAML::Node& pipeline) {
-  std::vector<std::string> width_height_sources = {
-      "hmplaycropper.output-width",
-      "hmplaycropper.output-height",
-      "streammux.width",
-      "streammux.height",
-      "hmstitcher.output-width",
-      "hmstitcher.output-height",
-  };
-
-  auto maybe_stream_width = get_node_value<long>(pipeline, width_height_sources.at(0), -1);
-  auto maybe_stream_height = get_node_value<long>(pipeline, width_height_sources.at(1), -1);
-  if (maybe_stream_width > 0 && maybe_stream_height > 0) {
-    return std::make_pair(maybe_stream_width, maybe_stream_height);
+std::optional<configurator_internal::RenderSinkDimensions> get_render_size_from_section(
+    const YAML::Node& pipeline,
+    const std::string& section_name,
+    const std::string& width_name,
+    const std::string& height_name,
+    bool require_enabled) {
+  if (require_enabled && !is_enabled(pipeline, section_name)) {
+    return std::nullopt;
   }
-
-  maybe_stream_width = get_node_value<long>(pipeline, width_height_sources.at(2), -1);
-  maybe_stream_height = get_node_value<long>(pipeline, width_height_sources.at(3), -1);
-  if (maybe_stream_width > 0 && maybe_stream_height > 0) {
-    return std::make_pair(maybe_stream_width, maybe_stream_height);
+  const long width = get_node_value<long>(pipeline, section_name + "." + width_name, -1);
+  const long height = get_node_value<long>(pipeline, section_name + "." + height_name, -1);
+  if (width > 0 && height > 0) {
+    return configurator_internal::RenderSinkDimensions{width, height};
   }
-
-  maybe_stream_width = get_node_value<long>(pipeline, width_height_sources.at(4), -1);
-  maybe_stream_height = get_node_value<long>(pipeline, width_height_sources.at(5), -1);
-  if (maybe_stream_width > 0 && maybe_stream_height > 0) {
-    return std::make_pair(maybe_stream_width, maybe_stream_height);
-  }
-
   return std::nullopt;
+}
+
+std::optional<configurator_internal::RenderSinkDimensions> get_render_scale_box_size(const YAML::Node& pipeline) {
+  if (auto size = get_render_size_from_section(
+          pipeline, "hmplaycropper", "output-width", "output-height", /*require_enabled=*/true);
+      size.has_value()) {
+    return size;
+  }
+  if (auto size = get_render_size_from_section(pipeline, "streammux", "width", "height", /*require_enabled=*/false);
+      size.has_value()) {
+    return size;
+  }
+  return get_render_size_from_section(
+      pipeline, "hmstitcher", "output-width", "output-height", /*require_enabled=*/true);
+}
+
+std::optional<configurator_internal::RenderSinkDimensions> get_render_aspect_size(const YAML::Node& pipeline) {
+  if (auto size = get_render_size_from_section(
+          pipeline, "hmplaycropper", "output-width", "output-height", /*require_enabled=*/true);
+      size.has_value()) {
+    return size;
+  }
+  if (auto size = get_render_size_from_section(
+          pipeline, "hmstitcher", "output-width", "output-height", /*require_enabled=*/true);
+      size.has_value()) {
+    return size;
+  }
+  return get_render_size_from_section(pipeline, "streammux", "width", "height", /*require_enabled=*/false);
 }
 
 absl::Status ensure_render_sink_with_scale(YAML::Node& pipeline, double show_render_scale) {
@@ -1035,10 +1049,10 @@ absl::Status ensure_render_sink_with_scale(YAML::Node& pipeline, double show_ren
 
   const bool show_render_sink = show_render_scale != 0.0;
   const bool has_render_scale = show_render_scale > 0.0;
-  std::optional<std::pair<long, long>> base_size;
+  std::optional<configurator_internal::RenderSinkDimensions> scaled_size;
   if (has_render_scale) {
-    base_size = get_default_render_base_size(pipeline);
-    if (!base_size.has_value()) {
+    scaled_size = configurator_internal::scaled_render_sink_dimensions(pipeline, show_render_scale);
+    if (!scaled_size.has_value()) {
       std::cerr << "Warning: --show-scaled requested but no base render dimensions found; using defaults\n";
     }
   }
@@ -1072,9 +1086,9 @@ absl::Status ensure_render_sink_with_scale(YAML::Node& pipeline, double show_ren
     }
 
     sink_node[kEnableFlagField] = "1";
-    if (has_render_scale && base_size.has_value()) {
-      sink_node["width"] = std::to_string(scaled_render_dimension(base_size.value().first, show_render_scale));
-      sink_node["height"] = std::to_string(scaled_render_dimension(base_size.value().second, show_render_scale));
+    if (has_render_scale && scaled_size.has_value()) {
+      sink_node["width"] = std::to_string(scaled_size->width);
+      sink_node["height"] = std::to_string(scaled_size->height);
     }
   }
 
@@ -1094,9 +1108,9 @@ absl::Status ensure_render_sink_with_scale(YAML::Node& pipeline, double show_ren
   render_sink["sink-id"] = std::to_string(std::max<int>(max_sink_id, 0) + 1);
   render_sink["type"] = get_render_sink_type();
   render_sink["sync"] = "1";
-  if (has_render_scale && base_size.has_value()) {
-    render_sink["width"] = std::to_string(scaled_render_dimension(base_size.value().first, show_render_scale));
-    render_sink["height"] = std::to_string(scaled_render_dimension(base_size.value().second, show_render_scale));
+  if (has_render_scale && scaled_size.has_value()) {
+    render_sink["width"] = std::to_string(scaled_size->width);
+    render_sink["height"] = std::to_string(scaled_size->height);
   }
 
   return absl::OkStatus();
@@ -1324,6 +1338,39 @@ std::optional<YAML::Node> maybe_get_config_file(const YAML::Node& yaml_node, con
 }
 
 } // namespace
+
+std::optional<configurator_internal::RenderSinkDimensions> configurator_internal::scaled_render_sink_dimensions(
+    const YAML::Node& pipeline,
+    double show_render_scale) {
+  if (show_render_scale <= 0.0) {
+    return std::nullopt;
+  }
+  auto box_size = get_render_scale_box_size(pipeline);
+  if (!box_size.has_value()) {
+    return std::nullopt;
+  }
+
+  configurator_internal::RenderSinkDimensions scaled{
+      scaled_render_dimension(box_size->width, show_render_scale),
+      scaled_render_dimension(box_size->height, show_render_scale),
+  };
+  const auto aspect_size = get_render_aspect_size(pipeline);
+  if (!aspect_size.has_value() || aspect_size->width <= 0 || aspect_size->height <= 0 ||
+      (aspect_size->width == box_size->width && aspect_size->height == box_size->height)) {
+    return scaled;
+  }
+
+  const long height_from_width = round_down_even(
+      std::max<long>(std::llround(static_cast<double>(scaled.width) * aspect_size->height / aspect_size->width), 2));
+  if (height_from_width <= scaled.height) {
+    scaled.height = height_from_width;
+    return scaled;
+  }
+
+  scaled.width = round_down_even(
+      std::max<long>(std::llround(static_cast<double>(scaled.height) * aspect_size->width / aspect_size->height), 2));
+  return scaled;
+}
 
 bool configurator_internal::bitrate_density_greater(
     uint64_t candidate_numerator,

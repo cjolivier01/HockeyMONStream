@@ -917,6 +917,10 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
   const bool use_xvideo = use_xvideo_render_sink();
 #endif
   const bool gpu_preview_fake = embedded_gpu_preview_video_mode.load();
+#ifdef IS_TEGRA
+  const bool scaled_nv3d_render =
+      !gpu_preview_fake && config->type == NV_DS_SINK_RENDER_3D && config->width > 0 && config->height > 0;
+#endif
 
   struct cudaDeviceProp prop;
   cudaGetDeviceProperties(&prop, config->gpu_id);
@@ -1039,6 +1043,8 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
       (!prop.integrated
 #ifndef IS_TEGRA
        || use_nv3d
+#else
+       || scaled_nv3d_render
 #endif
        )) {
     g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_cap_filter%d", uid);
@@ -1105,6 +1111,30 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
       g_object_set(G_OBJECT(bin->transform), "gpu-id", config->gpu_id, NULL);
       g_object_set(G_OBJECT(bin->transform), "nvbuf-memory-type", use_nv3d ? config->nvbuf_memory_type : 1, NULL);
     }
+  }
+#endif
+#ifdef IS_TEGRA
+  if (scaled_nv3d_render) {
+    bin->transform = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, elem_name);
+    if (!bin->transform) {
+      NVGSTDS_ERR_MSG_V("Failed to create '%s'", elem_name);
+      goto done;
+    }
+    gst_bin_add(GST_BIN(bin->bin), bin->transform);
+
+    caps = make_render_video_caps(nullptr, config);
+    if (!caps) {
+      NVGSTDS_ERR_MSG_V("Failed to create scaled render caps");
+      goto done;
+    }
+    g_object_set(G_OBJECT(bin->cap_filter), "caps", caps, NULL);
+    g_object_set(
+        G_OBJECT(bin->transform),
+        "gpu-id",
+        config->gpu_id,
+        "nvbuf-memory-type",
+        config->nvbuf_memory_type,
+        NULL);
   }
 #endif
 

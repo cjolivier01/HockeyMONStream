@@ -33,8 +33,16 @@ struct AutomaticHighBitDepthDecision {
   unsigned int minimum_source_bit_depth{0};
 };
 
+struct RenderSinkDimensions {
+  long width{0};
+  long height{0};
+};
+
 AutomaticHighBitDepthDecision decide_automatic_high_bit_depth(
     const std::vector<std::optional<unsigned int>>& source_bit_depths);
+std::optional<RenderSinkDimensions> scaled_render_sink_dimensions(
+    const YAML::Node& pipeline,
+    double show_render_scale);
 
 bool bitrate_density_greater(
     uint64_t candidate_numerator,

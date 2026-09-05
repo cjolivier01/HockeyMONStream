@@ -90,6 +90,41 @@ int main() {
               /*selected=*/20'000'000,
               1920ULL * 1080),
       "Stitched bitrate selection must prefer higher bitrate per pixel even when its absolute bitrate is lower");
+  const auto stitched_preview_size = hm::configurator_internal::scaled_render_sink_dimensions(
+      YAML::Load(
+          "hmplaycropper:\n"
+          "  enable: 0\n"
+          "  output-width: 7680\n"
+          "  output-height: 4320\n"
+          "streammux:\n"
+          "  width: 5312\n"
+          "  height: 2988\n"
+          "hmstitcher:\n"
+          "  enable: 1\n"
+          "  output-width: 15287\n"
+          "  output-height: 6958\n"),
+      0.3012048193);
+  ok &= expect(
+      stitched_preview_size.has_value() && stitched_preview_size->width == 1600 &&
+          stitched_preview_size->height == 728,
+      "Scaled stitched preview must fit the streammux preview box while preserving hmstitcher aspect");
+  const auto cropper_preview_size = hm::configurator_internal::scaled_render_sink_dimensions(
+      YAML::Load(
+          "hmplaycropper:\n"
+          "  enable: 1\n"
+          "  output-width: 1920\n"
+          "  output-height: 1080\n"
+          "streammux:\n"
+          "  width: 5312\n"
+          "  height: 2988\n"
+          "hmstitcher:\n"
+          "  enable: 1\n"
+          "  output-width: 15287\n"
+          "  output-height: 6958\n"),
+      0.3012048193);
+  ok &= expect(
+      cropper_preview_size.has_value() && cropper_preview_size->width == 578 && cropper_preview_size->height == 324,
+      "Scaled program preview must keep using active hmplaycropper dimensions");
   const auto rotation_value = [](const YAML::Node& config) {
     return hm::configurator_internal::effective_stitch_output_rotation(config);
   };
