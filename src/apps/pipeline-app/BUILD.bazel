@@ -112,6 +112,20 @@ cc_test(
 )
 
 cc_test(
+    name = "pipeline_asset_options_test",
+    srcs = [
+        "PipelineAssetOptions.h",
+        "PipelineAssetOptionsTest.cpp",
+    ],
+    copts = PIPELINE_APP_COPTS,
+    deps = [
+        "//src/libs/assets:asset_manager",
+        "//src/libs/common:utils",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
     name = "pipeline_runtime_control_test",
     srcs = ["PipelineRuntimeControlTest.cpp"],
     args = ["$(location :hstream-cli)"],

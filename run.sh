@@ -712,6 +712,14 @@ abs_config_path() {
     return 1
   fi
   case "${value}" in
+    '$HOME') value="${HOME}" ;;
+    '$HOME/'*) value="${HOME}/${value#'$HOME/'}" ;;
+    '${HOME}') value="${HOME}" ;;
+    '${HOME}/'*) value="${HOME}/${value#'${HOME}/'}" ;;
+    '~') value="${HOME}" ;;
+    '~/'*) value="${HOME}/${value#'~/'}" ;;
+  esac
+  case "${value}" in
     /*) realpath -m "${value}" ;;
     *) realpath -m "$(dirname "${config_file}")/${value}" ;;
   esac
