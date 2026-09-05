@@ -560,6 +560,8 @@ struct RendererState {
   GLuint rink_mask_texture{0};
   guint rink_mask_width{0};
   guint rink_mask_height{0};
+  guint rink_mask_canvas_width{0};
+  guint rink_mask_canvas_height{0};
   std::string rink_mask_output_generation;
   guint requested_rink_mask_width{0};
   guint requested_rink_mask_height{0};
@@ -1134,8 +1136,8 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
   }
   const bool artifact_identity_changed = !expected_width || !expected_height ||
       state->rink_mask_output_generation != overlays.stitched_output_generation ||
-      (expected_width && state->rink_mask_width != *expected_width) ||
-      (expected_height && state->rink_mask_height != *expected_height);
+      (expected_width && state->rink_mask_canvas_width != *expected_width) ||
+      (expected_height && state->rink_mask_canvas_height != *expected_height);
   if (artifact_identity_changed)
     state->rink_mask_dirty = true;
   if (!state->rink_mask_dirty)
@@ -1155,6 +1157,8 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
   }
   state->rink_mask_width = 0;
   state->rink_mask_height = 0;
+  state->rink_mask_canvas_width = 0;
+  state->rink_mask_canvas_height = 0;
   state->rink_mask_output_generation.clear();
   if (state->rink_mask_file.empty()) {
     state->rink_mask_dirty = false;
@@ -1175,7 +1179,19 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
         overlays.stitched_output_generation,
         invalidation ? invalidation : "",
         [&](const std::string& validated_path) {
-          loaded = hm::gpu_preview::load_rink_mask_png(validated_path);
+          hm::gpu_preview::RinkMaskLoadOptions options;
+          options.downsample_to_texture_budget = true;
+          options.maximum_source_dimension = std::max<std::uint32_t>(
+              hm::gpu_preview::kMaximumRinkMaskDimension, std::max(*expected_width, *expected_height));
+          options.maximum_source_pixels = hm::gpu_preview::kMaximumPreviewRinkMaskSourcePixels;
+          options.maximum_resource_bytes = hm::gpu_preview::kMaximumPreviewRinkMaskResourceBytes;
+          GLint maximum_texture_size = 0;
+          glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum_texture_size);
+          if (maximum_texture_size > 0) {
+            options.maximum_texture_dimension = std::min<std::uint32_t>(
+                options.maximum_texture_dimension, static_cast<std::uint32_t>(maximum_texture_size));
+          }
+          loaded = hm::gpu_preview::load_rink_mask_png(validated_path, {}, {}, options);
           if (!loaded)
             return absl::FailedPreconditionError(loaded.message);
           if (!hm::gpu_preview::rink_mask_dimensions_match(loaded.image, *expected_width, *expected_height)) {
@@ -1235,6 +1251,8 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
   }
   state->rink_mask_width = loaded.image.width;
   state->rink_mask_height = loaded.image.height;
+  state->rink_mask_canvas_width = loaded.image.canvas_width;
+  state->rink_mask_canvas_height = loaded.image.canvas_height;
   state->rink_mask_output_generation = overlays.stitched_output_generation;
   state->rink_mask_dirty = false;
   state->rink_mask_failure_reported = false;
@@ -1720,6 +1738,8 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
   state->rink_mask_dirty = true;
   state->rink_mask_width = 0;
   state->rink_mask_height = 0;
+  state->rink_mask_canvas_width = 0;
+  state->rink_mask_canvas_height = 0;
   state->rink_mask_output_generation.clear();
   state->requested_rink_mask_width = 0;
   state->requested_rink_mask_height = 0;
@@ -2390,8 +2410,8 @@ bool renderer_rink_mask_loaded_for_test(
     return false;
   std::lock_guard<std::mutex> lock(self->state->mutex);
   const RendererState* state = self->state;
-  return state->rink_mask_texture != 0 && !state->rink_mask_dirty && state->rink_mask_width == width &&
-      state->rink_mask_height == height && state->rink_mask_output_generation == output_generation;
+  return state->rink_mask_texture != 0 && !state->rink_mask_dirty && state->rink_mask_canvas_width == width &&
+      state->rink_mask_canvas_height == height && state->rink_mask_output_generation == output_generation;
 #else
   (void)sink;
   (void)output_generation;
@@ -2411,7 +2431,8 @@ bool renderer_rink_mask_cache_cleared_for_test(GstElement* sink) {
   std::lock_guard<std::mutex> lock(self->state->mutex);
   const RendererState* state = self->state;
   return state->rink_mask_texture == 0 && state->rink_mask_dirty && state->rink_mask_width == 0 &&
-      state->rink_mask_height == 0 && state->rink_mask_output_generation.empty() &&
+      state->rink_mask_height == 0 && state->rink_mask_canvas_width == 0 && state->rink_mask_canvas_height == 0 &&
+      state->rink_mask_output_generation.empty() &&
       state->requested_rink_mask_width == 0 && state->requested_rink_mask_height == 0 &&
       state->requested_rink_mask_output_generation.empty();
 #else
