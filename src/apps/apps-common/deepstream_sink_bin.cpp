@@ -60,16 +60,62 @@ void set_embedded_gpu_preview_video_mode(gboolean enabled) {
 
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 
+namespace hm::deepstream_sink_internal {
+
+namespace {
+
+guint round_down_even(guint value) {
+  if (value <= 2) {
+    return 2;
+  }
+  return value & ~static_cast<guint>(1);
+}
+
+guint rounded_ratio_to_even(guint64 numerator, guint denominator) {
+  if (denominator == 0) {
+    return 0;
+  }
+  const guint64 rounded = (numerator + denominator / 2) / denominator;
+  return round_down_even(static_cast<guint>(std::max<guint64>(2, rounded)));
+}
+
+} // namespace
+
+std::pair<guint, guint> fit_render_size_to_aspect(
+    guint box_width,
+    guint box_height,
+    guint input_width,
+    guint input_height) {
+  if (box_width == 0 || box_height == 0 || input_width == 0 || input_height == 0) {
+    return {box_width, box_height};
+  }
+
+  const guint height_from_width =
+      rounded_ratio_to_even(static_cast<guint64>(box_width) * input_height, input_width);
+  if (height_from_width <= box_height) {
+    return {box_width, height_from_width};
+  }
+
+  const guint width_from_height =
+      rounded_ratio_to_even(static_cast<guint64>(box_height) * input_width, input_height);
+  return {width_from_height, box_height};
+}
+
+} // namespace hm::deepstream_sink_internal
+
 namespace {
 
 constexpr guint kWebRtcPayloadType = 96;
 constexpr guint kDefaultWebRtcPort = 8080;
 constexpr guint kNvEncPresetP2 = 2;
 
-GstCaps* make_render_video_caps(const char* format, const NvDsSinkRenderConfig* config) {
+GstCaps* make_render_video_caps(const char* format, const NvDsSinkRenderConfig* config, bool nvmm = false) {
   GstCaps* caps = gst_caps_new_empty_simple("video/x-raw");
   if (!caps)
     return nullptr;
+  if (nvmm) {
+    gst_caps_set_features(caps, 0, gst_caps_features_new(MEMORY_FEATURES, NULL));
+  }
 
   GstStructure* structure = gst_caps_get_structure(caps, 0);
   if (format && *format) {
@@ -80,6 +126,156 @@ GstCaps* make_render_video_caps(const char* format, const NvDsSinkRenderConfig* 
         structure, "width", G_TYPE_INT, config->width, "height", G_TYPE_INT, config->height, NULL);
   }
   return caps;
+}
+
+struct RenderAspectCapsState {
+  GstElement* sink{nullptr};
+  GstElement* cap_filter{nullptr};
+  GstElement* system_memory_cap_filter{nullptr};
+  NvDsSinkRenderConfig config{};
+  const char* caps_format{nullptr};
+  const char* system_caps_format{nullptr};
+  bool caps_nvmm{false};
+  bool system_caps_nvmm{false};
+  bool resize_sink_window{false};
+  guint last_width{0};
+  guint last_height{0};
+};
+
+void set_render_caps_filter_caps(
+    GstElement* cap_filter,
+    const NvDsSinkRenderConfig* config,
+    const char* format,
+    bool nvmm) {
+  if (!cap_filter) {
+    return;
+  }
+  GstCaps* caps = make_render_video_caps(format, config, nvmm);
+  if (!caps) {
+    GST_WARNING_OBJECT(cap_filter, "Could not create fitted render caps");
+    return;
+  }
+  g_object_set(G_OBJECT(cap_filter), "caps", caps, NULL);
+  gst_caps_unref(caps);
+}
+
+GstPadProbeReturn update_render_aspect_caps_from_caps(GstPad*, GstPadProbeInfo* info, gpointer user_data) {
+  auto* state = static_cast<RenderAspectCapsState*>(user_data);
+  if (!state || (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) == 0) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  GstEvent* event = gst_pad_probe_info_get_event(info);
+  if (!event || GST_EVENT_TYPE(event) != GST_EVENT_CAPS) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  GstCaps* input_caps = nullptr;
+  gst_event_parse_caps(event, &input_caps);
+  const GstStructure* structure =
+      input_caps && gst_caps_get_size(input_caps) > 0 ? gst_caps_get_structure(input_caps, 0) : nullptr;
+  gint input_width = 0;
+  gint input_height = 0;
+  if (!structure || !gst_structure_get_int(structure, "width", &input_width) ||
+      !gst_structure_get_int(structure, "height", &input_height) || input_width <= 0 || input_height <= 0) {
+    return GST_PAD_PROBE_OK;
+  }
+
+  const auto fitted = hm::deepstream_sink_internal::fit_render_size_to_aspect(
+      static_cast<guint>(state->config.width),
+      static_cast<guint>(state->config.height),
+      static_cast<guint>(input_width),
+      static_cast<guint>(input_height));
+  if (fitted.first == 0 || fitted.second == 0 ||
+      (fitted.first == state->last_width && fitted.second == state->last_height)) {
+    return GST_PAD_PROBE_OK;
+  }
+  state->last_width = fitted.first;
+  state->last_height = fitted.second;
+
+  NvDsSinkRenderConfig fitted_config = state->config;
+  fitted_config.width = fitted.first;
+  fitted_config.height = fitted.second;
+  set_render_caps_filter_caps(state->cap_filter, &fitted_config, state->caps_format, state->caps_nvmm);
+  set_render_caps_filter_caps(
+      state->system_memory_cap_filter, &fitted_config, state->system_caps_format, state->system_caps_nvmm);
+  if (state->resize_sink_window && state->sink) {
+    g_object_set(
+        G_OBJECT(state->sink),
+        "window-width",
+        fitted_config.width,
+        "window-height",
+        fitted_config.height,
+        NULL);
+  }
+  GST_INFO_OBJECT(
+      state->cap_filter ? state->cap_filter : state->sink,
+      "Fitted scaled render output to %ux%u for upstream caps %dx%d in box %ux%u",
+      fitted_config.width,
+      fitted_config.height,
+      input_width,
+      input_height,
+      state->config.width,
+      state->config.height);
+  return GST_PAD_PROBE_OK;
+}
+
+void destroy_render_aspect_caps_state(gpointer data) {
+  auto* state = static_cast<RenderAspectCapsState*>(data);
+  if (!state) {
+    return;
+  }
+  if (state->sink) {
+    gst_object_unref(state->sink);
+  }
+  if (state->cap_filter) {
+    gst_object_unref(state->cap_filter);
+  }
+  if (state->system_memory_cap_filter) {
+    gst_object_unref(state->system_memory_cap_filter);
+  }
+  delete state;
+}
+
+void install_render_aspect_caps_probe(
+    GstElement* transform,
+    GstElement* sink,
+    GstElement* cap_filter,
+    GstElement* system_memory_cap_filter,
+    const NvDsSinkRenderConfig* config,
+    const char* caps_format,
+    bool caps_nvmm,
+    const char* system_caps_format,
+    bool system_caps_nvmm,
+    bool resize_sink_window) {
+  if (!transform || !config || config->width <= 0 || config->height <= 0 ||
+      (!cap_filter && !system_memory_cap_filter && !resize_sink_window)) {
+    return;
+  }
+
+  GstPad* sink_pad = gst_element_get_static_pad(transform, "sink");
+  if (!sink_pad) {
+    GST_WARNING_OBJECT(transform, "Could not install scaled render aspect probe");
+    return;
+  }
+
+  auto* state = new RenderAspectCapsState{
+      sink ? GST_ELEMENT(gst_object_ref(sink)) : nullptr,
+      cap_filter ? GST_ELEMENT(gst_object_ref(cap_filter)) : nullptr,
+      system_memory_cap_filter ? GST_ELEMENT(gst_object_ref(system_memory_cap_filter)) : nullptr,
+      *config,
+      caps_format,
+      system_caps_format,
+      caps_nvmm,
+      system_caps_nvmm,
+      resize_sink_window,
+      0,
+      0,
+  };
+  gst_pad_add_probe(
+      sink_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, update_render_aspect_caps_from_caps, state,
+      destroy_render_aspect_caps_state);
+  gst_object_unref(sink_pad);
 }
 
 struct FileEncoderBitrateScale {
@@ -1094,7 +1290,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
         gst_caps_unref(system_caps);
         gst_bin_add_many(GST_BIN(bin->bin), system_memory_transform, system_memory_cap_filter, NULL);
       } else {
-        caps = make_render_video_caps(nullptr, config);
+        caps = make_render_video_caps(nullptr, config, /*nvmm=*/true);
         if (!caps) {
           NVGSTDS_ERR_MSG_V("Failed to create scaled render caps");
           goto done;
@@ -1110,6 +1306,17 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
 
       g_object_set(G_OBJECT(bin->transform), "gpu-id", config->gpu_id, NULL);
       g_object_set(G_OBJECT(bin->transform), "nvbuf-memory-type", use_nv3d ? config->nvbuf_memory_type : 1, NULL);
+      install_render_aspect_caps_probe(
+          bin->transform,
+          bin->sink,
+          bin->cap_filter,
+          system_memory_cap_filter,
+          config,
+          use_nv3d ? nullptr : "NV12",
+          use_nv3d,
+          system_memory_cap_filter ? "BGRx" : nullptr,
+          false,
+          !use_xvideo);
     }
   }
 #endif
@@ -1122,7 +1329,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
     }
     gst_bin_add(GST_BIN(bin->bin), bin->transform);
 
-    caps = make_render_video_caps(nullptr, config);
+    caps = make_render_video_caps(nullptr, config, /*nvmm=*/true);
     if (!caps) {
       NVGSTDS_ERR_MSG_V("Failed to create scaled render caps");
       goto done;
@@ -1135,6 +1342,17 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
         "nvbuf-memory-type",
         config->nvbuf_memory_type,
         NULL);
+    install_render_aspect_caps_probe(
+        bin->transform,
+        bin->sink,
+        bin->cap_filter,
+        nullptr,
+        config,
+        nullptr,
+        true,
+        nullptr,
+        false,
+        true);
   }
 #endif
 

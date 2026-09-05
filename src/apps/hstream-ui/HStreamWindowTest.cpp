@@ -141,6 +141,10 @@ struct HStreamWindowTestAccess {
     return window->handlePlaybackProgressOutput(line);
   }
 
+  static void updatePreviewTabResolution(HStreamWindow* window, const QString& channel, int width, int height) {
+    window->updatePreviewTabResolution(channel, width, height);
+  }
+
   static void beginTimedOutPlaybackSeekRecovery(HStreamWindow* window, quint64 generation) {
     beginPendingPlaybackSeek(window, generation);
     window->handlePlaybackSeekOutput(
@@ -2772,6 +2776,39 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           preview_target, false, "Stopped Program target must use its Qt host as the native X11 coordinate space")) {
     return false;
   }
+  stitched_host->resize(900, 600);
+  HStreamWindowTestAccess::updatePreviewTabResolution(window, "stitched", 15287, 6958);
+  QApplication::processEvents();
+  const QSize wide_stitched_target_size = stitched_target->size();
+  HStreamWindowTestAccess::updatePreviewTabResolution(window, "stitched", 0, 0);
+  QApplication::processEvents();
+  const QSize default_stitched_target_size = stitched_target->size();
+  const double default_stitched_aspect =
+      default_stitched_target_size.height() > 0
+          ? static_cast<double>(default_stitched_target_size.width()) / default_stitched_target_size.height()
+          : 0.0;
+  const double wide_stitched_aspect =
+      wide_stitched_target_size.height() > 0
+          ? static_cast<double>(wide_stitched_target_size.width()) / wide_stitched_target_size.height()
+          : 0.0;
+  if (!expect(
+          default_stitched_target_size.width() > 0 && default_stitched_target_size.height() > 0 &&
+              wide_stitched_target_size.width() > 0 && wide_stitched_target_size.height() > 0 &&
+              default_stitched_target_size.width() <= stitched_host->width() &&
+              default_stitched_target_size.height() <= stitched_host->height() &&
+              wide_stitched_target_size.width() <= stitched_host->width() &&
+              wide_stitched_target_size.height() <= stitched_host->height() &&
+              wide_stitched_target_size.height() < default_stitched_target_size.height() &&
+              std::abs(default_stitched_aspect - 16.0 / 9.0) < 0.01 &&
+              std::abs(wide_stitched_aspect - 15287.0 / 6958.0) < 0.01,
+          "Embedded stitched preview host must relayout to the reported stitched canvas aspect")) {
+    std::cerr << "stitched_host=" << stitched_host->width() << 'x' << stitched_host->height()
+              << " default_target=" << default_stitched_target_size.width() << 'x'
+              << default_stitched_target_size.height() << " aspect=" << default_stitched_aspect
+              << " wide_target=" << wide_stitched_target_size.width() << 'x' << wide_stitched_target_size.height()
+              << " aspect=" << wide_stitched_aspect << '\n';
+    return false;
+  }
   const int preview_height_before_setup_collapse = preview_tabs->height();
   setup_preview_splitter->setSizes({0, setup_preview_splitter->height()});
   QApplication::processEvents();
@@ -4824,12 +4861,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QWidget* host;
     QWidget* target;
     QPushButton* button;
+    double expected_aspect;
   };
   const std::array<FocusPreviewCase, 4> additional_focus_cases = {{
-      {1, "stitched", stitched_host, stitched_target, stitched_focus},
-      {2, "source0", camera1_host, camera1_target, camera1_focus},
-      {3, "source1", camera2_host, camera2_target, camera2_focus},
-      {4, "source2", camera3_host, camera3_target, camera3_focus},
+      {1, "stitched", stitched_host, stitched_target, stitched_focus, 4096.0 / 1080.0},
+      {2, "source0", camera1_host, camera1_target, camera1_focus, 16.0 / 9.0},
+      {3, "source1", camera2_host, camera2_target, camera2_focus, 16.0 / 9.0},
+      {4, "source2", camera3_host, camera3_target, camera3_focus, 16.0 / 9.0},
   }};
   QWidget* previous_target = preview_target;
   for (const FocusPreviewCase& focus_case : additional_focus_cases) {
@@ -4857,15 +4895,18 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QTest::mouseDClick(focus_case.target, Qt::LeftButton);
     QApplication::processEvents();
     const bool preview_footer_hidden = focus_case.tab != 1 || !stitched_status->isVisible();
+    const double focused_aspect = focus_case.target->height() > 0
+        ? static_cast<double>(focus_case.target->width()) / focus_case.target->height()
+        : 0.0;
     if (!expect(
             focus_case.host->isVisible() && !preview_tabs->tabBar()->isVisible() && !top_bar->isVisible() &&
                 focus_case.button->isVisible() && focus_case.host->width() >= normal_host_size.width() &&
                 focus_case.host->height() >= normal_host_size.height() &&
                 preview_footer_hidden &&
-                std::abs(focus_case.target->width() * 9 - focus_case.target->height() * 16) <= 16 &&
+                focus_case.target->height() > 0 && std::abs(focused_aspect - focus_case.expected_aspect) < 0.01 &&
                 focus_case.button->x() == focus_case.target->width() - focus_case.button->width() - 6 &&
                 focus_case.button->y() == 6,
-            "Every ready Stitched/camera preview must maximize at 16:9 without displacing its restore control")) {
+            "Every ready Stitched/camera preview must maximize at its reported aspect without displacing its restore control")) {
       return false;
     }
     QTest::mouseClick(focus_case.button, Qt::LeftButton);

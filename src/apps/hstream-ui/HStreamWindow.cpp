@@ -665,6 +665,15 @@ class LetterboxRenderHost : public QWidget {
     return render_target_;
   }
 
+  void setVideoSize(int width, int height) {
+    const double aspect_ratio = width > 0 && height > 0 ? static_cast<double>(width) / height : 16.0 / 9.0;
+    if (std::abs(aspect_ratio_ - aspect_ratio) < 0.0001)
+      return;
+    aspect_ratio_ = aspect_ratio;
+    updateGeometry();
+    layoutRenderSurface();
+  }
+
   QPushButton* focusButton() const {
     return focus_button_;
   }
@@ -709,6 +718,11 @@ class LetterboxRenderHost : public QWidget {
 
   void resizeEvent(QResizeEvent* event) override {
     QWidget::resizeEvent(event);
+    layoutRenderSurface();
+  }
+
+ private:
+  void layoutRenderSurface() {
     if (!render_surface_) {
       return;
     }
@@ -756,7 +770,6 @@ class LetterboxRenderHost : public QWidget {
     focus_button_->raise();
   }
 
- private:
   double aspect_ratio_;
   QWidget* render_surface_{nullptr};
   NativeVideoTarget* render_target_{nullptr};
@@ -8968,6 +8981,11 @@ void HStreamWindow::updatePreviewTabResolution(const QString& channel, int width
   if (tab_index < 0)
     return;
   const QString title = channel == "program" ? "Program" : "Stitched";
+  if (tab_index < static_cast<int>(preview_hosts_.size())) {
+    auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[tab_index]);
+    if (host)
+      host->setVideoSize(width, height);
+  }
   preview_tabs_->setTabText(
       tab_index, width > 0 && height > 0 ? QString("%1 (%2×%3)").arg(title).arg(width).arg(height) : title);
 }

@@ -1,4 +1,5 @@
 #include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
+#include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 
@@ -645,6 +646,15 @@ int run_headless_render_video_sink() {
 }
 
 int run_scaled_render_sink_caps() {
+  const auto vegas_size = hm::deepstream_sink_internal::fit_render_size_to_aspect(1600, 900, 15287, 6958);
+  const auto native_size = hm::deepstream_sink_internal::fit_render_size_to_aspect(1600, 900, 16, 9);
+  if (vegas_size.first != 1600 || vegas_size.second != 728 || native_size.first != 1600 ||
+      native_size.second != 900) {
+    std::cerr << "Scaled render aspect fitting failed; vegas=" << vegas_size.first << 'x' << vegas_size.second
+              << " native=" << native_size.first << 'x' << native_size.second << '\n';
+    return 1;
+  }
+
 #ifndef IS_TEGRA
   const char* previous_render_sink = g_getenv("HM_RENDER_SINK");
   const bool restore_render_sink = previous_render_sink != nullptr;
@@ -687,18 +697,19 @@ int run_scaled_render_sink_caps() {
   GstCaps* caps = nullptr;
   g_object_get(G_OBJECT(sink_bin.sub_bins[0].cap_filter), "caps", &caps, NULL);
   const GstStructure* structure = caps && gst_caps_get_size(caps) == 1 ? gst_caps_get_structure(caps, 0) : nullptr;
+  const GstCapsFeatures* features = caps && gst_caps_get_size(caps) == 1 ? gst_caps_get_features(caps, 0) : nullptr;
   gint width = 0;
   gint height = 0;
-  const bool scaled =
-      structure && gst_structure_get_int(structure, "width", &width) &&
+  const bool scaled = structure && gst_structure_get_int(structure, "width", &width) &&
       gst_structure_get_int(structure, "height", &height) && width == 1600 && height == 900;
+  const bool nvmm = features && gst_caps_features_contains(features, "memory:NVMM");
   if (caps) {
     gst_caps_unref(caps);
   }
   gst_object_unref(GST_OBJECT(sink_bin.bin));
-  if (!scaled) {
+  if (!scaled || !nvmm) {
     std::cerr << "Scaled render sink caps did not carry the requested dimensions; width=" << width
-              << " height=" << height << '\n';
+              << " height=" << height << " nvmm=" << nvmm << '\n';
     return 3;
   }
   return 0;
