@@ -2149,7 +2149,18 @@ absl::Status PipelineApplication::createMainLoop(
     return context && context->configurator().stitching_calibration_required() &&
         stitch_frame_rewound_contexts_.count(context.get()) == 0;
   });
+  bool configure_only_active = false;
+  try {
+    configure_only_active = std::any_of(app_contexts.begin(), app_contexts.end(), [](const auto& context) {
+      return context && hm::get_node_value(context->configurator().config(), "pipeline.hmstitcher.enable", false) &&
+          hm::get_node_value(context->configurator().config(), "pipeline.hmstitcher.configure-only", false);
+    });
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Invalid configure-only stitching setting: " + std::string(error.what()));
+  }
   stitch_frame_calibration_active_.store(calibration_active, std::memory_order_release);
+  stitching_configure_only_active_.store(configure_only_active, std::memory_order_release);
+  cleanup_stack.push([this] { stitching_configure_only_active_.store(false, std::memory_order_release); });
   reset_playback_timing_state(current_stage_);
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
@@ -3227,15 +3238,20 @@ void PipelineApplication::reset_playback_timing_state(long stage) {
   timed_run_stop_requested_.store(false, std::memory_order_release);
   timed_run_last_progress_wall_ = time_limit_seconds_ > 0 &&
           hm::pipeline_internal::stitch_frame_should_account_playback(
-                                      stitch_frame_calibration_active_.load(std::memory_order_acquire))
+                                      stitching_calibration_blocks_playback_accounting())
       ? std::chrono::steady_clock::now()
       : std::chrono::steady_clock::time_point{};
+}
+
+bool PipelineApplication::stitching_calibration_blocks_playback_accounting() const {
+  return stitch_frame_calibration_active_.load(std::memory_order_acquire) ||
+      stitching_configure_only_active_.load(std::memory_order_acquire);
 }
 
 void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
   if (time_limit_seconds_ <= 0 || processed_ns == GST_CLOCK_TIME_NONE ||
       !hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
+          stitching_calibration_blocks_playback_accounting())) {
     return;
   }
   std::lock_guard<std::mutex> lock(playback_timing_mu_);
@@ -3306,7 +3322,7 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
   hm::PlaybackProgressMetrics metrics;
   if (!app_ctx || !app_ctx->pipeline.pipeline ||
       !hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
+          stitching_calibration_blocks_playback_accounting())) {
     return metrics;
   }
 
@@ -3684,6 +3700,16 @@ gboolean PipelineApplication::check_for_interrupt() {
     if (runtime_seek_pending_) {
       finish_runtime_seek("failed", "pipeline-stopped");
     }
+    if (const auto active_stage = stage_app_contexts_.find(current_stage_); active_stage != stage_app_contexts_.end()) {
+      for (const auto& context : active_stage->second) {
+        if (!context || one_pass_calibration_contexts_.count(context.get()) == 0) {
+          continue;
+        }
+        if (GstElement* stitcher = context->pipeline.hmstitcher_bin.elem_hmstitcher) {
+          g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+        }
+      }
+    }
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
@@ -3699,7 +3725,7 @@ gboolean PipelineApplication::check_for_interrupt() {
   }
   if (time_limit_seconds_ > 0 &&
       hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire)) &&
+          stitching_calibration_blocks_playback_accounting()) &&
       last_progress_wall != std::chrono::steady_clock::time_point{}) {
     constexpr int kTimedRunNoProgressTimeoutSeconds = 60;
     const auto stalled_seconds =
@@ -7098,7 +7124,7 @@ gboolean PipelineApplication::overlay_graphics(
   }
   if (time_limit_seconds_ > 0 && batch_meta &&
       hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
+          stitching_calibration_blocks_playback_accounting())) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (buf) {
       GstClockTime pts = GST_BUFFER_PTS(buf);

@@ -5063,6 +5063,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               ? x11_calibration_preview_ok
               : !window->logText().contains("--render-window-id=") &&
                   window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+                  window->logText().contains("--show-scaled=0.3012048193") &&
                   !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
                   camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
           "Only the X11 test backend should expose the selected embedded stitched preview window") ||

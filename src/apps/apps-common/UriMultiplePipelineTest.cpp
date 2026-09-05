@@ -644,6 +644,62 @@ int run_headless_render_video_sink() {
   return 0;
 }
 
+int run_scaled_render_sink_caps() {
+#ifdef IS_TEGRA
+  return 0;
+#else
+  const char* previous_render_sink = g_getenv("HM_RENDER_SINK");
+  const bool restore_render_sink = previous_render_sink != nullptr;
+  const std::string saved_render_sink = restore_render_sink ? previous_render_sink : "";
+  g_setenv("HM_RENDER_SINK", "nv3dsink", TRUE);
+
+  NvDsSinkSubBinConfig sink_config{};
+  sink_config.enable = TRUE;
+  sink_config.source_id = 0;
+  sink_config.type = NV_DS_SINK_RENDER_EGL;
+  sink_config.sync = FALSE;
+  sink_config.render_config.gpu_id = 0;
+  sink_config.render_config.width = 1600;
+  sink_config.render_config.height = 900;
+
+  NvDsSinkBin sink_bin{};
+  const bool created = create_sink_bin(1, &sink_config, &sink_bin, 0);
+
+  if (restore_render_sink) {
+    g_setenv("HM_RENDER_SINK", saved_render_sink.c_str(), TRUE);
+  } else {
+    g_unsetenv("HM_RENDER_SINK");
+  }
+
+  if (!created || !sink_bin.sub_bins[0].cap_filter) {
+    std::cerr << "Failed to construct a scaled render sink fixture\n";
+    if (sink_bin.bin) {
+      gst_object_unref(GST_OBJECT(sink_bin.bin));
+    }
+    return 2;
+  }
+
+  GstCaps* caps = nullptr;
+  g_object_get(G_OBJECT(sink_bin.sub_bins[0].cap_filter), "caps", &caps, NULL);
+  const GstStructure* structure = caps && gst_caps_get_size(caps) == 1 ? gst_caps_get_structure(caps, 0) : nullptr;
+  gint width = 0;
+  gint height = 0;
+  const bool scaled =
+      structure && gst_structure_get_int(structure, "width", &width) &&
+      gst_structure_get_int(structure, "height", &height) && width == 1600 && height == 900;
+  if (caps) {
+    gst_caps_unref(caps);
+  }
+  gst_object_unref(GST_OBJECT(sink_bin.bin));
+  if (!scaled) {
+    std::cerr << "Scaled render sink caps did not carry the requested dimensions; width=" << width
+              << " height=" << height << '\n';
+    return 3;
+  }
+  return 0;
+#endif
+}
+
 int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_muted) {
   GstElement* pipeline =
       gst_pipeline_new(initially_muted ? "hmaudio-muted-render-test" : "hmaudio-audible-render-test");
@@ -1377,6 +1433,12 @@ int main(int argc, char** argv) {
   }
 
   rc = run_headless_render_video_sink();
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  rc = run_scaled_render_sink_caps();
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

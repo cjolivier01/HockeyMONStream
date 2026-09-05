@@ -47,10 +47,10 @@ tuple round-trips through Hugin's PTO serialization; Biplane's `corners` switch 
 Projection framing is configurable. Auto FOV asks Hugin to derive the field of view from camera coverage; otherwise
 it uses the selected fixed horizontal FOV. Auto canvas asks Hugin to recalculate projection-aware canvas dimensions;
 otherwise it retains the optimized PTO canvas. Auto crop selects Hugin's largest valid-image rectangle, removing the
-black hourglass-shaped boundary, and is scaled down when necessary so it never exceeds the original calibrated canvas
-or configured live canvas limits. The baseline intentionally uses fixed 180-degree FOV, automatic canvas, and crop
-off, so its full projection canvas can retain the rounded/black dual-camera boundary. Steady-state video remains on
-the existing GPU remap and stitch path for every framing combination.
+black hourglass-shaped boundary. Projection-aware canvases are preserved unless a configured live canvas limit requires
+downscaling. The baseline intentionally uses fixed 180-degree FOV, automatic canvas, and crop off, so its full
+projection canvas can retain the rounded/black dual-camera boundary. Steady-state video remains on the existing GPU
+remap and stitch path for every framing combination.
 
 ## Validation
 

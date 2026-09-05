@@ -498,6 +498,14 @@ struct PngLayout {
   bool has_offset{false};
 };
 
+bool is_tiny_origin_crop_without_offset(const PngLayout& layout, int canvas_width, int canvas_height) {
+  if (layout.has_offset || layout.offset_x != 0 || layout.offset_y != 0 || layout.width > canvas_width ||
+      layout.height > canvas_height) {
+    return false;
+  }
+  return canvas_width - layout.width <= 1 && canvas_height - layout.height <= 1;
+}
+
 uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t size) {
   uint32_t crc = 0xffffffffU;
   auto update = [&](const unsigned char* bytes, size_t count) {
@@ -720,10 +728,12 @@ absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width,
   }
   if (!layout->has_offset && layout->offset_x == 0 && layout->offset_y == 0 &&
       (layout->width != canvas_width || layout->height != canvas_height)) {
-    return absl::FailedPreconditionError(
-        "PNG seam has full-canvas origin but does not match its mapping canvas: " + path.string() +
-        " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
-        " canvas=" + std::to_string(canvas_width) + "x" + std::to_string(canvas_height));
+    if (!is_tiny_origin_crop_without_offset(*layout, canvas_width, canvas_height)) {
+      return absl::FailedPreconditionError(
+          "PNG seam has full-canvas origin but does not match its mapping canvas: " + path.string() +
+          " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
+          " canvas=" + std::to_string(canvas_width) + "x" + std::to_string(canvas_height));
+    }
   }
 
   auto seam = decode_nonuniform_seam(path, *layout);
@@ -834,7 +844,8 @@ absl::Status validate_and_normalize_seam(
     auto seam = decode_nonuniform_seam(path, *layout);
     return seam.ok() ? absl::OkStatus() : seam.status();
   }
-  if (!layout->has_offset && !matches_native_canvas) {
+  if (!layout->has_offset && !matches_native_canvas &&
+      !is_tiny_origin_crop_without_offset(*layout, native_canvas_width, native_canvas_height)) {
     return absl::FailedPreconditionError(
         "PNG seam has full-canvas origin but matches neither the native nor capped mapping canvas: " + path.string() +
         " size=" + std::to_string(layout->width) + "x" + std::to_string(layout->height) +
@@ -1670,9 +1681,6 @@ absl::Status HuginProject::ApplyProjection(
   auto original_project = read_file(project_path);
   if (!original_project.ok())
     return original_project.status();
-  auto original_canvas = ParseCanvasSize(*original_project);
-  if (!original_canvas.ok())
-    return original_canvas.status();
   if (!ParseHorizontalFov(*original_project).ok())
     return absl::InvalidArgumentError("Optimized Hugin project has no valid horizontal field of view");
   auto pano_modify = executable("HM_PANO_MODIFY", "pano_modify");
@@ -1799,50 +1807,9 @@ absl::Status HuginProject::ApplyProjection(
 
   HM_RETURN_IF_ERROR(
       convert_project(projection_framing.auto_canvas ? std::optional<std::string>("AUTO") : std::nullopt));
-  std::pair<size_t, size_t> effective_size;
-  HM_ASSIGN_OR_RETURN(effective_size, validate_converted_project());
-  const size_t width_limit = original_canvas->first;
-  const size_t height_limit = original_canvas->second;
-  const double scale = std::min(
-      {1.0,
-       static_cast<double>(width_limit) / static_cast<double>(effective_size.first),
-       static_cast<double>(height_limit) / static_cast<double>(effective_size.second)});
-  if (scale < 1.0) {
-    std::ostringstream percentage;
-    percentage.imbue(std::locale::classic());
-    percentage << std::setprecision(12) << scale * 99.5 << '%';
-    if (scale * 99.5 >= 1.0) {
-      HM_RETURN_IF_ERROR(convert_project(percentage.str()));
-    } else {
-      // Hugin rejects percentage canvases below 1%, which projections such
-      // as Stereographic can require after AUTO geometry creates a very large
-      // intermediate canvas. Preserve the same guarded scale with explicit
-      // dimensions instead of allowing the later Nona render to allocate the
-      // AUTO-sized image.
-      auto auto_project = read_file(temporary_path);
-      if (!auto_project.ok())
-        return auto_project.status();
-      auto auto_canvas = ParseCanvasSize(*auto_project);
-      if (!auto_canvas.ok())
-        return auto_canvas.status();
-      const long double guarded_scale = static_cast<long double>(scale) * 0.995L;
-      const auto scaled_dimension = [guarded_scale](size_t value) -> absl::StatusOr<size_t> {
-        const long double scaled = static_cast<long double>(value) * guarded_scale;
-        if (!std::isfinite(static_cast<double>(scaled)) || scaled > std::numeric_limits<size_t>::max())
-          return absl::InvalidArgumentError("Scaled Hugin projection canvas dimension is invalid");
-        return std::max<size_t>(1, static_cast<size_t>(std::floor(scaled)));
-      };
-      size_t scaled_width = 0;
-      size_t scaled_height = 0;
-      HM_ASSIGN_OR_RETURN(scaled_width, scaled_dimension(auto_canvas->first));
-      HM_ASSIGN_OR_RETURN(scaled_height, scaled_dimension(auto_canvas->second));
-      HM_RETURN_IF_ERROR(convert_project(std::to_string(scaled_width) + "x" + std::to_string(scaled_height)));
-    }
-    HM_ASSIGN_OR_RETURN(effective_size, validate_converted_project());
-  }
-  if (effective_size.first > width_limit || effective_size.second > height_limit) {
-    return absl::FailedPreconditionError(projection_name + " output extent exceeds the calibrated canvas limits");
-  }
+  auto validated_project = validate_converted_project();
+  if (!validated_project.ok())
+    return validated_project.status();
   if (is_cancelled && is_cancelled())
     return absl::CancelledError(projection_name + " remap generation cancelled before PTO publication");
   fs::rename(temporary_path, project_path, error);

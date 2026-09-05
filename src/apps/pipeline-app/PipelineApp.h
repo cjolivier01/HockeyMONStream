@@ -203,6 +203,7 @@ class PipelineApplication {
   gboolean rewind_after_stitching_calibration(long stage, uint64_t main_loop_generation);
   void cancel_stitch_frame_rewind(uint64_t main_loop_generation);
   void reset_playback_timing_state(long stage);
+  bool stitching_calibration_blocks_playback_accounting() const;
   uint64_t initial_pipeline_position_ns(const HmApp* app_ctx) const;
   static int get_source_id_from_coordinates(float x_rel, float y_rel, AppCtx* app_ctx);
   static gpointer nvds_x_event_thread_static(gpointer data);
@@ -332,6 +333,7 @@ class PipelineApplication {
   std::set<const AppCtx*> stitch_frame_rewound_contexts_;
   std::set<const AppCtx*> stitch_frame_rewind_pending_contexts_;
   std::atomic<bool> stitch_frame_calibration_active_{false};
+  std::atomic<bool> stitching_configure_only_active_{false};
   guint stitch_frame_rewind_source_id_{0};
   guint stitch_frame_completion_timeout_source_id_{0};
   bool stitch_frame_rewind_cancellation_requested_{false};

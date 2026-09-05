@@ -66,6 +66,22 @@ constexpr guint kWebRtcPayloadType = 96;
 constexpr guint kDefaultWebRtcPort = 8080;
 constexpr guint kNvEncPresetP2 = 2;
 
+GstCaps* make_render_video_caps(const char* format, const NvDsSinkRenderConfig* config) {
+  GstCaps* caps = gst_caps_new_empty_simple("video/x-raw");
+  if (!caps)
+    return nullptr;
+
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  if (format && *format) {
+    gst_structure_set(structure, "format", G_TYPE_STRING, format, NULL);
+  }
+  if (config && config->width > 0 && config->height > 0) {
+    gst_structure_set(
+        structure, "width", G_TYPE_INT, config->width, "height", G_TYPE_INT, config->height, NULL);
+  }
+  return caps;
+}
+
 struct FileEncoderBitrateScale {
   GstElement* encoder{nullptr};
   hm::BitratePerPixel bitrate_per_pixel;
@@ -1050,7 +1066,11 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
 
     if (!prop.integrated || use_nv3d) {
       if (!use_nv3d) {
-        caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "NV12", NULL);
+        caps = make_render_video_caps("NV12", config);
+        if (!caps) {
+          NVGSTDS_ERR_MSG_V("Failed to create scaled render conversion caps");
+          goto done;
+        }
         g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_system_transform%d", uid);
         system_memory_transform = gst_element_factory_make("videoconvert", elem_name);
         g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_system_caps%d", uid);
@@ -1059,12 +1079,20 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
           NVGSTDS_ERR_MSG_V("Failed to create system-memory render conversion for embedded EGL output");
           goto done;
         }
-        GstCaps* system_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "BGRx", NULL);
+        GstCaps* system_caps = make_render_video_caps("BGRx", config);
+        if (!system_caps) {
+          NVGSTDS_ERR_MSG_V("Failed to create scaled system-memory render caps");
+          goto done;
+        }
         g_object_set(G_OBJECT(system_memory_cap_filter), "caps", system_caps, NULL);
         gst_caps_unref(system_caps);
         gst_bin_add_many(GST_BIN(bin->bin), system_memory_transform, system_memory_cap_filter, NULL);
       } else {
-        caps = gst_caps_new_empty_simple("video/x-raw");
+        caps = make_render_video_caps(nullptr, config);
+        if (!caps) {
+          NVGSTDS_ERR_MSG_V("Failed to create scaled render caps");
+          goto done;
+        }
       }
 
       // DeepStream 9.1's nveglglessink crashes in its render thread when it receives NVMM buffers with the GStreamer

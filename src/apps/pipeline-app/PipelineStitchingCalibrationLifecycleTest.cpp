@@ -157,6 +157,7 @@ class PipelineProcess {
       } else {
         ::unsetenv("HM_TEST_RINK_INFERENCE_DELAY_MS");
       }
+      ::setenv("HM_TEST_RINK_FORCE_PROFILE", "1", 1);
       if (same_stage_instances > 1 || !same_stage_peer_config.empty()) {
         // dGPU startup normally serializes PAUSED preroll. Exercise the same
         // concurrent calibration path used on integrated/ARM systems.
@@ -395,7 +396,15 @@ class PipelineProcess {
 
 bool write_pipeline_config(const fs::path& path) {
   std::ofstream output(path);
-  output << R"YAML(application:
+  output << R"YAML(pretrained-assets:
+  - name: superpoint-lightglue
+    on-demand: true
+    redistributable: false
+    url: https://github.com/fabio-sim/LightGlue-ONNX/releases/download/v2.0/superpoint_lightglue_pipeline.onnx
+    sha256: 228994cea8c010146fa2aef933baa3ffaa4bcdc522bc8aa560087fcff8134526
+    path: $HOME/.cache/hstream/models/superpoint-lightglue-pipeline-228994cea8c01014.onnx
+
+application:
   stage: 0
   enable-perf-measurement: 1
   perf-measurement-interval-sec: 1
@@ -555,8 +564,10 @@ bool write_game_config(
     int control_points,
     const std::string& invalidation_id,
     bool artifacts_invalidated,
-    int frame_count = 0) {
+    int frame_count = 0,
+    const std::string& control_point_matcher = std::string()) {
   std::ofstream output(path);
+  const bool has_stitching_section = frame_count > 0 || !control_point_matcher.empty();
   output << "game:\n"
          << "  videos:\n"
          << "    left: [cam1/GX010001.MP4]\n"
@@ -565,8 +576,12 @@ bool write_game_config(
          << "    frame_offsets:\n"
          << "      left: 0\n"
          << "      right: 0\n"
-         << (frame_count > 0 ? "stitching:\n  calibration_frame_count: " + std::to_string(frame_count) + "\n" : "")
-         << "hstream_ui:\n"
+         << (has_stitching_section ? "stitching:\n" : "");
+  if (frame_count > 0)
+    output << "  calibration_frame_count: " << frame_count << "\n";
+  if (!control_point_matcher.empty())
+    output << "  control_point_matcher: " << control_point_matcher << "\n";
+  output << "hstream_ui:\n"
          << "  video_roles:\n"
          << "    left: [cam1/GX010001.MP4]\n"
          << "    right: [cam2/GX010002.MP4]\n"
@@ -797,7 +812,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "ordinary-uri", false),
+              write_game_config(game / "config.yaml", 128, "ordinary-uri", false, 0, "akaze-hamming"),
               "ordinary URI calibration config must be written") ||
           !expect(
               ordinary_uri.Start(

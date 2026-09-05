@@ -131,6 +131,7 @@ constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
     "pipeline.streammux.frame-num-reset-on-eos=0,pipeline.hmstitcher.show=0";
+constexpr char kExternalStitchedPreviewRenderScale[] = "0.3012048193";
 
 template <typename Receiver, typename Slot>
 QMetaObject::Connection connect_check_state_changed(QCheckBox* checkbox, Receiver* receiver, Slot&& slot) {
@@ -8062,6 +8063,9 @@ QStringList HStreamWindow::pipelineArguments() const {
     args << QString("--enable-sinks=%1").arg(sinks.join(','));
     if (render_video || embed_render_window) {
       args << "--show";
+    }
+    if (render_video && !embed_render_window) {
+      args << QString("--show-scaled=%1").arg(kExternalStitchedPreviewRenderScale);
     }
   } else {
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");

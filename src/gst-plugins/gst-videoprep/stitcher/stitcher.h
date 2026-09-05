@@ -145,7 +145,9 @@ class StitcherPriv : public STITCH_PRIV_BASE {
     CalibrationSurfaceSnapshot right;
   };
   absl::Status ensure_stitcher();
+  absl::Status ensure_stitcher_with_artifact_lock();
   absl::Status reload_stitcher();
+  absl::Status reload_stitcher_with_artifact_lock();
   absl::Status configure_one_pass_from_surfaces(
       hm::surface::Surface incoming_surface_left,
       hm::surface::Surface incoming_surface_right);

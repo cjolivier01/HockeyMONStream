@@ -725,6 +725,11 @@ absl::Status StitcherPriv::ensure_stitcher() {
   return absl::OkStatus();
 }
 
+absl::Status StitcherPriv::ensure_stitcher_with_artifact_lock() {
+  std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
+  return ensure_stitcher();
+}
+
 absl::Status StitcherPriv::reload_stitcher() {
   HM_RETURN_IF_ERROR(ensure_stitcher());
   absl::MutexLock lk(&stitcher_mu_);
@@ -741,6 +746,11 @@ absl::Status StitcherPriv::reload_stitcher() {
   return absl::OkStatus();
 }
 
+absl::Status StitcherPriv::reload_stitcher_with_artifact_lock() {
+  std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
+  return reload_stitcher();
+}
+
 absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   caps_initialized_ = true;
   owner_element_ = params && params->m_element ? GST_ELEMENT(params->m_element) : nullptr;
@@ -749,7 +759,7 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   }
   const char* calibration_invalidation_id = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   calibration_invalidation_id_ = calibration_invalidation_id ? calibration_invalidation_id : "";
-  absl::Status status = ensure_stitcher();
+  absl::Status status = ensure_stitcher_with_artifact_lock();
   if (!status.ok()) {
     if (one_pass_mode_ && !calibration_run_generation_.empty() && absl::IsNotFound(status)) {
       if (!logged_missing_masks_) {
@@ -1081,7 +1091,7 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
     stitcher_ready = has_stitcher();
   }
   if (!stitcher_ready) {
-    absl::Status reload_status = reload_stitcher();
+    absl::Status reload_status = reload_stitcher_with_artifact_lock();
     if (!reload_status.ok()) {
       return configured_during_run_ ? report_calibration_failure(reload_status) : reload_status;
     }
@@ -1117,7 +1127,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     retry_validated_artifacts = validated_artifact_load_failed_;
   }
   if (retry_validated_artifacts) {
-    HM_RETURN_IF_ERROR(reload_stitcher());
+    HM_RETURN_IF_ERROR(reload_stitcher_with_artifact_lock());
     absl::MutexLock lk(&stitcher_mu_);
     if (!has_stitcher() || !canvas_width_hint_ || !canvas_height_hint_) {
       return absl::FailedPreconditionError("Validated control masks did not produce a usable stitcher after retry");
@@ -1949,11 +1959,10 @@ absl::Status StitcherPriv::GenerateOutput(
                 cudaError_t::cudaErrorLaunchFailure, (std::stringstream() << configure_status.message()).str()));
           }
           release_captured_calibration_surfaces();
-          // return absl::CancelledError("Stitching has been configured");
           if (!post_force_pipeline_eos(GST_ELEMENT(m_element))) {
             std::cerr << "Failed to post pipeline EOS, returning an error to stop the pipeline";
-            return absl::CancelledError("Stitching has been configured");
           }
+          return absl::CancelledError("Stitching has been configured");
         }
       }
     }

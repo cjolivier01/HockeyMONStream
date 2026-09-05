@@ -3981,6 +3981,33 @@ void remove_active_scoreboard_polygon(YAML::Node& config) {
     config["rink"]["scoreboard"].remove("perspective_polygon");
 }
 
+bool forced_test_rink_profile_enabled() {
+  const char* value = std::getenv("HM_TEST_RINK_FORCE_PROFILE");
+  return value != nullptr && std::string(value) == "1";
+}
+
+RinkProfile make_forced_test_rink_profile(const cv::Mat& stitched_image) {
+  // Lifecycle tests need deterministic rink publication from synthetic frames
+  // without depending on the ONNX segmentation model's image content.
+  const int x = stitched_image.cols > 4 ? stitched_image.cols / 8 : 0;
+  const int y = stitched_image.rows > 4 ? stitched_image.rows / 5 : 0;
+  const int width = std::max(1, stitched_image.cols - 2 * x);
+  const int height = std::max(1, stitched_image.rows - 2 * y);
+  const cv::Rect rink(x, y, width, height);
+  cv::Mat mask = cv::Mat::zeros(stitched_image.rows, stitched_image.cols, CV_8U);
+  cv::rectangle(mask, rink, cv::Scalar(255), cv::FILLED);
+
+  RinkProfile profile;
+  profile.masks.push_back(mask);
+  profile.combined_mask = mask.clone();
+  profile.centroid =
+      cv::Point2d(rink.x + static_cast<double>(rink.width) / 2.0, rink.y + static_cast<double>(rink.height) / 2.0);
+  profile.combined_bbox =
+      cv::Rect2d(static_cast<double>(rink.x), static_cast<double>(rink.y), rink.width, rink.height);
+  profile.scores.push_back(1.0f);
+  return profile;
+}
+
 } // namespace
 
 absl::Status save_rink_profile_locked(
@@ -4456,6 +4483,19 @@ absl::Status create_field_mask(
   const cv::Mat stitched = cv::imread(stitched_path.string(), cv::IMREAD_COLOR);
   if (stitched.empty())
     return absl::FailedPreconditionError("Unable to reload stitched frame for rink inference");
+  if (is_cancelled && is_cancelled())
+    return absl::CancelledError("Rink-mask calibration cancelled before inference");
+  if (forced_test_rink_profile_enabled()) {
+    return save_rink_profile_locked(
+        game_dir,
+        make_forced_test_rink_profile(stitched),
+        *hugin_generation,
+        expected_output_generation,
+        expected_output_authorization_id,
+        expected_invalidation_id,
+        expected_persisted_rotation,
+        &stitched);
+  }
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;

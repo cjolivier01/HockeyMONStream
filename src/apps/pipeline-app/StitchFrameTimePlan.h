@@ -51,8 +51,8 @@ inline bool stitch_frame_rewind_request_is_current(
   return main_loop_active && request_stage == current_stage && request_generation == current_generation;
 }
 
-inline bool stitch_frame_should_account_playback(bool calibration_rewind_pending) {
-  return !calibration_rewind_pending;
+inline bool stitch_frame_should_account_playback(bool calibration_blocks_playback) {
+  return !calibration_blocks_playback;
 }
 
 inline bool stitch_output_rotations_are_consistent(const std::vector<double>& rotations) {
