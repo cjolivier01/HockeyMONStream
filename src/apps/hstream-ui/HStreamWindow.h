@@ -279,6 +279,7 @@ class HStreamWindow : public QMainWindow {
   bool handleGpuPreviewStatus(const QString& line);
   bool handlePreviewOverlayDiagnostic(const QString& line);
   bool handlePreviewOverlayResponse(const QString& line);
+  QLabel* previewStatusForChannel(const QString& channel) const;
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);

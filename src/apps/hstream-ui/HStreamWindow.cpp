@@ -12498,6 +12498,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
   if (!generation_valid || generation < preview_generation_)
     return true;
 
+  QLabel* status_label = previewStatusForChannel(channel);
   QWidget* surface = previewSurfaceForChannel(channel);
   QWidget* target = previewTargetForChannel(channel);
   if (surface) {
@@ -12523,8 +12524,8 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
   if (status == "activated") {
     setPreviewFocusAvailable(channel, false);
     if (matches_pending) {
-      if (preview_status_)
-        preview_status_->setText(QString("Waiting for first GPU frame from %1").arg(channel));
+      if (status_label)
+        status_label->setText(QString("Waiting for first GPU frame from %1").arg(channel));
     }
     return true;
   }
@@ -12540,8 +12541,8 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       pending_preview_channel_.clear();
       pending_preview_generation_ = 0;
       preview_recovery_attempts_ = 0;
-      if (preview_status_)
-        preview_status_->setText(QString("%1 GPU preview ready").arg(channel == "program" ? "Program" : channel));
+      if (status_label)
+        status_label->setText(QString("%1 GPU preview ready").arg(channel == "program" ? "Program" : channel));
     }
     if (surface)
       surface->show();
@@ -12578,8 +12579,8 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
                              : QString("GPU preview unavailable\n%1").arg(message));
       notice->show();
     }
-    if ((matches_pending || affected_active) && preview_status_)
-      preview_status_->setText(
+    if ((matches_pending || affected_active) && status_label)
+      status_label->setText(
           status == "failed" ? "GPU preview failed; pipeline continues"
                              : "GPU preview unavailable; pipeline continues");
     appendLog(QString("GPU preview %1 channel=%2 generation=%3 message=%4")
@@ -12660,8 +12661,14 @@ bool HStreamWindow::handlePreviewOverlayDiagnostic(const QString& line) {
   const QString status = match.captured(3);
   const QString retry = match.captured(4);
   const QString message = match.captured(5);
+  QLabel* status_label = previewStatusForChannel(channel);
   if (status == "loaded") {
     appendLog(QString("rink mask overlay loaded channel=%1 file=%2").arg(channel, path));
+    if (show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked() &&
+        (channel == active_preview_channel_ || channel == selectedPipelinePreviewChannel()) && status_label &&
+        status_label->text() == "Rink mask overlay unavailable") {
+      status_label->setText(QString("%1 GPU preview ready").arg(channel == "program" ? "Program" : channel));
+    }
     return true;
   }
 
@@ -12673,8 +12680,8 @@ bool HStreamWindow::handlePreviewOverlayDiagnostic(const QString& line) {
     summary += QString(" retry=%1s").arg(retry);
   appendLog(summary, true);
   if (show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked() &&
-      (channel == active_preview_channel_ || channel == selectedPipelinePreviewChannel()) && preview_status_) {
-    preview_status_->setText("Rink mask overlay unavailable");
+      (channel == active_preview_channel_ || channel == selectedPipelinePreviewChannel()) && status_label) {
+    status_label->setText("Rink mask overlay unavailable");
   }
   return true;
 }
@@ -12788,6 +12795,10 @@ QString HStreamWindow::selectedPipelinePreviewChannel() const {
     return "program";
   return hm::ui_internal::preview_channel_for_tab(
       preview_tabs_->currentIndex(), static_cast<int>(camera_preview_render_targets_.size()));
+}
+
+QLabel* HStreamWindow::previewStatusForChannel(const QString& channel) const {
+  return channel == "stitched" ? stitched_status_ : preview_status_;
 }
 
 int HStreamWindow::previewReadyTimeoutMs() const {

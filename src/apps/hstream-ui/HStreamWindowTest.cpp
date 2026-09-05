@@ -4067,6 +4067,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "dead checkbox")) {
     return false;
   }
+  pipeline_process->write(
+      "@test-preview-overlay-diagnostic HSTREAM_PREVIEW_OVERLAY channel=program "
+      "rink-mask=/tmp/rink_mask_0.png status=loaded\n");
+  for (int i = 0; i < 100 && !window->logText().contains("rink mask overlay loaded channel=program"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          preview_status->text() == "Program GPU preview ready" &&
+              window->logText().contains("rink mask overlay loaded channel=program"),
+          "A recovered Program rink-mask overlay should clear the visible unavailable status")) {
+    return false;
+  }
   QTest::mouseClick(render_video, Qt::LeftButton);
   for (int i = 0;
        i < 100 && window->logText().count("GPU preview disabled generation=") <= disabled_count_before_runtime_toggle;
@@ -4784,6 +4797,26 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains("restoring rendering"),
           "A missing render-off acknowledgement must restore the visible tab and reconcile its backend channel")) {
     return false;
+  }
+  {
+    const QSignalBlocker blocker(show_rink_mask);
+    show_rink_mask->setChecked(true);
+    pipeline_process->write(
+        "@test-preview-overlay-diagnostic HSTREAM_PREVIEW_OVERLAY channel=stitched "
+        "rink-mask=/tmp/rink_mask_0.png status=validation-failed "
+        "message=field mask dimensions do not exactly match the live stitched canvas\n");
+    for (int i = 0; i < 100 && !window->logText().contains("rink mask overlay unavailable channel=stitched"); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    if (!expect(
+            stitched_status->text() == "Rink mask overlay unavailable" &&
+                preview_status->text() != "Rink mask overlay unavailable" &&
+                window->logText().contains("rink mask overlay unavailable channel=stitched"),
+            "A Stitched rink-mask diagnostic should update the visible Stitched preview status label")) {
+      return false;
+    }
+    show_rink_mask->setChecked(false);
   }
   pipeline_process->write("@test-resume-preview-disable\n");
   for (int i = 0; i < 100 && !window->logText().contains("test preview disable resumed"); ++i) {
