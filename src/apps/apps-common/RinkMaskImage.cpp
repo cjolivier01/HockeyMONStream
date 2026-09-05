@@ -1,12 +1,15 @@
 #include "hstream/src/apps/apps-common/RinkMaskImage.h"
 
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <new>
 #include <utility>
 
@@ -26,31 +29,125 @@ std::uint32_t read_big_endian_u32(const std::uint8_t* bytes) {
       static_cast<std::uint32_t>(bytes[2]) << 8U | static_cast<std::uint32_t>(bytes[3]);
 }
 
+RinkMaskImage copy_grayscale_mat(
+    const cv::Mat& input,
+    std::uint32_t canvas_width,
+    std::uint32_t canvas_height,
+    std::uint32_t texture_width,
+    std::uint32_t texture_height) {
+  const std::size_t texture_bytes = static_cast<std::size_t>(texture_width) * texture_height;
+  RinkMaskImage image;
+  image.canvas_width = canvas_width;
+  image.canvas_height = canvas_height;
+  image.width = texture_width;
+  image.height = texture_height;
+  image.alpha.resize(texture_bytes);
+  if (input.isContinuous()) {
+    std::copy_n(input.ptr<std::uint8_t>(), texture_bytes, image.alpha.begin());
+  } else {
+    for (std::uint32_t row = 0; row < texture_height; ++row) {
+      std::copy_n(
+          input.ptr<std::uint8_t>(static_cast<int>(row)),
+          texture_width,
+          image.alpha.begin() + static_cast<std::size_t>(row) * texture_width);
+    }
+  }
+  return image;
+}
+
+RinkMaskImage downsample_rink_mask_image(
+    const RinkMaskImage& source,
+    std::uint32_t texture_width,
+    std::uint32_t texture_height) {
+  if (source.width == texture_width && source.height == texture_height) {
+    RinkMaskImage image = source;
+    image.canvas_width = image.canvas_width ? image.canvas_width : image.width;
+    image.canvas_height = image.canvas_height ? image.canvas_height : image.height;
+    return image;
+  }
+  if (source.width > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+      source.height > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+      texture_width > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+      texture_height > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
+    return {};
+  }
+  cv::Mat source_view(
+      static_cast<int>(source.height),
+      static_cast<int>(source.width),
+      CV_8UC1,
+      const_cast<std::uint8_t*>(source.alpha.data()));
+  cv::Mat resized;
+  cv::resize(
+      source_view,
+      resized,
+      cv::Size(static_cast<int>(texture_width), static_cast<int>(texture_height)),
+      0.0,
+      0.0,
+      cv::INTER_AREA);
+  return copy_grayscale_mat(
+      resized,
+      source.canvas_width ? source.canvas_width : source.width,
+      source.canvas_height ? source.canvas_height : source.height,
+      texture_width,
+      texture_height);
+}
+
 RinkMaskImage decode_with_opencv(
     const std::vector<std::uint8_t>& compressed,
     std::uint32_t expected_width,
-    std::uint32_t expected_height) {
+    std::uint32_t expected_height,
+    std::uint32_t texture_width,
+    std::uint32_t texture_height) {
   const cv::Mat decoded = cv::imdecode(compressed, cv::IMREAD_GRAYSCALE);
   if (decoded.empty() || decoded.cols != static_cast<int>(expected_width) ||
       decoded.rows != static_cast<int>(expected_height) || decoded.type() != CV_8UC1) {
     return {};
   }
-  const std::size_t decoded_bytes = static_cast<std::size_t>(expected_width) * expected_height;
-  RinkMaskImage image;
-  image.width = expected_width;
-  image.height = expected_height;
-  image.alpha.resize(decoded_bytes);
-  if (decoded.isContinuous()) {
-    std::copy_n(decoded.ptr<std::uint8_t>(), decoded_bytes, image.alpha.begin());
-  } else {
-    for (std::uint32_t row = 0; row < expected_height; ++row) {
-      std::copy_n(
-          decoded.ptr<std::uint8_t>(static_cast<int>(row)),
-          expected_width,
-          image.alpha.begin() + static_cast<std::size_t>(row) * expected_width);
+  if (texture_width != expected_width || texture_height != expected_height) {
+    cv::Mat resized;
+    cv::resize(
+        decoded,
+        resized,
+        cv::Size(static_cast<int>(texture_width), static_cast<int>(texture_height)),
+        0.0,
+        0.0,
+        cv::INTER_AREA);
+    return copy_grayscale_mat(resized, expected_width, expected_height, texture_width, texture_height);
+  }
+  return copy_grayscale_mat(decoded, expected_width, expected_height, texture_width, texture_height);
+}
+
+std::pair<std::uint32_t, std::uint32_t> bounded_texture_dimensions(
+    std::uint32_t width,
+    std::uint32_t height,
+    const RinkMaskLoadOptions& options) {
+  if (!options.downsample_to_texture_budget)
+    return {width, height};
+  if (width == 0 || height == 0 || options.maximum_texture_dimension == 0 || options.maximum_texture_bytes == 0)
+    return {0, 0};
+  const long double source_pixels = static_cast<long double>(width) * height;
+  long double scale = 1.0L;
+  scale = std::min(scale, static_cast<long double>(options.maximum_texture_dimension) / width);
+  scale = std::min(scale, static_cast<long double>(options.maximum_texture_dimension) / height);
+  if (source_pixels > static_cast<long double>(options.maximum_texture_bytes)) {
+    scale = std::min(scale, std::sqrt(static_cast<long double>(options.maximum_texture_bytes) / source_pixels));
+  }
+  if (scale >= 1.0L)
+    return {width, height};
+  std::uint32_t texture_width = std::max<std::uint32_t>(1U, static_cast<std::uint32_t>(std::floor(width * scale)));
+  std::uint32_t texture_height = std::max<std::uint32_t>(1U, static_cast<std::uint32_t>(std::floor(height * scale)));
+  texture_width = std::min(texture_width, options.maximum_texture_dimension);
+  texture_height = std::min(texture_height, options.maximum_texture_dimension);
+  if (static_cast<std::uint64_t>(texture_width) * texture_height > options.maximum_texture_bytes) {
+    if (texture_width >= texture_height) {
+      texture_width =
+          std::max<std::uint32_t>(1U, static_cast<std::uint32_t>(options.maximum_texture_bytes / texture_height));
+    } else {
+      texture_height =
+          std::max<std::uint32_t>(1U, static_cast<std::uint32_t>(options.maximum_texture_bytes / texture_width));
     }
   }
-  return image;
+  return {texture_width, texture_height};
 }
 
 RinkMaskLoadResult failed(RinkMaskLoadStatus status, const char* message) {
@@ -80,7 +177,8 @@ class FileDescriptor {
 RinkMaskLoadResult load_rink_mask_png(
     const std::string& path,
     const RinkMaskDecoder& decoder,
-    const RinkMaskOpenObserver& open_observer) {
+    const RinkMaskOpenObserver& open_observer,
+    const RinkMaskLoadOptions& options) {
   try {
     const int opened = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
     if (opened < 0) {
@@ -123,20 +221,48 @@ RinkMaskLoadResult load_rink_mask_png(
 
     const std::uint32_t width = read_big_endian_u32(compressed.data() + 16);
     const std::uint32_t height = read_big_endian_u32(compressed.data() + 20);
-    if (width == 0 || height == 0 || width > kMaximumRinkMaskDimension || height > kMaximumRinkMaskDimension)
-      return failed(RinkMaskLoadStatus::kDimensionsTooLarge, "PNG dimensions exceed the 12288 pixel limit");
+    if (width == 0 || height == 0 || width > options.maximum_source_dimension ||
+        height > options.maximum_source_dimension) {
+      return failed(RinkMaskLoadStatus::kDimensionsTooLarge, "PNG dimensions exceed the rink-mask source limit");
+    }
     const std::uint64_t pixels = static_cast<std::uint64_t>(width) * height;
-    if (pixels > kMaximumRinkMaskTextureBytes)
+    if (options.downsample_to_texture_budget && pixels > options.maximum_source_pixels)
+      return failed(RinkMaskLoadStatus::kResourceBudgetExceeded, "source PNG pixels exceed the preview decode budget");
+    const auto [texture_width, texture_height] = bounded_texture_dimensions(width, height, options);
+    if (texture_width == 0 || texture_height == 0)
       return failed(RinkMaskLoadStatus::kTextureBudgetExceeded, "GL_ALPHA8 texture exceeds 32 MiB");
-    if (file_size > kMaximumRinkMaskResourceBytes - pixels * kResidentCopiesPerPixel) {
+    const std::uint64_t texture_pixels = static_cast<std::uint64_t>(texture_width) * texture_height;
+    if (texture_width > options.maximum_texture_dimension || texture_height > options.maximum_texture_dimension ||
+        texture_pixels > options.maximum_texture_bytes) {
+      return failed(RinkMaskLoadStatus::kTextureBudgetExceeded, "GL_ALPHA8 texture exceeds 32 MiB");
+    }
+    const std::uint64_t resident_bytes = options.downsample_to_texture_budget
+        ? pixels + texture_pixels * 2ULL
+        : texture_pixels * kResidentCopiesPerPixel;
+    if (resident_bytes > options.maximum_resource_bytes || file_size > options.maximum_resource_bytes - resident_bytes) {
       return failed(
           RinkMaskLoadStatus::kResourceBudgetExceeded,
-          "compressed, decoded, upload, and texture resources exceed 96 MiB");
+          "compressed, decoded, upload, and texture resources exceed the rink-mask preview budget");
     }
 
-    RinkMaskImage image = decoder ? decoder(compressed, width, height) : decode_with_opencv(compressed, width, height);
-    if (image.width != width || image.height != height || image.alpha.size() != pixels)
+    RinkMaskImage image = decoder ? decoder(compressed, width, height)
+                                  : decode_with_opencv(compressed, width, height, texture_width, texture_height);
+    if (decoder) {
+      image.canvas_width = image.canvas_width ? image.canvas_width : image.width;
+      image.canvas_height = image.canvas_height ? image.canvas_height : image.height;
+      if (image.width == width && image.height == height && image.alpha.size() == pixels &&
+          (texture_width != width || texture_height != height)) {
+        image = downsample_rink_mask_image(image, texture_width, texture_height);
+      }
+    }
+    if (image.canvas_width == 0)
+      image.canvas_width = image.width;
+    if (image.canvas_height == 0)
+      image.canvas_height = image.height;
+    if (image.canvas_width != width || image.canvas_height != height || image.width != texture_width ||
+        image.height != texture_height || image.alpha.size() != texture_pixels) {
       return failed(RinkMaskLoadStatus::kDecodeFailed, "decoder returned empty or inconsistent grayscale pixels");
+    }
     return RinkMaskLoadResult{RinkMaskLoadStatus::kLoaded, std::move(image), ""};
   } catch (const cv::Exception&) {
     return failed(RinkMaskLoadStatus::kDecodeFailed, "OpenCV decode threw an exception");
@@ -153,7 +279,9 @@ bool rink_mask_dimensions_match(
     const RinkMaskImage& image,
     std::uint32_t expected_width,
     std::uint32_t expected_height) {
-  return expected_width > 0 && expected_height > 0 && image.width == expected_width && image.height == expected_height;
+  const std::uint32_t canvas_width = image.canvas_width ? image.canvas_width : image.width;
+  const std::uint32_t canvas_height = image.canvas_height ? image.canvas_height : image.height;
+  return expected_width > 0 && expected_height > 0 && canvas_width == expected_width && canvas_height == expected_height;
 }
 
 const char* rink_mask_load_status_name(RinkMaskLoadStatus status) {

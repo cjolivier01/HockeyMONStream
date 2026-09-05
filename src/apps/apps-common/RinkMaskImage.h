@@ -12,8 +12,12 @@ inline constexpr std::uint64_t kMaximumRinkMaskCompressedBytes = 8ULL * 1024ULL 
 inline constexpr std::uint32_t kMaximumRinkMaskDimension = 12288U;
 inline constexpr std::uint64_t kMaximumRinkMaskTextureBytes = 32ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t kMaximumRinkMaskResourceBytes = 96ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kMaximumPreviewRinkMaskSourcePixels = 256ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kMaximumPreviewRinkMaskResourceBytes = 256ULL * 1024ULL * 1024ULL;
 
 struct RinkMaskImage {
+  std::uint32_t canvas_width{0};
+  std::uint32_t canvas_height{0};
   std::uint32_t width{0};
   std::uint32_t height{0};
   std::vector<std::uint8_t> alpha;
@@ -47,13 +51,23 @@ using RinkMaskDecoder = std::function<RinkMaskImage(
     std::uint32_t expected_height)>;
 using RinkMaskOpenObserver = std::function<void()>;
 
+struct RinkMaskLoadOptions {
+  std::uint32_t maximum_source_dimension{kMaximumRinkMaskDimension};
+  std::uint64_t maximum_source_pixels{kMaximumRinkMaskTextureBytes};
+  std::uint32_t maximum_texture_dimension{kMaximumRinkMaskDimension};
+  std::uint64_t maximum_texture_bytes{kMaximumRinkMaskTextureBytes};
+  std::uint64_t maximum_resource_bytes{kMaximumRinkMaskResourceBytes};
+  bool downsample_to_texture_budget{false};
+};
+
 // Opens the path once without following links, validates that same descriptor,
 // and reads the compressed PNG and its IHDR before invoking OpenCV. The
 // optional hooks exist for deterministic exception and pathname-swap tests.
 RinkMaskLoadResult load_rink_mask_png(
     const std::string& path,
     const RinkMaskDecoder& decoder = {},
-    const RinkMaskOpenObserver& open_observer = {});
+    const RinkMaskOpenObserver& open_observer = {},
+    const RinkMaskLoadOptions& options = {});
 bool rink_mask_dimensions_match(
     const RinkMaskImage& image,
     std::uint32_t expected_width,
