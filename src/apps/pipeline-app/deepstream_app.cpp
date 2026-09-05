@@ -266,6 +266,29 @@ static gboolean finalize_playtracker_telemetry(AppCtx* appCtx) {
   return finalized;
 }
 
+static gboolean pipeline_requires_eos_finalization(const AppCtx* appCtx) {
+  if (!appCtx) {
+    return TRUE;
+  }
+  if (appCtx->capture_playtracker_detections) {
+    return TRUE;
+  }
+  for (guint i = 0; i < appCtx->config.num_sink_sub_bins; ++i) {
+    const NvDsSinkSubBinConfig& sink = appCtx->config.sink_bin_sub_bin_config[i];
+    if (!sink.enable) {
+      continue;
+    }
+    switch (sink.type) {
+      case NV_DS_SINK_ENCODE_FILE:
+      case NV_DS_SINK_ENCODE_STITCHED_FILE:
+        return TRUE;
+      default:
+        break;
+    }
+  }
+  return FALSE;
+}
+
 // Error messages can be posted while createMainLoop() is synchronously waiting
 // for PAUSED/preroll, before the GLib main loop dispatches bus_callback(). Wake
 // an exact-frame peer immediately in the posting thread, but leave the message
@@ -2497,6 +2520,7 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   if (appCtx->return_value != 0) {
     mark_playtracker_telemetry_failed(appCtx);
   }
+  const gboolean eos_finalization_required = pipeline_requires_eos_finalization(appCtx);
   gboolean finalized = appCtx->eos_received || appCtx->return_value != 0;
   gboolean fatal_error = FALSE;
   if (!finalized) {
@@ -2527,11 +2551,16 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
       gst_object_unref(bus);
     }
     if (!finalized) {
-      mark_playtracker_telemetry_failed(appCtx);
-      g_printerr(
-          "%s; encoded output may be incomplete\n",
-          fatal_error ? "Pipeline failed while finalizing EOS" : "Pipeline EOS finalization timed out");
-      appCtx->return_value = -1;
+      if (eos_finalization_required || fatal_error) {
+        mark_playtracker_telemetry_failed(appCtx);
+        g_printerr(
+            "%s; encoded output may be incomplete\n",
+            fatal_error ? "Pipeline failed while finalizing EOS" : "Pipeline EOS finalization timed out");
+        appCtx->return_value = -1;
+      } else {
+        g_printerr("Display-only pipeline did not post EOS before shutdown; stopping without output finalization\n");
+        finalized = TRUE;
+      }
     }
   }
 

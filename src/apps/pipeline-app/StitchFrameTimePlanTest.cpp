@@ -66,9 +66,9 @@ int main() {
           !hm::pipeline_internal::stitch_frame_rewind_request_is_current(2, 4, 2, 4, false),
       "Deferred rewinds must belong to the active stage and main-loop generation");
   ok &= expect(
-      !hm::pipeline_internal::stitch_frame_should_account_playback(/*calibration_rewind_pending=*/true) &&
-          hm::pipeline_internal::stitch_frame_should_account_playback(/*calibration_rewind_pending=*/false),
-      "Calibration-frame playback must not consume time-limit or progress accounting");
+      !hm::pipeline_internal::stitch_frame_should_account_playback(/*calibration_blocks_playback=*/true) &&
+          hm::pipeline_internal::stitch_frame_should_account_playback(/*calibration_blocks_playback=*/false),
+      "Calibration work must not consume time-limit or progress accounting");
   ok &= expect(
       hm::pipeline_internal::stitch_output_rotations_are_consistent({}) &&
           hm::pipeline_internal::stitch_output_rotations_are_consistent({0.0, -0.0}) &&

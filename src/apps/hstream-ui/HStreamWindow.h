@@ -261,6 +261,7 @@ class HStreamWindow : public QMainWindow {
   void releaseArchiveFinalizerOwnership(bool remove_lock_file);
   bool releaseArchiveFinalizeSource(bool remove_guard, bool require_target_identity = false);
   bool releaseArchiveFinalizeTarget(bool remove_guard);
+  bool isArchiveFinalizing() const;
   void showStitchingCalibrationDialog();
   bool beginObservedStitchingCalibration(const QString& reported_stage);
   void handleStitchingCalibrationOutput(const QString& line);
@@ -276,7 +277,9 @@ class HStreamWindow : public QMainWindow {
   void clearPreviewFrames();
   void updatePreviewTabResolution(const QString& channel, int width, int height);
   bool handleGpuPreviewStatus(const QString& line);
+  bool handlePreviewOverlayDiagnostic(const QString& line);
   bool handlePreviewOverlayResponse(const QString& line);
+  QLabel* previewStatusForChannel(const QString& channel) const;
   QWidget* previewSurfaceForChannel(const QString& channel) const;
   QWidget* previewTargetForChannel(const QString& channel) const;
   void schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms);
@@ -303,6 +306,8 @@ class HStreamWindow : public QMainWindow {
   void maybeStartDeferredRestart();
   void savePreset();
   void resetCameraControls();
+  void cleanStitchingCalibration();
+  void updateStitchFrameTimeAvailability();
   void captureSavedControlState();
   void updatePresetDirtyState();
   void refreshGames();
@@ -535,6 +540,7 @@ class HStreamWindow : public QMainWindow {
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
   QPushButton* save_preset_button_{nullptr};
+  QPushButton* clean_stitching_button_{nullptr};
   QPushButton* stop_button_{nullptr};
   QCheckBox* render_video_toggle_{nullptr};
   QCheckBox* show_player_tracking_toggle_{nullptr};

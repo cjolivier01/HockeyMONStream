@@ -593,6 +593,20 @@ absl::Status prepare_inference_config(
   std::error_code error;
   if (!fs::is_regular_file(onnx_path, error) || error)
     return absl::NotFoundError("Configured ONNX model does not exist: " + onnx_path.string());
+  if (scalar_unsigned({}, properties, "network-mode", 0) == 1) {
+    if (!properties["int8-calib-file"] || !properties["int8-calib-file"].IsScalar()) {
+      return absl::InvalidArgumentError(
+          "Configured INT8 TensorRT inference requires an int8-calib-file; run ./run.sh --models-int8-calibrate first");
+    }
+    const fs::path calib_path =
+        resolve_path(properties["int8-calib-file"].as<std::string>(), inference_path.parent_path());
+    error.clear();
+    if (!fs::is_regular_file(calib_path, error) || error) {
+      return absl::NotFoundError(
+          "Configured INT8 calibration table is unavailable: " + calib_path.string() +
+          "; run ./run.sh --models-int8-calibrate first");
+    }
+  }
   const bool section_engine_override = section["model-engine-file"] && section["model-engine-file"].IsScalar();
   const fs::path configured_engine = section_engine_override
       ? resolve_path(section["model-engine-file"].as<std::string>(), config_directory)
@@ -604,7 +618,8 @@ absl::Status prepare_inference_config(
     return publish_relocated_config();
   if (lowercase(configured_engine.filename().string()).find("_bf16.engine") != std::string::npos) {
     return absl::NotFoundError(
-        "Configured prebuilt BF16 TensorRT engine is unavailable: " + configured_engine.string());
+        "Configured prebuilt BF16 TensorRT engine is unavailable: " + configured_engine.string() +
+        "; run ./run.sh --models-bf16-build first");
   }
   if (::access(onnx_path.parent_path().c_str(), W_OK) == 0)
     return publish_relocated_config();

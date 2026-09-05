@@ -3,6 +3,7 @@
 /* clang-format on */
 
 #include "PipelineApp.h"
+#include "PipelineAssetOptions.h"
 #include "PipelineRuntimeEnvironment.h"
 #include "PipelineRuntimePaths.h"
 #include "PreviewOverlayRuntime.h"
@@ -52,6 +53,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -107,6 +109,74 @@ template <typename... Args>
 void emit_preview_protocol(const char* format, Args... args) {
   g_print(format, args...);
   std::fflush(stdout);
+}
+
+fs::path resolve_asset_config_path(const std::string& raw, const fs::path& base) {
+  fs::path path;
+  const char* home = std::getenv("HOME");
+  if (home != nullptr && *home != '\0' && (raw == "$HOME" || raw == "${HOME}" || raw == "~")) {
+    path = home;
+  } else if (home != nullptr && *home != '\0' && raw.rfind("$HOME/", 0) == 0) {
+    path = fs::path(home) / raw.substr(6);
+  } else if (home != nullptr && *home != '\0' && raw.rfind("${HOME}/", 0) == 0) {
+    path = fs::path(home) / raw.substr(8);
+  } else if (home != nullptr && *home != '\0' && raw.rfind("~/", 0) == 0) {
+    path = fs::path(home) / raw.substr(2);
+  } else {
+    path = raw;
+  }
+  if (!path.is_absolute())
+    path = base / path;
+  return path.lexically_normal();
+}
+
+bool yaml_config_path(const fs::path& path) {
+  std::string extension = path.extension().string();
+  std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return extension == ".yaml" || extension == ".yml";
+}
+
+bool config_section_enabled(const YAML::Node& section) {
+  if (!section || !section.IsMap())
+    return true;
+  const YAML::Node enabled = section["enable"];
+  if (!enabled || !enabled.IsScalar())
+    return true;
+  try {
+    return enabled.as<int>() != 0;
+  } catch (...) {
+    try {
+      return enabled.as<bool>();
+    } catch (...) {
+      return true;
+    }
+  }
+}
+
+absl::Status ensure_effective_inference_assets(const YAML::Node& pipeline, const fs::path& config_directory) {
+  if (!pipeline || !pipeline.IsMap())
+    return absl::OkStatus();
+  std::vector<fs::path> inference_configs;
+  std::set<fs::path> seen;
+  for (const auto& entry : pipeline) {
+    if (!entry.first.IsScalar() || !entry.second.IsMap())
+      continue;
+    const std::string name = entry.first.as<std::string>();
+    if (name.rfind("primary-gie", 0) != 0 && name.rfind("secondary-gie", 0) != 0)
+      continue;
+    const YAML::Node section = entry.second;
+    if (!config_section_enabled(section) || !section["config-file"] || !section["config-file"].IsScalar())
+      continue;
+    const fs::path config_path = resolve_asset_config_path(section["config-file"].as<std::string>(), config_directory);
+    if (!yaml_config_path(config_path) || !seen.insert(config_path).second)
+      continue;
+    inference_configs.push_back(config_path);
+  }
+  if (inference_configs.empty())
+    return absl::OkStatus();
+  return hm::assets::AssetManager::EnsureRequired(inference_configs);
 }
 
 struct StitchFrameRewindRequest {
@@ -1340,6 +1410,8 @@ absl::Status PipelineApplication::configureInstances(
         app_ctx->return_value = -1;
         return absl::InternalError("Failed to parse config file");
       }
+      HM_RETURN_IF_ERROR(
+          ensure_effective_inference_assets(config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
       emit_ui_startup("models", "Preparing TensorRT models and engine caches");
       HM_RETURN_IF_ERROR(
           hm::pipeline::PrepareTensorRtModelCache(
@@ -2149,7 +2221,18 @@ absl::Status PipelineApplication::createMainLoop(
     return context && context->configurator().stitching_calibration_required() &&
         stitch_frame_rewound_contexts_.count(context.get()) == 0;
   });
+  bool configure_only_active = false;
+  try {
+    configure_only_active = std::any_of(app_contexts.begin(), app_contexts.end(), [](const auto& context) {
+      return context && hm::get_node_value(context->configurator().config(), "pipeline.hmstitcher.enable", false) &&
+          hm::get_node_value(context->configurator().config(), "pipeline.hmstitcher.configure-only", false);
+    });
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Invalid configure-only stitching setting: " + std::string(error.what()));
+  }
   stitch_frame_calibration_active_.store(calibration_active, std::memory_order_release);
+  stitching_configure_only_active_.store(configure_only_active, std::memory_order_release);
+  cleanup_stack.push([this] { stitching_configure_only_active_.store(false, std::memory_order_release); });
   reset_playback_timing_state(current_stage_);
   g_timeout_add(400, check_for_interrupt_static, nullptr);
 
@@ -3015,26 +3098,6 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     });
   }
 
-  // Cleaning only removes generated game artifacts and must remain usable
-  // offline, even when declared models are not installed.
-  if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
-    emit_ui_startup("assets", "Checking pretrained assets");
-    std::vector<fs::path> asset_configs;
-    for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
-      asset_configs.emplace_back(cfg_files_[index]);
-    if (stitching_calibration_only_) {
-      // Prune Program child configs before discovery. The rink model declared
-      // directly by the hockey config remains required for camera orientation;
-      // matcher graphs are marked on-demand and fetched after layered matcher
-      // selection has been resolved.
-      HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureRequired(asset_configs, [](YAML::Node config) {
-        hm::pipeline_internal::configure_stitching_calibration_pipeline(config);
-      }));
-    } else {
-      HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureRequired(asset_configs));
-    }
-  }
-
   if (pipline_options) {
     pipeline_options_.clear();
     for (size_t i = 0, n = g_strv_length(pipline_options); i < n; ++i) {
@@ -3067,6 +3130,26 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         {"stitching.post_stitch_rotate_degrees", degrees},
         {"pipeline.hmstitcher.post-stitch-rotate-degrees", degrees},
     });
+  }
+
+  // Cleaning only removes generated game artifacts and must remain usable
+  // offline, even when declared models are not installed.
+  if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
+    emit_ui_startup("assets", "Checking pretrained assets");
+    std::vector<fs::path> asset_configs;
+    for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
+      asset_configs.emplace_back(cfg_files_[index]);
+    HM_RETURN_IF_ERROR(hm::assets::AssetManager::EnsureRequired(asset_configs, [this](YAML::Node config) {
+      hm::pipeline_internal::apply_pipeline_options_for_asset_discovery(config, pipeline_options_);
+      if (stitching_calibration_only_) {
+        // Prune Program child configs before discovery. The rink model declared
+        // directly by the hockey config remains required for camera orientation;
+        // matcher graphs are marked on-demand and fetched after layered matcher
+        // selection has been resolved.
+        hm::pipeline_internal::configure_stitching_calibration_pipeline(
+            hm::pipeline_internal::pipeline_asset_root(config));
+      }
+    }));
   }
 
   gdouble render_scale = -1.0;
@@ -3227,15 +3310,20 @@ void PipelineApplication::reset_playback_timing_state(long stage) {
   timed_run_stop_requested_.store(false, std::memory_order_release);
   timed_run_last_progress_wall_ = time_limit_seconds_ > 0 &&
           hm::pipeline_internal::stitch_frame_should_account_playback(
-                                      stitch_frame_calibration_active_.load(std::memory_order_acquire))
+                                      stitching_calibration_blocks_playback_accounting())
       ? std::chrono::steady_clock::now()
       : std::chrono::steady_clock::time_point{};
+}
+
+bool PipelineApplication::stitching_calibration_blocks_playback_accounting() const {
+  return stitch_frame_calibration_active_.load(std::memory_order_acquire) ||
+      stitching_configure_only_active_.load(std::memory_order_acquire);
 }
 
 void PipelineApplication::record_timed_run_progress(uint64_t processed_ns) {
   if (time_limit_seconds_ <= 0 || processed_ns == GST_CLOCK_TIME_NONE ||
       !hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
+          stitching_calibration_blocks_playback_accounting())) {
     return;
   }
   std::lock_guard<std::mutex> lock(playback_timing_mu_);
@@ -3306,7 +3394,7 @@ hm::PlaybackProgressMetrics PipelineApplication::collect_progress_metrics(AppCtx
   hm::PlaybackProgressMetrics metrics;
   if (!app_ctx || !app_ctx->pipeline.pipeline ||
       !hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
+          stitching_calibration_blocks_playback_accounting())) {
     return metrics;
   }
 
@@ -3684,6 +3772,16 @@ gboolean PipelineApplication::check_for_interrupt() {
     if (runtime_seek_pending_) {
       finish_runtime_seek("failed", "pipeline-stopped");
     }
+    if (const auto active_stage = stage_app_contexts_.find(current_stage_); active_stage != stage_app_contexts_.end()) {
+      for (const auto& context : active_stage->second) {
+        if (!context || one_pass_calibration_contexts_.count(context.get()) == 0) {
+          continue;
+        }
+        if (GstElement* stitcher = context->pipeline.hmstitcher_bin.elem_hmstitcher) {
+          g_object_set(G_OBJECT(stitcher), "cancel-pending-work", TRUE, nullptr);
+        }
+      }
+    }
     quit_ = TRUE;
     if (main_loop_)
       g_main_loop_quit(main_loop_);
@@ -3699,7 +3797,7 @@ gboolean PipelineApplication::check_for_interrupt() {
   }
   if (time_limit_seconds_ > 0 &&
       hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire)) &&
+          stitching_calibration_blocks_playback_accounting()) &&
       last_progress_wall != std::chrono::steady_clock::time_point{}) {
     constexpr int kTimedRunNoProgressTimeoutSeconds = 60;
     const auto stalled_seconds =
@@ -7098,7 +7196,7 @@ gboolean PipelineApplication::overlay_graphics(
   }
   if (time_limit_seconds_ > 0 && batch_meta &&
       hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitch_frame_calibration_active_.load(std::memory_order_acquire))) {
+          stitching_calibration_blocks_playback_accounting())) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (buf) {
       GstClockTime pts = GST_BUFFER_PTS(buf);

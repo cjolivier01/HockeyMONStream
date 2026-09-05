@@ -23,6 +23,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 
 typedef enum {
   NV_DS_SINK_FAKE = 1,
@@ -206,5 +207,15 @@ std::optional<NvDsSinkType> sink_type_from_string(const std::string& str);
 std::string to_string(const NvDsSinkType& type);
 
 } // namespace hm
+
+namespace hm::deepstream_sink_internal {
+
+std::pair<guint, guint> fit_render_size_to_aspect(
+    guint box_width,
+    guint box_height,
+    guint input_width,
+    guint input_height);
+
+} // namespace hm::deepstream_sink_internal
 
 #endif

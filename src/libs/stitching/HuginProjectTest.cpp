@@ -409,6 +409,28 @@ int main() {
       hm::stitching::HuginProject::ValidateAndNormalizeSeam(interrupted_normalization, 42, 32).ok() &&
           cv::imread(interrupted_normalization.string(), cv::IMREAD_GRAYSCALE).size() == cv::Size(42, 32),
       "successful normalization must atomically publish the full-canvas seam");
+
+  const fs::path missing_offset_edge = seam_validation / "missing-offset-edge.png";
+  cv::Mat one_pixel_short_seam(31, 42, CV_8U, cv::Scalar(0));
+  one_pixel_short_seam.colRange(21, 42).setTo(255);
+  ok &= expect(cv::imwrite(missing_offset_edge.string(), one_pixel_short_seam), "edge-cropped seam must be encoded");
+  const auto missing_offset_status =
+      hm::stitching::HuginProject::ValidateAndNormalizeSeam(missing_offset_edge, 42, 32);
+  const cv::Mat normalized_missing_offset = cv::imread(missing_offset_edge.string(), cv::IMREAD_GRAYSCALE);
+  cv::Mat expected_missing_offset;
+  cv::copyMakeBorder(one_pixel_short_seam, expected_missing_offset, 0, 1, 0, 0, cv::BORDER_REPLICATE);
+  ok &= expect(
+      missing_offset_status.ok() && normalized_missing_offset.size() == cv::Size(42, 32) &&
+          cv::norm(normalized_missing_offset, expected_missing_offset, cv::NORM_INF) == 0,
+      "one-pixel origin-zero enblend seam without oFFs metadata must be normalized");
+
+  const fs::path missing_offset_large = seam_validation / "missing-offset-large.png";
+  cv::Mat large_mismatch_seam(30, 40, CV_8U, cv::Scalar(0));
+  large_mismatch_seam.colRange(20, 40).setTo(255);
+  ok &= expect(cv::imwrite(missing_offset_large.string(), large_mismatch_seam), "large mismatched seam must be encoded");
+  ok &= expect(
+      absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(missing_offset_large, 42, 32)),
+      "larger origin-zero enblend seam mismatch without oFFs metadata must still fail closed");
   ok &= expect(
       cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 42, CV_8UC3, cv::Scalar(1, 2, 3))),
       "fake panorama must exist");
@@ -584,8 +606,8 @@ int main() {
     const std::string contents((std::istreambuf_iterator<char>(optimized)), std::istreambuf_iterator<char>());
     const auto scaled = hm::stitching::HuginProject::ParseCanvasSize(contents);
     ok &= expect(
-        scaled.ok() && scaled->first == 62 && scaled->second == 31,
-        "General Panini AUTO geometry must remain inside the pre-Nona canvas limits");
+        scaled.ok() && scaled->first == 63 && scaled->second == 32,
+        "explicit max canvas dimension must resize General Panini AUTO geometry after projection conversion");
     ok &= expect(
         contents.find("p f19 ") != std::string::npos && contents.find("P\"100 0 0\"") != std::string::npos,
         "single-pass calibration must publish the selected General Panini projection");
@@ -601,13 +623,11 @@ int main() {
         "Hugin orchestration must optimize once without requesting unsupported output scaling");
     const std::string pano_modify_invocations = read_text_file(pano_modify_args);
     ok &= expect(
-        pano_modify_invocations.find(".autooptimiser_out.resize.pto") == std::string::npos,
-        "projection geometry already within the configured canvas must not be resized a second time");
-    ok &= expect(
         pano_modify_invocations.find("--projection=19 --projection-parameter=100 0 0") != std::string::npos &&
             pano_modify_invocations.find("--fov=AUTO --canvas=AUTO --crop=AUTO") != std::string::npos &&
-            pano_modify_invocations.find("--canvas=49.75%") != std::string::npos,
-        "General Panini conversion must request standard parameters, automatic geometry, and one bounded scaling");
+            pano_modify_invocations.find("--canvas=63x32 -o .autooptimiser_out.resize.pto autooptimiser_out.pto") !=
+                std::string::npos,
+        "General Panini conversion must preserve automatic geometry until the explicit max-dimension cap runs");
     const std::string nona_runs = read_text_file(nona_invocations);
     ok &= expect(
         std::count(nona_runs.begin(), nona_runs.end(), '\n') == 1,
@@ -654,10 +674,10 @@ int main() {
     const auto provenance = hm::stitching::HuginProject::ReadCanvasProvenance(root / "game", **provenance_lock);
     ok &= expect(
         provenance.ok() && provenance->has_value() && (*provenance)->max_output_width == 0 &&
-            (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 62 &&
-            (*provenance)->source_canvas_height == 32 && (*provenance)->canvas_width == 42 &&
+            (*provenance)->max_canvas_dimension == 64 && (*provenance)->source_canvas_width == 200 &&
+            (*provenance)->source_canvas_height == 102 && (*provenance)->canvas_width == 42 &&
             (*provenance)->canvas_height == 32 && !(*provenance)->max_output_width_applied &&
-            !(*provenance)->max_canvas_dimension_applied &&
+            (*provenance)->max_canvas_dimension_applied &&
             (*provenance)->mapping_backend == hm::stitching::MappingBackend::kNona &&
             (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini &&
             (*provenance)->projection_parameters == std::vector<double>({100.0, 0.0, 0.0}) &&
@@ -772,17 +792,15 @@ int main() {
   ok &= expect(!extreme_copy_error, "extreme Stereographic fixture PTO must be copied");
   const auto extreme_projection = hm::stitching::HuginProject::ApplyProjection(
       extreme_stereographic, hm::stitching::StitchProjection::kStereographic);
-  ok &= expect(
-      extreme_projection.ok(),
-      "an AUTO projection requiring a sub-one-percent canvas must use explicit bounded dimensions");
+  ok &= expect(extreme_projection.ok(), "an AUTO projection must preserve Hugin's projection canvas");
   const std::string extreme_stereographic_pto = read_text_file(extreme_stereographic / "autooptimiser_out.pto");
   const auto extreme_stereographic_canvas = hm::stitching::HuginProject::ParseCanvasSize(extreme_stereographic_pto);
   ok &= expect(
-      extreme_stereographic_canvas.ok() && extreme_stereographic_canvas->first == 99 &&
-          extreme_stereographic_canvas->second == 49 &&
-          read_text_file(pano_modify_args).find("--projection=4 --fov=AUTO --canvas=99x49 --crop=AUTO") !=
+      extreme_stereographic_canvas.ok() && extreme_stereographic_canvas->first == 100000 &&
+          extreme_stereographic_canvas->second == 50000 &&
+          read_text_file(pano_modify_args).find("--projection=4 --fov=AUTO --canvas=AUTO --crop=AUTO") !=
               std::string::npos,
-      "sub-one-percent Stereographic conversion must avoid Hugin's invalid percentage syntax");
+      "Stereographic conversion must keep Hugin's automatic canvas");
 
   const fs::path nonfinite_panini = root / "nonfinite-panini";
   fs::create_directories(nonfinite_panini);

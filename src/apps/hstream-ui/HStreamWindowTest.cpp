@@ -141,6 +141,10 @@ struct HStreamWindowTestAccess {
     return window->handlePlaybackProgressOutput(line);
   }
 
+  static void updatePreviewTabResolution(HStreamWindow* window, const QString& channel, int width, int height) {
+    window->updatePreviewTabResolution(channel, width, height);
+  }
+
   static void beginTimedOutPlaybackSeekRecovery(HStreamWindow* window, quint64 generation) {
     beginPendingPlaybackSeek(window, generation);
     window->handlePlaybackSeekOutput(
@@ -897,6 +901,19 @@ bool write_fake_runner(const QString& path) {
   file.write("    if os.environ.get('HSTREAM_UI_TEST_CLEAN_RESULT') == 'failure':\n");
   file.write("        print('clean runner forced failure', flush=True)\n");
   file.write("        sys.exit(8)\n");
+  file.write("    if os.environ.get('HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS') == '1':\n");
+  file.write("        import glob\n");
+  file.write("        game_id = sys.argv[sys.argv.index('-g') + 1]\n");
+  file.write("        game_dir = os.path.join(os.environ['HM_GAME_DIR'], game_id)\n");
+  file.write("        for pattern in ['hm_project.pto', 'autooptimiser_out.pto', '*.pto', 'mapping_*.tif',\n");
+  file.write("                        'mapping_*.tiff', 'stitching_canvas_provenance', 'stitch_generation',\n");
+  file.write("                        'panorama.tif', 'seam_file.png', 'matches.png', 'keypoints.png', 's.png',\n");
+  file.write("                        'rink_mask_*.png', 'left.png', 'right.png']:\n");
+  file.write("            for path in glob.glob(os.path.join(game_dir, pattern)):\n");
+  file.write("                try:\n");
+  file.write("                    os.remove(path)\n");
+  file.write("                except FileNotFoundError:\n");
+  file.write("                    pass\n");
   file.write("    print('clean runner exiting', flush=True)\n");
   file.write("    sys.exit(0)\n");
   file.write("sys.stdout.write('\\033[34mANSI')\n");
@@ -1063,6 +1080,9 @@ bool write_fake_runner(const QString& path) {
   file.write("    if line.startswith('@test-complete-preview-overlays'):\n");
   file.write("        if delayed_preview_overlay_responses:\n");
   file.write("            print(delayed_preview_overlay_responses.pop(0), flush=True)\n");
+  file.write("        return\n");
+  file.write("    if line.startswith('@test-preview-overlay-diagnostic '):\n");
+  file.write("        print(line.rstrip('\\n').split(' ', 1)[1], flush=True)\n");
   file.write("        return\n");
   file.write("    if line.startswith('@test-delay-runtime-control '):\n");
   file.write("        runtime_control_delay_seconds = float(line.rstrip('\\n').split(' ')[1]) / 1000.0\n");
@@ -2583,6 +2603,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* restart = require_child<QPushButton>(window, "restartStageButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  auto* calibration_frame_count = require_child<QSpinBox>(window, "calibrationFrameCountSpin");
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
@@ -2607,6 +2628,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       require_child<QLabel>(window, "projectionParameter3Label")};
   const std::array<QDoubleSpinBox*, 3> projection_parameter_spins = {
       panini_compression, panini_top_squeeze, panini_bottom_squeeze};
+  auto* clean_stitching = require_child<QPushButton>(window, "cleanStitchingButton");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -2648,6 +2670,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* program_controls = require_child<QWidget>(window, "programAssociatedControls");
   auto* program_controls_toggle = require_child<QToolButton>(window, "programControlsToggle");
   auto* stitched_controls = require_child<QWidget>(window, "stitchedAssociatedControls");
+  auto* stitched_controls_toggle = require_child<QToolButton>(window, "stitchedControlsToggle");
   auto* stitched_bring_up_shadows = require_child<QSlider>(window, "stitchedCameraSlider_Bring_Up_Shadows");
   auto* stitched_exposure = require_child<QSlider>(window, "stitchedCameraSlider_Exposure_x100");
   auto* stitched_lift_black_point = require_child<QCheckBox>(window, "stitchedCameraCheck_Lift_Shadow_Black_Point");
@@ -2657,6 +2680,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* algorithms_page = require_child<QWidget>(window, "stitchingAlgorithmsTab");
   auto* program_control_tabs = require_child<QTabWidget>(window, "programControlTabs");
   auto* stitched_control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+  auto* program_controls_splitter = require_child<QSplitter>(window, "programPreviewControlsSplitter");
+  auto* stitched_controls_splitter = require_child<QSplitter>(window, "stitchedPreviewControlsSplitter");
   auto* program_focus = require_child<QPushButton>(window, "programFocusButton");
   auto* stitched_focus = require_child<QPushButton>(window, "stitchedFocusButton");
   auto* top_bar = require_child<QWidget>(window, "topBarPanel");
@@ -2668,24 +2693,28 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* setup_row = require_child<QWidget>(window, "setupControlsRow");
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
-  if (!stop || !start || !pause || !restart || !mode || !control_points || !stitch_frame_time ||
+  if (!stop || !start || !pause || !restart || !mode || !control_points || !calibration_frame_count ||
+      !stitch_frame_time ||
       !control_point_matcher || !mapping_backend || !projection || !panini_compression || !panini_top_squeeze ||
       !panini_bottom_squeeze || !projection_auto_fov || !projection_horizontal_fov || !projection_auto_canvas ||
       !projection_auto_crop || !control_point_matcher_label || !mapping_backend_label || !projection_label ||
       !stitch_max_output_width || !run_autooptimizer || !save_preset_button || !stitch_max_output_width_label ||
       !projection_parameter_labels[0] || !projection_parameter_labels[1] || !projection_parameter_labels[2] ||
-      !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking ||
+      !clean_stitching || !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video ||
+      !show_player_tracking ||
       !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
       !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
       !preview_surface || !preview_target || !stitched_surface || !stitched_target || !stitched_host || !camera1_host ||
       !camera1_surface || !camera1_target || !camera1_focus || !camera2_host || !camera2_surface || !camera2_target ||
       !camera2_focus || !camera3_host || !camera3_surface || !camera3_target || !camera3_focus || !external_notice ||
       !camera1_notice || !stitched_status || !preview_status || !program_controls || !program_controls_toggle ||
-      !stitched_controls || !stitched_bring_up_shadows || !stitched_exposure || !stitched_lift_black_point ||
-      !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll || !algorithms_page ||
-      !program_control_tabs || !stitched_control_tabs || !program_focus || !stitched_focus || !top_bar || !setup_row ||
-      !log_panel || !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position ||
-      !pipeline_process) {
+      !stitched_controls || !stitched_controls_toggle || !stitched_bring_up_shadows || !stitched_exposure ||
+      !stitched_lift_black_point || !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll ||
+      !algorithms_page || !program_control_tabs || !stitched_control_tabs || !program_controls_splitter ||
+      !stitched_controls_splitter || !program_focus || !stitched_focus || !top_bar || !setup_row || !log_panel ||
+      !playback_progress ||
+      !seek_slider || !seek_back ||
+      !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2731,9 +2760,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   if (!expect(
-          program_control_tabs->minimumHeight() == 106 && program_control_tabs->maximumHeight() == 207 &&
-              stitched_control_tabs->minimumHeight() == 106 && stitched_control_tabs->maximumHeight() == 207,
-          "Program and Stitched configuration areas should be 15% taller below their video previews")) {
+          program_control_tabs->minimumHeight() == 220 &&
+              program_control_tabs->sizePolicy().verticalPolicy() == QSizePolicy::Expanding &&
+              stitched_control_tabs->minimumHeight() == 220 &&
+              stitched_control_tabs->sizePolicy().verticalPolicy() == QSizePolicy::Expanding,
+          "Program and Stitched configuration areas should expand inside their side control panes")) {
     return false;
   }
   const QRect stopped_target_rect(preview_target->mapTo(window, QPoint(0, 0)), preview_target->size());
@@ -2748,6 +2779,39 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   if (!expect_x11_widget_state(
           preview_target, false, "Stopped Program target must use its Qt host as the native X11 coordinate space")) {
+    return false;
+  }
+  stitched_host->resize(900, 600);
+  HStreamWindowTestAccess::updatePreviewTabResolution(window, "stitched", 15287, 6958);
+  QApplication::processEvents();
+  const QSize wide_stitched_target_size = stitched_target->size();
+  HStreamWindowTestAccess::updatePreviewTabResolution(window, "stitched", 0, 0);
+  QApplication::processEvents();
+  const QSize default_stitched_target_size = stitched_target->size();
+  const double default_stitched_aspect =
+      default_stitched_target_size.height() > 0
+          ? static_cast<double>(default_stitched_target_size.width()) / default_stitched_target_size.height()
+          : 0.0;
+  const double wide_stitched_aspect =
+      wide_stitched_target_size.height() > 0
+          ? static_cast<double>(wide_stitched_target_size.width()) / wide_stitched_target_size.height()
+          : 0.0;
+  if (!expect(
+          default_stitched_target_size.width() > 0 && default_stitched_target_size.height() > 0 &&
+              wide_stitched_target_size.width() > 0 && wide_stitched_target_size.height() > 0 &&
+              default_stitched_target_size.width() <= stitched_host->width() &&
+              default_stitched_target_size.height() <= stitched_host->height() &&
+              wide_stitched_target_size.width() <= stitched_host->width() &&
+              wide_stitched_target_size.height() <= stitched_host->height() &&
+              wide_stitched_target_size.height() < default_stitched_target_size.height() &&
+              std::abs(default_stitched_aspect - 16.0 / 9.0) < 0.01 &&
+              std::abs(wide_stitched_aspect - 15287.0 / 6958.0) < 0.01,
+          "Embedded stitched preview host must relayout to the reported stitched canvas aspect")) {
+    std::cerr << "stitched_host=" << stitched_host->width() << 'x' << stitched_host->height()
+              << " default_target=" << default_stitched_target_size.width() << 'x'
+              << default_stitched_target_size.height() << " aspect=" << default_stitched_aspect
+              << " wide_target=" << wide_stitched_target_size.width() << 'x' << wide_stitched_target_size.height()
+              << " aspect=" << wide_stitched_aspect << '\n';
     return false;
   }
   const int preview_height_before_setup_collapse = preview_tabs->height();
@@ -2779,9 +2843,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
-          stitched_control_tabs->height() >= 106 && stitched_control_tabs->height() <= 207 &&
+          stitched_control_tabs->height() >= 220 &&
               algorithms_scroll->viewport()->height() > 40,
-          "The rendered Stitched configuration area should receive the taller allocation without crushing content")) {
+          "The rendered Stitched configuration area should expand without crushing content")) {
     return false;
   }
   bool all_nona_projections_enabled = projection->model() && projection->count() == 22;
@@ -2958,14 +3022,18 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
               stitched_controls->isAncestorOf(control_point_matcher) &&
               stitched_controls->isAncestorOf(mapping_backend) && stitched_controls->isAncestorOf(projection) &&
+              stitched_controls->isAncestorOf(control_points) && stitched_controls->isAncestorOf(stitch_frame_time) &&
               stitched_controls->isAncestorOf(stitch_max_output_width) &&
               stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 4 &&
               stitched_control_tabs->count() == 3 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
               stitched_control_tabs->tabText(2) == "Algorithms" &&
+              program_controls_splitter->orientation() == Qt::Horizontal &&
+              stitched_controls_splitter->orientation() == Qt::Horizontal &&
               control_point_matcher_label->text() == "Control-point matcher" &&
               mapping_backend_label->text() == "Mapping backend" && projection_label->text() == "Projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
+              clean_stitching->text() == "Clean Stitching" && stitch_frame_time->isEnabled() == false &&
               !run_autooptimizer->isChecked() && !run_autooptimizer->isEnabled() &&
               mapping_backend->currentData().toString() == "opencv-magsac" && control_point_matcher->count() == 4 &&
               control_point_matcher->itemText(0) == "SuperPoint + LightGlue" &&
@@ -2985,6 +3053,48 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "their pipeline stage")) {
     return false;
   }
+  auto controls_drawer_reclaims_preview_space = [&](int tab_index,
+                                                    QSplitter* splitter,
+                                                    QWidget* controls,
+                                                    QToolButton* toggle,
+                                                    const char* label) {
+    preview_tabs->setCurrentIndex(tab_index);
+    QApplication::processEvents();
+    if (!toggle->isChecked()) {
+      QTest::mouseClick(toggle, Qt::LeftButton);
+      QApplication::processEvents();
+    }
+    const QList<int> expanded_sizes = splitter->sizes();
+    QTest::mouseClick(toggle, Qt::LeftButton);
+    QApplication::processEvents();
+    const QList<int> collapsed_sizes = splitter->sizes();
+    const bool collapsed = !toggle->isChecked() && controls->isHidden() && expanded_sizes.size() == 2 &&
+        collapsed_sizes.size() == 2 && collapsed_sizes.at(0) > expanded_sizes.at(0) &&
+        collapsed_sizes.at(1) <= toggle->sizeHint().width() + 24;
+    QTest::mouseClick(toggle, Qt::LeftButton);
+    QApplication::processEvents();
+    const QList<int> restored_sizes = splitter->sizes();
+    const bool restored = toggle->isChecked() && !controls->isHidden() && restored_sizes.size() == 2 &&
+        restored_sizes.at(1) >= std::max(1, expanded_sizes.at(1) / 2) &&
+        restored_sizes.at(0) < collapsed_sizes.at(0);
+    if (!collapsed || !restored) {
+      std::cerr << label << " drawer sizes: expanded=" << expanded_sizes.value(0) << ','
+                << expanded_sizes.value(1) << " collapsed=" << collapsed_sizes.value(0) << ','
+                << collapsed_sizes.value(1) << " restored=" << restored_sizes.value(0) << ','
+                << restored_sizes.value(1) << " toggle-hint=" << toggle->sizeHint().width() << '\n';
+    }
+    return collapsed && restored;
+  };
+  if (!expect(
+          controls_drawer_reclaims_preview_space(
+              0, program_controls_splitter, program_controls, program_controls_toggle, "Program") &&
+              controls_drawer_reclaims_preview_space(
+                  1, stitched_controls_splitter, stitched_controls, stitched_controls_toggle, "Stitched"),
+          "Collapsing Program or Stitched controls should return the side-pane width to the preview")) {
+    return false;
+  }
+  preview_tabs->setCurrentIndex(0);
+  QApplication::processEvents();
   const bool save_enabled_before_inactive_optimizer_toggle = save_preset_button->isEnabled();
   run_autooptimizer->setChecked(true);
   QApplication::processEvents();
@@ -2997,8 +3107,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
-          run_autooptimizer->isChecked() && run_autooptimizer->isEnabled(),
-          "Selecting the NONA mapping backend must enable its required panorama autooptimizer")) {
+      run_autooptimizer->isChecked() && run_autooptimizer->isEnabled(),
+      "Selecting the NONA mapping backend must enable its required panorama autooptimizer")) {
     return false;
   }
   run_autooptimizer->setChecked(false);
@@ -3006,6 +3116,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           mapping_backend->currentData().toString() == "opencv-magsac",
           "Turning the autooptimizer off while NONA is selected must return to the default MAGSAC++ backend")) {
+    return false;
+  }
+  calibration_frame_count->setValue(1);
+  QApplication::processEvents();
+  if (!expect(
+          stitch_frame_time->isEnabled(), "Single-frame stitching calibration should enable reference-frame time")) {
+    return false;
+  }
+  calibration_frame_count->setValue(4);
+  QApplication::processEvents();
+  if (!expect(
+          !stitch_frame_time->isEnabled(),
+          "Multi-frame stitching calibration should gray out reference-frame time")) {
     return false;
   }
 
@@ -3218,12 +3341,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   drivegpt_csv->setChecked(false);
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500") ||
       !expect(
-          stitch_frame_time->time() == QTime(0, 0, 0) &&
-              stitch_frame_time->mapTo(window, QPoint(0, 0)).x() > control_points->mapTo(window, QPoint(0, 0)).x(),
-          "Stitch-frame time should default to 00:00:00 immediately to the right of control points")) {
+          stitch_frame_time->time() == QTime(0, 0, 0) && !stitch_frame_time->isEnabled() &&
+              stitched_controls->isAncestorOf(stitch_frame_time),
+          "Stitch-frame time should default to 00:00:00 inside the stitched calibration controls")) {
     return false;
   }
+  calibration_frame_count->setValue(1);
+  QApplication::processEvents();
 
+  preview_tabs->setCurrentIndex(1);
+  stitched_control_tabs->setCurrentIndex(2);
+  QApplication::processEvents();
   window->activateWindow();
   stitch_frame_time->setFocus(Qt::OtherFocusReason);
   QTest::qWait(10);
@@ -3922,6 +4050,34 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               window->logText().contains("stdin:@set-preview-overlays 4 1 1 1") &&
               window->logText().contains("preview overlays players=1 play=1 rink=1 apply=live"),
           "Live overlay checkboxes must use the topology-independent backend command and confirm applied state")) {
+    return false;
+  }
+  pipeline_process->write(
+      "@test-preview-overlay-diagnostic HSTREAM_PREVIEW_OVERLAY channel=program "
+      "rink-mask=/tmp/rink_mask_0.png status=validation-failed retry=2s "
+      "message=field mask dimensions do not exactly match the live stitched canvas\n");
+  for (int i = 0; i < 100 && !window->logText().contains("rink mask overlay unavailable channel=program"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          preview_status->text() == "Rink mask overlay unavailable" &&
+              window->logText().contains("field mask dimensions do not exactly match the live stitched canvas"),
+          "Renderer-side rink-mask validation failures should be visible in hstream-ui instead of looking like a "
+          "dead checkbox")) {
+    return false;
+  }
+  pipeline_process->write(
+      "@test-preview-overlay-diagnostic HSTREAM_PREVIEW_OVERLAY channel=program "
+      "rink-mask=/tmp/rink_mask_0.png status=loaded\n");
+  for (int i = 0; i < 100 && !window->logText().contains("rink mask overlay loaded channel=program"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          preview_status->text() == "Program GPU preview ready" &&
+              window->logText().contains("rink mask overlay loaded channel=program"),
+          "A recovered Program rink-mask overlay should clear the visible unavailable status")) {
     return false;
   }
   QTest::mouseClick(render_video, Qt::LeftButton);
@@ -4642,6 +4798,26 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "A missing render-off acknowledgement must restore the visible tab and reconcile its backend channel")) {
     return false;
   }
+  {
+    const QSignalBlocker blocker(show_rink_mask);
+    show_rink_mask->setChecked(true);
+    pipeline_process->write(
+        "@test-preview-overlay-diagnostic HSTREAM_PREVIEW_OVERLAY channel=stitched "
+        "rink-mask=/tmp/rink_mask_0.png status=validation-failed "
+        "message=field mask dimensions do not exactly match the live stitched canvas\n");
+    for (int i = 0; i < 100 && !window->logText().contains("rink mask overlay unavailable channel=stitched"); ++i) {
+      QApplication::processEvents();
+      QTest::qWait(10);
+    }
+    if (!expect(
+            stitched_status->text() == "Rink mask overlay unavailable" &&
+                preview_status->text() != "Rink mask overlay unavailable" &&
+                window->logText().contains("rink mask overlay unavailable channel=stitched"),
+            "A Stitched rink-mask diagnostic should update the visible Stitched preview status label")) {
+      return false;
+    }
+    show_rink_mask->setChecked(false);
+  }
   pipeline_process->write("@test-resume-preview-disable\n");
   for (int i = 0; i < 100 && !window->logText().contains("test preview disable resumed"); ++i) {
     QApplication::processEvents();
@@ -4661,7 +4837,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           !top_bar->isVisible() && !setup_row->isVisible() && !log_panel->isVisible() &&
               !preview_tabs->tabBar()->isVisible() && !program_controls->isVisible() && program_host->isVisible() &&
-              playback_progress->isVisible() && !window->isFullScreen() &&
+              !preview_status->isVisible() && playback_progress->isVisible() && !window->isFullScreen() &&
               program_focus->toolTip().contains("Restore the normal HStream layout") &&
               program_focus->accessibleName() == "Restore HStream controls",
           "A real double-click on a ready GPU preview should focus it across the HStream app area")) {
@@ -4780,12 +4956,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QWidget* host;
     QWidget* target;
     QPushButton* button;
+    double expected_aspect;
   };
   const std::array<FocusPreviewCase, 4> additional_focus_cases = {{
-      {1, "stitched", stitched_host, stitched_target, stitched_focus},
-      {2, "source0", camera1_host, camera1_target, camera1_focus},
-      {3, "source1", camera2_host, camera2_target, camera2_focus},
-      {4, "source2", camera3_host, camera3_target, camera3_focus},
+      {1, "stitched", stitched_host, stitched_target, stitched_focus, 4096.0 / 1080.0},
+      {2, "source0", camera1_host, camera1_target, camera1_focus, 16.0 / 9.0},
+      {3, "source1", camera2_host, camera2_target, camera2_focus, 16.0 / 9.0},
+      {4, "source2", camera3_host, camera3_target, camera3_focus, 16.0 / 9.0},
   }};
   QWidget* previous_target = preview_target;
   for (const FocusPreviewCase& focus_case : additional_focus_cases) {
@@ -4812,14 +4989,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     QTest::mouseDClick(focus_case.target, Qt::LeftButton);
     QApplication::processEvents();
+    const bool preview_footer_hidden = focus_case.tab != 1 || !stitched_status->isVisible();
+    const double focused_aspect = focus_case.target->height() > 0
+        ? static_cast<double>(focus_case.target->width()) / focus_case.target->height()
+        : 0.0;
     if (!expect(
             focus_case.host->isVisible() && !preview_tabs->tabBar()->isVisible() && !top_bar->isVisible() &&
                 focus_case.button->isVisible() && focus_case.host->width() >= normal_host_size.width() &&
                 focus_case.host->height() >= normal_host_size.height() &&
-                std::abs(focus_case.target->width() * 9 - focus_case.target->height() * 16) <= 16 &&
+                preview_footer_hidden &&
+                focus_case.target->height() > 0 && std::abs(focused_aspect - focus_case.expected_aspect) < 0.01 &&
                 focus_case.button->x() == focus_case.target->width() - focus_case.button->width() - 6 &&
                 focus_case.button->y() == 6,
-            "Every ready Stitched/camera preview must maximize at 16:9 without displacing its restore control")) {
+            "Every ready Stitched/camera preview must maximize at its reported aspect without displacing its restore control")) {
       return false;
     }
     QTest::mouseClick(focus_case.button, Qt::LeftButton);
@@ -5017,6 +5199,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               ? x11_calibration_preview_ok
               : !window->logText().contains("--render-window-id=") &&
                   window->logText().contains("HM_RENDER_SINK=nv3dsink") &&
+                  window->logText().contains("--show-scaled=0.3012048193") &&
                   !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
                   camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
           "Only the X11 test backend should expose the selected embedded stitched preview window") ||
@@ -8113,7 +8296,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   projection->setCurrentIndex(projection->findData("stereographic"));
   QApplication::processEvents();
   const bool projection_fov_reset_clears_cache =
-      expect(horizontal_fov->value() == 180.0, "Reset Camera must clear inactive per-projection FOV values");
+      expect(horizontal_fov->value() == 180.0, "Reset Controls must clear inactive per-projection FOV values");
 
   game_id->setText("ui-projection-parameter-cache-game-a");
   activate(create);
@@ -8142,7 +8325,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   QApplication::processEvents();
   const bool projection_parameter_reset_clears_cache = expect(
       compression->value() == 100.0 && top_squeeze->value() == 0.0 && bottom_squeeze->value() == 0.0,
-      "Reset Camera must discard the visible projection parameter cache");
+      "Reset Controls must discard the visible projection parameter cache");
 
   game_id->setText(original_game_id);
   activate(create);
@@ -8185,6 +8368,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* stitched_use_10_bit_grading = require_child<QCheckBox>(window, "stitchedCameraCheck_Use_10_Bit_Grading");
   auto* stitched_precision_status = require_child<QLabel>(window, "stitchedColorPrecisionStatus");
   auto* reset = require_child<QPushButton>(window, "resetCameraButton");
+  auto* clean_stitching = require_child<QPushButton>(window, "cleanStitchingButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
@@ -8201,8 +8385,8 @@ bool test_camera_controls(HStreamWindow* window) {
       !apply_to_fast || !max_accel_x || !max_speed_x || !max_speed_y || !bring_up_shadows || !exposure ||
       !lift_shadow_black_point || !use_10_bit_grading || !stitched_bring_up_shadows || !stitched_exposure ||
       !stitched_lift_shadow_black_point || !stitched_use_10_bit_grading || !stitched_precision_status || !reset ||
-      !save || !create || !game_id || !start || !stop || !restart || !pipeline_process || !mode || !stitch_frame_time ||
-      !stitch_max_output_width || !mapping_backend || !projection) {
+      !clean_stitching || !save || !create || !game_id || !start || !stop || !restart || !pipeline_process || !mode ||
+      !stitch_frame_time || !stitch_max_output_width || !mapping_backend || !projection) {
     return false;
   }
 
@@ -8218,6 +8402,7 @@ bool test_camera_controls(HStreamWindow* window) {
       "restartStageButton",
       "savePresetButton",
       "resetCameraButton",
+      "cleanStitchingButton",
       "stopPipelineButton",
       "createGameButton",
       "refreshGamesButton",
@@ -8359,6 +8544,7 @@ bool test_camera_controls(HStreamWindow* window) {
   game_id->setText("ui-camera-control-game");
   activate(create);
   if (!expect(
+          reset->text() == "Reset Controls" &&
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10 &&
               window->cameraControlValue("Cancel_Stop_On_Opposite_Direction") == 1 &&
               window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 2 &&
@@ -8412,6 +8598,79 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path game_dir = config.parent_path();
+  {
+    YAML::Node clean_fixture(YAML::NodeType::Map);
+    clean_fixture["stitching"]["post_stitch_rotate_degrees"] = 18.0;
+    clean_fixture["stitching"]["mapping_backend"] = "opencv-magsac";
+    clean_fixture["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+    clean_fixture["stitching"]["max_output_width"] = 4096;
+    clean_fixture["stitching"]["frame_offsets"]["left"] = "12";
+    clean_fixture["stitching"]["control_points"][0][0] = 1.0;
+    clean_fixture["game"]["stitching"]["frame_offsets"]["right"] = "34";
+    clean_fixture["game"]["stitching"]["control_points"][0][0] = 2.0;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["control_points"] = 1700;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["frame_count"] = 3;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "clean-fixture-generation";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["backend_generation"] = "clean-fixture-generation";
+    clean_fixture["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "opencv-magsac";
+    clean_fixture["rink"]["scoreboard"]["perspective_polygon"].push_back(1);
+    clean_fixture["rink"]["ice_contours_mask_count"] = 1;
+    clean_fixture["rink"]["camera"]["fixed_edge_rotation_angle"] = 7.5;
+    clean_fixture["pipeline"]["hmstitcher"]["properties"]["shadow-lift"] = 35;
+    std::ofstream out(config);
+    out << clean_fixture << "\n";
+  }
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto", "mapping_0000.tif", "panorama.tif",
+                           "seam_file.png", "left.png", "right.png", "rink_mask_0.png"}) {
+    std::ofstream artifact(game_dir / name);
+    artifact << "manual clean fixture\n";
+  }
+  qputenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS", "1");
+  activate(clean_stitching);
+  qunsetenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS");
+  const YAML::Node cleaned_stitching = YAML::LoadFile(config.string());
+  if (!expect(
+          !fs::exists(game_dir / "hm_project.pto") && !fs::exists(game_dir / "panorama.tif") &&
+              !fs::exists(game_dir / "seam_file.png") && !fs::exists(game_dir / "left.png") &&
+              !fs::exists(game_dir / "right.png") && !fs::exists(game_dir / "rink_mask_0.png"),
+          "Clean Stitching should remove full stitching calibration artifacts") ||
+      !expect(
+          !lookup_yaml_path(cleaned_stitching, {"stitching", "frame_offsets"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"game", "stitching", "frame_offsets"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"stitching", "control_points"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"game", "stitching", "control_points"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "stitching_calibration", "status"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "rink_mask_status"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "stitching_calibration", "stale_from"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "invalidation_id"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "backend_generation"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"rink", "scoreboard", "perspective_polygon"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"rink", "ice_contours_mask_count"}, nullptr),
+          "Clean Stitching should remove calibration-derived config.yaml state") ||
+      !expect(
+          cleaned_stitching["stitching"]["post_stitch_rotate_degrees"].as<double>() == 18.0 &&
+              cleaned_stitching["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
+              cleaned_stitching["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+              cleaned_stitching["stitching"]["max_output_width"].as<int>() == 4096 &&
+              cleaned_stitching["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1700 &&
+              cleaned_stitching["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 3 &&
+              cleaned_stitching["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"]
+                      .as<std::string>() == "opencv-magsac" &&
+              cleaned_stitching["rink"]["camera"]["fixed_edge_rotation_angle"].as<double>() == 7.5 &&
+              cleaned_stitching["pipeline"]["hmstitcher"]["properties"]["shadow-lift"].as<int>() == 35,
+          "Clean Stitching should preserve user-authored stitching and non-calibration config")) {
+    return false;
+  }
   {
     YAML::Node capped(YAML::NodeType::Map);
     capped["stitching"]["max_output_width"] = 4096;
@@ -10005,7 +10264,7 @@ bool test_camera_controls(HStreamWindow* window) {
       live_playtracker["play-tracker"]["hstream-apply-to-follower-box"].as<bool>();
   if (!expect(
           reset_coalesced_all_dirty_controls,
-          "Reset Camera during playback should restore every changed control on both previously tunable boxes")) {
+          "Reset Controls during playback should restore every changed control on both previously tunable boxes")) {
     std::cerr << live_playtracker << '\n';
     activate(stop);
     return false;
