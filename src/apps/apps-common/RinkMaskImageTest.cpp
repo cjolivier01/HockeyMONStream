@@ -113,6 +113,29 @@ int main() {
     return 1;
   }
 
+  const fs::path downsampled_png = temporary.path() / "downsampled.png";
+  const cv::Mat downsampled_pixels(6, 10, CV_8UC1, cv::Scalar(255));
+  if (!cv::imwrite(downsampled_png.string(), downsampled_pixels)) {
+    std::cerr << "could not create downsampled rink-mask PNG fixture\n";
+    return 1;
+  }
+  hm::gpu_preview::RinkMaskLoadOptions downsample_options;
+  downsample_options.downsample_to_texture_budget = true;
+  downsample_options.maximum_source_dimension = 10;
+  downsample_options.maximum_source_pixels = 60;
+  downsample_options.maximum_texture_dimension = 5;
+  downsample_options.maximum_texture_bytes = 15;
+  downsample_options.maximum_resource_bytes = 1024;
+  const auto downsampled_result = hm::gpu_preview::load_rink_mask_png(downsampled_png.string(), {}, {}, downsample_options);
+  if (!downsampled_result || downsampled_result.image.canvas_width != 10U ||
+      downsampled_result.image.canvas_height != 6U || downsampled_result.image.width != 5U ||
+      downsampled_result.image.height != 3U || downsampled_result.image.alpha.size() != 15U ||
+      !hm::gpu_preview::rink_mask_dimensions_match(downsampled_result.image, 10U, 6U) ||
+      hm::gpu_preview::rink_mask_dimensions_match(downsampled_result.image, 5U, 3U)) {
+    std::cerr << "downsampled rink-mask texture lost full-canvas validation identity\n";
+    return 1;
+  }
+
   const fs::path symlink_path = temporary.path() / "mask-link.png";
   fs::create_symlink(valid_png.filename(), symlink_path);
   if (!expect_status(
@@ -201,7 +224,13 @@ int main() {
 
   const hm::gpu_preview::RinkMaskDecoder valid_decoder =
       [](const std::vector<std::uint8_t>&, std::uint32_t width, std::uint32_t height) {
-        return hm::gpu_preview::RinkMaskImage{width, height, std::vector<std::uint8_t>(width * height, 255U)};
+        hm::gpu_preview::RinkMaskImage image;
+        image.canvas_width = width;
+        image.canvas_height = height;
+        image.width = width;
+        image.height = height;
+        image.alpha = std::vector<std::uint8_t>(width * height, 255U);
+        return image;
       };
   const auto loaded = hm::gpu_preview::load_rink_mask_png(corrupt.string(), valid_decoder);
   if (!loaded || loaded.image.width != 2U || loaded.image.height != 2U || loaded.image.alpha.size() != 4U) {
