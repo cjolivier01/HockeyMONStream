@@ -104,6 +104,13 @@ absl::StatusOr<bool> owned_directory_marker_matches(
     std::string_view marker_name,
     std::string_view contents);
 
+// Removes a known owned work directory without following replacements and
+// retains its ownership marker until every payload entry is durably gone.
+absl::Status remove_owned_directory(
+    const std::filesystem::path& directory,
+    std::string_view marker_name,
+    std::string_view marker_contents);
+
 // Snapshots one opened regular file into a rollback directory without following
 // symlinks or trusting that the source pathname remains bound to the same inode.
 absl::Status snapshot_regular_file_for_rollback(

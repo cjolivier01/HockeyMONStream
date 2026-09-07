@@ -1169,13 +1169,13 @@ absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
   }
   if (::chmod(created, 0700) != 0) {
     std::error_code ignored;
-    fs::remove_all(created, ignored);
+    fs::remove(created, ignored);
     return absl::InternalError("Unable to make stitch staging directory private");
   }
   auto marker_status = write_owned_directory_marker(created, "journal_version", "2\n");
   if (!marker_status.ok()) {
     std::error_code ignored;
-    fs::remove_all(created, ignored);
+    fs::remove(created, ignored);
     return marker_status;
   }
   return fs::path(created);
@@ -1441,9 +1441,9 @@ absl::Status publish_artifacts(
   status = fsync_stitch_path(staging, true);
   if (!status.ok())
     return status;
-  fs::remove_all(staging, error);
-  if (error)
-    return absl::InternalError("Unable to clean committed stitch transaction: " + error.message());
+  status = remove_owned_directory(staging, "journal_version", "2\n");
+  if (!status.ok())
+    return status;
   status = fsync_stitch_path(game_dir, true);
   if (!status.ok())
     return status;
@@ -1965,8 +1965,7 @@ absl::Status HuginProject::Configure(
     ~Cleanup() {
       if (prepared)
         return;
-      std::error_code ignored;
-      fs::remove_all(path, ignored);
+      (void)remove_owned_directory(path, "journal_version", "2\n");
     }
   } cleanup{staging};
 

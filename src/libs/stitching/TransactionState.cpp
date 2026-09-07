@@ -508,7 +508,7 @@ absl::StatusOr<bool> owned_directory_marker_matches(
   const fs::path path = directory / marker_name;
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0) {
-    if (errno == ENOENT)
+    if (errno == ENOENT || errno == ELOOP || errno == EACCES)
       return false;
     return absl::FailedPreconditionError(
         "Unable to open work-directory ownership marker: " + std::string(std::strerror(errno)));
@@ -541,6 +541,28 @@ absl::StatusOr<bool> owned_directory_marker_matches(
     return absl::AbortedError("Work-directory ownership marker changed while it was being read");
   }
   return actual == contents;
+}
+
+absl::Status remove_owned_directory(
+    const fs::path& directory,
+    std::string_view marker_name,
+    std::string_view marker_contents) {
+  if (directory.empty() || directory.filename().empty() || marker_name.empty())
+    return absl::InvalidArgumentError("Invalid owned work-directory removal request");
+  auto parent = PinnedDirectory::Open(directory.parent_path(), "owned work-directory parent");
+  if (!parent.ok())
+    return parent.status();
+  auto child = parent->OpenChild(directory.filename().string(), "owned work directory");
+  if (!child.ok())
+    return child.status();
+  if (!child->has_value())
+    return absl::OkStatus();
+  auto owned = owned_directory_marker_matches((**child).path(), marker_name, marker_contents);
+  if (!owned.ok())
+    return owned.status();
+  if (!*owned)
+    return absl::FailedPreconditionError("Refusing to remove a work directory without a valid ownership marker");
+  return remove_pinned_directory(*parent, directory.filename().string(), **child, marker_name);
 }
 
 namespace {

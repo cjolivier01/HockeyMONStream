@@ -2066,8 +2066,7 @@ struct StitchingArtifactLoadSnapshot::Impl {
   Impl(fs::path directory, fs::path source_directory)
       : directory(std::move(directory)), source_directory(std::move(source_directory)) {}
   ~Impl() {
-    std::error_code ignored;
-    fs::remove_all(directory, ignored);
+    (void)remove_owned_directory(directory, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
   }
   fs::path directory;
   fs::path source_directory;
@@ -2125,13 +2124,22 @@ absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snaps
   char* created = ::mkdtemp(writable.data());
   if (created == nullptr)
     return absl::InternalError("Unable to create a stable control-mask load snapshot");
-  auto snapshot_impl = std::make_unique<StitchingArtifactLoadSnapshot::Impl>(fs::path(created), game_dir);
+  const fs::path snapshot_directory(created);
+  if (::chmod(created, 0700) != 0) {
+    std::error_code ignored;
+    fs::remove(snapshot_directory, ignored);
+    return absl::InternalError("Unable to protect the stable control-mask load snapshot");
+  }
+  auto marker_status =
+      write_owned_directory_marker(snapshot_directory, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+  if (!marker_status.ok()) {
+    std::error_code ignored;
+    fs::remove(snapshot_directory, ignored);
+    return marker_status;
+  }
+  auto snapshot_impl = std::make_unique<StitchingArtifactLoadSnapshot::Impl>(std::move(snapshot_directory), game_dir);
   StitchingArtifactLoadSnapshot::Impl* snapshot_impl_ptr = snapshot_impl.get();
   auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(std::move(snapshot_impl));
-  if (::chmod(created, 0700) != 0)
-    return absl::InternalError("Unable to protect the stable control-mask load snapshot");
-  HM_RETURN_IF_ERROR(
-      write_owned_directory_marker(snapshot->directory(), kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents));
   HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
       "HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS",
       "HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER",
@@ -4231,17 +4239,23 @@ absl::Status save_rink_profile_locked(
   const fs::path staging(created);
   struct Cleanup {
     fs::path path;
+    bool owned{false};
     bool prepared{false};
     ~Cleanup() {
       if (prepared)
         return;
-      std::error_code ignored;
-      fs::remove_all(path, ignored);
+      if (owned) {
+        (void)remove_owned_directory(path, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+      } else {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+      }
     }
   } cleanup{staging};
   if (::chmod(staging.c_str(), 0700) != 0)
     return absl::InternalError("Unable to protect rink staging directory");
   HM_RETURN_IF_ERROR(write_owned_directory_marker(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents));
+  cleanup.owned = true;
 
   for (size_t index = 0; index < profile.masks.size(); ++index) {
     const cv::Mat& mask = profile.masks[index];
@@ -4468,9 +4482,9 @@ absl::Status save_rink_profile_locked(
   sync_status = fsync_path(staging, true);
   if (!sync_status.ok())
     return sync_status;
-  fs::remove_all(staging, error);
-  if (error)
-    return absl::InternalError("Unable to clean committed rink transaction: " + error.message());
+  sync_status = remove_owned_directory(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+  if (!sync_status.ok())
+    return sync_status;
   sync_status = fsync_path(root, true);
   if (!sync_status.ok())
     return sync_status;

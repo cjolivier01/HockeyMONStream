@@ -1066,19 +1066,40 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   const fs::path visible_user_directory = dir / "hstream-control-mask-snapshot-ABC123";
   fs::create_directory(visible_user_directory);
   std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
+  const fs::path fake_marker_target = dir / "operator-marker-target";
+  std::ofstream(fake_marker_target) << "2\n";
+  fs::create_symlink(fake_marker_target, visible_user_directory / "journal_version");
   const fs::path visible_user_file = dir / "hstream-control-mask-snapshot-DEF456";
   std::ofstream(visible_user_file) << "operator-owned\n";
   const fs::path visible_user_symlink = dir / "hstream-control-mask-snapshot-GHI789";
   fs::create_symlink(visible_user_file, visible_user_symlink);
   auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
   if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
-      !fs::exists(visible_user_directory / "notes.txt") || !fs::is_regular_file(visible_user_file) ||
+      !fs::exists(visible_user_directory / "notes.txt") ||
+      !fs::is_symlink(visible_user_directory / "journal_version") || !fs::is_regular_file(visible_user_file) ||
       !fs::is_symlink(visible_user_symlink) ||
       !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif") ||
       !load->load_snapshot->verify().ok()) {
     std::cerr << "loader validation must retain a private stable artifact snapshot: " << load.status() << std::endl;
     return false;
   }
+  const fs::path interrupted_snapshot = load->load_snapshot->directory();
+  ::setenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY", "1", 1);
+  load->load_snapshot.reset();
+  ::unsetenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY");
+  load->artifact_lock.reset();
+  if (!fs::is_regular_file(interrupted_snapshot / "journal_version")) {
+    std::cerr << "interrupted snapshot destruction must retain its ownership marker" << std::endl;
+    return false;
+  }
+  auto resumed_load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+  if (!resumed_load.ok() || !resumed_load->artifact_lock || !resumed_load->load_snapshot ||
+      fs::exists(interrupted_snapshot)) {
+    std::cerr << "snapshot lifecycle cleanup must resume an interrupted marker-last removal: " << resumed_load.status()
+              << std::endl;
+    return false;
+  }
+  load = std::move(resumed_load);
   const fs::path pinned_mapping = dir / "mapping_0000_x.tif";
   const fs::path replacement_mapping = dir / "replacement-mapping-after-pin.tif";
   std::error_code replacement_error;

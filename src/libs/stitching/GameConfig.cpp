@@ -1049,12 +1049,17 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   const fs::path staging(created);
   struct Cleanup {
     fs::path path;
+    bool owned{false};
     bool prepared{false};
     ~Cleanup() {
       if (prepared)
         return;
-      std::error_code ignored;
-      fs::remove_all(path, ignored);
+      if (owned) {
+        (void)remove_owned_directory(path, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+      } else {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+      }
     }
   } cleanup{staging};
   if (::chmod(staging.c_str(), 0700) != 0)
@@ -1062,6 +1067,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   auto marker_status = write_owned_directory_marker(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
   if (!marker_status.ok())
     return marker_status;
+  cleanup.owned = true;
 
   auto status = write_transaction_file(staging / "config.yaml", contents);
   if (!status.ok())
@@ -1144,9 +1150,9 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   status = fsync_path(staging, true);
   if (!status.ok())
     return status;
-  fs::remove_all(staging, error);
-  if (error)
-    return absl::InternalError("Unable to clean committed rink invalidation: " + error.message());
+  status = remove_owned_directory(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+  if (!status.ok())
+    return status;
   status = fsync_path(game_dir, true);
   if (!status.ok())
     return status;
