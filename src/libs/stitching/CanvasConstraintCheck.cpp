@@ -1770,6 +1770,16 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
         directory_name != ".hstream-stitch-journal-v1" && directory_name != ".hstream-stitch-recovery-pending";
     if (!current_transaction && !legacy_transaction)
       continue;
+    if (current_transaction) {
+      std::error_code type_error;
+      const fs::file_type type = entry.symlink_status(type_error).type();
+      if (type_error == std::errc::no_such_file_or_directory)
+        continue;
+      if (type_error)
+        return absl::InternalError("Unable to inspect visible stitch transaction collision: " + type_error.message());
+      if (type != fs::file_type::directory)
+        continue;
+    }
     auto opened_transaction = root_directory.OpenChild(directory_name, "stitch transaction directory");
     if (!opened_transaction.ok())
       return opened_transaction.status();
@@ -2038,7 +2048,8 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           return status;
       }
     }
-    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    auto cleanup = remove_pinned_directory(
+        root_directory, directory_name, transaction_directory, current_transaction ? "journal_version" : "");
     if (!cleanup.ok())
       return cleanup;
   }

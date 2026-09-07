@@ -464,6 +464,16 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         directory_name != ".hstream-rink-journal-v1" && directory_name != ".hstream-rink-recovery-pending";
     if (!current_transaction && !legacy_transaction)
       continue;
+    if (current_transaction) {
+      std::error_code type_error;
+      const fs::file_type type = entry.symlink_status(type_error).type();
+      if (type_error == std::errc::no_such_file_or_directory)
+        continue;
+      if (type_error)
+        return absl::InternalError("Unable to inspect visible rink transaction collision: " + type_error.message());
+      if (type != fs::file_type::directory)
+        continue;
+    }
     auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
     if (!opened_transaction.ok())
       return opened_transaction.status();
@@ -561,7 +571,8 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       if (!status.ok())
         return status;
     }
-    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    auto cleanup = remove_pinned_directory(
+        root_directory, directory_name, transaction_directory, current_transaction ? kOwnedDirectoryMarkerName : "");
     if (!cleanup.ok())
       return cleanup;
     recovered = true;

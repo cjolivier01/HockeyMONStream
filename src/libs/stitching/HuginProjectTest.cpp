@@ -934,7 +934,7 @@ int main() {
   fs::create_directories(integer_overflow_fixtures);
   ok &= expect(
       write_spatial_tiff_tags(integer_overflow_fixtures / "mapping_0000.tif", 40, 32, 0.0f, 1.0f) &&
-          write_spatial_tiff_tags(integer_overflow_fixtures / "mapping_0001.tif", 40, 32, 3.0e9f, 1.0f) &&
+          write_spatial_tiff_tags(integer_overflow_fixtures / "mapping_0001.tif", 40, 32, 2147483648.0f, 1.0f) &&
           write_remap_pair(integer_overflow_fixtures, "mapping_0000", 40, 32) &&
           write_remap_pair(integer_overflow_fixtures, "mapping_0001", 40, 32) &&
           write_tool(
@@ -1618,11 +1618,17 @@ int main() {
   const fs::path visible_user_directory = root / "game" / "hstream-stitch-ABC123";
   fs::create_directories(visible_user_directory);
   std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
+  const fs::path visible_user_file = root / "game" / "hstream-stitch-DEF456";
+  std::ofstream(visible_user_file) << "operator-owned\n";
+  const fs::path visible_user_symlink = root / "game" / "hstream-stitch-GHI789";
+  fs::create_symlink(visible_user_file, visible_user_symlink);
   ok &= expect(
       hm::stitching::mark_transaction_recovery_pending(root / "game", hm::stitching::TransactionJournalKind::kStitch)
               .ok() &&
-          hm::stitching::HuginProject::Recover(root / "game").ok() && fs::exists(visible_user_directory / "notes.txt"),
-      "stitch recovery must not delete an unauthenticated visible prefix collision");
+          hm::stitching::HuginProject::Recover(root / "game").ok() &&
+          fs::exists(visible_user_directory / "notes.txt") && fs::is_regular_file(visible_user_file) &&
+          fs::is_symlink(visible_user_symlink),
+      "stitch recovery must ignore unauthenticated visible directory, file, and symlink prefix collisions");
   const auto write_legacy_transaction_fixture = [&](const fs::path& game, const fs::path& transaction) {
     fs::create_directories(transaction / "previous");
     std::ofstream manifest(transaction / "artifacts");

@@ -1009,8 +1009,10 @@ absl::StatusOr<std::pair<int, int>> normalize_and_measure(TiffPlacement* first, 
   if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0) {
     return absl::FailedPreconditionError("Hugin mapping TIFFs produce an invalid canvas");
   }
-  if (width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
+  if (static_cast<long double>(width) > std::numeric_limits<int>::max() ||
+      static_cast<long double>(height) > std::numeric_limits<int>::max()) {
     return absl::ResourceExhaustedError("Hugin mapping TIFF canvas exceeds integer dimension limits");
+  }
   return std::make_pair(static_cast<int>(width), static_cast<int>(height));
 }
 

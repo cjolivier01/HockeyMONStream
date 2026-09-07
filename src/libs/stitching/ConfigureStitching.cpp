@@ -815,6 +815,17 @@ absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
         name.compare(0, kLegacyControlMaskSnapshotPrefix.size(), kLegacyControlMaskSnapshotPrefix) == 0;
     if (!current_snapshot && !legacy_snapshot)
       continue;
+    if (current_snapshot) {
+      std::error_code type_error;
+      const fs::file_type type = entry.symlink_status(type_error).type();
+      if (type_error == std::errc::no_such_file_or_directory)
+        continue;
+      if (type_error)
+        return absl::InternalError(
+            "Unable to inspect visible control-mask snapshot collision: " + type_error.message());
+      if (type != fs::file_type::directory)
+        continue;
+    }
     auto opened_snapshot = root.OpenChild(name, "stale control-mask snapshot");
     if (!opened_snapshot.ok())
       return opened_snapshot.status();
@@ -843,7 +854,8 @@ absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
         return absl::FailedPreconditionError("Invalid stale control-mask snapshot entry: " + artifact_name);
       }
     }
-    HM_RETURN_IF_ERROR(remove_pinned_directory(root, name, snapshot));
+    HM_RETURN_IF_ERROR(remove_pinned_directory(
+        root, name, snapshot, current_snapshot ? kOwnedDirectoryMarkerName : std::string_view{}));
   }
   return absl::OkStatus();
 }
@@ -906,8 +918,10 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   if (!std::isfinite(xpos) || !std::isfinite(ypos) || !std::isfinite(x_px) || !std::isfinite(y_px)) {
     return absl::InvalidArgumentError(TO_STRING("Invalid TIFF placement: " << path.string()));
   }
-  if (x_px < std::numeric_limits<int>::lowest() || x_px > std::numeric_limits<int>::max() ||
-      y_px < std::numeric_limits<int>::lowest() || y_px > std::numeric_limits<int>::max()) {
+  if (static_cast<long double>(x_px) < std::numeric_limits<int>::lowest() ||
+      static_cast<long double>(x_px) > std::numeric_limits<int>::max() ||
+      static_cast<long double>(y_px) < std::numeric_limits<int>::lowest() ||
+      static_cast<long double>(y_px) > std::numeric_limits<int>::max()) {
     return absl::ResourceExhaustedError(
         TO_STRING("TIFF placement exceeds integer coordinate limits: " << path.string()));
   }
@@ -933,8 +947,10 @@ absl::StatusOr<CanvasSize> normalize_and_measure_canvas(TiffPlacement* p0, TiffP
   if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0) {
     return absl::FailedPreconditionError("Mapping TIFFs produce an invalid canvas");
   }
-  if (width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
+  if (static_cast<long double>(width) > std::numeric_limits<int>::max() ||
+      static_cast<long double>(height) > std::numeric_limits<int>::max()) {
     return absl::ResourceExhaustedError("Mapping TIFF canvas exceeds integer dimension limits");
+  }
   const auto canvas_width = static_cast<size_t>(width);
   const auto canvas_height = static_cast<size_t>(height);
   if (canvas_width > kHardMaximumArtifactDimension || canvas_height > kHardMaximumArtifactDimension ||
@@ -1933,7 +1949,11 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
   if (!artifact_bounds.ok()) {
     std::cout << "Stitching artifacts are unsafe or exceed parser byte limits: " << artifact_bounds << std::endl;
-    return false;
+    if (absl::IsNotFound(artifact_bounds) || absl::IsFailedPrecondition(artifact_bounds) ||
+        absl::IsInvalidArgument(artifact_bounds)) {
+      return false;
+    }
+    return artifact_bounds;
   }
   CanvasSize canvas_size;
   TiffPlacement p0;
@@ -1941,9 +1961,14 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   auto p0_status = read_tiff_placement(fs::path(game_dir) / "mapping_0000.tif");
   auto p1_status = read_tiff_placement(fs::path(game_dir) / "mapping_0001.tif");
   if (!p0_status.ok() || !p1_status.ok()) {
-    std::cout << "Stitching artifacts exist but mapping TIFF placement metadata is invalid: "
-              << (!p0_status.ok() ? p0_status.status() : p1_status.status()) << std::endl;
-    return false;
+    const absl::Status placement_status = !p0_status.ok() ? p0_status.status() : p1_status.status();
+    std::cout << "Stitching artifacts exist but mapping TIFF placement metadata is invalid: " << placement_status
+              << std::endl;
+    if (absl::IsNotFound(placement_status) || absl::IsFailedPrecondition(placement_status) ||
+        absl::IsInvalidArgument(placement_status)) {
+      return false;
+    }
+    return placement_status;
   }
   p0 = *p0_status;
   p1 = *p1_status;
@@ -1951,7 +1976,11 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   if (!canvas_status.ok()) {
     std::cout << "Stitching artifacts exist but mapping canvas metadata is invalid: " << canvas_status.status()
               << std::endl;
-    return false;
+    if (absl::IsNotFound(canvas_status.status()) || absl::IsFailedPrecondition(canvas_status.status()) ||
+        absl::IsInvalidArgument(canvas_status.status())) {
+      return false;
+    }
+    return canvas_status.status();
   }
   canvas_size = *canvas_status;
   auto provenance = HuginProject::ReadCanvasProvenance(game_dir, artifact_lock);
@@ -3035,6 +3064,16 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
         directory_name != ".hstream-rink-journal-v1" && directory_name != ".hstream-rink-recovery-pending";
     if (!current_transaction && !legacy_transaction)
       continue;
+    if (current_transaction) {
+      std::error_code type_error;
+      const fs::file_type type = entry.symlink_status(type_error).type();
+      if (type_error == std::errc::no_such_file_or_directory)
+        continue;
+      if (type_error)
+        return absl::InternalError("Unable to inspect visible rink transaction collision: " + type_error.message());
+      if (type != fs::file_type::directory)
+        continue;
+    }
     auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
     if (!opened_transaction.ok())
       return opened_transaction.status();
@@ -3135,7 +3174,11 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     // COMMITTED transactions already have a durable new generation. An
     // UNPREPARED directory has no publication metadata and never changed a
     // root artifact.
-    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    auto cleanup = remove_pinned_directory(
+        root_directory,
+        directory_name,
+        transaction_directory,
+        current_transaction ? kOwnedDirectoryMarkerName : std::string_view{});
     if (!cleanup.ok())
       return cleanup;
   }

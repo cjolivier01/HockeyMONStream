@@ -82,7 +82,8 @@ class PinnedRinkRollbackArtifact {
 absl::Status remove_pinned_directory(
     const PinnedDirectory& parent,
     const std::string& name,
-    const PinnedDirectory& directory);
+    const PinnedDirectory& directory,
+    std::string_view ownership_marker_name = {});
 
 // Reads one bounded regular file through a nonblocking no-follow descriptor so
 // validation and parsing consume the same inode.

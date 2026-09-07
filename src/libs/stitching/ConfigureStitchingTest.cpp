@@ -875,7 +875,11 @@ bool expect_canvas_constraint_checks_reject_oversized_artifacts(const fs::path& 
       return false;
     const auto metadata = hm::stitching::check_canvas_constraint_metadata_locked(dir, /*max_output_width=*/0);
     const auto full = hm::stitching::check_canvas_constraint_locked(dir, /*max_output_width=*/0);
-    return absl::IsResourceExhausted(metadata.status()) && absl::IsResourceExhausted(full.status());
+    lock->reset();
+    const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+    const auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string(), /*max_output_width=*/0);
+    return absl::IsResourceExhausted(metadata.status()) && absl::IsResourceExhausted(full.status()) &&
+        absl::IsResourceExhausted(configured.status()) && absl::IsResourceExhausted(load.status());
   };
 
   const fs::path oversized_tiff = tmpdir / "oversized_canvas_check_tiff";
@@ -1062,9 +1066,14 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   const fs::path visible_user_directory = dir / "hstream-control-mask-snapshot-ABC123";
   fs::create_directory(visible_user_directory);
   std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
+  const fs::path visible_user_file = dir / "hstream-control-mask-snapshot-DEF456";
+  std::ofstream(visible_user_file) << "operator-owned\n";
+  const fs::path visible_user_symlink = dir / "hstream-control-mask-snapshot-GHI789";
+  fs::create_symlink(visible_user_file, visible_user_symlink);
   auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
   if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
-      !fs::exists(visible_user_directory / "notes.txt") ||
+      !fs::exists(visible_user_directory / "notes.txt") || !fs::is_regular_file(visible_user_file) ||
+      !fs::is_symlink(visible_user_symlink) ||
       !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif") ||
       !load->load_snapshot->verify().ok()) {
     std::cerr << "loader validation must retain a private stable artifact snapshot: " << load.status() << std::endl;

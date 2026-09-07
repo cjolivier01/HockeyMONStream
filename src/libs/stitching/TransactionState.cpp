@@ -225,7 +225,7 @@ absl::Status verify_directory_binding(int parent_descriptor, const std::string& 
   return absl::OkStatus();
 }
 
-absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
+absl::Status remove_directory_contents_no_follow(int directory_descriptor, std::string_view retained_entry_name = {}) {
   const int iterator_descriptor = ::dup(directory_descriptor);
   if (iterator_descriptor < 0)
     return absl::InternalError(
@@ -242,7 +242,9 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
       ::closedir(iterator);
     }
   } cleanup{iterator};
+  ::rewinddir(iterator);
 
+  size_t removed_entries = 0;
   while (true) {
     errno = 0;
     dirent* entry = ::readdir(iterator);
@@ -253,6 +255,8 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
     }
     const std::string name(entry->d_name);
     if (name == "." || name == "..")
+      continue;
+    if (!retained_entry_name.empty() && name == retained_entry_name)
       continue;
     struct stat metadata{};
     if (::fstatat(directory_descriptor, name.c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
@@ -283,6 +287,14 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
       }
     } else if (::unlinkat(directory_descriptor, name.c_str(), 0) != 0) {
       return absl::InternalError("Unable to remove transaction entry " + name + ": " + std::strerror(errno));
+    }
+    ++removed_entries;
+    if (!retained_entry_name.empty()) {
+      const char* interrupt_after = std::getenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY");
+      if (interrupt_after != nullptr &&
+          removed_entries == static_cast<size_t>(std::strtoull(interrupt_after, nullptr, 10))) {
+        return absl::InternalError("Injected transaction cleanup interruption");
+      }
     }
   }
   if (::fsync(directory_descriptor) != 0)
@@ -386,16 +398,29 @@ absl::StatusOr<PinnedRinkRollbackArtifact> PinnedRinkRollbackArtifact::Open(
 absl::Status remove_pinned_directory(
     const PinnedDirectory& parent,
     const std::string& name,
-    const PinnedDirectory& directory) {
+    const PinnedDirectory& directory,
+    std::string_view ownership_marker_name) {
   auto status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
   if (!status.ok())
     return status;
-  status = remove_directory_contents_no_follow(directory.descriptor());
+  status = remove_directory_contents_no_follow(directory.descriptor(), ownership_marker_name);
   if (!status.ok())
     return status;
   status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
   if (!status.ok())
     return status;
+  if (!ownership_marker_name.empty()) {
+    if (::unlinkat(directory.descriptor(), std::string(ownership_marker_name).c_str(), 0) != 0) {
+      return absl::InternalError("Unable to remove transaction ownership marker: " + std::string(std::strerror(errno)));
+    }
+    if (::fsync(directory.descriptor()) != 0) {
+      return absl::InternalError(
+          "Unable to sync transaction ownership-marker removal: " + std::string(std::strerror(errno)));
+    }
+    status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
+    if (!status.ok())
+      return status;
+  }
   if (::unlinkat(parent.descriptor(), name.c_str(), AT_REMOVEDIR) != 0)
     return absl::InternalError("Unable to remove recovered transaction " + name + ": " + std::strerror(errno));
   if (::fsync(parent.descriptor()) != 0)
