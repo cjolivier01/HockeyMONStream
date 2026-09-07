@@ -8013,6 +8013,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     HM_RETURN_IF_ERROR(
         stitching::ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
   }
+  stitching::StitchCameraSelection camera;
+  HM_ASSIGN_OR_RETURN(camera, stitching::read_stitch_camera_selection(config_));
 
   config_["stitching"]["control_point_matcher"] = matcher_name;
   config_["stitching"]["mapping_backend"] = backend_name;
@@ -8020,15 +8022,33 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   config_["stitching"]["run_autooptimizer"] = run_autooptimizer;
   stitching::write_stitch_projection_parameters(config_, projection, projection_parameters);
   stitching::write_stitch_projection_framing(config_, projection_framing);
+  stitching::write_stitch_camera_selection(config_, camera);
 
   const stitching::StitchingBackendChoices backend_choices{
-      matcher_name, backend_name, projection_name, run_autooptimizer, projection_parameters, projection_framing};
+      matcher_name,
+      backend_name,
+      projection_name,
+      run_autooptimizer,
+      projection_parameters,
+      projection_framing,
+      camera};
 
   std::vector<double> private_projection_parameters;
   HM_ASSIGN_OR_RETURN(
       private_projection_parameters, stitching::read_stitch_projection_parameters(private_config_, projection));
   stitching::StitchProjectionFraming private_projection_framing;
   HM_ASSIGN_OR_RETURN(private_projection_framing, stitching::read_stitch_projection_framing(private_config_));
+  YAML::Node private_camera_config = YAML::Clone(lower_layer_config_);
+  const YAML::Node private_stitching = private_config_["stitching"];
+  if (private_stitching && private_stitching.IsMap()) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+      const YAML::Node value = private_stitching[key];
+      if (value && value.IsDefined())
+        private_camera_config["stitching"][key] = YAML::Clone(value);
+    }
+  }
+  stitching::StitchCameraSelection private_camera;
+  HM_ASSIGN_OR_RETURN(private_camera, stitching::read_stitch_camera_selection(private_camera_config));
 
   std::optional<YAML::Node> displaced_generated_projection_parameters;
   const auto displaced_parameters = get_node(private_config_, "stitching.projection_parameters." + projection_name);
@@ -8052,7 +8072,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
       *private_projection_value == projection && private_autooptimizer_value.has_value() &&
       *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters &&
-      private_projection_framing == projection_framing;
+      private_projection_framing == projection_framing && private_camera == camera;
   if (private_matches) {
     if (loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
       HM_RETURN_IF_ERROR(
@@ -8068,6 +8088,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   private_config_["stitching"]["run_autooptimizer"] = run_autooptimizer;
   stitching::write_stitch_projection_parameters(private_config_, projection, projection_parameters);
   stitching::write_stitch_projection_framing(private_config_, projection_framing);
+  stitching::write_stitch_camera_selection(private_config_, camera);
   if (private_values_present && !generated_private_values &&
       explicit_value_rank("stitching.control_point_matcher") < 3 &&
       explicit_value_rank("stitching.mapping_backend") < 3 && explicit_value_rank("stitching.projection") < 3 &&
@@ -8607,6 +8628,8 @@ absl::Status Configurator::complete_configuration(
             expected_projection_parameters, stitching::read_stitch_projection_parameters(config_, expected_projection));
         stitching::StitchProjectionFraming expected_projection_framing;
         HM_ASSIGN_OR_RETURN(expected_projection_framing, stitching::read_stitch_projection_framing(config_));
+        stitching::StitchCameraSelection expected_camera;
+        HM_ASSIGN_OR_RETURN(expected_camera, stitching::read_stitch_camera_selection(config_));
         if (get_node_value(config_, "stitching.mapping_backend", std::string()) == "nona") {
           HM_RETURN_IF_ERROR(
               stitching::ValidateStitchProjectionFraming(
@@ -8618,7 +8641,8 @@ absl::Status Configurator::complete_configuration(
             get_node_value(config_, "stitching.projection", std::string()),
             expected_run_autooptimizer,
             expected_projection_parameters,
-            expected_projection_framing};
+            expected_projection_framing,
+            expected_camera};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));

@@ -1,0 +1,125 @@
+# Projection review matrix for scripts/capture_stitching_projection_frames.py.
+# Paths are relative to this file. Set source_game_dir here or pass
+# --source-game-dir=/path/to/game on the command line.
+# Successful cases with an existing PNG are skipped on later runs. Pass
+# --force to rerun them, or --clean to remove this matrix's output and exit.
+version: 1
+source_game_dir: null
+output_dir: ../projection-review
+
+pipeline:
+  workspace: ..
+  executable: bazel-bin/src/apps/pipeline-app/pipeline-app
+  config_root: configs
+  config: configs/ds_hockey_app_config.yaml
+  timeout_seconds: 360
+  max_live_canvas_dimension: 4096
+
+# Set any threshold to zero to disable that check. Cases always run serially.
+resources:
+  min_available_memory_gib: 0
+  min_gpu_free_memory_gib: 0
+  gpu_launch_reserve_gib: 0
+  min_tmp_free_gib: 0
+  check_interval_seconds: 5
+  headroom_wait_timeout_seconds: 120
+
+defaults:
+  mapping_backend: nona
+  # Source-camera preset identifier from baseline.yaml. Cases may override it.
+  camera_config: gopro-mission-1
+  # Optional source-camera FOV override pair; set both or neither. horizontal is passed to
+  # pto_gen -f before optimization; vertical is retained by the stitching
+  # configuration but is not consumed by the current Hugin toolchain.
+  camera_horizontal_fov: null
+  camera_vertical_fov: null
+  # Output-panorama framing passed to pano_modify after autooptimiser. HStream
+  # currently exposes panorama HFOV only, although pano_modify also supports
+  # an HFOVxVFOV form. Projection framing is effective only with nona.
+  auto_fov: true
+  horizontal_fov: 180  # Retained in metadata but ignored while auto_fov is true.
+  auto_canvas: true
+  auto_crop: false
+  control_points: 900
+  frame_count: 4
+  stitch_frame_time: "00:00:00"
+  max_output_width: 4096
+
+# Parameterless projections get one representative AUTO-FOV case. General
+# Panini includes AUTO and fixed-FOV cases plus independent squeeze sweeps.
+projections:
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
+  - name: cylindrical
+    variants:
+      - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
+  - name: equirectangular
+    variants:
+      - {label: auto-fov, parameters: []}
+
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (Cmpr-dependent limit), auto_canvas, auto_crop; parameters:
+  # compression Cmpr (0..150), top squeeze Tops and bottom squeeze Bots
+  # (-100..100). Cmpr=100 supports the fixed 170/180/190-degree cases below.
+  - name: general-panini
+    variants:
+      - {label: default-auto, parameters: [100, 0, 0]}
+      - {label: default-fov170, parameters: [100, 0, 0], auto_fov: false, horizontal_fov: 170}
+      - {label: default-fov180, parameters: [100, 0, 0], auto_fov: false, horizontal_fov: 180}
+      - {label: default-fov190, parameters: [100, 0, 0], auto_fov: false, horizontal_fov: 190}
+      - {label: rectilinear-like-auto, parameters: [0, 0, 0], auto_fov: true}
+      - {label: mid-compression-auto, parameters: [50, 0, 0], auto_fov: true}
+      - {label: cylindrical-like-auto, parameters: [150, 0, 0]}
+      - {label: hard-squeeze-auto, parameters: [100, 50, 50]}
+      - {label: soft-squeeze-fov180, parameters: [100, -50, -50], auto_fov: false, horizontal_fov: 180}
+      - {label: asymmetric-cropped-fov190, parameters: [100, 40, -40], auto_fov: false, horizontal_fov: 190, auto_crop: true}
+      - {label: top-squeeze--100-auto, parameters: [100, -100, 0]}
+      - {label: top-squeeze--90-auto, parameters: [100, -90, 0]}
+      - {label: top-squeeze--80-auto, parameters: [100, -80, 0]}
+      - {label: top-squeeze--70-auto, parameters: [100, -70, 0]}
+      - {label: top-squeeze--60-auto, parameters: [100, -60, 0]}
+      - {label: top-squeeze--50-auto, parameters: [100, -50, 0]}
+      - {label: top-squeeze--40-auto, parameters: [100, -40, 0]}
+      - {label: top-squeeze--30-auto, parameters: [100, -30, 0]}
+      - {label: top-squeeze--20-auto, parameters: [100, -20, 0]}
+      - {label: top-squeeze--10-auto, parameters: [100, -10, 0]}
+      - {label: top-squeeze-0-auto, parameters: [100, 0, 0]}
+      - {label: top-squeeze-10-auto, parameters: [100, 10, 0]}
+      - {label: top-squeeze-20-auto, parameters: [100, 20, 0]}
+      - {label: top-squeeze-30-auto, parameters: [100, 30, 0]}
+      - {label: top-squeeze-40-auto, parameters: [100, 40, 0]}
+      - {label: top-squeeze-50-auto, parameters: [100, 50, 0]}
+      - {label: top-squeeze-60-auto, parameters: [100, 60, 0]}
+      - {label: top-squeeze-70-auto, parameters: [100, 70, 0]}
+      - {label: top-squeeze-80-auto, parameters: [100, 80, 0]}
+      - {label: top-squeeze-90-auto, parameters: [100, 90, 0]}
+      - {label: top-squeeze-100-auto, parameters: [100, 100, 0]}
+      - {label: bottom-squeeze--100-auto, parameters: [100, 0, -100]}
+      - {label: bottom-squeeze--90-auto, parameters: [100, 0, -90]}
+      - {label: bottom-squeeze--80-auto, parameters: [100, 0, -80]}
+      - {label: bottom-squeeze--70-auto, parameters: [100, 0, -70]}
+      - {label: bottom-squeeze--60-auto, parameters: [100, 0, -60]}
+      - {label: bottom-squeeze--50-auto, parameters: [100, 0, -50]}
+      - {label: bottom-squeeze--40-auto, parameters: [100, 0, -40]}
+      - {label: bottom-squeeze--30-auto, parameters: [100, 0, -30]}
+      - {label: bottom-squeeze--20-auto, parameters: [100, 0, -20]}
+      - {label: bottom-squeeze--10-auto, parameters: [100, 0, -10]}
+      - {label: bottom-squeeze-0-auto, parameters: [100, 0, 0]}
+      - {label: bottom-squeeze-10-auto, parameters: [100, 0, 10]}
+      - {label: bottom-squeeze-20-auto, parameters: [100, 0, 20]}
+      - {label: bottom-squeeze-30-auto, parameters: [100, 0, 30]}
+      - {label: bottom-squeeze-40-auto, parameters: [100, 0, 40]}
+      - {label: bottom-squeeze-50-auto, parameters: [100, 0, 50]}
+      - {label: bottom-squeeze-60-auto, parameters: [100, 0, 60]}
+      - {label: bottom-squeeze-70-auto, parameters: [100, 0, 70]}
+      - {label: bottom-squeeze-80-auto, parameters: [100, 0, 80]}
+      - {label: bottom-squeeze-90-auto, parameters: [100, 0, 90]}
+      - {label: bottom-squeeze-100-auto, parameters: [100, 0, 100]}
+
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
+  - name: hammer-aitoff
+    variants:
+      - {label: auto-fov, parameters: []}

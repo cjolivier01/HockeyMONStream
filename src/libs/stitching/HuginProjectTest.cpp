@@ -414,8 +414,7 @@ int main() {
   cv::Mat one_pixel_short_seam(31, 42, CV_8U, cv::Scalar(0));
   one_pixel_short_seam.colRange(21, 42).setTo(255);
   ok &= expect(cv::imwrite(missing_offset_edge.string(), one_pixel_short_seam), "edge-cropped seam must be encoded");
-  const auto missing_offset_status =
-      hm::stitching::HuginProject::ValidateAndNormalizeSeam(missing_offset_edge, 42, 32);
+  const auto missing_offset_status = hm::stitching::HuginProject::ValidateAndNormalizeSeam(missing_offset_edge, 42, 32);
   const cv::Mat normalized_missing_offset = cv::imread(missing_offset_edge.string(), cv::IMREAD_GRAYSCALE);
   cv::Mat expected_missing_offset;
   cv::copyMakeBorder(one_pixel_short_seam, expected_missing_offset, 0, 1, 0, 0, cv::BORDER_REPLICATE);
@@ -427,7 +426,8 @@ int main() {
   const fs::path missing_offset_large = seam_validation / "missing-offset-large.png";
   cv::Mat large_mismatch_seam(30, 40, CV_8U, cv::Scalar(0));
   large_mismatch_seam.colRange(20, 40).setTo(255);
-  ok &= expect(cv::imwrite(missing_offset_large.string(), large_mismatch_seam), "large mismatched seam must be encoded");
+  ok &=
+      expect(cv::imwrite(missing_offset_large.string(), large_mismatch_seam), "large mismatched seam must be encoded");
   ok &= expect(
       absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(missing_offset_large, 42, 32)),
       "larger origin-zero enblend seam mismatch without oFFs metadata must still fail closed");
@@ -589,6 +589,9 @@ int main() {
   ok &= expect(
       absl::IsCancelled(cancelled_optimizer) && cancellation_elapsed < std::chrono::seconds(5),
       "optimizer cancellation must terminate the Hugin process group before pipeline shutdown times out");
+  options.camera_configuration = "gopro-mission-1";
+  options.horizontal_fov = 127.2;
+  options.vertical_fov = 95.0;
   options.projection = hm::stitching::StitchProjection::kGeneralPanini;
   const auto configured = hm::stitching::HuginProject::Configure(
       root / "game", root / "private-inputs" / "left.png", root / "private-inputs" / "right.png", matches, options);
@@ -600,8 +603,8 @@ int main() {
     const std::string pto_gen_arguments(
         (std::istreambuf_iterator<char>(pto_gen_invocation)), std::istreambuf_iterator<char>());
     ok &= expect(
-        pto_gen_arguments == "-p 0 -o hm_project.pto -f 108 left.png right.png\n",
-        "Hugin input images must be declared rectilinear like HockeyMOM's known-good calibration path");
+        pto_gen_arguments == "-p 0 -o hm_project.pto -f 127.2 left.png right.png\n",
+        "Hugin input images must use the selected camera's horizontal FOV and rectilinear projection");
     std::ifstream optimized(root / "game" / "autooptimiser_out.pto");
     const std::string contents((std::istreambuf_iterator<char>(optimized)), std::istreambuf_iterator<char>());
     const auto scaled = hm::stitching::HuginProject::ParseCanvasSize(contents);
@@ -682,11 +685,16 @@ int main() {
             (*provenance)->projection == hm::stitching::StitchProjection::kGeneralPanini &&
             (*provenance)->projection_parameters == std::vector<double>({100.0, 0.0, 0.0}) &&
             (*provenance)->projection_framing == options.projection_framing &&
+            (*provenance)->camera == hm::stitching::StitchCameraSelection{"gopro-mission-1", 127.2, 95.0} &&
             (*provenance)->control_point_matcher == hm::stitching::ControlPointMatcher::kSuperPointLightGlue &&
             (*provenance)->akaze_calibration_fingerprint == "not-applicable",
-        "published Hugin provenance must record canvas, matcher, calibration, algorithm, parameters, and framing");
+        "published Hugin provenance must record canvas, camera/FOV, matcher, calibration, algorithm, parameters, and "
+        "framing");
     provenance_lock->reset();
   }
+  options.camera_configuration = "gopro-hero-11";
+  options.horizontal_fov = 108.0;
+  options.vertical_fov = 90.0;
 
   const fs::path custom_panini = root / "custom-panini";
   fs::create_directories(custom_panini);
@@ -721,20 +729,14 @@ int main() {
         framing_dir / "autooptimiser_out.pto",
         fs::copy_options::overwrite_existing,
         framing_copy_error);
-    const hm::stitching::StitchProjectionFraming framing{
-        (mask & 1U) != 0, 185.0, (mask & 2U) != 0, (mask & 4U) != 0};
+    const hm::stitching::StitchProjectionFraming framing{(mask & 1U) != 0, 185.0, (mask & 2U) != 0, (mask & 4U) != 0};
     const auto framed = framing_copy_error
         ? absl::Status(absl::StatusCode::kInternal, framing_copy_error.message())
         : hm::stitching::HuginProject::ApplyProjection(
-              framing_dir,
-              hm::stitching::StitchProjection::kGeneralPanini,
-              {100.0, 0.0, 0.0},
-              framing);
-    const std::string expected_arguments =
-        std::string("--projection=19 --projection-parameter=100 0 0 --fov=") +
+              framing_dir, hm::stitching::StitchProjection::kGeneralPanini, {100.0, 0.0, 0.0}, framing);
+    const std::string expected_arguments = std::string("--projection=19 --projection-parameter=100 0 0 --fov=") +
         (framing.auto_fov ? "AUTO" : "185") + (framing.auto_canvas ? " --canvas=AUTO" : "") +
-        (framing.auto_crop ? " --crop=AUTO" : " --crop=0,100,0,100%") +
-        " --output=.autooptimiser_out.projection.pto";
+        (framing.auto_crop ? " --crop=AUTO" : " --crop=0,100,0,100%") + " --output=.autooptimiser_out.projection.pto";
     const std::string framed_project = read_text_file(framing_dir / "autooptimiser_out.pto");
     ok &= expect(
         framed.ok() && read_text_file(pano_modify_args).find(expected_arguments) != std::string::npos &&
@@ -1088,6 +1090,12 @@ int main() {
   hm::stitching::HuginProject::Options opencv_options;
   opencv_options.mapping_backend = hm::stitching::MappingBackend::kOpenCvAffineRansac;
   opencv_options.max_canvas_dimension = 96;
+  bool opencv_canvas_started = false;
+  bool opencv_alignment_complete = false;
+  opencv_options.progress = [&](const std::string& stage, const std::string& status, const std::string&) {
+    opencv_canvas_started |= stage == "canvas" && status == "started";
+  };
+  opencv_options.alignment_complete = [&] { opencv_alignment_complete = true; };
   std::vector<hm::stitching::FeatureMatch> opencv_matches;
   for (int y = 6; y < 48; y += 10) {
     for (int x = 16; x < 64; x += 10) {
@@ -1097,6 +1105,18 @@ int main() {
            0.9f});
     }
   }
+  std::vector<hm::stitching::FeatureMatch> rejected_opencv_matches(16, {{20.0f, 20.0f}, {12.0f, 23.0f}, 0.9f});
+  fs::create_directories(root / "opencv-rejected-game");
+  const auto rejected_opencv = hm::stitching::HuginProject::Configure(
+      root / "opencv-rejected-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      rejected_opencv_matches,
+      opencv_options);
+  ok &= expect(
+      !rejected_opencv.ok() && opencv_canvas_started && !opencv_alignment_complete,
+      "an OpenCV geometry rejection after canvas progress starts must remain before the alignment-complete boundary");
+  opencv_canvas_started = false;
   const auto opencv_configured = hm::stitching::HuginProject::Configure(
       opencv_game,
       root / "private-inputs" / "left.png",
@@ -1105,7 +1125,9 @@ int main() {
       opencv_options);
   if (!opencv_configured.ok())
     std::cerr << opencv_configured << '\n';
-  ok &= expect(opencv_configured.ok(), "OpenCV mapping backend must not require autooptimiser");
+  ok &= expect(
+      opencv_configured.ok() && opencv_canvas_started && opencv_alignment_complete,
+      "OpenCV mapping backend must not require autooptimiser and must report accepted geometry before seam work");
   ok &= expect(
       fs::is_regular_file(opencv_game / "autooptimiser_out.pto") &&
           fs::is_regular_file(opencv_game / "mapping_0000.tif") &&
@@ -1190,8 +1212,7 @@ int main() {
   backend_claim["stitching"]["mapping_backend"] = "nona";
   backend_claim["stitching"]["projection"] = "equirectangular";
   backend_claim["stitching"]["run_autooptimizer"] = true;
-  hm::stitching::write_stitch_projection_framing(
-      backend_claim, expected_backend_choices.projection_framing);
+  hm::stitching::write_stitch_projection_framing(backend_claim, expected_backend_choices.projection_framing);
   backend_claim["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   backend_claim["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
   backend_claim["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "hugin-backend-a";
@@ -1212,6 +1233,12 @@ int main() {
   backend_claim_framing["horizontal_fov"] = expected_backend_choices.projection_framing.horizontal_fov;
   backend_claim_framing["auto_canvas"] = expected_backend_choices.projection_framing.auto_canvas;
   backend_claim_framing["auto_crop"] = expected_backend_choices.projection_framing.auto_crop;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["camera_config"] =
+      expected_backend_choices.camera.configuration;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["camera_fov"]["horizontal_fov"] =
+      expected_backend_choices.camera.horizontal_fov;
+  backend_claim["hstream_ui"]["stitching_calibration"]["backend_generation"]["camera_fov"]["vertical_fov"] =
+      expected_backend_choices.camera.vertical_fov;
   std::ofstream(root / "game" / "config.yaml") << YAML::Dump(backend_claim) << '\n';
   options.expected_invalidation_id = "hugin-backend-a";
   options.expected_backend_choices = expected_backend_choices;

@@ -46,6 +46,77 @@ int main() {
   fs::create_directories(root);
   std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
 
+  const YAML::Node camera_config = YAML::Load(R"(
+stitching:
+  camera_configs:
+    gopro-hero-11:
+      display_name: GoPro Hero 11
+      horizontal_fov: 108
+      vertical_fov: 90
+    gopro-mission-1:
+      display_name: GoPro Mission 1
+      horizontal_fov: 127.2
+      vertical_fov: 95
+    insta-ace-pro-2:
+      display_name: Insta Ace Pro 2
+      horizontal_fov: 108
+      vertical_fov: 90
+  camera_config: gopro-mission-1
+)");
+  const auto camera_configurations = hm::stitching::read_stitch_camera_configurations(camera_config);
+  const auto default_camera = hm::stitching::read_stitch_camera_selection(camera_config);
+  ok &= expect(
+      camera_configurations.ok() && camera_configurations->size() == 3 &&
+          (*camera_configurations)[0].id == "gopro-hero-11" &&
+          (*camera_configurations)[0].display_name == "GoPro Hero 11" &&
+          (*camera_configurations)[0].horizontal_fov == 108.0 && (*camera_configurations)[0].vertical_fov == 90.0 &&
+          (*camera_configurations)[1].id == "gopro-mission-1" &&
+          (*camera_configurations)[1].display_name == "GoPro Mission 1" &&
+          (*camera_configurations)[1].horizontal_fov == 127.2 && (*camera_configurations)[1].vertical_fov == 95.0 &&
+          (*camera_configurations)[2].id == "insta-ace-pro-2" &&
+          (*camera_configurations)[2].display_name == "Insta Ace Pro 2" &&
+          (*camera_configurations)[2].horizontal_fov == 108.0 && (*camera_configurations)[2].vertical_fov == 90.0,
+      "all baseline camera configurations and source FOV defaults must parse in display order");
+  ok &= expect(
+      default_camera.ok() && default_camera->configuration == "gopro-mission-1" &&
+          default_camera->horizontal_fov == 127.2 && default_camera->vertical_fov == 95.0,
+      "the selected camera configuration must resolve its default source FOVs");
+  YAML::Node overridden_camera_config = YAML::Clone(camera_config);
+  overridden_camera_config["stitching"]["camera_config"] = "gopro-mission-1";
+  overridden_camera_config["stitching"]["camera_fov"]["horizontal_fov"] = 126.5;
+  const auto overridden_camera = hm::stitching::read_stitch_camera_selection(overridden_camera_config);
+  ok &= expect(
+      overridden_camera.ok() && overridden_camera->configuration == "gopro-mission-1" &&
+          overridden_camera->horizontal_fov == 126.5 && overridden_camera->vertical_fov == 95.0,
+      "a per-game source FOV may override one axis while inheriting the selected camera's other axis");
+  YAML::Node private_camera_config(YAML::NodeType::Map);
+  if (overridden_camera.ok())
+    hm::stitching::write_stitch_camera_selection(private_camera_config, *overridden_camera);
+  const auto private_camera = hm::stitching::read_stitch_camera_selection(private_camera_config);
+  ok &= expect(
+      private_camera.ok() && overridden_camera.ok() && *private_camera == *overridden_camera &&
+          private_camera_config["stitching"]["camera_config"].as<std::string>() == "gopro-mission-1" &&
+          private_camera_config["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 126.5 &&
+          private_camera_config["stitching"]["camera_fov"]["vertical_fov"].as<double>() == 95.0,
+      "the resolved camera and both per-game FOV values must round-trip without shared preset definitions");
+  for (const YAML::Node& invalid_camera : {
+           YAML::Load("stitching: {camera_configs: []}"),
+           YAML::Load(
+               "stitching: {camera_configs: {Bad_ID: {display_name: Bad, horizontal_fov: 108, vertical_fov: "
+               "90}}}"),
+           YAML::Load("stitching: {camera_configs: {bad: {display_name: Bad, horizontal_fov: 0, vertical_fov: 90}}}"),
+           YAML::Load(
+               "stitching: {camera_configs: {bad: {display_name: Bad, horizontal_fov: 108, vertical_fov: "
+               ".nan}}}"),
+           YAML::Load("stitching: {camera_config: missing}"),
+           YAML::Load("stitching: {camera_config: Bad_ID, camera_fov: {horizontal_fov: 108, vertical_fov: 90}}"),
+           YAML::Load("stitching: {camera_fov: {horizontal_fov: 108, unsupported: 90}}"),
+       }) {
+    ok &= expect(
+        !hm::stitching::read_stitch_camera_selection(invalid_camera).ok(),
+        "malformed camera presets, unknown selections, source FOVs, and override keys must be rejected");
+  }
+
   YAML::Node projection_config;
   projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(100);
   projection_config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
@@ -165,15 +236,15 @@ int main() {
       hm::stitching::StitchProjection::kGeneralPanini, {100.0, 0.0, 0.0});
   const auto panini_cylindrical_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
       hm::stitching::StitchProjection::kGeneralPanini, {150.0, 0.0, 0.0});
-  const auto biplane_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
-      hm::stitching::StitchProjection::kBiplane, {45.0, 0.0});
-  const auto triplane_limit = hm::stitching::MaximumStitchProjectionHorizontalFov(
-      hm::stitching::StitchProjection::kTriplane, {60.0});
+  const auto biplane_limit =
+      hm::stitching::MaximumStitchProjectionHorizontalFov(hm::stitching::StitchProjection::kBiplane, {45.0, 0.0});
+  const auto triplane_limit =
+      hm::stitching::MaximumStitchProjectionHorizontalFov(hm::stitching::StitchProjection::kTriplane, {60.0});
   ok &= expect(
-      panini_zero_limit.ok() && std::abs(*panini_zero_limit - 160.0) < 1e-9 &&
-          panini_standard_limit.ok() && std::abs(*panini_standard_limit - 319.9135435412871) < 1e-9 &&
-          panini_cylindrical_limit.ok() && std::abs(*panini_cylindrical_limit - 180.00763969192198) < 1e-9 &&
-          biplane_limit.ok() && *biplane_limit == 224.0 && triplane_limit.ok() && *triplane_limit == 299.0,
+      panini_zero_limit.ok() && std::abs(*panini_zero_limit - 160.0) < 1e-9 && panini_standard_limit.ok() &&
+          std::abs(*panini_standard_limit - 319.9135435412871) < 1e-9 && panini_cylindrical_limit.ok() &&
+          std::abs(*panini_cylindrical_limit - 180.00763969192198) < 1e-9 && biplane_limit.ok() &&
+          *biplane_limit == 224.0 && triplane_limit.ok() && *triplane_limit == 299.0,
       "parameterized projection FOV limits must match libpano's dynamic formulas");
 
   auto first_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
@@ -743,11 +814,16 @@ int main() {
   if (after_conflict.ok() && after_conflict->has_value()) {
     YAML::Node worker_mismatch = YAML::Clone(**after_conflict);
     worker_mismatch["stitching"]["projection"] = "general-panini";
+    YAML::Node camera_worker_mismatch = YAML::Clone(**after_conflict);
+    camera_worker_mismatch["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
+    YAML::Node camera_claim_mismatch = YAML::Clone(**after_conflict);
+    camera_claim_mismatch["hstream_ui"]["stitching_calibration"]["backend_generation"]["camera_fov"]["vertical_fov"] =
+        91.0;
     YAML::Node inactive_worker_framing = YAML::Clone(**after_conflict);
     inactive_worker_framing["stitching"]["projection_framing"]["auto_crop"] = true;
     YAML::Node inactive_claim_framing = YAML::Clone(**after_conflict);
-    inactive_claim_framing["hstream_ui"]["stitching_calibration"]["backend_generation"]
-                           ["projection_framing"]["auto_crop"] = true;
+    inactive_claim_framing["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection_framing"]
+                          ["auto_crop"] = true;
     ok &= expect(
         absl::IsAborted(
             hm::stitching::validate_stitching_backend_generation(
@@ -757,9 +833,48 @@ int main() {
                 .ok() &&
             hm::stitching::validate_stitching_backend_generation(
                 inactive_claim_framing, "backend-generation-a", magsac_choices)
-                .ok(),
-        "generation validation must fence an active projection but ignore framing unused by OpenCV backends");
+                .ok() &&
+            absl::IsAborted(
+                hm::stitching::validate_stitching_backend_generation(
+                    camera_worker_mismatch, "backend-generation-a", magsac_choices)) &&
+            absl::IsAborted(
+                hm::stitching::validate_stitching_backend_generation(
+                    camera_claim_mismatch, "backend-generation-a", magsac_choices)),
+        "generation validation must fence the projection and camera/FOV tuple but ignore framing unused by OpenCV "
+        "backends");
   }
+
+  YAML::Node camera_override_generation(YAML::NodeType::Map);
+  camera_override_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  camera_override_generation["stitching"]["mapping_backend"] = "opencv-magsac";
+  camera_override_generation["stitching"]["projection"] = "rectilinear";
+  camera_override_generation["stitching"]["run_autooptimizer"] = false;
+  camera_override_generation["stitching"]["camera_config"] = "gopro-mission-1";
+  camera_override_generation["stitching"]["camera_fov"]["horizontal_fov"] = 126.5;
+  camera_override_generation["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  camera_override_generation["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "camera-override-generation";
+  hm::stitching::StitchingBackendChoices overridden_camera_choices{
+      "superpoint-lightglue", "opencv-magsac", "rectilinear", false};
+  overridden_camera_choices.camera = {"gopro-mission-1", 126.5, 95.0};
+  const absl::Status camera_override_reserved = hm::stitching::reserve_stitching_backend_generation_in_config(
+      camera_override_generation, "camera-override-generation", overridden_camera_choices);
+  YAML::Node removed_camera_override = YAML::Clone(camera_override_generation);
+  removed_camera_override["stitching"].remove("camera_fov");
+  YAML::Node nulled_camera_override = YAML::Clone(camera_override_generation);
+  nulled_camera_override["stitching"]["camera_fov"]["horizontal_fov"] = YAML::Node(YAML::NodeType::Null);
+  ok &= expect(
+      camera_override_reserved.ok() &&
+          hm::stitching::validate_stitching_backend_generation(
+              camera_override_generation, "camera-override-generation", overridden_camera_choices)
+              .ok() &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  removed_camera_override, "camera-override-generation", overridden_camera_choices)) &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  nulled_camera_override, "camera-override-generation", overridden_camera_choices)),
+      "removing or nulling a camera FOV override during calibration must restore the baseline preset and fence "
+      "publication of stale maps");
 
   YAML::Node parameter_generation(YAML::NodeType::Map);
   parameter_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
@@ -781,9 +896,14 @@ int main() {
   changed_framing["stitching"]["projection_framing"]["auto_crop"] = true;
   ok &= expect(
       parameter_reserved.ok() &&
-          parameter_generation["hstream_ui"]["stitching_calibration"]["backend_generation"]
-                              ["projection_framing"]["horizontal_fov"]
+          parameter_generation["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection_framing"]
+                              ["horizontal_fov"]
                                   .as<double>() == 180.0 &&
+          parameter_generation["hstream_ui"]["stitching_calibration"]["backend_generation"]["camera_config"]
+                  .as<std::string>() == "gopro-mission-1" &&
+          parameter_generation["hstream_ui"]["stitching_calibration"]["backend_generation"]["camera_fov"]
+                              ["horizontal_fov"]
+                                  .as<double>() == 127.2 &&
           absl::IsAborted(
               hm::stitching::validate_stitching_backend_generation(
                   changed_parameters, "backend-generation-b", panini_choices)) &&

@@ -42,6 +42,9 @@ MANIFEST_FIELDS = (
     "parameters",
     "auto_fov",
     "horizontal_fov",
+    "camera_config",
+    "camera_horizontal_fov",
+    "camera_vertical_fov",
     "auto_canvas",
     "auto_crop",
     "png",
@@ -52,6 +55,12 @@ MANIFEST_FIELDS = (
     "return_code",
     "first_failure",
     "work_directory",
+)
+CAMERA_FOV_MANIFEST_FIELDS = tuple(field for field in MANIFEST_FIELDS if field != "camera_config")
+LEGACY_MANIFEST_FIELDS = tuple(
+    field
+    for field in MANIFEST_FIELDS
+    if field not in ("camera_config", "camera_horizontal_fov", "camera_vertical_fov")
 )
 
 
@@ -65,6 +74,33 @@ def as_positive_number(value: object, path: str) -> float:
   if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
     raise ValueError(f"{path} must be a positive finite number")
   return float(value)
+
+
+def optional_camera_configuration(merged: dict[str, Any], path: str) -> str | None:
+  value = merged.get("camera_config")
+  if value is None:
+    return None
+  if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
+    raise ValueError(f"{path}.camera_config must be a lowercase kebab-case identifier")
+  return value
+
+
+def optional_camera_fov_pair(merged: dict[str, Any], path: str) -> tuple[float | None, float | None]:
+  horizontal_value = merged.get("camera_horizontal_fov")
+  vertical_value = merged.get("camera_vertical_fov")
+  if horizontal_value is None and vertical_value is None:
+    return None, None
+  if horizontal_value is None or vertical_value is None:
+    raise ValueError(
+        f"{path}.camera_horizontal_fov and {path}.camera_vertical_fov must be provided together"
+    )
+  horizontal = as_positive_number(horizontal_value, f"{path}.camera_horizontal_fov")
+  vertical = as_positive_number(vertical_value, f"{path}.camera_vertical_fov")
+  if horizontal >= 360:
+    raise ValueError(f"{path}.camera_horizontal_fov must be less than 360")
+  if vertical > 180:
+    raise ValueError(f"{path}.camera_vertical_fov must be at most 180")
+  return horizontal, vertical
 
 
 def as_integer(value: object, path: str, minimum: int = 1) -> int:
@@ -167,6 +203,8 @@ def expand_cases(config: dict[str, Any]) -> list[dict[str, object]]:
         raise ValueError(f"{label}.mapping_backend is unsupported")
       if backend != "nona" and projection != "rectilinear":
         raise ValueError(f"{label}: {backend} supports only rectilinear projection output")
+      camera_config = optional_camera_configuration(merged, label)
+      camera_horizontal_fov, camera_vertical_fov = optional_camera_fov_pair(merged, label)
       cases.append(
           {
               "case": label,
@@ -176,6 +214,9 @@ def expand_cases(config: dict[str, Any]) -> list[dict[str, object]]:
               "parameters": parameters,
               "auto_fov": auto_fov,
               "horizontal_fov": horizontal_fov,
+              "camera_config": camera_config,
+              "camera_horizontal_fov": camera_horizontal_fov,
+              "camera_vertical_fov": camera_vertical_fov,
               "auto_canvas": auto_canvas,
               "auto_crop": auto_crop,
               "control_points": as_integer(merged.get("control_points", 900), f"{label}.control_points"),
@@ -232,7 +273,7 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def effective_case_config(state: dict[str, object]) -> dict[str, object]:
-  return {
+  effective = {
       "projection": state["projection"],
       "projection_parameters": list(state["parameters"]),
       "projection_framing": calibration_matrix.projection_framing(state),
@@ -243,6 +284,45 @@ def effective_case_config(state: dict[str, object]) -> dict[str, object]:
       "stitch_frame_time": state["stitch_frame_time"],
       "max_output_width": state["max_output_width"],
   }
+  if state["camera_config"] is not None:
+    effective["camera_config"] = state["camera_config"]
+  if state["camera_horizontal_fov"] is not None:
+    effective["camera_fov"] = {
+        "horizontal_fov": state["camera_horizontal_fov"],
+        "vertical_fov": state["camera_vertical_fov"],
+    }
+  return effective
+
+
+def apply_case_camera_selection(config_path: Path, state: dict[str, object]) -> None:
+  camera_config = state["camera_config"]
+  horizontal_fov = state["camera_horizontal_fov"]
+  vertical_fov = state["camera_vertical_fov"]
+  if camera_config is None and horizontal_fov is None:
+    return
+  with config_path.open("r", encoding="utf-8") as stream:
+    config = as_map(yaml.safe_load(stream) or {}, "source game configuration")
+  stitching = config.setdefault("stitching", {})
+  if not isinstance(stitching, dict):
+    raise ValueError("source game stitching configuration must be a map")
+  if camera_config is not None:
+    stitching["camera_config"] = camera_config
+    if horizontal_fov is None:
+      stitching.pop("camera_fov", None)
+  if horizontal_fov is not None:
+    stitching["camera_fov"] = {
+        "horizontal_fov": horizontal_fov,
+        "vertical_fov": vertical_fov,
+    }
+  temporary = config_path.with_name(f".{config_path.name}.projection-frames-tmp")
+  try:
+    with temporary.open("w", encoding="utf-8") as stream:
+      yaml.safe_dump(config, stream, sort_keys=False)
+      stream.flush()
+      os.fsync(stream.fileno())
+    os.replace(temporary, config_path)
+  finally:
+    temporary.unlink(missing_ok=True)
 
 
 def convert_panorama(source: Path, destination: Path, ffmpeg: str) -> None:
@@ -377,13 +457,19 @@ def read_manifest(path: Path) -> dict[str, dict[str, object]]:
     return {}
   with path.open("r", encoding="utf-8", newline="") as stream:
     reader = csv.DictReader(stream)
-    if reader.fieldnames != list(MANIFEST_FIELDS):
+    if reader.fieldnames not in (
+        list(MANIFEST_FIELDS),
+        list(CAMERA_FOV_MANIFEST_FIELDS),
+        list(LEGACY_MANIFEST_FIELDS),
+    ):
       raise ValueError(f"existing manifest has an incompatible header: {path}")
     rows: dict[str, dict[str, object]] = {}
     for row in reader:
       sequence = row.get("sequence", "")
       if not sequence.isdigit():
         raise ValueError(f"existing manifest has an invalid sequence: {sequence!r}")
+      for field in ("camera_config", "camera_horizontal_fov", "camera_vertical_fov"):
+        row.setdefault(field, "")
       rows[sequence] = row
     return rows
 
@@ -424,6 +510,9 @@ def manifest_row(
       "parameters": calibration_matrix.parameter_text(tuple(state["parameters"])),
       "auto_fov": state["auto_fov"],
       "horizontal_fov": state["horizontal_fov"],
+      "camera_config": "" if state["camera_config"] is None else state["camera_config"],
+      "camera_horizontal_fov": "" if state["camera_horizontal_fov"] is None else state["camera_horizontal_fov"],
+      "camera_vertical_fov": "" if state["camera_vertical_fov"] is None else state["camera_vertical_fov"],
       "auto_canvas": state["auto_canvas"],
       "auto_crop": state["auto_crop"],
       "png": str(png_path) if png_path.is_file() else "",
@@ -591,6 +680,7 @@ def main() -> int:
       try:
         calibration_matrix.wait_for_resource_headroom(runner_args)
         work_root, game_id = calibration_matrix.create_isolated_game(source_game_dir, source_config_snapshot)
+        apply_case_camera_selection(work_root / game_id / "config.yaml", state)
         result = calibration_matrix.run_state(runner_args, work_root, game_id, state, sequence, log_path)
         if result["outcome"] == "pass":
           convert_panorama(work_root / game_id / "panorama.tif", png_path, ffmpeg)

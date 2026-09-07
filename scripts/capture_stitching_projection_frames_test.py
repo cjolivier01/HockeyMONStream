@@ -57,7 +57,10 @@ class ProjectionFrameConfigTest(unittest.TestCase):
   def test_starter_config_is_exhaustive_and_bounded(self) -> None:
     config_path = Path(__file__).resolve().parents[1] / "configs/stitching_projection_frames.yaml"
     with config_path.open("r", encoding="utf-8") as stream:
-      cases = capture.expand_cases(yaml.safe_load(stream))
+      config = yaml.safe_load(stream)
+      cases = capture.expand_cases(config)
+    self.assertEqual(config["defaults"]["camera_config"], "gopro-mission-1")
+    self.assertTrue(all(case["camera_config"] == "gopro-mission-1" for case in cases))
     grouped: dict[str, list[dict[str, object]]] = {}
     for case in cases:
       grouped.setdefault(str(case["projection"]), []).append(case)
@@ -73,6 +76,17 @@ class ProjectionFrameConfigTest(unittest.TestCase):
           if not bool(case["auto_fov"])
       }
       self.assertTrue({170, 180, 190}.issubset(fixed_fovs))
+
+  def test_panini_config_defaults_to_gopro_mission_1(self) -> None:
+    config_path = Path(__file__).resolve().parents[1] / "configs/stitching_panini_frames.yaml"
+    with config_path.open("r", encoding="utf-8") as stream:
+      config = yaml.safe_load(stream)
+    cases = capture.expand_cases(config)
+    self.assertEqual(config["defaults"]["camera_config"], "gopro-mission-1")
+    self.assertTrue(all(case["camera_config"] == "gopro-mission-1" for case in cases))
+    self.assertTrue(all(case["camera_horizontal_fov"] is None for case in cases))
+    self.assertTrue(all(case["camera_vertical_fov"] is None for case in cases))
+    self.assertTrue(all(bool(case["auto_fov"]) for case in cases if "auto" in str(case["label"])))
 
   def test_output_name_describes_effective_projection_config(self) -> None:
     state = {
@@ -140,6 +154,167 @@ class ProjectionFrameConfigTest(unittest.TestCase):
               ],
           }
       )
+
+  def test_camera_fov_pair_is_optional_and_validated(self) -> None:
+    inherited = capture.expand_cases(
+        {
+            "version": 1,
+            "projections": [
+                {"name": "rectilinear", "variants": [{"label": "inherited", "auto_fov": True}]}
+            ],
+        }
+    )[0]
+    self.assertIsNone(inherited["camera_config"])
+    self.assertIsNone(inherited["camera_horizontal_fov"])
+    self.assertIsNone(inherited["camera_vertical_fov"])
+
+    explicit = capture.expand_cases(
+        {
+            "version": 1,
+            "projections": [
+                {
+                    "name": "rectilinear",
+                    "variants": [
+                        {
+                            "label": "explicit",
+                            "auto_fov": True,
+                            "camera_horizontal_fov": 127.2,
+                            "camera_vertical_fov": 95,
+                        }
+                    ],
+                }
+            ],
+        }
+    )[0]
+    self.assertEqual(explicit["camera_horizontal_fov"], 127.2)
+    self.assertEqual(explicit["camera_vertical_fov"], 95.0)
+
+    for variant, message in (
+        (
+            {"label": "missing-vertical", "auto_fov": True, "camera_horizontal_fov": 108},
+            "must be provided together",
+        ),
+        (
+            {
+                "label": "horizontal-limit",
+                "auto_fov": True,
+                "camera_horizontal_fov": 360,
+                "camera_vertical_fov": 90,
+            },
+            "must be less than 360",
+        ),
+        (
+            {
+                "label": "vertical-limit",
+                "auto_fov": True,
+                "camera_horizontal_fov": 108,
+                "camera_vertical_fov": 181,
+            },
+            "must be at most 180",
+        ),
+    ):
+      with self.subTest(variant=variant), self.assertRaisesRegex(ValueError, message):
+        capture.expand_cases(
+            {"version": 1, "projections": [{"name": "rectilinear", "variants": [variant]}]}
+        )
+
+  def test_camera_configuration_is_inherited_overridden_and_validated(self) -> None:
+    cases = capture.expand_cases(
+        {
+            "version": 1,
+            "defaults": {"camera_config": "gopro-mission-1"},
+            "projections": [
+                {
+                    "name": "rectilinear",
+                    "variants": [
+                        {"label": "default", "auto_fov": True},
+                        {"label": "override", "auto_fov": True, "camera_config": "insta-ace-pro-2"},
+                    ],
+                }
+            ],
+        }
+    )
+    self.assertEqual([case["camera_config"] for case in cases], ["gopro-mission-1", "insta-ace-pro-2"])
+    self.assertEqual(capture.effective_case_config(cases[0])["camera_config"], "gopro-mission-1")
+
+    for invalid in ("", "GoPro Mission 1", "gopro_mission_1", "-gopro-mission-1"):
+      with self.subTest(camera_config=invalid), self.assertRaisesRegex(ValueError, "lowercase kebab-case"):
+        capture.expand_cases(
+            {
+                "version": 1,
+                "defaults": {"camera_config": invalid},
+                "projections": [
+                    {"name": "rectilinear", "variants": [{"label": "invalid", "auto_fov": True}]}
+                ],
+            }
+        )
+
+  def test_applies_camera_selection_to_isolated_game_config(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-camera-fov-test-") as temporary:
+      config_path = Path(temporary) / "config.yaml"
+      config_path.write_text("stitching:\n  projection: rectilinear\n", encoding="utf-8")
+      state = {
+          "camera_config": "gopro-mission-1",
+          "camera_horizontal_fov": 127.2,
+          "camera_vertical_fov": 95.0,
+      }
+      capture.apply_case_camera_selection(config_path, state)
+      configured = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+      self.assertEqual(configured["stitching"]["camera_config"], "gopro-mission-1")
+      self.assertEqual(
+          configured["stitching"]["camera_fov"], {"horizontal_fov": 127.2, "vertical_fov": 95.0}
+      )
+      self.assertEqual(configured["stitching"]["projection"], "rectilinear")
+
+      config_path.write_text(
+          "stitching:\n"
+          "  camera_config: gopro-hero-11\n"
+          "  camera_fov: {horizontal_fov: 100, vertical_fov: 80}\n",
+          encoding="utf-8",
+      )
+      capture.apply_case_camera_selection(
+          config_path,
+          {
+              "camera_config": "gopro-mission-1",
+              "camera_horizontal_fov": None,
+              "camera_vertical_fov": None,
+          },
+      )
+      configured = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+      self.assertEqual(configured["stitching"]["camera_config"], "gopro-mission-1")
+      self.assertNotIn("camera_fov", configured["stitching"])
+
+  def test_reads_legacy_manifest_without_camera_fov_columns(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-legacy-manifest-test-") as temporary:
+      manifest = Path(temporary) / "manifest.csv"
+      with manifest.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=capture.LEGACY_MANIFEST_FIELDS)
+        writer.writeheader()
+        writer.writerow({"sequence": "1", "label": "legacy", "outcome": "pass"})
+      row = capture.read_manifest(manifest)["1"]
+      self.assertEqual(row["camera_config"], "")
+      self.assertEqual(row["camera_horizontal_fov"], "")
+      self.assertEqual(row["camera_vertical_fov"], "")
+
+  def test_reads_camera_fov_manifest_without_camera_config_column(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="projection-frame-fov-manifest-test-") as temporary:
+      manifest = Path(temporary) / "manifest.csv"
+      with manifest.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=capture.CAMERA_FOV_MANIFEST_FIELDS)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "sequence": "1",
+                "label": "fov-only",
+                "camera_horizontal_fov": "127.2",
+                "camera_vertical_fov": "95",
+                "outcome": "pass",
+            }
+        )
+      row = capture.read_manifest(manifest)["1"]
+      self.assertEqual(row["camera_config"], "")
+      self.assertEqual(row["camera_horizontal_fov"], "127.2")
+      self.assertEqual(row["camera_vertical_fov"], "95")
 
   def test_resource_failure_is_recorded_per_case_and_matrix_continues(self) -> None:
     with tempfile.TemporaryDirectory(prefix="projection-frame-failure-test-") as temporary:

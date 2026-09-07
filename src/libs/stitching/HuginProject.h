@@ -56,13 +56,16 @@ class HuginProject {
     std::optional<StitchProjectionFraming> projection_framing;
     std::optional<ControlPointMatcher> control_point_matcher;
     std::optional<std::string> akaze_calibration_fingerprint;
+    std::optional<StitchCameraSelection> camera;
   };
 
   struct Options {
     using ProgressCallback =
         std::function<void(const std::string& stage, const std::string& status, const std::string& message)>;
 
-    double horizontal_fov{108.0};
+    double horizontal_fov{127.2};
+    double vertical_fov{95.0};
+    std::string camera_configuration{"gopro-mission-1"};
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
     ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
@@ -75,6 +78,10 @@ class HuginProject {
     std::optional<StitchingBackendChoices> expected_backend_choices;
     AkazeMatchingCalibration akaze_calibration;
     ProgressCallback progress;
+    // Called once the candidate's geometric alignment has succeeded. Failures
+    // after this boundary are canvas, seam, validation, or publication errors
+    // and must not be hidden by trying a different sampled frame.
+    std::function<void()> alignment_complete;
     std::function<bool()> is_cancelled;
   };
 

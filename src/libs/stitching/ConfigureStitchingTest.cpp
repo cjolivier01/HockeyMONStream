@@ -27,6 +27,30 @@ namespace fs = std::filesystem;
 
 namespace {
 
+bool expect_candidate_retry_policy_preserves_late_failure() {
+  const absl::Status geometry_failure = absl::FailedPreconditionError("candidate geometry rejected");
+  const absl::Status missing_candidate_input = absl::NotFoundError("candidate input unavailable");
+  const absl::Status seam_failure = absl::FailedPreconditionError("enblend failed to generate seam_file.png");
+  // OpenCV emits canvas/started before MAGSAC or affine fitting. The first
+  // rejected hypothesis must therefore remain retryable until the backend's
+  // explicit alignment-complete callback, allowing a later candidate to win.
+  bool accepted_later_candidate = false;
+  for (const auto& attempt : {geometry_failure, absl::OkStatus()}) {
+    if (attempt.ok()) {
+      accepted_later_candidate = true;
+      break;
+    }
+    if (!hm::stitching::should_retry_stitching_calibration_candidate(attempt, /*alignment_complete=*/false)) {
+      break;
+    }
+  }
+  return accepted_later_candidate &&
+      hm::stitching::should_retry_stitching_calibration_candidate(geometry_failure, false) &&
+      hm::stitching::should_retry_stitching_calibration_candidate(missing_candidate_input, false) &&
+      !hm::stitching::should_retry_stitching_calibration_candidate(seam_failure, true) &&
+      !hm::stitching::should_retry_stitching_calibration_candidate(absl::InternalError("publication failed"), true);
+}
+
 bool write_text_file(const fs::path& path, const std::string& contents) {
   std::ofstream out(path);
   if (!out.is_open()) {
@@ -63,7 +87,7 @@ bool write_canvas_provenance(
     return false;
   return write_text_file(
       dir / "stitching_canvas_provenance",
-      std::string(algorithm_aware ? "version=6\n" : "version=2\n") + "max-output-width=" +
+      std::string(algorithm_aware ? "version=7\n" : "version=2\n") + "max-output-width=" +
           std::to_string(max_output_width) + "\nmax-canvas-dimension=" + std::to_string(max_canvas_dimension) +
           "\nsource-canvas-width=" + std::to_string(source_width) +
           "\nsource-canvas-height=" + std::to_string(source_height) + "\ncanvas-width=" + std::to_string(width) +
@@ -75,7 +99,9 @@ bool write_canvas_provenance(
                    "\nprojection-auto-fov=" + (projection_framing.auto_fov ? "1" : "0") +
                    "\nprojection-horizontal-fov=" + std::to_string(projection_framing.horizontal_fov) +
                    "\nprojection-auto-canvas=" + (projection_framing.auto_canvas ? "1" : "0") +
-                   "\nprojection-auto-crop=" + (projection_framing.auto_crop ? "1" : "0") + "\ncontrol-point-matcher=" +
+                   "\nprojection-auto-crop=" + (projection_framing.auto_crop ? "1" : "0") +
+                   "\ncamera-configuration=gopro-mission-1\ncamera-horizontal-fov=127.2\ncamera-vertical-fov=95"
+                   "\ncontrol-point-matcher=" +
                    control_point_matcher + "\nakaze-calibration-fingerprint=" + akaze_calibration_fingerprint + "\n"
                            : ""));
 }
@@ -350,6 +376,26 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
       .content_validated = first->content_validated,
   };
   first->artifact_lock.reset();
+
+  YAML::Node fov_only_config;
+  fov_only_config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(fov_only_config) + "\n") ||
+      !expect_configured(dir, false, "a game-private source FOV-only override must invalidate existing maps")) {
+    return false;
+  }
+
+  config["stitching"]["camera_config"] = "gopro-hero-11";
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "a direct camera preset change must invalidate existing maps")) {
+    return false;
+  }
+  config["stitching"]["camera_config"] = "gopro-mission-1";
+  config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "a direct source horizontal FOV override must invalidate existing maps")) {
+    return false;
+  }
+  config["stitching"].remove("camera_fov");
 
   config["stitching"]["projection"] = "general-panini";
   if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
@@ -1960,6 +2006,9 @@ void finish(const fs::path& tmpdir, int code) {
 } // namespace
 
 int main() {
+  if (!expect_candidate_retry_policy_preserves_late_failure()) {
+    return 47;
+  }
   ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   const fs::path tmpdir =
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));

@@ -484,8 +484,10 @@ def verify_canvas_provenance(
     actual_height = int(provenance["canvas-height"])
     actual_max_width = int(provenance["max-output-width"])
     actual_max_dimension = int(provenance["max-canvas-dimension"])
-    if provenance["version"] != "5":
-      raise ValueError(f"published provenance version is {provenance['version']}, expected 5")
+    if provenance["version"] not in ("5", "6", "7"):
+      raise ValueError(
+          f"published provenance version is {provenance['version']}, expected framing-aware version 5, 6, or 7"
+      )
     if provenance["mapping-backend"] != backend:
       raise ValueError(f"published backend is {provenance['mapping-backend']}, expected {backend}")
     if provenance["projection"] != projection:

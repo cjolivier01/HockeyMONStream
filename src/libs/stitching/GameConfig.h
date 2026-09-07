@@ -16,6 +16,27 @@
 
 namespace hm::stitching {
 
+struct StitchCameraConfiguration {
+  std::string id{"gopro-mission-1"};
+  std::string display_name{"GoPro Mission 1"};
+  double horizontal_fov{127.2};
+  double vertical_fov{95.0};
+};
+
+struct StitchCameraSelection {
+  std::string configuration{"gopro-mission-1"};
+  double horizontal_fov{127.2};
+  double vertical_fov{95.0};
+
+  bool operator==(const StitchCameraSelection& other) const {
+    return configuration == other.configuration && horizontal_fov == other.horizontal_fov &&
+        vertical_fov == other.vertical_fov;
+  }
+  bool operator!=(const StitchCameraSelection& other) const {
+    return !(*this == other);
+  }
+};
+
 struct StitchProjectionFraming {
   bool auto_fov{false};
   double horizontal_fov{180.0};
@@ -23,10 +44,12 @@ struct StitchProjectionFraming {
   bool auto_crop{false};
 
   bool operator==(const StitchProjectionFraming& other) const {
-    return auto_fov == other.auto_fov && horizontal_fov == other.horizontal_fov &&
-        auto_canvas == other.auto_canvas && auto_crop == other.auto_crop;
+    return auto_fov == other.auto_fov && horizontal_fov == other.horizontal_fov && auto_canvas == other.auto_canvas &&
+        auto_crop == other.auto_crop;
   }
-  bool operator!=(const StitchProjectionFraming& other) const { return !(*this == other); }
+  bool operator!=(const StitchProjectionFraming& other) const {
+    return !(*this == other);
+  }
 };
 
 struct StitchingBackendChoices {
@@ -36,7 +59,15 @@ struct StitchingBackendChoices {
   bool run_autooptimizer{false};
   std::vector<double> projection_parameters;
   StitchProjectionFraming projection_framing;
+  StitchCameraSelection camera;
 };
+
+// Camera configuration definitions live in the shared baseline under
+// stitching.camera_configs. A game selects one with stitching.camera_config
+// and can override either source-image FOV under stitching.camera_fov.
+absl::StatusOr<std::vector<StitchCameraConfiguration>> read_stitch_camera_configurations(const YAML::Node& config);
+absl::StatusOr<StitchCameraSelection> read_stitch_camera_selection(const YAML::Node& config);
+void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelection& selection);
 
 // Projection parameters are stored under
 // stitching.projection_parameters.<canonical-projection-name>. Missing entries

@@ -147,6 +147,12 @@ absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const s
 // reader must not mutate the shared yaml-cpp document while traversing it.
 absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAML::Node& config);
 
+// Candidate-specific alignment failures can use another sampled frame. Once
+// the backend accepts a candidate's geometry, failures are terminal
+// operational errors and must be returned without replacing their cause with
+// a non-overlap summary.
+bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool alignment_complete);
+
 absl::StatusOr<std::string> stitched_output_generation_id(
     const std::string& hugin_generation,
     double post_stitch_rotate_degrees,
