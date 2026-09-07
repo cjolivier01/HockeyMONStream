@@ -31,6 +31,7 @@ bool expect_candidate_retry_policy_preserves_late_failure() {
   const absl::Status geometry_failure = absl::FailedPreconditionError("candidate geometry rejected");
   const absl::Status missing_candidate_input = absl::NotFoundError("candidate input unavailable");
   const absl::Status seam_failure = absl::FailedPreconditionError("enblend failed to generate seam_file.png");
+  const absl::Status dimension_failure = absl::ResourceExhaustedError("mapping canvas exceeds dimension limit");
   // OpenCV emits canvas/started before MAGSAC or affine fitting. The first
   // rejected hypothesis must therefore remain retryable until the backend's
   // explicit alignment-complete callback, allowing a later candidate to win.
@@ -47,6 +48,7 @@ bool expect_candidate_retry_policy_preserves_late_failure() {
   return accepted_later_candidate &&
       hm::stitching::should_retry_stitching_calibration_candidate(geometry_failure, false) &&
       hm::stitching::should_retry_stitching_calibration_candidate(missing_candidate_input, false) &&
+      !hm::stitching::should_retry_stitching_calibration_candidate(dimension_failure, false) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(seam_failure, true) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(absl::InternalError("publication failed"), true);
 }
@@ -1743,7 +1745,7 @@ bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmp
 
   bool snapshot_left_behind = false;
   for (const auto& entry : fs::directory_iterator(dir)) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-control-mask-snapshot-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-control-mask-snapshot-", 0) == 0)
       snapshot_left_behind = true;
   }
   if (!snapshot_started || error || result.ok() || !fs::is_symlink(fs::symlink_status(mapping)) ||

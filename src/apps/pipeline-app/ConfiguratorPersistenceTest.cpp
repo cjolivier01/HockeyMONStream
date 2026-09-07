@@ -1530,7 +1530,7 @@ play-tracker:
     ok &= expect(
         disabled_tracker_status.ok() &&
             !disabled_tracker.config()["pipeline"]["ds-playtracker"]["config-file"].IsDefined() &&
-            !fs::exists(disabled_tracker_game_dir / ".hstream-runtime"),
+            !fs::exists(disabled_tracker_game_dir / "hstream-runtime"),
         "A disabled tracker must not require or materialize a runtime sidecar");
 
     hm::Configurator incomplete_configurator(
@@ -1554,7 +1554,7 @@ play-tracker:
         ? YAML::LoadFile(incomplete_effective_path.string())
         : YAML::Node();
     ok &= expect(
-        incomplete_status.ok() && incomplete_effective_path.parent_path() == incomplete_game_dir / ".hstream-runtime" &&
+        incomplete_status.ok() && incomplete_effective_path.parent_path() == incomplete_game_dir / "hstream-runtime" &&
             incomplete_effective["play-tracker"]["preserve-custom-root"].as<bool>() &&
             !incomplete_effective["play-tracker"]["no-wide-start"].as<bool>() &&
             incomplete_effective["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() ==

@@ -455,8 +455,10 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
   bool recovered = false;
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(".hstream-rink-", 0) != 0 || directory_name == ".hstream-rink-journal-v1" ||
-        directory_name == ".hstream-rink-recovery-pending")
+    const bool current_transaction = directory_name.rfind("hstream-rink-", 0) == 0;
+    const bool legacy_transaction = directory_name.rfind(".hstream-rink-", 0) == 0 &&
+        directory_name != ".hstream-rink-journal-v1" && directory_name != ".hstream-rink-recovery-pending";
+    if (!current_transaction && !legacy_transaction)
       continue;
     auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
     if (!opened_transaction.ok())
@@ -1015,7 +1017,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   auto pending_status = mark_transaction_recovery_pending(game_dir, TransactionJournalKind::kRink);
   if (!pending_status.ok())
     return pending_status;
-  std::string pattern = (game_dir / ".hstream-rink-XXXXXX").string();
+  std::string pattern = (game_dir / "hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());

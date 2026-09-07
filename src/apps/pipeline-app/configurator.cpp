@@ -5969,7 +5969,7 @@ constexpr auto kPlaytrackerRuntimeGracePeriod = std::chrono::hours(24);
 
 fs::path playtracker_runtime_directory(const fs::path& game_dir) {
   if (!game_dir.empty())
-    return game_dir / ".hstream-runtime";
+    return game_dir / "hstream-runtime";
   if (const char* runtime_root = std::getenv("XDG_RUNTIME_DIR"); runtime_root && *runtime_root) {
     const fs::path configured(runtime_root);
     if (configured.is_absolute())

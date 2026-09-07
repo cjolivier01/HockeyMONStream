@@ -90,13 +90,14 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
 constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 2 + 16ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumParserPlacementTiffBytes = kHardMaximumArtifactPixels * 4 + 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 4 + 32ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserPlacementTiffBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserSeamPngBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumAkazeCalibrationBytes = 1024ULL * 1024ULL;
-constexpr std::string_view kControlMaskSnapshotPrefix = ".hstream-control-mask-snapshot-";
+constexpr std::string_view kControlMaskSnapshotPrefix = "hstream-control-mask-snapshot-";
+constexpr std::string_view kLegacyControlMaskSnapshotPrefix = ".hstream-control-mask-snapshot-";
 
 struct AkazeCalibrationProfile {
   std::string contents;
@@ -538,8 +539,12 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
   if (opened->descriptor < 0)
     return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
   if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
-      opened->metadata.st_size <= 0 || static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
-    return absl::FailedPreconditionError(TO_STRING("Invalid or oversized TIFF: " << path.string()));
+      opened->metadata.st_size <= 0)
+    return absl::FailedPreconditionError(TO_STRING("TIFF is not a non-empty regular file: " << path.string()));
+  if (static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
+    return absl::ResourceExhaustedError(TO_STRING(
+        "TIFF exceeds the " << maximum_bytes << "-byte encoded-file safety limit (" << opened->metadata.st_size
+                            << " bytes): " << path.string()));
   }
   const int tiff_descriptor = ::dup(opened->descriptor);
   if (tiff_descriptor < 0)
@@ -632,7 +637,12 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
       return absl::ResourceExhaustedError("Control-mask TIFF payload size overflows: " + path.string());
     }
     const uint64_t payload_bytes = (pixels * samples * bits + 7) / 8;
-    if (static_cast<uint64_t>((*opened)->metadata.st_size) > payload_bytes + 16ULL * 1024ULL * 1024ULL) {
+    constexpr uint64_t kMetadataAllowanceBytes = 16ULL * 1024ULL * 1024ULL;
+    const uint64_t maximum_encoded_bytes =
+        payload_bytes > (kMaximumParserPlacementTiffBytes - kMetadataAllowanceBytes) / 2
+        ? kMaximumParserPlacementTiffBytes
+        : payload_bytes * 2 + kMetadataAllowanceBytes;
+    if (static_cast<uint64_t>((*opened)->metadata.st_size) > maximum_encoded_bytes) {
       return absl::ResourceExhaustedError("Control-mask TIFF has an oversized encoded payload: " + path.string());
     }
     HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
@@ -807,7 +817,8 @@ absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
     return entries.status();
   for (const auto& entry : *entries) {
     const std::string name = entry.path().filename().string();
-    if (name.compare(0, kControlMaskSnapshotPrefix.size(), kControlMaskSnapshotPrefix) != 0)
+    if (name.compare(0, kControlMaskSnapshotPrefix.size(), kControlMaskSnapshotPrefix) != 0 &&
+        name.compare(0, kLegacyControlMaskSnapshotPrefix.size(), kLegacyControlMaskSnapshotPrefix) != 0)
       continue;
     auto opened_snapshot = root.OpenChild(name, "stale control-mask snapshot");
     if (!opened_snapshot.ok())
@@ -2072,7 +2083,7 @@ absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snaps
     const fs::path& game_dir,
     bool stable_validation_snapshot) {
   HM_RETURN_IF_ERROR(remove_stale_control_mask_snapshots(game_dir));
-  std::string pattern = (game_dir / ".hstream-control-mask-snapshot-XXXXXX").string();
+  std::string pattern = (game_dir / "hstream-control-mask-snapshot-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -2627,7 +2638,7 @@ absl::Status create_control_points(
   if (frame_pairs.empty()) {
     return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
-  std::string pattern = (fs::path(game_dir) / ".hstream-calibration-input-XXXXXX").string();
+  std::string pattern = (fs::path(game_dir) / "hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -2895,7 +2906,8 @@ absl::Status create_control_points(
 
 namespace {
 
-constexpr const char* kRinkTransactionPrefix = ".hstream-rink-";
+constexpr const char* kRinkTransactionPrefix = "hstream-rink-";
+constexpr const char* kLegacyRinkTransactionPrefix = ".hstream-rink-";
 
 absl::Status fsync_path(const fs::path& path, bool directory) {
   const int flags = O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0);
@@ -3009,8 +3021,10 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(kRinkTransactionPrefix, 0) != 0 || directory_name == ".hstream-rink-journal-v1" ||
-        directory_name == ".hstream-rink-recovery-pending")
+    const bool current_transaction = directory_name.rfind(kRinkTransactionPrefix, 0) == 0;
+    const bool legacy_transaction = directory_name.rfind(kLegacyRinkTransactionPrefix, 0) == 0 &&
+        directory_name != ".hstream-rink-journal-v1" && directory_name != ".hstream-rink-recovery-pending";
+    if (!current_transaction && !legacy_transaction)
       continue;
     auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
     if (!opened_transaction.ok())
@@ -4148,7 +4162,7 @@ absl::Status save_rink_profile_locked(
   auto pending_status = mark_transaction_recovery_pending(root, TransactionJournalKind::kRink);
   if (!pending_status.ok())
     return pending_status;
-  std::string pattern = (root / ".hstream-rink-XXXXXX").string();
+  std::string pattern = (root / "hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -4518,7 +4532,7 @@ absl::Status create_field_mask(
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
-  std::string pattern = (root / ".hstream-field-mask-input-XXXXXX").string();
+  std::string pattern = (root / "hstream-field-mask-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());

@@ -711,7 +711,7 @@ int main() {
         !interrupted_before_publication.ok(), "injected interruption after durable preparation must stop publication");
     bool durable_prepared_journal = false;
     for (const auto& entry : fs::directory_iterator(root)) {
-      if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-rink-", 0) == 0)
+      if (entry.is_directory() && entry.path().filename().string().rfind("hstream-rink-", 0) == 0)
         durable_prepared_journal = true;
     }
     ok &= expect(durable_prepared_journal, "durably prepared rink publication must retain its recovery journal");

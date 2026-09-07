@@ -1410,7 +1410,7 @@ int main() {
       !interrupted_before_publication.ok(), "injected interruption after durable preparation must stop publication");
   bool durable_prepared_journal = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0)
       durable_prepared_journal = true;
   }
   ok &= expect(durable_prepared_journal, "durably prepared Hugin publication must retain its recovery journal");
@@ -1449,7 +1449,7 @@ int main() {
   bool durable_partial_backup = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
     const fs::path backup = entry.path() / "previous" / "hm_project.pto";
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0 &&
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0 &&
         fs::is_regular_file(backup)) {
       fs::remove(backup);
       std::ofstream(backup) << "partial\n";
@@ -1483,7 +1483,7 @@ int main() {
       "durable backup completion must not remove root artifacts before replacement publication");
   fs::path rollback_transaction;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0) {
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0) {
       rollback_transaction = entry.path();
       break;
     }
@@ -1646,9 +1646,9 @@ int main() {
       prior << name << '\n';
   }
   std::ofstream(oversized_restore_root / "mapping_0000.tif", std::ios::trunc) << "replacement\n";
-  const bool oversized_restore_created =
-      ::truncate(
-          (oversized_restore_transaction / "previous" / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) == 0;
+  const bool oversized_restore_created = ::truncate(
+                                             (oversized_restore_transaction / "previous" / "mapping_0000.tif").c_str(),
+                                             2LL * 1024LL * 1024LL * 1024LL + 1) == 0;
   std::ofstream(oversized_restore_transaction / "journal_version") << "2\n";
   std::ofstream(oversized_restore_transaction / "state") << "BACKED_UP\n";
   const auto oversized_restore_recovery = hm::stitching::HuginProject::Recover(oversized_restore_root);
@@ -1854,7 +1854,7 @@ int main() {
       oversized_copy_error);
   const int oversized_mapping =
       ::open((oversized_generation_root / "mapping_0000_x.tif").c_str(), O_WRONLY | O_CLOEXEC);
-  const bool oversized_mapping_written = oversized_mapping >= 0 && ::ftruncate(oversized_mapping, 2LL << 30) == 0;
+  const bool oversized_mapping_written = oversized_mapping >= 0 && ::ftruncate(oversized_mapping, (2LL << 30) + 1) == 0;
   if (oversized_mapping >= 0)
     ::close(oversized_mapping);
   auto oversized_generation_lock = hm::stitching::HuginProject::RecoverAndLock(oversized_generation_root);
@@ -2193,7 +2193,7 @@ int main() {
   ok &= expect(second_reader_entered && second_reader_ok, "waiting Hugin reader must proceed after lock release");
   bool staging_left_behind = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0)
       staging_left_behind = true;
   }
   ok &= expect(!staging_left_behind, "private Hugin staging directory must be cleaned");

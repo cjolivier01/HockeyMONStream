@@ -47,9 +47,10 @@ constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kTiffMetadataAllowanceBytes = 16ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumTiffArtifactBytes = kHardMaximumArtifactPixels * 4 + kTiffMetadataAllowanceBytes;
+constexpr uint64_t kMaximumTiffArtifactBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPngArtifactBytes = 512ULL * 1024ULL * 1024ULL;
-constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
+constexpr const char* kStitchTransactionPrefix = "hstream-stitch-";
+constexpr const char* kLegacyStitchTransactionPrefix = ".hstream-stitch-";
 constexpr unsigned long kFuseSuperMagic = 0x65735546UL;
 constexpr unsigned long kMsDosSuperMagic = 0x4d44UL;
 constexpr unsigned long kExFatSuperMagic = 0x2011bab0UL;
@@ -118,7 +119,9 @@ absl::StatusOr<uint64_t> maximum_open_tiff_artifact_bytes(int descriptor, const 
   }
   const uint64_t payload_bits = pixels * samples * bits;
   const uint64_t payload_bytes = (payload_bits + 7) / 8;
-  return std::min(kMaximumTiffArtifactBytes, payload_bytes + kTiffMetadataAllowanceBytes);
+  if (payload_bytes > (kMaximumTiffArtifactBytes - kTiffMetadataAllowanceBytes) / 2)
+    return kMaximumTiffArtifactBytes;
+  return std::min(kMaximumTiffArtifactBytes, payload_bytes * 2 + kTiffMetadataAllowanceBytes);
 }
 
 absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const char* name, bool required) {
@@ -1761,8 +1764,10 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(kStitchTransactionPrefix, 0) != 0 || directory_name == ".hstream-stitch-journal-v1" ||
-        directory_name == ".hstream-stitch-recovery-pending")
+    const bool current_transaction = directory_name.rfind(kStitchTransactionPrefix, 0) == 0;
+    const bool legacy_transaction = directory_name.rfind(kLegacyStitchTransactionPrefix, 0) == 0 &&
+        directory_name != ".hstream-stitch-journal-v1" && directory_name != ".hstream-stitch-recovery-pending";
+    if (!current_transaction && !legacy_transaction)
       continue;
     auto opened_transaction = root_directory.OpenChild(directory_name, "stitch transaction directory");
     if (!opened_transaction.ok())
