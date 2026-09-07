@@ -127,6 +127,8 @@ constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
 constexpr int kRuntimeControlAckTimeoutMs = 3000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
+constexpr char kUiDirectoryName[] = "hstream-ui";
+constexpr char kLegacyUiDirectoryName[] = ".hstream-ui";
 constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
@@ -1812,7 +1814,7 @@ bool rename_entry_no_replace(
   return false;
 }
 
-constexpr char kUiCleanupDirectoryPrefix[] = ".hstream-cleanup-v2-";
+constexpr char kUiCleanupDirectoryPrefix[] = "hstream-cleanup-v2-";
 constexpr char kUiCleanupOwnerName[] = "owner";
 constexpr char kUiCleanupOwnerMagic[] = "hstream-cleanup-v2\n";
 constexpr char kUiCleanupCommittedName[] = "committed";
@@ -2103,7 +2105,7 @@ bool ui_cleanup_target_has_pending_transaction(
     return true;
   }
   static const QRegularExpression cleanup_name_pattern(
-      R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      R"(^\.?hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   bool pending = false;
   int scan_errno = 0;
   while (true) {
@@ -2349,7 +2351,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
     return false;
   }
   static const QRegularExpression cleanup_name_pattern(
-      R"(^\.hstream-cleanup-v2-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)",
+      R"(^\.?hstream-cleanup-v2-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)",
       QRegularExpression::CaseInsensitiveOption);
   static const QRegularExpression reconciliation_guard_name_pattern(
       R"(^\.hstream-reconcile-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(target|fallback)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)",
@@ -2361,7 +2363,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
   for (const QString& cleanup_name : names) {
     if (!cleanup_name_pattern.match(cleanup_name).hasMatch())
       continue;
-    const QString cleanup_id = cleanup_name.mid(static_cast<qsizetype>(std::strlen(kUiCleanupDirectoryPrefix)));
+    const QString cleanup_id = cleanup_name.right(36);
     const QByteArray encoded_cleanup = QFile::encodeName(cleanup_name);
     const int cleanup_fd =
         ::openat(parent_fd, encoded_cleanup.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
@@ -4284,11 +4286,12 @@ bool same_file_path(const QString& lhs, const QString& rhs) {
 
 bool is_ui_persistent_playtracker_config(const QString& path, const QString& game_dir) {
   const QFileInfo info(path);
-  const QString runtime_dir = QFileInfo(QDir(game_dir).filePath(".hstream-ui")).absoluteFilePath();
+  const QString runtime_dir = QFileInfo(QDir(game_dir).filePath(kUiDirectoryName)).absoluteFilePath();
+  const QString legacy_runtime_dir = QFileInfo(QDir(game_dir).filePath(kLegacyUiDirectoryName)).absoluteFilePath();
   const QString filename = info.fileName();
   const bool owned_name = filename == "play_tracker_config.yaml" ||
       (filename.startsWith("play_tracker_config_") && filename.endsWith(".yaml"));
-  return owned_name && info.absolutePath() == runtime_dir;
+  return owned_name && (info.absolutePath() == runtime_dir || info.absolutePath() == legacy_runtime_dir);
 }
 
 QString resolve_ui_persistent_playtracker_config(
@@ -13909,37 +13912,42 @@ void HStreamWindow::savePreset() {
   }
   width_constraint_check.reset();
   const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
-  const fs::path runtime_dir = config_path.parent_path() / ".hstream-ui";
   std::error_code cleanup_error;
   const auto stale_before = fs::file_time_type::clock::now() - std::chrono::hours(24);
-  for (fs::directory_iterator it(runtime_dir, cleanup_error), end; !cleanup_error && it != end;
-       it.increment(cleanup_error)) {
-    const std::string filename = it->path().filename().string();
-    if (filename.rfind("play_tracker_config_", 0) != 0 || it->path().extension() != ".yaml" ||
-        same_file_path(QString::fromStdString(it->path().string()), active_sidecar)) {
-      continue;
-    }
-    const fs::path retirement_marker =
-        fs::path(playtracker_sidecar_retirement_marker(QString::fromStdString(it->path().string())).toStdString());
-    if (!fs::is_regular_file(retirement_marker, cleanup_error) || cleanup_error) {
-      cleanup_error.clear();
-      continue;
-    }
-    const fs::file_time_type modified = fs::last_write_time(retirement_marker, cleanup_error);
-    if (cleanup_error || modified > stale_before) {
-      cleanup_error.clear();
-      continue;
-    }
-    fs::remove(it->path(), cleanup_error);
-    if (cleanup_error) {
-      appendLog(QString("could not remove stale playtracker config %1: %2")
-                    .arg(QString::fromStdString(it->path().string()), QString::fromStdString(cleanup_error.message())));
-      cleanup_error.clear();
-      continue;
-    }
-    fs::remove(retirement_marker, cleanup_error);
+  for (const char* runtime_name : {kUiDirectoryName, kLegacyUiDirectoryName}) {
     cleanup_error.clear();
+    const fs::path runtime_dir = config_path.parent_path() / runtime_name;
+    for (fs::directory_iterator it(runtime_dir, cleanup_error), end; !cleanup_error && it != end;
+         it.increment(cleanup_error)) {
+      const std::string filename = it->path().filename().string();
+      if (filename.rfind("play_tracker_config_", 0) != 0 || it->path().extension() != ".yaml" ||
+          same_file_path(QString::fromStdString(it->path().string()), active_sidecar)) {
+        continue;
+      }
+      const fs::path retirement_marker =
+          fs::path(playtracker_sidecar_retirement_marker(QString::fromStdString(it->path().string())).toStdString());
+      if (!fs::is_regular_file(retirement_marker, cleanup_error) || cleanup_error) {
+        cleanup_error.clear();
+        continue;
+      }
+      const fs::file_time_type modified = fs::last_write_time(retirement_marker, cleanup_error);
+      if (cleanup_error || modified > stale_before) {
+        cleanup_error.clear();
+        continue;
+      }
+      fs::remove(it->path(), cleanup_error);
+      if (cleanup_error) {
+        appendLog(
+            QString("could not remove stale playtracker config %1: %2")
+                .arg(QString::fromStdString(it->path().string()), QString::fromStdString(cleanup_error.message())));
+        cleanup_error.clear();
+        continue;
+      }
+      fs::remove(retirement_marker, cleanup_error);
+      cleanup_error.clear();
+    }
   }
+  cleanup_error.clear();
   if (invalidate_rink_masks) {
     appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
@@ -15291,7 +15299,7 @@ bool HStreamWindow::applySavedControlConfig(
       has_control(controls, "Max_Accel_Y_x10");
   if (has_playtracker_runtime_controls && game_id_edit_) {
     const QString game_dir = gameDirectory(game_id_edit_->text());
-    QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
+    QDir runtime_dir(QDir(game_dir).filePath(kUiDirectoryName));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
       appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
       return false;
@@ -15745,7 +15753,8 @@ void HStreamWindow::refreshVideoSets() {
           if (configured_paths.count(path) || !QFileInfo::exists(game_dir.filePath(path)))
             continue;
           for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
-            if (path.startsWith(QString(".hstream-ui/%1/").arg(role))) {
+            if (path.startsWith(QString("%1/%2/").arg(kUiDirectoryName, role)) ||
+                path.startsWith(QString("%1/%2/").arg(kLegacyUiDirectoryName, role))) {
               configured_paths.insert(path);
               add_item(role, path);
               break;
@@ -15895,7 +15904,7 @@ bool HStreamWindow::importVideoPath(const QString& source_path, QString* importe
     }
     target_dir.cd(cam_dir);
   } else if (is_explicit_role(role)) {
-    const QString ui_dir = ".hstream-ui";
+    const QString ui_dir = kUiDirectoryName;
     const QString role_dir = ui_dir + "/" + role;
     if (!target_dir.exists(ui_dir) && !target_dir.mkdir(ui_dir)) {
       appendLog(QString("failed to create UI metadata directory %1").arg(ui_dir));
@@ -16704,7 +16713,7 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
     return {};
   }
   const QString game_dir = gameDirectory(game_id);
-  QDir runtime_dir(QDir(game_dir).filePath(".hstream-ui"));
+  QDir runtime_dir(QDir(game_dir).filePath(kUiDirectoryName));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
     appendLog(QString("could not create playtracker runtime config directory %1").arg(runtime_dir.path()));
     return {};
