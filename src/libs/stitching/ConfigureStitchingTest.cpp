@@ -854,7 +854,7 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
   fs::create_directories(oversized_file_dir);
   if (!write_mapping_tiff(oversized_file_dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
       !write_mapping_tiff(oversized_file_dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f) ||
-      ::truncate((oversized_file_dir / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0) {
+      ::truncate((oversized_file_dir / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0) {
     return false;
   }
   setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
@@ -875,14 +875,13 @@ bool expect_canvas_constraint_checks_reject_oversized_artifacts(const fs::path& 
       return false;
     const auto metadata = hm::stitching::check_canvas_constraint_metadata_locked(dir, /*max_output_width=*/0);
     const auto full = hm::stitching::check_canvas_constraint_locked(dir, /*max_output_width=*/0);
-    return metadata.ok() && !metadata->artifacts_compatible && metadata->requires_regeneration && full.ok() &&
-        !full->artifacts_compatible && full->requires_regeneration;
+    return absl::IsResourceExhausted(metadata.status()) && absl::IsResourceExhausted(full.status());
   };
 
   const fs::path oversized_tiff = tmpdir / "oversized_canvas_check_tiff";
   fs::remove_all(oversized_tiff);
   if (!write_valid_stitching_artifacts(oversized_tiff) ||
-      ::truncate((oversized_tiff / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0 ||
+      ::truncate((oversized_tiff / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0 ||
       !rejects(oversized_tiff)) {
     std::cerr << "canvas compatibility checks must reject oversized TIFFs before parser access" << std::endl;
     return false;
@@ -1060,8 +1059,12 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   fs::create_directory(stale_snapshot);
   std::ofstream(stale_snapshot / "mapping_0000.tif", std::ios::binary) << "stale";
   std::ofstream(stale_snapshot / "left.png", std::ios::binary) << "stale validation input";
+  const fs::path visible_user_directory = dir / "hstream-control-mask-snapshot-ABC123";
+  fs::create_directory(visible_user_directory);
+  std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
   auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
   if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
+      !fs::exists(visible_user_directory / "notes.txt") ||
       !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif") ||
       !load->load_snapshot->verify().ok()) {
     std::cerr << "loader validation must retain a private stable artifact snapshot: " << load.status() << std::endl;

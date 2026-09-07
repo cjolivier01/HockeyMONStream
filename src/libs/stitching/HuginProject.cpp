@@ -1006,10 +1006,11 @@ absl::StatusOr<std::pair<int, int>> normalize_and_measure(TiffPlacement* first, 
   second->y -= minimum_y;
   const float width = std::max(first->x + first->width, second->x + second->width);
   const float height = std::max(first->y + first->height, second->y + second->height);
-  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0 ||
-      width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
+  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0) {
     return absl::FailedPreconditionError("Hugin mapping TIFFs produce an invalid canvas");
   }
+  if (width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
+    return absl::ResourceExhaustedError("Hugin mapping TIFF canvas exceeds integer dimension limits");
   return std::make_pair(static_cast<int>(width), static_cast<int>(height));
 }
 
@@ -1168,6 +1169,12 @@ absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
     std::error_code ignored;
     fs::remove_all(created, ignored);
     return absl::InternalError("Unable to make stitch staging directory private");
+  }
+  auto marker_status = write_owned_directory_marker(created, "journal_version", "2\n");
+  if (!marker_status.ok()) {
+    std::error_code ignored;
+    fs::remove_all(created, ignored);
+    return marker_status;
   }
   return fs::path(created);
 }

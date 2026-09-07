@@ -11060,7 +11060,7 @@ void HStreamWindow::startArchiveFinalization(
   }
   QTemporaryDir temporary_directory(
       QDir(target_info.absolutePath())
-          .filePath(QString(".%1.hstream-finalize-XXXXXX").arg(target_info.completeBaseName())));
+          .filePath(QString("%1-hstream-finalize-XXXXXX").arg(target_info.completeBaseName())));
   if (!temporary_directory.isValid()) {
     failArchiveFinalization(
         QString("Could not create a private temporary directory in %1.").arg(target_info.absolutePath()));

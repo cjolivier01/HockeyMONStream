@@ -96,8 +96,9 @@ constexpr uint64_t kMaximumParserSeamPngBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumAkazeCalibrationBytes = 1024ULL * 1024ULL;
-constexpr std::string_view kControlMaskSnapshotPrefix = "hstream-control-mask-snapshot-";
 constexpr std::string_view kLegacyControlMaskSnapshotPrefix = ".hstream-control-mask-snapshot-";
+constexpr std::string_view kOwnedDirectoryMarkerName = "journal_version";
+constexpr std::string_view kOwnedDirectoryMarkerContents = "2\n";
 
 struct AkazeCalibrationProfile {
   std::string contents;
@@ -636,15 +637,6 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
         pixels * samples > (std::numeric_limits<uint64_t>::max() - 7) / bits) {
       return absl::ResourceExhaustedError("Control-mask TIFF payload size overflows: " + path.string());
     }
-    const uint64_t payload_bytes = (pixels * samples * bits + 7) / 8;
-    constexpr uint64_t kMetadataAllowanceBytes = 16ULL * 1024ULL * 1024ULL;
-    const uint64_t maximum_encoded_bytes =
-        payload_bytes > (kMaximumParserPlacementTiffBytes - kMetadataAllowanceBytes) / 2
-        ? kMaximumParserPlacementTiffBytes
-        : payload_bytes * 2 + kMetadataAllowanceBytes;
-    if (static_cast<uint64_t>((*opened)->metadata.st_size) > maximum_encoded_bytes) {
-      return absl::ResourceExhaustedError("Control-mask TIFF has an oversized encoded payload: " + path.string());
-    }
     HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
     const int descriptor = std::exchange((*opened)->descriptor, -1);
     return PinnedLoadArtifact(name, descriptor, (*opened)->metadata);
@@ -817,8 +809,11 @@ absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
     return entries.status();
   for (const auto& entry : *entries) {
     const std::string name = entry.path().filename().string();
-    if (name.compare(0, kControlMaskSnapshotPrefix.size(), kControlMaskSnapshotPrefix) != 0 &&
-        name.compare(0, kLegacyControlMaskSnapshotPrefix.size(), kLegacyControlMaskSnapshotPrefix) != 0)
+    static const std::regex current_snapshot_pattern(R"(^hstream-control-mask-snapshot-[A-Za-z0-9]{6}$)");
+    const bool current_snapshot = std::regex_match(name, current_snapshot_pattern);
+    const bool legacy_snapshot =
+        name.compare(0, kLegacyControlMaskSnapshotPrefix.size(), kLegacyControlMaskSnapshotPrefix) == 0;
+    if (!current_snapshot && !legacy_snapshot)
       continue;
     auto opened_snapshot = root.OpenChild(name, "stale control-mask snapshot");
     if (!opened_snapshot.ok())
@@ -826,6 +821,14 @@ absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
     if (!opened_snapshot->has_value())
       continue;
     PinnedDirectory snapshot = std::move(**opened_snapshot);
+    if (current_snapshot) {
+      auto owned =
+          owned_directory_marker_matches(snapshot.path(), kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+      if (!owned.ok())
+        return owned.status();
+      if (!*owned)
+        continue;
+    }
     auto snapshot_entries = directory_entries(snapshot.path(), "stale control-mask snapshot", 16);
     if (!snapshot_entries.ok())
       return snapshot_entries.status();
@@ -834,7 +837,7 @@ absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
       const fs::file_type type = artifact.symlink_status(error).type();
       const std::string artifact_name = artifact.path().filename().string();
       if (error ||
-          (!is_control_mask_load_artifact_name(artifact_name) &&
+          (artifact_name != kOwnedDirectoryMarkerName && !is_control_mask_load_artifact_name(artifact_name) &&
            !is_stitch_validation_snapshot_artifact_name(artifact_name)) ||
           (type != fs::file_type::regular && type != fs::file_type::symlink)) {
         return absl::FailedPreconditionError("Invalid stale control-mask snapshot entry: " + artifact_name);
@@ -900,10 +903,13 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
 
   const float x_px = xpos * xres;
   const float y_px = ypos * yres;
-  if (!std::isfinite(xpos) || !std::isfinite(ypos) || !std::isfinite(x_px) || !std::isfinite(y_px) ||
-      x_px < std::numeric_limits<int>::lowest() || x_px > std::numeric_limits<int>::max() ||
-      y_px < std::numeric_limits<int>::lowest() || y_px > std::numeric_limits<int>::max()) {
+  if (!std::isfinite(xpos) || !std::isfinite(ypos) || !std::isfinite(x_px) || !std::isfinite(y_px)) {
     return absl::InvalidArgumentError(TO_STRING("Invalid TIFF placement: " << path.string()));
+  }
+  if (x_px < std::numeric_limits<int>::lowest() || x_px > std::numeric_limits<int>::max() ||
+      y_px < std::numeric_limits<int>::lowest() || y_px > std::numeric_limits<int>::max()) {
+    return absl::ResourceExhaustedError(
+        TO_STRING("TIFF placement exceeds integer coordinate limits: " << path.string()));
   }
 
   return TiffPlacement{
@@ -924,10 +930,11 @@ absl::StatusOr<CanvasSize> normalize_and_measure_canvas(TiffPlacement* p0, TiffP
 
   const float width = std::max(p0->x_px + p0->width, p1->x_px + p1->width);
   const float height = std::max(p0->y_px + p0->height, p1->y_px + p1->height);
-  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0 ||
-      width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
+  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0) {
     return absl::FailedPreconditionError("Mapping TIFFs produce an invalid canvas");
   }
+  if (width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
+    return absl::ResourceExhaustedError("Mapping TIFF canvas exceeds integer dimension limits");
   const auto canvas_width = static_cast<size_t>(width);
   const auto canvas_height = static_cast<size_t>(height);
   if (canvas_width > kHardMaximumArtifactDimension || canvas_height > kHardMaximumArtifactDimension ||
@@ -1971,7 +1978,7 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   }
   const absl::Status remap_status = validate_remap_artifact_headers(fs::path(game_dir), p0, p1);
   if (absl::IsFailedPrecondition(remap_status) || absl::IsInvalidArgument(remap_status) ||
-      absl::IsNotFound(remap_status) || absl::IsResourceExhausted(remap_status)) {
+      absl::IsNotFound(remap_status)) {
     std::cout << "Stitching artifacts exist but remap TIFF metadata is invalid: " << remap_status << std::endl;
     return false;
   }
@@ -2094,6 +2101,8 @@ absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snaps
   auto snapshot = std::make_unique<StitchingArtifactLoadSnapshot>(std::move(snapshot_impl));
   if (::chmod(created, 0700) != 0)
     return absl::InternalError("Unable to protect the stable control-mask load snapshot");
+  HM_RETURN_IF_ERROR(
+      write_owned_directory_marker(snapshot->directory(), kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents));
   HM_RETURN_IF_ERROR(wait_at_test_stitch_phase(
       "HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS",
       "HM_TEST_STITCH_LOAD_SNAPSHOT_MARKER",
@@ -2906,7 +2915,6 @@ absl::Status create_control_points(
 
 namespace {
 
-constexpr const char* kRinkTransactionPrefix = "hstream-rink-";
 constexpr const char* kLegacyRinkTransactionPrefix = ".hstream-rink-";
 
 absl::Status fsync_path(const fs::path& path, bool directory) {
@@ -3021,7 +3029,8 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    const bool current_transaction = directory_name.rfind(kRinkTransactionPrefix, 0) == 0;
+    static const std::regex current_transaction_pattern(R"(^hstream-rink-[A-Za-z0-9]{6}$)");
+    const bool current_transaction = std::regex_match(directory_name, current_transaction_pattern);
     const bool legacy_transaction = directory_name.rfind(kLegacyRinkTransactionPrefix, 0) == 0 &&
         directory_name != ".hstream-rink-journal-v1" && directory_name != ".hstream-rink-recovery-pending";
     if (!current_transaction && !legacy_transaction)
@@ -3032,6 +3041,14 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
     if (!opened_transaction->has_value())
       continue;
     PinnedDirectory transaction_directory = std::move(**opened_transaction);
+    if (current_transaction) {
+      auto owned = owned_directory_marker_matches(
+          transaction_directory.path(), kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+      if (!owned.ok())
+        return owned.status();
+      if (!*owned)
+        continue;
+    }
     const fs::path transaction = transaction_directory.path();
     auto state = read_rink_transaction_state(transaction);
     if (!state.ok())
@@ -4181,6 +4198,7 @@ absl::Status save_rink_profile_locked(
   } cleanup{staging};
   if (::chmod(staging.c_str(), 0700) != 0)
     return absl::InternalError("Unable to protect rink staging directory");
+  HM_RETURN_IF_ERROR(write_owned_directory_marker(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents));
 
   for (size_t index = 0; index < profile.masks.size(); ++index) {
     const cv::Mat& mask = profile.masks[index];

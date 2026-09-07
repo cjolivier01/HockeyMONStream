@@ -6892,7 +6892,7 @@ bool test_output_controls(HStreamWindow* window) {
           argument_text.contains(QRegularExpression(R"(-i\n/proc/self/fd/[0-9]+\n)")) &&
           !argument_text.contains("/proc/self/fd/197") && !argument_text.contains("/proc/self/fd/198") &&
           argument_text.contains(
-              QString("/.%1-tracking_output-with-audio.hstream-finalize-").arg(window->gameIdText())) &&
+              QString("/%1-tracking_output-with-audio-hstream-finalize-").arg(window->gameIdText())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
           argument_text.contains("-tag:v\nhvc1") &&
           window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),

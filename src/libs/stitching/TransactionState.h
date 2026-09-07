@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -89,6 +90,18 @@ absl::StatusOr<std::string> read_bounded_regular_file_no_follow(
     const std::filesystem::path& path,
     size_t maximum_bytes,
     const std::string& description);
+
+// Creates and validates a small, no-follow ownership marker used to
+// distinguish generated visible work directories from user directories that
+// merely share a prefix.
+absl::Status write_owned_directory_marker(
+    const std::filesystem::path& directory,
+    std::string_view marker_name,
+    std::string_view contents);
+absl::StatusOr<bool> owned_directory_marker_matches(
+    const std::filesystem::path& directory,
+    std::string_view marker_name,
+    std::string_view contents);
 
 // Snapshots one opened regular file into a rollback directory without following
 // symlinks or trusting that the source pathname remains bound to the same inode.
