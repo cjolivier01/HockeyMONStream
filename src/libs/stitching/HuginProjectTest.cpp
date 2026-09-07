@@ -1090,6 +1090,12 @@ int main() {
   hm::stitching::HuginProject::Options opencv_options;
   opencv_options.mapping_backend = hm::stitching::MappingBackend::kOpenCvAffineRansac;
   opencv_options.max_canvas_dimension = 96;
+  bool opencv_canvas_started = false;
+  bool opencv_alignment_complete = false;
+  opencv_options.progress = [&](const std::string& stage, const std::string& status, const std::string&) {
+    opencv_canvas_started |= stage == "canvas" && status == "started";
+  };
+  opencv_options.alignment_complete = [&] { opencv_alignment_complete = true; };
   std::vector<hm::stitching::FeatureMatch> opencv_matches;
   for (int y = 6; y < 48; y += 10) {
     for (int x = 16; x < 64; x += 10) {
@@ -1099,6 +1105,18 @@ int main() {
            0.9f});
     }
   }
+  std::vector<hm::stitching::FeatureMatch> rejected_opencv_matches(16, {{20.0f, 20.0f}, {12.0f, 23.0f}, 0.9f});
+  fs::create_directories(root / "opencv-rejected-game");
+  const auto rejected_opencv = hm::stitching::HuginProject::Configure(
+      root / "opencv-rejected-game",
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      rejected_opencv_matches,
+      opencv_options);
+  ok &= expect(
+      !rejected_opencv.ok() && opencv_canvas_started && !opencv_alignment_complete,
+      "an OpenCV geometry rejection after canvas progress starts must remain before the alignment-complete boundary");
+  opencv_canvas_started = false;
   const auto opencv_configured = hm::stitching::HuginProject::Configure(
       opencv_game,
       root / "private-inputs" / "left.png",
@@ -1107,7 +1125,9 @@ int main() {
       opencv_options);
   if (!opencv_configured.ok())
     std::cerr << opencv_configured << '\n';
-  ok &= expect(opencv_configured.ok(), "OpenCV mapping backend must not require autooptimiser");
+  ok &= expect(
+      opencv_configured.ok() && opencv_canvas_started && opencv_alignment_complete,
+      "OpenCV mapping backend must not require autooptimiser and must report accepted geometry before seam work");
   ok &= expect(
       fs::is_regular_file(opencv_game / "autooptimiser_out.pto") &&
           fs::is_regular_file(opencv_game / "mapping_0000.tif") &&

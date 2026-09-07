@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
@@ -1334,21 +1335,20 @@ absl::StatusOr<StitchCameraSelection> read_camera_selection_node(const YAML::Nod
   return read_stitch_camera_selection(wrapper);
 }
 
-absl::StatusOr<StitchCameraSelection> read_worker_camera_selection(
-    const YAML::Node& config,
-    const StitchCameraSelection& expected) {
-  YAML::Node wrapper = config && config.IsDefined() ? YAML::Clone(config) : YAML::Node(YAML::NodeType::Map);
-  YAML::Node configurations = wrapper["stitching"]["camera_configs"];
-  if (!configurations || !configurations.IsMap()) {
-    configurations = YAML::Node(YAML::NodeType::Map);
-    configurations["gopro-mission-1"]["display_name"] = "GoPro Mission 1";
-    configurations["gopro-mission-1"]["horizontal_fov"] = 127.2;
-    configurations["gopro-mission-1"]["vertical_fov"] = 95.0;
-    configurations[expected.configuration]["display_name"] = expected.configuration;
-    configurations[expected.configuration]["horizontal_fov"] = expected.horizontal_fov;
-    configurations[expected.configuration]["vertical_fov"] = expected.vertical_fov;
+absl::StatusOr<StitchCameraSelection> read_worker_camera_selection(const YAML::Node& config) {
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok())
+    return baseline.status();
+  YAML::Node effective = YAML::Clone(baseline->values);
+  const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+  if (stitching && !stitching.IsNull() && !stitching.IsMap())
+    return absl::InvalidArgumentError("stitching must be a map");
+  for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching[key] : YAML::Node();
+    if (value && value.IsDefined())
+      effective["stitching"][key] = YAML::Clone(value);
   }
-  return read_stitch_camera_selection(wrapper);
+  return read_stitch_camera_selection(effective);
 }
 
 absl::Status validate_backend_generation_claim(
@@ -1466,7 +1466,7 @@ absl::Status validate_backend_generation_claim(
     }
     const bool worker_framing_matches =
         *parsed_expected_backend != MappingBackend::kNona || *worker_framing == expected_choices.projection_framing;
-    auto worker_camera = read_worker_camera_selection(config, expected_choices.camera);
+    auto worker_camera = read_worker_camera_selection(config);
     if (!worker_camera.ok())
       return worker_camera.status();
     const bool worker_tuple_matches =

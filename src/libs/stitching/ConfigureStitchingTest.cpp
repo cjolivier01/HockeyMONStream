@@ -31,7 +31,21 @@ bool expect_candidate_retry_policy_preserves_late_failure() {
   const absl::Status geometry_failure = absl::FailedPreconditionError("candidate geometry rejected");
   const absl::Status missing_candidate_input = absl::NotFoundError("candidate input unavailable");
   const absl::Status seam_failure = absl::FailedPreconditionError("enblend failed to generate seam_file.png");
-  return hm::stitching::should_retry_stitching_calibration_candidate(geometry_failure, false) &&
+  // OpenCV emits canvas/started before MAGSAC or affine fitting. The first
+  // rejected hypothesis must therefore remain retryable until the backend's
+  // explicit alignment-complete callback, allowing a later candidate to win.
+  bool accepted_later_candidate = false;
+  for (const auto& attempt : {geometry_failure, absl::OkStatus()}) {
+    if (attempt.ok()) {
+      accepted_later_candidate = true;
+      break;
+    }
+    if (!hm::stitching::should_retry_stitching_calibration_candidate(attempt, /*alignment_complete=*/false)) {
+      break;
+    }
+  }
+  return accepted_later_candidate &&
+      hm::stitching::should_retry_stitching_calibration_candidate(geometry_failure, false) &&
       hm::stitching::should_retry_stitching_calibration_candidate(missing_candidate_input, false) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(seam_failure, true) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(absl::InternalError("publication failed"), true);

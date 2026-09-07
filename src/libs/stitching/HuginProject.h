@@ -78,6 +78,10 @@ class HuginProject {
     std::optional<StitchingBackendChoices> expected_backend_choices;
     AkazeMatchingCalibration akaze_calibration;
     ProgressCallback progress;
+    // Called once the candidate's geometric alignment has succeeded. Failures
+    // after this boundary are canvas, seam, validation, or publication errors
+    // and must not be hidden by trying a different sampled frame.
+    std::function<void()> alignment_complete;
     std::function<bool()> is_cancelled;
   };
 

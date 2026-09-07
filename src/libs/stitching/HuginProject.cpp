@@ -1998,6 +1998,8 @@ absl::Status HuginProject::Configure(
     status = run_autooptimiser(*autooptimiser, staging, options.is_cancelled);
     if (!status.ok())
       return status;
+    if (options.alignment_complete)
+      options.alignment_complete();
     if (options.progress)
       options.progress("optimizer", "complete", "Panorama alignment optimized");
   } else {
@@ -2183,6 +2185,8 @@ absl::Status HuginProject::Configure(
         options.akaze_calibration);
     if (!maps.ok())
       return maps.status();
+    if (options.alignment_complete)
+      options.alignment_complete();
     source_canvas = {maps->source_canvas_width, maps->source_canvas_height};
     max_output_width_applied = maps->max_output_width_applied;
     max_canvas_dimension_applied = maps->max_canvas_dimension_applied;

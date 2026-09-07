@@ -2604,8 +2604,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       camera};
 }
 
-bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool canvas_started) {
-  return !canvas_started && (absl::IsFailedPrecondition(status) || absl::IsNotFound(status));
+bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool alignment_complete) {
+  return !alignment_complete && (absl::IsFailedPrecondition(status) || absl::IsNotFound(status));
 }
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
@@ -2861,28 +2861,23 @@ absl::Status create_control_points(
                       : TO_STRING(
                             "stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()))
               << " with " << selected.size() << " selected control points" << std::endl;
-    bool canvas_started = false;
+    bool alignment_complete = false;
     HuginProject::Options candidate_options = options;
     candidate_options.progress = [&](const std::string& stage, const std::string& status, const std::string& message) {
-      if (stage == "canvas" && status == "started")
-        canvas_started = true;
       if (options.progress)
         options.progress(stage, status, message);
     };
+    candidate_options.alignment_complete = [&] { alignment_complete = true; };
     absl::Status configure_status = HuginProject::Configure(
-        game_dir,
-        input_files[candidate.index].first,
-        input_files[candidate.index].second,
-        selected,
-        candidate_options);
+        game_dir, input_files[candidate.index].first, input_files[candidate.index].second, selected, candidate_options);
     if (configure_status.ok()) {
       return absl::OkStatus();
     }
-    // Once alignment has completed, failures belong to canvas generation,
-    // seam validation, or transactional publication. Trying another sampled
-    // frame repeats the expensive nona/enblend work and ultimately disguises
-    // the real operational error as a generic non-overlap failure.
-    if (!should_retry_stitching_calibration_candidate(configure_status, canvas_started))
+    // Once the selected backend has accepted the candidate geometry, failures
+    // belong to canvas generation, seam validation, or transactional
+    // publication. Trying another sampled frame repeats expensive work and
+    // ultimately disguises the real operational error as non-overlap.
+    if (!should_retry_stitching_calibration_candidate(configure_status, alignment_complete))
       return configure_status;
     last_candidate_status = configure_status;
     std::cerr << "Skipping "

@@ -31,12 +31,12 @@ defaults:
   # Optional source-camera FOV override pair; set both or neither. horizontal is passed to
   # pto_gen -f before optimization; vertical is retained by the stitching
   # configuration but is not consumed by the current Hugin toolchain.
-  camera_horizontal_fov: 127.2
-  camera_vertical_fov: 95
+  camera_horizontal_fov: null
+  camera_vertical_fov: null
   # Output-panorama framing passed to pano_modify after autooptimiser. HStream
   # currently exposes panorama HFOV only, although pano_modify also supports
   # an HFOVxVFOV form. Projection framing is effective only with nona.
-  auto_fov: false
+  auto_fov: true
   horizontal_fov: 180  # Retained in metadata but ignored while auto_fov is true.
   auto_canvas: true
   auto_crop: false

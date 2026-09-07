@@ -84,6 +84,9 @@ class ProjectionFrameConfigTest(unittest.TestCase):
     cases = capture.expand_cases(config)
     self.assertEqual(config["defaults"]["camera_config"], "gopro-mission-1")
     self.assertTrue(all(case["camera_config"] == "gopro-mission-1" for case in cases))
+    self.assertTrue(all(case["camera_horizontal_fov"] is None for case in cases))
+    self.assertTrue(all(case["camera_vertical_fov"] is None for case in cases))
+    self.assertTrue(all(bool(case["auto_fov"]) for case in cases if "auto" in str(case["label"])))
 
   def test_output_name_describes_effective_projection_config(self) -> None:
     state = {

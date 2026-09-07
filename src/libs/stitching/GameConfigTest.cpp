@@ -844,6 +844,38 @@ stitching:
         "backends");
   }
 
+  YAML::Node camera_override_generation(YAML::NodeType::Map);
+  camera_override_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  camera_override_generation["stitching"]["mapping_backend"] = "opencv-magsac";
+  camera_override_generation["stitching"]["projection"] = "rectilinear";
+  camera_override_generation["stitching"]["run_autooptimizer"] = false;
+  camera_override_generation["stitching"]["camera_config"] = "gopro-mission-1";
+  camera_override_generation["stitching"]["camera_fov"]["horizontal_fov"] = 126.5;
+  camera_override_generation["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  camera_override_generation["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "camera-override-generation";
+  hm::stitching::StitchingBackendChoices overridden_camera_choices{
+      "superpoint-lightglue", "opencv-magsac", "rectilinear", false};
+  overridden_camera_choices.camera = {"gopro-mission-1", 126.5, 95.0};
+  const absl::Status camera_override_reserved = hm::stitching::reserve_stitching_backend_generation_in_config(
+      camera_override_generation, "camera-override-generation", overridden_camera_choices);
+  YAML::Node removed_camera_override = YAML::Clone(camera_override_generation);
+  removed_camera_override["stitching"].remove("camera_fov");
+  YAML::Node nulled_camera_override = YAML::Clone(camera_override_generation);
+  nulled_camera_override["stitching"]["camera_fov"]["horizontal_fov"] = YAML::Node(YAML::NodeType::Null);
+  ok &= expect(
+      camera_override_reserved.ok() &&
+          hm::stitching::validate_stitching_backend_generation(
+              camera_override_generation, "camera-override-generation", overridden_camera_choices)
+              .ok() &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  removed_camera_override, "camera-override-generation", overridden_camera_choices)) &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  nulled_camera_override, "camera-override-generation", overridden_camera_choices)),
+      "removing or nulling a camera FOV override during calibration must restore the baseline preset and fence "
+      "publication of stale maps");
+
   YAML::Node parameter_generation(YAML::NodeType::Map);
   parameter_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   parameter_generation["stitching"]["mapping_backend"] = "nona";
