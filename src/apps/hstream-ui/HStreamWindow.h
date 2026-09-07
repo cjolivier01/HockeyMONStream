@@ -379,6 +379,10 @@ class HStreamWindow : public QMainWindow {
   QString stitchFrameTime() const;
   QString controlPointMatcher() const;
   QString mappingBackend() const;
+  hm::stitching::StitchCameraSelection stitchCameraSelection() const;
+  absl::StatusOr<hm::stitching::StitchCameraSelection> stitchCameraSelectionFromGameConfig(
+      const YAML::Node& config) const;
+  void applyCameraConfigurationDefaults();
   QString stitchProjection() const;
   std::vector<double> stitchProjectionParameters() const;
   hm::stitching::StitchProjectionFraming stitchProjectionFraming() const;
@@ -497,6 +501,9 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* run_autooptimizer_check_{nullptr};
   QComboBox* control_point_matcher_combo_{nullptr};
   QComboBox* mapping_backend_combo_{nullptr};
+  QComboBox* camera_configuration_combo_{nullptr};
+  QDoubleSpinBox* camera_horizontal_fov_spin_{nullptr};
+  QDoubleSpinBox* camera_vertical_fov_spin_{nullptr};
   QComboBox* projection_combo_{nullptr};
   std::array<QLabel*, 3> projection_parameter_labels_{{nullptr, nullptr, nullptr}};
   std::array<QDoubleSpinBox*, 3> projection_parameter_spins_{{nullptr, nullptr, nullptr}};
@@ -688,6 +695,7 @@ class HStreamWindow : public QMainWindow {
   QString active_stitch_frame_time_;
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
+  hm::stitching::StitchCameraSelection active_camera_selection_;
   QString active_projection_;
   std::vector<double> active_projection_parameters_;
   hm::stitching::StitchProjectionFraming active_projection_framing_;
@@ -729,6 +737,8 @@ class HStreamWindow : public QMainWindow {
   bool default_run_autooptimizer_{false};
   QString default_control_point_matcher_{"superpoint-lightglue"};
   QString default_mapping_backend_{"opencv-magsac"};
+  std::vector<hm::stitching::StitchCameraConfiguration> camera_configurations_;
+  hm::stitching::StitchCameraSelection default_camera_selection_;
   QString default_projection_{"rectilinear"};
   std::map<QString, std::vector<double>> default_projection_parameters_;
   hm::stitching::StitchProjectionFraming default_projection_framing_;
@@ -744,6 +754,7 @@ class HStreamWindow : public QMainWindow {
   QString saved_stitch_frame_time_;
   QString saved_control_point_matcher_;
   QString saved_mapping_backend_;
+  hm::stitching::StitchCameraSelection saved_camera_selection_;
   QString saved_projection_;
   std::map<QString, std::vector<double>> projection_parameter_values_;
   std::map<QString, double> projection_fov_values_;

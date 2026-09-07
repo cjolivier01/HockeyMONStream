@@ -36,6 +36,7 @@ cc_library(
   deps = [
     ":stitching_algorithms",
     ":transaction_state",
+    "//src/libs/common:status",
     "@yaml-cpp",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
@@ -118,6 +119,7 @@ cc_library(
     ":live_stitching_generation",
     ":rink_segmentation",
     ":transaction_state",
+    "//src/libs/common:baseline_config",
     "//src/libs/common:utils",
     "@hm-cupano//src/pano:cuda_matrix",
     "@yaml-cpp",

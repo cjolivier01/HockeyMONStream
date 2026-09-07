@@ -26,6 +26,16 @@ resources:
 
 defaults:
   mapping_backend: nona
+  # Source-camera preset identifier from baseline.yaml. Cases may override it.
+  camera_config: gopro-mission-1
+  # Optional source-camera FOV override pair; set both or neither. horizontal is passed to
+  # pto_gen -f before optimization; vertical is retained by the stitching
+  # configuration but is not consumed by the current Hugin toolchain.
+  camera_horizontal_fov: null
+  camera_vertical_fov: null
+  # Output-panorama framing passed to pano_modify after autooptimiser. HStream
+  # currently exposes panorama HFOV only, although pano_modify also supports
+  # an HFOVxVFOV form. Projection framing is effective only with nona.
   auto_fov: true
   horizontal_fov: 180  # Retained in metadata but ignored while auto_fov is true.
   auto_canvas: true
@@ -39,38 +49,60 @@ defaults:
 # representative AUTO-FOV case. The four parameterized projections get ten
 # cases apiece, including AUTO FOV and fixed 170/180/190-degree views.
 projections:
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 179), auto_canvas, auto_crop; parameters: none.
   - name: rectilinear
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: cylindrical
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: equirectangular
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: full-frame-fisheye
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 359), auto_canvas, auto_crop; parameters: none.
   - name: stereographic
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: mercator
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 179), auto_canvas, auto_crop; parameters: none.
   - name: transverse-mercator
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: sinusoidal
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: lambert-cylindrical-equal-area
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: lambert-azimuthal-equal-area
     variants:
       - {label: auto-fov, parameters: []}
 
-  # Parameters: first and second standard parallels (phi1, phi2), each -90..90.
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: phi1
+  # and phi2 standard parallels (each -90..90).
   - name: albers-equal-area-conic
     variants:
       - {label: default-auto, parameters: [0, 60]}
@@ -84,26 +116,40 @@ projections:
       - {label: asymmetric-fov180, parameters: [-30, 60], auto_fov: false, horizontal_fov: 180}
       - {label: cropped-fov190, parameters: [15, 75], auto_fov: false, horizontal_fov: 190, auto_crop: true}
 
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: miller-cylindrical
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 359), auto_canvas, auto_crop; parameters: none.
   - name: panini
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: architectural
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 180), auto_canvas, auto_crop; parameters: none.
   - name: orthographic
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: equisolid
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 359), auto_canvas, auto_crop; parameters: none.
   - name: equirectangular-panini
     variants:
       - {label: auto-fov, parameters: []}
 
-  # Parameters: plane angle alpha (1..179), rounded-corner switch (0 or 1).
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum alpha + 179, capped at 360), auto_canvas,
+  # auto_crop; parameters: plane angle alpha (1..179), corners switch (0 or 1).
   - name: biplane
     variants:
       - {label: default-auto, parameters: [45, 0]}
@@ -117,7 +163,9 @@ projections:
       - {label: narrow-rounded-fov180, parameters: [15, 1], auto_fov: false, horizontal_fov: 180}
       - {label: retained-canvas-fov190, parameters: [60, 1], auto_fov: false, horizontal_fov: 190, auto_canvas: false}
 
-  # Parameter: side-plane angle alpha (1..120).
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 2*alpha + 179, capped at 360), auto_canvas,
+  # auto_crop; parameter: side-plane angle alpha (1..120).
   - name: triplane
     variants:
       - {label: default-auto, parameters: [60]}
@@ -131,9 +179,10 @@ projections:
       - {label: cropped-fov180, parameters: [45], auto_fov: false, horizontal_fov: 180, auto_crop: true}
       - {label: retained-canvas-fov190, parameters: [90], auto_fov: false, horizontal_fov: 190, auto_canvas: false}
 
-  # Parameters: compression Cmpr (0..150), top squeeze and bottom squeeze
-  # (-100..100). Fixed wide-FOV cases use Cmpr=100, whose Hugin FOV limit
-  # comfortably includes 170/180/190 degrees.
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (Cmpr-dependent limit), auto_canvas, auto_crop; parameters:
+  # compression Cmpr (0..150), top squeeze Tops and bottom squeeze Bots
+  # (-100..100). Cmpr=100 supports the fixed 170/180/190-degree cases below.
   - name: general-panini
     variants:
       - {label: default-auto, parameters: [100, 0, 0]}
@@ -147,9 +196,13 @@ projections:
       - {label: soft-squeeze-fov180, parameters: [100, -50, -50], auto_fov: false, horizontal_fov: 180}
       - {label: asymmetric-cropped-fov190, parameters: [100, 40, -40], auto_fov: false, horizontal_fov: 190, auto_crop: true}
 
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: thoby
     variants:
       - {label: auto-fov, parameters: []}
+  # Inputs: camera_horizontal_fov, camera_vertical_fov; auto_fov,
+  # horizontal_fov (maximum 360), auto_canvas, auto_crop; parameters: none.
   - name: hammer-aitoff
     variants:
       - {label: auto-fov, parameters: []}

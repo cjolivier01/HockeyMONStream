@@ -248,8 +248,7 @@ SliderStyleGeometry slider_style_geometry(const QSlider* slider) {
     option.state |= QStyle::State_Horizontal;
   else
     option.state &= ~QStyle::State_Horizontal;
-  const QRect handle =
-      slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, slider);
+  const QRect handle = slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, slider);
   const QPoint handle_center = slider->orientation() == Qt::Horizontal
       ? QPoint(handle.left() + handle.width() / 2, handle.center().y())
       : QPoint(handle.center().x(), handle.top() + handle.height() / 2);
@@ -2607,6 +2606,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* camera_configuration = require_child<QComboBox>(window, "stitchCameraConfigurationCombo");
+  auto* camera_horizontal_fov = require_child<QDoubleSpinBox>(window, "cameraHorizontalFovSpin");
+  auto* camera_vertical_fov = require_child<QDoubleSpinBox>(window, "cameraVerticalFovSpin");
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   auto* panini_compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
   auto* panini_top_squeeze = require_child<QDoubleSpinBox>(window, "generalPaniniTopSqueezeSpin");
@@ -2620,6 +2622,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* save_preset_button = require_child<QPushButton>(window, "savePresetButton");
   auto* control_point_matcher_label = require_child<QLabel>(window, "controlPointMatcherLabel");
   auto* mapping_backend_label = require_child<QLabel>(window, "mappingBackendLabel");
+  auto* camera_configuration_label = require_child<QLabel>(window, "stitchCameraConfigurationLabel");
+  auto* camera_horizontal_fov_label = require_child<QLabel>(window, "cameraHorizontalFovLabel");
+  auto* camera_vertical_fov_label = require_child<QLabel>(window, "cameraVerticalFovLabel");
   auto* projection_label = require_child<QLabel>(window, "stitchProjectionLabel");
   auto* stitch_max_output_width_label = require_child<QLabel>(window, "stitchMaxOutputWidthLabel");
   std::array<QLabel*, 3> projection_parameter_labels = {
@@ -2694,27 +2699,25 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* log_panel = require_child<QWidget>(window, "logPanel");
   auto* pipeline_process = window->findChild<QProcess*>();
   if (!stop || !start || !pause || !restart || !mode || !control_points || !calibration_frame_count ||
-      !stitch_frame_time ||
-      !control_point_matcher || !mapping_backend || !projection || !panini_compression || !panini_top_squeeze ||
+      !stitch_frame_time || !control_point_matcher || !mapping_backend || !camera_configuration ||
+      !camera_horizontal_fov || !camera_vertical_fov || !projection || !panini_compression || !panini_top_squeeze ||
       !panini_bottom_squeeze || !projection_auto_fov || !projection_horizontal_fov || !projection_auto_canvas ||
-      !projection_auto_crop || !control_point_matcher_label || !mapping_backend_label || !projection_label ||
-      !stitch_max_output_width || !run_autooptimizer || !save_preset_button || !stitch_max_output_width_label ||
-      !projection_parameter_labels[0] || !projection_parameter_labels[1] || !projection_parameter_labels[2] ||
-      !clean_stitching || !game_id || !rotate || !max_speed_x || !bring_up_shadows || !render_video ||
-      !show_player_tracking ||
-      !show_play_tracking || !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter ||
-      !setup_preview_splitter || !output_routing || !preview_tabs || !pipeline_inspector || !program_host ||
-      !preview_surface || !preview_target || !stitched_surface || !stitched_target || !stitched_host || !camera1_host ||
-      !camera1_surface || !camera1_target || !camera1_focus || !camera2_host || !camera2_surface || !camera2_target ||
-      !camera2_focus || !camera3_host || !camera3_surface || !camera3_target || !camera3_focus || !external_notice ||
-      !camera1_notice || !stitched_status || !preview_status || !program_controls || !program_controls_toggle ||
-      !stitched_controls || !stitched_controls_toggle || !stitched_bring_up_shadows || !stitched_exposure ||
-      !stitched_lift_black_point || !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll ||
-      !algorithms_page || !program_control_tabs || !stitched_control_tabs || !program_controls_splitter ||
-      !stitched_controls_splitter || !program_focus || !stitched_focus || !top_bar || !setup_row || !log_panel ||
-      !playback_progress ||
-      !seek_slider || !seek_back ||
-      !seek_forward || !seek_position || !pipeline_process) {
+      !projection_auto_crop || !control_point_matcher_label || !mapping_backend_label || !camera_configuration_label ||
+      !camera_horizontal_fov_label || !camera_vertical_fov_label || !projection_label || !stitch_max_output_width ||
+      !run_autooptimizer || !save_preset_button || !stitch_max_output_width_label || !projection_parameter_labels[0] ||
+      !projection_parameter_labels[1] || !projection_parameter_labels[2] || !clean_stitching || !game_id || !rotate ||
+      !max_speed_x || !bring_up_shadows || !render_video || !show_player_tracking || !show_play_tracking ||
+      !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter || !setup_preview_splitter ||
+      !output_routing || !preview_tabs || !pipeline_inspector || !program_host || !preview_surface || !preview_target ||
+      !stitched_surface || !stitched_target || !stitched_host || !camera1_host || !camera1_surface || !camera1_target ||
+      !camera1_focus || !camera2_host || !camera2_surface || !camera2_target || !camera2_focus || !camera3_host ||
+      !camera3_surface || !camera3_target || !camera3_focus || !external_notice || !camera1_notice ||
+      !stitched_status || !preview_status || !program_controls || !program_controls_toggle || !stitched_controls ||
+      !stitched_controls_toggle || !stitched_bring_up_shadows || !stitched_exposure || !stitched_lift_black_point ||
+      !stitched_force_high_bit || !stitched_precision_status || !algorithms_scroll || !algorithms_page ||
+      !program_control_tabs || !stitched_control_tabs || !program_controls_splitter || !stitched_controls_splitter ||
+      !program_focus || !stitched_focus || !top_bar || !setup_row || !log_panel || !playback_progress || !seek_slider ||
+      !seek_back || !seek_forward || !seek_position || !pipeline_process) {
     return false;
   }
 
@@ -2788,14 +2791,12 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   HStreamWindowTestAccess::updatePreviewTabResolution(window, "stitched", 0, 0);
   QApplication::processEvents();
   const QSize default_stitched_target_size = stitched_target->size();
-  const double default_stitched_aspect =
-      default_stitched_target_size.height() > 0
-          ? static_cast<double>(default_stitched_target_size.width()) / default_stitched_target_size.height()
-          : 0.0;
-  const double wide_stitched_aspect =
-      wide_stitched_target_size.height() > 0
-          ? static_cast<double>(wide_stitched_target_size.width()) / wide_stitched_target_size.height()
-          : 0.0;
+  const double default_stitched_aspect = default_stitched_target_size.height() > 0
+      ? static_cast<double>(default_stitched_target_size.width()) / default_stitched_target_size.height()
+      : 0.0;
+  const double wide_stitched_aspect = wide_stitched_target_size.height() > 0
+      ? static_cast<double>(wide_stitched_target_size.width()) / wide_stitched_target_size.height()
+      : 0.0;
   if (!expect(
           default_stitched_target_size.width() > 0 && default_stitched_target_size.height() > 0 &&
               wide_stitched_target_size.width() > 0 && wide_stitched_target_size.height() > 0 &&
@@ -2843,8 +2844,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
-          stitched_control_tabs->height() >= 220 &&
-              algorithms_scroll->viewport()->height() > 40,
+          stitched_control_tabs->height() >= 220 && algorithms_scroll->viewport()->height() > 40,
           "The rendered Stitched configuration area should expand without crushing content")) {
     return false;
   }
@@ -3021,7 +3021,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               stitched_controls->isAncestorOf(stitched_precision_status) && !camera1_host->isAncestorOf(max_speed_x) &&
               !camera1_host->isAncestorOf(bring_up_shadows) && !camera1_host->isAncestorOf(rotate) &&
               stitched_controls->isAncestorOf(control_point_matcher) &&
-              stitched_controls->isAncestorOf(mapping_backend) && stitched_controls->isAncestorOf(projection) &&
+              stitched_controls->isAncestorOf(mapping_backend) &&
+              stitched_controls->isAncestorOf(camera_configuration) &&
+              stitched_controls->isAncestorOf(camera_horizontal_fov) &&
+              stitched_controls->isAncestorOf(camera_vertical_fov) && stitched_controls->isAncestorOf(projection) &&
               stitched_controls->isAncestorOf(control_points) && stitched_controls->isAncestorOf(stitch_frame_time) &&
               stitched_controls->isAncestorOf(stitch_max_output_width) &&
               stitched_controls->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 4 &&
@@ -3030,7 +3033,19 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               program_controls_splitter->orientation() == Qt::Horizontal &&
               stitched_controls_splitter->orientation() == Qt::Horizontal &&
               control_point_matcher_label->text() == "Control-point matcher" &&
-              mapping_backend_label->text() == "Mapping backend" && projection_label->text() == "Projection" &&
+              mapping_backend_label->text() == "Mapping backend" &&
+              camera_configuration_label->text() == "Camera configuration" &&
+              camera_horizontal_fov_label->text() == "Camera horizontal FOV" &&
+              camera_vertical_fov_label->text() == "Camera vertical FOV" && camera_configuration->count() == 3 &&
+              camera_configuration->itemText(0) == "GoPro Hero 11" &&
+              camera_configuration->itemData(0).toString() == "gopro-hero-11" &&
+              camera_configuration->itemText(1) == "GoPro Mission 1" &&
+              camera_configuration->itemData(1).toString() == "gopro-mission-1" &&
+              camera_configuration->itemText(2) == "Insta Ace Pro 2" &&
+              camera_configuration->itemData(2).toString() == "insta-ace-pro-2" &&
+              camera_configuration->currentData().toString() == "gopro-mission-1" &&
+              camera_horizontal_fov->value() == 127.2 && camera_vertical_fov->value() == 95.0 &&
+              projection_label->text() == "Projection" &&
               stitch_max_output_width_label->text() == "Max stitched width" && stitch_max_output_width->value() == 0 &&
               stitch_max_output_width->maximum() == std::numeric_limits<int>::max() &&
               clean_stitching->text() == "Clean Stitching" && stitch_frame_time->isEnabled() == false &&
@@ -3053,38 +3068,35 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "their pipeline stage")) {
     return false;
   }
-  auto controls_drawer_reclaims_preview_space = [&](int tab_index,
-                                                    QSplitter* splitter,
-                                                    QWidget* controls,
-                                                    QToolButton* toggle,
-                                                    const char* label) {
-    preview_tabs->setCurrentIndex(tab_index);
-    QApplication::processEvents();
-    if (!toggle->isChecked()) {
-      QTest::mouseClick(toggle, Qt::LeftButton);
-      QApplication::processEvents();
-    }
-    const QList<int> expanded_sizes = splitter->sizes();
-    QTest::mouseClick(toggle, Qt::LeftButton);
-    QApplication::processEvents();
-    const QList<int> collapsed_sizes = splitter->sizes();
-    const bool collapsed = !toggle->isChecked() && controls->isHidden() && expanded_sizes.size() == 2 &&
-        collapsed_sizes.size() == 2 && collapsed_sizes.at(0) > expanded_sizes.at(0) &&
-        collapsed_sizes.at(1) <= toggle->sizeHint().width() + 24;
-    QTest::mouseClick(toggle, Qt::LeftButton);
-    QApplication::processEvents();
-    const QList<int> restored_sizes = splitter->sizes();
-    const bool restored = toggle->isChecked() && !controls->isHidden() && restored_sizes.size() == 2 &&
-        restored_sizes.at(1) >= std::max(1, expanded_sizes.at(1) / 2) &&
-        restored_sizes.at(0) < collapsed_sizes.at(0);
-    if (!collapsed || !restored) {
-      std::cerr << label << " drawer sizes: expanded=" << expanded_sizes.value(0) << ','
-                << expanded_sizes.value(1) << " collapsed=" << collapsed_sizes.value(0) << ','
-                << collapsed_sizes.value(1) << " restored=" << restored_sizes.value(0) << ','
-                << restored_sizes.value(1) << " toggle-hint=" << toggle->sizeHint().width() << '\n';
-    }
-    return collapsed && restored;
-  };
+  auto controls_drawer_reclaims_preview_space =
+      [&](int tab_index, QSplitter* splitter, QWidget* controls, QToolButton* toggle, const char* label) {
+        preview_tabs->setCurrentIndex(tab_index);
+        QApplication::processEvents();
+        if (!toggle->isChecked()) {
+          QTest::mouseClick(toggle, Qt::LeftButton);
+          QApplication::processEvents();
+        }
+        const QList<int> expanded_sizes = splitter->sizes();
+        QTest::mouseClick(toggle, Qt::LeftButton);
+        QApplication::processEvents();
+        const QList<int> collapsed_sizes = splitter->sizes();
+        const bool collapsed = !toggle->isChecked() && controls->isHidden() && expanded_sizes.size() == 2 &&
+            collapsed_sizes.size() == 2 && collapsed_sizes.at(0) > expanded_sizes.at(0) &&
+            collapsed_sizes.at(1) <= toggle->sizeHint().width() + 24;
+        QTest::mouseClick(toggle, Qt::LeftButton);
+        QApplication::processEvents();
+        const QList<int> restored_sizes = splitter->sizes();
+        const bool restored = toggle->isChecked() && !controls->isHidden() && restored_sizes.size() == 2 &&
+            restored_sizes.at(1) >= std::max(1, expanded_sizes.at(1) / 2) &&
+            restored_sizes.at(0) < collapsed_sizes.at(0);
+        if (!collapsed || !restored) {
+          std::cerr << label << " drawer sizes: expanded=" << expanded_sizes.value(0) << ',' << expanded_sizes.value(1)
+                    << " collapsed=" << collapsed_sizes.value(0) << ',' << collapsed_sizes.value(1)
+                    << " restored=" << restored_sizes.value(0) << ',' << restored_sizes.value(1)
+                    << " toggle-hint=" << toggle->sizeHint().width() << '\n';
+        }
+        return collapsed && restored;
+      };
   if (!expect(
           controls_drawer_reclaims_preview_space(
               0, program_controls_splitter, program_controls, program_controls_toggle, "Program") &&
@@ -3107,8 +3119,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   if (!expect(
-      run_autooptimizer->isChecked() && run_autooptimizer->isEnabled(),
-      "Selecting the NONA mapping backend must enable its required panorama autooptimizer")) {
+          run_autooptimizer->isChecked() && run_autooptimizer->isEnabled(),
+          "Selecting the NONA mapping backend must enable its required panorama autooptimizer")) {
     return false;
   }
   run_autooptimizer->setChecked(false);
@@ -3127,8 +3139,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   calibration_frame_count->setValue(4);
   QApplication::processEvents();
   if (!expect(
-          !stitch_frame_time->isEnabled(),
-          "Multi-frame stitching calibration should gray out reference-frame time")) {
+          !stitch_frame_time->isEnabled(), "Multi-frame stitching calibration should gray out reference-frame time")) {
     return false;
   }
 
@@ -4996,8 +5007,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     if (!expect(
             focus_case.host->isVisible() && !preview_tabs->tabBar()->isVisible() && !top_bar->isVisible() &&
                 focus_case.button->isVisible() && focus_case.host->width() >= normal_host_size.width() &&
-                focus_case.host->height() >= normal_host_size.height() &&
-                preview_footer_hidden &&
+                focus_case.host->height() >= normal_host_size.height() && preview_footer_hidden &&
                 focus_case.target->height() > 0 && std::abs(focused_aspect - focus_case.expected_aspect) < 0.01 &&
                 focus_case.button->x() == focus_case.target->width() - focus_case.button->width() - 6 &&
                 focus_case.button->y() == 6,
@@ -7699,15 +7709,14 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const int stitched_finalize_index = window->logText().lastIndexOf(stitched_finalize_log);
   const QString completed_base = QFileInfo(program_completed).completeBaseName();
   const QString unsuffixed_base = QString("%1-tracking_output-with-audio").arg(window->gameIdText());
-  const QString telemetry_suffix = completed_base.startsWith(unsuffixed_base)
-      ? completed_base.mid(unsuffixed_base.size())
-      : QString("invalid");
-  bool dual_telemetry_deployed = telemetry_suffix.isEmpty() ||
-      QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch();
+  const QString telemetry_suffix =
+      completed_base.startsWith(unsuffixed_base) ? completed_base.mid(unsuffixed_base.size()) : QString("invalid");
+  bool dual_telemetry_deployed =
+      telemetry_suffix.isEmpty() || QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch();
   for (const QString& stem : telemetry_stems) {
     QFile published(QDir(window->gameDirectoryText()).filePath(stem + telemetry_suffix + ".csv"));
-    dual_telemetry_deployed &= published.open(QIODevice::ReadOnly) &&
-        published.readAll() == (stem + " dual archive contents\n").toUtf8();
+    dual_telemetry_deployed &=
+        published.open(QIODevice::ReadOnly) && published.readAll() == (stem + " dual archive contents\n").toUtf8();
   }
   const bool ok = expect(
       window->outputStateText("archive-file") == "SAVED" && window->outputStateText("archive-stitched") == "SAVED" &&
@@ -7717,8 +7726,8 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
           QFileInfo(stitched_completed).completeBaseName().contains("-stitched_output-with-audio") &&
           !QFileInfo::exists(program_source) && !QFileInfo::exists(stitched_source) && program_finalize_index >= 0 &&
           telemetry_finalize_index > program_finalize_index && stitched_finalize_index > telemetry_finalize_index &&
-          dual_telemetry_deployed && combined_log_opened &&
-          combined_log_text.contains(program_finalize_log) && combined_log_text.contains(stitched_finalize_log) &&
+          dual_telemetry_deployed && combined_log_opened && combined_log_text.contains(program_finalize_log) &&
+          combined_log_text.contains(stitched_finalize_log) &&
           combined_log_text.contains("DriveGPT CSVs copied to the game directory") &&
           combined_log_text.contains(QString("completed archive published: %1").arg(program_completed)) &&
           combined_log_text.contains(QString("completed archive published: %1").arg(stitched_completed)),
@@ -7742,15 +7751,13 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
   drivegpt_csv->setChecked(false);
 
-  const bool telemetry_source_removed =
-      QFile::remove(QDir(telemetry_working).filePath("camera_fast-11.csv"));
+  const bool telemetry_source_removed = QFile::remove(QDir(telemetry_working).filePath("camera_fast-11.csv"));
   const auto run_telemetry_publication_failure = [&](const QString& label, bool with_stitched_archive) {
     const QString failed_telemetry_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
     const QString failed_telemetry_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_telemetry_program_source.toLocal8Bit());
     if (with_stitched_archive) {
-      qputenv(
-          "HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", failed_telemetry_stitched_source.toLocal8Bit());
+      qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", failed_telemetry_stitched_source.toLocal8Bit());
     } else {
       qunsetenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH");
     }
@@ -7769,19 +7776,16 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
     qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
     drivegpt_csv->setChecked(false);
-    const QString failed_telemetry_program_completed =
-        archive_path->text().section("Completed archive: ", 1).trimmed();
-    const QString failed_telemetry_stitched_completed = with_stitched_archive
-        ? stitched_archive_path->text().section("Completed archive: ", 1).trimmed()
-        : QString();
+    const QString failed_telemetry_program_completed = archive_path->text().section("Completed archive: ", 1).trimmed();
+    const QString failed_telemetry_stitched_completed =
+        with_stitched_archive ? stitched_archive_path->text().section("Completed archive: ", 1).trimmed() : QString();
     auto* failed_telemetry_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
     auto* failed_telemetry_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
     auto* failed_telemetry_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
     const QString telemetry_warning = "DriveGPT CSV publication failed:";
     const int telemetry_warning_index = window->logText().lastIndexOf("WARNING: completed DriveGPT CSVs");
-    const int stitched_after_warning_index =
-        window->logText().lastIndexOf(QString("finalizing archive without re-encoding: %1")
-                                         .arg(failed_telemetry_stitched_source));
+    const int stitched_after_warning_index = window->logText().lastIndexOf(
+        QString("finalizing archive without re-encoding: %1").arg(failed_telemetry_stitched_source));
     const bool result = expect(
         window->outputStateText("archive-file") == "SAVED" &&
             (!with_stitched_archive || window->outputStateText("archive-stitched") == "SAVED") &&
@@ -7790,8 +7794,9 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
             failed_telemetry_detail->text().contains(telemetry_warning) &&
             failed_telemetry_detail->text().contains(telemetry_working) && telemetry_warning_index >= 0 &&
             (!with_stitched_archive || stitched_after_warning_index > telemetry_warning_index),
-        QString("A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
-                "without blocking saved video outputs")
+        QString(
+            "A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
+            "without blocking saved video outputs")
             .arg(with_stitched_archive ? "dual-archive" : "Program-only")
             .toStdString());
     QFile::remove(failed_telemetry_program_completed);
@@ -7803,8 +7808,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   };
   const bool program_telemetry_failure_visible =
       telemetry_source_removed && run_telemetry_publication_failure("program-telemetry-failure", false);
-  const bool dual_telemetry_failure_visible =
-      run_telemetry_publication_failure("dual-telemetry-failure", true);
+  const bool dual_telemetry_failure_visible = run_telemetry_publication_failure("dual-telemetry-failure", true);
 
   const auto run_route_failure = [&](const QString& label, const QByteArray& fail_route, bool fail_program) {
     const QString failed_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
@@ -7840,9 +7844,9 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
         window->outputStateText(failed_output) == "ERROR" && window->outputStateText(saved_output) == "SAVED" &&
             QFileInfo::exists(failed_recovery) && !QFileInfo::exists(failed_source) &&
             !QFileInfo::exists(saved_source) && run_log_opened &&
-            failed_path_label->text() == QString("Recovery archive: %1").arg(failed_recovery) &&
-            finalize_dialog && finalize_dialog->isVisible() && ok_button && ok_button->isVisible() &&
-            finalize_detail && finalize_detail->text().contains(failed_recovery) &&
+            failed_path_label->text() == QString("Recovery archive: %1").arg(failed_recovery) && finalize_dialog &&
+            finalize_dialog->isVisible() && ok_button && ok_button->isVisible() && finalize_detail &&
+            finalize_detail->text().contains(failed_recovery) &&
             run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_program_source)) &&
             run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_stitched_source)) &&
             run_log_text.contains("archive finalization failed") &&
@@ -7872,8 +7876,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
   activate(start);
   for (int i = 0; i < 600 &&
-       (window->outputStateText("archive-file") != "ERROR" ||
-        window->outputStateText("archive-stitched") != "ERROR");
+       (window->outputStateText("archive-file") != "ERROR" || window->outputStateText("archive-stitched") != "ERROR");
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -7885,10 +7888,8 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
       QDir(output_root.path()).filePath("dual-both-fail-stitched-finalization-failed.mkv");
   QFile both_failed_program_log(both_failed_program_recovery + ".log");
   QFile both_failed_stitched_log(both_failed_stitched_recovery + ".log");
-  const bool both_failed_program_log_opened =
-      both_failed_program_log.open(QIODevice::ReadOnly | QIODevice::Text);
-  const bool both_failed_stitched_log_opened =
-      both_failed_stitched_log.open(QIODevice::ReadOnly | QIODevice::Text);
+  const bool both_failed_program_log_opened = both_failed_program_log.open(QIODevice::ReadOnly | QIODevice::Text);
+  const bool both_failed_stitched_log_opened = both_failed_stitched_log.open(QIODevice::ReadOnly | QIODevice::Text);
   const QString both_failed_program_log_text =
       both_failed_program_log_opened ? QString::fromUtf8(both_failed_program_log.readAll()) : QString();
   const QString both_failed_stitched_log_text =
@@ -7897,8 +7898,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   auto* both_failed_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
   auto* both_failed_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
   const bool both_failures_safe = expect(
-      window->outputStateText("archive-file") == "ERROR" &&
-          window->outputStateText("archive-stitched") == "ERROR" &&
+      window->outputStateText("archive-file") == "ERROR" && window->outputStateText("archive-stitched") == "ERROR" &&
           QFileInfo::exists(both_failed_program_recovery) && QFileInfo::exists(both_failed_stitched_recovery) &&
           both_failed_program_log_opened && both_failed_stitched_log_opened &&
           archive_path->text() == QString("Recovery archive: %1").arg(both_failed_program_recovery) &&
@@ -8019,6 +8019,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* save = require_child<QPushButton>(window, "savePresetButton");
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* camera_configuration = require_child<QComboBox>(window, "stitchCameraConfigurationCombo");
+  auto* camera_horizontal_fov = require_child<QDoubleSpinBox>(window, "cameraHorizontalFovSpin");
+  auto* camera_vertical_fov = require_child<QDoubleSpinBox>(window, "cameraVerticalFovSpin");
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
   auto* run_autooptimizer = require_child<QCheckBox>(window, "runAutooptimizerCheck");
   auto* compression = require_child<QDoubleSpinBox>(window, "generalPaniniCompressionSpin");
@@ -8028,14 +8031,31 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* horizontal_fov = require_child<QDoubleSpinBox>(window, "projectionHorizontalFovSpin");
   auto* auto_canvas = require_child<QCheckBox>(window, "projectionAutoCanvasCheck");
   auto* auto_crop = require_child<QCheckBox>(window, "projectionAutoCropCheck");
-  if (!game_id || !create || !reset || !save || !control_point_matcher || !mapping_backend || !projection ||
-      !run_autooptimizer || !compression || !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov ||
-      !auto_canvas || !auto_crop) {
+  if (!game_id || !create || !reset || !save || !control_point_matcher || !mapping_backend || !camera_configuration ||
+      !camera_horizontal_fov || !camera_vertical_fov || !projection || !run_autooptimizer || !compression ||
+      !top_squeeze || !bottom_squeeze || !auto_fov || !horizontal_fov || !auto_canvas || !auto_crop) {
     return false;
   }
   const QString original_game_id = game_id->text();
   game_id->setText("ui-projection-parameters-game");
   activate(create);
+  const bool camera_defaults_available = expect(
+      camera_configuration->count() == 3 && camera_configuration->currentData().toString() == "gopro-mission-1" &&
+          camera_horizontal_fov->value() == 127.2 && camera_vertical_fov->value() == 95.0,
+      "A new game must expose all three camera presets and select the baseline GoPro Mission 1 defaults");
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
+  QApplication::processEvents();
+  const bool hero_defaults_applied = expect(
+      camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0,
+      "Selecting GoPro Hero 11 must load its horizontal and vertical source FOV defaults");
+  camera_configuration->setCurrentIndex(camera_configuration->findData("insta-ace-pro-2"));
+  QApplication::processEvents();
+  const bool ace_defaults_applied = expect(
+      camera_horizontal_fov->value() == 108.0 && camera_vertical_fov->value() == 90.0,
+      "Selecting Insta Ace Pro 2 must load its horizontal and vertical source FOV defaults");
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-mission-1"));
+  camera_horizontal_fov->setValue(126.5);
+  camera_vertical_fov->setValue(94.5);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   projection->setCurrentIndex(projection->findData("general-panini"));
   compression->setValue(120.0);
@@ -8048,13 +8068,24 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const fs::path config_path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
   const YAML::Node config = YAML::LoadFile(config_path.string());
   const YAML::Node parameters = config["stitching"]["projection_parameters"]["general-panini"];
+  const YAML::Node camera_fov = config["stitching"]["camera_fov"];
   const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   const bool saved = expect(
       parameters.IsSequence() && parameters.size() == 3 && parameters[0].as<double>() == 120.0 &&
           parameters[1].as<double>() == 15.0 && parameters[2].as<double>() == -20.0 &&
+          config["stitching"]["camera_config"].as<std::string>() == "gopro-mission-1" &&
+          camera_fov["horizontal_fov"].as<double>() == 126.5 && camera_fov["vertical_fov"].as<double>() == 94.5 &&
           calibration["status"].as<std::string>() == "pending" &&
           calibration["stale_from"].as<std::string>() == "canvas" && !save->isEnabled(),
-      "Saving General Panini parameters must persist Hugin order and invalidate calibration from the canvas stage");
+      "Saving camera/FOV overrides and General Panini parameters must persist them in the game config and "
+      "invalidate calibration from the canvas stage");
+  camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
+  QApplication::processEvents();
+  activate(create);
+  const bool camera_override_reloaded = expect(
+      camera_configuration->currentData().toString() == "gopro-mission-1" && camera_horizontal_fov->value() == 126.5 &&
+          camera_vertical_fov->value() == 94.5 && !save->isEnabled(),
+      "Reloading a game must restore its camera selection and both private source FOV overrides");
 
   YAML::Node generated_override = YAML::Clone(config);
   generated_override["stitching"]["projection"] = "triplane";
@@ -8329,7 +8360,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   game_id->setText(original_game_id);
   activate(create);
-  return saved && generated_parameters_restored && generated_projection_parameters_discarded &&
+  return camera_defaults_available && hero_defaults_applied && ace_defaults_applied && saved &&
+      camera_override_reloaded && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
       edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&
       partial_previous_framing_inherits_defaults && absent_previous_framing_restores_defaults &&
@@ -8544,8 +8576,7 @@ bool test_camera_controls(HStreamWindow* window) {
   game_id->setText("ui-camera-control-game");
   activate(create);
   if (!expect(
-          reset->text() == "Reset Controls" &&
-          window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10 &&
+          reset->text() == "Reset Controls" && window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10 &&
               window->cameraControlValue("Cancel_Stop_On_Opposite_Direction") == 1 &&
               window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 2 &&
               window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 2 &&
@@ -8625,8 +8656,15 @@ bool test_camera_controls(HStreamWindow* window) {
     std::ofstream out(config);
     out << clean_fixture << "\n";
   }
-  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto", "mapping_0000.tif", "panorama.tif",
-                           "seam_file.png", "left.png", "right.png", "rink_mask_0.png"}) {
+  for (const char* name :
+       {"hm_project.pto",
+        "autooptimiser_out.pto",
+        "mapping_0000.tif",
+        "panorama.tif",
+        "seam_file.png",
+        "left.png",
+        "right.png",
+        "rink_mask_0.png"}) {
     std::ofstream artifact(game_dir / name);
     artifact << "manual clean fixture\n";
   }
@@ -10043,7 +10081,8 @@ bool test_camera_controls(HStreamWindow* window) {
       rejected_batch_log.lastIndexOf("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=64.0");
   const int rejected_cropper_index =
       rejected_batch_log.lastIndexOf("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=64.0");
-  const int rejected_epoch_index = rejected_batch_log.lastIndexOf("stdin:@set-property hmstitcher0 stitched-output-epoch=");
+  const int rejected_epoch_index =
+      rejected_batch_log.lastIndexOf("stdin:@set-property hmstitcher0 stitched-output-epoch=");
   if (!expect(
           rejected_tracker_index >= 0 && rejected_cropper_index > rejected_tracker_index &&
               rejected_epoch_index > rejected_cropper_index &&
@@ -12093,6 +12132,16 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
       analysis.contains("unsafe or implausibly large canvas") && analysis.contains("What to try") &&
       analysis.contains("Bounded fallback search") && analysis.contains("1 projective hypothesis") &&
       analysis.contains("1 frame-set candidate") && analysis.contains("pressing Play is required");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window,
+      "FAILED_PRECONDITION: enblend failed to generate seam_file.png after control points were accepted");
+  const QString seam_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window,
+      "No stitching calibration frame pair produced a usable Hugin solution after 4 candidate attempts");
+  const bool seam_failure_is_not_misclassified =
+      seam_analysis.contains("seam/panorama generation or artifact publication step failed") &&
+      seam_analysis.contains("enblend failed to generate seam_file.png") &&
+      !seam_analysis.contains("did not produce enough geometrically consistent overlap");
 
   return expect(
              combo_protected && spin_protected && check_protected && radio_protected && pane_scrolled,
@@ -12100,7 +12149,10 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
       expect(follows_tail && preserves_manual_scroll,
              "Runtime log must follow new output only while the operator remains at the bottom") &&
       expect(diagnosis_is_actionable,
-             "Calibration failures must explain the cause, bounded fallbacks, and corrective action");
+             "Calibration failures must explain the cause, bounded fallbacks, and corrective action") &&
+      expect(
+          seam_failure_is_not_misclassified,
+          "A late seam/publication failure must retain its cause instead of being presented as non-overlap");
 }
 
 } // namespace

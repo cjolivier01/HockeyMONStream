@@ -20,6 +20,60 @@ except ModuleNotFoundError:
   from scripts import run_stitching_calibration_matrix as matrix
 
 
+class CanvasProvenanceTest(unittest.TestCase):
+  def write_provenance(self, directory: Path, version: int) -> None:
+    (directory / "stitching_canvas_provenance").write_text(
+        "\n".join(
+            (
+                f"version={version}",
+                "max-output-width=4096",
+                "max-canvas-dimension=4096",
+                "source-canvas-width=4000",
+                "source-canvas-height=2000",
+                "canvas-width=4000",
+                "canvas-height=2000",
+                "max-output-width-applied=0",
+                "max-canvas-dimension-applied=0",
+                "mapping-backend=nona",
+                "projection=general-panini",
+                "projection-parameters=100,0,0",
+                "projection-auto-fov=1",
+                "projection-horizontal-fov=180",
+                "projection-auto-canvas=1",
+                "projection-auto-crop=0",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+  def verify(self, directory: Path) -> str:
+    _, failure = matrix.verify_canvas_provenance(
+        directory,
+        "nona",
+        "general-panini",
+        (100, 0, 0),
+        4096,
+        4096,
+        {"auto_fov": True, "horizontal_fov": 180, "auto_canvas": True, "auto_crop": False},
+    )
+    return failure
+
+  def test_accepts_all_framing_aware_provenance_versions(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="matrix-provenance-test-") as temporary:
+      directory = Path(temporary)
+      for version in (5, 6, 7):
+        with self.subTest(version=version):
+          self.write_provenance(directory, version)
+          self.assertEqual(self.verify(directory), "")
+
+  def test_rejects_pre_framing_provenance(self) -> None:
+    with tempfile.TemporaryDirectory(prefix="matrix-provenance-test-") as temporary:
+      directory = Path(temporary)
+      self.write_provenance(directory, 4)
+      self.assertIn("expected framing-aware version 5, 6, or 7", self.verify(directory))
+
+
 class IsolatedGameTest(unittest.TestCase):
   def setUp(self) -> None:
     self.temporary = tempfile.TemporaryDirectory(prefix="matrix-isolation-test-")

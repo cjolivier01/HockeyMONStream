@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
 #include <algorithm>
@@ -594,6 +595,134 @@ absl::StatusOr<std::vector<double>> read_stitch_projection_parameters(
   }
 }
 
+absl::StatusOr<std::vector<StitchCameraConfiguration>> read_stitch_camera_configurations(const YAML::Node& config) {
+  static const std::regex valid_id("^[a-z0-9]+(?:-[a-z0-9]+)*$");
+  const std::vector<StitchCameraConfiguration> legacy_default = {
+      {.id = "gopro-mission-1", .display_name = "GoPro Mission 1", .horizontal_fov = 127.2, .vertical_fov = 95.0},
+      {.id = "gopro-hero-11", .display_name = "GoPro Hero 11", .horizontal_fov = 108.0, .vertical_fov = 90.0},
+      {.id = "insta-ace-pro-2", .display_name = "Insta Ace Pro 2", .horizontal_fov = 108.0, .vertical_fov = 90.0}};
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    if (stitching && !stitching.IsNull() && !stitching.IsMap())
+      return absl::InvalidArgumentError("stitching must be a map");
+    const YAML::Node configurations = stitching && stitching.IsMap() ? stitching["camera_configs"] : YAML::Node();
+    if (!configurations || !configurations.IsDefined() || configurations.IsNull())
+      return legacy_default;
+    if (!configurations.IsMap())
+      return absl::InvalidArgumentError("stitching.camera_configs must be a map");
+
+    std::vector<StitchCameraConfiguration> result;
+    std::set<std::string> ids;
+    for (const auto& entry : configurations) {
+      if (!entry.first.IsScalar())
+        return absl::InvalidArgumentError("stitching.camera_configs keys must be scalar identifiers");
+      const std::string id = entry.first.as<std::string>();
+      if (!std::regex_match(id, valid_id) || !ids.insert(id).second) {
+        return absl::InvalidArgumentError(
+            "stitching.camera_configs identifiers must be unique lowercase kebab-case values");
+      }
+      if (!entry.second.IsMap())
+        return absl::InvalidArgumentError("stitching.camera_configs." + id + " must be a map");
+      const YAML::Node display_name = entry.second["display_name"];
+      const YAML::Node horizontal_fov = entry.second["horizontal_fov"];
+      const YAML::Node vertical_fov = entry.second["vertical_fov"];
+      if (!display_name || !display_name.IsScalar() || display_name.as<std::string>().empty()) {
+        return absl::InvalidArgumentError("stitching.camera_configs." + id + ".display_name must be a nonempty scalar");
+      }
+      if (!horizontal_fov || !horizontal_fov.IsScalar() || !vertical_fov || !vertical_fov.IsScalar()) {
+        return absl::InvalidArgumentError(
+            "stitching.camera_configs." + id + " must define numeric horizontal_fov and vertical_fov values");
+      }
+      StitchCameraConfiguration camera{
+          .id = id,
+          .display_name = display_name.as<std::string>(),
+          .horizontal_fov = horizontal_fov.as<double>(),
+          .vertical_fov = vertical_fov.as<double>()};
+      if (!std::isfinite(camera.horizontal_fov) || camera.horizontal_fov <= 0.0 || camera.horizontal_fov >= 360.0) {
+        return absl::InvalidArgumentError(
+            "stitching.camera_configs." + id + ".horizontal_fov must be finite and between 0 and 360 degrees");
+      }
+      if (!std::isfinite(camera.vertical_fov) || camera.vertical_fov <= 0.0 || camera.vertical_fov > 180.0) {
+        return absl::InvalidArgumentError(
+            "stitching.camera_configs." + id + ".vertical_fov must be finite and between 0 and 180 degrees");
+      }
+      result.push_back(std::move(camera));
+    }
+    if (result.empty())
+      return absl::InvalidArgumentError("stitching.camera_configs must contain at least one configuration");
+    return result;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError(
+        "Unable to read stitching camera configurations: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<StitchCameraSelection> read_stitch_camera_selection(const YAML::Node& config) {
+  try {
+    std::vector<StitchCameraConfiguration> configurations;
+    HM_ASSIGN_OR_RETURN(configurations, read_stitch_camera_configurations(config));
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node configured = stitching && stitching.IsMap() ? stitching["camera_config"] : YAML::Node();
+    if (configured && configured.IsDefined() && !configured.IsNull() && !configured.IsScalar())
+      return absl::InvalidArgumentError("stitching.camera_config must be a scalar identifier");
+    const std::string configuration = configured && configured.IsDefined() && !configured.IsNull()
+        ? configured.as<std::string>()
+        : configurations[0].id;
+    static const std::regex valid_id("^[a-z0-9]+(?:-[a-z0-9]+)*$");
+    if (!std::regex_match(configuration, valid_id)) {
+      return absl::InvalidArgumentError("stitching.camera_config must be a lowercase kebab-case identifier");
+    }
+    auto selected = std::find_if(configurations.begin(), configurations.end(), [&](const auto& candidate) {
+      return candidate.id == configuration;
+    });
+
+    const YAML::Node fov = stitching && stitching.IsMap() ? stitching["camera_fov"] : YAML::Node();
+    if (fov && fov.IsDefined() && !fov.IsNull() && !fov.IsMap())
+      return absl::InvalidArgumentError("stitching.camera_fov must be a map");
+    if (fov && fov.IsMap()) {
+      static const std::set<std::string> supported_keys = {"horizontal_fov", "vertical_fov"};
+      for (const auto& entry : fov) {
+        if (!entry.first.IsScalar() || !supported_keys.count(entry.first.as<std::string>()))
+          return absl::InvalidArgumentError("stitching.camera_fov contains an unsupported key");
+      }
+    }
+    const YAML::Node horizontal_override = fov && fov.IsMap() ? fov["horizontal_fov"] : YAML::Node();
+    const YAML::Node vertical_override = fov && fov.IsMap() ? fov["vertical_fov"] : YAML::Node();
+    const bool has_horizontal = horizontal_override && horizontal_override.IsDefined() && !horizontal_override.IsNull();
+    const bool has_vertical = vertical_override && vertical_override.IsDefined() && !vertical_override.IsNull();
+    if ((has_horizontal && !horizontal_override.IsScalar()) || (has_vertical && !vertical_override.IsScalar())) {
+      return absl::InvalidArgumentError("stitching.camera_fov values must be numeric scalars");
+    }
+    if (selected == configurations.end() && (!has_horizontal || !has_vertical)) {
+      return absl::InvalidArgumentError(
+          "Unknown stitching.camera_config \"" + configuration +
+          "\"; define it in stitching.camera_configs or "
+          "provide both stitching.camera_fov overrides");
+    }
+    StitchCameraSelection result{
+        .configuration = configuration,
+        .horizontal_fov = has_horizontal ? horizontal_override.as<double>() : selected->horizontal_fov,
+        .vertical_fov = has_vertical ? vertical_override.as<double>() : selected->vertical_fov};
+    if (!std::isfinite(result.horizontal_fov) || result.horizontal_fov <= 0.0 || result.horizontal_fov >= 360.0) {
+      return absl::InvalidArgumentError(
+          "stitching.camera_fov.horizontal_fov must be finite and between 0 and 360 degrees");
+    }
+    if (!std::isfinite(result.vertical_fov) || result.vertical_fov <= 0.0 || result.vertical_fov > 180.0) {
+      return absl::InvalidArgumentError(
+          "stitching.camera_fov.vertical_fov must be finite and between 0 and 180 degrees");
+    }
+    return result;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read stitching camera selection: " + std::string(exception.what()));
+  }
+}
+
+void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelection& selection) {
+  config["stitching"]["camera_config"] = selection.configuration;
+  config["stitching"]["camera_fov"]["horizontal_fov"] = selection.horizontal_fov;
+  config["stitching"]["camera_fov"]["vertical_fov"] = selection.vertical_fov;
+}
+
 void write_stitch_projection_parameters(
     YAML::Node& config,
     StitchProjection projection,
@@ -617,15 +746,13 @@ absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAM
       return result;
     if (!framing.IsMap())
       return absl::InvalidArgumentError("stitching.projection_framing must be a map");
-    static const std::set<std::string> supported_keys = {
-        "auto_fov", "horizontal_fov", "auto_canvas", "auto_crop"};
+    static const std::set<std::string> supported_keys = {"auto_fov", "horizontal_fov", "auto_canvas", "auto_crop"};
     for (const auto& entry : framing) {
       if (!entry.first.IsScalar())
         return absl::InvalidArgumentError("stitching.projection_framing keys must be scalar values");
       const std::string key = entry.first.as<std::string>();
       if (!supported_keys.count(key)) {
-        return absl::InvalidArgumentError(
-            "Unsupported stitching.projection_framing key \"" + key + "\"");
+        return absl::InvalidArgumentError("Unsupported stitching.projection_framing key \"" + key + "\"");
       }
     }
     auto read_bool = [&](const char* key, bool fallback) -> absl::StatusOr<bool> {
@@ -656,8 +783,7 @@ absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAM
     const YAML::Node horizontal_fov = framing["horizontal_fov"];
     if (horizontal_fov && horizontal_fov.IsDefined() && !horizontal_fov.IsNull()) {
       if (!horizontal_fov.IsScalar()) {
-        return absl::InvalidArgumentError(
-            "stitching.projection_framing.horizontal_fov must be a numeric scalar");
+        return absl::InvalidArgumentError("stitching.projection_framing.horizontal_fov must be a numeric scalar");
       }
       result.horizontal_fov = horizontal_fov.as<double>();
     }
@@ -667,8 +793,7 @@ absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAM
     }
     return result;
   } catch (const YAML::Exception& exception) {
-    return absl::InvalidArgumentError(
-        "Unable to read stitching projection framing: " + std::string(exception.what()));
+    return absl::InvalidArgumentError("Unable to read stitching projection framing: " + std::string(exception.what()));
   }
 }
 
@@ -1192,6 +1317,40 @@ absl::StatusOr<StitchProjectionFraming> read_projection_framing_node(const YAML:
   return read_stitch_projection_framing(wrapper);
 }
 
+void write_camera_selection_node(YAML::Node node, const StitchCameraSelection& camera) {
+  node["camera_config"] = camera.configuration;
+  node["camera_fov"]["horizontal_fov"] = camera.horizontal_fov;
+  node["camera_fov"]["vertical_fov"] = camera.vertical_fov;
+}
+
+absl::StatusOr<StitchCameraSelection> read_camera_selection_node(const YAML::Node& node) {
+  YAML::Node wrapper(YAML::NodeType::Map);
+  if (node && node.IsMap()) {
+    if (node["camera_config"])
+      wrapper["stitching"]["camera_config"] = YAML::Clone(node["camera_config"]);
+    if (node["camera_fov"])
+      wrapper["stitching"]["camera_fov"] = YAML::Clone(node["camera_fov"]);
+  }
+  return read_stitch_camera_selection(wrapper);
+}
+
+absl::StatusOr<StitchCameraSelection> read_worker_camera_selection(
+    const YAML::Node& config,
+    const StitchCameraSelection& expected) {
+  YAML::Node wrapper = config && config.IsDefined() ? YAML::Clone(config) : YAML::Node(YAML::NodeType::Map);
+  YAML::Node configurations = wrapper["stitching"]["camera_configs"];
+  if (!configurations || !configurations.IsMap()) {
+    configurations = YAML::Node(YAML::NodeType::Map);
+    configurations["gopro-mission-1"]["display_name"] = "GoPro Mission 1";
+    configurations["gopro-mission-1"]["horizontal_fov"] = 127.2;
+    configurations["gopro-mission-1"]["vertical_fov"] = 95.0;
+    configurations[expected.configuration]["display_name"] = expected.configuration;
+    configurations[expected.configuration]["horizontal_fov"] = expected.horizontal_fov;
+    configurations[expected.configuration]["vertical_fov"] = expected.vertical_fov;
+  }
+  return read_stitch_camera_selection(wrapper);
+}
+
 absl::Status validate_backend_generation_claim(
     const YAML::Node& config,
     const std::string& expected_invalidation_id,
@@ -1208,7 +1367,8 @@ absl::Status validate_backend_generation_claim(
         !claim["mapping_backend"].IsScalar() || !claim["projection"] || !claim["projection"].IsScalar() ||
         !claim["run_autooptimizer"] || !claim["run_autooptimizer"].IsScalar() || !claim["projection_parameters"] ||
         !claim["projection_parameters"].IsSequence() || !claim["projection_framing"] ||
-        !claim["projection_framing"].IsMap()) {
+        !claim["projection_framing"].IsMap() || !claim["camera_config"] || !claim["camera_config"].IsScalar() ||
+        !claim["camera_fov"] || !claim["camera_fov"].IsMap()) {
       return absl::AbortedError("Stitching backend generation claim is missing or incomplete");
     }
     auto parsed_expected_projection = ParseStitchProjection(expected_choices.projection);
@@ -1226,6 +1386,9 @@ absl::Status validate_backend_generation_claim(
     auto parsed_claim_framing = read_projection_framing_node(claim["projection_framing"]);
     if (!parsed_claim_framing.ok())
       return parsed_claim_framing.status();
+    auto parsed_claim_camera = read_camera_selection_node(claim);
+    if (!parsed_claim_camera.ok())
+      return parsed_claim_camera.status();
     if (*parsed_expected_backend == MappingBackend::kNona) {
       const absl::Status expected_framing_status = ValidateStitchProjectionFraming(
           expected_projection, expected_choices.projection_parameters, expected_choices.projection_framing);
@@ -1243,7 +1406,8 @@ absl::Status validate_backend_generation_claim(
         claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
         claim["projection"].as<std::string>() == expected_choices.projection &&
         claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer &&
-        claim_parameters == expected_choices.projection_parameters && claim_framing_matches;
+        claim_parameters == expected_choices.projection_parameters && claim_framing_matches &&
+        *parsed_claim_camera == expected_choices.camera;
     if (!claim_matches) {
       auto format_parameters = [](const std::vector<double>& parameters) {
         std::ostringstream output;
@@ -1261,17 +1425,20 @@ absl::Status validate_backend_generation_claim(
              << expected_invalidation_id << ", matcher=" << expected_choices.control_point_matcher
              << ", backend=" << expected_choices.mapping_backend << ", projection=" << expected_choices.projection
              << ", autooptimizer=" << (expected_choices.run_autooptimizer ? "true" : "false")
-             << ", parameters=" << format_parameters(expected_choices.projection_parameters) << "}, reserved {id="
-             << claim["invalidation_id"].as<std::string>()
+             << ", parameters=" << format_parameters(expected_choices.projection_parameters)
+             << "}, reserved {id=" << claim["invalidation_id"].as<std::string>()
              << ", matcher=" << claim["control_point_matcher"].as<std::string>()
              << ", backend=" << claim["mapping_backend"].as<std::string>()
              << ", projection=" << claim["projection"].as<std::string>()
              << ", autooptimizer=" << (claim["run_autooptimizer"].as<bool>() ? "true" : "false")
-             << ", parameters=" << format_parameters(claim_parameters) << ", framing={auto-fov="
-             << (parsed_claim_framing->auto_fov ? "true" : "false")
+             << ", parameters=" << format_parameters(claim_parameters)
+             << ", framing={auto-fov=" << (parsed_claim_framing->auto_fov ? "true" : "false")
              << ", fov=" << parsed_claim_framing->horizontal_fov
              << ", auto-canvas=" << (parsed_claim_framing->auto_canvas ? "true" : "false")
              << ", auto-crop=" << (parsed_claim_framing->auto_crop ? "true" : "false") << "}}";
+      detail << ", camera={config=" << parsed_claim_camera->configuration
+             << ", hfov=" << parsed_claim_camera->horizontal_fov << ", vfov=" << parsed_claim_camera->vertical_fov
+             << "}";
       return absl::AbortedError(detail.str());
     }
     if (!validate_worker_tuple)
@@ -1297,14 +1464,18 @@ absl::Status validate_backend_generation_claim(
       if (!worker_framing_status.ok())
         return worker_framing_status;
     }
-    const bool worker_framing_matches = *parsed_expected_backend != MappingBackend::kNona ||
-        *worker_framing == expected_choices.projection_framing;
+    const bool worker_framing_matches =
+        *parsed_expected_backend != MappingBackend::kNona || *worker_framing == expected_choices.projection_framing;
+    auto worker_camera = read_worker_camera_selection(config, expected_choices.camera);
+    if (!worker_camera.ok())
+      return worker_camera.status();
     const bool worker_tuple_matches =
         stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
         stitching["projection"].as<std::string>() == expected_choices.projection &&
         stitching["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer &&
-        worker_parameters == expected_choices.projection_parameters && worker_framing_matches;
+        worker_parameters == expected_choices.projection_parameters && worker_framing_matches &&
+        *worker_camera == expected_choices.camera;
     if (!worker_tuple_matches)
       return absl::AbortedError("Worker-visible stitching backend choices changed during calibration");
   } catch (const YAML::Exception& exception) {
@@ -1364,6 +1535,7 @@ absl::Status reserve_stitching_backend_generation_in_config(
         projection_parameters.push_back(parameter);
       claim["projection_parameters"] = projection_parameters;
       write_projection_framing_node(claim["projection_framing"], expected_choices.projection_framing);
+      write_camera_selection_node(claim, expected_choices.camera);
     } else {
       // Claims created before parameter-aware calibration contain the other
       // immutable choices. Extend only an exactly matching legacy claim;
@@ -1409,6 +1581,27 @@ absl::Status reserve_stitching_backend_generation_in_config(
         if (!current_tuple_matches)
           return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
         write_projection_framing_node(claim["projection_framing"], expected_choices.projection_framing);
+      }
+      const bool camera_missing = !claim["camera_config"] || !claim["camera_config"].IsDefined() ||
+          claim["camera_config"].IsNull() || !claim["camera_fov"] || !claim["camera_fov"].IsDefined() ||
+          claim["camera_fov"].IsNull();
+      if (camera_missing) {
+        auto parsed_projection = ParseStitchProjection(expected_choices.projection);
+        auto parsed_parameters = parsed_projection.ok()
+            ? parse_projection_parameter_sequence(claim["projection_parameters"], *parsed_projection)
+            : absl::StatusOr<std::vector<double>>(parsed_projection.status());
+        const bool current_tuple_matches = parsed_parameters.ok() && claim["control_point_matcher"] &&
+            claim["control_point_matcher"].IsScalar() && claim["mapping_backend"] &&
+            claim["mapping_backend"].IsScalar() && claim["projection"] && claim["projection"].IsScalar() &&
+            claim["run_autooptimizer"] && claim["run_autooptimizer"].IsScalar() &&
+            claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
+            claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
+            claim["projection"].as<std::string>() == expected_choices.projection &&
+            claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer &&
+            *parsed_parameters == expected_choices.projection_parameters;
+        if (!current_tuple_matches)
+          return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
+        write_camera_selection_node(claim, expected_choices.camera);
       }
     }
   } catch (const YAML::Exception& exception) {

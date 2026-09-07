@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
@@ -1775,6 +1776,7 @@ struct ConfiguredStitchAlgorithms {
   StitchProjection projection;
   std::vector<double> projection_parameters;
   StitchProjectionFraming projection_framing;
+  StitchCameraSelection camera;
 };
 
 absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
@@ -1798,14 +1800,19 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const YAML::Node matcher_node = stitching["control_point_matcher"];
     const YAML::Node backend_node = stitching["mapping_backend"];
     const YAML::Node projection_node = stitching["projection"];
+    const YAML::Node camera_node = stitching["camera_config"];
+    const YAML::Node camera_fov_node = stitching["camera_fov"];
     const bool matcher_present = matcher_node && !matcher_node.IsNull();
     const bool backend_present = backend_node && !backend_node.IsNull();
     const bool projection_present = projection_node && !projection_node.IsNull();
-    if (!matcher_present && !backend_present && !projection_present)
+    const bool camera_present = camera_node && !camera_node.IsNull();
+    const bool camera_fov_present = camera_fov_node && !camera_fov_node.IsNull();
+    if (!matcher_present && !backend_present && !projection_present && !camera_present && !camera_fov_present)
       return std::nullopt;
     if ((matcher_present && !matcher_node.IsScalar()) || (backend_present && !backend_node.IsScalar()) ||
-        (projection_present && !projection_node.IsScalar())) {
-      return absl::InvalidArgumentError("stitching matcher, mapping backend, and projection must be scalar values");
+        (projection_present && !projection_node.IsScalar()) || (camera_present && !camera_node.IsScalar())) {
+      return absl::InvalidArgumentError(
+          "stitching matcher, mapping backend, projection, and camera configuration must be scalar values");
     }
     ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue;
     if (matcher_present)
@@ -1822,6 +1829,17 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     HM_ASSIGN_OR_RETURN(projection_parameters, read_stitch_projection_parameters(**loaded, projection));
     StitchProjectionFraming projection_framing;
     HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(**loaded));
+    StitchCameraSelection camera;
+    const auto baseline = hm::baseline_config::load();
+    if (!baseline.ok())
+      return baseline.status();
+    YAML::Node effective_camera_config = YAML::Clone(baseline->values);
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov"}) {
+      const YAML::Node value = stitching[key];
+      if (value && value.IsDefined())
+        effective_camera_config["stitching"][key] = YAML::Clone(value);
+    }
+    HM_ASSIGN_OR_RETURN(camera, read_stitch_camera_selection(effective_camera_config));
     if (backend == MappingBackend::kNona)
       HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
     return ConfiguredStitchAlgorithms{
@@ -1829,7 +1847,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
         .mapping_backend = backend,
         .projection = projection,
         .projection_parameters = std::move(projection_parameters),
-        .projection_framing = projection_framing};
+        .projection_framing = projection_framing,
+        .camera = camera};
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching mapping choices: " + std::string(exception.what()));
   }
@@ -1852,6 +1871,10 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
   }
   if (*provenance->control_point_matcher != configured->control_point_matcher)
     return CanvasProvenanceCompatibility{false, "the selected control-point matcher changed"};
+  if (!provenance->camera.has_value())
+    return CanvasProvenanceCompatibility{false, "camera FOV provenance is missing"};
+  if (*provenance->camera != configured->camera)
+    return CanvasProvenanceCompatibility{false, "the selected camera configuration or source FOV changed"};
   std::string expected_calibration = "not-applicable";
   if (configured->control_point_matcher == ControlPointMatcher::kAkazeHamming) {
     std::optional<AkazeCalibrationProfile> profile;
@@ -2566,6 +2589,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_ASSIGN_OR_RETURN(projection_parameters, read_stitch_projection_parameters(config, projection));
   StitchProjectionFraming projection_framing;
   HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(config));
+  StitchCameraSelection camera;
+  HM_ASSIGN_OR_RETURN(camera, read_stitch_camera_selection(config));
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(mapping_backend, projection));
   if (mapping_backend == MappingBackend::kNona)
     HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
@@ -2575,7 +2600,12 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       std::string(StitchProjectionName(projection)),
       run_autooptimizer,
       std::move(projection_parameters),
-      projection_framing};
+      projection_framing,
+      camera};
+}
+
+bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool canvas_started) {
+  return !canvas_started && (absl::IsFailedPrecondition(status) || absl::IsNotFound(status));
 }
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
@@ -2635,9 +2665,28 @@ absl::Status create_control_points(
   try {
     if (fs::exists(game_config_path)) {
       const YAML::Node config = YAML::LoadFile(game_config_path.string());
-      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(config));
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      YAML::Node effective_config = YAML::Clone(config);
+      const YAML::Node baseline_stitching = baseline->values["stitching"];
+      if (baseline_stitching && baseline_stitching.IsMap()) {
+        for (const char* key : {"camera_configs", "camera_config"}) {
+          const YAML::Node private_value = config["stitching"][key];
+          const YAML::Node default_value = baseline_stitching[key];
+          if ((!private_value || !private_value.IsDefined()) && default_value && default_value.IsDefined())
+            effective_config["stitching"][key] = YAML::Clone(default_value);
+        }
+      }
+      const YAML::Node private_stitching = config["stitching"];
+      if (private_stitching && !private_stitching.IsNull() && !private_stitching.IsMap())
+        return absl::InvalidArgumentError("stitching must be a map");
+      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(effective_config));
     } else {
-      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(YAML::Node()));
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(baseline->values));
     }
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError(TO_STRING(
@@ -2763,6 +2812,9 @@ absl::Status create_control_points(
                                      << (skipped_frame_pairs == 0 ? "" : TO_STRING(", skipped " << skipped_frame_pairs))
                                      << ")"));
   HuginProject::Options options;
+  options.camera_configuration = backend_choices.camera.configuration;
+  options.horizontal_fov = backend_choices.camera.horizontal_fov;
+  options.vertical_fov = backend_choices.camera.vertical_fov;
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;
@@ -2809,20 +2861,30 @@ absl::Status create_control_points(
                       : TO_STRING(
                             "stitching calibration frame pair " << (candidate.index + 1) << "/" << input_files.size()))
               << " with " << selected.size() << " selected control points" << std::endl;
+    bool canvas_started = false;
+    HuginProject::Options candidate_options = options;
+    candidate_options.progress = [&](const std::string& stage, const std::string& status, const std::string& message) {
+      if (stage == "canvas" && status == "started")
+        canvas_started = true;
+      if (options.progress)
+        options.progress(stage, status, message);
+    };
     absl::Status configure_status = HuginProject::Configure(
-        game_dir, input_files[candidate.index].first, input_files[candidate.index].second, selected, options);
+        game_dir,
+        input_files[candidate.index].first,
+        input_files[candidate.index].second,
+        selected,
+        candidate_options);
     if (configure_status.ok()) {
       return absl::OkStatus();
     }
+    // Once alignment has completed, failures belong to canvas generation,
+    // seam validation, or transactional publication. Trying another sampled
+    // frame repeats the expensive nona/enblend work and ultimately disguises
+    // the real operational error as a generic non-overlap failure.
+    if (!should_retry_stitching_calibration_candidate(configure_status, canvas_started))
+      return configure_status;
     last_candidate_status = configure_status;
-    if (absl::IsCancelled(configure_status) || absl::IsAborted(configure_status) ||
-        absl::IsInvalidArgument(configure_status) || absl::IsInternal(configure_status) ||
-        absl::IsResourceExhausted(configure_status)) {
-      return configure_status;
-    }
-    if (!absl::IsFailedPrecondition(configure_status) && !absl::IsNotFound(configure_status)) {
-      return configure_status;
-    }
     std::cerr << "Skipping "
               << (candidate.pooled
                       ? "pooled stitching calibration"
@@ -4002,8 +4064,7 @@ RinkProfile make_forced_test_rink_profile(const cv::Mat& stitched_image) {
   profile.combined_mask = mask.clone();
   profile.centroid =
       cv::Point2d(rink.x + static_cast<double>(rink.width) / 2.0, rink.y + static_cast<double>(rink.height) / 2.0);
-  profile.combined_bbox =
-      cv::Rect2d(static_cast<double>(rink.x), static_cast<double>(rink.y), rink.width, rink.height);
+  profile.combined_bbox = cv::Rect2d(static_cast<double>(rink.x), static_cast<double>(rink.y), rink.width, rink.height);
   profile.scores.push_back(1.0f);
   return profile;
 }
