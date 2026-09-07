@@ -58,8 +58,11 @@ constexpr size_t kMinimumUsableMatches = 16;
 constexpr double kMaximumOptimizationRmsPixels = 50.0;
 constexpr size_t kHardMaximumCanvasDimension = 32768;
 constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumCanvasPixels * 2 + 16ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumParserPlacementTiffBytes = kHardMaximumCanvasPixels * 4 + 16ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumCanvasPixels * 4 + 32ULL * 1024ULL * 1024ULL;
+// Nona's LZW BigTIFF output can be larger than its decoded RGBA payload when
+// the warped pixels are not compressible. Keep a hard encoded-file bound, but
+// do not mistake normal compression overhead for an invalid TIFF.
+constexpr uint64_t kMaximumParserPlacementTiffBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumParserPngBytes = 512ULL * 1024ULL * 1024ULL;
 absl::StatusOr<std::string> read_file(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
@@ -125,9 +128,12 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
   if (opened->descriptor < 0)
     return absl::NotFoundError("Unable to open Hugin TIFF: " + path.string());
   if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
-      opened->metadata.st_size <= 0 || static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
-    return absl::FailedPreconditionError("Invalid or oversized Hugin TIFF: " + path.string());
-  }
+      opened->metadata.st_size <= 0)
+    return absl::FailedPreconditionError("Hugin TIFF is not a non-empty regular file: " + path.string());
+  if (static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes)
+    return absl::ResourceExhaustedError(
+        "Hugin TIFF exceeds the " + std::to_string(maximum_bytes) + "-byte encoded-file safety limit (" +
+        std::to_string(opened->metadata.st_size) + " bytes): " + path.string());
   const int tiff_descriptor = ::dup(opened->descriptor);
   if (tiff_descriptor < 0)
     return absl::InternalError("Unable to duplicate Hugin TIFF descriptor: " + path.string());
@@ -412,7 +418,7 @@ absl::Status validate_decoded_dimensions(
     return absl::ResourceExhaustedError(description + " exceeds the absolute decoded-image safety limit");
   }
   if (maximum_dimension.has_value() && (width > *maximum_dimension || height > *maximum_dimension)) {
-    return absl::FailedPreconditionError(description + " exceeds the configured maximum canvas dimension");
+    return absl::ResourceExhaustedError(description + " exceeds the configured maximum canvas dimension");
   }
   return absl::OkStatus();
 }
@@ -1000,9 +1006,12 @@ absl::StatusOr<std::pair<int, int>> normalize_and_measure(TiffPlacement* first, 
   second->y -= minimum_y;
   const float width = std::max(first->x + first->width, second->x + second->width);
   const float height = std::max(first->y + first->height, second->y + second->height);
-  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0 ||
-      width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max()) {
+  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0 || height < 1.0) {
     return absl::FailedPreconditionError("Hugin mapping TIFFs produce an invalid canvas");
+  }
+  if (static_cast<long double>(width) > std::numeric_limits<int>::max() ||
+      static_cast<long double>(height) > std::numeric_limits<int>::max()) {
+    return absl::ResourceExhaustedError("Hugin mapping TIFF canvas exceeds integer dimension limits");
   }
   return std::make_pair(static_cast<int>(width), static_cast<int>(height));
 }
@@ -1102,7 +1111,7 @@ absl::Status validate_staged_artifacts(
   if (!status.ok())
     return status;
   if (max_output_width.has_value() && *max_output_width > 0 && static_cast<size_t>(canvas->first) > *max_output_width) {
-    return absl::FailedPreconditionError("Decoded Hugin remap canvas exceeds the configured maximum output width");
+    return absl::ResourceExhaustedError("Decoded Hugin remap canvas exceeds the configured maximum output width");
   }
   auto first_source_size = read_png_dimensions(directory / "left.png");
   auto second_source_size = read_png_dimensions(directory / "right.png");
@@ -1150,7 +1159,7 @@ absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
   auto pending = mark_transaction_recovery_pending(game_dir, TransactionJournalKind::kStitch);
   if (!pending.ok())
     return pending;
-  std::string pattern = (game_dir / ".hstream-stitch-XXXXXX").string();
+  std::string pattern = (game_dir / "hstream-stitch-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -1160,8 +1169,14 @@ absl::StatusOr<fs::path> make_staging_directory(const fs::path& game_dir) {
   }
   if (::chmod(created, 0700) != 0) {
     std::error_code ignored;
-    fs::remove_all(created, ignored);
+    fs::remove(created, ignored);
     return absl::InternalError("Unable to make stitch staging directory private");
+  }
+  auto marker_status = write_owned_directory_marker(created, "journal_version", "2\n");
+  if (!marker_status.ok()) {
+    std::error_code ignored;
+    fs::remove(created, ignored);
+    return marker_status;
   }
   return fs::path(created);
 }
@@ -1426,9 +1441,9 @@ absl::Status publish_artifacts(
   status = fsync_stitch_path(staging, true);
   if (!status.ok())
     return status;
-  fs::remove_all(staging, error);
-  if (error)
-    return absl::InternalError("Unable to clean committed stitch transaction: " + error.message());
+  status = remove_owned_directory(staging, "journal_version", "2\n");
+  if (!status.ok())
+    return status;
   status = fsync_stitch_path(game_dir, true);
   if (!status.ok())
     return status;
@@ -1950,8 +1965,7 @@ absl::Status HuginProject::Configure(
     ~Cleanup() {
       if (prepared)
         return;
-      std::error_code ignored;
-      fs::remove_all(path, ignored);
+      (void)remove_owned_directory(path, "journal_version", "2\n");
     }
   } cleanup{staging};
 
@@ -2159,7 +2173,7 @@ absl::Status HuginProject::Configure(
       if (width_ok && dimension_ok)
         break;
       if (attempt == 2) {
-        return absl::FailedPreconditionError("Hugin mapping canvas still exceeds requested size after three attempts");
+        return absl::ResourceExhaustedError("Hugin mapping canvas still exceeds requested size after three attempts");
       }
       if (!width_ok) {
         status = fit_canvas_width(

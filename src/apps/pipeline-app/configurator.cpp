@@ -1851,7 +1851,7 @@ int rename_archive_entry_no_replace(
       SYS_renameat2, source_directory_fd, source_name, destination_directory_fd, destination_name, kRenameNoReplace));
 }
 
-constexpr char kArchiveCleanupDirectoryPrefix[] = ".hstream-cleanup-v2-";
+constexpr char kArchiveCleanupDirectoryPrefix[] = "hstream-cleanup-v2-";
 constexpr char kArchiveCleanupOwnerName[] = "owner";
 constexpr char kArchiveCleanupOwnerMagic[] = "hstream-cleanup-v2\n";
 constexpr char kArchiveCleanupCommittedName[] = "committed";
@@ -2113,7 +2113,7 @@ absl::StatusOr<bool> archive_cleanup_target_has_pending_transaction(
         TO_STRING("Failed to scan archive cleanup transactions: " << std::strerror(saved_errno)));
   }
   static const std::regex cleanup_name_pattern(
-      R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      R"(^\.?hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   bool pending = false;
   absl::Status scan_status = absl::OkStatus();
   int scan_errno = 0;
@@ -3002,7 +3002,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
     return current_entries;
   };
   static const std::regex cleanup_name_pattern(
-      R"(^\.hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+      R"(^\.?hstream-cleanup-v2-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   static const std::regex reconciliation_guard_name_pattern(
       R"(^\.hstream-reconcile-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-(target|fallback)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
   const auto is_cleanup_directory_name = [&](const std::string& name) {
@@ -3023,7 +3023,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
     const std::string cleanup_name = cleanup_path.filename().string();
     if (!is_cleanup_directory_name(cleanup_name))
       continue;
-    const std::string cleanup_id = cleanup_name.substr(std::strlen(kArchiveCleanupDirectoryPrefix));
+    const std::string cleanup_id = cleanup_name.substr(cleanup_name.size() - 36);
     const int cleanup_fd = ::openat(parent_fd, cleanup_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (cleanup_fd < 0) {
       const int saved_errno = errno;
@@ -5969,7 +5969,7 @@ constexpr auto kPlaytrackerRuntimeGracePeriod = std::chrono::hours(24);
 
 fs::path playtracker_runtime_directory(const fs::path& game_dir) {
   if (!game_dir.empty())
-    return game_dir / ".hstream-runtime";
+    return game_dir / "hstream-runtime";
   if (const char* runtime_root = std::getenv("XDG_RUNTIME_DIR"); runtime_root && *runtime_root) {
     const fs::path configured(runtime_root);
     if (configured.is_absolute())

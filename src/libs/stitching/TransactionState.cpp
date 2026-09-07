@@ -225,7 +225,7 @@ absl::Status verify_directory_binding(int parent_descriptor, const std::string& 
   return absl::OkStatus();
 }
 
-absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
+absl::Status remove_directory_contents_no_follow(int directory_descriptor, std::string_view retained_entry_name = {}) {
   const int iterator_descriptor = ::dup(directory_descriptor);
   if (iterator_descriptor < 0)
     return absl::InternalError(
@@ -242,7 +242,9 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
       ::closedir(iterator);
     }
   } cleanup{iterator};
+  ::rewinddir(iterator);
 
+  size_t removed_entries = 0;
   while (true) {
     errno = 0;
     dirent* entry = ::readdir(iterator);
@@ -253,6 +255,8 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
     }
     const std::string name(entry->d_name);
     if (name == "." || name == "..")
+      continue;
+    if (!retained_entry_name.empty() && name == retained_entry_name)
       continue;
     struct stat metadata{};
     if (::fstatat(directory_descriptor, name.c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0) {
@@ -283,6 +287,14 @@ absl::Status remove_directory_contents_no_follow(int directory_descriptor) {
       }
     } else if (::unlinkat(directory_descriptor, name.c_str(), 0) != 0) {
       return absl::InternalError("Unable to remove transaction entry " + name + ": " + std::strerror(errno));
+    }
+    ++removed_entries;
+    if (!retained_entry_name.empty()) {
+      const char* interrupt_after = std::getenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY");
+      if (interrupt_after != nullptr &&
+          removed_entries == static_cast<size_t>(std::strtoull(interrupt_after, nullptr, 10))) {
+        return absl::InternalError("Injected transaction cleanup interruption");
+      }
     }
   }
   if (::fsync(directory_descriptor) != 0)
@@ -386,16 +398,29 @@ absl::StatusOr<PinnedRinkRollbackArtifact> PinnedRinkRollbackArtifact::Open(
 absl::Status remove_pinned_directory(
     const PinnedDirectory& parent,
     const std::string& name,
-    const PinnedDirectory& directory) {
+    const PinnedDirectory& directory,
+    std::string_view ownership_marker_name) {
   auto status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
   if (!status.ok())
     return status;
-  status = remove_directory_contents_no_follow(directory.descriptor());
+  status = remove_directory_contents_no_follow(directory.descriptor(), ownership_marker_name);
   if (!status.ok())
     return status;
   status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
   if (!status.ok())
     return status;
+  if (!ownership_marker_name.empty()) {
+    if (::unlinkat(directory.descriptor(), std::string(ownership_marker_name).c_str(), 0) != 0) {
+      return absl::InternalError("Unable to remove transaction ownership marker: " + std::string(std::strerror(errno)));
+    }
+    if (::fsync(directory.descriptor()) != 0) {
+      return absl::InternalError(
+          "Unable to sync transaction ownership-marker removal: " + std::string(std::strerror(errno)));
+    }
+    status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
+    if (!status.ok())
+      return status;
+  }
   if (::unlinkat(parent.descriptor(), name.c_str(), AT_REMOVEDIR) != 0)
     return absl::InternalError("Unable to remove recovered transaction " + name + ": " + std::strerror(errno));
   if (::fsync(parent.descriptor()) != 0)
@@ -435,6 +460,109 @@ absl::StatusOr<std::string> read_bounded_regular_file_no_follow(
   if (::fstat(descriptor, &verified_metadata) != 0 || !same_file_snapshot(metadata, verified_metadata))
     return absl::AbortedError(description + " changed while it was being read");
   return contents;
+}
+
+absl::Status write_owned_directory_marker(
+    const fs::path& directory,
+    std::string_view marker_name,
+    std::string_view contents) {
+  const fs::path path = directory / marker_name;
+  const int descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (descriptor < 0)
+    return absl::InternalError(
+        "Unable to create work-directory ownership marker: " + std::string(std::strerror(errno)));
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::write(descriptor, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0) {
+      const int saved_errno = errno;
+      ::close(descriptor);
+      ::unlink(path.c_str());
+      return absl::InternalError(
+          "Unable to write work-directory ownership marker: " + std::string(std::strerror(saved_errno)));
+    }
+    offset += static_cast<size_t>(count);
+  }
+  if (::fsync(descriptor) != 0) {
+    const int saved_errno = errno;
+    ::close(descriptor);
+    ::unlink(path.c_str());
+    return absl::InternalError(
+        "Unable to sync work-directory ownership marker: " + std::string(std::strerror(saved_errno)));
+  }
+  if (::close(descriptor) != 0) {
+    const int saved_errno = errno;
+    ::unlink(path.c_str());
+    return absl::InternalError(
+        "Unable to close work-directory ownership marker: " + std::string(std::strerror(saved_errno)));
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<bool> owned_directory_marker_matches(
+    const fs::path& directory,
+    std::string_view marker_name,
+    std::string_view contents) {
+  const fs::path path = directory / marker_name;
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (errno == ENOENT || errno == ELOOP || errno == EACCES)
+      return false;
+    return absl::FailedPreconditionError(
+        "Unable to open work-directory ownership marker: " + std::string(std::strerror(errno)));
+  }
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+      static_cast<uint64_t>(metadata.st_size) != contents.size()) {
+    return false;
+  }
+  std::string actual(contents.size(), '\0');
+  size_t offset = 0;
+  while (offset < actual.size()) {
+    const ssize_t count = ::read(descriptor, actual.data() + offset, actual.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::FailedPreconditionError("Unable to read work-directory ownership marker");
+    offset += static_cast<size_t>(count);
+  }
+  struct stat verified{};
+  if (::fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev || metadata.st_ino != verified.st_ino ||
+      metadata.st_size != verified.st_size || metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
+      metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec) {
+    return absl::AbortedError("Work-directory ownership marker changed while it was being read");
+  }
+  return actual == contents;
+}
+
+absl::Status remove_owned_directory(
+    const fs::path& directory,
+    std::string_view marker_name,
+    std::string_view marker_contents) {
+  if (directory.empty() || directory.filename().empty() || marker_name.empty())
+    return absl::InvalidArgumentError("Invalid owned work-directory removal request");
+  auto parent = PinnedDirectory::Open(directory.parent_path(), "owned work-directory parent");
+  if (!parent.ok())
+    return parent.status();
+  auto child = parent->OpenChild(directory.filename().string(), "owned work directory");
+  if (!child.ok())
+    return child.status();
+  if (!child->has_value())
+    return absl::OkStatus();
+  auto owned = owned_directory_marker_matches((**child).path(), marker_name, marker_contents);
+  if (!owned.ok())
+    return owned.status();
+  if (!*owned)
+    return absl::FailedPreconditionError("Refusing to remove a work directory without a valid ownership marker");
+  return remove_pinned_directory(*parent, directory.filename().string(), **child, marker_name);
 }
 
 namespace {

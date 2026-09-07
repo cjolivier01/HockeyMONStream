@@ -30,6 +30,9 @@
 namespace hm::stitching {
 namespace {
 
+constexpr std::string_view kOwnedDirectoryMarkerName = "journal_version";
+constexpr std::string_view kOwnedDirectoryMarkerContents = "2\n";
+
 absl::StatusOr<std::vector<double>> parse_projection_parameter_sequence(
     const YAML::Node& node,
     StitchProjection projection) {
@@ -455,15 +458,36 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
   bool recovered = false;
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(".hstream-rink-", 0) != 0 || directory_name == ".hstream-rink-journal-v1" ||
-        directory_name == ".hstream-rink-recovery-pending")
+    static const std::regex current_transaction_pattern(R"(^hstream-rink-[A-Za-z0-9]{6}$)");
+    const bool current_transaction = std::regex_match(directory_name, current_transaction_pattern);
+    const bool legacy_transaction = directory_name.rfind(".hstream-rink-", 0) == 0 &&
+        directory_name != ".hstream-rink-journal-v1" && directory_name != ".hstream-rink-recovery-pending";
+    if (!current_transaction && !legacy_transaction)
       continue;
+    if (current_transaction) {
+      std::error_code type_error;
+      const fs::file_type type = entry.symlink_status(type_error).type();
+      if (type_error == std::errc::no_such_file_or_directory)
+        continue;
+      if (type_error)
+        return absl::InternalError("Unable to inspect visible rink transaction collision: " + type_error.message());
+      if (type != fs::file_type::directory)
+        continue;
+    }
     auto opened_transaction = root_directory.OpenChild(directory_name, "rink transaction directory");
     if (!opened_transaction.ok())
       return opened_transaction.status();
     if (!opened_transaction->has_value())
       continue;
     PinnedDirectory transaction_directory = std::move(**opened_transaction);
+    if (current_transaction) {
+      auto owned = owned_directory_marker_matches(
+          transaction_directory.path(), kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+      if (!owned.ok())
+        return owned.status();
+      if (!*owned)
+        continue;
+    }
     const fs::path transaction = transaction_directory.path();
     auto state = read_rink_transaction_state(transaction);
     if (!state.ok())
@@ -547,7 +571,8 @@ absl::Status recover_rink_transactions_locked(const fs::path& root) {
       if (!status.ok())
         return status;
     }
-    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    auto cleanup = remove_pinned_directory(
+        root_directory, directory_name, transaction_directory, current_transaction ? kOwnedDirectoryMarkerName : "");
     if (!cleanup.ok())
       return cleanup;
     recovered = true;
@@ -1015,7 +1040,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   auto pending_status = mark_transaction_recovery_pending(game_dir, TransactionJournalKind::kRink);
   if (!pending_status.ok())
     return pending_status;
-  std::string pattern = (game_dir / ".hstream-rink-XXXXXX").string();
+  std::string pattern = (game_dir / "hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -1024,16 +1049,25 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   const fs::path staging(created);
   struct Cleanup {
     fs::path path;
+    bool owned{false};
     bool prepared{false};
     ~Cleanup() {
       if (prepared)
         return;
-      std::error_code ignored;
-      fs::remove_all(path, ignored);
+      if (owned) {
+        (void)remove_owned_directory(path, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+      } else {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+      }
     }
   } cleanup{staging};
   if (::chmod(staging.c_str(), 0700) != 0)
     return absl::InternalError("Unable to protect rink invalidation staging directory");
+  auto marker_status = write_owned_directory_marker(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+  if (!marker_status.ok())
+    return marker_status;
+  cleanup.owned = true;
 
   auto status = write_transaction_file(staging / "config.yaml", contents);
   if (!status.ok())
@@ -1116,9 +1150,9 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   status = fsync_path(staging, true);
   if (!status.ok())
     return status;
-  fs::remove_all(staging, error);
-  if (error)
-    return absl::InternalError("Unable to clean committed rink invalidation: " + error.message());
+  status = remove_owned_directory(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+  if (!status.ok())
+    return status;
   status = fsync_path(game_dir, true);
   if (!status.ok())
     return status;

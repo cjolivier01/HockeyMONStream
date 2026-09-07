@@ -1532,12 +1532,12 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(center_video);
   activate(add_video);
   if (!expect(
-          select_list_item(list, "Center  .hstream-ui/center/GX010003.MP4"),
+          select_list_item(list, "Center  hstream-ui/center/GX010003.MP4"),
           "Explicit Center assignment should remain visible")) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "center" / "GX010003.MP4") &&
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "center" / "GX010003.MP4") &&
               !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010003.MP4"),
           "Center imports should stay outside runtime Auto discovery paths")) {
     return false;
@@ -1573,7 +1573,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "right" / "GX010002.MP4") &&
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "right" / "GX010002.MP4") &&
               !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010002.MP4"),
           "Explicit Right imports should stay outside runtime Auto discovery paths")) {
     return false;
@@ -1586,19 +1586,19 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   YAML::Node yaml = YAML::LoadFile(config.string());
   if (!expect(
           yaml["hstream_ui"]["video_roles"]["center"] &&
-              yaml["hstream_ui"]["video_roles"]["center"][0].as<std::string>() == ".hstream-ui/center/GX010003.MP4" &&
+              yaml["hstream_ui"]["video_roles"]["center"][0].as<std::string>() == "hstream-ui/center/GX010003.MP4" &&
               !yaml["game"]["videos"]["center"] && text.find("left") != std::string::npos &&
               text.find("GX010005.MP4") != std::string::npos && text.find("right") != std::string::npos &&
               text.find("GX010002.MP4") != std::string::npos && yaml["game"]["videos"]["left"].size() == 1 &&
-              yaml["game"]["videos"]["left"][0].as<std::string>() == ".hstream-ui/left/GX010005.MP4" &&
+              yaml["game"]["videos"]["left"][0].as<std::string>() == "hstream-ui/left/GX010005.MP4" &&
               yaml["game"]["videos"]["right"].size() == 1 &&
-              yaml["game"]["videos"]["right"][0].as<std::string>() == ".hstream-ui/right/GX010002.MP4" &&
+              yaml["game"]["videos"]["right"][0].as<std::string>() == "hstream-ui/right/GX010002.MP4" &&
               !yaml["game"]["stitching"]["frame_offsets"] && !yaml["stitching"]["frame_offsets"],
           "Explicit roles should replace stale pipeline config, keep all chapters, and clear stale offsets")) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "left" / "GX010005.MP4") &&
+          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "left" / "GX010005.MP4") &&
               !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010005.MP4"),
           "Explicit Left imports should stay outside runtime Auto discovery paths")) {
     return false;
@@ -1610,7 +1610,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           uneven_explicit["game"]["videos"]["left"].size() == 2 &&
               uneven_explicit["game"]["videos"]["right"].size() == 1 &&
-              uneven_explicit["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX020005.MP4",
+              uneven_explicit["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/GX020005.MP4",
           "Explicit Left/Right playlists with different physical chapter counts should be persisted independently")) {
     return false;
   }
@@ -1621,8 +1621,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           matched_explicit["game"]["videos"]["left"].size() == 2 &&
               matched_explicit["game"]["videos"]["right"].size() == 2 &&
-              matched_explicit["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX020005.MP4" &&
-              matched_explicit["game"]["videos"]["right"][1].as<std::string>() == ".hstream-ui/right/GX020002.MP4",
+              matched_explicit["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/GX020005.MP4" &&
+              matched_explicit["game"]["videos"]["right"][1].as<std::string>() == "hstream-ui/right/GX020002.MP4",
           "Matching explicit Left/Right chapter counts should write runtime video config")) {
     return false;
   }
@@ -1633,7 +1633,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           mismatched_chapters["game"]["videos"]["left"].size() == 3 &&
               mismatched_chapters["game"]["videos"]["right"].size() == 2 &&
-              mismatched_chapters["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/GX030005.MP4",
+              mismatched_chapters["game"]["videos"]["left"][2].as<std::string>() == "hstream-ui/left/GX030005.MP4",
           "Explicit Left/Right playlists with different chapter labels should remain independently ordered")) {
     return false;
   }
@@ -1643,20 +1643,20 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           restarted_explicit["game"]["videos"]["left"].size() == 4 &&
               restarted_explicit["game"]["videos"]["right"].size() == 2 &&
-              restarted_explicit["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/GX030005.MP4" &&
-              restarted_explicit["game"]["videos"]["left"][3].as<std::string>() == ".hstream-ui/left/GX010006.MP4",
+              restarted_explicit["game"]["videos"]["left"][2].as<std::string>() == "hstream-ui/left/GX030005.MP4" &&
+              restarted_explicit["game"]["videos"]["left"][3].as<std::string>() == "hstream-ui/left/GX010006.MP4",
           "Explicit GoPro playlists should sort by recording ID before physical chapter number")) {
     return false;
   }
 
-  if (!select_list_item(list, "Right  .hstream-ui/right/GX010002.MP4")) {
+  if (!select_list_item(list, "Right  hstream-ui/right/GX010002.MP4")) {
     return false;
   }
   {
     YAML::Node before_failed_remove = YAML::LoadFile(config.string());
-    before_failed_remove["hstream_ui"]["copied_imports"].push_back(".hstream-ui/right/GX010002.MP4");
+    before_failed_remove["hstream_ui"]["copied_imports"].push_back("hstream-ui/right/GX010002.MP4");
     YAML::Node source_metadata(YAML::NodeType::Map);
-    source_metadata["path"] = ".hstream-ui/right/GX010002.MP4";
+    source_metadata["path"] = "hstream-ui/right/GX010002.MP4";
     source_metadata["family"] = "test-family";
     source_metadata["source_parent"] = source_dir.toStdString();
     before_failed_remove["hstream_ui"]["auto_import_sources"].push_back(source_metadata);
@@ -1675,7 +1675,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
         hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n").ok();
   });
   ::setenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS", "100", 1);
-  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", ".hstream-ui/right/GX010002.MP4", 1);
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "hstream-ui/right/GX010002.MP4", 1);
   activate(remove_video);
   ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
   ::unsetenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS");
@@ -1684,7 +1684,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           concurrent_remove_write_ok &&
               fs::exists(
-                  fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui" / "right" / "GX010002.MP4") &&
+                  fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "right" / "GX010002.MP4") &&
               after_failed_right_remove["hstream_ui"]["video_roles"]["right"] &&
               after_failed_right_remove["hstream_ui"]["copied_imports"].size() == 1 &&
               after_failed_right_remove["hstream_ui"]["auto_import_sources"].size() == 1 &&
@@ -1692,7 +1692,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           "Failed deletion must restore the transactional pre-removal state without losing an interleaved writer")) {
     return false;
   }
-  if (!select_list_item(list, "Right  .hstream-ui/right/GX010002.MP4")) {
+  if (!select_list_item(list, "Right  hstream-ui/right/GX010002.MP4")) {
     return false;
   }
   std::atomic<bool> post_remove_writer_ok{false};
@@ -1702,12 +1702,12 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     if (!lock.ok())
       return;
     YAML::Node latest = YAML::LoadFile(config.string());
-    latest["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/concurrent.mov");
+    latest["hstream_ui"]["video_roles"]["right"].push_back("hstream-ui/right/concurrent.mov");
     latest["concurrent"]["post_remove_keep"] = true;
     post_remove_writer_ok = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n").ok();
   });
   ::setenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS", "100", 1);
-  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", ".hstream-ui/right/GX010002.MP4", 1);
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "hstream-ui/right/GX010002.MP4", 1);
   activate(remove_video);
   ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
   ::unsetenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS");
@@ -1716,11 +1716,11 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   const bool post_remove_state_ok = post_remove_writer_ok &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"].size() == 3 &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][0].as<std::string>() ==
-          ".hstream-ui/right/GX010002.MP4" &&
+          "hstream-ui/right/GX010002.MP4" &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][1].as<std::string>() ==
-          ".hstream-ui/right/GX020002.MP4" &&
+          "hstream-ui/right/GX020002.MP4" &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][2].as<std::string>() ==
-          ".hstream-ui/right/concurrent.mov" &&
+          "hstream-ui/right/concurrent.mov" &&
       after_post_transaction_failure["concurrent"]["post_remove_keep"].as<bool>();
   if (!post_remove_state_ok)
     std::cerr << "post-remove config:\n" << YAML::Dump(after_post_transaction_failure) << '\n';
@@ -1729,7 +1729,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           "Failed deletion rollback must preserve the original role before a serialized same-role append")) {
     return false;
   }
-  if (!select_list_item(list, "Right  .hstream-ui/right/GX010002.MP4")) {
+  if (!select_list_item(list, "Right  hstream-ui/right/GX010002.MP4")) {
     return false;
   }
   std::atomic<bool> successful_remove_writer_checked{false};
@@ -1740,10 +1740,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
         auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
         if (!lock.ok())
           return;
-        successful_remove_writer_saw_missing = !fs::exists(config.parent_path() / ".hstream-ui/right/GX010002.MP4");
+        successful_remove_writer_saw_missing = !fs::exists(config.parent_path() / "hstream-ui/right/GX010002.MP4");
         if (!successful_remove_writer_saw_missing) {
           YAML::Node latest = YAML::LoadFile(config.string());
-          latest["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX010002.MP4");
+          latest["hstream_ui"]["video_roles"]["right"].push_back("hstream-ui/right/GX010002.MP4");
           const auto unexpected_publish =
               hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n");
           (void)unexpected_publish;
@@ -1762,8 +1762,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
               updated_text.find("GX010002.MP4") == std::string::npos &&
               after_right_remove["game"]["videos"]["left"].size() == 4 &&
               after_right_remove["game"]["videos"]["right"].size() == 2 &&
-              after_right_remove["game"]["videos"]["right"][0].as<std::string>() == ".hstream-ui/right/GX020002.MP4" &&
-              after_right_remove["game"]["videos"]["right"][1].as<std::string>() == ".hstream-ui/right/concurrent.mov",
+              after_right_remove["game"]["videos"]["right"][0].as<std::string>() == "hstream-ui/right/GX020002.MP4" &&
+              after_right_remove["game"]["videos"]["right"][1].as<std::string>() == "hstream-ui/right/concurrent.mov",
           "A successful deletion must complete before a same-path adopter can acquire the config transaction") ||
       !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
     return false;
@@ -1776,11 +1776,11 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   generated["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   generated["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
   generated["hstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/GX010005.MP4");
+  generated["hstream_ui"]["video_roles"]["left"].push_back("hstream-ui/left/GX010005.MP4");
   generated["hstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hstream_ui"]["video_roles"]["right"].push_back(".hstream-ui/right/GX020002.MP4");
+  generated["hstream_ui"]["video_roles"]["right"].push_back("hstream-ui/right/GX020002.MP4");
   generated["hstream_ui"]["video_roles"]["center"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hstream_ui"]["video_roles"]["center"].push_back(".hstream-ui/center/GX010003.MP4");
+  generated["hstream_ui"]["video_roles"]["center"].push_back("hstream-ui/center/GX010003.MP4");
   generated["game"]["stitching"]["frame_offsets"]["left"] = "90";
   generated["stitching"]["frame_offsets"]["left"] = "91";
   {
@@ -1851,8 +1851,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           arbitrary_config["game"]["videos"]["left"].size() == 1 &&
               arbitrary_config["game"]["videos"]["right"].size() == 1 &&
-              arbitrary_config["game"]["videos"]["left"][0].as<std::string>() == ".hstream-ui/left/left-camera.mov" &&
-              arbitrary_config["game"]["videos"]["right"][0].as<std::string>() == ".hstream-ui/right/right-camera.mov",
+              arbitrary_config["game"]["videos"]["left"][0].as<std::string>() == "hstream-ui/left/left-camera.mov" &&
+              arbitrary_config["game"]["videos"]["right"][0].as<std::string>() == "hstream-ui/right/right-camera.mov",
           "Single-file explicit Left/Right pairs with arbitrary filenames should run as chapter 1")) {
     return false;
   }
@@ -1865,7 +1865,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           arbitrary_mismatched["game"]["videos"]["left"].size() == 2 &&
               arbitrary_mismatched["game"]["videos"]["right"].size() == 1 &&
               arbitrary_mismatched["game"]["videos"]["left"][1].as<std::string>() ==
-                  ".hstream-ui/left/left-camera-alt.mov",
+                  "hstream-ui/left/left-camera-alt.mov",
           "Arbitrary explicit playlists with different counts should remain in independent insertion order")) {
     return false;
   }
@@ -1877,10 +1877,9 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           arbitrary_multi["game"]["videos"]["left"].size() == 2 &&
               arbitrary_multi["game"]["videos"]["right"].size() == 2 &&
-              arbitrary_multi["game"]["videos"]["left"][1].as<std::string>() ==
-                  ".hstream-ui/left/left-camera-alt.mov" &&
+              arbitrary_multi["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/left-camera-alt.mov" &&
               arbitrary_multi["game"]["videos"]["right"][1].as<std::string>() ==
-                  ".hstream-ui/right/right-camera-alt.mov",
+                  "hstream-ui/right/right-camera-alt.mov",
           "Equal-length arbitrary explicit lists should run in insertion order")) {
     return false;
   }
@@ -1906,8 +1905,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           numbered_parts["game"]["videos"]["left"].size() == 2 &&
               numbered_parts["game"]["videos"]["right"].size() == 1 &&
-              numbered_parts["game"]["videos"]["left"][0].as<std::string>() == ".hstream-ui/left/left-2.mkv" &&
-              numbered_parts["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/left-12.mkv",
+              numbered_parts["game"]["videos"]["left"][0].as<std::string>() == "hstream-ui/left/left-2.mkv" &&
+              numbered_parts["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/left-12.mkv",
           "Explicit left/right part playlists should support MKV and sort multi-digit parts numerically")) {
     return false;
   }
@@ -1938,9 +1937,9 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           heterogeneous_camera["game"]["videos"]["left"].size() == 3 &&
               heterogeneous_camera["game"]["videos"]["right"].size() == 1 &&
               heterogeneous_camera["game"]["videos"]["left"][0].as<std::string>() ==
-                  ".hstream-ui/left/VID_20260815_101000_001.MP4" &&
-              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == ".hstream-ui/left/GX010007.MP4" &&
-              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() == ".hstream-ui/left/left-camera.mov",
+                  "hstream-ui/left/VID_20260815_101000_001.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/GX010007.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() == "hstream-ui/left/left-camera.mov",
           "A heterogeneous explicit camera playlist should preserve the user's total recording order")) {
     return false;
   }
@@ -2135,7 +2134,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   activate(left);
   ::setenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY", "1", 1);
   ::setenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL", "1", 1);
-  ::setenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL", ".hstream-ui/left/GX020001.MP4", 1);
+  ::setenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL", "hstream-ui/left/GX020001.MP4", 1);
   video_path->setText(duplicate_a);
   activate(add_video);
   ::unsetenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL");
@@ -2145,25 +2144,25 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   const fs::path rollback_delete_failure_config = rollback_delete_failure_game / "config.yaml";
   YAML::Node rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
   bool rollback_staging_path_exists = false;
-  for (const auto& entry : fs::directory_iterator(rollback_delete_failure_game / ".hstream-ui/left")) {
+  for (const auto& entry : fs::directory_iterator(rollback_delete_failure_game / "hstream-ui/left")) {
     if (entry.path().filename().string().rfind(".hstream-rollback-", 0) == 0)
       rollback_staging_path_exists = true;
   }
   if (!expect(
-          fs::exists(rollback_delete_failure_game / ".hstream-ui/left/GX020001.MP4") && !rollback_staging_path_exists &&
+          fs::exists(rollback_delete_failure_game / "hstream-ui/left/GX020001.MP4") && !rollback_staging_path_exists &&
               rollback_delete_failure_after["hstream_ui"]["copied_imports"].size() == 1 &&
               !rollback_delete_failure_after["hstream_ui"]["video_roles"]["left"],
           "A staged copied-file rollback deletion failure must restore the path and ownership metadata")) {
     return false;
   }
   activate(create);
-  if (!select_list_item(list, "Left  .hstream-ui/left/GX020001.MP4")) {
+  if (!select_list_item(list, "Left  hstream-ui/left/GX020001.MP4")) {
     return false;
   }
   activate(remove_video);
   rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
   if (!expect(
-          !fs::exists(rollback_delete_failure_game / ".hstream-ui/left/GX020001.MP4") &&
+          !fs::exists(rollback_delete_failure_game / "hstream-ui/left/GX020001.MP4") &&
               rollback_delete_failure_after["hstream_ui"]["copied_imports"].size() == 0,
           "An owned orphan retained after rollback must remain visible and removable through the UI")) {
     return false;
@@ -2182,7 +2181,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   const YAML::Node save_failure_after = YAML::LoadFile((save_failure_game / "config.yaml").string());
   const YAML::Node save_failure_roles = save_failure_after["hstream_ui"]["video_roles"];
   if (!expect(
-          !fs::exists(save_failure_game / ".hstream-ui" / "left" / "GX020001.MP4") &&
+          !fs::exists(save_failure_game / "hstream-ui" / "left" / "GX020001.MP4") &&
               save_failure_after["hstream_ui"]["copied_imports"].size() == 0 &&
               (!save_failure_roles || !save_failure_roles["left"]),
           "Private-config save failure must remove the new copied file and its ownership metadata")) {
@@ -5316,8 +5315,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const QString switched_game_id = "ui-switched-during-calibration";
     const fs::path switched_config =
         fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "config.yaml";
-    const fs::path active_runtime_dir = config.parent_path() / ".hstream-ui";
-    const fs::path switched_runtime_dir = switched_config.parent_path() / ".hstream-ui";
+    const fs::path active_runtime_dir = config.parent_path() / "hstream-ui";
+    const fs::path switched_runtime_dir = switched_config.parent_path() / "hstream-ui";
     auto runtime_snapshot_count = [](const fs::path& dir) {
       if (!fs::exists(dir))
         return size_t{0};
@@ -6488,10 +6487,11 @@ bool test_output_controls(HStreamWindow* window) {
     QFile resolved_log_file(resolved_log);
     const bool resolved_log_opened = resolved_log_file.open(QIODevice::ReadOnly);
     const QByteArray resolved_log_text = resolved_log_opened ? resolved_log_file.readAll() : QByteArray();
-    const bool cleanup_transactions_absent =
-        QDir(output_root.path())
-            .entryList({".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
-            .isEmpty();
+    const bool cleanup_transactions_absent = QDir(output_root.path())
+                                                 .entryList(
+                                                     {"hstream-cleanup-v2-*", ".hstream-cleanup-v2-*"},
+                                                     QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
+                                                 .isEmpty();
     struct stat retained_provisional_guard_stat{};
     const bool trusted_source_retained = active_provisional_guard_pinned &&
         ::lstat(QFile::encodeName(active_provisional_guard).constData(), &retained_provisional_guard_stat) == 0 &&
@@ -6892,7 +6892,7 @@ bool test_output_controls(HStreamWindow* window) {
           argument_text.contains(QRegularExpression(R"(-i\n/proc/self/fd/[0-9]+\n)")) &&
           !argument_text.contains("/proc/self/fd/197") && !argument_text.contains("/proc/self/fd/198") &&
           argument_text.contains(
-              QString("/.%1-tracking_output-with-audio.hstream-finalize-").arg(window->gameIdText())) &&
+              QString("/%1-tracking_output-with-audio-hstream-finalize-").arg(window->gameIdText())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
           argument_text.contains("-tag:v\nhvc1") &&
           window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),
@@ -9404,7 +9404,7 @@ bool test_camera_controls(HStreamWindow* window) {
     out << "stale-mask";
   }
 
-  const fs::path runtime_dir_collision = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+  const fs::path runtime_dir_collision = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
   {
     std::ofstream out(runtime_dir_collision);
     out << "directory-collision";
@@ -9852,6 +9852,15 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   YAML::Node relative_runtime_config = YAML::LoadFile(config.string());
+  const fs::path legacy_runtime_dir = config.parent_path() / ".hstream-ui";
+  fs::create_directories(legacy_runtime_dir);
+  const fs::path configured_runtime_config(
+      relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"].as<std::string>());
+  fs::copy_file(
+      configured_runtime_config.is_absolute() ? configured_runtime_config
+                                              : config.parent_path() / configured_runtime_config,
+      legacy_runtime_dir / "play_tracker_config.yaml",
+      fs::copy_options::overwrite_existing);
   relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"] = ".hstream-ui/play_tracker_config.yaml";
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 35;
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift-black-point"] = false;
@@ -10120,7 +10129,7 @@ bool test_camera_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   auto newest_live_playtracker_config = [&]() {
-    const fs::path dir = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+    const fs::path dir = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
     fs::path newest;
     std::uint64_t newest_generation = 0;
     for (const auto& entry : fs::directory_iterator(dir)) {
@@ -10363,7 +10372,7 @@ bool test_camera_controls(HStreamWindow* window) {
     max_speed_x->setValue(value);
   }
   QTest::qWait(220);
-  const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / ".hstream-ui";
+  const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
   auto runtime_snapshot_count = [&]() {
     return static_cast<int>(std::count_if(
         fs::directory_iterator(runtime_dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
@@ -11596,7 +11605,9 @@ bool test_cleanup_transaction_protocol() {
   };
   const auto cleanup_transaction = [](const QString& directory) {
     const QStringList names = QDir(directory).entryList(
-        {".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name);
+        {"hstream-cleanup-v2-*", ".hstream-cleanup-v2-*"},
+        QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+        QDir::Name);
     return names.isEmpty() ? QString() : QDir(directory).filePath(names.front());
   };
   const auto file_identity = [](const QString& path, struct stat* identity) {
@@ -11875,11 +11886,12 @@ bool test_cleanup_transaction_protocol() {
   QString deep_cleanup_chain_error;
   const bool deep_cleanup_chain_reconciled =
       hm::ui_internal::reconcile_cleanup_directory_for_test(deep_cleanup_chain_dir, &deep_cleanup_chain_error);
-  const bool deep_cleanup_chain_retired =
-      QDir(deep_cleanup_chain_dir)
-          .entryList(
-              {".hstream-cleanup-v2-*"}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDir::Name)
-          .isEmpty();
+  const bool deep_cleanup_chain_retired = QDir(deep_cleanup_chain_dir)
+                                              .entryList(
+                                                  {"hstream-cleanup-v2-*", ".hstream-cleanup-v2-*"},
+                                                  QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+                                                  QDir::Name)
+                                              .isEmpty();
   ok &= expect(
       deep_cleanup_chain_setup && deep_cleanup_chain_reconciled && deep_cleanup_chain_retired,
       "UI cleanup reconciliation must reach a fixed point beyond the former five-pass dependency limit");
@@ -11945,7 +11957,7 @@ bool test_cleanup_transaction_protocol() {
   const QStringList concurrent_artifacts =
       QDir(concurrent_dir)
           .entryList(
-              {".hstream-cleanup-v2-*", "*.hstream-cleanup-pin"},
+              {"hstream-cleanup-v2-*", ".hstream-cleanup-v2-*", "*.hstream-cleanup-pin"},
               QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
               QDir::Name);
   ok &= expect(

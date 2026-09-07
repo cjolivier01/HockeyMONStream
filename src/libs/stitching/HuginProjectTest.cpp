@@ -930,6 +930,42 @@ int main() {
                   fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "working fake Nona and enblend tools must be restored after retry provenance validation");
 
+  const fs::path integer_overflow_fixtures = root / "integer-overflow-fixtures";
+  fs::create_directories(integer_overflow_fixtures);
+  ok &= expect(
+      write_spatial_tiff_tags(integer_overflow_fixtures / "mapping_0000.tif", 40, 32, 0.0f, 1.0f) &&
+          write_spatial_tiff_tags(integer_overflow_fixtures / "mapping_0001.tif", 40, 32, 2147483648.0f, 1.0f) &&
+          write_remap_pair(integer_overflow_fixtures, "mapping_0000", 40, 32) &&
+          write_remap_pair(integer_overflow_fixtures, "mapping_0001", 40, 32) &&
+          write_tool(
+              nona,
+              "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
+              "mapping_0001_x.tif mapping_0001_y.tif; do cp '" +
+                  integer_overflow_fixtures.string() + "/'$file \"$file\"; done\n"),
+      "integer-overflow Nona fixtures must be created");
+  const fs::path integer_overflow_game = root / "integer-overflow-game";
+  fs::create_directories(integer_overflow_game);
+  hm::stitching::HuginProject::Options integer_overflow_options = options;
+  integer_overflow_options.max_canvas_dimension.reset();
+  integer_overflow_options.max_output_width.reset();
+  integer_overflow_options.progress = {};
+  const auto integer_overflow_status = hm::stitching::HuginProject::Configure(
+      integer_overflow_game,
+      root / "private-inputs" / "left.png",
+      root / "private-inputs" / "right.png",
+      matches,
+      integer_overflow_options);
+  ok &= expect(
+      absl::IsResourceExhausted(integer_overflow_status),
+      "a placement-derived canvas above integer dimensions must be fatal");
+  ok &= expect(
+      write_tool(
+          nona,
+          "for file in mapping_0000.tif mapping_0000_x.tif mapping_0000_y.tif mapping_0001.tif "
+          "mapping_0001_x.tif mapping_0001_y.tif; do cp '" +
+              fixtures.string() + "/'$file \"$file\"; done\n"),
+      "working fake Nona must be restored after integer-overflow validation");
+
   const auto optimizer_args_size = fs::file_size(autooptimiser_args);
   hm::stitching::HuginProject::Options optimizer_disabled_options;
   std::string optimizer_disabled_message;
@@ -1410,7 +1446,7 @@ int main() {
       !interrupted_before_publication.ok(), "injected interruption after durable preparation must stop publication");
   bool durable_prepared_journal = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0)
       durable_prepared_journal = true;
   }
   ok &= expect(durable_prepared_journal, "durably prepared Hugin publication must retain its recovery journal");
@@ -1449,7 +1485,7 @@ int main() {
   bool durable_partial_backup = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
     const fs::path backup = entry.path() / "previous" / "hm_project.pto";
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0 &&
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0 &&
         fs::is_regular_file(backup)) {
       fs::remove(backup);
       std::ofstream(backup) << "partial\n";
@@ -1483,7 +1519,7 @@ int main() {
       "durable backup completion must not remove root artifacts before replacement publication");
   fs::path rollback_transaction;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0) {
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0) {
       rollback_transaction = entry.path();
       break;
     }
@@ -1579,6 +1615,20 @@ int main() {
       "panorama.tif",
       "stitching_canvas_provenance",
   };
+  const fs::path visible_user_directory = root / "game" / "hstream-stitch-ABC123";
+  fs::create_directories(visible_user_directory);
+  std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
+  const fs::path visible_user_file = root / "game" / "hstream-stitch-DEF456";
+  std::ofstream(visible_user_file) << "operator-owned\n";
+  const fs::path visible_user_symlink = root / "game" / "hstream-stitch-GHI789";
+  fs::create_symlink(visible_user_file, visible_user_symlink);
+  ok &= expect(
+      hm::stitching::mark_transaction_recovery_pending(root / "game", hm::stitching::TransactionJournalKind::kStitch)
+              .ok() &&
+          hm::stitching::HuginProject::Recover(root / "game").ok() &&
+          fs::exists(visible_user_directory / "notes.txt") && fs::is_regular_file(visible_user_file) &&
+          fs::is_symlink(visible_user_symlink),
+      "stitch recovery must ignore unauthenticated visible directory, file, and symlink prefix collisions");
   const auto write_legacy_transaction_fixture = [&](const fs::path& game, const fs::path& transaction) {
     fs::create_directories(transaction / "previous");
     std::ofstream manifest(transaction / "artifacts");
@@ -1646,9 +1696,9 @@ int main() {
       prior << name << '\n';
   }
   std::ofstream(oversized_restore_root / "mapping_0000.tif", std::ios::trunc) << "replacement\n";
-  const bool oversized_restore_created =
-      ::truncate(
-          (oversized_restore_transaction / "previous" / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) == 0;
+  const bool oversized_restore_created = ::truncate(
+                                             (oversized_restore_transaction / "previous" / "mapping_0000.tif").c_str(),
+                                             2LL * 1024LL * 1024LL * 1024LL + 1) == 0;
   std::ofstream(oversized_restore_transaction / "journal_version") << "2\n";
   std::ofstream(oversized_restore_transaction / "state") << "BACKED_UP\n";
   const auto oversized_restore_recovery = hm::stitching::HuginProject::Recover(oversized_restore_root);
@@ -1854,7 +1904,7 @@ int main() {
       oversized_copy_error);
   const int oversized_mapping =
       ::open((oversized_generation_root / "mapping_0000_x.tif").c_str(), O_WRONLY | O_CLOEXEC);
-  const bool oversized_mapping_written = oversized_mapping >= 0 && ::ftruncate(oversized_mapping, 2LL << 30) == 0;
+  const bool oversized_mapping_written = oversized_mapping >= 0 && ::ftruncate(oversized_mapping, (2LL << 30) + 1) == 0;
   if (oversized_mapping >= 0)
     ::close(oversized_mapping);
   auto oversized_generation_lock = hm::stitching::HuginProject::RecoverAndLock(oversized_generation_root);
@@ -1866,7 +1916,7 @@ int main() {
       oversized_generation_root / "mapping_0000_x.tif", oversized_generation_root / "rollback-mapping.tif");
   ::unsetenv("HM_TEST_STITCH_DISABLE_LINK_CLONE");
   ok &= expect(
-      !oversized_copy_error && oversized_mapping_written && absl::IsFailedPrecondition(oversized_generation.status()) &&
+      !oversized_copy_error && oversized_mapping_written && absl::IsResourceExhausted(oversized_generation.status()) &&
           absl::IsFailedPrecondition(oversized_rollback) &&
           !fs::exists(oversized_generation_root / "rollback-mapping.tif"),
       "generation fingerprinting and rollback must reject oversized sparse TIFFs before reading their payload");
@@ -1891,12 +1941,31 @@ int main() {
       ? hm::stitching::HuginProject::GenerationId(padded_generation_root, **padded_generation_lock)
       : absl::StatusOr<std::string>(padded_generation_lock.status());
   ok &= expect(
-      padded_mapping_written && absl::IsResourceExhausted(padded_bounds) &&
-          absl::IsFailedPrecondition(padded_generation.status()),
-      "dimension-derived TIFF ceilings must reject valid headers with large trailing padding before hashing");
+      padded_mapping_written && padded_bounds.ok() && padded_generation.ok(),
+      "TIFF validation must accept valid files above the removed payload-relative ceiling");
   if (padded_generation_lock.ok())
     padded_generation_lock->reset();
   fs::remove_all(padded_generation_root);
+
+  const fs::path over_dimension_generation_root = root / "over-dimension-generation-artifact";
+  std::error_code over_dimension_copy_error;
+  fs::copy(
+      root / "game",
+      over_dimension_generation_root,
+      fs::copy_options::recursive | fs::copy_options::copy_symlinks,
+      over_dimension_copy_error);
+  const bool over_dimension_mapping_written = !over_dimension_copy_error &&
+      write_spatial_tiff_tags(over_dimension_generation_root / "mapping_0000_x.tif", 40000, 1, 0.0f, 1.0f);
+  auto over_dimension_generation_lock = hm::stitching::HuginProject::RecoverAndLock(over_dimension_generation_root);
+  const auto over_dimension_generation = over_dimension_generation_lock.ok()
+      ? hm::stitching::HuginProject::GenerationId(over_dimension_generation_root, **over_dimension_generation_lock)
+      : absl::StatusOr<std::string>(over_dimension_generation_lock.status());
+  ok &= expect(
+      over_dimension_mapping_written && absl::IsResourceExhausted(over_dimension_generation.status()),
+      "generation fingerprinting must preserve fatal TIFF dimension-limit failures");
+  if (over_dimension_generation_lock.ok())
+    over_dimension_generation_lock->reset();
+  fs::remove_all(over_dimension_generation_root);
 
   const fs::path growing_rollback_root = root / "growing-rollback-source";
   fs::create_directories(growing_rollback_root);
@@ -2193,8 +2262,10 @@ int main() {
   ok &= expect(second_reader_entered && second_reader_ok, "waiting Hugin reader must proceed after lock release");
   bool staging_left_behind = false;
   for (const auto& entry : fs::directory_iterator(root / "game")) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-stitch-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-stitch-", 0) == 0 &&
+        read_text_file(entry.path() / "journal_version") == "2\n") {
       staging_left_behind = true;
+    }
   }
   ok &= expect(!staging_left_behind, "private Hugin staging directory must be cleaned");
   fs::remove_all(root);

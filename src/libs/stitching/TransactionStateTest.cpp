@@ -57,6 +57,30 @@ int main() {
   ::unsetenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN");
   ok &= expect(forced.ok() && *forced, "test override must force compatibility recovery scanning");
 
+  const fs::path owned = root / "hstream-stitch-ABC123";
+  fs::create_directory(owned);
+  std::ofstream(owned / "first") << "first\n";
+  std::ofstream(owned / "second") << "second\n";
+  auto owner_status = hm::stitching::write_owned_directory_marker(owned, "journal_version", "2\n");
+  auto pinned_root = hm::stitching::PinnedDirectory::Open(root, "transaction cleanup test root");
+  auto pinned_owned = pinned_root.ok()
+      ? pinned_root->OpenChild(owned.filename().string(), "owned transaction cleanup test directory")
+      : absl::StatusOr<std::optional<hm::stitching::PinnedDirectory>>(pinned_root.status());
+  ::setenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY", "1", 1);
+  const auto interrupted_cleanup = pinned_owned.ok() && pinned_owned->has_value()
+      ? hm::stitching::remove_pinned_directory(
+            *pinned_root, owned.filename().string(), **pinned_owned, "journal_version")
+      : pinned_owned.status();
+  ::unsetenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY");
+  ok &= expect(
+      owner_status.ok() && !interrupted_cleanup.ok() && fs::is_regular_file(owned / "journal_version"),
+      "interrupted cleanup must retain visible work-directory ownership until payload deletion completes");
+  const auto resumed_cleanup = pinned_owned.ok() && pinned_owned->has_value()
+      ? hm::stitching::remove_pinned_directory(
+            *pinned_root, owned.filename().string(), **pinned_owned, "journal_version")
+      : pinned_owned.status();
+  ok &= expect(resumed_cleanup.ok() && !fs::exists(owned), "owned visible work-directory cleanup must be resumable");
+
   const fs::path invalid = root / ".hstream-rink-recovery-pending";
   fs::remove(invalid);
   fs::create_directory(invalid);

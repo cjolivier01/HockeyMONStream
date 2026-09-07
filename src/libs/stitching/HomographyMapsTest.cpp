@@ -578,8 +578,8 @@ int main() {
       near_projective_pole_matches,
       hm::stitching::MappingBackend::kOpenCvMagsac);
   ok &= expect(
-      !near_projective_pole.ok() && near_projective_pole.status().code() == absl::StatusCode::kFailedPrecondition,
-      "MAGSAC mapping should reject near-pole canvas extents as a retryable candidate failure before integer conversion");
+      !near_projective_pole.ok() && near_projective_pole.status().code() == absl::StatusCode::kResourceExhausted,
+      "MAGSAC mapping should reject near-pole canvas extents as a fatal dimension-limit failure");
 
   fs::path skewed_projective_dir = root / "skewed-projective";
   fs::create_directories(skewed_projective_dir);

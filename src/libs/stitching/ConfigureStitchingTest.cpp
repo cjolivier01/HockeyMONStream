@@ -31,6 +31,7 @@ bool expect_candidate_retry_policy_preserves_late_failure() {
   const absl::Status geometry_failure = absl::FailedPreconditionError("candidate geometry rejected");
   const absl::Status missing_candidate_input = absl::NotFoundError("candidate input unavailable");
   const absl::Status seam_failure = absl::FailedPreconditionError("enblend failed to generate seam_file.png");
+  const absl::Status dimension_failure = absl::ResourceExhaustedError("mapping canvas exceeds dimension limit");
   // OpenCV emits canvas/started before MAGSAC or affine fitting. The first
   // rejected hypothesis must therefore remain retryable until the backend's
   // explicit alignment-complete callback, allowing a later candidate to win.
@@ -47,6 +48,7 @@ bool expect_candidate_retry_policy_preserves_late_failure() {
   return accepted_later_candidate &&
       hm::stitching::should_retry_stitching_calibration_candidate(geometry_failure, false) &&
       hm::stitching::should_retry_stitching_calibration_candidate(missing_candidate_input, false) &&
+      !hm::stitching::should_retry_stitching_calibration_candidate(dimension_failure, false) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(seam_failure, true) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(absl::InternalError("publication failed"), true);
 }
@@ -852,7 +854,7 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
   fs::create_directories(oversized_file_dir);
   if (!write_mapping_tiff(oversized_file_dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
       !write_mapping_tiff(oversized_file_dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f) ||
-      ::truncate((oversized_file_dir / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0) {
+      ::truncate((oversized_file_dir / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0) {
     return false;
   }
   setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
@@ -873,14 +875,17 @@ bool expect_canvas_constraint_checks_reject_oversized_artifacts(const fs::path& 
       return false;
     const auto metadata = hm::stitching::check_canvas_constraint_metadata_locked(dir, /*max_output_width=*/0);
     const auto full = hm::stitching::check_canvas_constraint_locked(dir, /*max_output_width=*/0);
-    return metadata.ok() && !metadata->artifacts_compatible && metadata->requires_regeneration && full.ok() &&
-        !full->artifacts_compatible && full->requires_regeneration;
+    lock->reset();
+    const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/0);
+    const auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string(), /*max_output_width=*/0);
+    return absl::IsResourceExhausted(metadata.status()) && absl::IsResourceExhausted(full.status()) &&
+        absl::IsResourceExhausted(configured.status()) && absl::IsResourceExhausted(load.status());
   };
 
   const fs::path oversized_tiff = tmpdir / "oversized_canvas_check_tiff";
   fs::remove_all(oversized_tiff);
   if (!write_valid_stitching_artifacts(oversized_tiff) ||
-      ::truncate((oversized_tiff / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0 ||
+      ::truncate((oversized_tiff / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0 ||
       !rejects(oversized_tiff)) {
     std::cerr << "canvas compatibility checks must reject oversized TIFFs before parser access" << std::endl;
     return false;
@@ -1058,13 +1063,43 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   fs::create_directory(stale_snapshot);
   std::ofstream(stale_snapshot / "mapping_0000.tif", std::ios::binary) << "stale";
   std::ofstream(stale_snapshot / "left.png", std::ios::binary) << "stale validation input";
+  const fs::path visible_user_directory = dir / "hstream-control-mask-snapshot-ABC123";
+  fs::create_directory(visible_user_directory);
+  std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
+  const fs::path fake_marker_target = dir / "operator-marker-target";
+  std::ofstream(fake_marker_target) << "2\n";
+  fs::create_symlink(fake_marker_target, visible_user_directory / "journal_version");
+  const fs::path visible_user_file = dir / "hstream-control-mask-snapshot-DEF456";
+  std::ofstream(visible_user_file) << "operator-owned\n";
+  const fs::path visible_user_symlink = dir / "hstream-control-mask-snapshot-GHI789";
+  fs::create_symlink(visible_user_file, visible_user_symlink);
   auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
   if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
+      !fs::exists(visible_user_directory / "notes.txt") ||
+      !fs::is_symlink(visible_user_directory / "journal_version") || !fs::is_regular_file(visible_user_file) ||
+      !fs::is_symlink(visible_user_symlink) ||
       !fs::is_regular_file(load->load_snapshot->directory() / "mapping_0000_x.tif") ||
       !load->load_snapshot->verify().ok()) {
     std::cerr << "loader validation must retain a private stable artifact snapshot: " << load.status() << std::endl;
     return false;
   }
+  const fs::path interrupted_snapshot = load->load_snapshot->directory();
+  ::setenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY", "1", 1);
+  load->load_snapshot.reset();
+  ::unsetenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY");
+  load->artifact_lock.reset();
+  if (!fs::is_regular_file(interrupted_snapshot / "journal_version")) {
+    std::cerr << "interrupted snapshot destruction must retain its ownership marker" << std::endl;
+    return false;
+  }
+  auto resumed_load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
+  if (!resumed_load.ok() || !resumed_load->artifact_lock || !resumed_load->load_snapshot ||
+      fs::exists(interrupted_snapshot)) {
+    std::cerr << "snapshot lifecycle cleanup must resume an interrupted marker-last removal: " << resumed_load.status()
+              << std::endl;
+    return false;
+  }
+  load = std::move(resumed_load);
   const fs::path pinned_mapping = dir / "mapping_0000_x.tif";
   const fs::path replacement_mapping = dir / "replacement-mapping-after-pin.tif";
   std::error_code replacement_error;
@@ -1743,7 +1778,7 @@ bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmp
 
   bool snapshot_left_behind = false;
   for (const auto& entry : fs::directory_iterator(dir)) {
-    if (entry.is_directory() && entry.path().filename().string().rfind(".hstream-control-mask-snapshot-", 0) == 0)
+    if (entry.is_directory() && entry.path().filename().string().rfind("hstream-control-mask-snapshot-", 0) == 0)
       snapshot_left_behind = true;
   }
   if (!snapshot_started || error || result.ok() || !fs::is_symlink(fs::symlink_status(mapping)) ||

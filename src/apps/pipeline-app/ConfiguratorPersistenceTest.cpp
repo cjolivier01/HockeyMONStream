@@ -1530,7 +1530,7 @@ play-tracker:
     ok &= expect(
         disabled_tracker_status.ok() &&
             !disabled_tracker.config()["pipeline"]["ds-playtracker"]["config-file"].IsDefined() &&
-            !fs::exists(disabled_tracker_game_dir / ".hstream-runtime"),
+            !fs::exists(disabled_tracker_game_dir / "hstream-runtime"),
         "A disabled tracker must not require or materialize a runtime sidecar");
 
     hm::Configurator incomplete_configurator(
@@ -1554,7 +1554,7 @@ play-tracker:
         ? YAML::LoadFile(incomplete_effective_path.string())
         : YAML::Node();
     ok &= expect(
-        incomplete_status.ok() && incomplete_effective_path.parent_path() == incomplete_game_dir / ".hstream-runtime" &&
+        incomplete_status.ok() && incomplete_effective_path.parent_path() == incomplete_game_dir / "hstream-runtime" &&
             incomplete_effective["play-tracker"]["preserve-custom-root"].as<bool>() &&
             !incomplete_effective["play-tracker"]["no-wide-start"].as<bool>() &&
             incomplete_effective["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() ==
@@ -2781,6 +2781,9 @@ play-tracker:
               .ok(),
       "A single-file Auto side and two independently explicit playlists are unambiguous");
 
+  const auto is_cleanup_directory_name = [](const std::string& name) {
+    return name.rfind("hstream-cleanup-v2-", 0) == 0 || name.rfind(".hstream-cleanup-v2-", 0) == 0;
+  };
   const fs::path custom_archive_dir = root / "configured-output" / "custom-archive-game";
   const fs::path custom_archive = custom_archive_dir / "operator-selected-name.mkv";
   const fs::path custom_recovery = custom_archive_dir / "operator-selected-name-finalization-failed.mkv";
@@ -3233,7 +3236,7 @@ play-tracker:
       std::istreambuf_iterator<char>(early_quarantine_guard_stream), std::istreambuf_iterator<char>()};
   bool early_quarantine_hidden_entry = false;
   for (const auto& entry : fs::directory_iterator(early_quarantine_dir)) {
-    if (entry.is_directory() && entry.path().filename().string().find(".hstream-cleanup-") == 0)
+    if (entry.is_directory() && is_cleanup_directory_name(entry.path().filename().string()))
       early_quarantine_hidden_entry = true;
   }
   ok &= expect(
@@ -3281,7 +3284,7 @@ play-tracker:
   bool interrupted_quarantine_cleanup_remains = false;
   for (const auto& entry : fs::directory_iterator(interrupted_quarantine_dir)) {
     if (entry.is_directory() && entry.path() != unrelated_cleanup_directory &&
-        entry.path().filename().string().find(".hstream-cleanup-") == 0)
+        is_cleanup_directory_name(entry.path().filename().string()))
       interrupted_quarantine_cleanup_remains = true;
   }
   ok &= expect(
@@ -3382,7 +3385,7 @@ play-tracker:
       std::istreambuf_iterator<char>(fallback_retirement_recovery_stream), std::istreambuf_iterator<char>()};
   bool fallback_retirement_cleanup_remains = false;
   for (const fs::path& entry : fs::directory_iterator(fallback_retirement_dir)) {
-    if (entry.filename().string().rfind(".hstream-cleanup-", 0) == 0)
+    if (is_cleanup_directory_name(entry.filename().string()))
       fallback_retirement_cleanup_remains = true;
   }
   ok &= expect(
@@ -3408,7 +3411,7 @@ play-tracker:
   g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_FALLBACK_RETIREMENT");
   fs::path committed_retirement_transaction;
   for (const fs::path& entry : fs::directory_iterator(committed_retirement_dir)) {
-    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+    if (fs::is_directory(entry) && is_cleanup_directory_name(entry.filename().string()))
       committed_retirement_transaction = entry;
   }
   const bool committed_retirement_authenticated = !committed_retirement_transaction.empty() &&
@@ -3441,7 +3444,7 @@ play-tracker:
   g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_BEFORE_CLEANUP_COMMIT_PUBLISH");
   fs::path pending_commit_transaction;
   for (const fs::path& entry : fs::directory_iterator(pending_commit_dir)) {
-    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+    if (fs::is_directory(entry) && is_cleanup_directory_name(entry.filename().string()))
       pending_commit_transaction = entry;
   }
   const bool pending_commit_unpublished = !pending_commit_transaction.empty() &&
@@ -3508,7 +3511,7 @@ play-tracker:
   g_unsetenv("HSTREAM_CONFIGURATOR_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
   fs::path failed_private_unlink_transaction;
   for (const fs::path& entry : fs::directory_iterator(failed_private_unlink_dir)) {
-    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+    if (fs::is_directory(entry) && is_cleanup_directory_name(entry.filename().string()))
       failed_private_unlink_transaction = entry;
   }
   const bool failed_private_unlink_authenticated = !failed_private_unlink_transaction.empty() &&
@@ -3555,7 +3558,7 @@ play-tracker:
   for (const fs::path& entry : fs::directory_iterator(concurrent_cleanup_dir)) {
     const std::string name = entry.filename().string();
     concurrent_cleanup_artifacts_remain |=
-        name.rfind(".hstream-cleanup-v2-", 0) == 0 || absl::EndsWith(name, ".hstream-cleanup-pin");
+        is_cleanup_directory_name(name) || absl::EndsWith(name, ".hstream-cleanup-pin");
   }
   ok &= expect(
       concurrent_cleanup_stat_ok && concurrent_cleanup_first.ok() && concurrent_cleanup_second.ok() &&
@@ -3591,7 +3594,7 @@ play-tracker:
   g_unsetenv("HSTREAM_CONFIGURATOR_TEST_INTERRUPT_AFTER_ARCHIVE_QUARANTINE");
   fs::path interrupted_concurrent_transaction;
   for (const fs::path& entry : fs::directory_iterator(interrupted_concurrent_dir)) {
-    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0)
+    if (fs::is_directory(entry) && is_cleanup_directory_name(entry.filename().string()))
       interrupted_concurrent_transaction = entry;
   }
   const auto interrupted_concurrent_restart =
@@ -3651,7 +3654,7 @@ play-tracker:
   bool reconciliation_race_private_links_retired = false;
   fs::path reconciliation_race_foreign_path;
   for (const fs::path& entry : fs::directory_iterator(reconciliation_race_dir)) {
-    if (fs::is_directory(entry) && entry.filename().string().rfind(".hstream-cleanup-v2-", 0) == 0) {
+    if (fs::is_directory(entry) && is_cleanup_directory_name(entry.filename().string())) {
       reconciliation_race_private_links_retired = fs::exists(entry / "owner") && !fs::exists(entry / "entry") &&
           !fs::exists(entry / "guard") && !fs::exists(entry / "fallback");
       continue;
@@ -3682,7 +3685,7 @@ play-tracker:
   bool reconciliation_guard_public_fallback = false;
   for (const fs::path& entry : fs::directory_iterator(reconciliation_race_dir)) {
     const std::string name = entry.filename().string();
-    if (fs::is_directory(entry) && name.rfind(".hstream-cleanup-v2-", 0) == 0) {
+    if (fs::is_directory(entry) && is_cleanup_directory_name(name)) {
       if (fs::exists(entry / "owner") && !fs::exists(entry / "entry") && !fs::exists(entry / "guard") &&
           !fs::exists(entry / "fallback")) {
         reconciliation_outer_owner_only = true;
@@ -3699,7 +3702,7 @@ play-tracker:
   for (const fs::path& entry : fs::directory_iterator(reconciliation_race_dir)) {
     const std::string name = entry.filename().string();
     reconciliation_race_artifacts_remain |=
-        name.rfind(".hstream-cleanup-", 0) == 0 || name.find(".hstream-reconcile-") != std::string::npos;
+        is_cleanup_directory_name(name) || name.find(".hstream-reconcile-") != std::string::npos;
   }
   std::ifstream reconciliation_race_recovery_stream(
       reconciliation_race_dir / "reconcile-race-finalization-failed.mkv", std::ios::binary);
@@ -3742,8 +3745,8 @@ play-tracker:
   const auto deep_cleanup_chain_recovery =
       hm::configurator_internal::recover_stale_archive_work_files(deep_cleanup_chain_dir / "configured.mkv");
   const bool deep_cleanup_chain_retired =
-      std::none_of(fs::directory_iterator(deep_cleanup_chain_dir), fs::directory_iterator(), [](const auto& entry) {
-        return entry.path().filename().string().rfind(".hstream-cleanup-v2-", 0) == 0;
+      std::none_of(fs::directory_iterator(deep_cleanup_chain_dir), fs::directory_iterator(), [&](const auto& entry) {
+        return is_cleanup_directory_name(entry.path().filename().string());
       });
   ok &= expect(
       deep_cleanup_chain_setup && deep_cleanup_chain_recovery.ok() && deep_cleanup_chain_recovery->empty() &&

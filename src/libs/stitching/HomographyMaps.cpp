@@ -51,15 +51,15 @@ absl::Status validate_image(const cv::Mat& image, const char* name) {
 }
 
 absl::Status validate_output_size(double width, double height) {
-  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0 || height <= 0.0 ||
-      width >= static_cast<double>(kUnmapped) || height >= static_cast<double>(kUnmapped) ||
+  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0 || height <= 0.0)
+    return absl::FailedPreconditionError("OpenCV mapping candidate canvas dimensions are invalid");
+  if (width >= static_cast<double>(kUnmapped) || height >= static_cast<double>(kUnmapped) ||
       width > static_cast<double>(std::numeric_limits<int>::max()) ||
-      height > static_cast<double>(std::numeric_limits<int>::max())) {
-    return absl::FailedPreconditionError("OpenCV mapping candidate canvas exceeds uint16 remap limits");
-  }
+      height > static_cast<double>(std::numeric_limits<int>::max()))
+    return absl::ResourceExhaustedError("OpenCV mapping candidate canvas exceeds uint16 remap limits");
   constexpr int64_t kMaxPixels = 128LL * 1024LL * 1024LL;
   if (width > static_cast<double>(kMaxPixels) / height)
-    return absl::FailedPreconditionError("OpenCV mapping candidate canvas exceeds decoded-image safety limits");
+    return absl::ResourceExhaustedError("OpenCV mapping candidate canvas exceeds decoded-image safety limits");
   return absl::OkStatus();
 }
 
@@ -613,6 +613,8 @@ absl::StatusOr<HomographyMapResult> CreateOpenCvMappingFiles(
           magsac_consensus_validated = true;
           break;
         }
+        if (absl::IsResourceExhausted(candidate_status))
+          return candidate_status;
         last_rejection = candidate_status;
         std::cerr << "Rejected calibrated MAGSAC hypothesis " << (attempt + 1) << " with " << candidate_inlier_count
                   << "/" << matches.size() << " inliers: " << candidate_status << '\n';

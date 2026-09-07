@@ -362,6 +362,20 @@ stitching:
           ordered_merged[1].as<std::string>() == "A.mp4" && ordered_merged[2].as<std::string>() == "C.mp4",
       "rollback merging must preserve the latest sequence's relative order around restored entries");
 
+  const fs::path visible_user_directory = root / "hstream-rink-ABC123";
+  fs::create_directories(visible_user_directory);
+  std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
+  const fs::path visible_user_file = root / "hstream-rink-DEF456";
+  std::ofstream(visible_user_file) << "operator-owned\n";
+  const fs::path visible_user_symlink = root / "hstream-rink-GHI789";
+  fs::create_symlink(visible_user_file, visible_user_symlink);
+  ok &= expect(
+      hm::stitching::mark_transaction_recovery_pending(root, hm::stitching::TransactionJournalKind::kRink).ok() &&
+          hm::stitching::load_game_config_file(root / "config.yaml").ok() &&
+          fs::exists(visible_user_directory / "notes.txt") && fs::is_regular_file(visible_user_file) &&
+          fs::is_symlink(visible_user_symlink),
+      "rink recovery must ignore unauthenticated visible directory, file, and symlink prefix collisions");
+
   const fs::path interrupted = root / ".hstream-rink-interrupted";
   fs::create_directories(interrupted / "previous");
   std::ofstream(interrupted / "previous" / "config.yaml") << "recovered:\n  old: true\n";

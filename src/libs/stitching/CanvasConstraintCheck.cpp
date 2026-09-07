@@ -19,6 +19,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -46,10 +47,9 @@ constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kHardMaximumArtifactDimension = 32768;
 constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kTiffMetadataAllowanceBytes = 16ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumTiffArtifactBytes = kHardMaximumArtifactPixels * 4 + kTiffMetadataAllowanceBytes;
+constexpr uint64_t kMaximumTiffArtifactBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPngArtifactBytes = 512ULL * 1024ULL * 1024ULL;
-constexpr const char* kStitchTransactionPrefix = ".hstream-stitch-";
+constexpr const char* kLegacyStitchTransactionPrefix = ".hstream-stitch-";
 constexpr unsigned long kFuseSuperMagic = 0x65735546UL;
 constexpr unsigned long kMsDosSuperMagic = 0x4d44UL;
 constexpr unsigned long kExFatSuperMagic = 0x2011bab0UL;
@@ -116,9 +116,7 @@ absl::StatusOr<uint64_t> maximum_open_tiff_artifact_bytes(int descriptor, const 
       pixels * samples > (std::numeric_limits<uint64_t>::max() - 7) / bits) {
     return absl::ResourceExhaustedError("TIFF artifact payload size overflows: " + path.string());
   }
-  const uint64_t payload_bits = pixels * samples * bits;
-  const uint64_t payload_bytes = (payload_bits + 7) / 8;
-  return std::min(kMaximumTiffArtifactBytes, payload_bytes + kTiffMetadataAllowanceBytes);
+  return kMaximumTiffArtifactBytes;
 }
 
 absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const char* name, bool required) {
@@ -375,10 +373,12 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(const fs::path& path) {
   const float y_px = y_position * y_resolution;
   if (!have_dimensions || width == 0 || height == 0 || !have_resolution || !have_position ||
       !std::isfinite(x_resolution) || !std::isfinite(y_resolution) || x_resolution <= 0.0f || y_resolution <= 0.0f ||
-      !std::isfinite(x_position) || !std::isfinite(y_position) || !std::isfinite(x_px) || !std::isfinite(y_px) ||
-      width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
-      static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels) {
+      !std::isfinite(x_position) || !std::isfinite(y_position) || !std::isfinite(x_px) || !std::isfinite(y_px)) {
     return absl::FailedPreconditionError("Invalid mapping TIFF placement metadata: " + path.string());
+  }
+  if (width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
+      static_cast<uint64_t>(width) * height > kHardMaximumArtifactPixels) {
+    return absl::ResourceExhaustedError("Mapping TIFF placement dimensions exceed safety limits: " + path.string());
   }
   return TiffPlacement{.x_px = x_px, .y_px = y_px, .width = width, .height = height};
 }
@@ -394,10 +394,12 @@ absl::StatusOr<CanvasSize> mapping_canvas_size(const fs::path& game_dir) {
   const float min_y = std::min(first->y_px, second->y_px);
   const float width = std::max(first->x_px - min_x + first->width, second->x_px - min_x + second->width);
   const float height = std::max(first->y_px - min_y + first->height, second->y_px - min_y + second->height);
-  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0f || height < 1.0f ||
-      width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
-      width * height > kHardMaximumArtifactPixels) {
+  if (!std::isfinite(width) || !std::isfinite(height) || width < 1.0f || height < 1.0f) {
     return absl::FailedPreconditionError("Mapping TIFFs produce an invalid canvas");
+  }
+  if (width > kHardMaximumArtifactDimension || height > kHardMaximumArtifactDimension ||
+      width * height > kHardMaximumArtifactPixels) {
+    return absl::ResourceExhaustedError("Mapping TIFF canvas exceeds safety limits");
   }
   return CanvasSize{.width = static_cast<size_t>(width), .height = static_cast<size_t>(height)};
 }
@@ -1189,19 +1191,20 @@ absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
     if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0)
       return absl::FailedPreconditionError("Invalid Hugin artifact while fingerprinting: " + path.string());
     uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
-    if (maximum_bytes == 0 || static_cast<uint64_t>(before.st_size) > maximum_bytes) {
-      return absl::FailedPreconditionError("Oversized Hugin artifact while fingerprinting: " + path.string());
+    if (maximum_bytes == 0) {
+      return absl::FailedPreconditionError("Invalid Hugin artifact type while fingerprinting: " + path.string());
+    }
+    if (static_cast<uint64_t>(before.st_size) > maximum_bytes) {
+      return absl::ResourceExhaustedError("Oversized Hugin artifact while fingerprinting: " + path.string());
     }
     if (fs::path(name).extension() == ".tif") {
       auto tiff_maximum = maximum_open_tiff_artifact_bytes(descriptor, path);
       if (!tiff_maximum.ok())
-        return absl::FailedPreconditionError(
-            "Invalid bounded TIFF artifact while fingerprinting: " + path.string() + ": " +
-            std::string(tiff_maximum.status().message()));
+        return tiff_maximum.status();
       maximum_bytes = *tiff_maximum;
     }
     if (static_cast<uint64_t>(before.st_size) > maximum_bytes) {
-      return absl::FailedPreconditionError("Oversized Hugin artifact while fingerprinting: " + path.string());
+      return absl::ResourceExhaustedError("Oversized Hugin artifact while fingerprinting: " + path.string());
     }
     const char present = '1';
     const std::string size = std::to_string(static_cast<uint64_t>(before.st_size));
@@ -1761,15 +1764,35 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
     return root_entries.status();
   for (const auto& entry : *root_entries) {
     const std::string directory_name = entry.path().filename().string();
-    if (directory_name.rfind(kStitchTransactionPrefix, 0) != 0 || directory_name == ".hstream-stitch-journal-v1" ||
-        directory_name == ".hstream-stitch-recovery-pending")
+    static const std::regex current_transaction_pattern(R"(^hstream-stitch-[A-Za-z0-9]{6}$)");
+    const bool current_transaction = std::regex_match(directory_name, current_transaction_pattern);
+    const bool legacy_transaction = directory_name.rfind(kLegacyStitchTransactionPrefix, 0) == 0 &&
+        directory_name != ".hstream-stitch-journal-v1" && directory_name != ".hstream-stitch-recovery-pending";
+    if (!current_transaction && !legacy_transaction)
       continue;
+    if (current_transaction) {
+      std::error_code type_error;
+      const fs::file_type type = entry.symlink_status(type_error).type();
+      if (type_error == std::errc::no_such_file_or_directory)
+        continue;
+      if (type_error)
+        return absl::InternalError("Unable to inspect visible stitch transaction collision: " + type_error.message());
+      if (type != fs::file_type::directory)
+        continue;
+    }
     auto opened_transaction = root_directory.OpenChild(directory_name, "stitch transaction directory");
     if (!opened_transaction.ok())
       return opened_transaction.status();
     if (!opened_transaction->has_value())
       continue;
     PinnedDirectory transaction_directory = std::move(**opened_transaction);
+    if (current_transaction) {
+      auto owned = owned_directory_marker_matches(transaction_directory.path(), "journal_version", "2\n");
+      if (!owned.ok())
+        return owned.status();
+      if (!*owned)
+        continue;
+    }
     recovered = true;
     const fs::path transaction = transaction_directory.path();
     auto state = read_stitch_transaction_state(transaction);
@@ -2025,7 +2048,8 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
           return status;
       }
     }
-    auto cleanup = remove_pinned_directory(root_directory, directory_name, transaction_directory);
+    auto cleanup = remove_pinned_directory(
+        root_directory, directory_name, transaction_directory, current_transaction ? "journal_version" : "");
     if (!cleanup.ok())
       return cleanup;
   }
@@ -2248,7 +2272,7 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
   const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
   if (!artifact_bounds.ok()) {
     if (absl::IsNotFound(artifact_bounds) || absl::IsFailedPrecondition(artifact_bounds) ||
-        absl::IsInvalidArgument(artifact_bounds) || absl::IsResourceExhausted(artifact_bounds)) {
+        absl::IsInvalidArgument(artifact_bounds)) {
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     }
     return artifact_bounds;
@@ -2256,7 +2280,7 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
   auto canvas = mapping_canvas_size(game_dir);
   if (!canvas.ok()) {
     if (absl::IsNotFound(canvas.status()) || absl::IsFailedPrecondition(canvas.status()) ||
-        absl::IsInvalidArgument(canvas.status()) || absl::IsResourceExhausted(canvas.status())) {
+        absl::IsInvalidArgument(canvas.status())) {
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     }
     return canvas.status();
@@ -2280,7 +2304,7 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
   const absl::Status artifact_contract = validate_canvas_artifact_contract(game_dir, *canvas, validate_seam_payload);
   if (!artifact_contract.ok()) {
     if (absl::IsNotFound(artifact_contract) || absl::IsFailedPrecondition(artifact_contract) ||
-        absl::IsInvalidArgument(artifact_contract) || absl::IsResourceExhausted(artifact_contract)) {
+        absl::IsInvalidArgument(artifact_contract)) {
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     }
     return artifact_contract;
