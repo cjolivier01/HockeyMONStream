@@ -888,22 +888,18 @@ bool restore_generated_stitch_rink_context(YAML::Node& config) {
           (entry.first.as<std::string>() != "rink_config" && entry.first.as<std::string>() != "rink_configs"))
         return false;
     }
-    bool unchanged = stitching && stitching.IsMap();
+    if (!generated["rink_config"] || !generated["rink_configs"])
+      return false;
+    // Preserve edits independently: changing only the selected rink must not
+    // turn the untouched generated profile catalog into private defaults.
     for (const char* key : {"rink_config", "rink_configs"}) {
-      if (!generated[key])
-        return false;
-      const YAML::Node current = unchanged ? stitching[key] : YAML::Node();
-      unchanged = unchanged && current && YAML::Dump(current) == YAML::Dump(generated[key]);
-    }
-    // A user edit to the materialized context makes it private intent. Do not
-    // restore old values over that edit; discard only our generated marker.
-    if (unchanged) {
-      for (const char* key : {"rink_config", "rink_configs"}) {
-        if (previous[key])
-          config["stitching"][key] = YAML::Clone(previous[key]);
-        else
-          config["stitching"].remove(key);
-      }
+      const YAML::Node current = stitching && stitching.IsMap() ? stitching[key] : YAML::Node();
+      if (!current || YAML::Dump(current) != YAML::Dump(generated[key]))
+        continue;
+      if (previous[key])
+        config["stitching"][key] = YAML::Clone(previous[key]);
+      else
+        config["stitching"].remove(key);
     }
     config["hstream_ui"].remove("generated_stitching_rink_context");
     return true;

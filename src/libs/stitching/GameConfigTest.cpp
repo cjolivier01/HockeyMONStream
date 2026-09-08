@@ -300,6 +300,24 @@ stitching:
       refreshed_context.ok() && hm::stitching::read_stitch_projection_framing(private_rink)->rotation_degrees[1] == -41,
       "changed overlay defaults must reach the next worker generation");
 
+  YAML::Node changed_selection = YAML::Clone(private_rink);
+  changed_selection["stitching"]["rink_config"] = "sharks-ice";
+  const bool selection_restored = hm::stitching::restore_generated_stitch_rink_context(changed_selection);
+  ok &= expect(
+      selection_restored && !changed_selection["stitching"]["rink_configs"] &&
+          changed_selection["stitching"]["rink_config"].as<std::string>() == "sharks-ice",
+      "editing only the selection must preserve it while restoring untouched inherited profile definitions");
+  YAML::Node changed_sharks_default = YAML::Clone(overlay_rink);
+  changed_sharks_default["stitching"]["rink_config"] = "sharks-ice";
+  changed_sharks_default["stitching"]["rink_configs"]["sharks-ice"]["rotation_degrees"][1] = -28;
+  const auto selection_refreshed =
+      hm::stitching::materialize_stitch_rink_context(changed_selection, changed_sharks_default);
+  const auto refreshed_selection_view = hm::stitching::read_stitch_projection_framing(changed_selection);
+  ok &= expect(
+      selection_refreshed.ok() && refreshed_selection_view.ok() && refreshed_selection_view->rotation_inherited &&
+          refreshed_selection_view->rotation_degrees[1] == -28,
+      "a selection-only edit must still follow subsequent shared profile updates");
+
   auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
   const auto rink_view = hm::stitching::read_stitch_projection_framing(
       YAML::Load("stitching: {projection_framing: {rotation_degrees: [0, -35, 3], crop: [0.02, 0.98, 0.54, 1]}}"));
