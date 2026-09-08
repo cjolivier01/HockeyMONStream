@@ -382,6 +382,8 @@ class HStreamWindow : public QMainWindow {
   hm::stitching::StitchCameraSelection stitchCameraSelection() const;
   absl::StatusOr<hm::stitching::StitchCameraSelection> stitchCameraSelectionFromGameConfig(
       const YAML::Node& config) const;
+  absl::StatusOr<hm::stitching::StitchProjectionFraming> stitchProjectionFramingFromGameConfig(
+      const YAML::Node& config) const;
   void applyCameraConfigurationDefaults();
   QString stitchProjection() const;
   std::vector<double> stitchProjectionParameters() const;

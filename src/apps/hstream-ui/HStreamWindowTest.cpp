@@ -8087,6 +8087,22 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           camera_vertical_fov->value() == 94.5 && !save->isEnabled(),
       "Reloading a game must restore its camera selection and both private source FOV overrides");
 
+  YAML::Node inherited_rink_config = YAML::Clone(config);
+  inherited_rink_config["stitching"]["rink_config"] = "vallco";
+  inherited_rink_config["stitching"].remove("projection_framing");
+  std::ofstream(config_path) << YAML::Dump(inherited_rink_config) << '\n';
+  activate(create);
+  const bool inherited_rink_loads_clean = expect(!save->isEnabled(), "A rink-only game must load its default view cleanly");
+  top_squeeze->setValue(16);
+  activate(save);
+  const auto inherited_rink_saved = YAML::LoadFile(config_path.string());
+  const auto inherited_rink_view = hm::stitching::read_stitch_projection_framing(inherited_rink_saved);
+  const bool inherited_rink_preserved = expect(
+      inherited_rink_view.ok() && inherited_rink_view->rotation_inherited &&
+          inherited_rink_view->rotation_degrees[1] == -35 &&
+          !inherited_rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
+      "Editing projection controls must keep a rink-only game's rotation inherited");
+
   YAML::Node leveled_config = YAML::Clone(config);
   leveled_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
   leveled_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0.02, 0.98, 0.54, 1]");
@@ -8374,7 +8390,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   game_id->setText(original_game_id);
   activate(create);
-  return leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available && hero_defaults_applied &&
+  return inherited_rink_loads_clean && inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available && hero_defaults_applied &&
       ace_defaults_applied && saved &&
       camera_override_reloaded && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&

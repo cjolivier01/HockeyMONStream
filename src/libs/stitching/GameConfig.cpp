@@ -799,8 +799,11 @@ absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurat
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
     if (stitching && !stitching.IsNull() && !stitching.IsMap())
       return absl::InvalidArgumentError("stitching must be a map");
-    YAML::Node definitions = stitching && stitching.IsMap() ? stitching["rink_configs"] : YAML::Node();
-    if (!definitions || definitions.IsNull()) {
+    const YAML::Node configured_definitions = stitching && stitching.IsMap() ? stitching["rink_configs"] : YAML::Node();
+    YAML::Node definitions;
+    if (configured_definitions && !configured_definitions.IsNull()) {
+      definitions.reset(configured_definitions);
+    } else {
       const auto baseline = hm::baseline_config::load();
       if (!baseline.ok())
         return baseline.status();

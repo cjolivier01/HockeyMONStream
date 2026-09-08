@@ -105,8 +105,7 @@ int main() {
           "  output-height: 6958\n"),
       0.3012048193);
   ok &= expect(
-      stitched_preview_size.has_value() && stitched_preview_size->width == 1600 &&
-          stitched_preview_size->height == 728,
+      stitched_preview_size.has_value() && stitched_preview_size->width == 1600 && stitched_preview_size->height == 728,
       "Scaled stitched preview must fit the streammux preview box while preserving hmstitcher aspect");
   const auto cropper_preview_size = hm::configurator_internal::scaled_render_sink_dimensions(
       YAML::Load(
@@ -1880,6 +1879,37 @@ play-tracker:
           !(**backend_cli_final)["stitching"]["run_autooptimizer"].as<bool>() &&
           !hm::get_node(**backend_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "CLI materialization must preserve and restore an existing explicit game-private stitching backend choice");
+
+  for (const std::string override_value : {"null", "[0, 0, 0]", "[0, -35, 0]"}) {
+    const std::string game =
+        override_value == "null" ? "rink-inherited" : (override_value == "[0, 0, 0]" ? "rink-zero" : "rink-equal");
+    const fs::path rink_dir = games / game;
+    fs::create_directories(rink_dir);
+    YAML::Node rink_private =
+        YAML::Load("stitching: {rink_config: vallco, projection_framing: {rotation_degrees: " + override_value + "}}");
+    ok &= expect(
+        hm::stitching::publish_game_config(rink_dir, YAML::Dump(rink_private) + "\n").ok(),
+        "rink persistence fixture must publish");
+    for (int iteration = 0; iteration < 2; ++iteration) {
+      hm::Configurator rink_configurator(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+      const auto configured = rink_configurator.configure();
+      const auto persisted = rink_configurator.persist_effective_stitching_backend_choices();
+      const auto loaded = hm::stitching::load_game_config_file(rink_dir / "config.yaml");
+      if (!configured.ok() || !persisted.ok())
+        std::cerr << game << ": configure=" << configured << " persist=" << persisted << "\n";
+      ok &= expect(
+          configured.ok() && persisted.ok() && loaded.ok() && loaded->has_value(),
+          "rink defaults and explicit rotations must survive repeated backend materialization");
+      if (!loaded.ok() || !loaded->has_value())
+        continue;
+      const auto framing = hm::stitching::read_stitch_projection_framing(**loaded);
+      const bool inherited = override_value == "null";
+      ok &= expect(
+          framing.ok() && framing->rotation_inherited == inherited &&
+              framing->rotation_degrees[1] == (game == "rink-zero" ? 0 : -35),
+          "backend persistence must retain rotation inheritance and explicit overrides, including zero");
+    }
+  }
 
   const fs::path framing_cli_dir = games / "framing-cli";
   fs::create_directories(framing_cli_dir);
