@@ -284,16 +284,18 @@ release_assets=(
   "${release_dir}"/*.sh
   "${release_dir}/SHA256SUMS"
 )
-release_note_args=()
+release_notes=$'HockeyMONStream is free, MIT-licensed software for stitching multiple sports-camera videos, automatically tracking the play, and producing a virtual pan-and-zoom program view. It is self-hosted on supported NVIDIA GPU hardware.\n\n[Product overview](https://cjolivier01.github.io/HockeyMONStream/) · [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) · [Source code](https://github.com/cjolivier01/HockeyMONStream)'
 if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
   private_release_warning=$'## Windows installer trust\n\n> [!WARNING]\n'
   private_release_warning+=$'> The Windows installer in this release uses a private/self-signed publisher certificate. '
   private_release_warning+=$'Windows will report an unknown publisher unless that certificate is explicitly trusted on '
   private_release_warning+=$'the target machine. The Debian artifacts are unaffected.'
-  release_note_args=(--notes "${private_release_warning}")
+  release_notes+=$'\n\n'
+  release_notes+="${private_release_warning}"
 fi
 if ! gh release create "${release_tag}" "${release_assets[@]}" \
-    --repo "${repository}" --verify-tag --generate-notes "${release_note_args[@]}" --title "HStream ${release_tag}"; then
+    --repo "${repository}" --verify-tag --generate-notes --notes "${release_notes}" \
+    --title "HockeyMONStream ${release_tag} — multi-camera sports video"; then
   echo "ERROR: tag ${release_tag} was pushed, but GitHub release publication failed." >&2
   echo "After inspecting the failure, retry publication or run:" >&2
   echo "  make delete-release RELEASE_TAG=${release_tag}" >&2

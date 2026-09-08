@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Download and install HockeyMONStream sports video software</title>
+  <meta name="description" content="Download HockeyMONStream for Ubuntu, NVIDIA Jetson, or Windows 11 WSL and learn what is required to run multi-camera sports video stitching.">
+  <link rel="canonical" href="https://cjolivier01.github.io/HockeyMONStream/install.html">
+  <link rel="stylesheet" href="site.css">
+  <meta name="theme-color" content="#07111f">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="HockeyMONStream">
+  <meta property="og:title" content="Download and install HockeyMONStream">
+  <meta property="og:description" content="Release packages for Ubuntu, NVIDIA Jetson, and Windows 11 through WSL 2.">
+  <meta property="og:url" content="https://cjolivier01.github.io/HockeyMONStream/install.html">
+  <meta property="og:image" content="https://cjolivier01.github.io/HockeyMONStream/assets/hockey-panorama.webp">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+  <header class="wrap">
+    <nav class="nav" aria-label="Main navigation">
+      <a class="brand" href="./">HockeyMON<span>Stream</span></a>
+      <div class="nav-links">
+        <a href="./#how-it-works">How it works</a>
+        <a href="./#features">Features</a>
+        <a href="install.html" aria-current="page">Install</a>
+        <a href="./#faq">FAQ</a>
+        <a href="https://github.com/cjolivier01/HockeyMONStream">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <div class="page-hero">
+      <p class="eyebrow">Download and installation</p>
+      <h1>Run the sports video pipeline on your GPU</h1>
+      <p class="lede">Choose a packaged release or build from source. HockeyMONStream is free software, but it depends on NVIDIA’s GPU driver, CUDA, and DeepStream components.</p>
+      <div class="actions">
+        <a class="button primary" href="https://github.com/cjolivier01/HockeyMONStream/releases/latest">Open the latest release</a>
+        <a class="button" href="https://github.com/cjolivier01/HockeyMONStream#build-from-source">Build from source</a>
+      </div>
+    </div>
+
+    <article class="content">
+      <div class="notice"><strong>Before downloading:</strong> this is a technical, self-hosted project—not a hosted video service. You provide compatible cameras or recordings, NVIDIA hardware, storage, and the NVIDIA software dependencies.</div>
+
+      <h2>Windows 11</h2>
+      <p>Download the release asset ending in <code>_windows-wsl-setup.exe</code>. The bootstrapper creates a dedicated Ubuntu environment under WSL 2 and installs the matching HockeyMONStream Debian package.</p>
+      <p>You will need Windows 11 with virtualization and WSL 2 support, an NVIDIA GPU with a current Windows driver that exposes CUDA to WSL, and the supported NVIDIA DeepStream Debian package. The installer asks you to select the DeepStream package; it is not redistributed inside the installer.</p>
+      <p>The current public installer is signed with a private/self-signed publisher certificate. Windows therefore shows an unknown-publisher warning unless that certificate is already trusted. Read the complete <a href="https://github.com/cjolivier01/HockeyMONStream/blob/master/docs/windows-wsl-installer.md">Windows WSL installer documentation</a> for the security model, files, and uninstall behavior.</p>
+
+      <h2>Ubuntu desktop</h2>
+      <p>Download the <code>_ubuntu24.04_amd64.deb</code> or <code>_ubuntu26.04_amd64.deb</code> asset that exactly matches the host release. Install the matching NVIDIA driver/CUDA and supported DeepStream package first, then install the HockeyMONStream package and its dependencies.</p>
+      <p>The release filename and package metadata identify the intended Ubuntu version. Do not install the Ubuntu 24.04 package on 26.04, or vice versa.</p>
+
+      <h2>NVIDIA Jetson</h2>
+      <p>For JetPack 6-class Jetson systems, download the release asset ending in <code>_jetson-ubuntu22.04_arm64.deb</code>. The release also contains a Hugin build script and corresponding source archives used for the Jetson calibration toolchain.</p>
+
+      <h2>Verify the download</h2>
+      <p>Every packaged release includes <code>SHA256SUMS</code>. Download that file from the same release and compare the package hash before installing:</p>
+      <pre><code>sha256sum -c SHA256SUMS --ignore-missing</code></pre>
+
+      <h2>Prepare camera footage</h2>
+      <p>By default, games live under <code>$HOME/Videos/&lt;game_id&gt;</code>. Put each camera’s clips in a separate directory:</p>
+      <pre><code>$HOME/Videos/game-001/cam1/*.mp4
+$HOME/Videos/game-001/cam2/*.mp4</code></pre>
+      <p>GoPro and Insta360 chapter naming patterns are supported. See the <a href="https://github.com/cjolivier01/HockeyMONStream#build-from-source">README build guide</a> for source builds and the current run commands.</p>
+
+      <h2>What happens on the first run</h2>
+      <p>The runner loads the bundled baseline configuration, downloads configured pretrained runtime model assets if they are missing, configures stitching from your footage, and starts the main detection and play-tracking pipeline. You can keep the default game and output roots or configure explicit paths.</p>
+
+      <h2>Need help or want to contribute?</h2>
+      <p>Search the <a href="https://github.com/cjolivier01/HockeyMONStream">repository documentation</a>, inspect <a href="https://github.com/cjolivier01/HockeyMONStream/releases">all releases</a>, or <a href="https://github.com/cjolivier01/HockeyMONStream/issues">open a GitHub issue</a> with platform details and logs.</p>
+    </article>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <span>HockeyMONStream is free software released under the MIT license.</span>
+        <span><a href="./">Product overview</a> · <a href="https://github.com/cjolivier01/HockeyMONStream/releases">Releases</a></span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
