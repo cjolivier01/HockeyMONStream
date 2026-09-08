@@ -286,7 +286,7 @@ void ScoreboardSelectionCanvas::setPoints(const QVector<QPoint>& points) {
   points_.clear();
   if (!image_.isNull()) {
     for (const QPoint& point : points) {
-      if (points_.size() == 4)
+      if (points_.size() == maximum_points_)
         break;
       points_.push_back(clampImagePoint(point));
     }
@@ -357,7 +357,8 @@ void ScoreboardSelectionCanvas::focusPoints() {
   const double bounds_height = std::max(40, maximum_y - minimum_y);
   const double scale = std::min(width() * 0.7 / bounds_width, height() * 0.7 / bounds_height);
   view_scale_ = std::clamp(scale, kMinimumScale, kMaximumScale);
-  const QPointF center((minimum_x + maximum_x) / 2.0, (minimum_y + maximum_y) / 2.0);
+  const QPointF center = QPointF((minimum_x + maximum_x) / 2.0, (minimum_y + maximum_y) / 2.0) +
+      (line_selection_mode_ ? QPointF(0.5, 0.5) : QPointF());
   view_offset_ = QPointF(width() / 2.0, height() / 2.0) - center * view_scale_;
   view_initialized_ = true;
   invalidateViewportCache();
@@ -382,6 +383,13 @@ void ScoreboardSelectionCanvas::clearPoints() {
   notifySelectionChanged();
 }
 
+void ScoreboardSelectionCanvas::setLineSelectionMode(int maximum_points) {
+  line_selection_mode_ = true;
+  maximum_points_ = std::clamp(maximum_points, 2, 128);
+  clearPoints();
+  update();
+}
+
 bool ScoreboardSelectionCanvas::event(QEvent* event) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
   if (event->type() == QEvent::DevicePixelRatioChange) {
@@ -398,7 +406,7 @@ void ScoreboardSelectionCanvas::paintEvent(QPaintEvent*) {
   if (image_.isNull()) {
     painter.fillRect(rect(), QColor(7, 20, 29));
     painter.setPen(QColor(211, 237, 248));
-    painter.drawText(rect(), Qt::AlignCenter, "Could not load the scoreboard image");
+    painter.drawText(rect(), Qt::AlignCenter, "Could not load the image");
     return;
   }
   if (!view_initialized_)
@@ -411,13 +419,17 @@ void ScoreboardSelectionCanvas::paintEvent(QPaintEvent*) {
     renderViewportCache();
   painter.drawPixmap(QPointF(0, 0), viewport_cache_);
 
-  const QVector<QPoint> polygon = ordered_points(points_);
+  const QVector<QPoint> polygon = line_selection_mode_ ? points_ : ordered_points(points_);
   if (polygon.size() >= 2) {
     QPainterPath path;
     path.moveTo(imageToScreen(polygon.front()));
-    for (qsizetype index = 1; index < polygon.size(); ++index)
-      path.lineTo(imageToScreen(polygon[index]));
-    if (polygon.size() == 4)
+    for (qsizetype index = 1; index < polygon.size(); ++index) {
+      if (line_selection_mode_ && index % 2 == 0)
+        path.moveTo(imageToScreen(polygon[index]));
+      else
+        path.lineTo(imageToScreen(polygon[index]));
+    }
+    if (!line_selection_mode_ && polygon.size() == 4)
       path.closeSubpath();
     painter.setPen(QPen(QColor(145, 231, 255), 3));
     painter.drawPath(path);
@@ -457,7 +469,7 @@ void ScoreboardSelectionCanvas::resizeEvent(QResizeEvent* event) {
     fitImage();
   } else {
     const QPointF old_center(event->oldSize().width() / 2.0, event->oldSize().height() / 2.0);
-    const QPointF image_center = screenToImage(old_center);
+    const QPointF image_center = screenToImage(old_center) + (line_selection_mode_ ? QPointF(0.5, 0.5) : QPointF());
     view_offset_ = QPointF(event->size().width() / 2.0, event->size().height() / 2.0) - image_center * view_scale_;
     invalidateViewportCache();
     update();
@@ -509,7 +521,7 @@ void ScoreboardSelectionCanvas::mouseReleaseEvent(QMouseEvent* event) {
     QWidget::mouseReleaseEvent(event);
     return;
   }
-  if (dragged_point_ < 0 && !pointer_moved_ && points_.size() < 4) {
+  if (dragged_point_ < 0 && !pointer_moved_ && points_.size() < maximum_points_) {
     points_.push_back(clampImagePoint(screenToImage(event->position())));
     notifySelectionChanged();
   }
@@ -547,11 +559,11 @@ QPoint ScoreboardSelectionCanvas::clampImagePoint(const QPointF& point) const {
 }
 
 QPointF ScoreboardSelectionCanvas::imageToScreen(const QPoint& point) const {
-  return QPointF(point) * view_scale_ + view_offset_;
+  return (QPointF(point) + (line_selection_mode_ ? QPointF(0.5, 0.5) : QPointF())) * view_scale_ + view_offset_;
 }
 
 QPointF ScoreboardSelectionCanvas::screenToImage(const QPointF& point) const {
-  return (point - view_offset_) / view_scale_;
+  return (point - view_offset_) / view_scale_ - (line_selection_mode_ ? QPointF(0.5, 0.5) : QPointF());
 }
 
 int ScoreboardSelectionCanvas::pointNear(const QPointF& position) const {
@@ -567,7 +579,7 @@ int ScoreboardSelectionCanvas::pointNear(const QPointF& position) const {
 void ScoreboardSelectionCanvas::setScaleAround(const QPointF& position, double scale) {
   if (image_.isNull())
     return;
-  const QPointF image_position = screenToImage(position);
+  const QPointF image_position = screenToImage(position) + (line_selection_mode_ ? QPointF(0.5, 0.5) : QPointF());
   view_scale_ = std::clamp(scale, kMinimumScale, kMaximumScale);
   view_offset_ = position - image_position * view_scale_;
   view_initialized_ = true;

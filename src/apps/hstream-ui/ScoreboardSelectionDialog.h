@@ -39,6 +39,8 @@ class ScoreboardSelectionCanvas : public QWidget {
   void zoomBy(double factor);
   void undoLastPoint();
   void clearPoints();
+  // Select independent endpoint pairs instead of a four-corner polygon.
+  void setLineSelectionMode(int maximum_points = 8);
 
   std::function<void()> selectionChanged;
   std::function<void(const QPoint&, bool)> hoverChanged;
@@ -66,6 +68,8 @@ class ScoreboardSelectionCanvas : public QWidget {
   QImage image_;
   QSize image_size_;
   QVector<QPoint> points_;
+  bool line_selection_mode_{false};
+  int maximum_points_{4};
   double view_scale_{1.0};
   QPointF view_offset_;
   bool view_initialized_{false};
