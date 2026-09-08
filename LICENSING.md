@@ -16,7 +16,7 @@ licensing. Do not assume that the root `LICENSE.md` applies to every file.
   obtained dependency and is not licensed by this repository's MIT file.
 - Jetson release packages redistribute Hugin components under GNU General
   Public License terms; the corresponding Hugin source archive and build
-  script ship with each release.
+  script accompany each application release that contains the Jetson package.
 - Notices for optional native model assets are recorded under
   `third_party/native_model_licenses/`.
 
