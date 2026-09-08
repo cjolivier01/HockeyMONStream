@@ -148,12 +148,17 @@ h1 {
   background: linear-gradient(110deg, var(--blue), #4aaeff);
   border-color: transparent;
   box-shadow: 0 12px 36px rgba(43, 130, 255, 0.28);
+  color: var(--bg);
 }
 
 .button:hover {
   border-color: rgba(114, 217, 255, 0.6);
   color: white;
   transform: translateY(-1px);
+}
+
+.button.primary:hover {
+  color: var(--bg);
 }
 
 .hero-visual {
@@ -406,6 +411,21 @@ details p {
   border-radius: 5px;
   color: #e8f6ff;
   padding: 2px 6px;
+}
+
+.content pre {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 16px 18px;
+}
+
+.content pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
 }
 
 .notice {

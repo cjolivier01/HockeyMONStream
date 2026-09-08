@@ -1,12 +1,13 @@
-# HockeyMONStream — open-source multi-camera sports video
+# HockeyMONStream — self-hosted multi-camera sports video
 
 [![Latest release](https://img.shields.io/github/v/release/cjolivier01/HockeyMONStream?label=download)](https://github.com/cjolivier01/HockeyMONStream/releases/latest)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
+[![File-level licensing](https://img.shields.io/badge/licensing-mixed-blue.svg)](LICENSING.md)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](src)
 [![NVIDIA DeepStream](https://img.shields.io/badge/NVIDIA-DeepStream-76B900.svg)](https://developer.nvidia.com/deepstream-sdk)
 
-**HockeyMONStream is a free, self-hosted system for stitching multiple camera
-videos into a panorama and automatically tracking the play.** It turns fixed
+**HockeyMONStream is a free-to-download, source-available, self-hosted system
+for stitching two camera videos into a panorama and automatically tracking the
+play.** It turns fixed
 wide-angle footage into a moving program view for recording or streaming youth
 sports. The project began with ice hockey, but its video pipeline can be adapted
 for other rink, court, and field sports.
@@ -18,7 +19,7 @@ for other rink, court, and field sports.
 
 ## What it does
 
-1. Reads synchronized recordings from two or more cameras, including GoPro and
+1. Reads synchronized recordings from two cameras, including GoPro and
    Insta360 chapter layouts.
 2. Calibrates overlap and stitches the views into one wide panorama on the GPU.
 3. Detects and tracks the action, then pans and zooms a virtual camera to follow
@@ -40,12 +41,14 @@ calibration uses native C++/ONNX and does not invoke Python.
 - Researchers experimenting with sports video stitching, detection, tracking,
   virtual pan/tilt/zoom, or GPU video processing.
 
-HockeyMONStream is an independent, open-source option for people evaluating
+HockeyMONStream is an independent, source-available option for people evaluating
 automated sports-camera products such as Pixellot, Hudl, or Veo. It is not a
 drop-in clone and is not affiliated with those companies; their names and
 trademarks belong to their respective owners. Unlike a hosted subscription,
-HockeyMONStream provides the pipeline source under the MIT license and runs on
-your NVIDIA GPU hardware.
+HockeyMONStream provides an inspectable pipeline and runs on your NVIDIA GPU
+hardware without a HockeyMONStream subscription fee. The repository has mixed
+file-level licensing; see [Licensing](#licensing) before modifying or
+redistributing it.
 
 ## Download
 
@@ -63,6 +66,16 @@ with a private/self-signed publisher certificate, so Windows reports an unknown
 publisher unless that certificate is trusted. See the
 [installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html)
 and [Windows WSL details](docs/windows-wsl-installer.md) before installing.
+
+## Licensing
+
+This repository is source-available but is **not covered by one blanket
+open-source license**. It contains files under the root MIT license, Apache-2.0
+components, and NVIDIA-derived files marked `LicenseRef-NvidiaProprietary`.
+NVIDIA DeepStream and downloaded model assets also have their own terms. A
+file's specific notice controls when present; the root MIT license does not
+override it. Read [LICENSING.md](LICENSING.md) before use, modification, or
+redistribution.
 
 The repository and public product are named HockeyMONStream. Existing runtime
 and packaging identifiers retain their legacy HStream names for compatibility:

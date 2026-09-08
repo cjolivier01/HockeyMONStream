@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://cjolivier01.github.io/HockeyMONStream/sitemap.xml

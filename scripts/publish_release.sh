@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the complete HStream Debian matrix and publish it as the next semantic
+# Build the complete HockeyMONStream package matrix and publish the next semantic
 # patch release. No tag or GitHub object is created until every package has
 # been built and its metadata has been validated.
 set -euo pipefail
@@ -70,6 +70,11 @@ if [[ "${#origin_repositories[@]}" -ne 1 ]]; then
   exit 1
 fi
 repository="${!origin_repositories[*]}"
+# Resolve the repository's former name so release metadata and generated links
+# use the current public product URL even from an older local clone.
+if [[ "${repository}" == "cjolivier01/hstream" ]]; then
+  repository="cjolivier01/HockeyMONStream"
+fi
 
 # Ask the remote directly. The local origin/HEAD symref can remain stale after
 # a repository changes its default branch.
@@ -113,6 +118,7 @@ echo "  hugin_2022.0.0+dfsg.orig.tar.xz"
 echo "  libvigraimpex_1.11.1+dfsg.orig.tar.xz"
 echo "  hstream_${release_tag}_jetson-hugin-build.sh"
 echo "  hstream_${release_tag}_windows-wsl-setup.exe"
+echo "  install-hstream-deb.sh"
 echo "  SHA256SUMS"
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -242,6 +248,12 @@ fi
 install -m 0755 "${windows_installer}" \
   "${release_dir}/hstream_${release_tag}_windows-wsl-setup.exe"
 
+# Publish the exact desktop dependency installer from this tag. It validates
+# the local DeepStream and HStream packages and handles Ubuntu compatibility.
+desktop_installer_asset="${release_dir}/install-hstream-deb.sh"
+git show "${source_revision}:scripts/install_deb.sh" > "${desktop_installer_asset}"
+chmod 0755 "${desktop_installer_asset}"
+
 # The Jetson package redistributes GPLv2 Hugin binaries. Accompany them with
 # the exact verified corresponding-source archive and the build-control script
 # used by this tag. VIGRA's verified source is included as well so the complete
@@ -270,7 +282,7 @@ if [[ "${new_latest_tag}" != "${latest_tag}" ]] ||
   exit 1
 fi
 
-git tag -a "${release_tag}" "${source_revision}" -m "HStream ${release_tag}"
+git tag -a "${release_tag}" "${source_revision}" -m "HockeyMONStream ${release_tag}"
 if ! git push origin "refs/tags/${release_tag}"; then
   git tag -d "${release_tag}" >/dev/null
   echo "ERROR: could not push release tag ${release_tag}." >&2
@@ -284,7 +296,7 @@ release_assets=(
   "${release_dir}"/*.sh
   "${release_dir}/SHA256SUMS"
 )
-release_notes=$'HockeyMONStream is free, MIT-licensed software for stitching multiple sports-camera videos, automatically tracking the play, and producing a virtual pan-and-zoom program view. It is self-hosted on supported NVIDIA GPU hardware.\n\n[Product overview](https://cjolivier01.github.io/HockeyMONStream/) · [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) · [Source code](https://github.com/cjolivier01/HockeyMONStream)'
+release_notes=$'HockeyMONStream is source-available software for stitching two sports-camera videos, automatically tracking the play, and producing a virtual pan-and-zoom program view. It runs without a HockeyMONStream subscription fee on supported NVIDIA GPU hardware. The repository has mixed file-level licensing.\n\n[Product overview](https://cjolivier01.github.io/HockeyMONStream/) · [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) · [Source and licensing](https://github.com/cjolivier01/HockeyMONStream)'
 if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
   private_release_warning=$'## Windows installer trust\n\n> [!WARNING]\n'
   private_release_warning+=$'> The Windows installer in this release uses a private/self-signed publisher certificate. '
@@ -302,7 +314,7 @@ if ! gh release create "${release_tag}" "${release_assets[@]}" \
   exit 1
 fi
 
-echo "Published HStream ${release_tag}:"
+echo "Published HockeyMONStream ${release_tag}:"
 if ! gh release view "${release_tag}" --repo "${repository}" --json url --jq '.url'; then
   echo "WARNING: release publication succeeded, but its URL could not be queried." >&2
 fi

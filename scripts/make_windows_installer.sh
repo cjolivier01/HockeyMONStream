@@ -7,7 +7,7 @@ set -euo pipefail
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_TAG=""
 OUTPUT_DIR="${TOPDIR}/dist/windows"
-REPOSITORY="cjolivier01/hstream"
+REPOSITORY="cjolivier01/HockeyMONStream"
 SIGNING_PKCS12="${WINDOWS_SIGNING_PKCS12:-}"
 SIGNING_PASSWORD_FILE="${WINDOWS_SIGNING_PASSWORD_FILE:-}"
 SIGNING_CA_FILE="${WINDOWS_SIGNING_CA_FILE:-}"
@@ -22,7 +22,7 @@ Options:
                        highest local semantic-version tag, or v0.1.0.
   --output-dir DIR     Output directory (default: dist/windows).
   --repository OWNER/REPO
-                       GitHub release repository (default: cjolivier01/hstream).
+                       GitHub release repository (default: cjolivier01/HockeyMONStream).
   -h, --help           Show this help.
 
 Ubuntu build dependencies:
