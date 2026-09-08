@@ -1,0 +1,19 @@
+# Measured for the saved sabercats-16a two-camera calibration. This is a
+# venue/setup-specific view; do not use its orientation for another camera rig.
+stitching:
+  rink_config: vallco
+  camera_config: gopro-hero-11
+  mapping_backend: nona
+  run_autooptimizer: true
+  projection: general-panini
+  projection_parameters:
+    general-panini: [100, 0, 0]
+  projection_framing:
+    auto_fov: false
+    horizontal_fov: 160
+    auto_canvas: true
+    auto_crop: false
+    rotation_degrees: [0, -35, 3]
+    crop: [0.02, 0.98, 0.54, 1]
+  post_stitch_rotate_degrees: 0
+  max_output_width: 3840

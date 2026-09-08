@@ -8087,6 +8087,20 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           camera_vertical_fov->value() == 94.5 && !save->isEnabled(),
       "Reloading a game must restore its camera selection and both private source FOV overrides");
 
+  YAML::Node leveled_config = YAML::Clone(config);
+  leveled_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
+  leveled_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0.02, 0.98, 0.54, 1]");
+  std::ofstream(config_path) << YAML::Dump(leveled_config) << '\n';
+  activate(create);
+  const bool leveled_view_loads_clean = expect(!save->isEnabled(), "A loaded rink view must not dirty its own preset");
+  top_squeeze->setValue(16);
+  activate(save);
+  const auto saved_view = YAML::LoadFile(config_path.string())["stitching"]["projection_framing"];
+  const bool leveled_view_preserved = expect(
+      saved_view["rotation_degrees"].as<std::vector<double>>() == std::vector<double>({0, -35, 3}) &&
+          saved_view["crop"].as<std::vector<double>>() == std::vector<double>({0.02, 0.98, 0.54, 1}),
+      "Editing a projection control must preserve the game's calibrated rotation and explicit crop");
+
   YAML::Node generated_override = YAML::Clone(config);
   generated_override["stitching"]["projection"] = "triplane";
   generated_override["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[75]");
@@ -8360,7 +8374,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   game_id->setText(original_game_id);
   activate(create);
-  return camera_defaults_available && hero_defaults_applied && ace_defaults_applied && saved &&
+  return leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available && hero_defaults_applied &&
+      ace_defaults_applied && saved &&
       camera_override_reloaded && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
       edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&

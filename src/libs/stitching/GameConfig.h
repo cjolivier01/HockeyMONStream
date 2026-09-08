@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -42,15 +43,33 @@ struct StitchProjectionFraming {
   double horizontal_fov{180.0};
   bool auto_canvas{true};
   bool auto_crop{false};
+  // Hugin camera-space yaw, pitch, roll, applied before projection. Unlike
+  // post_stitch_rotate_degrees this levels the rays, not the finished bitmap.
+  std::array<double, 3> rotation_degrees{0.0, 0.0, 0.0};
+  // Fractions of the full projected canvas: left, right, top, bottom.
+  // A non-full crop and auto_crop are mutually exclusive.
+  std::array<double, 4> crop{0.0, 1.0, 0.0, 1.0};
 
   bool operator==(const StitchProjectionFraming& other) const {
     return auto_fov == other.auto_fov && horizontal_fov == other.horizontal_fov && auto_canvas == other.auto_canvas &&
-        auto_crop == other.auto_crop;
+        auto_crop == other.auto_crop && rotation_degrees == other.rotation_degrees && crop == other.crop;
   }
   bool operator!=(const StitchProjectionFraming& other) const {
     return !(*this == other);
   }
 };
+
+struct StitchRinkConfiguration {
+  std::string id;
+  std::string display_name;
+  // One rotation of the registered camera pair, not per-camera corrections.
+  std::array<double, 3> rotation_degrees{0.0, 0.0, 0.0};
+};
+
+// Definitions live in stitching.rink_configs in the shared baseline. An empty
+// stitching.rink_config selects no venue default (legacy zero rotation).
+absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurations(const YAML::Node& config);
+absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config);
 
 struct StitchingBackendChoices {
   std::string control_point_matcher;
@@ -84,6 +103,8 @@ void write_stitch_projection_parameters(
 // Controls how pano_modify frames the selected projection. AUTO options ask
 // Hugin to recompute that property; disabled options preserve the optimizer's
 // corresponding PTO setting. horizontal_fov is used only when auto_fov=false.
+// Explicit projection_framing.rotation_degrees overrides the selected rink's
+// rotation. Missing/null rotation inherits that rink, or zero without a rink.
 absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAML::Node& config);
 void write_stitch_projection_framing(YAML::Node& config, const StitchProjectionFraming& framing);
 absl::Status ValidateStitchProjectionFraming(

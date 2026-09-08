@@ -8097,7 +8097,9 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       explicit_value_rank("stitching.projection_framing.auto_fov") < 3 &&
       explicit_value_rank("stitching.projection_framing.horizontal_fov") < 3 &&
       explicit_value_rank("stitching.projection_framing.auto_canvas") < 3 &&
-      explicit_value_rank("stitching.projection_framing.auto_crop") < 3) {
+      explicit_value_rank("stitching.projection_framing.auto_crop") < 3 &&
+      explicit_value_rank("stitching.projection_framing.rotation_degrees") < 3 &&
+      explicit_value_rank("stitching.projection_framing.crop") < 3) {
     remove_yaml_key_path(private_config_, {"hstream_ui", "generated_stitching_backend_choices"});
   } else {
     private_config_["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] = matcher_name;
@@ -8115,6 +8117,9 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     generated_framing["horizontal_fov"] = projection_framing.horizontal_fov;
     generated_framing["auto_canvas"] = projection_framing.auto_canvas;
     generated_framing["auto_crop"] = projection_framing.auto_crop;
+    generated_framing["rotation_degrees"] =
+        std::vector<double>(projection_framing.rotation_degrees.begin(), projection_framing.rotation_degrees.end());
+    generated_framing["crop"] = std::vector<double>(projection_framing.crop.begin(), projection_framing.crop.end());
     if (persisted_values_are_generated && persisted_previous_matcher.has_value() &&
         persisted_previous_matcher->IsScalar()) {
       private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =

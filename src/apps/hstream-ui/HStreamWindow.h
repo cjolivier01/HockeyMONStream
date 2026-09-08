@@ -742,6 +742,7 @@ class HStreamWindow : public QMainWindow {
   QString default_projection_{"rectilinear"};
   std::map<QString, std::vector<double>> default_projection_parameters_;
   hm::stitching::StitchProjectionFraming default_projection_framing_;
+  hm::stitching::StitchProjectionFraming loaded_projection_framing_;
   std::map<QString, int> saved_camera_controls_;
   QString saved_high_bit_depth_mode_{"auto"};
   int saved_stitching_control_points_{0};

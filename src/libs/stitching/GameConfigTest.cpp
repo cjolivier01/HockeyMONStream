@@ -203,6 +203,36 @@ stitching:
       "adjustable projection parameters must reject precision that Hugin cannot round-trip");
 
   auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
+  const auto rink_view = hm::stitching::read_stitch_projection_framing(
+      YAML::Load("stitching: {projection_framing: {rotation_degrees: [0, -35, 3], crop: [0.02, 0.98, 0.54, 1]}}"));
+  ok &= expect(rink_view.ok(), "camera-space leveling and a normalized crop must parse");
+  if (rink_view.ok()) {
+    YAML::Node round_trip;
+    hm::stitching::write_stitch_projection_framing(round_trip, *rink_view);
+    const auto parsed = hm::stitching::read_stitch_projection_framing(round_trip);
+    ok &= expect(parsed.ok() && *parsed == *rink_view, "projection leveling and crop must round-trip exactly");
+    auto changed = *rink_view;
+    changed.rotation_degrees[1] += 1;
+    ok &= expect(changed != *rink_view, "leveling changes must invalidate map and generation comparisons");
+    changed = *rink_view;
+    changed.crop[0] += 0.01;
+    ok &= expect(changed != *rink_view, "crop changes must invalidate map and generation comparisons");
+  }
+  for (const std::string view :
+       {"rotation_degrees: [0, 1]",
+        "rotation_degrees: [0, .nan, 0]",
+        "rotation_degrees: [0, 181, 0]",
+        "crop: [0, 1, 0]",
+        "crop: [-0.1, 1, 0, 1]",
+        "crop: [0.9, 0.1, 0, 1]",
+        "crop: [0, 1, 0.5, 0.5]",
+        "crop: [0, 1, 0, .inf]",
+        "auto_crop: true, crop: [0, 1, 0.5, 1]"}) {
+    ok &= expect(
+        !hm::stitching::read_stitch_projection_framing(YAML::Load("stitching: {projection_framing: {" + view + "}}"))
+             .ok(),
+        "invalid leveling and crop configurations must fail before Hugin runs");
+  }
   ok &= expect(
       default_framing.ok() && !default_framing->auto_fov && default_framing->horizontal_fov == 180.0 &&
           default_framing->auto_canvas && !default_framing->auto_crop,

@@ -33,6 +33,39 @@ namespace {
 constexpr std::string_view kOwnedDirectoryMarkerName = "journal_version";
 constexpr std::string_view kOwnedDirectoryMarkerContents = "2\n";
 
+absl::Status validate_projection_view(const StitchProjectionFraming& framing) {
+  for (double angle : framing.rotation_degrees) {
+    if (!std::isfinite(angle) || std::abs(angle) > 180.0)
+      return absl::InvalidArgumentError("projection_framing.rotation_degrees must contain angles in [-180, 180]");
+  }
+  for (double edge : framing.crop) {
+    if (!std::isfinite(edge) || edge < 0.0 || edge > 1.0)
+      return absl::InvalidArgumentError("projection_framing.crop must contain fractions in [0, 1]");
+  }
+  if (framing.crop[0] >= framing.crop[1] || framing.crop[2] >= framing.crop[3])
+    return absl::InvalidArgumentError("projection_framing.crop requires left < right and top < bottom");
+  if (framing.auto_crop && framing.crop != StitchProjectionFraming{}.crop)
+    return absl::InvalidArgumentError("projection_framing.crop cannot be combined with auto_crop");
+  return absl::OkStatus();
+}
+
+template <size_t N>
+absl::Status read_framing_array(const YAML::Node& framing, const char* key, std::array<double, N>& result) {
+  const YAML::Node node = framing[key];
+  if (!node || node.IsNull())
+    return absl::OkStatus();
+  if (!node.IsSequence() || node.size() != N)
+    return absl::InvalidArgumentError(std::string("projection_framing.") + key + " has the wrong number of values");
+  for (size_t index = 0; index < N; ++index)
+    result[index] = node[index].as<double>();
+  return absl::OkStatus();
+}
+
+void write_projection_view(YAML::Node node, const StitchProjectionFraming& framing) {
+  node["rotation_degrees"] = std::vector<double>(framing.rotation_degrees.begin(), framing.rotation_degrees.end());
+  node["crop"] = std::vector<double>(framing.crop.begin(), framing.crop.end());
+}
+
 absl::StatusOr<std::vector<double>> parse_projection_parameter_sequence(
     const YAML::Node& node,
     StitchProjection projection) {
@@ -761,9 +794,93 @@ void write_stitch_projection_parameters(
   config["stitching"]["projection_parameters"][StitchProjectionName(projection)] = values;
 }
 
+absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurations(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    if (stitching && !stitching.IsNull() && !stitching.IsMap())
+      return absl::InvalidArgumentError("stitching must be a map");
+    YAML::Node definitions = stitching && stitching.IsMap() ? stitching["rink_configs"] : YAML::Node();
+    if (!definitions || definitions.IsNull()) {
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      const YAML::Node baseline_values = baseline->values;
+      const YAML::Node baseline_stitching = baseline_values["stitching"];
+      definitions.reset(baseline_stitching && baseline_stitching.IsMap() ? baseline_stitching["rink_configs"]
+                                                                        : YAML::Node());
+      if (!definitions || definitions.IsNull())
+        return std::vector<StitchRinkConfiguration>{};
+    }
+    if (!definitions.IsMap())
+      return absl::InvalidArgumentError("stitching.rink_configs must be a map");
+    static const std::regex valid_id("^[a-z0-9]+(?:-[a-z0-9]+)*$");
+    std::set<std::string> ids;
+    std::vector<StitchRinkConfiguration> result;
+    for (const auto& entry : definitions) {
+      if (!entry.first.IsScalar() || !entry.second.IsMap())
+        return absl::InvalidArgumentError("stitching.rink_configs entries must be named maps");
+      const auto id = entry.first.as<std::string>();
+      if (!std::regex_match(id, valid_id) || !ids.insert(id).second)
+        return absl::InvalidArgumentError("stitching.rink_configs identifiers must be unique lowercase kebab-case");
+      for (const auto& field : entry.second) {
+        if (!field.first.IsScalar() ||
+            (field.first.as<std::string>() != "display_name" && field.first.as<std::string>() != "rotation_degrees"))
+          return absl::InvalidArgumentError("Unsupported field in stitching.rink_configs." + id);
+      }
+      const YAML::Node name = entry.second["display_name"];
+      const YAML::Node rotation = entry.second["rotation_degrees"];
+      if (!name || !name.IsScalar() || name.as<std::string>().empty() || !rotation || rotation.IsNull())
+        return absl::InvalidArgumentError("Rink " + id + " requires display_name and rotation_degrees");
+      StitchProjectionFraming view;
+      HM_RETURN_IF_ERROR(read_framing_array(entry.second, "rotation_degrees", view.rotation_degrees));
+      HM_RETURN_IF_ERROR(validate_projection_view(view));
+      result.push_back({id, name.as<std::string>(), view.rotation_degrees});
+    }
+    return result;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read stitching rink profiles: " + std::string(exception.what()));
+  }
+}
+
+absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    if (stitching && !stitching.IsNull() && !stitching.IsMap())
+      return absl::InvalidArgumentError("stitching must be a map");
+    const YAML::Node selected = stitching && stitching.IsMap() ? stitching["rink_config"] : YAML::Node();
+    if (!selected || selected.IsNull())
+      return std::string();
+    if (!selected.IsScalar())
+      return absl::InvalidArgumentError("stitching.rink_config must be a rink identifier");
+    const auto id = selected.as<std::string>();
+    if (id.empty())
+      return id;
+    const auto profiles = read_stitch_rink_configurations(config);
+    if (!profiles.ok())
+      return profiles.status();
+    for (const auto& profile : *profiles) {
+      if (profile.id == id)
+        return id;
+    }
+    return absl::InvalidArgumentError("Unknown stitching.rink_config \"" + id + "\"");
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read stitching rink selection: " + std::string(exception.what()));
+  }
+}
+
 absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAML::Node& config) {
   StitchProjectionFraming result;
   try {
+    std::string rink;
+    HM_ASSIGN_OR_RETURN(rink, read_stitch_rink_selection(config));
+    if (!rink.empty()) {
+      std::vector<StitchRinkConfiguration> profiles;
+      HM_ASSIGN_OR_RETURN(profiles, read_stitch_rink_configurations(config));
+      for (const auto& profile : profiles) {
+        if (profile.id == rink)
+          result.rotation_degrees = profile.rotation_degrees;
+      }
+    }
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
     if (stitching && !stitching.IsNull() && !stitching.IsMap())
       return absl::InvalidArgumentError("stitching must be a map");
@@ -772,7 +889,8 @@ absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAM
       return result;
     if (!framing.IsMap())
       return absl::InvalidArgumentError("stitching.projection_framing must be a map");
-    static const std::set<std::string> supported_keys = {"auto_fov", "horizontal_fov", "auto_canvas", "auto_crop"};
+    static const std::set<std::string> supported_keys = {
+        "auto_fov", "horizontal_fov", "auto_canvas", "auto_crop", "rotation_degrees", "crop"};
     for (const auto& entry : framing) {
       if (!entry.first.IsScalar())
         return absl::InvalidArgumentError("stitching.projection_framing keys must be scalar values");
@@ -817,6 +935,9 @@ absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAM
       return absl::InvalidArgumentError(
           "stitching.projection_framing.horizontal_fov must be finite and between 0 and 360 degrees");
     }
+    HM_RETURN_IF_ERROR(read_framing_array(framing, "rotation_degrees", result.rotation_degrees));
+    HM_RETURN_IF_ERROR(read_framing_array(framing, "crop", result.crop));
+    HM_RETURN_IF_ERROR(validate_projection_view(result));
     return result;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching projection framing: " + std::string(exception.what()));
@@ -829,12 +950,14 @@ void write_stitch_projection_framing(YAML::Node& config, const StitchProjectionF
   node["horizontal_fov"] = framing.horizontal_fov;
   node["auto_canvas"] = framing.auto_canvas;
   node["auto_crop"] = framing.auto_crop;
+  write_projection_view(node, framing);
 }
 
 absl::Status ValidateStitchProjectionFraming(
     StitchProjection projection,
     const std::vector<double>& projection_parameters,
     const StitchProjectionFraming& framing) {
+  HM_RETURN_IF_ERROR(validate_projection_view(framing));
   const absl::Status parameter_status = ValidateStitchProjectionParameters(projection, projection_parameters);
   if (!parameter_status.ok())
     return parameter_status;
@@ -1343,6 +1466,7 @@ void write_projection_framing_node(YAML::Node node, const StitchProjectionFramin
   node["horizontal_fov"] = framing.horizontal_fov;
   node["auto_canvas"] = framing.auto_canvas;
   node["auto_crop"] = framing.auto_crop;
+  write_projection_view(node, framing);
 }
 
 absl::StatusOr<StitchProjectionFraming> read_projection_framing_node(const YAML::Node& node) {

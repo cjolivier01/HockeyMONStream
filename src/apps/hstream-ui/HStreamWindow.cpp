@@ -4748,6 +4748,7 @@ void HStreamWindow::loadBaselineDefaults() {
         "Effective baseline stitching projection framing is invalid: " + projection_framing.status().ToString());
   }
   default_projection_framing_ = *projection_framing;
+  loaded_projection_framing_ = default_projection_framing_;
   auto camera_configurations = hm::stitching::read_stitch_camera_configurations(baseline_config_);
   if (!camera_configurations.ok()) {
     throw std::runtime_error(
@@ -6845,7 +6846,8 @@ std::vector<double> HStreamWindow::stitchProjectionParameters() const {
 }
 
 hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() const {
-  hm::stitching::StitchProjectionFraming framing = default_projection_framing_;
+  // Preserve calibrated rotation and crop, which do not have UI editors yet.
+  hm::stitching::StitchProjectionFraming framing = loaded_projection_framing_;
   if (projection_auto_fov_check_)
     framing.auto_fov = projection_auto_fov_check_->isChecked();
   if (projection_fov_spin_)
@@ -6854,6 +6856,8 @@ hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() 
     framing.auto_canvas = projection_auto_canvas_check_->isChecked();
   if (projection_auto_crop_check_)
     framing.auto_crop = projection_auto_crop_check_->isChecked();
+  if (framing.auto_crop)
+    framing.crop = hm::stitching::StitchProjectionFraming{}.crop;
   return framing;
 }
 
@@ -14005,6 +14009,7 @@ void HStreamWindow::resetCameraControls() {
     updateProjectionParameterControls();
   }
   if (!pipeline_running) {
+    loaded_projection_framing_ = default_projection_framing_;
     if (projection_auto_fov_check_)
       projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
     updateProjectionFramingControls();
@@ -14244,6 +14249,7 @@ void HStreamWindow::loadSavedControlConfig() {
     updateProjectionCompatibility();
     updateProjectionParameterControls();
   }
+  loaded_projection_framing_ = default_projection_framing_;
   if (projection_auto_fov_check_) {
     const bool blocked = projection_auto_fov_check_->blockSignals(true);
     projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
@@ -14827,6 +14833,7 @@ void HStreamWindow::loadSavedControlConfig() {
         throw std::invalid_argument("saved stitching projection is incompatible with the mapping backend");
       updateProjectionParameterControls();
     }
+    loaded_projection_framing_ = staged_projection_framing;
     if (projection_auto_fov_check_) {
       const bool blocked = projection_auto_fov_check_->blockSignals(true);
       projection_auto_fov_check_->setChecked(staged_projection_framing.auto_fov);

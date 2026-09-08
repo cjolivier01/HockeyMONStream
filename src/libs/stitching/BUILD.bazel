@@ -316,6 +316,12 @@ cc_library(
   ],
 )
 
+cc_binary(
+  name = "stitching-replay",
+  srcs = ["StitchingReplayMain.cpp"],
+  deps = [":hugin_project"],
+)
+
 cc_test(
   name = "homography_maps_test",
   srcs = ["HomographyMapsTest.cpp"],
