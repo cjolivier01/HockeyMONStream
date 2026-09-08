@@ -7,6 +7,8 @@
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QImage>
 #include <QtTest/QTest>
+#include <QtTest/qtest_widgets.h>
+#include <QtTest/qtestmouse.h>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>

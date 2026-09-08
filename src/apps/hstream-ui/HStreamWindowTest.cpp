@@ -8145,6 +8145,23 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           "Reset to rink defaults persists inheritance"))
     return false;
 
+  YAML::Node custom_rink_config = YAML::Clone(config);
+  custom_rink_config["stitching"]["rink_config"] = "practice";
+  custom_rink_config["stitching"]["rink_configs"] = YAML::Load(
+      "{practice: {display_name: Practice, rotation_degrees: [0, -42, 1]}}");
+  std::ofstream(config_path) << YAML::Dump(custom_rink_config) << '\n';
+  activate(create);
+  if (!expect(rink_configuration->currentData().toString() == "practice" && rink_pitch->value() == -42,
+              "A partial private catalog loads alongside the standard rinks")) return false;
+  rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
+  activate(save);
+  const auto custom_to_standard = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
+  if (!expect(custom_to_standard.ok() && custom_to_standard->rotation_degrees[1] == -25,
+              "Switching from a custom catalog to a standard rink remains readable by private-only workers")) return false;
+  activate(create);
+  if (!expect(rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -25,
+              "Reload keeps the selected standard rink after a custom profile")) return false;
+
   YAML::Node leveled_config = YAML::Clone(config);
   leveled_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
   leveled_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0.02, 0.98, 0.54, 1]");

@@ -393,7 +393,7 @@ class HStreamWindow : public QMainWindow {
   void loadRinkLevelingControls(const YAML::Node& config);
   void updateRinkLevelingControls();
   void selectRinkLeveling();
-  void writeRinkLevelingSelection(YAML::Node& config) const;
+  bool writeRinkLevelingSelection(YAML::Node& config);
   void storeProjectionParameterControls();
   void updateProjectionCompatibility();
   bool prepareStitchingCalibrationRun(

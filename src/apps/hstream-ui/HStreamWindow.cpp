@@ -4061,7 +4061,8 @@ bool generated_stitching_backend_choices_match_private(
   const bool generated_projection_framing_matches = !generated_projection_framing_present ||
       (parsed_generated_projection_framing.has_value() && parsed_private_projection_framing.has_value() &&
        *parsed_generated_projection_framing == *parsed_private_projection_framing &&
-       parsed_generated_projection_framing->rotation_inherited == parsed_private_projection_framing->rotation_inherited);
+       parsed_generated_projection_framing->rotation_inherited ==
+           parsed_private_projection_framing->rotation_inherited);
   const bool generated_matcher_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher);
   const bool generated_backend_present =
@@ -6953,27 +6954,21 @@ void HStreamWindow::updateRinkLevelingControls() {
     rink_leveling_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
 }
 
-void HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) const {
+bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
   if (!rink_configuration_combo_)
-    return;
+    return true;
+  hm::stitching::restore_generated_stitch_rink_context(config);
   const std::string selected = rink_configuration_combo_->currentData().toString().toStdString();
   config["stitching"]["rink_config"] = selected.empty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(selected);
-  // Keep custom user-overlay definitions available to private-only pipeline readers.
-  const auto canonical = hm::stitching::read_stitch_rink_configurations(YAML::Node());
-  for (const auto& profile : rink_configurations_) {
-    if (profile.id != selected)
-      continue;
-    bool is_canonical = false;
-    if (canonical.ok())
-      for (const auto& candidate : *canonical)
-        if (candidate.id == profile.id && candidate.rotation_degrees == profile.rotation_degrees)
-          is_canonical = true;
-    if (!is_canonical) {
-      auto node = config["stitching"]["rink_configs"][profile.id];
-      node["display_name"] = profile.display_name;
-      node["rotation_degrees"] = std::vector<double>(profile.rotation_degrees.begin(), profile.rotation_degrees.end());
-    }
+  // Workers read private YAML. Supply the effective catalog temporarily while
+  // retaining inheritance from user-level defaults on the next reload.
+  const auto context =
+      hm::stitching::materialize_stitch_rink_context(config, merge_yaml_maps(baseline_config_, config));
+  if (!context.ok()) {
+    appendLog(QString("Could not save rink selection: %1").arg(context.status().ToString().c_str()));
+    return false;
   }
+  return true;
 }
 
 void HStreamWindow::selectRinkLeveling() {
@@ -7404,7 +7399,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
   }
   hm::stitching::write_stitch_projection_parameters(config, *parsed_active_projection, active_projection_parameters_);
   hm::stitching::write_stitch_projection_framing(config, active_projection_framing_);
-  writeRinkLevelingSelection(config);
+  if (!writeRinkLevelingSelection(config))
+    return false;
   if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
     config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
   }
@@ -7625,7 +7621,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
     hm::stitching::write_stitch_projection_parameters(config, *parsed_active_projection, active_projection_parameters_);
     hm::stitching::write_stitch_projection_framing(config, active_projection_framing_);
-    writeRinkLevelingSelection(config);
+    if (!writeRinkLevelingSelection(config))
+      return false;
     if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
       config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
     }
@@ -15329,7 +15326,8 @@ bool HStreamWindow::applySavedControlConfig(
       hm::stitching::write_stitch_projection_parameters(config, *projection, parameters);
   }
   hm::stitching::write_stitch_projection_framing(config, selected_projection_framing);
-  writeRinkLevelingSelection(config);
+  if (!writeRinkLevelingSelection(config))
+    return false;
   write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
   if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
       mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
