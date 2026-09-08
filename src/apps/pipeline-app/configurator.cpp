@@ -699,7 +699,8 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
     const auto generated_value = parsed_framing(generated_projection_framing);
     const auto private_value = parsed_framing(private_projection_framing);
     generated_projection_framing_matches_private =
-        generated_value.has_value() && private_value.has_value() && *generated_value == *private_value;
+        generated_value.has_value() && private_value.has_value() && *generated_value == *private_value &&
+        generated_value->rotation_inherited == private_value->rotation_inherited;
   }
   const auto metadata_parameters_valid = [&numeric_sequence](
                                              const std::optional<YAML::Node>& parameters,
@@ -7942,10 +7943,13 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
        *persisted_generated_projection_parameter_values == *persisted_projection_parameter_values);
   const bool generated_framing_matches_private = !generated_projection_framing.has_value() ||
       (generated_projection_framing_value.has_value() && private_projection_framing_value.has_value() &&
-       *generated_projection_framing_value == *private_projection_framing_value);
+       *generated_projection_framing_value == *private_projection_framing_value &&
+       generated_projection_framing_value->rotation_inherited == private_projection_framing_value->rotation_inherited);
   const bool persisted_generated_framing_matches = !persisted_generated_projection_framing.has_value() ||
       (persisted_generated_projection_framing_value.has_value() && persisted_projection_framing_value.has_value() &&
-       *persisted_generated_projection_framing_value == *persisted_projection_framing_value);
+       *persisted_generated_projection_framing_value == *persisted_projection_framing_value &&
+       persisted_generated_projection_framing_value->rotation_inherited ==
+           persisted_projection_framing_value->rotation_inherited);
   const bool private_values_present = private_matcher_value.has_value() && private_backend_value.has_value() &&
       private_projection_value.has_value() && private_autooptimizer_value.has_value();
   const bool persisted_matcher_present = persisted_matcher.has_value() && persisted_matcher->IsScalar();
@@ -8033,6 +8037,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       projection_framing,
       camera};
 
+  bool rink_context_changed = false;
+  HM_ASSIGN_OR_RETURN(rink_context_changed, stitching::materialize_stitch_rink_context(private_config_, config_));
   std::vector<double> private_projection_parameters;
   HM_ASSIGN_OR_RETURN(
       private_projection_parameters, stitching::read_stitch_projection_parameters(private_config_, projection));
@@ -8068,7 +8074,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       displaced_generated_projection_parameters->IsSequence() &&
       (!private_parameter_projection.has_value() || *private_parameter_projection != projection_name);
 
-  const bool private_matches = private_matcher_value.has_value() && *private_matcher_value == matcher &&
+  const bool private_matches = !rink_context_changed && private_matcher_value.has_value() && *private_matcher_value == matcher &&
       private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
       *private_projection_value == projection && private_autooptimizer_value.has_value() &&
       *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters &&
@@ -8389,7 +8395,9 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   if (private_config.has_value()) {
     const YAML::Node original_private_config = YAML::Clone(*private_config);
     private_config_ = YAML::Clone(*private_config);
-    loaded_generated_stitching_backend_choices_ = normalize_generated_stitching_backend_choices(private_config_);
+    const bool restored_rink_context = stitching::restore_generated_stitch_rink_context(private_config_);
+    loaded_generated_stitching_backend_choices_ = normalize_generated_stitching_backend_choices(private_config_) ||
+        restored_rink_context;
     persisted_private_config_ =
         YAML::Clone(loaded_generated_stitching_backend_choices_ ? original_private_config : private_config_);
     record_explicit_overlay(private_config_, {}, 2);

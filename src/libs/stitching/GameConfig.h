@@ -75,6 +75,11 @@ struct StitchRinkConfiguration {
 // stitching.rink_config selects no venue default (legacy zero rotation).
 absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurations(const YAML::Node& config);
 absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config);
+// Runtime workers read game-private YAML. Preserve noncanonical effective rink
+// context there only as generated state, restoring prior private intent before
+// the next layered config load. Returns whether the document changed.
+bool restore_generated_stitch_rink_context(YAML::Node& config);
+absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const YAML::Node& effective);
 
 struct StitchingBackendChoices {
   std::string control_point_matcher;

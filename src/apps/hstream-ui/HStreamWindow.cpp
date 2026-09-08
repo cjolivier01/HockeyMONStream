@@ -4059,7 +4059,8 @@ bool generated_stitching_backend_choices_match_private(
       private_projection_framing_present ? parse_framing(private_projection_framing) : std::nullopt;
   const bool generated_projection_framing_matches = !generated_projection_framing_present ||
       (parsed_generated_projection_framing.has_value() && parsed_private_projection_framing.has_value() &&
-       *parsed_generated_projection_framing == *parsed_private_projection_framing);
+       *parsed_generated_projection_framing == *parsed_private_projection_framing &&
+       parsed_generated_projection_framing->rotation_inherited == parsed_private_projection_framing->rotation_inherited);
   const bool generated_matcher_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher);
   const bool generated_backend_present =
@@ -6818,7 +6819,9 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
 
 absl::StatusOr<hm::stitching::StitchProjectionFraming> HStreamWindow::stitchProjectionFramingFromGameConfig(
     const YAML::Node& config) const {
-  return hm::stitching::read_stitch_projection_framing(merge_yaml_maps(baseline_config_, config));
+  YAML::Node private_values = YAML::Clone(config);
+  hm::stitching::restore_generated_stitch_rink_context(private_values);
+  return hm::stitching::read_stitch_projection_framing(merge_yaml_maps(baseline_config_, private_values));
 }
 
 void HStreamWindow::applyCameraConfigurationDefaults() {
@@ -14336,6 +14339,7 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   try {
     YAML::Node config = **loaded_config;
+    hm::stitching::restore_generated_stitch_rink_context(config);
     std::map<QString, int> staged_controls;
     QString staged_high_bit_depth_mode = highBitDepthMode();
     bool native_high_bit_depth_mode_present = false;

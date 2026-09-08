@@ -46,7 +46,9 @@ stitching:
 This rotates both registered cameras together; their relative alignment remains intact. The selected profile
 supplies the rotation when `projection_framing.rotation_degrees` is absent or null. An explicit game value wins,
 including `[0, 0, 0]` or a value equal to the venue default. Ordinary config/UI saves preserve that distinction,
-so inherited settings follow later profile edits. With no selected rink, rotation remains zero for existing games.
+so inherited settings follow later profile edits. Runtime workers receive generated snapshots of custom overlay
+profiles; the next layered load restores private intent and resolves the current defaults again. With no selected
+rink, rotation remains zero for existing games.
 These venue angles are starting defaults; mounting position and pitch can vary between recordings.
 
 Crop defaults to `[0, 1, 0, 1]`. Angles must be finite and within ±180 degrees.
@@ -69,7 +71,9 @@ bazel-bin/src/libs/stitching/stitching-replay \
 
 The destination must not exist. Replay retains the source images and point correspondences, reruns Hugin's
 optimizer deterministically, and publishes maps with the normal transaction and validation path. It requires a
-matching source-camera FOV and standard HStream `hm_project.pto` point records. The new config references the
+matching source-camera FOV and standard HStream `hm_project.pto` point records. Calibrated AKAZE sources are
+rejected because their saved points use rectified coordinates that Nona cannot apply to the original images.
+The new config references the
 original videos by absolute path and discards old panorama-coordinate rink metadata. The source game is preserved.
 Open the new game in HStream and select its Stitched preview, or encode the full canvas:
 

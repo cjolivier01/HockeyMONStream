@@ -1911,6 +1911,56 @@ play-tracker:
     }
   }
 
+  for (const std::string rink_id : {"vallco", "custom-rink"}) {
+    const std::string game = "rink-overlay-" + rink_id;
+    const fs::path rink_dir = games / game;
+    fs::create_directories(rink_dir);
+    YAML::Node fixture = YAML::Load("stitching: {rink_config: " + rink_id + "}");
+    ok &= expect(
+        hm::stitching::publish_game_config(rink_dir, YAML::Dump(fixture)).ok(), "custom rink fixture must publish");
+    for (double pitch : {-40, -41}) {
+      const fs::path overlay_path = root / (game + ".yaml");
+      std::ofstream(overlay_path) << "stitching: {rink_configs: {" << rink_id
+                                  << ": {display_name: Custom rink, rotation_degrees: [0, " << pitch << ", 0]}}}\n";
+      hm::Configurator custom_rink(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+      const auto configured = custom_rink.configure();
+      const bool overlaid = custom_rink.overlay_config("", overlay_path.string());
+      const auto persisted = custom_rink.persist_effective_stitching_backend_choices();
+      const auto loaded = hm::stitching::load_game_config_file(rink_dir / "config.yaml");
+      ok &= expect(
+          configured.ok() && overlaid && persisted.ok() && loaded.ok() && loaded->has_value(),
+          "built-in overrides and new profiles from config overlays must reach private workers");
+      if (loaded.ok() && loaded->has_value()) {
+        const auto framing = hm::stitching::read_stitch_projection_framing(**loaded);
+        ok &= expect(
+            framing.ok() && framing->rotation_inherited && framing->rotation_degrees[1] == pitch,
+            "restarting with a changed overlay profile must refresh inherited worker rotation");
+      }
+    }
+  }
+  const fs::path generated_zero_dir = games / "rink-generated-zero";
+  fs::create_directories(generated_zero_dir);
+  ok &= expect(
+      hm::stitching::publish_game_config(generated_zero_dir, "stitching: {rink_config: vallco}\n").ok(),
+      "generated zero fixture must publish");
+  hm::Configurator generated_zero("rink-generated-zero", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto zero_configured = generated_zero.configure();
+  const auto zero_persisted = generated_zero.persist_effective_stitching_backend_choices();
+  YAML::Node zero_edited = YAML::LoadFile((generated_zero_dir / "config.yaml").string());
+  zero_edited["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
+  ok &= expect(
+      hm::stitching::publish_game_config(generated_zero_dir, YAML::Dump(zero_edited)).ok(),
+      "explicit zero edit must publish");
+  hm::Configurator zero_reloaded("rink-generated-zero", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto zero_reconfigured = zero_reloaded.configure();
+  const auto zero_repersisted = zero_reloaded.persist_effective_stitching_backend_choices();
+  const auto zero_saved =
+      hm::stitching::read_stitch_projection_framing(YAML::LoadFile((generated_zero_dir / "config.yaml").string()));
+  ok &= expect(
+      zero_configured.ok() && zero_persisted.ok() && zero_reconfigured.ok() && zero_repersisted.ok() &&
+          zero_saved.ok() && !zero_saved->rotation_inherited && zero_saved->rotation_degrees[1] == 0,
+      "an explicit zero added to generated framing must survive restoration and subsequent persistence");
+
   const fs::path framing_cli_dir = games / "framing-cli";
   fs::create_directories(framing_cli_dir);
   YAML::Node framing_cli_private(YAML::NodeType::Map);

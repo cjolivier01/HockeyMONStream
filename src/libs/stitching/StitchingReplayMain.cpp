@@ -40,6 +40,18 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   auto source_config = checked(stitching::load_game_config_file(source / "config.yaml"));
   if (!source_config.has_value())
     throw std::runtime_error("Source game has no config.yaml");
+  // Saved calibrated AKAZE points describe rectified images. Nona receives
+  // original PNGs and cannot consume the KB4 lens profile; a preset must not
+  // hide this source coordinate-space distinction by changing its matcher.
+  const auto provenance = checked(stitching::HuginProject::ReadCanvasProvenance(source, *lock));
+  const auto source_matcher = checked(
+      stitching::ParseControlPointMatcher(
+          (*source_config)["stitching"]["control_point_matcher"].as<std::string>("superpoint-lightglue")));
+  const bool rectified_provenance = provenance.has_value() && provenance->akaze_calibration_fingerprint.has_value() &&
+      provenance->akaze_calibration_fingerprint->rfind("sha256:", 0) == 0;
+  if (rectified_provenance ||
+      (source_matcher == stitching::ControlPointMatcher::kAkazeHamming && fs::exists(source / "left_calibration.json")))
+    throw std::runtime_error("Replay cannot use calibrated AKAZE rectified control points with Nona");
   auto config = YAML::Clone(*source_config);
   const auto overlay = YAML::LoadFile(preset.string());
   if (!overlay.IsMap())

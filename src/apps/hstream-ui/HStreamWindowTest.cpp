@@ -8231,6 +8231,20 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       !auto_fov->isChecked() && horizontal_fov->value() == 180.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
       "UI load must restore inherited projection framing when generated choices displaced no private map");
 
+  YAML::Node explicit_zero_generated = YAML::Clone(generated_framing_override);
+  explicit_zero_generated["stitching"]["rink_config"] = "vallco";
+  explicit_zero_generated["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
+  std::ofstream(config_path) << YAML::Dump(explicit_zero_generated) << '\n';
+  activate(create);
+  const bool explicit_zero_is_private_intent = expect(auto_fov->isChecked(),
+      "An explicit zero added to generated inherited framing must stop generated-tuple restoration");
+  top_squeeze->setValue(17);
+  activate(save);
+  const auto zero_saved_view = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
+  const bool explicit_zero_survives_ui_save = expect(zero_saved_view.ok() && !zero_saved_view->rotation_inherited &&
+      zero_saved_view->rotation_degrees == std::array<double, 3>{0, 0, 0},
+      "Loading and saving a generated view with an explicit zero must retain that override");
+
   auto malformed_previous_choice_rejects_marker = [&](const char* key, const char* value, const char* message) {
     YAML::Node malformed = YAML::Clone(generated_backend_alias);
     malformed["hstream_ui"]["generated_stitching_backend_choices"][key] = value;
@@ -8390,7 +8404,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   game_id->setText(original_game_id);
   activate(create);
-  return inherited_rink_loads_clean && inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available && hero_defaults_applied &&
+  return explicit_zero_is_private_intent && explicit_zero_survives_ui_save && inherited_rink_loads_clean && inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available && hero_defaults_applied &&
       ace_defaults_applied && saved &&
       camera_override_reloaded && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&

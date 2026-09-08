@@ -272,6 +272,34 @@ stitching:
         "unknown selections and malformed profiles must fail before calibration");
   }
 
+  YAML::Node overlay_rink = YAML::Clone(rink_profiles);
+  overlay_rink["stitching"]["rink_configs"]["vallco"]["rotation_degrees"][1] = -40;
+  YAML::Node private_rink = YAML::Load("stitching: {rink_config: vallco}");
+  const auto context_materialized = hm::stitching::materialize_stitch_rink_context(private_rink, overlay_rink);
+  const auto worker_rink = hm::stitching::read_stitch_projection_framing(private_rink);
+  ok &= expect(
+      context_materialized.ok() && *context_materialized && worker_rink.ok() && worker_rink->rotation_inherited &&
+          worker_rink->rotation_degrees[1] == -40,
+      "worker-visible context must resolve inherited custom overlay defaults");
+  const auto same_context = hm::stitching::materialize_stitch_rink_context(private_rink, overlay_rink);
+  ok &= expect(same_context.ok() && !*same_context, "repeated runtime context materialization must be stable");
+  YAML::Node edited_context = YAML::Clone(private_rink);
+  edited_context["stitching"]["rink_configs"]["vallco"]["rotation_degrees"][1] = -42;
+  hm::stitching::restore_generated_stitch_rink_context(edited_context);
+  ok &= expect(
+      hm::stitching::read_stitch_projection_framing(edited_context)->rotation_degrees[1] == -42,
+      "editing a generated profile must become private intent without being overwritten");
+  const bool context_restored = hm::stitching::restore_generated_stitch_rink_context(private_rink);
+  ok &= expect(
+      context_restored && !private_rink["stitching"]["rink_configs"] &&
+          private_rink["stitching"]["rink_config"].as<std::string>() == "vallco",
+      "the next layered load must restore private selection without freezing overlay profile defaults");
+  overlay_rink["stitching"]["rink_configs"]["vallco"]["rotation_degrees"][1] = -41;
+  const auto refreshed_context = hm::stitching::materialize_stitch_rink_context(private_rink, overlay_rink);
+  ok &= expect(
+      refreshed_context.ok() && hm::stitching::read_stitch_projection_framing(private_rink)->rotation_degrees[1] == -41,
+      "changed overlay defaults must reach the next worker generation");
+
   auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
   const auto rink_view = hm::stitching::read_stitch_projection_framing(
       YAML::Load("stitching: {projection_framing: {rotation_degrees: [0, -35, 3], crop: [0.02, 0.98, 0.54, 1]}}"));

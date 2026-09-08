@@ -322,6 +322,13 @@ cc_binary(
   deps = [":hugin_project"],
 )
 
+sh_test(
+  name = "stitching_replay_test",
+  srcs = ["StitchingReplayTest.sh"],
+  args = ["$(location :stitching-replay)"],
+  data = [":stitching-replay"],
+)
+
 cc_test(
   name = "homography_maps_test",
   srcs = ["HomographyMapsTest.cpp"],

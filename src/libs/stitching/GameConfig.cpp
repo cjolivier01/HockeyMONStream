@@ -871,6 +871,97 @@ absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config)
   }
 }
 
+bool restore_generated_stitch_rink_context(YAML::Node& config) {
+  try {
+    const YAML::Node values = config;
+    const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();
+    const YAML::Node marker = ui && ui.IsMap() ? ui["generated_stitching_rink_context"] : YAML::Node();
+    if (!marker || !marker.IsMap() || marker.size() != 2)
+      return false;
+    const YAML::Node generated = marker["generated"];
+    const YAML::Node previous = marker["previous"];
+    if (!generated || !generated.IsMap() || !previous || !previous.IsMap() || generated.size() != 2)
+      return false;
+    const YAML::Node stitching = values["stitching"];
+    for (const auto& entry : previous) {
+      if (!entry.first.IsScalar() ||
+          (entry.first.as<std::string>() != "rink_config" && entry.first.as<std::string>() != "rink_configs"))
+        return false;
+    }
+    bool unchanged = stitching && stitching.IsMap();
+    for (const char* key : {"rink_config", "rink_configs"}) {
+      if (!generated[key])
+        return false;
+      const YAML::Node current = unchanged ? stitching[key] : YAML::Node();
+      unchanged = unchanged && current && YAML::Dump(current) == YAML::Dump(generated[key]);
+    }
+    // A user edit to the materialized context makes it private intent. Do not
+    // restore old values over that edit; discard only our generated marker.
+    if (unchanged) {
+      for (const char* key : {"rink_config", "rink_configs"}) {
+        if (previous[key])
+          config["stitching"][key] = YAML::Clone(previous[key]);
+        else
+          config["stitching"].remove(key);
+      }
+    }
+    config["hstream_ui"].remove("generated_stitching_rink_context");
+    return true;
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const YAML::Node& effective) {
+  try {
+    const std::string before = YAML::Dump(config);
+    restore_generated_stitch_rink_context(config);
+    std::string selected;
+    HM_ASSIGN_OR_RETURN(selected, read_stitch_rink_selection(effective));
+    const auto current_selection = read_stitch_rink_selection(config);
+    bool matching = current_selection.ok() && *current_selection == selected;
+    std::vector<StitchRinkConfiguration> profiles;
+    if (!selected.empty()) {
+      HM_ASSIGN_OR_RETURN(profiles, read_stitch_rink_configurations(effective));
+      const auto current_profiles = read_stitch_rink_configurations(config);
+      const auto same_selected_profile = [&](const StitchRinkConfiguration& profile) {
+        if (profile.id != selected || !current_profiles.ok())
+          return false;
+        return std::any_of(current_profiles->begin(), current_profiles->end(), [&](const auto& current) {
+          return current.id == selected && current.rotation_degrees == profile.rotation_degrees;
+        });
+      };
+      matching = matching && std::any_of(profiles.begin(), profiles.end(), same_selected_profile);
+    }
+    if (matching)
+      return YAML::Dump(config) != before;
+
+    YAML::Node marker(YAML::NodeType::Map);
+    marker["previous"] = YAML::Node(YAML::NodeType::Map);
+    const YAML::Node values = config;
+    const YAML::Node stitching = values && values.IsMap() ? values["stitching"] : YAML::Node();
+    for (const char* key : {"rink_config", "rink_configs"}) {
+      const YAML::Node value = stitching && stitching.IsMap() ? stitching[key] : YAML::Node();
+      if (value)
+        marker["previous"][key] = YAML::Clone(value);
+    }
+    YAML::Node definitions(YAML::NodeType::Map);
+    for (const auto& profile : profiles) {
+      definitions[profile.id]["display_name"] = profile.display_name;
+      definitions[profile.id]["rotation_degrees"] =
+          std::vector<double>(profile.rotation_degrees.begin(), profile.rotation_degrees.end());
+    }
+    config["stitching"]["rink_config"] = selected;
+    config["stitching"]["rink_configs"] = definitions;
+    marker["generated"]["rink_config"] = selected;
+    marker["generated"]["rink_configs"] = YAML::Clone(definitions);
+    config["hstream_ui"]["generated_stitching_rink_context"] = marker;
+    return YAML::Dump(config) != before;
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to materialize stitching rink context: " + std::string(exception.what()));
+  }
+}
+
 absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAML::Node& config) {
   StitchProjectionFraming result;
   result.rotation_inherited = true;
