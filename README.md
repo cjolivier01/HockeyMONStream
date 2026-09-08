@@ -1,8 +1,81 @@
-# HockeyMONStream
+# HockeyMONStream — self-hosted multi-camera sports video
 
-High-performance hockey video production pipeline built on NVIDIA DeepStream and GStreamer.
+[![Latest release](https://img.shields.io/github/v/release/cjolivier01/HockeyMONStream?label=download)](https://github.com/cjolivier01/HockeyMONStream/releases/latest)
+[![File-level licensing](https://img.shields.io/badge/licensing-mixed-blue.svg)](LICENSING.md)
+[![C++](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](src)
+[![NVIDIA DeepStream](https://img.shields.io/badge/NVIDIA-DeepStream-76B900.svg)](https://developer.nvidia.com/deepstream-sdk)
 
-HockeyMONStream contains a DeepStream-style C++ app (`pipeline-app`) plus custom GStreamer plugins for dual-camera stitching, rink masking, play tracking, live routing, and archive output. It is the performance-oriented counterpart to the Python HockeyMON project. Production calibration uses native C++/ONNX and does not invoke Python; its explicit parity test requires the pinned HockeyMON Git checkout and declared parity dependencies.
+**HockeyMONStream is a free-to-download, source-available, self-hosted system
+for stitching two camera videos into a panorama and automatically tracking the
+play.** It turns fixed
+wide-angle footage into a moving program view for recording or streaming youth
+sports. The project began with ice hockey, but its video pipeline can be adapted
+for other rink, court, and field sports.
+
+[Product overview](https://cjolivier01.github.io/HockeyMONStream/) ·
+[Download the latest release](https://github.com/cjolivier01/HockeyMONStream/releases/latest) ·
+[Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) ·
+[Browse the source](src)
+
+## What it does
+
+1. Reads synchronized recordings from two cameras, including GoPro and
+   Insta360 chapter layouts.
+2. Calibrates overlap and stitches the views into one wide panorama on the GPU.
+3. Detects and tracks the action, then pans and zooms a virtual camera to follow
+   the play.
+4. Adds optional scoreboard/graphics and writes an archive or routes video to
+   live RTMP/RTSP outputs.
+
+The implementation is a DeepStream-style C++17 application (`pipeline-app`)
+with custom GStreamer, CUDA, and ONNX plugins for multi-camera synchronization,
+video stitching, rink masking, object detection, play tracking, live routing,
+and archive output. It is the performance-oriented counterpart to the Python
+[HockeyMON](https://github.com/cjolivier01/HockeyMON) project. Production
+calibration uses native C++/ONNX and does not invoke Python.
+
+### Who it is for
+
+- Youth and amateur sports teams that want control of their footage and compute.
+- Developers building an automatic sports camera or multi-camera video pipeline.
+- Researchers experimenting with sports video stitching, detection, tracking,
+  virtual pan/tilt/zoom, or GPU video processing.
+
+HockeyMONStream is an independent, source-available option for people evaluating
+automated sports-camera products such as Pixellot, Hudl, or Veo. It is not a
+drop-in clone and is not affiliated with those companies; their names and
+trademarks belong to their respective owners. Unlike a hosted subscription,
+HockeyMONStream provides an inspectable pipeline and runs on your NVIDIA GPU
+hardware without a HockeyMONStream subscription fee. The repository has mixed
+file-level licensing; see [Licensing](#licensing) before modifying or
+redistributing it.
+
+## Download
+
+The [latest GitHub release](https://github.com/cjolivier01/HockeyMONStream/releases/latest)
+contains installers/packages for these targets:
+
+| Platform | Release asset | Notes |
+| --- | --- | --- |
+| Windows 11 | `*_windows-wsl-setup.exe` | Installs the app in a dedicated WSL 2 environment; requires an NVIDIA GPU and DeepStream package. |
+| Ubuntu 24.04 / 26.04 x86_64 | `*_amd64.deb` | Use with the matching NVIDIA DeepStream installation. |
+| NVIDIA Jetson (Ubuntu 22.04 arm64) | `*_jetson-ubuntu22.04_arm64.deb` | Built for JetPack 6-class Jetson systems. |
+
+Release assets include `SHA256SUMS`. The Windows installer is currently signed
+with a private/self-signed publisher certificate, so Windows reports an unknown
+publisher unless that certificate is trusted. See the
+[installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html)
+and [Windows WSL details](docs/windows-wsl-installer.md) before installing.
+
+## Licensing
+
+This repository is source-available but is **not covered by one blanket
+open-source license**. It contains files under the root MIT license, Apache-2.0
+components, and NVIDIA-derived files marked `LicenseRef-NvidiaProprietary`.
+NVIDIA DeepStream and downloaded model assets also have their own terms. A
+file's specific notice controls when present; the root MIT license does not
+override it. Read [LICENSING.md](LICENSING.md) before use, modification, or
+redistribution.
 
 The repository and public product are named HockeyMONStream. Existing runtime
 and packaging identifiers retain their legacy HStream names for compatibility:
@@ -13,7 +86,7 @@ the `hstream` Debian package; HStream UI and installer labels;
 
 This repo also includes DeepStream-Yolo-derived model conversion/config docs under `docs/` and DeepStream config snippets under `configs/deepstream/`.
 
-## Quick Start
+## Build from source
 
 1. Install system deps:
    - DeepStream installed under `/opt/nvidia/deepstream/deepstream` (see `WORKSPACE.bazel`).

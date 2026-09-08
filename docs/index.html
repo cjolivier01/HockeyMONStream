@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Self-hosted multi-camera sports video | HockeyMONStream</title>
+  <meta name="description" content="Source-available software that stitches two sports camera videos, tracks the play, and creates an automatic pan-and-zoom program view.">
+  <link rel="canonical" href="https://cjolivier01.github.io/HockeyMONStream/">
+  <link rel="sitemap" type="application/xml" href="sitemap.xml" title="Sitemap">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="site.css">
+  <meta name="theme-color" content="#07111f">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="HockeyMONStream">
+  <meta property="og:title" content="HockeyMONStream — self-hosted multi-camera sports video">
+  <meta property="og:description" content="Stitch multiple cameras, automatically track the play, and produce sports video on your own NVIDIA GPU.">
+  <meta property="og:url" content="https://cjolivier01.github.io/HockeyMONStream/">
+  <meta property="og:image" content="https://cjolivier01.github.io/HockeyMONStream/assets/hockeymonstream-social.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="750">
+  <meta property="og:image:alt" content="Diagram of two sports cameras feeding a stitched panorama and automatic play tracker">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="HockeyMONStream — self-hosted automatic sports video">
+  <meta name="twitter:description" content="Dual-camera stitching and automatic play tracking with no HockeyMONStream subscription fee.">
+  <meta name="twitter:image" content="https://cjolivier01.github.io/HockeyMONStream/assets/hockeymonstream-social.png">
+  <meta name="twitter:image:alt" content="Diagram of two sports cameras feeding a stitched panorama and automatic play tracker">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "HockeyMONStream",
+    "alternateName": "HStream",
+    "description": "Source-available, self-hosted software for dual-camera sports video stitching, automatic play tracking, virtual pan and zoom, recording, and live streaming.",
+    "url": "https://cjolivier01.github.io/HockeyMONStream/",
+    "sameAs": "https://github.com/cjolivier01/HockeyMONStream",
+    "downloadUrl": "https://github.com/cjolivier01/HockeyMONStream/releases/latest",
+    "softwareHelp": "https://github.com/cjolivier01/HockeyMONStream/blob/master/README.md",
+    "applicationCategory": "MultimediaApplication",
+    "applicationSubCategory": "Sports video production",
+    "operatingSystem": "Ubuntu 24.04/26.04, Ubuntu 22.04 on NVIDIA Jetson, Windows 11 via WSL 2",
+    "isAccessibleForFree": true,
+    "image": "https://cjolivier01.github.io/HockeyMONStream/assets/hockeymonstream-social.png",
+    "author": {
+      "@type": "Person",
+      "name": "Chris Olivier",
+      "url": "https://github.com/cjolivier01"
+    },
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "featureList": [
+      "Multi-camera video synchronization and stitching",
+      "Automatic sports play tracking",
+      "Virtual pan, tilt, and zoom",
+      "GPU-accelerated video processing",
+      "Recorded and RTMP/RTSP output",
+      "Self-hosted source repository with file-level licensing"
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Is this a free open-source alternative to Pixellot, Hudl, or Veo?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "HockeyMONStream has no subscription fee and makes its pipeline source available, but the repository has mixed file-level licensing and is not entirely under an OSI open-source license. It is a self-hosted option in the same broad automated sports-video category, not a drop-in replacement or a claim of feature parity. The project is not affiliated with those companies."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can it stitch multiple camera videos?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The current pipeline discovers recordings from two cameras, synchronizes them, calibrates their overlapping views, and creates a wide panorama."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does the camera follow the play?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Object detections feed a configurable play tracker. The tracker controls a cropped program view, including virtual pan and zoom behavior, while the original panorama remains available in the pipeline."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does it work for sports other than hockey?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The bundled models and defaults target ice hockey. The GStreamer pipeline is modular, so developers can replace models, masks, camera geometry, and tracking configuration for other rink, court, or field sports."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What hardware is required?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "An NVIDIA GPU environment with the matching CUDA, TensorRT, and DeepStream dependencies is required. See the release and build notes for Ubuntu, Jetson, and Windows through WSL 2."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="wrap">
+    <nav class="nav" aria-label="Main navigation">
+      <a class="brand" href="./">HockeyMON<span>Stream</span></a>
+      <div class="nav-links">
+        <a href="#how-it-works">How it works</a>
+        <a href="#features">Features</a>
+        <a href="install.html">Install</a>
+        <a href="#faq">FAQ</a>
+        <a href="https://github.com/cjolivier01/HockeyMONStream">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <div class="wrap hero">
+      <div>
+        <p class="eyebrow">No subscription · source available · self-hosted</p>
+        <h1>Your cameras. One smart sports video.</h1>
+        <p class="lede">HockeyMONStream stitches multiple fixed-camera recordings into a wide view, tracks the play, and drives a virtual pan-and-zoom camera—on hardware you control.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/cjolivier01/HockeyMONStream/releases/latest">Download latest release</a>
+          <a class="button" href="https://github.com/cjolivier01/HockeyMONStream">View source on GitHub</a>
+        </div>
+      </div>
+      <figure class="hero-visual">
+        <img src="assets/sports-video-pipeline.svg" width="1200" height="750" alt="Two fixed sports cameras feeding a stitched panorama with automatic play tracking">
+        <figcaption>Two fixed views become one panorama; detections drive the program crop.</figcaption>
+      </figure>
+    </div>
+
+    <div class="wrap stats" role="group" aria-label="Project highlights">
+      <div class="stat"><strong>Source</strong><span>available to inspect</span></div>
+      <div class="stat"><strong>2 cameras</strong><span>synchronized inputs</span></div>
+      <div class="stat"><strong>GPU-native</strong><span>CUDA video path</span></div>
+      <div class="stat"><strong>Local-first</strong><span>your compute and footage</span></div>
+    </div>
+
+    <section id="how-it-works" class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">From fixed views to a program feed</p>
+        <h2>Multi-camera sports production, in one pipeline</h2>
+        <p>Built for youth hockey and adaptable to other sports, HockeyMONStream combines the expensive-looking parts of automated production in an inspectable C++ and GPU pipeline.</p>
+      </div>
+      <div class="steps">
+        <article class="card">
+          <div class="number">1</div>
+          <h3>Synchronize and stitch</h3>
+          <p>Read recordings from GoPro, Insta360, or other camera layouts. Calibrate overlap and blend the inputs into a single wide panorama.</p>
+        </article>
+        <article class="card">
+          <div class="number">2</div>
+          <h3>Detect and follow play</h3>
+          <p>Run object detection and tracking on the stitched view. A configurable virtual camera follows action while damping jitter and empty-rink drift.</p>
+        </article>
+        <article class="card">
+          <div class="number">3</div>
+          <h3>Record or stream</h3>
+          <p>Create an archive with audio, add scoreboard graphics, preview locally, or route the program output through RTMP and RTSP.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="features" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">Built for tinkerers and teams</p>
+          <h2>Run the full video stack</h2>
+          <p>The source, configuration, inference plumbing, calibration, and output routing are available to inspect. Permission to modify or redistribute varies by file; review the licensing notices first.</p>
+        </div>
+        <div class="grid-3">
+          <article class="card"><h3>Native video stitching</h3><p>Feature matching, homography fitting, projection-aware calibration, masking, and GPU blending for wide sports views.</p></article>
+          <article class="card"><h3>Automatic virtual camera</h3><p>Configurable follower boxes, zoom behavior, direction changes, seeking, and per-frame play-tracker telemetry.</p></article>
+          <article class="card"><h3>Hardware-accelerated</h3><p>NVIDIA DeepStream, GStreamer, CUDA, TensorRT, and ONNX keep the steady-state video path on the GPU.</p></article>
+          <article class="card"><h3>Flexible camera files</h3><p>Camera directories and common action-camera chapter naming are discovered without manually concatenating every clip.</p></article>
+          <article class="card"><h3>Production outputs</h3><p>Losslessly remux an archive with audio, render a preview, or send video to file, RTMP, and RTSP sinks.</p></article>
+          <article class="card"><h3>UI and CLI control</h3><p>Use the desktop runtime control application or invoke the pipeline directly for scripted processing and experiments.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Self-hosted vs. hosted systems</p>
+        <h2>A buildable alternative, not a black box</h2>
+        <p>People researching Pixellot, Hudl, Veo, or another automated sports camera often need either a turnkey service or a platform they can change. HockeyMONStream serves the second need.</p>
+      </div>
+      <div class="comparison">
+        <table>
+          <caption class="visually-hidden">General comparison of HockeyMONStream and hosted sports camera services</caption>
+          <thead><tr><th scope="col">Consideration</th><th scope="col">HockeyMONStream</th><th scope="col">Typical hosted service</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Software cost</th><td>No HockeyMONStream subscription fee</td><td>Commercial pricing varies</td></tr>
+            <tr><th scope="row">Operation</th><td>Self-hosted on supported NVIDIA hardware</td><td>Vendor-managed appliance or cloud</td></tr>
+            <tr><th scope="row">Source and algorithms</th><td>Available in the repo; file-level terms vary</td><td>Usually proprietary</td></tr>
+            <tr><th scope="row">Setup experience</th><td>Technical; bring cameras, GPU, and DeepStream</td><td>Usually designed for turnkey operation</td></tr>
+            <tr><th scope="row">Best fit</th><td>Developers, researchers, and DIY teams</td><td>Organizations buying a managed product</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">This is a category-level comparison, not a claim of feature parity. HockeyMONStream is independent of Pixellot, Hudl, and Veo.</p>
+    </section>
+
+    <section class="wrap">
+      <div class="callout">
+        <div>
+          <p class="eyebrow">Ready to experiment?</p>
+          <h2>Download, inspect, adapt.</h2>
+          <p>Packages are available for Ubuntu, NVIDIA Jetson, and Windows 11 via WSL 2.</p>
+        </div>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/cjolivier01/HockeyMONStream/releases/latest">Get HockeyMONStream</a>
+          <a class="button" href="install.html">Read installation notes</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Frequently asked questions</p>
+        <h2>What to know before you start</h2>
+      </div>
+      <div class="faq">
+        <details><summary>Is this a free open-source alternative to Pixellot, Hudl, or Veo?</summary><p>HockeyMONStream has no subscription fee and makes its pipeline source available, but the repository has mixed file-level licensing and is not entirely under an OSI open-source license. It is a self-hosted option in the same broad automated sports-video category, not a drop-in replacement or a claim of feature parity. The project is not affiliated with those companies.</p></details>
+        <details><summary>Can it stitch multiple camera videos?</summary><p>Yes. The current pipeline discovers recordings from two cameras, synchronizes them, calibrates their overlapping views, and creates a wide panorama.</p></details>
+        <details><summary>How does the camera follow the play?</summary><p>Object detections feed a configurable play tracker. The tracker controls a cropped program view, including virtual pan and zoom behavior, while the original panorama remains available in the pipeline.</p></details>
+        <details><summary>Does it work for sports other than hockey?</summary><p>The bundled models and defaults target ice hockey. The GStreamer pipeline is modular, so developers can replace models, masks, camera geometry, and tracking configuration for other rink, court, or field sports.</p></details>
+        <details><summary>What hardware is required?</summary><p>An NVIDIA GPU environment with the matching CUDA, TensorRT, and DeepStream dependencies is required. See the release and build notes for Ubuntu, Jetson, and Windows through WSL 2.</p></details>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap footer-row">
+      <span>HockeyMONStream · Source available · Mixed file-level licensing</span>
+      <span><a href="https://github.com/cjolivier01/HockeyMONStream">Source</a> · <a href="https://github.com/cjolivier01/HockeyMONStream/blob/master/LICENSING.md">Licensing</a> · <a href="https://github.com/cjolivier01/HockeyMONStream/releases">Releases</a> · <a href="https://github.com/cjolivier01/HockeyMONStream/issues">Issues</a></span>
+    </div>
+  </footer>
+</body>
+</html>

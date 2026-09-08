@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Download and install HockeyMONStream sports video software</title>
+  <meta name="description" content="Download HockeyMONStream for Ubuntu, NVIDIA Jetson, or Windows 11 WSL and learn what is required to run multi-camera sports video stitching.">
+  <link rel="canonical" href="https://cjolivier01.github.io/HockeyMONStream/install.html">
+  <link rel="sitemap" type="application/xml" href="sitemap.xml" title="Sitemap">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="site.css">
+  <meta name="theme-color" content="#07111f">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="HockeyMONStream">
+  <meta property="og:title" content="Download and install HockeyMONStream">
+  <meta property="og:description" content="Release packages for Ubuntu, NVIDIA Jetson, and Windows 11 through WSL 2.">
+  <meta property="og:url" content="https://cjolivier01.github.io/HockeyMONStream/install.html">
+  <meta property="og:image" content="https://cjolivier01.github.io/HockeyMONStream/assets/hockeymonstream-social.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="750">
+  <meta property="og:image:alt" content="Diagram of two sports cameras feeding a stitched panorama and automatic play tracker">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Download and install HockeyMONStream">
+  <meta name="twitter:description" content="Release packages for Ubuntu, NVIDIA Jetson, and Windows 11 through WSL 2.">
+  <meta name="twitter:image" content="https://cjolivier01.github.io/HockeyMONStream/assets/hockeymonstream-social.png">
+  <meta name="twitter:image:alt" content="Diagram of two sports cameras feeding a stitched panorama and automatic play tracker">
+</head>
+<body>
+  <header class="wrap">
+    <nav class="nav" aria-label="Main navigation">
+      <a class="brand" href="./">HockeyMON<span>Stream</span></a>
+      <div class="nav-links">
+        <a href="./#how-it-works">How it works</a>
+        <a href="./#features">Features</a>
+        <a href="install.html" aria-current="page">Install</a>
+        <a href="./#faq">FAQ</a>
+        <a href="https://github.com/cjolivier01/HockeyMONStream">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <div class="page-hero">
+      <p class="eyebrow">Download and installation</p>
+      <h1>Run the sports video pipeline on your GPU</h1>
+      <p class="lede">Choose a packaged release or build from source. HockeyMONStream has no subscription fee, but it depends on NVIDIA’s GPU driver, CUDA, and DeepStream components.</p>
+      <div class="actions">
+        <a class="button primary" href="https://github.com/cjolivier01/HockeyMONStream/releases/latest">Open the latest release</a>
+        <a class="button" href="https://github.com/cjolivier01/HockeyMONStream#build-from-source">Build from source</a>
+      </div>
+    </div>
+
+    <article class="content">
+      <div class="notice"><strong>Before downloading:</strong> this is a technical, self-hosted project—not a hosted video service. You provide compatible cameras or recordings, NVIDIA hardware, storage, and the NVIDIA software dependencies.</div>
+
+      <h2>Verify every download before installing</h2>
+      <p>Each packaged HockeyMONStream application release includes <code>SHA256SUMS</code>. Download it with the files for your platform and verify those files before opening an installer, making a script executable, or running a package command.</p>
+      <p>On Ubuntu, Jetson, or an existing WSL environment, run:</p>
+      <pre><code>sha256sum -c SHA256SUMS --ignore-missing</code></pre>
+      <p>On Windows, open PowerShell in the download directory and run:</p>
+      <pre><code>Get-FileHash .\hstream_vX.Y.Z_windows-wsl-setup.exe -Algorithm SHA256</code></pre>
+      <p>Compare the PowerShell result with the matching line in <code>SHA256SUMS</code>. DeepStream comes separately from NVIDIA and is not covered by the HockeyMONStream checksum file; obtain it from an official NVIDIA download page and follow NVIDIA's published checksum or signature verification guidance before giving its package to an installer.</p>
+
+      <h2>Windows 11</h2>
+      <p>Download and verify the release asset ending in <code>_windows-wsl-setup.exe</code>, then open it. The bootstrapper creates a dedicated Ubuntu environment under WSL 2 and installs the matching HockeyMONStream Debian package.</p>
+      <p>You will need Windows 11 with virtualization and WSL 2 support, an NVIDIA GPU with a current Windows driver that exposes CUDA to WSL, and the NVIDIA DeepStream 9.1 Debian package. The installer asks you to select the DeepStream package; it is not redistributed inside the installer.</p>
+      <p>The current public installer is signed with a private/self-signed publisher certificate. Windows therefore shows an unknown-publisher warning unless that certificate is already trusted. Read the complete <a href="https://github.com/cjolivier01/HockeyMONStream/blob/master/docs/windows-wsl-installer.md">Windows WSL installer documentation</a> for the security model, files, and uninstall behavior.</p>
+
+      <h2>Ubuntu desktop</h2>
+      <p>Download three files: the <code>_ubuntu24.04_amd64.deb</code> or <code>_ubuntu26.04_amd64.deb</code> asset that exactly matches the host, <a href="https://github.com/cjolivier01/HockeyMONStream/releases/latest/download/install-hstream-deb.sh"><code>install-hstream-deb.sh</code></a> from the same HockeyMONStream release, and NVIDIA’s separately obtained DeepStream 9.1 Debian package.</p>
+      <p>After verifying all three downloads as described above, run the helper with the downloaded paths:</p>
+      <pre><code>chmod +x ./install-hstream-deb.sh
+sudo ./install-hstream-deb.sh \
+  --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1_amd64.deb \
+  --hstream-deb=./hstream_vX.Y.Z_ubuntu24.04_amd64.deb</code></pre>
+      <p>Use the actual release version and switch <code>ubuntu24.04</code> to <code>ubuntu26.04</code> on an Ubuntu 26.04 host. The helper validates package metadata, configures the NVIDIA repositories, and applies the required Ubuntu 26.04 compatibility handling. Do not install a package built for the other Ubuntu release.</p>
+
+      <h2>NVIDIA Jetson</h2>
+      <p>For JetPack 6-class Jetson systems with DeepStream 7.1, download and verify the release asset ending in <code>_jetson-ubuntu22.04_arm64.deb</code>, then install it through APT:</p>
+      <pre><code>sudo apt install ./hstream_vX.Y.Z_jetson-ubuntu22.04_arm64.deb</code></pre>
+      <p>The release also contains a Hugin build script and corresponding source archives used for the Jetson calibration toolchain.</p>
+
+      <h2>Prepare camera footage</h2>
+      <p>By default, games live under <code>$HOME/Videos/&lt;game_id&gt;</code>. Put each camera’s clips in a separate directory:</p>
+      <pre><code>$HOME/Videos/game-001/cam1/*.mp4
+$HOME/Videos/game-001/cam2/*.mp4</code></pre>
+      <p>GoPro and Insta360 chapter naming patterns are supported. See the <a href="https://github.com/cjolivier01/HockeyMONStream#build-from-source">README build guide</a> for source builds and the current run commands.</p>
+
+      <h2>What happens on the first run</h2>
+      <p>The runner loads the bundled baseline configuration, downloads configured pretrained runtime model assets if they are missing, configures stitching from your footage, and starts the main detection and play-tracking pipeline. You can keep the default game and output roots or configure explicit paths.</p>
+
+      <h2>Need help or want to contribute?</h2>
+      <p>Search the <a href="https://github.com/cjolivier01/HockeyMONStream">repository documentation</a>, inspect <a href="https://github.com/cjolivier01/HockeyMONStream/releases">all releases</a>, or <a href="https://github.com/cjolivier01/HockeyMONStream/issues">open a GitHub issue</a> with platform details and logs.</p>
+    </article>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <span>HockeyMONStream is source-available with mixed file-level licensing.</span>
+        <span><a href="./">Product overview</a> · <a href="https://github.com/cjolivier01/HockeyMONStream/blob/master/LICENSING.md">Licensing</a> · <a href="https://github.com/cjolivier01/HockeyMONStream/releases">Releases</a></span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

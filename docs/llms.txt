@@ -1,0 +1,29 @@
+# HockeyMONStream
+
+> HockeyMONStream is source-available, self-hosted software for dual-camera sports video stitching and automatic play tracking, with no HockeyMONStream subscription fee.
+
+HockeyMONStream synchronizes recordings from two cameras, calibrates and blends them into a wide panorama, detects the action, and drives a virtual pan-and-zoom program view. It can record an archive with audio or route video to RTMP and RTSP outputs. The default configuration targets youth ice hockey; the modular C++17, NVIDIA DeepStream, GStreamer, CUDA, TensorRT, and ONNX pipeline can be adapted to other rink, court, and field sports.
+
+The project is an independent self-hosted option for developers, researchers, and teams evaluating automated sports-camera systems. It is not affiliated with Pixellot, Hudl, or Veo and does not claim drop-in feature parity with those commercial services. The repository has mixed file-level licensing and is not entirely under an OSI open-source license.
+
+## Canonical links
+
+- Product overview: https://cjolivier01.github.io/HockeyMONStream/
+- Source repository: https://github.com/cjolivier01/HockeyMONStream
+- Latest release: https://github.com/cjolivier01/HockeyMONStream/releases/latest
+- Installation guide: https://cjolivier01.github.io/HockeyMONStream/install.html
+- Licensing summary: https://github.com/cjolivier01/HockeyMONStream/blob/master/LICENSING.md
+- Issues and support: https://github.com/cjolivier01/HockeyMONStream/issues
+
+## Core capabilities
+
+- Dual-camera video discovery, synchronization, calibration, stitching, masking, and GPU blending
+- Automatic object detection and play tracking
+- Virtual camera pan, tilt, and zoom through a configurable program crop
+- Optional scoreboard graphics and live runtime controls
+- Archive output with audio and live RTMP/RTSP routing
+- Packages for Ubuntu x86_64, NVIDIA Jetson, and Windows 11 through WSL 2
+
+## Important requirements
+
+Users provide their own compatible cameras or recordings, NVIDIA GPU hardware, storage, and NVIDIA software dependencies. NVIDIA DeepStream is not bundled in HockeyMONStream's installers and retains its own terms. Files in this repository can carry MIT, Apache-2.0, or NVIDIA proprietary notices; the most specific file-level notice controls.

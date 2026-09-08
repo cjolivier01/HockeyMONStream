@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use HockeyMONStream in your work, please cite the software using this metadata."
+title: "HockeyMONStream: source-available multi-camera sports video stitching and play tracking"
+type: software
+authors:
+  - family-names: Olivier
+    given-names: Chris
+    alias: cjolivier01
+repository-code: "https://github.com/cjolivier01/HockeyMONStream"
+url: "https://cjolivier01.github.io/HockeyMONStream/"
+version: 0.1.3
+date-released: 2026-09-03
+keywords:
+  - multi-camera video stitching
+  - automatic sports camera
+  - sports video
+  - play tracking
+  - ice hockey
+  - youth sports
+  - computer vision
+  - NVIDIA DeepStream
+  - GStreamer
+  - CUDA

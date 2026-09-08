@@ -3,7 +3,7 @@ param(
     [ValidateSet("Install", "Launch", "Unregister", "EnsureWslMachine")]
     [string]$Action = "Install",
     [string]$VersionTag = "",
-    [string]$Repository = "cjolivier01/hstream",
+    [string]$Repository = "cjolivier01/HockeyMONStream",
     [string]$DistroName = "HStream",
     [string]$DeepStreamDeb = ""
 )
