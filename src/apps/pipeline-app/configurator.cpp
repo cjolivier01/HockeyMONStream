@@ -8120,6 +8120,11 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     generated_framing["rotation_degrees"] =
         std::vector<double>(projection_framing.rotation_degrees.begin(), projection_framing.rotation_degrees.end());
     generated_framing["crop"] = std::vector<double>(projection_framing.crop.begin(), projection_framing.crop.end());
+    // Generated-value restoration compares the persisted tuple without venue
+    // context; preserve omission here while immutable generation claims record
+    // the resolved rotation separately.
+    if (projection_framing.rotation_inherited)
+      generated_framing.remove("rotation_degrees");
     if (persisted_values_are_generated && persisted_previous_matcher.has_value() &&
         persisted_previous_matcher->IsScalar()) {
       private_config_["hstream_ui"]["generated_stitching_backend_choices"]["previous_control_point_matcher"] =

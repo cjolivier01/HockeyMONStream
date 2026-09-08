@@ -806,8 +806,8 @@ absl::StatusOr<std::vector<StitchRinkConfiguration>> read_stitch_rink_configurat
         return baseline.status();
       const YAML::Node baseline_values = baseline->values;
       const YAML::Node baseline_stitching = baseline_values["stitching"];
-      definitions.reset(baseline_stitching && baseline_stitching.IsMap() ? baseline_stitching["rink_configs"]
-                                                                        : YAML::Node());
+      definitions.reset(
+          baseline_stitching && baseline_stitching.IsMap() ? baseline_stitching["rink_configs"] : YAML::Node());
       if (!definitions || definitions.IsNull())
         return std::vector<StitchRinkConfiguration>{};
     }
@@ -870,6 +870,7 @@ absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config)
 
 absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAML::Node& config) {
   StitchProjectionFraming result;
+  result.rotation_inherited = true;
   try {
     std::string rink;
     HM_ASSIGN_OR_RETURN(rink, read_stitch_rink_selection(config));
@@ -935,6 +936,8 @@ absl::StatusOr<StitchProjectionFraming> read_stitch_projection_framing(const YAM
       return absl::InvalidArgumentError(
           "stitching.projection_framing.horizontal_fov must be finite and between 0 and 360 degrees");
     }
+    const YAML::Node rotation = framing["rotation_degrees"];
+    result.rotation_inherited = !rotation || rotation.IsNull();
     HM_RETURN_IF_ERROR(read_framing_array(framing, "rotation_degrees", result.rotation_degrees));
     HM_RETURN_IF_ERROR(read_framing_array(framing, "crop", result.crop));
     HM_RETURN_IF_ERROR(validate_projection_view(result));
@@ -951,6 +954,8 @@ void write_stitch_projection_framing(YAML::Node& config, const StitchProjectionF
   node["auto_canvas"] = framing.auto_canvas;
   node["auto_crop"] = framing.auto_crop;
   write_projection_view(node, framing);
+  if (framing.rotation_inherited)
+    node.remove("rotation_degrees");
 }
 
 absl::Status ValidateStitchProjectionFraming(

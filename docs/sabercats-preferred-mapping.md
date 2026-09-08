@@ -35,7 +35,21 @@ projection_framing:
   crop: [0.02, 0.98, 0.54, 1]   # left, right, top, bottom as full-canvas fractions
 ```
 
-Rotation defaults to zero and crop defaults to `[0, 1, 0, 1]`. Angles must be finite and within ±180 degrees.
+The shared baseline defines `stitching.rink_configs.vallco` with rotation `[0, -35, 0]` and
+`stitching.rink_configs.sharks-ice` with `[0, -25, 0]`. Select one in the game-private config:
+
+```yaml
+stitching:
+  rink_config: vallco  # or sharks-ice
+```
+
+This rotates both registered cameras together; their relative alignment remains intact. The selected profile
+supplies the rotation when `projection_framing.rotation_degrees` is absent or null. An explicit game value wins,
+including `[0, 0, 0]` or a value equal to the venue default. Ordinary config/UI saves preserve that distinction,
+so inherited settings follow later profile edits. With no selected rink, rotation remains zero for existing games.
+These venue angles are starting defaults; mounting position and pitch can vary between recordings.
+
+Crop defaults to `[0, 1, 0, 1]`. Angles must be finite and within ±180 degrees.
 Crop fractions must lie in `[0, 1]` and enclose a nonempty rectangle. An explicit crop cannot be combined with
 `auto_crop: true`. The existing UI preserves these YAML settings when loading and saving a game; selecting
 automatic crop replaces the explicit rectangle. Dedicated rotation/crop UI editors are not provided yet.

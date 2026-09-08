@@ -50,6 +50,11 @@ struct StitchProjectionFraming {
   // A non-full crop and auto_crop are mutually exclusive.
   std::array<double, 4> crop{0.0, 1.0, 0.0, 1.0};
 
+  // Persistence metadata only: omitted/null YAML rotation inherits the selected
+  // rink default. Generation claims and equality still use the resolved angles.
+  // Set false when an editor accepts an explicit game override.
+  bool rotation_inherited{false};
+
   bool operator==(const StitchProjectionFraming& other) const {
     return auto_fov == other.auto_fov && horizontal_fov == other.horizontal_fov && auto_canvas == other.auto_canvas &&
         auto_crop == other.auto_crop && rotation_degrees == other.rotation_degrees && crop == other.crop;
