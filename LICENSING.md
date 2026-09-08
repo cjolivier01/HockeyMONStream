@@ -14,6 +14,9 @@ licensing. Do not assume that the root `LICENSE.md` applies to every file.
 - Third-party libraries, tools, model files, and runtime dependencies retain
   their own licenses. In particular, NVIDIA DeepStream is a separately
   obtained dependency and is not licensed by this repository's MIT file.
+- Jetson release packages redistribute Hugin components under GNU General
+  Public License terms; the corresponding Hugin source archive and build
+  script ship with each release.
 - Notices for optional native model assets are recorded under
   `third_party/native_model_licenses/`.
 
