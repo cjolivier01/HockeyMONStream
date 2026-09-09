@@ -1,5 +1,4 @@
 exports_files([
-    "hm_camera_gpt_contiguous_frames.patch",
     "lightglue_onnx.BUILD",
     "onnxruntime.BUILD",
 ])
