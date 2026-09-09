@@ -467,7 +467,9 @@ play-tracker:
     fs::create_directories(games / game);
     YAML::Node settings(YAML::NodeType::Map);
     settings["stitching"]["mapping_backend"] = test.backend;
+    settings["stitching"]["run_autooptimizer"] = std::string(test.backend) == "nona";
     settings["stitching"]["rink_config"] = "vallco";
+    settings["stitching"]["projection_framing"]["horizontal_fov"] = 120;
     settings["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load(test.rotation);
     settings["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Load(test.crop_rotation);
     if (test.native_overrides) {
@@ -521,6 +523,18 @@ play-tracker:
     ok &= expect(
         YAML::Dump(YAML::LoadFile(path.string())) == saved,
         "Effective crop suppression must not rewrite the saved preset");
+    if (test.native_overrides) {
+      ok &= expect(
+          YAML::Dump(configurator.game_private_config()["pipeline"]) == YAML::Dump(settings["pipeline"]),
+          "Effective crop suppression must not mutate the private YAML snapshot through shared nodes");
+      ok &= expect(
+          configurator.persist_effective_stitching_backend_choices().ok(),
+          "Startup must persist the effective stitching choices successfully");
+      const YAML::Node persisted = YAML::LoadFile(path.string());
+      ok &= expect(
+          YAML::Dump(persisted["pipeline"]) == YAML::Dump(settings["pipeline"]),
+          "Startup persistence must retain every dormant native crop angle and property bag");
+    }
   }
 
   const auto prepare_tone_routing = [&](const std::string& game, const char* high_bit_mode) {

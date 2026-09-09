@@ -8432,9 +8432,11 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
     persisted_private_config_ =
         YAML::Clone(loaded_generated_stitching_backend_choices_ ? original_private_config : private_config_);
     record_explicit_overlay(private_config_, {}, 2);
+    // Runtime mappings can overwrite native properties (for example, suppress
+    // crop rotation). Keep those nodes separate from the saved private intent.
     config = merge_nodes(
         config,
-        private_config_,
+        YAML::Clone(private_config_),
         /*warn_if_key_not_in_dest=*/!config);
   } else {
     private_config_ = YAML::Node(YAML::NodeType::Map);
