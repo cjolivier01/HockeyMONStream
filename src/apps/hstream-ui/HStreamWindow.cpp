@@ -14038,13 +14038,14 @@ void HStreamWindow::savePreset() {
   }
   absl::Status publish;
   size_t invalidated_masks = 0;
+  const std::string intended_config_contents = YAML::Dump(config) + "\n";
   const bool fail_before_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
   const bool fail_after_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
   if (fail_before_config_publish) {
     publish = absl::InternalError("preset config publication failure requested by test");
   } else if (invalidate_rink_masks) {
     auto transaction = hm::stitching::publish_game_config_without_rink_masks(
-        config_path.parent_path(), YAML::Dump(config) + "\n", /*remove_stitched_snapshot=*/true);
+        config_path.parent_path(), intended_config_contents, /*remove_stitched_snapshot=*/true);
     if (transaction.ok()) {
       invalidated_masks = *transaction;
       publish = absl::OkStatus();
@@ -14052,7 +14053,7 @@ void HStreamWindow::savePreset() {
       publish = transaction.status();
     }
   } else {
-    publish = publish_yaml_config(config_path, config);
+    publish = hm::stitching::publish_game_config(config_path.parent_path(), intended_config_contents);
   }
   if (fail_after_config_publish && publish.ok()) {
     publish = absl::InternalError("post-commit preset config failure requested by test");
@@ -14061,10 +14062,22 @@ void HStreamWindow::savePreset() {
     bool published_sidecar_may_be_referenced = published_playtracker_sidecar.isEmpty();
     YAML::Node visible_config;
     bool visible_config_loaded = false;
+    bool visible_generation_matches = false;
     try {
       if (fs::is_regular_file(config_path)) {
-        visible_config = YAML::LoadFile(config_path.string());
-        visible_config_loaded = true;
+        QFile visible_file(QString::fromStdString(config_path.string()));
+        if (visible_file.open(QIODevice::ReadOnly)) {
+          const QByteArray visible_contents = visible_file.readAll();
+          if (visible_file.error() == QFileDevice::NoError) {
+            visible_config = YAML::Load(visible_contents.toStdString());
+            visible_config_loaded = true;
+            // Compare the actual published bytes: parsing and dumping YAML can
+            // change formatting (for example, an empty camera-controls map).
+            visible_generation_matches = visible_contents == QByteArray::fromStdString(intended_config_contents);
+          }
+        }
+        if (!visible_config_loaded)
+          published_sidecar_may_be_referenced = true;
       }
     } catch (const std::exception&) {
       // The transaction lock is already held. If the just-published config
@@ -14085,7 +14098,6 @@ void HStreamWindow::savePreset() {
         }
       }
     }
-    const bool visible_generation_matches = visible_config_loaded && YAML::Dump(visible_config) == YAML::Dump(config);
     if (!published_sidecar_may_be_referenced) {
       QFile::remove(published_playtracker_sidecar);
     }
@@ -14096,6 +14108,9 @@ void HStreamWindow::savePreset() {
       if (game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
         preset_save_retry_game_ids_.insert(game_id_edit_->text().trimmed());
       }
+      // The selected angles are already in this exact visible generation.
+      // Consume their old snapshot so retry does not reject our own config write.
+      pending_leveling_revision_.clear();
       captureSavedControlState();
     }
     appendLog(QString("failed to write preset %1: %2")
