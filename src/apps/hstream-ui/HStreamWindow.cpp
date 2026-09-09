@@ -7017,10 +7017,13 @@ void HStreamWindow::selectProjectionCrop() {
   current_geometry.auto_crop = saved_geometry.auto_crop = false;
   current_geometry.crop = saved_geometry.crop = hm::stitching::StitchProjectionFraming{}.crop;
   const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
+  // Parameter-free projections intentionally have no entry in the saved map.
+  const bool parameters_changed = saved_parameters == saved_projection_parameters_.end()
+      ? !stitchProjectionParameters().empty()
+      : saved_parameters->second != stitchProjectionParameters();
   QString preview_error;
-  if (!rinkLevelingInputsUnchanged() || saved_projection_ != stitchProjection() ||
-      saved_parameters == saved_projection_parameters_.end() ||
-      saved_parameters->second != stitchProjectionParameters() || current_geometry != saved_geometry) {
+  if (!rinkLevelingInputsUnchanged() || saved_projection_ != stitchProjection() || parameters_changed ||
+      current_geometry != saved_geometry) {
     preview_error = "Save and calibrate the current projection, angles and camera settings to enable its crop preview.";
   }
   ProjectionCropDialog dialog(
@@ -7034,6 +7037,8 @@ void HStreamWindow::selectProjectionCrop() {
   if (dialog.exec() != QDialog::Accepted)
     return;
   const auto chosen = dialog.framing();
+  if (chosen == selected_framing)
+    return;
   loaded_projection_framing_.crop = chosen.crop;
   projection_auto_crop_check_->setChecked(chosen.auto_crop);
   if (!dialog.sourceRevision().isEmpty())
