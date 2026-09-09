@@ -13,7 +13,7 @@ inline constexpr std::uint32_t kMaximumRinkMaskDimension = 12288U;
 inline constexpr std::uint64_t kMaximumRinkMaskTextureBytes = 32ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t kMaximumRinkMaskResourceBytes = 96ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t kMaximumPreviewRinkMaskSourcePixels = 256ULL * 1024ULL * 1024ULL;
-inline constexpr std::uint64_t kMaximumPreviewRinkMaskResourceBytes = 256ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kMaximumPreviewRinkMaskResourceBytes = 512ULL * 1024ULL * 1024ULL;
 
 struct RinkMaskImage {
   std::uint32_t canvas_width{0};

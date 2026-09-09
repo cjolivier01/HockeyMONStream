@@ -7,6 +7,7 @@
 #include <opencv2/imgproc.hpp>
 #include <tiffio.h>
 #include <yaml-cpp/yaml.h>
+#include "cupano/pano/controlMasks.h"
 
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -845,11 +846,54 @@ bool expect_canvas_size_waits_for_hugin_lock(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_doubled_canvas_limits(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "doubled_canvas_limits";
+  fs::create_directories(dir);
+  // Placement-only checks exercise pixel limits without allocating a full panorama.
+  const auto check = [&](int width, int height, bool allowed) {
+    if (!write_mapping_tiff(dir / "mapping_0000.tif", 1, 1, 0.0f, 0.0f) ||
+        !write_mapping_tiff(dir / "mapping_0001.tif", 1, 1, width - 1, height - 1))
+      return false;
+    const auto canvas = hm::stitching::stitching_canvas_size(dir.string());
+    if (allowed)
+      return canvas.ok() && canvas->width == width && canvas->height == height;
+    return absl::IsResourceExhausted(canvas.status());
+  };
+  if (!check(19695, 12460, true) || !check(65536, 1, true) || !check(65537, 1, false) || !check(16384, 16384, true) ||
+      !check(16384, 16385, false)) {
+    std::cerr << "canvas limits must admit the 245MP rink and reject extents above the doubled bounds" << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool expect_wide_control_masks_reload(const fs::path& tmpdir) {
+  const fs::path dir = tmpdir / "wide_control_masks";
+  fs::create_directories(dir);
+  for (const std::string index : {"0000", "0001"}) {
+    if (!write_mapping_tiff(dir / ("mapping_" + index + ".tif"), 40000, 2, index == "0000" ? 0 : 25536, 0) ||
+        !write_remap_tiff(dir / ("mapping_" + index + "_x.tif"), 40000, 2) ||
+        !write_remap_tiff(dir / ("mapping_" + index + "_y.tif"), 40000, 2))
+      return false;
+  }
+  cv::Mat seam(2, 65536, CV_8UC1, cv::Scalar(0));
+  seam.colRange(32768, seam.cols).setTo(255);
+  if (!cv::imwrite((dir / "seam_file.png").string(), seam) ||
+      !hm::stitching::HuginProject::ValidateAndNormalizeSeam(dir / "seam_file.png", 65536, 2).ok())
+    return false;
+  hm::pano::ControlMasks masks(dir.string());
+  if (!masks.is_valid() || masks.canvas_width() != 65536 || masks.canvas_height() != 2) {
+    std::cerr << "hm-cupano must load remaps and seams at the doubled dimension limit" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "oversized_legacy_tiff";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 40000, 1, 0.0f, 0.0f) ||
+  if (!write_mapping_tiff(dir / "mapping_0000.tif", 65537, 1, 0.0f, 0.0f) ||
       !write_mapping_tiff(dir / "mapping_0001.tif", 1, 1, 0.0f, 0.0f)) {
     return false;
   }
@@ -2117,7 +2161,8 @@ int main() {
     finish(tmpdir, 24);
   }
 
-  if (!expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
+  if (!expect_doubled_canvas_limits(tmpdir) || !expect_wide_control_masks_reload(tmpdir) ||
+      !expect_legacy_seam_generation_rejects_oversized_tiff(tmpdir)) {
     finish(tmpdir, 10);
   }
 

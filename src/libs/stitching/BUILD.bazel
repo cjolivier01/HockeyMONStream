@@ -541,6 +541,7 @@ cc_test(
     "-ltiff",
   ],
   deps = [
+    "@hm-cupano//src/pano:canvas",
     ":canvas_constraint_check",
     ":stitching",
     "@opencv_linux//:opencv",

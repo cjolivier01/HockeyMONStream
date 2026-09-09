@@ -1990,7 +1990,7 @@ int main() {
       fs::copy_options::recursive | fs::copy_options::copy_symlinks,
       over_dimension_copy_error);
   const bool over_dimension_mapping_written = !over_dimension_copy_error &&
-      write_spatial_tiff_tags(over_dimension_generation_root / "mapping_0000_x.tif", 40000, 1, 0.0f, 1.0f);
+      write_spatial_tiff_tags(over_dimension_generation_root / "mapping_0000_x.tif", 65537, 1, 0.0f, 1.0f);
   auto over_dimension_generation_lock = hm::stitching::HuginProject::RecoverAndLock(over_dimension_generation_root);
   const auto over_dimension_generation = over_dimension_generation_lock.ok()
       ? hm::stitching::HuginProject::GenerationId(over_dimension_generation_root, **over_dimension_generation_lock)

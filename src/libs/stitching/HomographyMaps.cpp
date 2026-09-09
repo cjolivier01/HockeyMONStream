@@ -57,7 +57,7 @@ absl::Status validate_output_size(double width, double height) {
       width > static_cast<double>(std::numeric_limits<int>::max()) ||
       height > static_cast<double>(std::numeric_limits<int>::max()))
     return absl::ResourceExhaustedError("OpenCV mapping candidate canvas exceeds uint16 remap limits");
-  constexpr int64_t kMaxPixels = 128LL * 1024LL * 1024LL;
+  constexpr int64_t kMaxPixels = 256LL * 1024LL * 1024LL;
   if (width > static_cast<double>(kMaxPixels) / height)
     return absl::ResourceExhaustedError("OpenCV mapping candidate canvas exceeds decoded-image safety limits");
   return absl::OkStatus();

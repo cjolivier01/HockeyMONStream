@@ -1,4 +1,5 @@
 exports_files([
+    "hm_cupano_canvas_limits.patch",
     "hm_cupano_fractional_canvas.patch",
     "rules_cuda_sm120.patch",
 ])
