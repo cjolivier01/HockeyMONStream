@@ -22,7 +22,8 @@
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 namespace {
-const QStringList kSnapshotFiles = {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"};
+const QStringList kSnapshotFiles =
+    {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png", "config.yaml"};
 
 QByteArray readFile(const QString& path, qint64 limit = 1024 * 1024) {
   QFile file(path);
@@ -41,8 +42,12 @@ bool writeFile(const QString& path, const QByteArray& contents) {
 RinkLevelingDialog::RinkLevelingDialog(
     const QString& game_directory,
     const std::array<double, 3>& current_rotation,
-    QWidget* parent)
-    : QDialog(parent), game_directory_(game_directory), initial_rotation_(current_rotation) {
+    QWidget* parent,
+    std::optional<hm::stitching::StitchCameraSelection> expected_camera)
+    : QDialog(parent),
+      game_directory_(game_directory),
+      initial_rotation_(current_rotation),
+      expected_camera_(std::move(expected_camera)) {
   setObjectName("rinkLevelingDialog");
   setWindowTitle("Level the rink from vertical posts");
   resize(1120, 820);
@@ -65,6 +70,7 @@ RinkLevelingDialog::RinkLevelingDialog(
     auto* actions = new QHBoxLayout();
     for (const auto& name : {"Undo point", "Clear", "Fit image"}) {
       auto* button = new QPushButton(name);
+      button->setObjectName(QString("rinkLevelingCamera%1%2").arg(camera).arg(QString(name).remove(' ')));
       actions->addWidget(button);
       connect(button, &QPushButton::clicked, this, [this, camera, name]() {
         if (QString(name) == "Undo point")
@@ -162,6 +168,11 @@ void RinkLevelingDialog::loadSnapshot() {
     load_error_ = "Stitching is being updated. Stop playback and try again after calibration finishes.";
     return;
   }
+  const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
+  if (!config_lock.ok()) {
+    load_error_ = "Game settings are being updated. Try again after the update finishes.";
+    return;
+  }
   source_revision_ = sourceRevision(game_directory_);
   if (!temporary_.isValid() || source_revision_.isEmpty()) {
     load_error_ = "Run stitching calibration first. Its saved camera images and panorama project are needed.";
@@ -175,6 +186,20 @@ void RinkLevelingDialog::loadSnapshot() {
   }
   if (sourceRevision(temporary_.path()) != source_revision_) {
     load_error_ = "The source calibration changed while opening. Reopen the dialog.";
+    return;
+  }
+  try {
+    const YAML::Node config = YAML::Load(readFile(temporary_.filePath("config.yaml")).toStdString());
+    const auto ui = config["hstream_ui"];
+    const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
+    const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
+    if (status && !status.IsNull() && (!status.IsScalar() || status.as<std::string>() != "complete")) {
+      load_error_ =
+          "Stitching calibration is pending or incomplete. Finish calibration with the current camera and reference-frame settings first.";
+      return;
+    }
+  } catch (const YAML::Exception&) {
+    load_error_ = "Could not read the game's calibration settings. Repair the config and recalibrate first.";
     return;
   }
   const auto prepared =
@@ -213,6 +238,22 @@ void RinkLevelingDialog::loadSnapshot() {
     load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
     return;
   }
+  if (expected_camera_ && version < 7) {
+    load_error_ =
+        "This older calibration has no camera-model metadata. Recalibrate once with the current camera settings before selecting posts.";
+    return;
+  }
+  if (expected_camera_) {
+    bool horizontal_ok = false, vertical_ok = false;
+    const double horizontal = fields.value("camera-horizontal-fov").toDouble(&horizontal_ok);
+    const double vertical = fields.value("camera-vertical-fov").toDouble(&vertical_ok);
+    if (!horizontal_ok || !vertical_ok ||
+        fields.value("camera-configuration").toStdString() != expected_camera_->configuration ||
+        horizontal != expected_camera_->horizontal_fov || vertical != expected_camera_->vertical_fov) {
+      load_error_ = "The camera model or FOV differs from the saved calibration. Recalibrate before selecting posts.";
+      return;
+    }
+  }
   // Versions 2-7 predate the shared camera-space rotation and imply zero.
   for (size_t index = 0; index < published_rotation_.size(); ++index) {
     const QString key = QString("projection-rotation-%1").arg(index);
@@ -245,6 +286,7 @@ std::array<double, 3> RinkLevelingDialog::rotationDegrees() const {
 void RinkLevelingDialog::setBusy(bool busy) {
   busy_ = busy;
   const bool enabled = !busy && load_error_.isEmpty();
+  tabs_->setEnabled(enabled);
   for (auto* canvas : canvases_)
     canvas->setEnabled(enabled);
   for (auto* spin : angle_spins_)
@@ -428,7 +470,12 @@ void RinkLevelingDialog::acceptAngles() {
   if (busy_ || !previewed_)
     return;
   const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
-  if (!lock.ok() || sourceRevision(game_directory_) != source_revision_) {
+  if (!lock.ok()) {
+    fail("The stitching calibration is being updated. Cancel and reopen after it finishes.");
+    return;
+  }
+  const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
+  if (!config_lock.ok() || sourceRevision(game_directory_) != source_revision_) {
     fail("The stitching calibration changed. Cancel and reopen the dialog before applying angles.");
     accept_button_->setEnabled(false);
     return;

@@ -393,6 +393,7 @@ class HStreamWindow : public QMainWindow {
   void loadRinkLevelingControls(const YAML::Node& config);
   void updateRinkLevelingControls();
   void selectRinkLeveling();
+  bool rinkLevelingInputsUnchanged() const;
   bool writeRinkLevelingSelection(YAML::Node& config);
   void storeProjectionParameterControls();
   void updateProjectionCompatibility();

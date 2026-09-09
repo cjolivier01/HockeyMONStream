@@ -7,8 +7,10 @@
 
 #include <array>
 #include <functional>
+#include <optional>
 #include <vector>
 
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/RinkLeveling.h"
 
 class QLabel;
@@ -24,7 +26,8 @@ class RinkLevelingDialog : public QDialog {
   RinkLevelingDialog(
       const QString& game_directory,
       const std::array<double, 3>& current_rotation,
-      QWidget* parent = nullptr);
+      QWidget* parent = nullptr,
+      std::optional<hm::stitching::StitchCameraSelection> expected_camera = std::nullopt);
   ~RinkLevelingDialog() override;
   QString loadError() const {
     return load_error_;
@@ -33,7 +36,7 @@ class RinkLevelingDialog : public QDialog {
   QByteArray sourceRevision() const {
     return source_revision_;
   }
-  // Caller holds the stitching artifact lock when this is used at publication.
+  // Caller holds artifact -> config locks when this is used at publication.
   static QByteArray sourceRevision(const QString& game_directory);
 
  protected:
@@ -60,6 +63,7 @@ class RinkLevelingDialog : public QDialog {
   hm::stitching::RinkLevelingProject project_;
   std::array<double, 3> published_rotation_{};
   std::array<double, 3> initial_rotation_{};
+  std::optional<hm::stitching::StitchCameraSelection> expected_camera_;
   std::array<ScoreboardSelectionCanvas*, 2> canvases_{};
   std::array<QDoubleSpinBox*, 2> angle_spins_{};
   QLabel* status_{nullptr};

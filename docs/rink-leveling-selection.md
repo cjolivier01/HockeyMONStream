@@ -18,6 +18,9 @@ To measure the angle from a calibrated game:
 **Cancel**, Escape, and closing the dialog discard its changes, even after estimating or rendering a preview.
 An accepted selection also remains staged until Save Preset (starting playback saves a staged selection first).
 The dialog and preset save both check that the original calibration still matches before accepting an estimate.
+Camera/FOV, matcher, and reference-frame changes require calibration before selecting posts. A staged estimate
+cannot be saved with changed input controls. The snapshot also records the private config, so concurrent changes
+to game settings reject the estimate; saved calibration marked pending or incomplete must finish first.
 The original game images, project and maps are never overwritten by preview rendering.
 
 ![Selecting upright posts in the left camera image](images/rink-leveling/selection.jpg)
@@ -30,6 +33,8 @@ finds the shared vertical direction from those planes, estimates pitch and roll,
 published project's previous rotation using matrices before fitting; it never subtracts Euler angles or rotates
 the two registered cameras independently. Unsupported translated-camera projects and mismatched image sizes fail
 with an explanation. Older NONA provenance (versions 2–7) predates this common rotation and implies zero.
+The desktop selector requires camera metadata (version 7 or newer) to verify the selected model; older games
+need one calibration with current camera settings first. The offline geometry helper can still read older projects.
 
 The fit establishes physical level; the preferred visual framing can still benefit from manual adjustment.
 Approximate marks on eight Sabercats posts produced pitch −30.810° and roll +0.159°, with six consistent posts

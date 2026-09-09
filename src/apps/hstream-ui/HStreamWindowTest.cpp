@@ -74,6 +74,11 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool rinkLevelingInputsUnchanged(HStreamWindow* window) {
+    return window->rinkLevelingInputsUnchanged();
+  }
+  static void stageTestLeveling(HStreamWindow* window) { window->pending_leveling_revision_ = "test-selection"; }
+  static void discardTestLeveling(HStreamWindow* window) { window->pending_leveling_revision_.clear(); }
   static void appendLog(HStreamWindow* window, const QString& message) {
     window->appendLog(message);
   }
@@ -8103,6 +8108,18 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           inherited_rink_view->rotation_degrees[1] == -35 &&
           !inherited_rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
       "Editing projection controls must keep a rink-only game's rotation inherited");
+
+  if (!expect(HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Saved calibration controls permit leveling")) return false;
+  const double original_camera_fov = camera_horizontal_fov->value();
+  camera_horizontal_fov->setValue(original_camera_fov + 1);
+  if (!expect(!HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Unsaved camera/FOV changes reject leveling")) return false;
+  HStreamWindowTestAccess::stageTestLeveling(window);
+  const std::string before_rejected_leveling = YAML::Dump(YAML::LoadFile(config_path.string()));
+  activate(save);
+  if (!expect(YAML::Dump(YAML::LoadFile(config_path.string())) == before_rejected_leveling,
+              "A staged estimate cannot be saved alongside changed camera inputs")) return false;
+  HStreamWindowTestAccess::discardTestLeveling(window);
+  camera_horizontal_fov->setValue(original_camera_fov);
 
   auto* rink_configuration = window->findChild<QComboBox*>("stitchRinkConfigurationCombo");
   auto* rink_pitch = window->findChild<QDoubleSpinBox*>("rinkPitchSpin");

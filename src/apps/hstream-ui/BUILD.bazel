@@ -81,6 +81,7 @@ cc_library(
     deps = [
         ":scoreboard_selection_dialog",
         "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
         "//src/libs/stitching:rink_leveling",
         "@qt//:qt_widgets",
     ],

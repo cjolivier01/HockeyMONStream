@@ -1,14 +1,14 @@
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
+#include <QtTest/qtest_widgets.h>
+#include <QtTest/qtestmouse.h>
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QImage>
 #include <QtTest/QTest>
-#include <QtTest/qtest_widgets.h>
-#include <QtTest/qtestmouse.h>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
@@ -101,9 +101,10 @@ int main(int argc, char** argv) {
       "p f2 w400 h200 v180 n\"PNG\"\ni w100 h100 f0 v90 y-30 p0 r0 n\"left.png\"\n"
       "i w100 h100 f0 v90 y30 p0 r0 n\"right.png\"\n";
   ok &= write(game.filePath("autooptimiser_out.pto"), pto);
-  ok &= write(
-      game.filePath("stitching_canvas_provenance"),
-      "version=8\nmapping-backend=nona\nprojection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n");
+  const QByteArray provenance =
+      "version=8\nmapping-backend=nona\nprojection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
+      "camera-configuration=test-camera\ncamera-horizontal-fov=90\ncamera-vertical-fov=90\n";
+  ok &= write(game.filePath("stitching_canvas_provenance"), provenance);
   const QByteArray config =
       "stitching:\n  rink_config: vallco\n  projection_framing:\n    rotation_degrees: [0, -33, 2]\n";
   ok &= write(game.filePath("config.yaml"), config);
@@ -124,6 +125,25 @@ int main(int argc, char** argv) {
   const QByteArray old_path = qgetenv("PATH");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
+  {
+    ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\nsleep 0.3\ncat <<'RAYS'\n" + transformed + "RAYS\n");
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    markPosts(dialog);
+    auto* estimate = dialog.findChild<QPushButton*>("estimateRinkLevelingButton");
+    auto* clear = dialog.findChild<QPushButton*>("rinkLevelingCamera0Clear");
+    auto* undo = dialog.findChild<QPushButton*>("rinkLevelingCamera0Undopoint");
+    estimate->click();
+    ok &= expect(
+        clear && undo && !clear->isEnabled() && !undo->isEnabled(), "point actions are disabled while estimating");
+    clear->click();
+    undo->click();
+    ok &= expect(waitUntil([&]() { return estimate->isEnabled(); }), "delayed estimate completes");
+    auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
+    ok &= expect(
+        canvas->points().size() == 4 && clear->isEnabled(),
+        "disabled mutation buttons preserve the estimated selection");
+  }
   {
     ScoreboardSelectionCanvas canvas;
     canvas.setLineSelectionMode();
@@ -204,6 +224,33 @@ int main(int argc, char** argv) {
             read(game.filePath("config.yaml")) == config && RinkLevelingDialog::sourceRevision(game.path()) == revision,
         "cancel stops an active renderer promptly without changing game artifacts");
     ok &= script(bin.filePath("nona"), "cp left.png preview.png\n");
+  }
+  {
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "preview before config change completes");
+    write(game.filePath("config.yaml"), config + "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
+    accept->click();
+    ok &= expect(dialog.result() != QDialog::Accepted, "changed calibration settings invalidate an open estimate");
+    RinkLevelingDialog pending(game.path(), {0, -33, 2});
+    ok &= expect(!pending.loadError().isEmpty(), "saved but stale calibration cannot be used for selecting posts");
+    write(game.filePath("config.yaml"), config);
+    hm::stitching::StitchCameraSelection changed_camera;
+    changed_camera.configuration = "test-camera";
+    changed_camera.horizontal_fov = 90;
+    changed_camera.vertical_fov = 90;
+    RinkLevelingDialog matching(game.path(), {0, -33, 2}, nullptr, changed_camera);
+    ok &= expect(matching.loadError().isEmpty(), "matching camera metadata allows leveling");
+    changed_camera.configuration = "different-camera";
+    RinkLevelingDialog mismatched(game.path(), {0, -33, 2}, nullptr, changed_camera);
+    ok &= expect(!mismatched.loadError().isEmpty(), "published camera metadata must match the selected camera model");
+    QByteArray legacy = provenance;
+    legacy.replace("version=8", "version=6");
+    write(game.filePath("stitching_canvas_provenance"), legacy);
+    RinkLevelingDialog unverifiable(game.path(), {0, -33, 2}, nullptr, changed_camera);
+    ok &= expect(!unverifiable.loadError().isEmpty(), "desktop selection requires verifiable camera metadata");
+    write(game.filePath("stitching_canvas_provenance"), provenance);
   }
   {
     QImage mismatch(20, 20, QImage::Format_RGB32);

@@ -6971,11 +6971,27 @@ bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
   return true;
 }
 
+bool HStreamWindow::rinkLevelingInputsUnchanged() const {
+  return saved_camera_selection_ == stitchCameraSelection() && saved_control_point_matcher_ == controlPointMatcher() &&
+      saved_mapping_backend_ == mappingBackend() && saved_run_autooptimizer_ == runAutooptimizer() &&
+      saved_stitch_frame_time_ == stitchFrameTime() &&
+      saved_stitching_control_points_ == stitchingCalibrationControlPoints() &&
+      saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount();
+}
+
 void HStreamWindow::selectRinkLeveling() {
   if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
     return;
+  if (!rinkLevelingInputsUnchanged()) {
+    appendLog(
+        "Camera or reference-frame settings changed. Save and finish stitching calibration before selecting posts.");
+    return;
+  }
   RinkLevelingDialog dialog(
-      gameDirectory(game_id_edit_->text().trimmed()), loaded_projection_framing_.rotation_degrees, this);
+      gameDirectory(game_id_edit_->text().trimmed()),
+      loaded_projection_framing_.rotation_degrees,
+      this,
+      stitchCameraSelection());
   if (dialog.exec() != QDialog::Accepted)
     return;
   loaded_projection_framing_.rotation_degrees = dialog.rotationDegrees();
@@ -13904,14 +13920,14 @@ void HStreamWindow::savePreset() {
   const int selected_max_output_width = stitchingMaxOutputWidth();
   std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
   if (!pending_leveling_revision_.isEmpty()) {
+    if (!rinkLevelingInputsUnchanged()) {
+      appendLog(
+          "Could not save leveling: camera or reference-frame settings changed. Restore them or recalibrate and select posts again.");
+      return;
+    }
     width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
     if (!width_constraint_check.has_value())
       return;
-    if (RinkLevelingDialog::sourceRevision(QString::fromStdString(config_path.parent_path().string())) !=
-        pending_leveling_revision_) {
-      appendLog("Could not save leveling: the calibration changed. Reopen Level from posts and estimate again.");
-      return;
-    }
   }
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
@@ -13975,6 +13991,14 @@ void HStreamWindow::savePreset() {
     }
   }
   const QString game_dir = QString::fromStdString(config_path.parent_path().string());
+  // Hold artifact -> config locks while checking both the calibration and
+  // private input settings, and keep them until publication finishes.
+  if (!pending_leveling_revision_.isEmpty() &&
+      RinkLevelingDialog::sourceRevision(game_dir) != pending_leveling_revision_) {
+    appendLog(
+        "Could not save leveling: calibration or game settings changed. Reopen Level from posts and estimate again.");
+    return;
+  }
   const QString previous_active_sidecar =
       resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
 
