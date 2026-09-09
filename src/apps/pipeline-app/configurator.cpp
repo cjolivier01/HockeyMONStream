@@ -5895,10 +5895,41 @@ absl::Status Configurator::map_common_config_keys() {
       HM_RETURN_IF_ERROR(validate_fixed_edge_value(*fixed_edge_rotation, "rink.camera.fixed_edge_rotation_angle"));
     }
   }
+  stitching::MappingBackend crop_rotation_backend;
+  HM_ASSIGN_OR_RETURN(
+      crop_rotation_backend,
+      stitching::ParseMappingBackend(
+          get_node_value(config_, "stitching.mapping_backend", std::string("opencv-magsac"))));
+  bool suppress_crop_rotation = false;
+  if (crop_rotation_backend == stitching::MappingBackend::kNona) {
+    stitching::StitchProjectionFraming framing;
+    HM_ASSIGN_OR_RETURN(framing, stitching::read_stitch_projection_framing(config_));
+    suppress_crop_rotation = framing.has_leveling_rotation();
+  }
   for (const char* stage : {"hmplaycropper", "ds-playtracker"}) {
     YAML::Node stage_config = pipeline[stage];
     if (!stage_config.IsMap())
       continue;
+    if (suppress_crop_rotation) {
+      // NONA already levels the camera rays. A second, position-dependent tilt
+      // must be disabled in both the cropper and the tracker's matching geometry.
+      // Generic property bags are applied after the typed native properties.
+      for (const char* key :
+           {"fixed-edge-rotation-angle", "fixed-edge-rotation-angle-left", "fixed-edge-rotation-angle-right"}) {
+        stage_config[key] = 0.0;
+        std::string legacy_key(key);
+        std::replace(legacy_key.begin(), legacy_key.end(), '-', '_');
+        stage_config.remove(legacy_key);
+        for (const char* bag : {"properties", "private-properties"}) {
+          YAML::Node properties = stage_config[bag];
+          if (properties.IsMap()) {
+            properties.remove(key);
+            properties.remove(legacy_key);
+          }
+        }
+      }
+      continue;
+    }
     const std::string prefix = std::string("pipeline.") + stage + ".";
     const int source_rank = std::max(0, explicit_value_rank("rink.camera.fixed_edge_rotation_angle"));
     auto may_replace = [&](const char* key) {

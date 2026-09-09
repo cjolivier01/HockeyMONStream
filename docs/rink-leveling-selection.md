@@ -3,6 +3,12 @@ dialog. Vallco inherits −35° pitch and Sharks Ice inherits −25° pitch. A s
 profile, including when it happens to equal that profile's default. **Use rink default** removes the override.
 Changing the rink while a game override is active keeps the override. No rink selection inherits zero rotation.
 
+When NONA applies a nonzero rink pitch or roll, **Program → Crop Rotation** shows zero for both sides and disables
+the controls. The tracker uses the same zero angles so its crop geometry stays aligned with the Program view.
+This applies to angles selected from posts, manually entered angles, and inherited rink defaults. The saved crop
+angles are retained and restored when pitch and roll are both zero or the mapping backend changes to OpenCV.
+Yaw alone does not disable crop rotation. Final stitched-output rotation remains a separate setting.
+
 To measure the angle from a calibrated game:
 
 1. Finish a NONA stitching calibration so the two source stills and calibrated project are available.

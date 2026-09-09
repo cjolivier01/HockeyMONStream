@@ -392,6 +392,9 @@ class HStreamWindow : public QMainWindow {
   void updateProjectionFramingControls();
   void loadRinkLevelingControls(const YAML::Node& config);
   void updateRinkLevelingControls();
+  bool cropRotationSuppressed() const;
+  void updateCropRotationControls();
+  int cameraPresetControlValue(const QString& id) const;
   void selectRinkLeveling();
   void selectProjectionCrop();
   bool hasPendingCropSelection() const;
@@ -765,6 +768,9 @@ class HStreamWindow : public QMainWindow {
   hm::stitching::StitchProjectionFraming default_projection_framing_;
   hm::stitching::StitchProjectionFraming loaded_projection_framing_;
   std::map<QString, int> saved_camera_controls_;
+  // Preserve preset angles while the visible/effective values are forced to zero.
+  std::map<QString, int> suppressed_crop_rotation_controls_;
+  QLabel* crop_rotation_explanation_{nullptr};
   QString saved_high_bit_depth_mode_{"auto"};
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};

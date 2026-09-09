@@ -442,6 +442,87 @@ play-tracker:
           !mapped_defaults["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Every supported non-tracker native default must be filled from the bundled canonical baseline");
 
+  // Effective leveling overrides every crop-rotation entry point, including
+  // stale native overrides, without rewriting the user's saved angles.
+  struct CropRotationCase {
+    const char* backend;
+    const char* rotation;
+    const char* crop_rotation;
+    bool suppressed;
+    bool native_overrides;
+  };
+  int crop_rotation_case_index = 0;
+  for (const auto& test : std::vector<CropRotationCase>{
+           {"nona", "[0, -30, 0]", "17", true, false},
+           {"nona", "[0, 0, 2]", "[17, 19]", true, false},
+           {"nona", "null", "null", true, false}, // Inherit Vallco.
+           {"nona", "[0, -30, 2]", "[17, 19]", true, true},
+           {"nona", "[0, -30, 0]", "null", true, true},
+           {"nona", "[0, 0, 0]", "17", false, false},
+           {"nona", "[12, 0, 0]", "17", false, false},
+           {"opencv-magsac", "[0, -30, 2]", "17", false, false},
+           {"opencv-affine-ransac", "null", "17", false, false},
+       }) {
+    const std::string game = "leveled-crop-" + std::to_string(crop_rotation_case_index++);
+    fs::create_directories(games / game);
+    YAML::Node settings(YAML::NodeType::Map);
+    settings["stitching"]["mapping_backend"] = test.backend;
+    settings["stitching"]["rink_config"] = "vallco";
+    settings["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load(test.rotation);
+    settings["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Load(test.crop_rotation);
+    if (test.native_overrides) {
+      for (const char* stage : {"hmplaycropper", "ds-playtracker"}) {
+        for (const char* key :
+             {"fixed-edge-rotation-angle",
+              "fixed-edge-rotation-angle-left",
+              "fixed-edge-rotation-angle-right",
+              "fixed_edge_rotation_angle",
+              "fixed_edge_rotation_angle_left",
+              "fixed_edge_rotation_angle_right"}) {
+          settings["pipeline"][stage][key] = 31.0;
+          settings["pipeline"][stage]["properties"][key] = 32.0;
+          settings["pipeline"][stage]["private-properties"][key] = 33.0;
+        }
+      }
+    }
+    const fs::path path = games / game / "config.yaml";
+    const std::string saved = YAML::Dump(settings);
+    std::ofstream(path) << saved;
+    hm::Configurator configurator(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const bool loaded =
+        configurator.configure().ok() && configurator.underlay_config("pipeline", mapping_structure_path.string());
+    const auto status = loaded ? configurator.apply_supported_baseline_mappings()
+                               : absl::InternalError("crop rotation fixture did not load");
+    ok &= expect(status.ok(), "Leveled crop rotation configuration must map successfully");
+    if (!status.ok()) {
+      std::cerr << status << '\n';
+      continue;
+    }
+    ok &= expect(configurator.apply_supported_baseline_mappings().ok(), "Repeated rotation mapping must succeed");
+    for (const char* stage : {"hmplaycropper", "ds-playtracker"}) {
+      const YAML::Node mapped = configurator.config()["pipeline"][stage];
+      ok &= expect(
+          mapped["fixed-edge-rotation-angle"].as<double>() == (test.suppressed ? 0.0 : 17.0),
+          "Only effective NONA pitch/roll must suppress Program and tracker crop rotation");
+      if (test.suppressed) {
+        ok &= expect(
+            mapped["fixed-edge-rotation-angle-left"].as<double>() == 0.0 &&
+                mapped["fixed-edge-rotation-angle-right"].as<double>() == 0.0,
+            "Both sides must be zero even for null canonical crop rotation");
+        if (test.native_overrides)
+          ok &= expect(
+              mapped["properties"].size() == 0 && mapped["private-properties"].size() == 0 &&
+                  !mapped["fixed_edge_rotation_angle"].IsDefined() &&
+                  !mapped["fixed_edge_rotation_angle_left"].IsDefined() &&
+                  !mapped["fixed_edge_rotation_angle_right"].IsDefined(),
+              "Native bags and legacy aliases must not reintroduce crop rotation");
+      }
+    }
+    ok &= expect(
+        YAML::Dump(YAML::LoadFile(path.string())) == saved,
+        "Effective crop suppression must not rewrite the saved preset");
+  }
+
   const auto prepare_tone_routing = [&](const std::string& game, const char* high_bit_mode) {
     fs::create_directories(games / game);
     auto configurator =
