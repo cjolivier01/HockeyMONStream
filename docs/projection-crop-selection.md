@@ -33,3 +33,5 @@ axis. It does not read back live GPU video frames. The crop overlay changes imme
 are recomputed at the actual output resolution during calibration. If calibration is missing, busy, or does not
 match the current camera/projection settings, the editor explains why its preview is unavailable. Mode selection
 and numeric trims remain available; save and calibrate the current geometry to enable the preview.
+An incomplete or failed calibration is reported directly in the empty preview area, with instructions to finish
+calibration and reopen Adjust crop. Missing calibration files and image-loading errors are reported separately.

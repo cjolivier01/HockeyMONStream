@@ -24,6 +24,7 @@ class ProjectionCropCanvas : public QWidget {
  public:
   explicit ProjectionCropCanvas(QWidget* parent = nullptr);
   void setImage(const QImage& image);
+  void setPlaceholderMessage(const QString& message);
   void setCrop(const std::array<double, 4>& crop, bool editable, bool keep_full_width);
   const std::array<double, 4>& crop() const {
     return crop_;
@@ -41,6 +42,7 @@ class ProjectionCropCanvas : public QWidget {
   QRectF cropRect() const;
   int hitTest(const QPointF& point) const;
   QImage image_;
+  QString placeholder_message_{"Preparing crop preview…"};
   std::array<double, 4> crop_{0, 1, 0, 1};
   bool editable_{false};
   bool keep_full_width_{false};

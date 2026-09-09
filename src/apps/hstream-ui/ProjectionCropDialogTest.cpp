@@ -61,6 +61,35 @@ int main(int argc, char** argv) {
   }
   bool ok = true;
   {
+    QTemporaryDir partial;
+    const auto check_unavailable = [&](const QString& expected) {
+      ProjectionCropDialog dialog(partial.path(), framing, "general-panini", {100, 0, 0}, camera);
+      dialog.show();
+      auto* status = dialog.findChild<QLabel*>("projectionCropStatus");
+      auto* canvas = dialog.findChild<QWidget*>("projectionCropCanvas");
+      auto* mode = dialog.findChild<QComboBox*>("projectionCropMode");
+      mode->setCurrentIndex(mode->findData("manual"));
+      const bool explained = waitUntil([&]() { return status->text().contains(expected); });
+      const bool visible = canvas->accessibleDescription().contains(expected);
+      const bool numeric_available = dialog.findChild<QDoubleSpinBox*>("projectionCropTop")->isEnabled();
+      dialog.close();
+      return expect(
+          explained && visible && numeric_available && dialog.sourceRevision().isEmpty(),
+          "An unavailable crop preview must explain why in the canvas and keep numeric trim available");
+    };
+    ok &= check_unavailable("Stitching calibration is not available yet");
+    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
+    ok &= check_unavailable("Stitching calibration is incomplete");
+    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: failed}}\n");
+    ok &= check_unavailable("Stitching calibration failed");
+    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+    ok &= check_unavailable("has not produced all the saved camera images and projection");
+    ok &= write(partial.filePath("config.yaml"), "{}\n");
+    ok &= check_unavailable("has not produced all the saved camera images and projection");
+    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: [invalid]}}\n");
+    ok &= check_unavailable("Could not read the game's calibration status");
+  }
+  {
     ProjectionCropDialog dialog({}, framing, "general-panini", {100, 0, 0}, camera, "No saved calibration.");
     dialog.show();
     auto* mode = dialog.findChild<QComboBox*>("projectionCropMode");
@@ -140,6 +169,22 @@ int main(int argc, char** argv) {
     return 1;
   const QByteArray path = qgetenv("PATH");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
+  {
+    // Old image artifacts do not make a pending calibration ready.
+    ok &= write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
+    ProjectionCropDialog dialog(game.path(), framing, "general-panini", {100, 0, 0}, camera);
+    dialog.show();
+    ok &= expect(
+        waitUntil([&]() {
+          return dialog.findChild<QLabel*>("projectionCropStatus")
+              ->text()
+              .contains("Stitching calibration is incomplete");
+        }) &&
+            dialog.sourceRevision().isEmpty(),
+        "Pending calibration must be explained even when old preview artifacts exist");
+    dialog.close();
+    ok &= write(game.filePath("config.yaml"), "{}\n");
+  }
   for (bool edit_before_preview : {false, true}) {
     auto automatic = framing;
     automatic.auto_crop = true;
@@ -183,6 +228,18 @@ int main(int argc, char** argv) {
     write(game.filePath("config.yaml"), "changed: true\n");
     dialog.findChild<QPushButton*>("acceptProjectionCropButton")->click();
     ok &= expect(dialog.result() != QDialog::Accepted, "a stale calibration preview cannot be applied");
+    dialog.close();
+  }
+  {
+    ok &= write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+    ok &= write(bin.filePath("nona"), "#!/bin/sh\nprintf 'invalid preview' > full.png\n", true);
+    ProjectionCropDialog dialog(game.path(), framing, "general-panini", {100, 0, 0}, camera);
+    dialog.show();
+    auto* status = dialog.findChild<QLabel*>("projectionCropStatus");
+    ok &= expect(
+        waitUntil([&]() { return status->text().contains("The rendered crop preview could not be loaded:"); }) &&
+            !status->text().contains("calibration is incomplete") && dialog.sourceRevision().isEmpty(),
+        "An image decode failure after valid calibration must be distinguished from incomplete calibration");
     dialog.close();
   }
   qputenv("PATH", path);
