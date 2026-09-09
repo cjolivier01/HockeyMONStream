@@ -1,9 +1,10 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
-#include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
+#include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
@@ -82,6 +83,12 @@ struct HStreamWindowTestAccess {
     window->pending_leveling_revision_ = revision;
   }
   static void discardTestLeveling(HStreamWindow* window) { window->pending_leveling_revision_.clear(); }
+  static bool hasPendingCalibrationView(HStreamWindow* window) {
+    return !window->pending_leveling_revision_.isEmpty() || window->hasPendingCropSelection();
+  }
+  static QByteArray pendingLevelingRevision(HStreamWindow* window) {
+    return window->pending_leveling_revision_;
+  }
   static void appendLog(HStreamWindow* window, const QString& message) {
     window->appendLog(message);
   }
@@ -8195,6 +8202,162 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       saved_view["rotation_degrees"].as<std::vector<double>>() == std::vector<double>({0, -35, 3}) &&
           saved_view["crop"].as<std::vector<double>>() == std::vector<double>({0.02, 0.98, 0.54, 1}),
       "Editing a projection control must preserve the game's calibrated rotation and explicit crop");
+
+  auto* crop_button = require_child<QPushButton>(window, "projectionCropButton");
+  if (!expect(crop_button && crop_button->isEnabled(), "The crop editor is available for a stopped NONA game"))
+    return false;
+  bool crop_dialog_seen = false;
+  QTimer::singleShot(0, [&]() {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (!dialog)
+      return;
+    auto* mode = dialog->findChild<QComboBox*>("projectionCropMode");
+    auto* keep = dialog->findChild<QCheckBox*>("projectionCropKeepWidth");
+    crop_dialog_seen = mode && keep && mode->currentData() == "manual";
+    if (crop_dialog_seen)
+      keep->setChecked(true);
+    dialog->reject();
+  });
+  activate(crop_button);
+  if (!expect(crop_dialog_seen && !save->isEnabled(), "Cancel in the crop editor must preserve the loaded preset"))
+    return false;
+  QTimer::singleShot(0, [&]() {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (!dialog)
+      return;
+    dialog->findChild<QComboBox*>("projectionCropMode")->setCurrentIndex(2);
+    dialog->findChild<QCheckBox*>("projectionCropKeepWidth")->setChecked(true);
+    dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(30);
+    dialog->findChild<QDoubleSpinBox*>("projectionCropBottom")->setValue(10);
+    dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+  });
+  activate(crop_button);
+  if (!expect(save->isEnabled(), "A manual crop selection marks the preset dirty"))
+    return false;
+  activate(save);
+  const auto cropped = YAML::LoadFile(config_path.string())["stitching"]["projection_framing"];
+  if (!expect(
+          !cropped["auto_crop"].as<bool>() &&
+              cropped["crop"].as<std::vector<double>>() == std::vector<double>({0, 1, 0.3, 0.9}) &&
+              cropped["rotation_degrees"].as<std::vector<double>>() == std::vector<double>({0, -35, 3}),
+          "Saving manual crop retains the full width and preserves camera angles"))
+    return false;
+  activate(create);
+  if (!expect(!save->isEnabled(), "Reloading the manual crop leaves a clean preset"))
+    return false;
+
+  // Exercise a real preview callback through the main window. Cylindrical has
+  // no custom parameter vector, and accepting an unchanged view must not attach
+  // a revision guard that blocks unrelated camera edits afterward.
+  projection->setCurrentIndex(projection->findData("cylindrical"));
+  activate(save);
+  auto crop_preview_config = YAML::LoadFile(config_path.string());
+  crop_preview_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  std::ofstream(config_path) << YAML::Dump(crop_preview_config) << '\n';
+  activate(create);
+  QTemporaryDir crop_tools;
+  const QDir crop_game(window->gameDirectoryText());
+  const auto write_crop_fixture = [](const QString& path, const QByteArray& contents, bool executable = false) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(contents) == contents.size() &&
+        (!executable || file.setPermissions(file.permissions() | QFileDevice::ExeOwner));
+  };
+  QImage crop_image(800, 400, QImage::Format_RGB32);
+  crop_image.fill(Qt::gray);
+  const QByteArray crop_provenance =
+      "version=8\nmapping-backend=nona\nprojection=cylindrical\nprojection-parameters=none\n"
+      "projection-auto-fov=" +
+      QByteArray::number(auto_fov->isChecked()) +
+      "\nprojection-auto-canvas=" + QByteArray::number(auto_canvas->isChecked()) +
+      "\nprojection-horizontal-fov=" + QByteArray::number(horizontal_fov->value()) +
+      "\nprojection-rotation-0=0\nprojection-rotation-1=-35\nprojection-rotation-2=3\n"
+      "camera-configuration=gopro-mission-1\ncamera-horizontal-fov=126.5\ncamera-vertical-fov=94.5\n";
+  if (!expect(
+          crop_tools.isValid() && crop_image.save(crop_game.filePath("left.png")) &&
+              crop_image.save(crop_game.filePath("right.png")) &&
+              write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance) &&
+              write_crop_fixture(
+                  crop_game.filePath("autooptimiser_out.pto"),
+                  "p f1 w800 h400 v180 S0,800,120,360 n\"PNG\"\n"
+                  "i w800 h400 f0 v90 y-30 p0 r0 n\"left.png\"\n"
+                  "i w800 h400 f0 v90 y30 p0 r0 n\"right.png\"\n") &&
+              write_crop_fixture(
+                  crop_tools.filePath("pano_modify"),
+                  "#!/bin/sh\ncase \"$*\" in\n*--crop=AUTO*) cp autooptimiser_out.pto auto.pto;;\n"
+                  "*) cp autooptimiser_out.pto full.pto;;\nesac\n",
+                  true) &&
+              write_crop_fixture(crop_tools.filePath("nona"), "#!/bin/sh\ncp left.png full.png\n", true),
+          "Crop preview fixture must be available"))
+    return false;
+  const QByteArray crop_original_path = qgetenv("PATH");
+  qputenv("PATH", crop_tools.path().toUtf8() + ":/usr/bin:/bin");
+  bool crop_preview_ready = false;
+  QTimer::singleShot(0, [&]() {
+    auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
+    if (!dialog)
+      return;
+    for (int attempt = 0; attempt < 250 && dialog->sourceRevision().isEmpty(); ++attempt)
+      QTest::qWait(20);
+    crop_preview_ready = !dialog->sourceRevision().isEmpty();
+    if (crop_preview_ready)
+      dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+    else
+      dialog->close();
+  });
+  activate(crop_button);
+  if (!expect(
+          crop_preview_ready && !save->isEnabled() && !HStreamWindowTestAccess::hasPendingCalibrationView(window),
+          "A parameter-free projection can preview an unchanged crop without attaching a save guard")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
+  for (double top_trim : {35.0, 30.0}) {
+    QTimer::singleShot(0, [&]() {
+      auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
+      if (!dialog)
+        return;
+      for (int attempt = 0; attempt < 250 && dialog->sourceRevision().isEmpty(); ++attempt)
+        QTest::qWait(20);
+      crop_preview_ready = !dialog->sourceRevision().isEmpty();
+      if (crop_preview_ready) {
+        dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(top_trim);
+        dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+      } else {
+        dialog->close();
+      }
+    });
+    activate(crop_button);
+    const bool changed_crop = top_trim == 35.0;
+    if (!expect(
+            crop_preview_ready && save->isEnabled() == changed_crop &&
+                HStreamWindowTestAccess::hasPendingCalibrationView(window) == changed_crop,
+            "Reverting a staged crop must remove its save guard")) {
+      qputenv("PATH", crop_original_path);
+      return false;
+    }
+    if (changed_crop) {
+      HStreamWindowTestAccess::stageTestLeveling(window);
+      // Crop mode changes must not consume an independently pending leveling
+      // selection, even when the crop is temporarily hidden by Auto.
+      auto_crop->setChecked(true);
+      if (!expect(
+              HStreamWindowTestAccess::pendingLevelingRevision(window) == "test-selection",
+              "Crop controls preserve pending leveling")) {
+        qputenv("PATH", crop_original_path);
+        return false;
+      }
+      auto_crop->setChecked(false);
+      HStreamWindowTestAccess::discardTestLeveling(window);
+    }
+  }
+  qputenv("PATH", crop_original_path);
+  camera_horizontal_fov->setValue(126.75);
+  activate(save);
+  if (!expect(
+          !save->isEnabled() &&
+              YAML::LoadFile(config_path.string())["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 126.75,
+          "Reverting a staged crop must not prevent subsequent camera-setting saves"))
+    return false;
 
   YAML::Node generated_override = YAML::Clone(config);
   generated_override["stitching"]["projection"] = "triplane";
