@@ -437,6 +437,18 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
     return false;
   }
   config["stitching"]["projection_framing"]["auto_crop"] = false;
+  config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "camera-space leveling must invalidate maps with legacy default orientation")) {
+    return false;
+  }
+  config["stitching"]["projection_framing"].remove("rotation_degrees");
+  config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0.02, 0.98, 0.54, 1]");
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "an explicit rink crop must invalidate maps with legacy full framing")) {
+    return false;
+  }
+  config["stitching"]["projection_framing"].remove("crop");
   config["stitching"]["projection_parameters"]["general-panini"][0] = 120;
   if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "a direct General Panini parameter change must invalidate existing maps")) {

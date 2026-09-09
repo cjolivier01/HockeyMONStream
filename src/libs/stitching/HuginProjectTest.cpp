@@ -465,9 +465,10 @@ int main() {
           "while [ \"$#\" -gt 0 ]; do case \"$1\" in --projection=*) projection=${1#*=} ;; "
           "--projection-parameter=*) parameters=${1#*=} ;; --canvas=*) canvas=${1#--canvas=} ;; "
           "--fov=*) fov=${1#*=} ;; --crop=AUTO) crop=1 ;; --crop=0,100,0,100%) crop=0 ;; "
-          "--crop=*) exit 93 ;; --output=*) output=${1#*=} ;; "
+          "--crop=10,90,20,80%) crop=2 ;; --crop=*) exit 93 ;; --rotate=*) ;; --output=*) output=${1#*=} ;; "
           "-o) shift; output=$1 ;; *) input=$1 ;; esac; shift; done\n"
           "test \"$input\" = autooptimiser_out.pto\n"
+          "if test -n \"${HM_TEST_DROP_CROP:-}\"; then crop=0; fi\n"
           "if test -n \"${HM_TEST_PANO_FOV_CLAMP:-}\" && test \"$fov\" != AUTO; then "
           "fov=$HM_TEST_PANO_FOV_CLAMP; fi\n"
           "if test \"$projection\" = 19; then\n"
@@ -480,7 +481,8 @@ int main() {
           "  awk -v parameters=\"$parameters\" -v fov=\"$fov\" -v width=$width -v height=$height -v crop=$crop '/^p / { "
           "sub(/f[0-9]+/, \"f19\"); sub(/w[0-9]+/, \"w\" width); sub(/h[0-9]+/, \"h\" height); "
           "if (fov != \"AUTO\") sub(/v[-+0-9.eE]+/, \"v\" fov); "
-          "if (crop) $0 = $0 \" S0,\" width \",0,\" height; $0 = $0 \" P\\\"\" parameters \"\\\"\" } { print }' "
+          "if (crop == 1) $0 = $0 \" S0,\" width \",0,\" height; "
+          "if (crop == 2) $0 = $0 \" S20,180,20,80\"; $0 = $0 \" P\\\"\" parameters \"\\\"\" } { print }' "
           "\"$input\" > \"$output\"\n"
           "elif test -n \"$projection\"; then\n"
           "  test -n \"$fov\"\n"
@@ -541,6 +543,7 @@ int main() {
   options.mapping_backend = hm::stitching::MappingBackend::kNona;
   options.run_autooptimizer = true;
   options.projection_framing = {true, 180.0, true, true};
+  options.projection_framing.rotation_degrees = {0, -35, 3};
   fs::create_directories(root / "private-inputs");
   ok &= expect(
       cv::imwrite((root / "private-inputs" / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(11, 12, 13))),
@@ -598,6 +601,15 @@ int main() {
   if (!configured.ok())
     std::cerr << configured << '\n';
   ok &= expect(configured.ok(), "fake Hugin toolchain must complete orchestration");
+  if (configured.ok()) {
+    auto lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
+    if (!lock.ok())
+      return 1;
+    auto provenance = hm::stitching::HuginProject::ReadCanvasProvenance(root / "game", **lock);
+    ok &= expect(
+        provenance.ok() && provenance->has_value() && (**provenance).projection_framing == options.projection_framing,
+        "published projection view provenance must round-trip the camera-space rotation");
+  }
   if (configured.ok()) {
     std::ifstream pto_gen_invocation(pto_gen_args);
     const std::string pto_gen_arguments(
@@ -718,6 +730,29 @@ int main() {
       absl::IsInvalidArgument(unsupported_parameter_precision) &&
           unsupported_parameter_precision.message().find("increments of 0.01") != std::string::npos,
       "projection conversion must reject precision that pano_modify cannot preserve before invoking Hugin");
+
+  const fs::path rink_view = root / "rink-view";
+  fs::create_directories(rink_view);
+  const std::string rink_input = read_text_file(root / "game" / "hm_project.pto");
+  std::ofstream(rink_view / "autooptimiser_out.pto") << rink_input;
+  hm::stitching::StitchProjectionFraming rink_framing;
+  rink_framing.horizontal_fov = 160;
+  rink_framing.rotation_degrees = {0, -35, 3};
+  rink_framing.crop = {0.1, 0.9, 0.2, 0.8};
+  const auto rink_status = hm::stitching::HuginProject::ApplyProjection(
+      rink_view, hm::stitching::StitchProjection::kGeneralPanini, {100, 0, 0}, rink_framing);
+  ok &= expect(
+      rink_status.ok() && read_text_file(pano_modify_args).find("--rotate=0,-35,3 --fov=160") != std::string::npos &&
+          read_text_file(rink_view / "autooptimiser_out.pto").find("S20,180,20,80") != std::string::npos,
+      "rink leveling must rotate the camera rays before generating a correctly cropped projection");
+  std::ofstream(rink_view / "autooptimiser_out.pto") << rink_input;
+  ::setenv("HM_TEST_DROP_CROP", "1", 1);
+  const auto dropped_crop = hm::stitching::HuginProject::ApplyProjection(
+      rink_view, hm::stitching::StitchProjection::kGeneralPanini, {100, 0, 0}, rink_framing);
+  ::unsetenv("HM_TEST_DROP_CROP");
+  ok &= expect(
+      !dropped_crop.ok() && read_text_file(rink_view / "autooptimiser_out.pto") == rink_input,
+      "a tool that ignores the requested rink crop must fail without replacing the calibrated project");
 
   std::ofstream(pano_modify_args, std::ios::trunc).close();
   for (unsigned mask = 0; mask < 8; ++mask) {

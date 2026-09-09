@@ -4059,7 +4059,8 @@ bool generated_stitching_backend_choices_match_private(
       private_projection_framing_present ? parse_framing(private_projection_framing) : std::nullopt;
   const bool generated_projection_framing_matches = !generated_projection_framing_present ||
       (parsed_generated_projection_framing.has_value() && parsed_private_projection_framing.has_value() &&
-       *parsed_generated_projection_framing == *parsed_private_projection_framing);
+       *parsed_generated_projection_framing == *parsed_private_projection_framing &&
+       parsed_generated_projection_framing->rotation_inherited == parsed_private_projection_framing->rotation_inherited);
   const bool generated_matcher_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher);
   const bool generated_backend_present =
@@ -4748,6 +4749,7 @@ void HStreamWindow::loadBaselineDefaults() {
         "Effective baseline stitching projection framing is invalid: " + projection_framing.status().ToString());
   }
   default_projection_framing_ = *projection_framing;
+  loaded_projection_framing_ = default_projection_framing_;
   auto camera_configurations = hm::stitching::read_stitch_camera_configurations(baseline_config_);
   if (!camera_configurations.ok()) {
     throw std::runtime_error(
@@ -6815,6 +6817,13 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
   return hm::stitching::read_stitch_camera_selection(effective);
 }
 
+absl::StatusOr<hm::stitching::StitchProjectionFraming> HStreamWindow::stitchProjectionFramingFromGameConfig(
+    const YAML::Node& config) const {
+  YAML::Node private_values = YAML::Clone(config);
+  hm::stitching::restore_generated_stitch_rink_context(private_values);
+  return hm::stitching::read_stitch_projection_framing(merge_yaml_maps(baseline_config_, private_values));
+}
+
 void HStreamWindow::applyCameraConfigurationDefaults() {
   if (!camera_configuration_combo_)
     return;
@@ -6845,7 +6854,8 @@ std::vector<double> HStreamWindow::stitchProjectionParameters() const {
 }
 
 hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() const {
-  hm::stitching::StitchProjectionFraming framing = default_projection_framing_;
+  // Preserve calibrated rotation and crop, which do not have UI editors yet.
+  hm::stitching::StitchProjectionFraming framing = loaded_projection_framing_;
   if (projection_auto_fov_check_)
     framing.auto_fov = projection_auto_fov_check_->isChecked();
   if (projection_fov_spin_)
@@ -6854,6 +6864,8 @@ hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() 
     framing.auto_canvas = projection_auto_canvas_check_->isChecked();
   if (projection_auto_crop_check_)
     framing.auto_crop = projection_auto_crop_check_->isChecked();
+  if (framing.auto_crop)
+    framing.crop = hm::stitching::StitchProjectionFraming{}.crop;
   return framing;
 }
 
@@ -7171,7 +7183,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
                     .arg(current_projection_parameters.status().ToString().c_str()));
       return false;
     }
-    auto current_projection_framing = hm::stitching::read_stitch_projection_framing(config);
+    auto current_projection_framing = stitchProjectionFramingFromGameConfig(config);
     if (!current_projection_framing.ok()) {
       appendLog(QString("invalid current stitching projection framing: %1")
                     .arg(current_projection_framing.status().ToString().c_str()));
@@ -7371,9 +7383,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       if (!parameters.ok())
         throw std::invalid_argument(std::string(parameters.status().message()));
       saved_projection_parameters = *parameters;
-      YAML::Node saved_projection_framing_node;
-      if (lookup_yaml_path(config, "stitching.projection_framing", &saved_projection_framing_node)) {
-        auto framing = hm::stitching::read_stitch_projection_framing(config);
+      {
+        auto framing = stitchProjectionFramingFromGameConfig(config);
         if (!framing.ok())
           throw std::invalid_argument(std::string(framing.status().message()));
         if (saved_mapping_backend == "nona") {
@@ -14005,6 +14016,7 @@ void HStreamWindow::resetCameraControls() {
     updateProjectionParameterControls();
   }
   if (!pipeline_running) {
+    loaded_projection_framing_ = default_projection_framing_;
     if (projection_auto_fov_check_)
       projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
     updateProjectionFramingControls();
@@ -14244,6 +14256,7 @@ void HStreamWindow::loadSavedControlConfig() {
     updateProjectionCompatibility();
     updateProjectionParameterControls();
   }
+  loaded_projection_framing_ = default_projection_framing_;
   if (projection_auto_fov_check_) {
     const bool blocked = projection_auto_fov_check_->blockSignals(true);
     projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
@@ -14326,6 +14339,7 @@ void HStreamWindow::loadSavedControlConfig() {
   }
   try {
     YAML::Node config = **loaded_config;
+    hm::stitching::restore_generated_stitch_rink_context(config);
     std::map<QString, int> staged_controls;
     QString staged_high_bit_depth_mode = highBitDepthMode();
     bool native_high_bit_depth_mode_present = false;
@@ -14449,9 +14463,8 @@ void HStreamWindow::loadSavedControlConfig() {
     if (!configured_camera_selection.ok())
       throw std::invalid_argument(std::string(configured_camera_selection.status().message()));
     staged_camera_selection = *configured_camera_selection;
-    YAML::Node projection_framing_node;
-    if (lookup_yaml_path(config, "stitching.projection_framing", &projection_framing_node)) {
-      auto configured_projection_framing = hm::stitching::read_stitch_projection_framing(config);
+    {
+      auto configured_projection_framing = stitchProjectionFramingFromGameConfig(config);
       if (!configured_projection_framing.ok())
         throw std::invalid_argument(std::string(configured_projection_framing.status().message()));
       staged_projection_framing = *configured_projection_framing;
@@ -14545,18 +14558,14 @@ void HStreamWindow::loadSavedControlConfig() {
         // framing. Start from that effective default, then apply only keys
         // that were explicitly present in the previous private map so a
         // partial map keeps inheriting its omitted fields.
-        staged_projection_framing = default_projection_framing_;
-        if (previous_projection_framing.has_value()) {
-          YAML::Node restored(YAML::NodeType::Map);
-          hm::stitching::write_stitch_projection_framing(restored, staged_projection_framing);
-          YAML::Node restored_framing = restored["stitching"]["projection_framing"];
-          for (const auto& entry : *previous_projection_framing)
-            restored_framing[entry.first.as<std::string>()] = YAML::Clone(entry.second);
-          const auto merged_projection_framing = hm::stitching::read_stitch_projection_framing(restored);
-          if (!merged_projection_framing.ok())
-            throw std::invalid_argument(std::string(merged_projection_framing.status().message()));
-          staged_projection_framing = *merged_projection_framing;
-        }
+        YAML::Node restored = YAML::Clone(config);
+        restored["stitching"].remove("projection_framing");
+        if (previous_projection_framing.has_value())
+          restored["stitching"]["projection_framing"] = YAML::Clone(*previous_projection_framing);
+        const auto merged_projection_framing = stitchProjectionFramingFromGameConfig(restored);
+        if (!merged_projection_framing.ok())
+          throw std::invalid_argument(std::string(merged_projection_framing.status().message()));
+        staged_projection_framing = *merged_projection_framing;
       }
     } else {
       YAML::Node control_point_matcher;
@@ -14827,6 +14836,7 @@ void HStreamWindow::loadSavedControlConfig() {
         throw std::invalid_argument("saved stitching projection is incompatible with the mapping backend");
       updateProjectionParameterControls();
     }
+    loaded_projection_framing_ = staged_projection_framing;
     if (projection_auto_fov_check_) {
       const bool blocked = projection_auto_fov_check_->blockSignals(true);
       projection_auto_fov_check_->setChecked(staged_projection_framing.auto_fov);

@@ -211,7 +211,8 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool camera_aware = lines.size() == 21 && lines[0] == "version=7";
+  const bool view_aware = lines.size() == 28 && lines[0] == "version=8";
+  const bool camera_aware = (lines.size() == 21 && lines[0] == "version=7") || view_aware;
   if (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware)
     return absl::FailedPreconditionError("Invalid stitching canvas provenance format");
   HuginProject::CanvasProvenance provenance;
@@ -274,6 +275,18 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
       framing.auto_fov = auto_fov != 0;
       framing.auto_canvas = auto_canvas != 0;
       framing.auto_crop = auto_crop != 0;
+      if (view_aware) {
+        for (size_t index = 0; index < framing.rotation_degrees.size(); ++index) {
+          HM_ASSIGN_OR_RETURN(
+              framing.rotation_degrees[index],
+              parse_canvas_provenance_double(lines[21 + index], "projection-rotation-" + std::to_string(index)));
+        }
+        for (size_t index = 0; index < framing.crop.size(); ++index) {
+          HM_ASSIGN_OR_RETURN(
+              framing.crop[index],
+              parse_canvas_provenance_double(lines[24 + index], "projection-crop-" + std::to_string(index)));
+        }
+      }
       if (*provenance.mapping_backend == MappingBackend::kNona) {
         HM_RETURN_IF_ERROR(
             ValidateStitchProjectionFraming(*provenance.projection, *provenance.projection_parameters, framing));
@@ -1738,10 +1751,27 @@ absl::Status HuginProject::ApplyProjection(
       command.emplace_back(
           "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
     }
+    if (projection_framing.rotation_degrees != StitchProjectionFraming{}.rotation_degrees) {
+      std::ostringstream rotation;
+      rotation.imbue(std::locale::classic());
+      rotation << std::setprecision(std::numeric_limits<double>::max_digits10);
+      rotation << projection_framing.rotation_degrees[0] << ',' << projection_framing.rotation_degrees[1] << ','
+               << projection_framing.rotation_degrees[2];
+      command.emplace_back("--rotate=" + rotation.str());
+    }
     command.emplace_back(projection_framing.auto_fov ? "--fov=AUTO" : "--fov=" + configured_fov.str());
     if (canvas.has_value())
       command.emplace_back("--canvas=" + *canvas);
-    command.emplace_back(projection_framing.auto_crop ? "--crop=AUTO" : "--crop=0,100,0,100%");
+    if (projection_framing.auto_crop) {
+      command.emplace_back("--crop=AUTO");
+    } else {
+      std::ostringstream crop;
+      crop.imbue(std::locale::classic());
+      crop << std::setprecision(std::numeric_limits<double>::max_digits10);
+      for (size_t index = 0; index < projection_framing.crop.size(); ++index)
+        crop << (index == 0 ? "" : ",") << 100.0 * projection_framing.crop[index];
+      command.emplace_back("--crop=" + crop.str() + "%");
+    }
     command.emplace_back("--output=" + temporary_path.filename().string());
     command.emplace_back(project_path.filename().string());
     return run_checked(command, staging_directory, nullptr, is_cancelled);
@@ -1779,12 +1809,14 @@ absl::Status HuginProject::ApplyProjection(
     std::istringstream lines(*converted_project);
     std::string line;
     std::string panorama_line;
+    bool crop_found = false;
     while (std::getline(lines, line)) {
       if (line.rfind("p ", 0) != 0)
         continue;
       panorama_line = line;
       std::smatch crop_match;
       if (std::regex_search(line, crop_match, crop_pattern)) {
+        crop_found = true;
         try {
           const size_t left = std::stoull(crop_match[1].str());
           const size_t right = std::stoull(crop_match[2].str());
@@ -1792,6 +1824,14 @@ absl::Status HuginProject::ApplyProjection(
           const size_t bottom = std::stoull(crop_match[4].str());
           if (left >= right || top >= bottom || right > canvas->first || bottom > canvas->second)
             return absl::FailedPreconditionError(projection_name + " PTO contains an invalid automatic crop rectangle");
+          if (!projection_framing.auto_crop && projection_framing.crop != StitchProjectionFraming{}.crop) {
+            const std::array<size_t, 4> edges{left, right, top, bottom};
+            for (size_t index = 0; index < edges.size(); ++index) {
+              const double dimension = index < 2 ? canvas->first : canvas->second;
+              if (std::abs(static_cast<double>(edges[index]) - projection_framing.crop[index] * dimension) > 1.01)
+                return absl::FailedPreconditionError("pano_modify did not preserve the requested crop");
+            }
+          }
           effective_size = {right - left, bottom - top};
         } catch (const std::exception&) {
           return absl::FailedPreconditionError(projection_name + " PTO contains an invalid automatic crop rectangle");
@@ -1799,6 +1839,8 @@ absl::Status HuginProject::ApplyProjection(
       }
       break;
     }
+    if (!projection_framing.auto_crop && projection_framing.crop != StitchProjectionFraming{}.crop && !crop_found)
+      return absl::FailedPreconditionError("pano_modify omitted the requested crop");
 
     // Projection parameters are a standalone token on the panorama line.
     // Searching the full PTO for an unanchored `P"` also matches the end of
@@ -2278,7 +2320,7 @@ absl::Status HuginProject::Configure(
       : options.projection_parameters;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
   provenance.imbue(std::locale::classic());
-  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=7\n"
+  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version=8\n"
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -2312,6 +2354,10 @@ absl::Status HuginProject::Configure(
   } else {
     return absl::InvalidArgumentError("Calibrated AKAZE requires source profile fingerprint provenance");
   }
+  for (size_t index = 0; index < options.projection_framing.rotation_degrees.size(); ++index)
+    provenance << "projection-rotation-" << index << '=' << options.projection_framing.rotation_degrees[index] << '\n';
+  for (size_t index = 0; index < options.projection_framing.crop.size(); ++index)
+    provenance << "projection-crop-" << index << '=' << options.projection_framing.crop[index] << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;

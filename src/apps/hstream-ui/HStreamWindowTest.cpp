@@ -8087,6 +8087,36 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           camera_vertical_fov->value() == 94.5 && !save->isEnabled(),
       "Reloading a game must restore its camera selection and both private source FOV overrides");
 
+  YAML::Node inherited_rink_config = YAML::Clone(config);
+  inherited_rink_config["stitching"]["rink_config"] = "vallco";
+  inherited_rink_config["stitching"].remove("projection_framing");
+  std::ofstream(config_path) << YAML::Dump(inherited_rink_config) << '\n';
+  activate(create);
+  const bool inherited_rink_loads_clean = expect(!save->isEnabled(), "A rink-only game must load its default view cleanly");
+  top_squeeze->setValue(16);
+  activate(save);
+  const auto inherited_rink_saved = YAML::LoadFile(config_path.string());
+  const auto inherited_rink_view = hm::stitching::read_stitch_projection_framing(inherited_rink_saved);
+  const bool inherited_rink_preserved = expect(
+      inherited_rink_view.ok() && inherited_rink_view->rotation_inherited &&
+          inherited_rink_view->rotation_degrees[1] == -35 &&
+          !inherited_rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
+      "Editing projection controls must keep a rink-only game's rotation inherited");
+
+  YAML::Node leveled_config = YAML::Clone(config);
+  leveled_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
+  leveled_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0.02, 0.98, 0.54, 1]");
+  std::ofstream(config_path) << YAML::Dump(leveled_config) << '\n';
+  activate(create);
+  const bool leveled_view_loads_clean = expect(!save->isEnabled(), "A loaded rink view must not dirty its own preset");
+  top_squeeze->setValue(16);
+  activate(save);
+  const auto saved_view = YAML::LoadFile(config_path.string())["stitching"]["projection_framing"];
+  const bool leveled_view_preserved = expect(
+      saved_view["rotation_degrees"].as<std::vector<double>>() == std::vector<double>({0, -35, 3}) &&
+          saved_view["crop"].as<std::vector<double>>() == std::vector<double>({0.02, 0.98, 0.54, 1}),
+      "Editing a projection control must preserve the game's calibrated rotation and explicit crop");
+
   YAML::Node generated_override = YAML::Clone(config);
   generated_override["stitching"]["projection"] = "triplane";
   generated_override["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[75]");
@@ -8200,6 +8230,20 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const bool absent_previous_framing_restores_defaults = expect(
       !auto_fov->isChecked() && horizontal_fov->value() == 180.0 && auto_canvas->isChecked() && !auto_crop->isChecked(),
       "UI load must restore inherited projection framing when generated choices displaced no private map");
+
+  YAML::Node explicit_zero_generated = YAML::Clone(generated_framing_override);
+  explicit_zero_generated["stitching"]["rink_config"] = "vallco";
+  explicit_zero_generated["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
+  std::ofstream(config_path) << YAML::Dump(explicit_zero_generated) << '\n';
+  activate(create);
+  const bool explicit_zero_is_private_intent = expect(auto_fov->isChecked(),
+      "An explicit zero added to generated inherited framing must stop generated-tuple restoration");
+  top_squeeze->setValue(17);
+  activate(save);
+  const auto zero_saved_view = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
+  const bool explicit_zero_survives_ui_save = expect(zero_saved_view.ok() && !zero_saved_view->rotation_inherited &&
+      zero_saved_view->rotation_degrees == std::array<double, 3>{0, 0, 0},
+      "Loading and saving a generated view with an explicit zero must retain that override");
 
   auto malformed_previous_choice_rejects_marker = [&](const char* key, const char* value, const char* message) {
     YAML::Node malformed = YAML::Clone(generated_backend_alias);
@@ -8360,7 +8404,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   game_id->setText(original_game_id);
   activate(create);
-  return camera_defaults_available && hero_defaults_applied && ace_defaults_applied && saved &&
+  return explicit_zero_is_private_intent && explicit_zero_survives_ui_save && inherited_rink_loads_clean && inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available && hero_defaults_applied &&
+      ace_defaults_applied && saved &&
       camera_override_reloaded && generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
       edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&

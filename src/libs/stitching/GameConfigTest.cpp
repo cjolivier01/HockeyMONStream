@@ -202,7 +202,153 @@ stitching:
       projection_parameter_precision_valid && projection_parameter_precision_invalid && high_precision_yaml_rejected,
       "adjustable projection parameters must reject precision that Hugin cannot round-trip");
 
+  const YAML::Node rink_profiles = YAML::Load(R"(
+stitching:
+  rink_configs:
+    vallco: {display_name: Vallco, rotation_degrees: [0, -35, 0]}
+    sharks-ice: {display_name: Sharks Ice, rotation_degrees: [0, -25, 0]}
+  rink_config: vallco
+)");
+  const auto profiles = hm::stitching::read_stitch_rink_configurations(rink_profiles);
+  ok &= expect(profiles.ok() && profiles->size() == 2, "rink profiles must retain both named venue defaults");
+  for (const auto& [id, pitch] : std::vector<std::pair<std::string, double>>{{"vallco", -35}, {"sharks-ice", -25}}) {
+    YAML::Node inherited = YAML::Clone(rink_profiles);
+    inherited["stitching"]["rink_config"] = id;
+    for (bool explicit_null : {false, true}) {
+      if (explicit_null)
+        inherited["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Node(YAML::NodeType::Null);
+      auto framing = hm::stitching::read_stitch_projection_framing(inherited);
+      ok &= expect(
+          framing.ok() && framing->rotation_degrees == std::array<double, 3>{0, pitch, 0} &&
+              framing->rotation_inherited,
+          "missing and null rotation must inherit the selected rink pitch");
+      if (!framing.ok())
+        continue;
+      framing->horizontal_fov = 160;
+      hm::stitching::write_stitch_projection_framing(inherited, *framing);
+      ok &= expect(
+          !inherited["stitching"]["projection_framing"]["rotation_degrees"],
+          "saving another framing field must not freeze a venue default as a private override");
+      YAML::Node changed_profile = YAML::Clone(inherited);
+      changed_profile["stitching"]["rink_configs"][id]["rotation_degrees"][1] = pitch + 2;
+      const auto changed = hm::stitching::read_stitch_projection_framing(changed_profile);
+      ok &= expect(
+          changed.ok() && changed->rotation_degrees[1] == pitch + 2 && *changed != *framing,
+          "inherited angles must follow profile edits and invalidate geometry comparisons");
+    }
+    for (double override_pitch : {0.0, pitch, -12.0}) {
+      YAML::Node overridden = YAML::Clone(inherited);
+      overridden["stitching"]["projection_framing"]["rotation_degrees"] = std::vector<double>{0, override_pitch, 0};
+      const auto explicit_framing = hm::stitching::read_stitch_projection_framing(overridden);
+      ok &= expect(
+          explicit_framing.ok() && explicit_framing->rotation_degrees[1] == override_pitch &&
+              !explicit_framing->rotation_inherited,
+          "an explicit game rotation, including zero or a value equal to the default, must win");
+      if (explicit_framing.ok()) {
+        hm::stitching::write_stitch_projection_framing(overridden, *explicit_framing);
+        overridden["stitching"]["rink_config"] = id == "vallco" ? "sharks-ice" : "vallco";
+        const auto changed_venue = hm::stitching::read_stitch_projection_framing(overridden);
+        ok &= expect(
+            changed_venue.ok() && *changed_venue == *explicit_framing && !changed_venue->rotation_inherited,
+            "saving and changing venues must preserve an explicit rotation override");
+      }
+    }
+  }
+  for (const std::string invalid :
+       {"rink_config: unknown",
+        "rink_config: []",
+        "rink_configs: []",
+        "rink_configs: {vallco: {display_name: Vallco}}",
+        "rink_configs: {vallco: {display_name: '', rotation_degrees: [0, -35, 0]}}",
+        "rink_configs: {vallco: {display_name: Vallco, rotation_degrees: [0, .inf, 0]}}",
+        "rink_configs: {vallco: {display_name: Vallco, rotation_degrees: [0, -35]}}",
+        "rink_configs: {Vallco: {display_name: Vallco, rotation_degrees: [0, -35, 0]}}",
+        "rink_configs: {vallco: {display_name: Vallco, rotation_degrees: [0, -35, 0], left: -30}}"}) {
+    YAML::Node malformed = YAML::Load("stitching: {" + invalid + "}");
+    if (!malformed["stitching"]["rink_config"])
+      malformed["stitching"]["rink_config"] = "vallco";
+    ok &= expect(
+        !hm::stitching::read_stitch_projection_framing(malformed).ok(),
+        "unknown selections and malformed profiles must fail before calibration");
+  }
+
+  YAML::Node overlay_rink = YAML::Clone(rink_profiles);
+  overlay_rink["stitching"]["rink_configs"]["vallco"]["rotation_degrees"][1] = -40;
+  YAML::Node private_rink = YAML::Load("stitching: {rink_config: vallco}");
+  const auto context_materialized = hm::stitching::materialize_stitch_rink_context(private_rink, overlay_rink);
+  const auto worker_rink = hm::stitching::read_stitch_projection_framing(private_rink);
+  ok &= expect(
+      context_materialized.ok() && *context_materialized && worker_rink.ok() && worker_rink->rotation_inherited &&
+          worker_rink->rotation_degrees[1] == -40,
+      "worker-visible context must resolve inherited custom overlay defaults");
+  const auto same_context = hm::stitching::materialize_stitch_rink_context(private_rink, overlay_rink);
+  ok &= expect(same_context.ok() && !*same_context, "repeated runtime context materialization must be stable");
+  YAML::Node edited_context = YAML::Clone(private_rink);
+  edited_context["stitching"]["rink_configs"]["vallco"]["rotation_degrees"][1] = -42;
+  hm::stitching::restore_generated_stitch_rink_context(edited_context);
+  ok &= expect(
+      hm::stitching::read_stitch_projection_framing(edited_context)->rotation_degrees[1] == -42,
+      "editing a generated profile must become private intent without being overwritten");
+  const bool context_restored = hm::stitching::restore_generated_stitch_rink_context(private_rink);
+  ok &= expect(
+      context_restored && !private_rink["stitching"]["rink_configs"] &&
+          private_rink["stitching"]["rink_config"].as<std::string>() == "vallco",
+      "the next layered load must restore private selection without freezing overlay profile defaults");
+  overlay_rink["stitching"]["rink_configs"]["vallco"]["rotation_degrees"][1] = -41;
+  const auto refreshed_context = hm::stitching::materialize_stitch_rink_context(private_rink, overlay_rink);
+  ok &= expect(
+      refreshed_context.ok() && hm::stitching::read_stitch_projection_framing(private_rink)->rotation_degrees[1] == -41,
+      "changed overlay defaults must reach the next worker generation");
+
+  YAML::Node changed_selection = YAML::Clone(private_rink);
+  changed_selection["stitching"]["rink_config"] = "sharks-ice";
+  const bool selection_restored = hm::stitching::restore_generated_stitch_rink_context(changed_selection);
+  ok &= expect(
+      selection_restored && !changed_selection["stitching"]["rink_configs"] &&
+          changed_selection["stitching"]["rink_config"].as<std::string>() == "sharks-ice",
+      "editing only the selection must preserve it while restoring untouched inherited profile definitions");
+  YAML::Node changed_sharks_default = YAML::Clone(overlay_rink);
+  changed_sharks_default["stitching"]["rink_config"] = "sharks-ice";
+  changed_sharks_default["stitching"]["rink_configs"]["sharks-ice"]["rotation_degrees"][1] = -28;
+  const auto selection_refreshed =
+      hm::stitching::materialize_stitch_rink_context(changed_selection, changed_sharks_default);
+  const auto refreshed_selection_view = hm::stitching::read_stitch_projection_framing(changed_selection);
+  ok &= expect(
+      selection_refreshed.ok() && refreshed_selection_view.ok() && refreshed_selection_view->rotation_inherited &&
+          refreshed_selection_view->rotation_degrees[1] == -28,
+      "a selection-only edit must still follow subsequent shared profile updates");
+
   auto default_framing = hm::stitching::read_stitch_projection_framing(YAML::Node());
+  const auto rink_view = hm::stitching::read_stitch_projection_framing(
+      YAML::Load("stitching: {projection_framing: {rotation_degrees: [0, -35, 3], crop: [0.02, 0.98, 0.54, 1]}}"));
+  ok &= expect(rink_view.ok(), "camera-space leveling and a normalized crop must parse");
+  if (rink_view.ok()) {
+    YAML::Node round_trip;
+    hm::stitching::write_stitch_projection_framing(round_trip, *rink_view);
+    const auto parsed = hm::stitching::read_stitch_projection_framing(round_trip);
+    ok &= expect(parsed.ok() && *parsed == *rink_view, "projection leveling and crop must round-trip exactly");
+    auto changed = *rink_view;
+    changed.rotation_degrees[1] += 1;
+    ok &= expect(changed != *rink_view, "leveling changes must invalidate map and generation comparisons");
+    changed = *rink_view;
+    changed.crop[0] += 0.01;
+    ok &= expect(changed != *rink_view, "crop changes must invalidate map and generation comparisons");
+  }
+  for (const std::string view :
+       {"rotation_degrees: [0, 1]",
+        "rotation_degrees: [0, .nan, 0]",
+        "rotation_degrees: [0, 181, 0]",
+        "crop: [0, 1, 0]",
+        "crop: [-0.1, 1, 0, 1]",
+        "crop: [0.9, 0.1, 0, 1]",
+        "crop: [0, 1, 0.5, 0.5]",
+        "crop: [0, 1, 0, .inf]",
+        "auto_crop: true, crop: [0, 1, 0.5, 1]"}) {
+    ok &= expect(
+        !hm::stitching::read_stitch_projection_framing(YAML::Load("stitching: {projection_framing: {" + view + "}}"))
+             .ok(),
+        "invalid leveling and crop configurations must fail before Hugin runs");
+  }
   ok &= expect(
       default_framing.ok() && !default_framing->auto_fov && default_framing->horizontal_fov == 180.0 &&
           default_framing->auto_canvas && !default_framing->auto_crop,
@@ -925,6 +1071,29 @@ stitching:
               hm::stitching::validate_stitching_backend_generation(
                   changed_framing, "backend-generation-b", panini_choices)),
       "projection parameter and framing changes must be fenced by the immutable calibration generation claim");
+
+  YAML::Node rink_generation = YAML::Clone(parameter_generation);
+  rink_generation["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  rink_generation["stitching"]["rink_configs"] = YAML::Clone(rink_profiles["stitching"]["rink_configs"]);
+  rink_generation["stitching"]["rink_config"] = "vallco";
+  auto rink_choices = panini_choices;
+  rink_choices.projection_framing = *hm::stitching::read_stitch_projection_framing(rink_generation);
+  const auto rink_reserved = hm::stitching::reserve_stitching_backend_generation_in_config(
+      rink_generation, "backend-generation-b", rink_choices);
+  YAML::Node changed_rink = YAML::Clone(rink_generation);
+  changed_rink["stitching"]["rink_config"] = "sharks-ice";
+  YAML::Node edited_rink = YAML::Clone(rink_generation);
+  edited_rink["stitching"]["rink_configs"]["vallco"]["rotation_degrees"][1] = -34;
+  ok &= expect(
+      rink_reserved.ok() &&
+          hm::stitching::validate_stitching_backend_generation(rink_generation, "backend-generation-b", rink_choices)
+              .ok() &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(
+                  changed_rink, "backend-generation-b", rink_choices)) &&
+          absl::IsAborted(
+              hm::stitching::validate_stitching_backend_generation(edited_rink, "backend-generation-b", rink_choices)),
+      "a selected rink or inherited default change must fence stale map publication");
 
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);

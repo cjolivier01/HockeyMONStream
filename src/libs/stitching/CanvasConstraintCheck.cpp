@@ -714,7 +714,8 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool camera_aware = lines.size() == 21 && lines[0] == "version=7";
+  const bool view_aware = lines.size() == 28 && lines[0] == "version=8";
+  const bool camera_aware = (lines.size() == 21 && lines[0] == "version=7") || view_aware;
   if (!input.eof() ||
       (!legacy && !algorithm_aware && !parameter_aware && !framing_aware && !calibration_aware && !camera_aware))
     return absl::FailedPreconditionError("Invalid canvas provenance format");
@@ -803,6 +804,23 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
        lines[matcher_index + 1].rfind("akaze-calibration-fingerprint=", 0) != 0 ||
        lines[matcher_index + 1].size() == std::strlen("akaze-calibration-fingerprint="))) {
     return absl::FailedPreconditionError("Invalid canvas provenance calibration fields");
+  }
+  if (view_aware) {
+    std::array<double, 7> values{};
+    for (size_t index = 0; index < values.size(); ++index) {
+      const std::string prefix = index < 3 ? "projection-rotation-" + std::to_string(index) + "="
+                                           : "projection-crop-" + std::to_string(index - 3) + "=";
+      std::istringstream value(
+          lines[21 + index].rfind(prefix, 0) == 0 ? lines[21 + index].substr(prefix.size()) : std::string());
+      value.imbue(std::locale::classic());
+      if (!(value >> values[index]) || !value.eof() || !std::isfinite(values[index]) ||
+          (index < 3 ? std::abs(values[index]) > 180.0 : values[index] < 0.0 || values[index] > 1.0))
+        return absl::FailedPreconditionError("Invalid canvas provenance projection view");
+    }
+    if (values[3] >= values[4] || values[5] >= values[6] ||
+        (lines[15] == "projection-auto-crop=1" &&
+         (values[3] != 0.0 || values[4] != 1.0 || values[5] != 0.0 || values[6] != 1.0)))
+      return absl::FailedPreconditionError("Invalid canvas provenance projection crop");
   }
   return provenance;
 }
