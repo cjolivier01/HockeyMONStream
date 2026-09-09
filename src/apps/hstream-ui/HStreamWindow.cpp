@@ -4989,6 +4989,9 @@ int HStreamWindow::videoSetCount() const {
 }
 
 int HStreamWindow::cameraControlValue(const QString& id) const {
+  if (cropRotationSuppressed() &&
+      (id == "Left_Fixed_Edge_Rotation_Angle_x10" || id == "Right_Fixed_Edge_Rotation_Angle_x10"))
+    return 0;
   const auto slider = camera_sliders_.find(id);
   if (slider != camera_sliders_.end() && slider->second) {
     return slider->second->value();
@@ -4997,6 +5000,14 @@ int HStreamWindow::cameraControlValue(const QString& id) const {
   if (id == "Use_10_Bit_Grading" && checkbox != camera_checkboxes_.end() && checkbox->second)
     return checkbox->second->checkState() == Qt::Checked ? 1 : 0;
   return checkbox != camera_checkboxes_.end() && checkbox->second && checkbox->second->isChecked() ? 1 : 0;
+}
+
+int HStreamWindow::cameraPresetControlValue(const QString& id) const {
+  const auto suppressed = suppressed_crop_rotation_controls_.find(id);
+  if (suppressed != suppressed_crop_rotation_controls_.end())
+    return suppressed->second;
+  const auto slider = camera_sliders_.find(id);
+  return slider != camera_sliders_.end() && slider->second ? slider->second->value() : cameraControlValue(id);
 }
 
 int HStreamWindow::cameraTabCount() const {
@@ -6346,7 +6357,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     control_tabs->addTab(add_slider_tab(motion_controls, false), "Motion");
     control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
-    control_tabs->addTab(add_slider_tab(crop_controls, false), "Crop Rotation");
+    auto* crop_page = add_slider_tab(crop_controls, false);
+    crop_rotation_explanation_ = new QLabel(
+        "Crop rotation is 0 while rink pitch or roll is applied. Clear rink leveling to adjust crop rotation.");
+    crop_rotation_explanation_->setObjectName("cropRotationExplanation");
+    crop_rotation_explanation_->setWordWrap(true);
+    crop_rotation_explanation_->hide();
+    crop_page->layout()->addWidget(crop_rotation_explanation_);
+    control_tabs->addTab(crop_page, "Crop Rotation");
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
     control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
@@ -6960,6 +6978,41 @@ void HStreamWindow::updateRinkLevelingControls() {
     rink_default_button_->setEnabled(enabled && !loaded_projection_framing_.rotation_inherited);
   if (rink_leveling_button_)
     rink_leveling_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+  updateCropRotationControls();
+}
+
+bool HStreamWindow::cropRotationSuppressed() const {
+  return mappingBackend() == "nona" && loaded_projection_framing_.has_leveling_rotation();
+}
+
+void HStreamWindow::updateCropRotationControls() {
+  const bool suppressed = cropRotationSuppressed();
+  for (const QString& id :
+       {QString("Left_Fixed_Edge_Rotation_Angle_x10"), QString("Right_Fixed_Edge_Rotation_Angle_x10")}) {
+    const auto slider = camera_sliders_.find(id);
+    if (slider == camera_sliders_.end() || !slider->second)
+      continue;
+    const QSignalBlocker blocker(slider->second);
+    if (suppressed) {
+      suppressed_crop_rotation_controls_.emplace(id, slider->second->value());
+      // Saved negative angles can extend the range without including zero.
+      slider->second->setRange(std::min(0, slider->second->minimum()), std::max(0, slider->second->maximum()));
+      slider->second->setValue(0);
+    } else {
+      const auto saved = suppressed_crop_rotation_controls_.find(id);
+      if (saved != suppressed_crop_rotation_controls_.end()) {
+        slider->second->setValue(saved->second);
+        suppressed_crop_rotation_controls_.erase(saved);
+      }
+    }
+    camera_value_labels_.at(id)->setText(QString::number(slider->second->value()));
+    slider->second->setEnabled(!suppressed);
+  }
+  const auto link = camera_sliders_.find("Link_Fixed_Edge_Rotation_Left_Right");
+  if (link != camera_sliders_.end() && link->second)
+    link->second->setEnabled(!suppressed);
+  if (crop_rotation_explanation_)
+    crop_rotation_explanation_->setVisible(suppressed);
 }
 
 bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
@@ -14234,6 +14287,11 @@ void HStreamWindow::savePreset() {
 void HStreamWindow::resetCameraControls() {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   for (const auto& [id, value] : camera_defaults_) {
+    const auto suppressed = suppressed_crop_rotation_controls_.find(id);
+    if (suppressed != suppressed_crop_rotation_controls_.end()) {
+      suppressed->second = value;
+      continue;
+    }
     const auto it = camera_sliders_.find(id);
     if (it != camera_sliders_.end()) {
       it->second->setValue(value);
@@ -14413,7 +14471,7 @@ void HStreamWindow::captureSavedControlState() {
   saved_camera_controls_.clear();
   for (const auto& [id, default_value] : camera_defaults_) {
     Q_UNUSED(default_value);
-    saved_camera_controls_[id] = cameraControlValue(id);
+    saved_camera_controls_[id] = cameraPresetControlValue(id);
   }
   saved_high_bit_depth_mode_ = highBitDepthMode();
   saved_stitch_frame_time_ = stitchFrameTime();
@@ -14454,7 +14512,7 @@ void HStreamWindow::updatePresetDirtyState() {
     for (const auto& [id, default_value] : camera_defaults_) {
       Q_UNUSED(default_value);
       const auto saved = saved_camera_controls_.find(id);
-      if (saved == saved_camera_controls_.end() || saved->second != cameraControlValue(id)) {
+      if (saved == saved_camera_controls_.end() || saved->second != cameraPresetControlValue(id)) {
         dirty = true;
         break;
       }
@@ -14590,6 +14648,8 @@ void HStreamWindow::loadSavedControlConfig() {
       label_it->second->setText(QString::number(value));
     }
   }
+  suppressed_crop_rotation_controls_.clear();
+  updateCropRotationControls();
   synchronizeStitchedColorControls();
 
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
@@ -14613,7 +14673,7 @@ void HStreamWindow::loadSavedControlConfig() {
     bool native_high_bit_depth_mode_present = false;
     for (const auto& [id, default_value] : camera_defaults_) {
       Q_UNUSED(default_value);
-      staged_controls[id] = cameraControlValue(id);
+      staged_controls[id] = cameraPresetControlValue(id);
     }
     auto stage_control = [this, &staged_controls](const QString& id, int value) {
       const auto slider = camera_sliders_.find(id);
@@ -15166,6 +15226,8 @@ void HStreamWindow::loadSavedControlConfig() {
         label_it->second->setText(QString::number(slider_it->second->value()));
       }
     }
+    suppressed_crop_rotation_controls_.clear();
+    updateCropRotationControls();
     synchronizeStitchedColorControls();
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
     captureSavedControlState();
@@ -15338,7 +15400,7 @@ bool HStreamWindow::applySavedControlConfig(
   for (const auto& [id, default_value] : camera_defaults_) {
     if (id == "Use_10_Bit_Grading")
       continue;
-    const int value = cameraControlValue(id);
+    const int value = cameraPresetControlValue(id);
     if (value == default_value) {
       continue;
     }
@@ -15454,7 +15516,7 @@ bool HStreamWindow::applySavedControlConfig(
     appendLog("maximum stitched width changed without changing the effective canvas; reusing existing maps");
   }
 
-  auto slider_value = [this](const QString& id) -> int { return cameraControlValue(id); };
+  auto slider_value = [this](const QString& id) -> int { return cameraPresetControlValue(id); };
   const auto saved_stitch_rotation = saved_camera_controls_.find("Stitch_Rotate_Degrees");
   const auto stitch_rotation_slider = camera_sliders_.find("Stitch_Rotate_Degrees");
   const bool preserve_stitch_rotation_null = previous_stitch_rotation_was_null &&
@@ -15494,7 +15556,7 @@ bool HStreamWindow::applySavedControlConfig(
     const auto slider = camera_sliders_.find(id);
     const auto saved = saved_camera_controls_.find(id);
     return slider != camera_sliders_.end() && slider->second && saved != saved_camera_controls_.end() &&
-        slider->second->value() == saved->second;
+        cameraPresetControlValue(id) == saved->second;
   };
   const bool preserve_fixed_edge_null = previous_fixed_edge_rotation_was_null &&
       fixed_edge_control_matches_saved("Link_Fixed_Edge_Rotation_Left_Right") &&
@@ -17441,7 +17503,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
       "Right_Fixed_Edge_Rotation_Angle_x10",
   };
   if (fixed_edge_rotation_controls.contains(id)) {
-    scheduleRotationRuntimeControl(id, value);
+    scheduleRotationRuntimeControl(id, cropRotationSuppressed() ? cameraControlValue(id) : value);
     return false;
   }
   const QSet<QString> playtracker_live_controls = {
@@ -17548,6 +17610,11 @@ bool HStreamWindow::publishRotationRuntimeControls(
   const bool has_fixed_edge_change = controls.count("Link_Fixed_Edge_Rotation_Left_Right") ||
       controls.count("Left_Fixed_Edge_Rotation_Angle_x10") || controls.count("Right_Fixed_Edge_Rotation_Angle_x10");
   if (has_fixed_edge_change) {
+    if (cropRotationSuppressed()) {
+      for (auto& [id, value] : controls)
+        if (id == "Left_Fixed_Edge_Rotation_Angle_x10" || id == "Right_Fixed_Edge_Rotation_Angle_x10")
+          value = 0;
+    }
     const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
     const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
     const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
@@ -17853,6 +17920,10 @@ void HStreamWindow::synchronizeFixedEdgeRotationControls(const QString& changed_
   const QString left_id = "Left_Fixed_Edge_Rotation_Angle_x10";
   const QString right_id = "Right_Fixed_Edge_Rotation_Angle_x10";
   if (changed_id != link_id && changed_id != left_id && changed_id != right_id) {
+    return;
+  }
+  if (cropRotationSuppressed()) {
+    updateCropRotationControls();
     return;
   }
   const bool linked = changed_id == link_id ? value != 0 : cameraControlValue(link_id) != 0;

@@ -76,6 +76,11 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static void setTestLevelingRotation(HStreamWindow* window, double pitch) {
+    window->loaded_projection_framing_.rotation_degrees = {0.0, pitch, 0.0};
+    window->loaded_projection_framing_.rotation_inherited = false;
+    window->updateRinkLevelingControls();
+  }
   static bool rinkLevelingInputsUnchanged(HStreamWindow* window) {
     return window->rinkLevelingInputsUnchanged();
   }
@@ -8027,6 +8032,93 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
       second_failure_safe && both_failures_safe && blocked_recovery_resumed;
 }
 
+bool test_leveled_crop_rotation(HStreamWindow* window) {
+  auto* game = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* save = require_child<QPushButton>(window, "savePresetButton");
+  auto* reset = require_child<QPushButton>(window, "resetCameraButton");
+  auto* backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* pitch = require_child<QDoubleSpinBox>(window, "rinkPitchSpin");
+  auto* roll = require_child<QDoubleSpinBox>(window, "rinkRollSpin");
+  auto* link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
+  auto* left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
+  auto* right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
+  auto* explanation = require_child<QLabel>(window, "cropRotationExplanation");
+  if (!game || !create || !save || !reset || !backend || !pitch || !roll || !link || !left || !right || !explanation)
+    return false;
+  const QString original_game = game->text();
+  game->setText("ui-leveled-crop-rotation");
+  activate(create);
+  const fs::path path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  auto load = [&](const char* rotation, const char* angles, const char* mapping = "nona") {
+    YAML::Node config = YAML::Load("stitching: {rink_config: vallco, run_autooptimizer: true}");
+    config["stitching"]["mapping_backend"] = mapping;
+    config["stitching"]["projection_framing"]["horizontal_fov"] = 120;
+    config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load(rotation);
+    config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Load(angles);
+    std::ofstream(path) << YAML::Dump(config);
+    activate(create);
+  };
+  auto suppressed = [&]() {
+    return left->value() == 0 && right->value() == 0 && !left->isEnabled() && !right->isEnabled() &&
+        !link->isEnabled() && !explanation->isHidden();
+  };
+  bool ok = true;
+  load("[0, 0, 0]", "[21, 32]");
+  pitch->setValue(-30);
+  ok &= expect(suppressed(), "Manual rink pitch must disable and zero both crop angles");
+  activate(save);
+  const auto saved = YAML::LoadFile(path.string());
+  ok &= expect(
+      saved["rink"]["camera"]["fixed_edge_rotation_angle"][0].as<double>() == 21 &&
+          saved["rink"]["camera"]["fixed_edge_rotation_angle"][1].as<double>() == 32,
+      "Saving leveling must preserve the dormant manual crop angles");
+  activate(create);
+  ok &= expect(suppressed() && !save->isEnabled(), "Reload must show zero without dirtying the saved preset");
+  pitch->setValue(0);
+  ok &= expect(
+      left->isEnabled() && right->isEnabled() && link->isEnabled() && left->value() == 210 && right->value() == 320 &&
+          explanation->isHidden(),
+      "Clearing leveling must restore independent crop angles");
+  roll->setValue(2);
+  ok &= expect(suppressed(), "Roll alone must suppress crop rotation");
+  left->setValue(450);
+  right->setValue(550);
+  ok &= expect(suppressed(), "Programmatic slider changes must not bypass leveling suppression");
+  roll->setValue(0);
+  ok &= expect(
+      left->value() == 210 && right->value() == 320,
+      "A suppressed slider change must not overwrite dormant preset angles");
+  load("null", "17");
+  ok &= expect(pitch->value() == -35 && suppressed(), "Inherited Vallco pitch must suppress crop rotation");
+  pitch->setValue(0);
+  ok &= expect(
+      left->value() == 170 && right->value() == 170 && link->value() == 1,
+      "A new preset must replace the previous game's dormant angles");
+  load("[12, 0, 0]", "18");
+  ok &= expect(left->isEnabled() && left->value() == 180, "Yaw alone must retain manual crop rotation");
+  load("[0, -30, 2]", "19", "opencv-magsac");
+  ok &=
+      expect(left->isEnabled() && left->value() == 190, "Dormant NONA leveling must not disable OpenCV crop rotation");
+  backend->setCurrentIndex(backend->findData("nona"));
+  ok &= expect(suppressed(), "Switching to NONA must apply existing leveling suppression");
+  backend->setCurrentIndex(backend->findData("opencv-magsac"));
+  ok &= expect(left->isEnabled() && left->value() == 190, "Switching away from NONA must restore manual crop rotation");
+  load("[0, -30, 0]", "null");
+  roll->setValue(1);
+  activate(save);
+  ok &= expect(
+      suppressed() && YAML::LoadFile(path.string())["rink"]["camera"]["fixed_edge_rotation_angle"].IsNull(),
+      "Suppression must preserve explicit null crop rotation through save");
+  activate(reset);
+  ok &= expect(
+      left->isEnabled() && left->value() == 100 && right->value() == 100,
+      "Reset must clear game leveling and restore baseline crop angles");
+  game->setText(original_game);
+  activate(create);
+  return ok;
+}
+
 bool test_projection_parameter_persistence(HStreamWindow* window) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -10417,6 +10509,36 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
+  const int backend_before_live_leveling = mapping_backend->currentIndex();
+  {
+    const QSignalBlocker blocker(mapping_backend);
+    mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  }
+  HStreamWindowTestAccess::setTestLevelingRotation(window, -30);
+  fixed_edge_right->setValue(500);
+  for (int i = 0;
+       i < 100 && !window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=0.0");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(
+          fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 && !fixed_edge_left->isEnabled() &&
+              !fixed_edge_right->isEnabled() &&
+              window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-left=0.0") &&
+              window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=0.0") &&
+              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-left=0.0") &&
+              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-right=0.0"),
+          "Leveled playback must publish only zero crop angles to both stages")) {
+    activate(stop);
+    return false;
+  }
+  {
+    const QSignalBlocker blocker(mapping_backend);
+    mapping_backend->setCurrentIndex(backend_before_live_leveling);
+  }
+  HStreamWindowTestAccess::setTestLevelingRotation(window, 0);
+
   pipeline_process->write("@test-reject-runtime-control\n");
   for (int i = 0; i < 50 && !window->logText().contains("test runtime control rejection armed"); ++i) {
     QApplication::processEvents();
@@ -12585,6 +12707,10 @@ int main(int argc, char** argv) {
   }
   if (!test_projection_parameter_persistence(&window)) {
     std::cerr << "test_projection_parameter_persistence failed\n";
+    return 1;
+  }
+  if (!test_leveled_crop_rotation(&window)) {
+    std::cerr << "test_leveled_crop_rotation failed\n";
     return 1;
   }
   if (!test_rink_leveling_save_retry(&window)) {

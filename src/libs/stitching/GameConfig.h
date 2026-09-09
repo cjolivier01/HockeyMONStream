@@ -55,6 +55,10 @@ struct StitchProjectionFraming {
   // Set false when an editor accepts an explicit game override.
   bool rotation_inherited{false};
 
+  bool has_leveling_rotation() const {
+    return rotation_degrees[1] != 0.0 || rotation_degrees[2] != 0.0;
+  }
+
   bool operator==(const StitchProjectionFraming& other) const {
     return auto_fov == other.auto_fov && horizontal_fov == other.horizontal_fov && auto_canvas == other.auto_canvas &&
         auto_crop == other.auto_crop && rotation_degrees == other.rotation_degrees && crop == other.crop;
