@@ -1,0 +1,495 @@
+#include "src/apps/hstream-ui/RinkLevelingDialog.h"
+
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QMap>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QSignalBlocker>
+#include <QtCore/QStandardPaths>
+#include <QtCore/QTimer>
+#include <QtWidgets/QDialogButtonBox>
+#include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QTabWidget>
+#include <QtWidgets/QVBoxLayout>
+
+#include <cmath>
+
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
+
+namespace {
+const QStringList kSnapshotFiles =
+    {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png", "config.yaml"};
+
+QByteArray readFile(const QString& path, qint64 limit = 1024 * 1024) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly) || file.size() > limit)
+    return {};
+  return file.readAll();
+}
+
+bool writeFile(const QString& path, const QByteArray& contents) {
+  QFile file(path);
+  return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size() &&
+      file.flush();
+}
+} // namespace
+
+RinkLevelingDialog::RinkLevelingDialog(
+    const QString& game_directory,
+    const std::array<double, 3>& current_rotation,
+    QWidget* parent,
+    std::optional<hm::stitching::StitchCameraSelection> expected_camera)
+    : QDialog(parent),
+      game_directory_(game_directory),
+      initial_rotation_(current_rotation),
+      expected_camera_(std::move(expected_camera)) {
+  setObjectName("rinkLevelingDialog");
+  setWindowTitle("Level the rink from vertical posts");
+  resize(1120, 820);
+  auto* layout = new QVBoxLayout(this);
+  auto* instructions = new QLabel(
+      "Mark the top and bottom of at least three tall, upright wall or glass posts, spread across both cameras. "
+      "Each pair of clicks marks one post. Avoid rink corners, sloping beams and short marks. "
+      "Scroll to zoom, drag the image to pan, and drag a numbered point to adjust it.");
+  instructions->setWordWrap(true);
+  layout->addWidget(instructions);
+  tabs_ = new QTabWidget();
+  for (size_t camera = 0; camera < canvases_.size(); ++camera) {
+    auto* page = new QWidget();
+    auto* page_layout = new QVBoxLayout(page);
+    canvases_[camera] = new ScoreboardSelectionCanvas();
+    canvases_[camera]->setObjectName(QString("rinkLevelingCamera%1").arg(camera));
+    canvases_[camera]->setLineSelectionMode();
+    canvases_[camera]->selectionChanged = [this]() { selectionChanged(); };
+    page_layout->addWidget(canvases_[camera], 1);
+    auto* actions = new QHBoxLayout();
+    for (const auto& name : {"Undo point", "Clear", "Fit image"}) {
+      auto* button = new QPushButton(name);
+      button->setObjectName(QString("rinkLevelingCamera%1%2").arg(camera).arg(QString(name).remove(' ')));
+      actions->addWidget(button);
+      connect(button, &QPushButton::clicked, this, [this, camera, name]() {
+        if (QString(name) == "Undo point")
+          canvases_[camera]->undoLastPoint();
+        else if (QString(name) == "Clear")
+          canvases_[camera]->clearPoints();
+        else
+          canvases_[camera]->fitImage();
+      });
+    }
+    page_layout->addLayout(actions);
+    tabs_->addTab(page, camera == 0 ? "Left camera" : "Right camera");
+  }
+  preview_canvas_ = new ScoreboardSelectionCanvas();
+  preview_canvas_->setObjectName("rinkLevelingPreview");
+  preview_canvas_->setLineSelectionMode(2);
+  tabs_->addTab(preview_canvas_, "Preview");
+  tabs_->setTabEnabled(2, false);
+  connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
+    if (index < 2)
+      QTimer::singleShot(0, this, [this, index]() { canvases_[index]->fitImage(); });
+  });
+  layout->addWidget(tabs_, 1);
+  auto* angles = new QHBoxLayout();
+  for (size_t index = 0; index < angle_spins_.size(); ++index) {
+    angles->addWidget(new QLabel(index == 0 ? "Pitch" : "Roll"));
+    auto* spin = new QDoubleSpinBox();
+    spin->setObjectName(index == 0 ? "rinkLevelingPitch" : "rinkLevelingRoll");
+    spin->setRange(-180, 180);
+    spin->setDecimals(3);
+    spin->setSingleStep(0.25);
+    spin->setSuffix(QString::fromUtf8("°"));
+    spin->setValue(initial_rotation_[index + 1]);
+    angle_spins_[index] = spin;
+    connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this]() {
+      previewed_ = false;
+      accept_button_->setEnabled(false);
+      tabs_->setTabEnabled(2, false);
+    });
+    angles->addWidget(spin);
+  }
+  estimate_button_ = new QPushButton("Estimate from posts");
+  estimate_button_->setObjectName("estimateRinkLevelingButton");
+  preview_button_ = new QPushButton("Preview angles");
+  preview_button_->setObjectName("previewRinkLevelingButton");
+  connect(estimate_button_, &QPushButton::clicked, this, [this]() { estimate(); });
+  connect(preview_button_, &QPushButton::clicked, this, [this]() { preview(); });
+  angles->addWidget(estimate_button_);
+  angles->addWidget(preview_button_);
+  layout->addLayout(angles);
+  status_ = new QLabel("The current angles are shown. Mark posts, estimate, then preview before using the result.");
+  status_->setObjectName("rinkLevelingStatus");
+  status_->setWordWrap(true);
+  layout->addWidget(status_);
+  auto* note = new QLabel(
+      "Preview uses the saved projection and crop. The estimate levels the scene; you can fine-tune pitch and roll. "
+      "Use angles returns the result to the controls. Save Preset applies it to this game. Cancel keeps existing settings.");
+  note->setWordWrap(true);
+  layout->addWidget(note);
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+  accept_button_ = buttons->addButton("Use angles", QDialogButtonBox::AcceptRole);
+  accept_button_->setObjectName("acceptRinkLevelingButton");
+  accept_button_->setEnabled(false);
+  connect(buttons, &QDialogButtonBox::rejected, this, &RinkLevelingDialog::reject);
+  connect(accept_button_, &QPushButton::clicked, this, [this]() { acceptAngles(); });
+  layout->addWidget(buttons);
+  loadSnapshot();
+  QTimer::singleShot(0, this, [this]() { canvases_[0]->fitImage(); });
+  if (!load_error_.isEmpty())
+    fail(load_error_);
+  setBusy(false);
+}
+
+RinkLevelingDialog::~RinkLevelingDialog() {
+  if (process_) {
+    process_->disconnect(this);
+    process_->kill();
+    process_->waitForFinished(3000);
+  }
+}
+
+QByteArray RinkLevelingDialog::sourceRevision(const QString& directory) {
+  QCryptographicHash hash(QCryptographicHash::Sha256);
+  for (const QString& name : kSnapshotFiles) {
+    QFile file(QDir(directory).filePath(name));
+    if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > 128 * 1024 * 1024 || !hash.addData(&file))
+      return {};
+  }
+  return hash.result();
+}
+
+void RinkLevelingDialog::loadSnapshot() {
+  const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
+  if (!lock.ok() || !*lock) {
+    load_error_ = "Stitching is being updated. Stop playback and try again after calibration finishes.";
+    return;
+  }
+  const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
+  if (!config_lock.ok()) {
+    load_error_ = "Game settings are being updated. Try again after the update finishes.";
+    return;
+  }
+  source_revision_ = sourceRevision(game_directory_);
+  if (!temporary_.isValid() || source_revision_.isEmpty()) {
+    load_error_ = "Run stitching calibration first. Its saved camera images and panorama project are needed.";
+    return;
+  }
+  for (const QString& name : kSnapshotFiles) {
+    if (!QFile::copy(QDir(game_directory_).filePath(name), temporary_.filePath(name))) {
+      load_error_ = "Could not create a temporary calibration snapshot.";
+      return;
+    }
+  }
+  if (sourceRevision(temporary_.path()) != source_revision_) {
+    load_error_ = "The source calibration changed while opening. Reopen the dialog.";
+    return;
+  }
+  try {
+    const YAML::Node config = YAML::Load(readFile(temporary_.filePath("config.yaml")).toStdString());
+    const auto ui = config["hstream_ui"];
+    const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
+    const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
+    if (status && !status.IsNull() && (!status.IsScalar() || status.as<std::string>() != "complete")) {
+      load_error_ =
+          "Stitching calibration is pending or incomplete. Finish calibration with the current camera and reference-frame settings first.";
+      return;
+    }
+  } catch (const YAML::Exception&) {
+    load_error_ = "Could not read the game's calibration settings. Repair the config and recalibrate first.";
+    return;
+  }
+  const auto prepared =
+      hm::stitching::PrepareRinkLevelingProject(readFile(temporary_.filePath("autooptimiser_out.pto")).toStdString());
+  if (!prepared.ok() || prepared->image_sizes.size() != 2) {
+    load_error_ = prepared.ok() ? "This selector requires two calibrated cameras."
+                                : QString::fromStdString(prepared.status().ToString());
+    return;
+  }
+  project_ = *prepared;
+  // Saved HStream PTOs use these ordered image names. Refuse a project that
+  // would make the renderer read different source images from the snapshot.
+  QStringList image_records;
+  for (const auto& line : QByteArray::fromStdString(project_.pto).split('\n'))
+    if (line.trimmed().startsWith("i "))
+      image_records.push_back(QString::fromUtf8(line));
+  if (image_records.size() != 2 || !image_records[0].contains(" n\"left.png\"") ||
+      !image_records[1].contains(" n\"right.png\"")) {
+    load_error_ = "The saved project does not reference the expected left and right camera images. Recalibrate first.";
+    return;
+  }
+  QMap<QString, QString> fields;
+  for (const QByteArray& line : readFile(temporary_.filePath("stitching_canvas_provenance")).split('\n')) {
+    const int separator = line.indexOf('=');
+    if (separator < 0)
+      continue;
+    const QString key = QString::fromUtf8(line.left(separator));
+    if (fields.contains(key)) {
+      load_error_ = "The saved calibration metadata has duplicate fields. Recalibrate before leveling.";
+      return;
+    }
+    fields[key] = QString::fromUtf8(line.mid(separator + 1));
+  }
+  const int version = fields.value("version").toInt();
+  if (version < 2 || version > 8 || fields.value("mapping-backend") != "nona") {
+    load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
+    return;
+  }
+  if (expected_camera_ && version < 7) {
+    load_error_ =
+        "This older calibration has no camera-model metadata. Recalibrate once with the current camera settings before selecting posts.";
+    return;
+  }
+  if (expected_camera_) {
+    bool horizontal_ok = false, vertical_ok = false;
+    const double horizontal = fields.value("camera-horizontal-fov").toDouble(&horizontal_ok);
+    const double vertical = fields.value("camera-vertical-fov").toDouble(&vertical_ok);
+    if (!horizontal_ok || !vertical_ok ||
+        fields.value("camera-configuration").toStdString() != expected_camera_->configuration ||
+        horizontal != expected_camera_->horizontal_fov || vertical != expected_camera_->vertical_fov) {
+      load_error_ = "The camera model or FOV differs from the saved calibration. Recalibrate before selecting posts.";
+      return;
+    }
+  }
+  // Versions 2-7 predate the shared camera-space rotation and imply zero.
+  for (size_t index = 0; index < published_rotation_.size(); ++index) {
+    const QString key = QString("projection-rotation-%1").arg(index);
+    if (version < 8 && !fields.contains(key))
+      continue;
+    bool ok = false;
+    published_rotation_[index] = fields.value(key).toDouble(&ok);
+    if (!ok || !std::isfinite(published_rotation_[index]) || std::abs(published_rotation_[index]) > 180) {
+      load_error_ = "The saved calibration rotation is invalid. Recalibrate before leveling.";
+      return;
+    }
+  }
+  if (!writeFile(temporary_.filePath("sphere.pto"), QByteArray::fromStdString(project_.pto))) {
+    load_error_ = "Could not prepare the calibration project.";
+    return;
+  }
+  for (size_t camera = 0; camera < canvases_.size(); ++camera) {
+    if (!canvases_[camera]->setImage(temporary_.filePath(camera == 0 ? "left.png" : "right.png")) ||
+        canvases_[camera]->imageSize() != QSize(project_.image_sizes[camera][0], project_.image_sizes[camera][1])) {
+      load_error_ = "Saved camera image dimensions do not match the calibration. Run stitching calibration again.";
+      return;
+    }
+  }
+}
+
+std::array<double, 3> RinkLevelingDialog::rotationDegrees() const {
+  return {initial_rotation_[0], angle_spins_[0]->value(), angle_spins_[1]->value()};
+}
+
+void RinkLevelingDialog::setBusy(bool busy) {
+  busy_ = busy;
+  const bool enabled = !busy && load_error_.isEmpty();
+  tabs_->setEnabled(enabled);
+  for (auto* canvas : canvases_)
+    canvas->setEnabled(enabled);
+  for (auto* spin : angle_spins_)
+    spin->setEnabled(enabled);
+  estimate_button_->setEnabled(enabled);
+  preview_button_->setEnabled(enabled);
+  accept_button_->setEnabled(enabled && previewed_);
+}
+
+void RinkLevelingDialog::fail(const QString& message) {
+  setBusy(false);
+  status_->setText(message);
+}
+
+void RinkLevelingDialog::selectionChanged() {
+  estimated_ = false;
+  previewed_ = false;
+  if (!accept_button_)
+    return;
+  accept_button_->setEnabled(false);
+  tabs_->setTabEnabled(2, false);
+  const auto count = canvases_[0]->points().size() / 2 + canvases_[1]->points().size() / 2;
+  status_->setText(QString("%1 complete posts selected. Use at least three, spread across both cameras.").arg(count));
+}
+
+void RinkLevelingDialog::startTool(
+    const QString& program,
+    const QStringList& arguments,
+    const QByteArray& input,
+    std::function<void(const QByteArray&)> completed) {
+  const QString executable = QStandardPaths::findExecutable(program);
+  if (executable.isEmpty()) {
+    fail(QString("%1 is required for leveling. Install the Hugin tools.").arg(program));
+    return;
+  }
+  setBusy(true);
+  auto* process = new QProcess(this);
+  process_ = process;
+  process->setWorkingDirectory(temporary_.path());
+  auto* timeout = new QTimer(process);
+  timeout->setSingleShot(true);
+  connect(timeout, &QTimer::timeout, process, [process]() { process->kill(); });
+  connect(process, &QProcess::started, this, [process, input, timeout]() {
+    process->write(input);
+    process->closeWriteChannel();
+    timeout->start(60000);
+  });
+  connect(process, &QProcess::errorOccurred, this, [this, process, program](QProcess::ProcessError error) {
+    if (error == QProcess::FailedToStart) {
+      process_ = nullptr;
+      process->deleteLater();
+      fail(QString("Could not start %1: %2").arg(program, process->errorString()));
+    }
+  });
+  connect(
+      process,
+      qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+      this,
+      [this, process, program, completed, timeout](int code, QProcess::ExitStatus status) {
+        timeout->stop();
+        const QByteArray output = process->readAllStandardOutput();
+        const QString error = QString::fromUtf8(process->readAllStandardError()).right(1500);
+        process_ = nullptr;
+        process->deleteLater();
+        if (code != 0 || status != QProcess::NormalExit) {
+          fail(QString("%1 failed or timed out. %2").arg(program, error));
+          return;
+        }
+        setBusy(false);
+        completed(output);
+      });
+  process->start(executable, arguments);
+}
+
+void RinkLevelingDialog::estimate() {
+  if (busy_ || !load_error_.isEmpty())
+    return;
+  std::vector<hm::stitching::RinkLevelingLine> lines;
+  for (size_t camera = 0; camera < canvases_.size(); ++camera) {
+    const auto& points = canvases_[camera]->points();
+    if (points.size() < 2 || points.size() % 2) {
+      fail("Mark complete top/bottom pairs in both camera images.");
+      return;
+    }
+    for (qsizetype index = 0; index < points.size(); index += 2)
+      lines.push_back(
+          {camera,
+           {double(points[index].x()), double(points[index].y())},
+           {double(points[index + 1].x()), double(points[index + 1].y())}});
+  }
+  const auto input = hm::stitching::FormatRinkLevelingPoints(lines, project_.image_sizes);
+  if (!input.ok()) {
+    fail(QString::fromStdString(input.status().ToString()));
+    return;
+  }
+  status_->setText("Estimating pitch and roll from the calibrated viewing rays…");
+  startTool(
+      "pano_trafo",
+      {"sphere.pto"},
+      QByteArray::fromStdString(*input),
+      [this, count = lines.size()](const QByteArray& output) {
+        const auto rays = hm::stitching::ParseRinkLevelingRays(output.toStdString(), count);
+        if (!rays.ok()) {
+          fail(QString::fromStdString(rays.status().ToString()));
+          return;
+        }
+        const auto result = hm::stitching::EstimateRinkLeveling(*rays, published_rotation_, initial_rotation_[0]);
+        if (!result.ok()) {
+          fail(QString::fromStdString(result.status().ToString()));
+          return;
+        }
+        for (size_t index = 0; index < angle_spins_.size(); ++index)
+          angle_spins_[index]->setValue(result->rotation_degrees[index + 1]);
+        estimated_ = true;
+        status_->setText(
+            QString("Used %1 of %2 posts; RMS angular residual %3°. Preview the result, then fine-tune if needed.")
+                .arg(result->inlier_indices.size())
+                .arg(count)
+                .arg(result->rms_residual_degrees, 0, 'f', 2));
+      });
+}
+
+void RinkLevelingDialog::preview() {
+  if (busy_ || !load_error_.isEmpty())
+    return;
+  const auto delta = hm::stitching::RinkLevelingRotationDelta(published_rotation_, rotationDegrees());
+  if (!delta.ok()) {
+    fail(QString::fromStdString(delta.status().ToString()));
+    return;
+  }
+  previewed_ = false;
+  accept_button_->setEnabled(false);
+  status_->setText("Rendering a temporary still preview…");
+  // Bound this offline CPU preview to 1600 pixels wide, keeping the saved
+  // projection, canvas aspect and crop. No steady-state video readback.
+  const QString original = QString::fromUtf8(readFile(temporary_.filePath("autooptimiser_out.pto")));
+  const auto match = QRegularExpression("(?m)^p .*?\\bw(\\d+) .*?\\bh(\\d+)").match(original);
+  const int width = match.captured(1).toInt(), height = match.captured(2).toInt();
+  if (width <= 0 || height <= 0 || height > width * 4LL) {
+    fail("Saved preview canvas dimensions are invalid.");
+    return;
+  }
+  const int preview_width = std::min(1600, width);
+  const int preview_height = std::max(1, int(std::round(double(height) * preview_width / width)));
+  const QString rotation = QString("--rotate=%1,%2,%3")
+                               .arg((*delta)[0], 0, 'g', 16)
+                               .arg((*delta)[1], 0, 'g', 16)
+                               .arg((*delta)[2], 0, 'g', 16);
+  startTool(
+      "pano_modify",
+      {rotation,
+       QString("--canvas=%1x%2").arg(preview_width).arg(preview_height),
+       "-o",
+       "preview.pto",
+       "autooptimiser_out.pto"},
+      {},
+      [this](const QByteArray&) {
+        QFile::remove(temporary_.filePath("preview.png"));
+        startTool(
+            "nona",
+            {"-m", "PNG", "--ignore-exposure", "--seam=blend", "-o", "preview.png", "preview.pto"},
+            {},
+            [this](const QByteArray&) {
+              if (!preview_canvas_->setImage(temporary_.filePath("preview.png"))) {
+                fail("Hugin did not produce a readable preview.");
+                return;
+              }
+              preview_canvas_->fitImage();
+              previewed_ = true;
+              tabs_->setTabEnabled(2, true);
+              tabs_->setCurrentIndex(2);
+              accept_button_->setEnabled(true);
+              status_->setText(
+                  estimated_ ? "Inspect the walls and both ends of the rink. Use angles when satisfied."
+                             : "Preview of the displayed angles. You can use these or estimate from selected posts.");
+            });
+      });
+}
+
+void RinkLevelingDialog::acceptAngles() {
+  if (busy_ || !previewed_)
+    return;
+  const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
+  if (!lock.ok() || !*lock) {
+    fail("The stitching calibration is being updated. Cancel and reopen after it finishes.");
+    return;
+  }
+  const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
+  if (!config_lock.ok() || sourceRevision(game_directory_) != source_revision_) {
+    fail("The stitching calibration changed. Cancel and reopen the dialog before applying angles.");
+    accept_button_->setEnabled(false);
+    return;
+  }
+  accept();
+}
+
+void RinkLevelingDialog::reject() {
+  if (process_) {
+    process_->disconnect(this);
+    process_->kill();
+    process_->waitForFinished(3000);
+    process_->deleteLater();
+    process_ = nullptr;
+  }
+  QDialog::reject();
+}

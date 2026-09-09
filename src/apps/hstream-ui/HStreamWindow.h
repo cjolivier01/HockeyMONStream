@@ -390,6 +390,11 @@ class HStreamWindow : public QMainWindow {
   hm::stitching::StitchProjectionFraming stitchProjectionFraming() const;
   void updateProjectionParameterControls();
   void updateProjectionFramingControls();
+  void loadRinkLevelingControls(const YAML::Node& config);
+  void updateRinkLevelingControls();
+  void selectRinkLeveling();
+  bool rinkLevelingInputsUnchanged() const;
+  bool writeRinkLevelingSelection(YAML::Node& config);
   void storeProjectionParameterControls();
   void updateProjectionCompatibility();
   bool prepareStitchingCalibrationRun(
@@ -513,6 +518,14 @@ class HStreamWindow : public QMainWindow {
   QDoubleSpinBox* projection_fov_spin_{nullptr};
   QCheckBox* projection_auto_canvas_check_{nullptr};
   QCheckBox* projection_auto_crop_check_{nullptr};
+  QComboBox* rink_configuration_combo_{nullptr};
+  std::array<QDoubleSpinBox*, 2> rink_angle_spins_{};
+  QPushButton* rink_leveling_button_{nullptr};
+  QPushButton* rink_default_button_{nullptr};
+  QLabel* rink_rotation_source_{nullptr};
+  std::vector<hm::stitching::StitchRinkConfiguration> rink_configurations_;
+  QString saved_rink_configuration_;
+  QByteArray pending_leveling_revision_;
   QTimeEdit* stitch_frame_time_edit_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};

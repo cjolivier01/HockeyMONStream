@@ -179,6 +179,25 @@ cc_library(
   ],
 )
 
+cc_library(
+  name = "rink_leveling",
+  srcs = ["RinkLeveling.cpp"],
+  hdrs = ["RinkLeveling.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "@opencv_linux//:opencv",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "rink_leveling_test",
+  srcs = ["RinkLevelingTest.cpp"],
+  deps = [":rink_leveling"],
+)
+
 cc_test(
   name = "scoreboard_selector_test",
   srcs = ["ScoreboardSelectorTest.cpp"],

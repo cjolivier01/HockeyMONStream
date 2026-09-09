@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
+#include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
 
@@ -4060,7 +4061,8 @@ bool generated_stitching_backend_choices_match_private(
   const bool generated_projection_framing_matches = !generated_projection_framing_present ||
       (parsed_generated_projection_framing.has_value() && parsed_private_projection_framing.has_value() &&
        *parsed_generated_projection_framing == *parsed_private_projection_framing &&
-       parsed_generated_projection_framing->rotation_inherited == parsed_private_projection_framing->rotation_inherited);
+       parsed_generated_projection_framing->rotation_inherited ==
+           parsed_private_projection_framing->rotation_inherited);
   const bool generated_matcher_present = lookup_yaml_path(
       config, "hstream_ui.generated_stitching_backend_choices.control_point_matcher", &generated_matcher);
   const bool generated_backend_present =
@@ -4750,6 +4752,11 @@ void HStreamWindow::loadBaselineDefaults() {
   }
   default_projection_framing_ = *projection_framing;
   loaded_projection_framing_ = default_projection_framing_;
+  loadRinkLevelingControls(baseline_config_);
+  const auto rink_configurations = hm::stitching::read_stitch_rink_configurations(baseline_config_);
+  if (!rink_configurations.ok())
+    throw std::runtime_error(rink_configurations.status().ToString());
+  rink_configurations_ = *rink_configurations;
   auto camera_configurations = hm::stitching::read_stitch_camera_configurations(baseline_config_);
   if (!camera_configurations.ok()) {
     throw std::runtime_error(
@@ -5426,6 +5433,41 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   });
   connect(projection_auto_canvas_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
   connect(projection_auto_crop_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
+  rink_configuration_combo_ = new QComboBox();
+  rink_configuration_combo_->setObjectName("stitchRinkConfigurationCombo");
+  rink_rotation_source_ = new QLabel();
+  rink_rotation_source_->setObjectName("rinkRotationSource");
+  for (size_t index = 0; index < rink_angle_spins_.size(); ++index) {
+    auto* spin = new QDoubleSpinBox();
+    spin->setObjectName(index == 0 ? "rinkPitchSpin" : "rinkRollSpin");
+    spin->setRange(-180, 180);
+    spin->setDecimals(3);
+    spin->setSingleStep(0.25);
+    spin->setSuffix(QString::fromUtf8("°"));
+    rink_angle_spins_[index] = spin;
+    connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, index](double angle) {
+      loaded_projection_framing_.rotation_degrees[index + 1] = angle;
+      loaded_projection_framing_.rotation_inherited = false;
+      updateRinkLevelingControls();
+      updatePresetDirtyState();
+    });
+  }
+  rink_leveling_button_ = new QPushButton("Level from posts…");
+  rink_leveling_button_->setObjectName("selectRinkLevelingButton");
+  rink_default_button_ = new QPushButton("Use rink default");
+  rink_default_button_->setObjectName("resetRinkLevelingButton");
+  connect(rink_leveling_button_, &QPushButton::clicked, this, [this]() { selectRinkLeveling(); });
+  connect(rink_default_button_, &QPushButton::clicked, this, [this]() {
+    loaded_projection_framing_.rotation_inherited = true;
+    pending_leveling_revision_.clear();
+    updateRinkLevelingControls();
+    updatePresetDirtyState();
+  });
+  connect(rink_configuration_combo_, &QComboBox::currentIndexChanged, this, [this]() {
+    updateRinkLevelingControls();
+    updatePresetDirtyState();
+  });
+  loadRinkLevelingControls(baseline_config_);
   updateProjectionCompatibility();
   updateProjectionParameterControls();
   updateProjectionFramingControls();
@@ -6481,7 +6523,16 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     algorithms_layout->addWidget(stitch_max_output_width_spin_, 15, 1);
     algorithms_layout->addWidget(run_autooptimizer_check_, 16, 0, 1, 2);
     algorithms_layout->addWidget(clean_stitching_button_, 17, 0, 1, 2);
-    algorithms_layout->setRowStretch(18, 1);
+    algorithms_layout->addWidget(new QLabel("Rink"), 18, 0);
+    algorithms_layout->addWidget(rink_configuration_combo_, 18, 1);
+    algorithms_layout->addWidget(new QLabel("Rink pitch"), 19, 0);
+    algorithms_layout->addWidget(rink_angle_spins_[0], 19, 1);
+    algorithms_layout->addWidget(new QLabel("Rink roll"), 20, 0);
+    algorithms_layout->addWidget(rink_angle_spins_[1], 20, 1);
+    algorithms_layout->addWidget(rink_rotation_source_, 21, 0, 1, 2);
+    algorithms_layout->addWidget(rink_default_button_, 22, 0);
+    algorithms_layout->addWidget(rink_leveling_button_, 22, 1);
+    algorithms_layout->setRowStretch(23, 1);
     algorithms_scroll->setWidget(algorithms_page);
     control_tabs->addTab(algorithms_scroll, "Algorithms");
     updateProjectionParameterControls();
@@ -6853,8 +6904,106 @@ std::vector<double> HStreamWindow::stitchProjectionParameters() const {
   return parsed.ok() ? hm::stitching::DefaultStitchProjectionParameters(*parsed) : std::vector<double>{};
 }
 
+void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
+  if (!rink_configuration_combo_)
+    return;
+  const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
+  const auto profiles = hm::stitching::read_stitch_rink_configurations(effective);
+  const auto selection = hm::stitching::read_stitch_rink_selection(effective);
+  if (!profiles.ok() || !selection.ok())
+    throw std::invalid_argument(!profiles.ok() ? profiles.status().ToString() : selection.status().ToString());
+  rink_configurations_ = *profiles;
+  const QSignalBlocker blocker(rink_configuration_combo_);
+  rink_configuration_combo_->clear();
+  rink_configuration_combo_->addItem("No rink default", QString());
+  for (const auto& profile : rink_configurations_)
+    rink_configuration_combo_->addItem(
+        QString::fromStdString(profile.display_name), QString::fromStdString(profile.id));
+  set_combo_to_data(rink_configuration_combo_, QString::fromStdString(*selection));
+  pending_leveling_revision_.clear();
+  updateRinkLevelingControls();
+}
+
+void HStreamWindow::updateRinkLevelingControls() {
+  if (!rink_configuration_combo_ || !rink_rotation_source_)
+    return;
+  if (loaded_projection_framing_.rotation_inherited) {
+    loaded_projection_framing_.rotation_degrees = {};
+    const std::string selected = rink_configuration_combo_->currentData().toString().toStdString();
+    for (const auto& profile : rink_configurations_)
+      if (profile.id == selected)
+        loaded_projection_framing_.rotation_degrees = profile.rotation_degrees;
+  }
+  for (size_t index = 0; index < rink_angle_spins_.size(); ++index) {
+    if (!rink_angle_spins_[index])
+      continue;
+    const QSignalBlocker blocker(rink_angle_spins_[index]);
+    rink_angle_spins_[index]->setValue(loaded_projection_framing_.rotation_degrees[index + 1]);
+  }
+  rink_rotation_source_->setText(
+      loaded_projection_framing_.rotation_inherited ? "Using rink defaults" : "Using this game's angle override");
+  const bool enabled = mappingBackend() == "nona" && !isArchiveFinalizing() &&
+      (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning);
+  rink_configuration_combo_->setEnabled(enabled);
+  for (auto* spin : rink_angle_spins_)
+    if (spin)
+      spin->setEnabled(enabled);
+  if (rink_default_button_)
+    rink_default_button_->setEnabled(enabled && !loaded_projection_framing_.rotation_inherited);
+  if (rink_leveling_button_)
+    rink_leveling_button_->setEnabled(enabled && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
+}
+
+bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
+  if (!rink_configuration_combo_)
+    return true;
+  hm::stitching::restore_generated_stitch_rink_context(config);
+  const std::string selected = rink_configuration_combo_->currentData().toString().toStdString();
+  config["stitching"]["rink_config"] = selected.empty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(selected);
+  // Workers read private YAML. Supply the effective catalog temporarily while
+  // retaining inheritance from user-level defaults on the next reload.
+  const auto context =
+      hm::stitching::materialize_stitch_rink_context(config, merge_yaml_maps(baseline_config_, config));
+  if (!context.ok()) {
+    appendLog(QString("Could not save rink selection: %1").arg(context.status().ToString().c_str()));
+    return false;
+  }
+  return true;
+}
+
+bool HStreamWindow::rinkLevelingInputsUnchanged() const {
+  return saved_camera_selection_ == stitchCameraSelection() && saved_control_point_matcher_ == controlPointMatcher() &&
+      saved_mapping_backend_ == mappingBackend() && saved_run_autooptimizer_ == runAutooptimizer() &&
+      saved_stitch_frame_time_ == stitchFrameTime() &&
+      saved_stitching_control_points_ == stitchingCalibrationControlPoints() &&
+      saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount();
+}
+
+void HStreamWindow::selectRinkLeveling() {
+  if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
+    return;
+  if (!rinkLevelingInputsUnchanged()) {
+    appendLog(
+        "Camera or reference-frame settings changed. Save and finish stitching calibration before selecting posts.");
+    return;
+  }
+  RinkLevelingDialog dialog(
+      gameDirectory(game_id_edit_->text().trimmed()),
+      loaded_projection_framing_.rotation_degrees,
+      this,
+      stitchCameraSelection());
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  loaded_projection_framing_.rotation_degrees = dialog.rotationDegrees();
+  loaded_projection_framing_.rotation_inherited = false;
+  pending_leveling_revision_ = dialog.sourceRevision();
+  updateRinkLevelingControls();
+  updatePresetDirtyState();
+  appendLog("Rink leveling selected. Save Preset to apply these angles and regenerate stitching.");
+}
+
 hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() const {
-  // Preserve calibrated rotation and crop, which do not have UI editors yet.
+  // Keep the calibrated rotation and crop while overlaying visible framing controls.
   hm::stitching::StitchProjectionFraming framing = loaded_projection_framing_;
   if (projection_auto_fov_check_)
     framing.auto_fov = projection_auto_fov_check_->isChecked();
@@ -6992,6 +7141,7 @@ void HStreamWindow::updateProjectionFramingControls() {
     projection_auto_canvas_check_->setEnabled(nona && !running && !finalizing);
   if (projection_auto_crop_check_)
     projection_auto_crop_check_->setEnabled(nona && !running && !finalizing);
+  updateRinkLevelingControls();
 }
 
 void HStreamWindow::updateProjectionCompatibility() {
@@ -7265,6 +7415,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
   }
   hm::stitching::write_stitch_projection_parameters(config, *parsed_active_projection, active_projection_parameters_);
   hm::stitching::write_stitch_projection_framing(config, active_projection_framing_);
+  if (!writeRinkLevelingSelection(config))
+    return false;
   if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
     config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
   }
@@ -7485,6 +7637,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
     hm::stitching::write_stitch_projection_parameters(config, *parsed_active_projection, active_projection_parameters_);
     hm::stitching::write_stitch_projection_framing(config, active_projection_framing_);
+    if (!writeRinkLevelingSelection(config))
+      return false;
     if (active_calibration_frame_count_ != kDefaultStitchCalibrationFrameCount) {
       config["stitching"]["calibration_frame_count"] = active_calibration_frame_count_;
     }
@@ -8016,7 +8170,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
       evidence.contains("artifact publication") || evidence.contains("publish stitch artifact")) {
     explanation = "Alignment completed, but the seam/panorama generation or artifact publication step failed.";
     action = "Check the reported diagnostic, available disk space, and write access to the game directory.";
-  } else if (evidence.contains("insufficient consensus") || evidence.contains("usable match") ||
+  } else if (
+      evidence.contains("insufficient consensus") || evidence.contains("usable match") ||
       evidence.contains("control point") || evidence.contains("no stitching calibration frame pair")) {
     explanation =
         "The cameras did not produce enough geometrically consistent overlap. Repeated rink markings can create "
@@ -8363,6 +8518,13 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 void HStreamWindow::startPipeline() {
+  if (!pending_leveling_revision_.isEmpty()) {
+    savePreset();
+    if (!pending_leveling_revision_.isEmpty()) {
+      appendLog("Save the selected rink leveling before starting playback.");
+      return;
+    }
+  }
   if (live_rotation_authorization_pending_) {
     appendLog("pipeline start deferred while live rotation config I/O finishes");
     return;
@@ -13757,6 +13919,16 @@ void HStreamWindow::savePreset() {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
   std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
+  if (!pending_leveling_revision_.isEmpty()) {
+    if (!rinkLevelingInputsUnchanged()) {
+      appendLog(
+          "Could not save leveling: camera or reference-frame settings changed. Restore them or recalibrate and select posts again.");
+      return;
+    }
+    width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
+    if (!width_constraint_check.has_value())
+      return;
+  }
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
@@ -13794,7 +13966,8 @@ void HStreamWindow::savePreset() {
     // Respect artifact -> config lock ordering only for an actual width
     // transition. Ordinary preset saves never contend with calibration.
     config_lock->reset();
-    width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
+    if (!width_constraint_check.has_value())
+      width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
     if (!width_constraint_check.has_value())
       return;
     config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
@@ -13813,11 +13986,19 @@ void HStreamWindow::savePreset() {
               &*width_constraint_check)) {
         return;
       }
-    } else {
+    } else if (pending_leveling_revision_.isEmpty()) {
       width_constraint_check.reset();
     }
   }
   const QString game_dir = QString::fromStdString(config_path.parent_path().string());
+  // Hold artifact -> config locks while checking both the calibration and
+  // private input settings, and keep them until publication finishes.
+  if (!pending_leveling_revision_.isEmpty() &&
+      RinkLevelingDialog::sourceRevision(game_dir) != pending_leveling_revision_) {
+    appendLog(
+        "Could not save leveling: calibration or game settings changed. Reopen Level from posts and estimate again.");
+    return;
+  }
   const QString previous_active_sidecar =
       resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
 
@@ -13857,13 +14038,14 @@ void HStreamWindow::savePreset() {
   }
   absl::Status publish;
   size_t invalidated_masks = 0;
+  const std::string intended_config_contents = YAML::Dump(config) + "\n";
   const bool fail_before_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
   const bool fail_after_config_publish = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
   if (fail_before_config_publish) {
     publish = absl::InternalError("preset config publication failure requested by test");
   } else if (invalidate_rink_masks) {
     auto transaction = hm::stitching::publish_game_config_without_rink_masks(
-        config_path.parent_path(), YAML::Dump(config) + "\n", /*remove_stitched_snapshot=*/true);
+        config_path.parent_path(), intended_config_contents, /*remove_stitched_snapshot=*/true);
     if (transaction.ok()) {
       invalidated_masks = *transaction;
       publish = absl::OkStatus();
@@ -13871,7 +14053,7 @@ void HStreamWindow::savePreset() {
       publish = transaction.status();
     }
   } else {
-    publish = publish_yaml_config(config_path, config);
+    publish = hm::stitching::publish_game_config(config_path.parent_path(), intended_config_contents);
   }
   if (fail_after_config_publish && publish.ok()) {
     publish = absl::InternalError("post-commit preset config failure requested by test");
@@ -13880,10 +14062,22 @@ void HStreamWindow::savePreset() {
     bool published_sidecar_may_be_referenced = published_playtracker_sidecar.isEmpty();
     YAML::Node visible_config;
     bool visible_config_loaded = false;
+    bool visible_generation_matches = false;
     try {
       if (fs::is_regular_file(config_path)) {
-        visible_config = YAML::LoadFile(config_path.string());
-        visible_config_loaded = true;
+        QFile visible_file(QString::fromStdString(config_path.string()));
+        if (visible_file.open(QIODevice::ReadOnly)) {
+          const QByteArray visible_contents = visible_file.readAll();
+          if (visible_file.error() == QFileDevice::NoError) {
+            visible_config = YAML::Load(visible_contents.toStdString());
+            visible_config_loaded = true;
+            // Compare the actual published bytes: parsing and dumping YAML can
+            // change formatting (for example, an empty camera-controls map).
+            visible_generation_matches = visible_contents == QByteArray::fromStdString(intended_config_contents);
+          }
+        }
+        if (!visible_config_loaded)
+          published_sidecar_may_be_referenced = true;
       }
     } catch (const std::exception&) {
       // The transaction lock is already held. If the just-published config
@@ -13904,7 +14098,6 @@ void HStreamWindow::savePreset() {
         }
       }
     }
-    const bool visible_generation_matches = visible_config_loaded && YAML::Dump(visible_config) == YAML::Dump(config);
     if (!published_sidecar_may_be_referenced) {
       QFile::remove(published_playtracker_sidecar);
     }
@@ -13915,12 +14108,16 @@ void HStreamWindow::savePreset() {
       if (game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
         preset_save_retry_game_ids_.insert(game_id_edit_->text().trimmed());
       }
+      // The selected angles are already in this exact visible generation.
+      // Consume their old snapshot so retry does not reject our own config write.
+      pending_leveling_revision_.clear();
       captureSavedControlState();
     }
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
     return;
   }
+  pending_leveling_revision_.clear();
   width_constraint_check.reset();
   const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
   std::error_code cleanup_error;
@@ -14017,6 +14214,7 @@ void HStreamWindow::resetCameraControls() {
   }
   if (!pipeline_running) {
     loaded_projection_framing_ = default_projection_framing_;
+    loadRinkLevelingControls(baseline_config_);
     if (projection_auto_fov_check_)
       projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
     updateProjectionFramingControls();
@@ -14165,6 +14363,8 @@ void HStreamWindow::captureSavedControlState() {
   saved_projection_ = stitchProjection();
   saved_projection_parameters_ = projection_parameter_values_;
   saved_projection_framing_ = stitchProjectionFraming();
+  saved_rink_configuration_ =
+      rink_configuration_combo_ ? rink_configuration_combo_->currentData().toString() : QString();
   updatePresetDirtyState();
 }
 
@@ -14175,8 +14375,11 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = retry_required || saved_camera_controls_.size() != camera_defaults_.size() ||
-      saved_high_bit_depth_mode_ != highBitDepthMode() || saved_stitch_frame_time_ != stitchFrameTime() ||
+  bool dirty = retry_required ||
+      (rink_configuration_combo_ && saved_rink_configuration_ != rink_configuration_combo_->currentData().toString()) ||
+      saved_projection_framing_.rotation_inherited != loaded_projection_framing_.rotation_inherited ||
+      saved_camera_controls_.size() != camera_defaults_.size() || saved_high_bit_depth_mode_ != highBitDepthMode() ||
+      saved_stitch_frame_time_ != stitchFrameTime() ||
       saved_stitching_control_points_ != stitchingCalibrationControlPoints() ||
       saved_stitching_calibration_frame_count_ != stitchingCalibrationFrameCount() ||
       saved_stitch_max_output_width_ != stitchingMaxOutputWidth() || saved_run_autooptimizer_ != runAutooptimizer() ||
@@ -14257,6 +14460,7 @@ void HStreamWindow::loadSavedControlConfig() {
     updateProjectionParameterControls();
   }
   loaded_projection_framing_ = default_projection_framing_;
+  loadRinkLevelingControls(baseline_config_);
   if (projection_auto_fov_check_) {
     const bool blocked = projection_auto_fov_check_->blockSignals(true);
     projection_auto_fov_check_->setChecked(default_projection_framing_.auto_fov);
@@ -14837,6 +15041,7 @@ void HStreamWindow::loadSavedControlConfig() {
       updateProjectionParameterControls();
     }
     loaded_projection_framing_ = staged_projection_framing;
+    loadRinkLevelingControls(config);
     if (projection_auto_fov_check_) {
       const bool blocked = projection_auto_fov_check_->blockSignals(true);
       projection_auto_fov_check_->setChecked(staged_projection_framing.auto_fov);
@@ -15160,6 +15365,8 @@ bool HStreamWindow::applySavedControlConfig(
       hm::stitching::write_stitch_projection_parameters(config, *projection, parameters);
   }
   hm::stitching::write_stitch_projection_framing(config, selected_projection_framing);
+  if (!writeRinkLevelingSelection(config))
+    return false;
   write_stitch_max_output_width_override(config, selected_max_output_width, default_stitch_max_output_width_);
   if (stitch_frame_time_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
       mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||

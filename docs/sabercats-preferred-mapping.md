@@ -54,7 +54,8 @@ These venue angles are starting defaults; mounting position and pitch can vary b
 Crop defaults to `[0, 1, 0, 1]`. Angles must be finite and within ±180 degrees.
 Crop fractions must lie in `[0, 1]` and enclose a nonempty rectangle. An explicit crop cannot be combined with
 `auto_crop: true`. The existing UI preserves these YAML settings when loading and saving a game; selecting
-automatic crop replaces the explicit rectangle. Dedicated rotation/crop UI editors are not provided yet.
+automatic crop replaces the explicit rectangle. Rink profiles, pitch/roll editors and optional post-based leveling
+are described in [rink-leveling-selection.md](rink-leveling-selection.md); explicit crop remains a YAML setting.
 Both settings are recorded in map provenance and calibration generation claims, so changes invalidate old maps.
 
 The complete setup-specific preset is [sabercats_preferred_mapping.yaml](../configs/sabercats_preferred_mapping.yaml).

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -74,6 +75,13 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool rinkLevelingInputsUnchanged(HStreamWindow* window) {
+    return window->rinkLevelingInputsUnchanged();
+  }
+  static void stageTestLeveling(HStreamWindow* window, const QByteArray& revision = "test-selection") {
+    window->pending_leveling_revision_ = revision;
+  }
+  static void discardTestLeveling(HStreamWindow* window) { window->pending_leveling_revision_.clear(); }
   static void appendLog(HStreamWindow* window, const QString& message) {
     window->appendLog(message);
   }
@@ -8092,7 +8100,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   inherited_rink_config["stitching"].remove("projection_framing");
   std::ofstream(config_path) << YAML::Dump(inherited_rink_config) << '\n';
   activate(create);
-  const bool inherited_rink_loads_clean = expect(!save->isEnabled(), "A rink-only game must load its default view cleanly");
+  const bool inherited_rink_loads_clean =
+      expect(!save->isEnabled(), "A rink-only game must load its default view cleanly");
   top_squeeze->setValue(16);
   activate(save);
   const auto inherited_rink_saved = YAML::LoadFile(config_path.string());
@@ -8102,6 +8111,76 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           inherited_rink_view->rotation_degrees[1] == -35 &&
           !inherited_rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
       "Editing projection controls must keep a rink-only game's rotation inherited");
+
+  if (!expect(HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Saved calibration controls permit leveling")) return false;
+  const double original_camera_fov = camera_horizontal_fov->value();
+  camera_horizontal_fov->setValue(original_camera_fov + 1);
+  if (!expect(!HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Unsaved camera/FOV changes reject leveling")) return false;
+  HStreamWindowTestAccess::stageTestLeveling(window);
+  const std::string before_rejected_leveling = YAML::Dump(YAML::LoadFile(config_path.string()));
+  activate(save);
+  if (!expect(YAML::Dump(YAML::LoadFile(config_path.string())) == before_rejected_leveling,
+              "A staged estimate cannot be saved alongside changed camera inputs")) return false;
+  HStreamWindowTestAccess::discardTestLeveling(window);
+  camera_horizontal_fov->setValue(original_camera_fov);
+
+  auto* rink_configuration = window->findChild<QComboBox*>("stitchRinkConfigurationCombo");
+  auto* rink_pitch = window->findChild<QDoubleSpinBox*>("rinkPitchSpin");
+  auto* rink_roll = window->findChild<QDoubleSpinBox*>("rinkRollSpin");
+  auto* rink_default = window->findChild<QPushButton*>("resetRinkLevelingButton");
+  if (!expect(rink_configuration && rink_pitch && rink_roll && rink_default, "Rink leveling controls exist"))
+    return false;
+  if (!expect(
+          rink_configuration->currentData().toString() == "vallco" && rink_pitch->value() == -35,
+          "Rink-only Vallco config shows inherited pitch"))
+    return false;
+  rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
+  if (!expect(rink_pitch->value() == -25 && save->isEnabled(), "Changing rink updates inherited pitch"))
+    return false;
+  activate(save);
+  auto rink_saved = YAML::LoadFile(config_path.string());
+  if (!expect(
+          rink_saved["stitching"]["rink_config"].as<std::string>() == "sharks-ice" &&
+              !rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
+          "Saving rink selection keeps default rotation inherited"))
+    return false;
+  rink_pitch->setValue(-35);
+  rink_configuration->setCurrentIndex(rink_configuration->findData("vallco"));
+  activate(save);
+  rink_saved = YAML::LoadFile(config_path.string());
+  if (!expect(
+          rink_saved["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -35,
+          "An explicit angle equal to a rink default remains an override"))
+    return false;
+  rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
+  if (!expect(rink_pitch->value() == -35, "Changing rink preserves game override"))
+    return false;
+  activate(rink_default);
+  if (!expect(rink_pitch->value() == -25, "Use rink default removes the game override"))
+    return false;
+  activate(save);
+  rink_saved = YAML::LoadFile(config_path.string());
+  if (!expect(
+          !rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
+          "Reset to rink defaults persists inheritance"))
+    return false;
+
+  YAML::Node custom_rink_config = YAML::Clone(config);
+  custom_rink_config["stitching"]["rink_config"] = "practice";
+  custom_rink_config["stitching"]["rink_configs"] = YAML::Load(
+      "{practice: {display_name: Practice, rotation_degrees: [0, -42, 1]}}");
+  std::ofstream(config_path) << YAML::Dump(custom_rink_config) << '\n';
+  activate(create);
+  if (!expect(rink_configuration->currentData().toString() == "practice" && rink_pitch->value() == -42,
+              "A partial private catalog loads alongside the standard rinks")) return false;
+  rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
+  activate(save);
+  const auto custom_to_standard = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
+  if (!expect(custom_to_standard.ok() && custom_to_standard->rotation_degrees[1] == -25,
+              "Switching from a custom catalog to a standard rink remains readable by private-only workers")) return false;
+  activate(create);
+  if (!expect(rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -25,
+              "Reload keeps the selected standard rink after a custom profile")) return false;
 
   YAML::Node leveled_config = YAML::Clone(config);
   leveled_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
@@ -8404,9 +8483,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   game_id->setText(original_game_id);
   activate(create);
-  return explicit_zero_is_private_intent && explicit_zero_survives_ui_save && inherited_rink_loads_clean && inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available && hero_defaults_applied &&
-      ace_defaults_applied && saved &&
-      camera_override_reloaded && generated_parameters_restored && generated_projection_parameters_discarded &&
+  return explicit_zero_is_private_intent && explicit_zero_survives_ui_save &&
+      inherited_rink_loads_clean && inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved &&
+      camera_defaults_available && hero_defaults_applied && ace_defaults_applied && saved && camera_override_reloaded &&
+      generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
       edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&
       partial_previous_framing_inherits_defaults && absent_previous_framing_restores_defaults &&
@@ -8417,6 +8497,61 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       inactive_opencv_framing_is_clean && projection_fov_does_not_leak_between_games &&
       projection_fov_reset_clears_cache && projection_parameters_do_not_leak_between_games &&
       projection_parameter_reset_clears_cache;
+}
+
+bool test_rink_leveling_save_retry(HStreamWindow* window) {
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* save = require_child<QPushButton>(window, "savePresetButton");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
+  auto* pitch = require_child<QDoubleSpinBox>(window, "rinkPitchSpin");
+  if (!game_id || !create || !save || !mapping_backend || !pitch)
+    return false;
+  const QString original_game_id = game_id->text();
+  game_id->setText("ui-leveling-durability-retry-game");
+  activate(create);
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  activate(save);
+  const fs::path game_dir(window->gameDirectoryText().toStdString());
+  const fs::path config_path = game_dir / "config.yaml";
+  // Geometry is covered by the dialog integration test. These snapshot files
+  // exercise the same content revision that an accepted dialog passes to Save.
+  std::ofstream(game_dir / "autooptimiser_out.pto") << "p f2 w3600 h1800 v360\n";
+  std::ofstream(game_dir / "stitching_canvas_provenance") << "{}\n";
+  QImage image(32, 32, QImage::Format_RGB32);
+  image.fill(Qt::white);
+  if (!expect(
+          image.save(QString::fromStdString((game_dir / "left.png").string())) &&
+              image.save(QString::fromStdString((game_dir / "right.png").string())),
+          "Leveling retry fixture must contain both camera snapshots"))
+    return false;
+  const QByteArray selected_revision = RinkLevelingDialog::sourceRevision(window->gameDirectoryText());
+  if (!expect(!selected_revision.isEmpty(), "Staged leveling must use a real snapshot revision"))
+    return false;
+  pitch->setValue(-31);
+  HStreamWindowTestAccess::stageTestLeveling(window, selected_revision);
+  qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT", "1");
+  activate(save);
+  qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
+  const auto visible_config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          visible_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -31 &&
+              visible_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
+              RinkLevelingDialog::sourceRevision(window->gameDirectoryText()) != selected_revision &&
+              save->isEnabled(),
+          "Post-commit failure must expose the selected angles and preserve the durability retry"))
+    return false;
+  // Retry immediately, without reloading the game or opening the dialog again.
+  activate(save);
+  const auto retried_config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          !save->isEnabled() &&
+              retried_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -31,
+          "A visible leveling save must retry successfully despite changing its own source revision"))
+    return false;
+  game_id->setText(original_game_id);
+  activate(create);
+  return true;
 }
 
 bool test_camera_controls(HStreamWindow* window) {
@@ -12287,6 +12422,10 @@ int main(int argc, char** argv) {
   }
   if (!test_projection_parameter_persistence(&window)) {
     std::cerr << "test_projection_parameter_persistence failed\n";
+    return 1;
+  }
+  if (!test_rink_leveling_save_retry(&window)) {
+    std::cerr << "test_rink_leveling_save_retry failed\n";
     return 1;
   }
   if (!test_output_controls(&window)) {
