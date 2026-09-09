@@ -83,6 +83,12 @@ struct HStreamWindowTestAccess {
     window->pending_leveling_revision_ = revision;
   }
   static void discardTestLeveling(HStreamWindow* window) { window->pending_leveling_revision_.clear(); }
+  static bool hasPendingCalibrationView(HStreamWindow* window) {
+    return !window->pending_leveling_revision_.isEmpty() || window->hasPendingCropSelection();
+  }
+  static QByteArray pendingLevelingRevision(HStreamWindow* window) {
+    return window->pending_leveling_revision_;
+  }
   static void appendLog(HStreamWindow* window, const QString& message) {
     window->appendLog(message);
   }
@@ -8299,15 +8305,58 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       dialog->close();
   });
   activate(crop_button);
-  qputenv("PATH", crop_original_path);
-  if (!expect(crop_preview_ready && !save->isEnabled(), "A parameter-free projection can preview an unchanged crop"))
+  if (!expect(
+          crop_preview_ready && !save->isEnabled() && !HStreamWindowTestAccess::hasPendingCalibrationView(window),
+          "A parameter-free projection can preview an unchanged crop without attaching a save guard")) {
+    qputenv("PATH", crop_original_path);
     return false;
+  }
+  for (double top_trim : {35.0, 30.0}) {
+    QTimer::singleShot(0, [&]() {
+      auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
+      if (!dialog)
+        return;
+      for (int attempt = 0; attempt < 250 && dialog->sourceRevision().isEmpty(); ++attempt)
+        QTest::qWait(20);
+      crop_preview_ready = !dialog->sourceRevision().isEmpty();
+      if (crop_preview_ready) {
+        dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(top_trim);
+        dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+      } else {
+        dialog->close();
+      }
+    });
+    activate(crop_button);
+    const bool changed_crop = top_trim == 35.0;
+    if (!expect(
+            crop_preview_ready && save->isEnabled() == changed_crop &&
+                HStreamWindowTestAccess::hasPendingCalibrationView(window) == changed_crop,
+            "Reverting a staged crop must remove its save guard")) {
+      qputenv("PATH", crop_original_path);
+      return false;
+    }
+    if (changed_crop) {
+      HStreamWindowTestAccess::stageTestLeveling(window);
+      // Crop mode changes must not consume an independently pending leveling
+      // selection, even when the crop is temporarily hidden by Auto.
+      auto_crop->setChecked(true);
+      if (!expect(
+              HStreamWindowTestAccess::pendingLevelingRevision(window) == "test-selection",
+              "Crop controls preserve pending leveling")) {
+        qputenv("PATH", crop_original_path);
+        return false;
+      }
+      auto_crop->setChecked(false);
+      HStreamWindowTestAccess::discardTestLeveling(window);
+    }
+  }
+  qputenv("PATH", crop_original_path);
   camera_horizontal_fov->setValue(126.75);
   activate(save);
   if (!expect(
           !save->isEnabled() &&
               YAML::LoadFile(config_path.string())["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 126.75,
-          "Accepting an unchanged crop must not prevent subsequent camera-setting saves"))
+          "Reverting a staged crop must not prevent subsequent camera-setting saves"))
     return false;
 
   YAML::Node generated_override = YAML::Clone(config);

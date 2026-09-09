@@ -394,6 +394,7 @@ class HStreamWindow : public QMainWindow {
   void updateRinkLevelingControls();
   void selectRinkLeveling();
   void selectProjectionCrop();
+  bool hasPendingCropSelection() const;
   bool rinkLevelingInputsUnchanged() const;
   bool writeRinkLevelingSelection(YAML::Node& config);
   void storeProjectionParameterControls();
@@ -528,6 +529,9 @@ class HStreamWindow : public QMainWindow {
   std::vector<hm::stitching::StitchRinkConfiguration> rink_configurations_;
   QString saved_rink_configuration_;
   QByteArray pending_leveling_revision_;
+  // Keep the edited crop's revision when Auto temporarily hides it. Enforce it
+  // only while the effective crop differs from the saved preset.
+  QByteArray crop_selection_revision_;
   QTimeEdit* stitch_frame_time_edit_{nullptr};
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};

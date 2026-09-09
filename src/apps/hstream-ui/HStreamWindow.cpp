@@ -6928,6 +6928,7 @@ void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
         QString::fromStdString(profile.display_name), QString::fromStdString(profile.id));
   set_combo_to_data(rink_configuration_combo_, QString::fromStdString(*selection));
   pending_leveling_revision_.clear();
+  crop_selection_revision_.clear();
   updateRinkLevelingControls();
 }
 
@@ -7037,14 +7038,22 @@ void HStreamWindow::selectProjectionCrop() {
   if (dialog.exec() != QDialog::Accepted)
     return;
   const auto chosen = dialog.framing();
-  if (chosen == selected_framing)
+  // Reopening a staged crop can refresh its source revision after calibration
+  // changes. Accepting an unchanged saved preset needs no new guard.
+  if (chosen == selected_framing && !hasPendingCropSelection())
     return;
   loaded_projection_framing_.crop = chosen.crop;
   projection_auto_crop_check_->setChecked(chosen.auto_crop);
-  if (!dialog.sourceRevision().isEmpty())
-    pending_leveling_revision_ = dialog.sourceRevision();
+  crop_selection_revision_ = dialog.sourceRevision();
   updatePresetDirtyState();
   appendLog("Crop selected. Save Preset applies it to this game and regenerates stitching.");
+}
+
+bool HStreamWindow::hasPendingCropSelection() const {
+  if (crop_selection_revision_.isEmpty())
+    return false;
+  const auto selected = stitchProjectionFraming();
+  return selected.auto_crop != saved_projection_framing_.auto_crop || selected.crop != saved_projection_framing_.crop;
 }
 
 hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() const {
@@ -8566,9 +8575,9 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 void HStreamWindow::startPipeline() {
-  if (!pending_leveling_revision_.isEmpty()) {
+  if (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection()) {
     savePreset();
-    if (!pending_leveling_revision_.isEmpty()) {
+    if (!pending_leveling_revision_.isEmpty() || hasPendingCropSelection()) {
       appendLog("Save the selected calibration view before starting playback.");
       return;
     }
@@ -13967,7 +13976,9 @@ void HStreamWindow::savePreset() {
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
   std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
-  if (!pending_leveling_revision_.isEmpty()) {
+  const bool pending_crop = hasPendingCropSelection();
+  const bool pending_view = !pending_leveling_revision_.isEmpty() || pending_crop;
+  if (pending_view) {
     if (!rinkLevelingInputsUnchanged()) {
       appendLog(
           "Could not save the calibration view: camera or reference-frame settings changed. Restore them or recalibrate and reopen the view selector.");
@@ -14034,18 +14045,21 @@ void HStreamWindow::savePreset() {
               &*width_constraint_check)) {
         return;
       }
-    } else if (pending_leveling_revision_.isEmpty()) {
+    } else if (!pending_view) {
       width_constraint_check.reset();
     }
   }
   const QString game_dir = QString::fromStdString(config_path.parent_path().string());
   // Hold artifact -> config locks while checking both the calibration and
   // private input settings, and keep them until publication finishes.
-  if (!pending_leveling_revision_.isEmpty() &&
-      RinkLevelingDialog::sourceRevision(game_dir) != pending_leveling_revision_) {
-    appendLog(
-        "Could not save the calibration view: calibration or game settings changed. Reopen the leveling or crop selector.");
-    return;
+  if (pending_view) {
+    const auto revision = RinkLevelingDialog::sourceRevision(game_dir);
+    if ((!pending_leveling_revision_.isEmpty() && revision != pending_leveling_revision_) ||
+        (pending_crop && revision != crop_selection_revision_)) {
+      appendLog(
+          "Could not save the calibration view: calibration or game settings changed. Reopen the leveling or crop selector.");
+      return;
+    }
   }
   const QString previous_active_sidecar =
       resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
@@ -14156,9 +14170,10 @@ void HStreamWindow::savePreset() {
       if (game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
         preset_save_retry_game_ids_.insert(game_id_edit_->text().trimmed());
       }
-      // The selected angles are already in this exact visible generation.
-      // Consume their old snapshot so retry does not reject our own config write.
+      // The selected view is already in this exact visible generation. Consume
+      // its old snapshots so retry does not reject our own config write.
       pending_leveling_revision_.clear();
+      crop_selection_revision_.clear();
       captureSavedControlState();
     }
     appendLog(QString("failed to write preset %1: %2")
@@ -14166,6 +14181,7 @@ void HStreamWindow::savePreset() {
     return;
   }
   pending_leveling_revision_.clear();
+  crop_selection_revision_.clear();
   width_constraint_check.reset();
   const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
   std::error_code cleanup_error;
