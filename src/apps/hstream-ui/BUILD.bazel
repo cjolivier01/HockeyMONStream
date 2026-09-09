@@ -24,6 +24,8 @@ filegroup(
         "HStreamWindow.h",
         "RinkLevelingDialog.cpp",
         "RinkLevelingDialog.h",
+        "ProjectionCropDialog.cpp",
+        "ProjectionCropDialog.h",
         "PipelineInspectorWidget.cpp",
         "PipelineInspectorWidget.h",
         "ScoreboardSelectionDialog.cpp",
@@ -88,6 +90,24 @@ cc_library(
 )
 
 cc_library(
+    name = "projection_crop_dialog",
+    srcs = ["ProjectionCropDialog.cpp"],
+    hdrs = ["ProjectionCropDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":rink_leveling_dialog",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:rink_leveling",
+        "//src/libs/stitching:stitching_algorithms",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp"],
     hdrs = ["HStreamWindow.h"],
@@ -97,6 +117,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":pipeline_inspector_widget",
+        ":projection_crop_dialog",
         ":rink_leveling_dialog",
         ":scoreboard_selection_dialog",
         ":telemetry_csv_publisher",
@@ -217,6 +238,19 @@ cc_test(
     deps = [
         ":scoreboard_selection_dialog",
         "@qt//:qt_network",
+        "@qt//:qt_test",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_test(
+    name = "projection_crop_dialog_test",
+    srcs = ["ProjectionCropDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":projection_crop_dialog",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
     ],

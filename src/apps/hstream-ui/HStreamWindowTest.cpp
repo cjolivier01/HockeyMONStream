@@ -8196,6 +8196,49 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           saved_view["crop"].as<std::vector<double>>() == std::vector<double>({0.02, 0.98, 0.54, 1}),
       "Editing a projection control must preserve the game's calibrated rotation and explicit crop");
 
+  auto* crop_button = require_child<QPushButton>(window, "projectionCropButton");
+  if (!expect(crop_button && crop_button->isEnabled(), "The crop editor is available for a stopped NONA game"))
+    return false;
+  bool crop_dialog_seen = false;
+  QTimer::singleShot(0, [&]() {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (!dialog)
+      return;
+    auto* mode = dialog->findChild<QComboBox*>("projectionCropMode");
+    auto* keep = dialog->findChild<QCheckBox*>("projectionCropKeepWidth");
+    crop_dialog_seen = mode && keep && mode->currentData() == "manual";
+    if (crop_dialog_seen)
+      keep->setChecked(true);
+    dialog->reject();
+  });
+  activate(crop_button);
+  if (!expect(crop_dialog_seen && !save->isEnabled(), "Cancel in the crop editor must preserve the loaded preset"))
+    return false;
+  QTimer::singleShot(0, [&]() {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (!dialog)
+      return;
+    dialog->findChild<QComboBox*>("projectionCropMode")->setCurrentIndex(2);
+    dialog->findChild<QCheckBox*>("projectionCropKeepWidth")->setChecked(true);
+    dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(30);
+    dialog->findChild<QDoubleSpinBox*>("projectionCropBottom")->setValue(10);
+    dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+  });
+  activate(crop_button);
+  if (!expect(save->isEnabled(), "A manual crop selection marks the preset dirty"))
+    return false;
+  activate(save);
+  const auto cropped = YAML::LoadFile(config_path.string())["stitching"]["projection_framing"];
+  if (!expect(
+          !cropped["auto_crop"].as<bool>() &&
+              cropped["crop"].as<std::vector<double>>() == std::vector<double>({0, 1, 0.3, 0.9}) &&
+              cropped["rotation_degrees"].as<std::vector<double>>() == std::vector<double>({0, -35, 3}),
+          "Saving manual crop retains the full width and preserves camera angles"))
+    return false;
+  activate(create);
+  if (!expect(!save->isEnabled(), "Reloading the manual crop leaves a clean preset"))
+    return false;
+
   YAML::Node generated_override = YAML::Clone(config);
   generated_override["stitching"]["projection"] = "triplane";
   generated_override["stitching"]["projection_parameters"]["triplane"] = YAML::Load("[75]");

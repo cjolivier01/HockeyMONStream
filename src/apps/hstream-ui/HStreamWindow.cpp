@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
+#include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
@@ -5420,8 +5421,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   projection_auto_crop_check_->setChecked(default_projection_framing_.auto_crop);
   set_control_help(
       projection_auto_crop_check_,
-      "Crop to Hugin's tight valid-image rectangle. Turn this off to retain the full projection canvas and its "
-      "rounded dual-camera/fisheye boundary at the top and bottom.");
+      "Crop to Hugin's tight valid-image rectangle. Adjust crop offers Full canvas and Manual modes with independent "
+      "edges, including Keep full width. Turning Auto off restores the current manual crop, if any.");
   connect(projection_auto_fov_check_, &QCheckBox::toggled, this, [this]() {
     updateProjectionFramingControls();
     updatePresetDirtyState();
@@ -5433,6 +5434,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   });
   connect(projection_auto_canvas_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
   connect(projection_auto_crop_check_, &QCheckBox::toggled, this, [this]() { updatePresetDirtyState(); });
+  projection_crop_button_ = new QPushButton("Adjust crop…");
+  projection_crop_button_->setObjectName("projectionCropButton");
+  set_control_help(
+      projection_crop_button_, "Preview Auto cropping, retain the full canvas, or drag a manual crop rectangle.");
+  connect(projection_crop_button_, &QPushButton::clicked, this, [this]() { selectProjectionCrop(); });
   rink_configuration_combo_ = new QComboBox();
   rink_configuration_combo_->setObjectName("stitchRinkConfigurationCombo");
   rink_rotation_source_ = new QLabel();
@@ -6518,7 +6524,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     algorithms_layout->addWidget(projection_fov_label, 12, 0);
     algorithms_layout->addWidget(projection_fov_controls, 12, 1);
     algorithms_layout->addWidget(projection_auto_canvas_check_, 13, 0, 1, 2);
-    algorithms_layout->addWidget(projection_auto_crop_check_, 14, 0, 1, 2);
+    algorithms_layout->addWidget(projection_auto_crop_check_, 14, 0);
+    algorithms_layout->addWidget(projection_crop_button_, 14, 1);
     algorithms_layout->addWidget(max_width_label, 15, 0);
     algorithms_layout->addWidget(stitch_max_output_width_spin_, 15, 1);
     algorithms_layout->addWidget(run_autooptimizer_check_, 16, 0, 1, 2);
@@ -7002,6 +7009,39 @@ void HStreamWindow::selectRinkLeveling() {
   appendLog("Rink leveling selected. Save Preset to apply these angles and regenerate stitching.");
 }
 
+void HStreamWindow::selectProjectionCrop() {
+  if (!projection_crop_button_ || !projection_crop_button_->isEnabled() || !game_id_edit_)
+    return;
+  auto selected_framing = stitchProjectionFraming();
+  auto current_geometry = selected_framing, saved_geometry = saved_projection_framing_;
+  current_geometry.auto_crop = saved_geometry.auto_crop = false;
+  current_geometry.crop = saved_geometry.crop = hm::stitching::StitchProjectionFraming{}.crop;
+  const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
+  QString preview_error;
+  if (!rinkLevelingInputsUnchanged() || saved_projection_ != stitchProjection() ||
+      saved_parameters == saved_projection_parameters_.end() ||
+      saved_parameters->second != stitchProjectionParameters() || current_geometry != saved_geometry) {
+    preview_error = "Save and calibrate the current projection, angles and camera settings to enable its crop preview.";
+  }
+  ProjectionCropDialog dialog(
+      gameDirectory(game_id_edit_->text().trimmed()),
+      selected_framing,
+      stitchProjection(),
+      stitchProjectionParameters(),
+      stitchCameraSelection(),
+      preview_error,
+      this);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  const auto chosen = dialog.framing();
+  loaded_projection_framing_.crop = chosen.crop;
+  projection_auto_crop_check_->setChecked(chosen.auto_crop);
+  if (!dialog.sourceRevision().isEmpty())
+    pending_leveling_revision_ = dialog.sourceRevision();
+  updatePresetDirtyState();
+  appendLog("Crop selected. Save Preset applies it to this game and regenerates stitching.");
+}
+
 hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() const {
   // Keep the calibrated rotation and crop while overlaying visible framing controls.
   hm::stitching::StitchProjectionFraming framing = loaded_projection_framing_;
@@ -7141,6 +7181,9 @@ void HStreamWindow::updateProjectionFramingControls() {
     projection_auto_canvas_check_->setEnabled(nona && !running && !finalizing);
   if (projection_auto_crop_check_)
     projection_auto_crop_check_->setEnabled(nona && !running && !finalizing);
+  if (projection_crop_button_)
+    projection_crop_button_->setEnabled(
+        nona && !running && !finalizing && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
   updateRinkLevelingControls();
 }
 
@@ -8521,7 +8564,7 @@ void HStreamWindow::startPipeline() {
   if (!pending_leveling_revision_.isEmpty()) {
     savePreset();
     if (!pending_leveling_revision_.isEmpty()) {
-      appendLog("Save the selected rink leveling before starting playback.");
+      appendLog("Save the selected calibration view before starting playback.");
       return;
     }
   }
@@ -13922,7 +13965,7 @@ void HStreamWindow::savePreset() {
   if (!pending_leveling_revision_.isEmpty()) {
     if (!rinkLevelingInputsUnchanged()) {
       appendLog(
-          "Could not save leveling: camera or reference-frame settings changed. Restore them or recalibrate and select posts again.");
+          "Could not save the calibration view: camera or reference-frame settings changed. Restore them or recalibrate and reopen the view selector.");
       return;
     }
     width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
@@ -13996,7 +14039,7 @@ void HStreamWindow::savePreset() {
   if (!pending_leveling_revision_.isEmpty() &&
       RinkLevelingDialog::sourceRevision(game_dir) != pending_leveling_revision_) {
     appendLog(
-        "Could not save leveling: calibration or game settings changed. Reopen Level from posts and estimate again.");
+        "Could not save the calibration view: calibration or game settings changed. Reopen the leveling or crop selector.");
     return;
   }
   const QString previous_active_sidecar =

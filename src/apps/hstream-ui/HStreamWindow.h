@@ -393,6 +393,7 @@ class HStreamWindow : public QMainWindow {
   void loadRinkLevelingControls(const YAML::Node& config);
   void updateRinkLevelingControls();
   void selectRinkLeveling();
+  void selectProjectionCrop();
   bool rinkLevelingInputsUnchanged() const;
   bool writeRinkLevelingSelection(YAML::Node& config);
   void storeProjectionParameterControls();
@@ -518,6 +519,7 @@ class HStreamWindow : public QMainWindow {
   QDoubleSpinBox* projection_fov_spin_{nullptr};
   QCheckBox* projection_auto_canvas_check_{nullptr};
   QCheckBox* projection_auto_crop_check_{nullptr};
+  QPushButton* projection_crop_button_{nullptr};
   QComboBox* rink_configuration_combo_{nullptr};
   std::array<QDoubleSpinBox*, 2> rink_angle_spins_{};
   QPushButton* rink_leveling_button_{nullptr};
