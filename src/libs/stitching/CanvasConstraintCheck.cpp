@@ -44,8 +44,8 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
-constexpr size_t kHardMaximumArtifactDimension = 32768;
-constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr size_t kHardMaximumArtifactDimension = 65536;
+constexpr uint64_t kHardMaximumArtifactPixels = 256ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumTiffArtifactBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPngArtifactBytes = 512ULL * 1024ULL * 1024ULL;

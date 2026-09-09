@@ -56,8 +56,8 @@ namespace fs = std::filesystem;
 
 constexpr size_t kMinimumUsableMatches = 16;
 constexpr double kMaximumOptimizationRmsPixels = 50.0;
-constexpr size_t kHardMaximumCanvasDimension = 32768;
-constexpr uint64_t kHardMaximumCanvasPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr size_t kHardMaximumCanvasDimension = 65536;
+constexpr uint64_t kHardMaximumCanvasPixels = 256ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumCanvasPixels * 4 + 32ULL * 1024ULL * 1024ULL;
 // Nona's LZW BigTIFF output can be larger than its decoded RGBA payload when
 // the warped pixels are not compressible. Keep a hard encoded-file bound, but

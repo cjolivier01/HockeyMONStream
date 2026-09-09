@@ -31,6 +31,10 @@ create or consume an intermediate stitched video frame. The normal downstream ri
 projected stitch; calibration no longer creates an ordinary panorama for a separate first rink detection or performs a
 second projection/remap/stitch stage.
 
+Stitching image validation permits up to 65,536 pixels per dimension and 268,435,456 total pixels. These bounds are
+shared by calibration, artifact reload, and the patched `hm-cupano` control-mask loaders. Explicit output-width
+settings still apply, and Jetson retains its separate 8,192-pixel live-canvas default.
+
 `nona` supports every Hugin projection exposed by the UI. The native `opencv-magsac` and
 `opencv-affine-ransac` mapping backends currently support rectilinear output only. Incompatible YAML pairs fail
 validation, while the UI disables non-rectilinear choices whenever an OpenCV backend is selected. Older OpenCV

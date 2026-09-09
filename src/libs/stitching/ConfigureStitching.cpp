@@ -88,8 +88,8 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
 }
 
 constexpr size_t kDefaultMaxControlPoints = 1500;
-constexpr size_t kHardMaximumArtifactDimension = 32768;
-constexpr uint64_t kHardMaximumArtifactPixels = 128ULL * 1024ULL * 1024ULL;
+constexpr size_t kHardMaximumArtifactDimension = 65536;
+constexpr uint64_t kHardMaximumArtifactPixels = 256ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 4 + 32ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserPlacementTiffBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserSeamPngBytes = 512ULL * 1024ULL * 1024ULL;

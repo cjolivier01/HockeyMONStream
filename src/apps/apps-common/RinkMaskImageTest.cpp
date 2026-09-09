@@ -136,6 +136,28 @@ int main() {
     return 1;
   }
 
+  // Check admission of the real 245MP canvas without allocating its decoded pixels.
+  const fs::path native_canvas = temporary.path() / "native-canvas.png";
+  write_header(native_canvas, 19695, 12460);
+  hm::gpu_preview::RinkMaskLoadOptions native_options;
+  native_options.downsample_to_texture_budget = true;
+  native_options.maximum_source_dimension = 19695;
+  native_options.maximum_source_pixels = hm::gpu_preview::kMaximumPreviewRinkMaskSourcePixels;
+  native_options.maximum_resource_bytes = hm::gpu_preview::kMaximumPreviewRinkMaskResourceBytes;
+  bool reached_decoder = false;
+  const auto native_result = hm::gpu_preview::load_rink_mask_png(
+      native_canvas.string(),
+      [&](const auto&, auto, auto) -> hm::gpu_preview::RinkMaskImage {
+        reached_decoder = true;
+        throw std::runtime_error("stop after preview resource admission");
+      },
+      {},
+      native_options);
+  if (!reached_decoder || native_result.status != hm::gpu_preview::RinkMaskLoadStatus::kDecodeFailed) {
+    std::cerr << "245MP rink mask must fit the doubled preview resource budget\n";
+    return 1;
+  }
+
   const fs::path symlink_path = temporary.path() / "mask-link.png";
   fs::create_symlink(valid_png.filename(), symlink_path);
   if (!expect_status(
