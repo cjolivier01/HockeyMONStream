@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
@@ -126,6 +127,16 @@ int main(int argc, char** argv) {
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
+    const auto producer_lock = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+    if (!expect(producer_lock.ok() && *producer_lock, "producer holds the artifact lock before opening"))
+      return 1;
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    ok &= expect(
+        !dialog.loadError().isEmpty() &&
+            !dialog.findChild<QPushButton*>("previewRinkLevelingButton")->isEnabled(),
+        "opening must reject artifact-lock contention even before any source files change");
+  }
+  {
     ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\nsleep 0.3\ncat <<'RAYS'\n" + transformed + "RAYS\n");
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
@@ -203,6 +214,15 @@ int main(int argc, char** argv) {
     dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "repeat preview completes");
+    {
+      const auto producer_lock = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+      if (!expect(producer_lock.ok() && *producer_lock, "producer holds the artifact lock before acceptance"))
+        return 1;
+      accept->click();
+      ok &= expect(
+          dialog.result() != QDialog::Accepted && RinkLevelingDialog::sourceRevision(game.path()) == revision,
+          "acceptance must reject artifact-lock contention even when snapshot hashes still match");
+    }
     accept->click();
     ok &= expect(
         dialog.result() == QDialog::Accepted && dialog.rotationDegrees() == std::array<double, 3>{0, -33, 2},

@@ -200,6 +200,7 @@ cc_test(
     deps = [
         ":rink_leveling_dialog",
         ":scoreboard_selection_dialog",
+        "//src/libs/stitching:canvas_constraint_check",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
     ],

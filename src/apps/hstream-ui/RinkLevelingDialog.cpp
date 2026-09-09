@@ -164,7 +164,7 @@ QByteArray RinkLevelingDialog::sourceRevision(const QString& directory) {
 
 void RinkLevelingDialog::loadSnapshot() {
   const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
-  if (!lock.ok()) {
+  if (!lock.ok() || !*lock) {
     load_error_ = "Stitching is being updated. Stop playback and try again after calibration finishes.";
     return;
   }
@@ -470,7 +470,7 @@ void RinkLevelingDialog::acceptAngles() {
   if (busy_ || !previewed_)
     return;
   const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
-  if (!lock.ok()) {
+  if (!lock.ok() || !*lock) {
     fail("The stitching calibration is being updated. Cancel and reopen after it finishes.");
     return;
   }
