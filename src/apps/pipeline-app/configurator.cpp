@@ -5811,9 +5811,11 @@ absl::Status Configurator::map_common_config_keys() {
     const std::string sink_path = "pipeline." + section_name + ".";
     std::optional<YAML::Node> bitrate;
     HM_ASSIGN_OR_RETURN(bitrate, canonical_source("video_out.bit_rate", sink_path + "bitrate", sink["bitrate"], true));
-    if (bitrate.has_value()) {
-      if ((*bitrate).IsNull() || !(*bitrate).IsScalar())
-        return absl::InvalidArgumentError("video_out.bit_rate must be a positive integer");
+    if (bitrate.has_value() && bitrate->IsNull()) {
+      sink.remove("bitrate");
+    } else if (bitrate.has_value()) {
+      if (!(*bitrate).IsScalar())
+        return absl::InvalidArgumentError("video_out.bit_rate must be null or a positive integer");
       try {
         const int64_t value = (*bitrate).as<int64_t>();
         if (value <= 0 || value > G_MAXINT)
@@ -6920,6 +6922,11 @@ absl::Status Configurator::configure_stitching_calibration_archive_name(YAML::No
     const std::optional<ArchiveOverride> selected_bitrate = select_override(
         sink["bitrate"], native_bitrate_rank, canonical_bitrate, canonical_bitrate_rank, legacy_bitrate);
     if (selected_bitrate.has_value()) {
+      if (selected_bitrate->value.IsNull() && selected_bitrate->source == ArchiveOverrideSource::kCanonical) {
+        sink.remove("bitrate");
+        explicit_value_ranks_.erase(sink_path + "bitrate");
+        continue;
+      }
       if (selected_bitrate->value.IsNull() || !selected_bitrate->value.IsScalar())
         return absl::InvalidArgumentError("The calibration archive bitrate override must be a positive integer");
       try {
@@ -7231,12 +7238,17 @@ absl::Status Configurator::configure_encode_file_outputs(
     HM_RETURN_IF_ERROR(configurator_internal::claim_unique_archive_output_path(claimed_output_paths, output_path, key));
     const int canonical_bitrate_rank = explicit_value_rank("video_out.bit_rate");
     const int native_bitrate_rank = explicit_value_rank("pipeline." + key + ".bitrate");
+    const auto canonical_bitrate = get_node(config_, "video_out.bit_rate");
+    const bool canonical_bitrate_is_fixed =
+        canonical_bitrate.has_value() && !canonical_bitrate->IsNull() && canonical_bitrate_rank >= 1;
+    const bool native_bitrate_is_fixed =
+        sink_node["bitrate"].IsDefined() && !sink_node["bitrate"].IsNull() && native_bitrate_rank >= 1;
     archive_outputs.push_back(
         {sink_node,
          sink_id,
          codec,
          std::move(output_path),
-         (sink_type != NV_DS_SINK_ENCODE_STITCHED_FILE && canonical_bitrate_rank >= 1) || native_bitrate_rank >= 1,
+         (sink_type != NV_DS_SINK_ENCODE_STITCHED_FILE && canonical_bitrate_is_fixed) || native_bitrate_is_fixed,
          sink_type == NV_DS_SINK_ENCODE_STITCHED_FILE});
   }
 
