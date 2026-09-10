@@ -647,8 +647,10 @@ play-tracker:
   }
 
   auto automatic_calibration_archive = prepare_tone_routing("automatic-calibration-archive", "0");
-  if (automatic_calibration_archive &&
-      automatic_calibration_archive->apply_config_item("video_out.bit_rate", "null").ok()) {
+  if (automatic_calibration_archive) {
+    YAML::Node automatic_video_out = automatic_calibration_archive->config()["video_out"];
+    automatic_video_out["bit_rate"] = YAML::Node(YAML::NodeType::Null);
+    hm::ConfiguratorTestAccess::set_explicit_rank(automatic_calibration_archive.get(), "video_out.bit_rate", 3);
     YAML::Node archive_pipeline = automatic_calibration_archive->config()["pipeline"];
     archive_pipeline["sink0"]["enable"] = 1;
     archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
