@@ -5421,6 +5421,12 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     projection_parameter_spins_[index]->setSingleStep(1.0);
     projection_parameter_spins_[index]->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     projection_parameter_labels_[index]->setBuddy(projection_parameter_spins_[index]);
+    projection_parameter_checks_[index] = new QCheckBox();
+    projection_parameter_checks_[index]->setObjectName(QString("projectionParameter%1Check").arg(index + 1));
+    connect(projection_parameter_checks_[index], &QCheckBox::toggled, this, [this, index](bool checked) {
+      // The numeric value remains the shared storage for projection parameters.
+      projection_parameter_spins_[index]->setValue(checked ? 1 : 0);
+    });
     connect(projection_parameter_spins_[index], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
       storeProjectionParameterControls();
       updateProjectionFramingControls();
@@ -6318,7 +6324,11 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       percent->setSuffix("%");
     }
     for (const CameraSliderSpec& spec : specs) {
-      addSlider(content_layout, spec.id, spec.label, spec.minimum, spec.maximum, spec.default_value);
+      if (spec.minimum == 0 && spec.maximum == 1) {
+        addCameraCheckBox(content_layout, spec.id, spec.label, spec.default_value != 0);
+      } else {
+        addSlider(content_layout, spec.id, spec.label, spec.minimum, spec.maximum, spec.default_value);
+      }
     }
     if (include_color_toggles) {
       addCameraCheckBox(
@@ -6438,9 +6448,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       const auto canonical = camera_sliders_.find(spec.id);
       if (canonical == camera_sliders_.end() || !canonical->second)
         throw std::logic_error(QString("No canonical camera slider for %1").arg(spec.id).toStdString());
-      auto* row = new QGridLayout();
+      auto* row_widget = new QWidget();
+      auto* row = new QGridLayout(row_widget);
+      row->setContentsMargins(0, 0, 0, 0);
       auto* name = new QLabel(spec.label);
       const QString id = QString::fromLatin1(spec.id);
+      row_widget->setObjectName("stitchedCameraRow_" + id);
+      name->setObjectName("stitchedCameraLabel_" + id);
+      stitched_color_control_rows_[id] = row_widget;
       auto* value_label = make_value_label("stitchedCameraValue_" + id, QString::number(canonical->second->value()));
       auto* slider = new WheelPassthroughSlider(Qt::Horizontal);
       slider->setObjectName("stitchedCameraSlider_" + id);
@@ -6457,7 +6472,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       row->addWidget(name, 0, 0);
       row->addWidget(value_label, 0, 1);
       row->addWidget(slider, 1, 0, 1, 2);
-      color_layout->addLayout(row);
+      color_layout->addWidget(row_widget);
     };
     for (const CameraSliderSpec& spec : color_controls)
       add_mirrored_slider(spec);
@@ -6590,6 +6605,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
       algorithms_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 9, 0);
       algorithms_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 9, 1);
+      algorithms_layout->addWidget(projection_parameter_checks_[index], static_cast<int>(index) + 9, 0, 1, 2);
     }
     algorithms_layout->addWidget(projection_fov_label, 12, 0);
     algorithms_layout->addWidget(projection_fov_controls, 12, 1);
@@ -6600,11 +6616,20 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     algorithms_layout->addWidget(stitch_max_output_width_spin_, 15, 1);
     algorithms_layout->addWidget(run_autooptimizer_check_, 16, 0, 1, 2);
     algorithms_layout->addWidget(clean_stitching_button_, 17, 0, 1, 2);
-    algorithms_layout->addWidget(new QLabel("Rink"), 18, 0);
+    auto* rink_label = new QLabel("Rink");
+    rink_label->setObjectName("rinkConfigurationLabel");
+    rink_label->setBuddy(rink_configuration_combo_);
+    auto* pitch_label = new QLabel("Rink pitch");
+    pitch_label->setObjectName("rinkPitchLabel");
+    pitch_label->setBuddy(rink_angle_spins_[0]);
+    auto* roll_label = new QLabel("Rink roll");
+    roll_label->setObjectName("rinkRollLabel");
+    roll_label->setBuddy(rink_angle_spins_[1]);
+    algorithms_layout->addWidget(rink_label, 18, 0);
     algorithms_layout->addWidget(rink_configuration_combo_, 18, 1);
-    algorithms_layout->addWidget(new QLabel("Rink pitch"), 19, 0);
+    algorithms_layout->addWidget(pitch_label, 19, 0);
     algorithms_layout->addWidget(rink_angle_spins_[0], 19, 1);
-    algorithms_layout->addWidget(new QLabel("Rink roll"), 20, 0);
+    algorithms_layout->addWidget(roll_label, 20, 0);
     algorithms_layout->addWidget(rink_angle_spins_[1], 20, 1);
     algorithms_layout->addWidget(rink_rotation_source_, 21, 0, 1, 2);
     algorithms_layout->addWidget(rink_default_button_, 22, 0);
@@ -6875,13 +6900,13 @@ void HStreamWindow::updateStitchedColorPrecisionControls() {
   }
 
   for (const QString& id : {QString("Bring_Up_Shadows"), QString("Exposure_x100")}) {
-    const auto control = stitched_color_sliders_.find(id);
-    if (control != stitched_color_sliders_.end() && control->second)
+    const auto control = stitched_color_control_rows_.find(id);
+    if (control != stitched_color_control_rows_.end() && control->second)
       control->second->setEnabled(tone_controls_enabled);
   }
   const auto black_point = stitched_color_checkboxes_.find("Lift_Shadow_Black_Point");
   if (black_point != stitched_color_checkboxes_.end() && black_point->second)
-    black_point->second->setEnabled(tone_controls_enabled);
+    black_point->second->setEnabled(tone_controls_enabled && cameraControlValue("Bring_Up_Shadows") > 0);
   const auto force = stitched_color_checkboxes_.find("Use_10_Bit_Grading");
   if (force != stitched_color_checkboxes_.end() && force->second)
     force->second->setEnabled(true);
@@ -7023,6 +7048,11 @@ void HStreamWindow::updateRinkLevelingControls() {
   const bool enabled = mappingBackend() == "nona" && !isArchiveFinalizing() &&
       (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning);
   rink_configuration_combo_->setEnabled(enabled);
+  for (const auto* name : {"rinkConfigurationLabel", "rinkPitchLabel", "rinkRollLabel"}) {
+    if (auto* label = findChild<QLabel*>(name))
+      label->setEnabled(enabled);
+  }
+  rink_rotation_source_->setEnabled(enabled);
   for (auto* spin : rink_angle_spins_)
     if (spin)
       spin->setEnabled(enabled);
@@ -7058,10 +7088,10 @@ void HStreamWindow::updateCropRotationControls() {
       }
     }
     camera_value_labels_.at(id)->setText(QString::number(slider->second->value()));
-    slider->second->setEnabled(!suppressed);
+    camera_control_rows_.at(id)->setEnabled(!suppressed);
   }
-  const auto link = camera_sliders_.find("Link_Fixed_Edge_Rotation_Left_Right");
-  if (link != camera_sliders_.end() && link->second)
+  const auto link = camera_checkboxes_.find("Link_Fixed_Edge_Rotation_Left_Right");
+  if (link != camera_checkboxes_.end() && link->second)
     link->second->setEnabled(!suppressed);
   if (crop_rotation_explanation_)
     crop_rotation_explanation_->setVisible(suppressed);
@@ -7202,7 +7232,7 @@ void HStreamWindow::updateProjectionParameterControls() {
   const auto projection = hm::stitching::ParseStitchProjection(projection_name.toStdString());
   const auto* definitions = projection.ok() ? &hm::stitching::StitchProjectionParameters(*projection) : nullptr;
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  const bool enabled = mappingBackend() == "nona" && !running;
+  const bool enabled = mappingBackend() == "nona" && !running && !isArchiveFinalizing();
   std::vector<double> values;
   if (projection.ok()) {
     const auto saved = projection_parameter_values_.find(projection_name);
@@ -7212,11 +7242,14 @@ void HStreamWindow::updateProjectionParameterControls() {
   for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
     QLabel* label = projection_parameter_labels_[index];
     QDoubleSpinBox* spin = projection_parameter_spins_[index];
+    QCheckBox* checkbox = projection_parameter_checks_[index];
     const bool visible = definitions && index < definitions->size();
-    if (!label || !spin)
+    if (!label || !spin || !checkbox)
       continue;
-    label->setVisible(visible);
-    spin->setVisible(visible);
+    const bool boolean = visible && std::string_view((*definitions)[index].name) == "corners";
+    label->setVisible(visible && !boolean);
+    spin->setVisible(visible && !boolean);
+    checkbox->setVisible(boolean);
     if (!visible)
       continue;
     const auto& definition = (*definitions)[index];
@@ -7227,10 +7260,16 @@ void HStreamWindow::updateProjectionParameterControls() {
     spin->setRange(definition.minimum, definition.maximum);
     spin->setValue(index < values.size() ? values[index] : definition.default_value);
     spin->setEnabled(enabled);
+    label->setEnabled(enabled);
+    const QSignalBlocker checkbox_blocker(checkbox);
+    checkbox->setChecked(spin->value() != 0);
+    checkbox->setEnabled(enabled);
+    checkbox->setText(label->text());
     spin->setProperty("huginParameterName", QString::fromLatin1(definition.name));
     const QString description = QString::fromLatin1(definition.description);
     set_control_help(label, description);
     set_control_help(spin, description);
+    set_control_help(checkbox, description);
   }
   projection_parameter_controls_projection_ = projection_name;
   if (stitched_control_tabs_) {
@@ -7283,7 +7322,8 @@ void HStreamWindow::updateProjectionFramingControls() {
       projection_fov_spin_->setValue(selected_fov);
     projection_fov_values_[projection] = projection_fov_spin_->value();
     projection_fov_controls_projection_ = projection;
-    projection_fov_spin_->setEnabled(nona && !running && !finalizing && projection_auto_fov_check_ && !automatic_fov);
+    const bool fov_enabled = nona && !running && !finalizing && projection_auto_fov_check_ && !automatic_fov;
+    projection_fov_spin_->setEnabled(fov_enabled);
     const QString maximum_text = QString::number(maximum_fov, 'f', 2);
     const QString description =
         QString(
@@ -7291,8 +7331,10 @@ void HStreamWindow::updateProjectionFramingControls() {
             "current projection parameters; values above that limit are not representable by Hugin.")
             .arg(projection_display_name, maximum_text);
     set_control_help(projection_fov_spin_, description);
-    if (auto* label = findChild<QLabel*>("projectionHorizontalFovLabel"))
+    if (auto* label = findChild<QLabel*>("projectionHorizontalFovLabel")) {
+      label->setEnabled(fov_enabled);
       set_control_help(label, description);
+    }
   }
   if (projection_auto_fov_check_)
     projection_auto_fov_check_->setEnabled(nona && !running && !finalizing);
@@ -14021,12 +14063,6 @@ void HStreamWindow::updateRunControls() {
     projection_combo_->setEnabled(!running && !finalizing);
   updateProjectionParameterControls();
   updateProjectionFramingControls();
-  if (finalizing) {
-    for (QDoubleSpinBox* spin : projection_parameter_spins_) {
-      if (spin)
-        spin->setEnabled(false);
-    }
-  }
   if (stitch_max_output_width_spin_) {
     stitch_max_output_width_spin_->setEnabled(!running && !finalizing);
   }
@@ -14534,7 +14570,10 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = isArchiveFinalizing();
   const bool single_frame = calibration_frame_count_spin_ && calibration_frame_count_spin_->value() == 1;
-  stitch_frame_time_edit_->setEnabled(!running && !finalizing && single_frame);
+  const bool enabled = !running && !finalizing && single_frame;
+  stitch_frame_time_edit_->setEnabled(enabled);
+  if (auto* label = findChild<QLabel*>("stitchFrameTimeLabel"))
+    label->setEnabled(enabled);
   set_control_help(
       stitch_frame_time_edit_,
       single_frame
@@ -14567,7 +14606,23 @@ void HStreamWindow::captureSavedControlState() {
   updatePresetDirtyState();
 }
 
+void HStreamWindow::updateCameraControlDependencies() {
+  const auto enable_row = [this](const QString& id, bool enabled) {
+    const auto row = camera_control_rows_.find(id);
+    if (row != camera_control_rows_.end())
+      row->second->setEnabled(enabled);
+  };
+  enable_row("Oversized_Player_Percent", cameraControlValue("Ignore_Oversized_Players") != 0);
+  enable_row("Stop_Cancel_Hysteresis_Frames", cameraControlValue("Cancel_Stop_On_Opposite_Direction") != 0);
+  // Overshoot uses the speed multiplier only when timed braking is off.
+  enable_row("Overshoot_Speed_Ratio_x100", cameraControlValue("Overshoot_Stop_Delay_Frames") == 0);
+  enable_row("Lift_Shadow_Black_Point", cameraControlValue("Bring_Up_Shadows") > 0);
+  updateStitchedColorPrecisionControls();
+}
+
 void HStreamWindow::updatePresetDirtyState() {
+  // Refresh after both interactive edits and signal-blocked preset loads.
+  updateCameraControlDependencies();
   if (!save_preset_button_)
     return;
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
@@ -15775,10 +15830,8 @@ bool HStreamWindow::applySavedControlConfig(
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
       has_control(controls, "Right_Fixed_Edge_Rotation_Angle_x10");
   auto fixed_edge_control_matches_saved = [this](const QString& id) {
-    const auto slider = camera_sliders_.find(id);
     const auto saved = saved_camera_controls_.find(id);
-    return slider != camera_sliders_.end() && slider->second && saved != saved_camera_controls_.end() &&
-        cameraPresetControlValue(id) == saved->second;
+    return saved != saved_camera_controls_.end() && cameraPresetControlValue(id) == saved->second;
   };
   const bool preserve_fixed_edge_null = previous_fixed_edge_rotation_was_null &&
       fixed_edge_control_matches_saved("Link_Fixed_Edge_Rotation_Left_Right") &&
@@ -18149,8 +18202,13 @@ QSlider* HStreamWindow::addSlider(
     int minimum,
     int maximum,
     int value) {
-  auto* row = new QGridLayout();
+  auto* row_widget = new QWidget();
+  row_widget->setObjectName("cameraRow_" + id);
+  camera_control_rows_[id] = row_widget;
+  auto* row = new QGridLayout(row_widget);
+  row->setContentsMargins(0, 0, 0, 0);
   auto* name = new QLabel(label);
+  name->setObjectName("cameraLabel_" + id);
   auto* value_label = make_value_label("cameraValue_" + id, QString::number(value));
   auto* slider = new WheelPassthroughSlider(Qt::Horizontal);
   slider->setObjectName("cameraSlider_" + id);
@@ -18190,13 +18248,18 @@ QSlider* HStreamWindow::addSlider(
   row->addWidget(name, 0, 0);
   row->addWidget(value_label, 0, 1);
   row->addWidget(slider, 1, 0, 1, 2);
-  layout->addLayout(row);
+  layout->addWidget(row_widget);
   return slider;
 }
 
 QSpinBox* HStreamWindow::addCameraSpinBox(QVBoxLayout* layout, const QString& id, const QString& label, int value) {
-  auto* row = new QHBoxLayout();
+  auto* row_widget = new QWidget();
+  row_widget->setObjectName("cameraRow_" + id);
+  camera_control_rows_[id] = row_widget;
+  auto* row = new QHBoxLayout(row_widget);
+  row->setContentsMargins(0, 0, 0, 0);
   auto* name = new QLabel(label);
+  name->setObjectName("cameraLabel_" + id);
   auto* spin = new QSpinBox();
   spin->setObjectName("cameraSpin_" + id);
   spin->setRange(0, std::numeric_limits<int>::max());
@@ -18211,7 +18274,7 @@ QSpinBox* HStreamWindow::addCameraSpinBox(QVBoxLayout* layout, const QString& id
   });
   row->addWidget(name, 1);
   row->addWidget(spin);
-  layout->addLayout(row);
+  layout->addWidget(row_widget);
   return spin;
 }
 
@@ -18220,8 +18283,13 @@ QDoubleSpinBox* HStreamWindow::addCameraDoubleSpinBox(
     const QString& id,
     const QString& label,
     double value) {
-  auto* row = new QHBoxLayout();
+  auto* row_widget = new QWidget();
+  row_widget->setObjectName("cameraRow_" + id);
+  camera_control_rows_[id] = row_widget;
+  auto* row = new QHBoxLayout(row_widget);
+  row->setContentsMargins(0, 0, 0, 0);
   auto* name = new QLabel(label);
+  name->setObjectName("cameraLabel_" + id);
   auto* spin = new CameraDoubleSpinBox();
   spin->setObjectName("cameraSpin_" + id);
   spin->setDecimals(std::numeric_limits<double>::max_digits10);
@@ -18238,7 +18306,7 @@ QDoubleSpinBox* HStreamWindow::addCameraDoubleSpinBox(
   });
   row->addWidget(name, 1);
   row->addWidget(spin);
-  layout->addLayout(row);
+  layout->addWidget(row_widget);
   return spin;
 }
 
@@ -18257,13 +18325,16 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
     checkbox->setChecked(checked);
   }
   camera_checkboxes_[id] = checkbox;
+  camera_control_rows_[id] = checkbox;
   camera_defaults_[id] = checked ? 1 : 0;
   connect_check_state_changed(checkbox, this, [this, id](Qt::CheckState state) {
     const int new_value = state == Qt::Checked ? 1 : 0;
+    synchronizeFixedEdgeRotationControls(id, new_value);
     const bool sent_live = sendLiveCameraControl(id, new_value);
     if (sent_live) {
       appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
     } else if (
+        (scheduled_rotation_controls_.count(id) && scheduled_rotation_controls_.at(id) == new_value) ||
         (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value) ||
         (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value)) {
       // The scheduler already reported the coalesced live update.

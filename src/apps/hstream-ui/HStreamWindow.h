@@ -311,6 +311,7 @@ class HStreamWindow : public QMainWindow {
   void updateStitchFrameTimeAvailability();
   void captureSavedControlState();
   void updatePresetDirtyState();
+  void updateCameraControlDependencies();
   void refreshGames();
   void selectGame(const QString& game_id);
   void createOrLoadGame();
@@ -527,6 +528,7 @@ class HStreamWindow : public QMainWindow {
   QComboBox* projection_combo_{nullptr};
   std::array<QLabel*, 3> projection_parameter_labels_{{nullptr, nullptr, nullptr}};
   std::array<QDoubleSpinBox*, 3> projection_parameter_spins_{{nullptr, nullptr, nullptr}};
+  std::array<QCheckBox*, 3> projection_parameter_checks_{{nullptr, nullptr, nullptr}};
   QCheckBox* projection_auto_fov_check_{nullptr};
   QDoubleSpinBox* projection_fov_spin_{nullptr};
   QCheckBox* projection_auto_canvas_check_{nullptr};
@@ -755,12 +757,14 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> output_states_;
   std::map<QString, QCheckBox*> output_toggles_;
   std::map<QString, QSlider*> camera_sliders_;
+  std::map<QString, QWidget*> camera_control_rows_;
   std::map<QString, QSpinBox*> camera_spinboxes_;
   std::map<QString, QDoubleSpinBox*> camera_double_spinboxes_;
   std::map<QString, double> inherited_player_size_controls_;
   std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, QSlider*> stitched_color_sliders_;
+  std::map<QString, QWidget*> stitched_color_control_rows_;
   std::map<QString, QCheckBox*> stitched_color_checkboxes_;
   std::map<QString, QLabel*> stitched_color_value_labels_;
   QLabel* stitched_color_precision_status_{nullptr};
