@@ -7,7 +7,7 @@ The selected calibration pair keeps its EXIF when published to the game director
 
 Available fields include camera make/model/serial, firmware, lens identity,
 focal length/aperture, exposure time, ISO, exposure compensation, white balance,
-sharpness, GPS position/altitude/speed and capture time. Fields are written only
+sharpness, GPS position/altitude/speed/course and capture time. Fields are written only
 when the recording supplies a supported value. Lens focal length is not guessed
 from a field-of-view setting; gyro readings and other vendor data without an EXIF
 counterpart are not copied into unrelated tags.
@@ -53,7 +53,7 @@ For a real-recording smoke check, first create a disposable PNG, then run:
 ```sh
 bazel-bin/src/libs/stitching/calibration_frame_exif_test \
   /path/to/source.MP4 /path/to/disposable.png 10.5
-exiftool -config '' -G1 -s -n -EXIF:all /path/to/disposable.png
+exiftool -config '' -a -G1 -s -n -EXIF:all /path/to/disposable.png
 ```
 
 The last argument is the original timestamp in seconds within that physical

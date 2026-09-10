@@ -53,6 +53,8 @@ const char* const kTags[] = {
     "GPSLongitude",
     "GPSAltitude",
     "GPSSpeed",
+    "GPSTrack",
+    "GPSTrackRef",
     "GPSDateTime",
     "GPSMeasureMode",
     "GPSDOP",
@@ -554,6 +556,15 @@ Tags ForFrame(const Metadata& metadata, double seconds) {
     if (const auto speed = number(values, "GPSSpeed"); speed && *speed >= 0) {
       out["GPSSpeed"] = decimal(*speed);
       out["GPSSpeedRef"] = "K";
+    }
+    // ExifTool's timed GPS table defines course relative to true north unless
+    // GPSTrackRef explicitly overrides it (Insta360 records use the default).
+    if (const auto track = number(values, "GPSTrack"); track && *track >= 0 && *track < 360) {
+      const std::string reference = values.count("GPSTrackRef") ? values["GPSTrackRef"] : "T";
+      if (reference == "T" || reference == "M") {
+        out["GPSTrack"] = decimal(*track);
+        out["GPSTrackRef"] = reference;
+      }
     }
     if (values.count("GPSDateTime") && utc_time(values["GPSDateTime"], false)) {
       const auto& date = values["GPSDateTime"];

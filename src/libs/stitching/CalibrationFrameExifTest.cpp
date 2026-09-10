@@ -70,6 +70,8 @@ int main(int argc, char** argv) {
     "Track4:Doc1:GPSAltitude": -2.5,
     "Track4:Doc1:GPSMeasureMode": 3,
     "Track4:Doc1:GPSSpeed": 36,
+    "Track4:Doc1:GPSTrack": 123.5,
+    "Track4:Doc1:GPSTrackRef": "M",
     "Track4:Doc2:SampleTime": 1,
     "Track4:Doc2:SampleDuration": 1,
     "Track4:Doc2:ExposureTimes": "0.005 0.006",
@@ -90,9 +92,13 @@ int main(int argc, char** argv) {
         tags["GPSLatitudeRef"] == "S" && tags["GPSLongitudeRef"] == "W" && tags["GPSAltitudeRef"] == "1" &&
             tags["GPSSpeedRef"] == "K",
         "GPS signs and units must survive");
+    ok &= expect(
+        tags["GPSTrack"] == "123.5" && tags["GPSTrackRef"] == "M",
+        "GPS course must preserve an explicit magnetic reference");
     tags = ForFrame(*gopro, 1);
     ok &= expect(
-        tags["ExposureTime"] == "0.005" && tags["ISO"] == "1600" && !tags.count("GPSLatitude"),
+        tags["ExposureTime"] == "0.005" && tags["ISO"] == "1600" && !tags.count("GPSLatitude") &&
+            !tags.count("GPSTrack"),
         "Sample boundaries must not retain stale exposure or GPS");
     ok &= expect(
         tags["DateTimeOriginal"] == "2026:09:05 00:00:00" && tags["OffsetTimeOriginal"] == "+00:00",
@@ -363,10 +369,11 @@ int main(int argc, char** argv) {
         ok &= expect(
             tags["GPS:GPSLatitude"].as<double>() == 40 && tags["GPS:GPSLongitude"].as<double>() == 70 &&
                 tags["GPS:GPSLongitudeRef"].as<std::string>() == "W" && tags["GPS:GPSSpeed"].as<double>() == 36 &&
+                tags["GPS:GPSTrack"].as<double>() == 180 && tags["GPS:GPSTrackRef"].as<std::string>() == "T" &&
                 tags["GPS:GPSAltitudeRef"].as<int>() == 1 &&
                 tags["GPS:GPSDateStamp"].as<std::string>() == "2026:09:04" &&
                 tags["GPS:GPSTimeStamp"].as<std::string>() == "12:00:00.025",
-            "Written EXIF must recover the UTC GPS record with fractional timestamp, signs and speed units");
+            "Written EXIF must recover the UTC GPS record with fractional timestamp, signs, speed units and course");
       } catch (const YAML::Exception& e) {
         std::cerr << e.what() << "\n";
         ok = false;
