@@ -184,8 +184,33 @@ bool e2e(const QStringList& args) {
     std::cerr << "End-of-range pause failed: " << status->text().toStdString() << '\n';
     return false;
   }
+  auto* save = widget<QPushButton>(dialog, "experimentSave");
+  if (!save->isEnabled()) {
+    std::cerr << "Prepared candidate cannot be saved\n";
+    return false;
+  }
+  auto* in = widget<QDoubleSpinBox>(dialog, "experimentIn");
+  in->setValue(in->value() + 1);
+  if (save->isEnabled()) {
+    std::cerr << "Changing the range left an old candidate saveable with a different media binding\n";
+    return false;
+  }
+  comparison->setCurrentIndex(0);
+  comparison->setCurrentIndex(2);
+  if (save->isEnabled()) {
+    std::cerr << "Selecting an old candidate enabled Save before the new range was prepared\n";
+    return false;
+  }
+  // A failed preparation retains the old candidate for inspection. It must
+  // not make that candidate saveable using the edited recording or range.
+  widget<QLineEdit>(dialog, "experimentManifest")->setText("/missing/hstream_telemetry.json");
+  prepare->click();
+  if (!wait_until([&]() { return prepare->isEnabled(); }, 5000) || save->isEnabled()) {
+    std::cerr << "Failed preparation re-enabled Save for a stale candidate\n";
+    return false;
+  }
   std::cout
-      << "PASS: historical preparation, parameter trial, actual GPU playback, paused frame step, original comparison, range loop, end pause, screenshots\n";
+      << "PASS: historical preparation, parameter trial, actual GPU playback, paused frame step, original comparison, range loop, end pause, screenshots, stale trial save invalidation\n";
   return true;
 }
 

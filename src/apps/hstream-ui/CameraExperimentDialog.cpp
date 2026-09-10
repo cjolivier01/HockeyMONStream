@@ -226,7 +226,7 @@ struct CameraExperimentDialog::Impl {
     settings->setEnabled(!active);
     legacy_arena->setEnabled(!active);
     legacy_config->setEnabled(!active);
-    save->setEnabled(!active && comparison->currentIndex() >= 2);
+    save->setEnabled(!active && !source_dirty && comparison->currentIndex() >= 2);
   }
 
   void invalidate_source() {
@@ -236,6 +236,7 @@ struct CameraExperimentDialog::Impl {
     apply->setEnabled(false);
     play->setEnabled(false);
     capture->setEnabled(false);
+    save->setEnabled(false);
     preview.Close();
     preview_open = false;
     playing = false;
@@ -434,7 +435,7 @@ struct CameraExperimentDialog::Impl {
     capture->setEnabled(false);
     timeline->setRange(0, selected->empty() ? 0 : static_cast<int>(selected->size() - 1));
     timeline->setValue(0);
-    save->setEnabled(index >= 2 && !work.valid());
+    save->setEnabled(index >= 2 && !source_dirty && !work.valid());
     update_frame();
     if (!source_dirty && (preview_open || replay_now)) {
       if (open_preview() && replay_now) {
@@ -814,7 +815,8 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   connect(s.save, &QPushButton::clicked, this, [this]() {
     auto& state = *impl_;
     const int index = state.comparison->currentIndex() - 2;
-    if (!state.session || index < 0 || static_cast<std::size_t>(index) >= state.trials.size())
+    if (!state.session || state.source_dirty || state.work.valid() || index < 0 ||
+        static_cast<std::size_t>(index) >= state.trials.size())
       return;
     const QString path =
         QFileDialog::getSaveFileName(this, "Save camera experiment", "camera-trial.yaml", "YAML (*.yaml)");
