@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <system_error>
 
@@ -120,6 +121,7 @@ bool open_reserved_stream(int fd, std::ofstream* output) {
     return false;
   }
   output->open(absl::StrCat("/proc/self/fd/", fd), std::ios::out | std::ios::binary);
+  output->imbue(std::locale::classic());
   return output->good();
 }
 
@@ -255,7 +257,7 @@ absl::Status PlayTrackerTelemetryCsv::Start(
   config_events_ << "Event,SampleBoundary,Kind,Key,Value,Artifact\n";
   config_events_ << "0,1,base-config,config-file," << csv_string(source_config.path) << ','
                  << csv_string(source_config_filename_) << '\n';
-  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_ || !replay_) {
     RemoveIncompleteOutputs();
     CloseOutputs();
     return absl::InternalError("could not initialize playtracker telemetry CSV headers");
@@ -342,6 +344,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       {"hstream_telemetry", ".json"},
       {"play_tracker_source", ".yaml"},
       {"play_tracker_effective", ".yaml"},
+      {"hstream_replay", ".jsonl"},
   };
   uint64_t first_generation = 0;
   fs::directory_iterator entry(output_directory_, error);
@@ -387,7 +390,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
     return absl::InternalError(absl::StrCat("could not inspect telemetry generations: ", error.message()));
   }
 
-  std::array<int, 9> artifact_fds;
+  std::array<int, 10> artifact_fds;
   artifact_fds.fill(-1);
   bool generation_reserved = false;
   for (uint64_t attempt = 0; attempt < 100000; ++attempt) {
@@ -402,6 +405,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
     camera_fast_filename_ = suffixed_name("camera_fast", suffix_, ".csv");
     frame_index_filename_ = suffixed_name("hstream_frame_index", suffix_, ".csv");
     config_events_filename_ = suffixed_name("hstream_config_events", suffix_, ".csv");
+    replay_filename_ = suffixed_name("hstream_replay", suffix_, ".jsonl");
     source_config_filename_ = suffixed_name("play_tracker_source", suffix_, ".yaml");
     effective_config_filename_ = suffixed_name("play_tracker_effective", suffix_, ".yaml");
     struct ArtifactReservation {
@@ -409,7 +413,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       std::string published_filename;
       bool training_input;
     };
-    const std::array<ArtifactReservation, 9> generation_artifacts = {{
+    const std::array<ArtifactReservation, 10> generation_artifacts = {{
         {absl::StrCat(".", tracking_filename_, ".partial"), tracking_filename_, true},
         {absl::StrCat(".", detections_filename_, ".partial"), detections_filename_, true},
         {absl::StrCat(".", camera_filename_, ".partial"), camera_filename_, true},
@@ -419,6 +423,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
         {suffixed_name("hstream_telemetry", suffix_, ".json"), {}, false},
         {source_config_filename_, {}, false},
         {effective_config_filename_, {}, false},
+        {replay_filename_, {}, false},
     }};
     const size_t owned_start = owned_artifacts_.size();
     int reservation_error = 0;
@@ -477,7 +482,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
   const bool streams_opened = open_reserved_stream(artifact_fds[0], &tracking_) &&
       open_reserved_stream(artifact_fds[1], &detections_) && open_reserved_stream(artifact_fds[2], &camera_) &&
       open_reserved_stream(artifact_fds[3], &camera_fast_) && open_reserved_stream(artifact_fds[4], &frame_index_) &&
-      open_reserved_stream(artifact_fds[5], &config_events_);
+      open_reserved_stream(artifact_fds[5], &config_events_) && open_reserved_stream(artifact_fds[9], &replay_);
   manifest_fd_ = artifact_fds[6];
   artifact_fds[6] = -1;
   // Keep stable descriptors for every staged artifact. Training publication
@@ -693,7 +698,7 @@ void PlayTrackerTelemetryCsv::WriterLoop() {
         writer_failed_ = true;
       }
     }
-    if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_) {
+    if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !replay_) {
       writer_failed_ = true;
     }
   }
@@ -703,13 +708,45 @@ void PlayTrackerTelemetryCsv::WriterLoop() {
   camera_fast_.flush();
   frame_index_.flush();
   config_events_.flush();
-  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+  replay_.flush();
+  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_ || !replay_) {
     writer_failed_ = true;
   }
 }
 
 void PlayTrackerTelemetryCsv::WriteSample(const QueuedSample& queued) {
   const TelemetrySample& sample = queued.sample;
+  if (sample.replay) {
+    const TelemetryReplaySample& state = *sample.replay;
+    replay_ << std::setprecision(std::numeric_limits<float>::max_digits10)
+            << "{\"schema\":1,\"sample_id\":" << queued.sample_id << ",\"source_id\":" << sample.source_id
+            << ",\"pts_ns\":";
+    if (sample.pts_ns) {
+      replay_ << *sample.pts_ns;
+    } else {
+      replay_ << "null";
+    }
+    replay_ << ",\"seek_epoch\":" << sample.seek_epoch << ",\"reset_epoch\":" << state.reset_epoch
+            << ",\"width\":" << sample.width << ",\"height\":" << sample.height << ",\"arena\":[" << state.arena[0]
+            << ',' << state.arena[1] << ',' << state.arena[2] << ',' << state.arena[3]
+            << "],\"stepped\":" << (state.stepped ? "true" : "false")
+            << ",\"has_received_tracks\":" << (state.has_received_tracks ? "true" : "false")
+            << ",\"edge_rotation_left\":" << state.edge_rotation_left
+            << ",\"edge_rotation_right\":" << state.edge_rotation_right << ",\"tracks\":[";
+    bool first_track = true;
+    for (const auto& [id, box] : state.tracks) {
+      if (!first_track)
+        replay_ << ',';
+      first_track = false;
+      replay_ << '[' << id << ',' << box[0] << ',' << box[1] << ',' << box[2] << ',' << box[3] << ']';
+    }
+    replay_ << ']';
+    if (!state.checkpoint.empty()) {
+      replay_ << ",\"checkpoint\":" << json_string(state.checkpoint)
+              << ",\"base_checkpoint\":" << json_string(state.base_checkpoint);
+    }
+    replay_ << "}\n";
+  }
   for (const TelemetryDetection& detection : sample.detections) {
     // Exact current HM DetectionDataFrame order (headerless):
     // Frame,BBox_X1,BBox_Y1,BBox_X2,BBox_Y2,Scores,Labels.
@@ -861,7 +898,8 @@ bool PlayTrackerTelemetryCsv::FlushAndSyncStagedArtifacts() {
   camera_fast_.flush();
   frame_index_.flush();
   config_events_.flush();
-  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_) {
+  replay_.flush();
+  if (!tracking_ || !detections_ || !camera_ || !camera_fast_ || !frame_index_ || !config_events_ || !replay_) {
     return false;
   }
 
@@ -1172,7 +1210,8 @@ std::string PlayTrackerTelemetryCsv::BuildManifestContents() const {
               "blocks instead of creating loss; native source/frame/PTS identity is in the frame-index sidecar\"\n"
            << "  },\n"
            << "  \"sidecars\": {\"frame_index\": " << json_string(frame_index_filename_)
-           << ", \"config_events\": " << json_string(config_events_filename_) << "},\n"
+           << ", \"config_events\": " << json_string(config_events_filename_)
+           << ", \"replay\": " << json_string(replay_filename_) << "},\n"
            << "  \"config_provenance\": {\n"
            << "    \"source_path\": " << json_string(source_config_path_) << ",\n"
            << "    \"effective_path\": " << json_string(effective_config_path_) << ",\n"
@@ -1190,6 +1229,7 @@ void PlayTrackerTelemetryCsv::CloseOutputs() {
   camera_fast_.close();
   frame_index_.close();
   config_events_.close();
+  replay_.close();
   for (OwnedArtifact& artifact : owned_artifacts_) {
     if (artifact.reservation_fd >= 0) {
       ::close(artifact.reservation_fd);
@@ -1224,6 +1264,7 @@ void PlayTrackerTelemetryCsv::ResetOutputPaths() {
   camera_fast_filename_.clear();
   frame_index_filename_.clear();
   config_events_filename_.clear();
+  replay_filename_.clear();
   source_config_filename_.clear();
   effective_config_filename_.clear();
   owned_artifacts_.clear();

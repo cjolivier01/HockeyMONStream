@@ -139,6 +139,12 @@ hm::playtracker::TelemetrySample make_policy_sample(bool with_track, size_t extr
   sample.tracks.resize(sample.tracks.size() + extra_tracks, {99, 1.0f, 2.0f, 3.0f, 4.0f, 0.5f, 0});
   sample.policy_boxes.push_back({1.0f, 2.0f, 300.0f, 150.0f});
   sample.policy_boxes.push_back({3.0f, 4.0f, 500.0f, 250.0f});
+  sample.replay.emplace();
+  sample.replay->arena = {0, 0, 3840, 1080};
+  sample.replay->tracks.push_back({88, {10.5f, 20.25f, 40.5f, 60.25f}});
+  sample.replay->stepped = true;
+  sample.replay->checkpoint = "native state\nwith \"quotes\"";
+  sample.replay->base_checkpoint = "base state";
   return sample;
 }
 
@@ -204,6 +210,7 @@ int main() {
   sample.tracks.push_back({88, 10.5f, 20.25f, 30.0f, 40.0f, 0.875f, 0});
   sample.policy_boxes.push_back({1.0f, 2.0f, 300.0f, 150.0f});
   sample.policy_boxes.push_back({3.0f, 4.0f, 500.0f, 250.0f});
+  sample.replay = make_policy_sample(true).replay;
   if (!expect(exporter.TryEnqueue(std::move(sample)), "metadata sample should enter the bounded writer queue") ||
       !expect(
           exporter.TryRecordConfigEvent(
@@ -234,6 +241,7 @@ int main() {
   const std::string frame_index = read_file(directory / "hstream_frame_index-10.csv");
   const std::string config_events = read_file(directory / "hstream_config_events-10.csv");
   const std::string manifest = read_file(directory / "hstream_telemetry-10.json");
+  const std::string replay = read_file(directory / "hstream_replay-10.jsonl");
   const std::vector<std::string> durability_events =
       hm::playtracker::PlayTrackerTelemetryCsvTestPeer::DurabilityEvents(exporter);
   const size_t pending_manifest_sync = event_position(durability_events, "fsync:manifest:pending");
@@ -246,6 +254,15 @@ int main() {
   const size_t committed_manifest_sync = event_position(durability_events, "fsync:manifest:committed");
 
   const bool valid =
+      expect(
+          replay.find("\"sample_id\":1,\"source_id\":7,\"pts_ns\":17490000000") != std::string::npos &&
+              replay.find("\"tracks\":[[88,10.5,20.25,40.5,60.25]]") != std::string::npos &&
+              replay.find("native state\\nwith \\\"quotes\\\"") != std::string::npos &&
+              manifest.find("\"replay\": \"hstream_replay-10.jsonl\"") != std::string::npos,
+          "replay sidecar must preserve exact TLBR inputs, frame identity and escaped native checkpoints") &&
+      expect(
+          event_position(durability_events, "fsync:staged:hstream_replay-10.jsonl") < tracking_link,
+          "replay state must be durable before publishing the tracking commit marker") &&
       expect(
           read_file(directory / "tracking.csv") == "preserve-existing-hm-data\n",
           "pre-existing HM tracking data must remain byte-for-byte intact") &&

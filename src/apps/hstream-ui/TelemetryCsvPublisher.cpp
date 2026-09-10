@@ -5,6 +5,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QMap>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QUuid>
 
@@ -356,6 +357,96 @@ std::array<QByteArray, 6> staging_artifact_filenames(const QString& destination_
   };
 }
 
+bool allowed_staging_artifact(const QByteArray& filename, const QString& suffix) {
+  const auto csv_files = staging_artifact_filenames(suffix);
+  if (std::find(csv_files.begin(), csv_files.end(), filename) != csv_files.end())
+    return true;
+  const QString name = QFile::decodeName(filename);
+  if (name == "hstream_telemetry" + suffix + ".json" || name == "hstream_replay" + suffix + ".jsonl")
+    return true;
+  return QRegularExpression(
+             "^play_tracker_(source|effective|runtime_tuning)" + QRegularExpression::escape(suffix) +
+             "(-[1-9][0-9]*)?\\.yaml$")
+      .match(name)
+      .hasMatch();
+}
+
+// Configuration events may contain quoted filenames and embedded newlines.
+// Parse their bounded metadata independently from the large tracking CSVs.
+bool parse_config_events(const QByteArray& contents, QList<QStringList>* rows, QString* error) {
+  QStringList row;
+  QByteArray field;
+  bool quoted = false;
+  bool ended_quote = false;
+  for (qsizetype index = 0; index < contents.size(); ++index) {
+    const char c = contents[index];
+    if (quoted) {
+      if (c == '"') {
+        if (index + 1 < contents.size() && contents[index + 1] == '"') {
+          field += '"';
+          ++index;
+        } else {
+          quoted = false;
+          ended_quote = true;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c == ',' || c == '\n') {
+      row.push_back(QString::fromUtf8(field));
+      field.clear();
+      ended_quote = false;
+      if (c == '\n') {
+        if (row.size() != 6) {
+          *error = "configuration event must have six columns";
+          return false;
+        }
+        rows->push_back(row);
+        row.clear();
+      }
+    } else if (c == '\r' && index + 1 < contents.size() && contents[index + 1] == '\n') {
+      continue;
+    } else if (c == '"' && field.isEmpty() && !ended_quote) {
+      quoted = true;
+    } else if (ended_quote || c == '"') {
+      *error = "invalid quoting in configuration events";
+      return false;
+    } else {
+      field += c;
+    }
+  }
+  if (quoted || !row.isEmpty() || !field.isEmpty() || ended_quote) {
+    *error = "configuration events are truncated";
+    return false;
+  }
+  if (rows->isEmpty() ||
+      rows->front() != QStringList({"Event", "SampleBoundary", "Kind", "Key", "Value", "Artifact"})) {
+    *error = "configuration events have an unsupported header";
+    return false;
+  }
+  return true;
+}
+
+QByteArray encode_config_events(const QList<QStringList>& rows) {
+  QByteArray result;
+  for (const QStringList& row : rows) {
+    bool first = true;
+    for (QString field : row) {
+      if (!first)
+        result += ',';
+      first = false;
+      if (field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r')) {
+        field.replace('"', "\"\"");
+        result += '"' + field.toUtf8() + '"';
+      } else {
+        result += field.toUtf8();
+      }
+    }
+    result += '\n';
+  }
+  return result;
+}
+
 bool read_directory_entries(int directory_fd, std::vector<QByteArray>* entries, QString* error) {
   if (!entries)
     return false;
@@ -632,11 +723,10 @@ bool recover_owned_staging_areas(int game_directory_fd, QString* error) {
       }
       return false;
     }
-    const auto expected_files = staging_artifact_filenames(destination_suffix);
     for (const QByteArray& entry : staging_entries) {
       if (entry == kStagingMarkerFilename)
         continue;
-      if (std::find(expected_files.cbegin(), expected_files.cend(), entry) == expected_files.cend()) {
+      if (!allowed_staging_artifact(entry, destination_suffix)) {
         if (error) {
           *error = QString("owned telemetry staging directory %1 contains unexpected path %2")
                        .arg(directory_name, QFile::decodeName(entry));
@@ -892,7 +982,6 @@ bool cleanup_named_staging_area(
           QString("could not inspect telemetry staging directory %1: %2").arg(area->directory_name, directory_error);
     return false;
   }
-  const auto expected_files = staging_artifact_filenames(area->destination_suffix);
   if (copied) {
     for (CopiedArtifact& artifact : *copied) {
       if (!artifact.temporary_filename.isEmpty())
@@ -902,7 +991,7 @@ bool cleanup_named_staging_area(
   for (const QByteArray& entry : entries) {
     if (entry == kStagingMarkerFilename)
       continue;
-    if (std::find(expected_files.cbegin(), expected_files.cend(), entry) == expected_files.cend()) {
+    if (!allowed_staging_artifact(entry, area->destination_suffix)) {
       if (error) {
         *error = QString("telemetry staging directory %1 contains unexpected path %2")
                      .arg(area->directory_name, QFile::decodeName(entry));
@@ -995,12 +1084,12 @@ bool telemetry_csv_destination_paths_available(const QString& game_directory, co
       ::open(encoded_game_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
   if (game_directory_fd.get() < 0)
     return false;
-  const std::array<QString, 6> stems = {
-      "camera", "camera_fast", "detections", "hstream_frame_index", "hstream_config_events", "tracking"};
-  for (const QString& stem : stems) {
-    struct stat info{};
-    const QByteArray filename = QFile::encodeName(stem + destination_suffix + ".csv");
-    if (::fstatat(game_directory_fd.get(), filename.constData(), &info, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+  std::vector<QByteArray> entries;
+  QString error;
+  if (!read_directory_entries(game_directory_fd.get(), &entries, &error))
+    return false;
+  for (const QByteArray& entry : entries) {
+    if (allowed_staging_artifact(entry, destination_suffix))
       return false;
   }
   return true;
@@ -1059,7 +1148,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
 
   const QString source_suffix = manifest_match.captured(1);
   const QJsonObject sidecars = root.value("sidecars").toObject();
-  const std::array<std::pair<QString, QString>, 6> artifacts = {{
+  const std::array<std::pair<QString, QString>, 6> csv_artifacts = {{
       {"camera", manifest_file(root, "hm_compatibility", "camera_csv")},
       {"camera_fast", manifest_file(root, "hm_compatibility", "camera_fast_csv")},
       {"detections", manifest_file(root, "hm_compatibility", "detections_csv")},
@@ -1067,11 +1156,111 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
       {"hstream_config_events", sidecars.value("config_events").toString()},
       {"tracking", manifest_file(root, "hm_compatibility", "tracking_csv")},
   }};
-  for (const auto& [stem, filename] : artifacts) {
+  struct PublicationArtifact {
+    QString stem;
+    QString source;
+    QString destination;
+    QByteArray replacement;
+  };
+  std::vector<PublicationArtifact> artifacts;
+  std::vector<OpenRegularFile> provenance_inputs;
+  for (const auto& [stem, filename] : csv_artifacts) {
     if (filename != stem + source_suffix + ".csv" || QFileInfo(filename).fileName() != filename) {
       result.error = QString("telemetry manifest has an unsafe or inconsistent %1 filename").arg(stem);
       return result;
     }
+    artifacts.push_back({stem, filename, stem + destination_suffix + ".csv", {}});
+  }
+
+  // Replay checkpoints carry the resolved native configuration, and the
+  // original YAML/event artifacts are retained too. Rewrite only generation
+  // references in the copied manifest/events; the immutable working run keeps
+  // its original names and bytes.
+  if (sidecars.contains("replay")) {
+    const QString replay = sidecars.value("replay").toString();
+    if (replay != "hstream_replay" + source_suffix + ".jsonl") {
+      result.error = "telemetry manifest has an unsafe or inconsistent replay filename";
+      return result;
+    }
+    artifacts.push_back({"hstream_replay", replay, "hstream_replay" + destination_suffix + ".jsonl", {}});
+    QMap<QString, QString> renamed;
+    auto add_config = [&](const QString& name) {
+      if (renamed.contains(name))
+        return true;
+      const auto match = QRegularExpression(
+                             "^(play_tracker_(?:source|effective|runtime_tuning))" +
+                             QRegularExpression::escape(source_suffix) + "(-[1-9][0-9]*)?\\.yaml$")
+                             .match(name);
+      if (!match.hasMatch()) {
+        result.error = "telemetry configuration artifact has an unsafe or inconsistent filename: " + name;
+        return false;
+      }
+      const QString destination = match.captured(1) + destination_suffix + match.captured(2) + ".yaml";
+      renamed.insert(name, destination);
+      artifacts.push_back({match.captured(1), name, destination, {}});
+      return true;
+    };
+    const QJsonObject provenance = root.value("config_provenance").toObject();
+    const QString source_config = provenance.value("source_artifact").toString();
+    const QString effective_config = provenance.value("effective_artifact").toString();
+    if (!add_config(source_config) || !add_config(effective_config))
+      return result;
+    OpenRegularFile event_file;
+    QByteArray event_contents;
+    if (!read_regular_file_at(
+            source_directory_fd.get(),
+            QFile::encodeName(sidecars.value("config_events").toString()),
+            16 * 1024 * 1024,
+            &event_contents,
+            &event_file,
+            &result.error))
+      return result;
+    QList<QStringList> events;
+    if (!parse_config_events(event_contents, &events, &result.error))
+      return result;
+    provenance_inputs.push_back(std::move(event_file));
+    for (int index = 1; index < events.size(); ++index) {
+      QString& name = events[index][5];
+      if (!name.isEmpty()) {
+        if (!add_config(name))
+          return result;
+        name = renamed.value(name);
+      }
+    }
+    for (auto& artifact : artifacts) {
+      if (artifact.stem == "hstream_config_events")
+        artifact.replacement = encode_config_events(events);
+    }
+    QJsonObject published = root;
+    QJsonObject compatibility = published.value("hm_compatibility").toObject();
+    for (const auto& key : {"tracking_csv", "detections_csv", "camera_csv", "camera_fast_csv"}) {
+      QJsonObject file = compatibility.value(key).toObject();
+      const QString source_name = file.value("file").toString();
+      for (const auto& artifact : artifacts) {
+        if (artifact.source == source_name)
+          file["file"] = artifact.destination;
+      }
+      compatibility[key] = file;
+    }
+    published["hm_compatibility"] = compatibility;
+    QJsonObject published_sidecars = sidecars;
+    for (const auto& key : {"frame_index", "config_events", "replay"}) {
+      for (const auto& artifact : artifacts) {
+        if (artifact.source == sidecars.value(key).toString())
+          published_sidecars[key] = artifact.destination;
+      }
+    }
+    published["sidecars"] = published_sidecars;
+    QJsonObject published_provenance = provenance;
+    published_provenance["source_artifact"] = renamed.value(source_config);
+    published_provenance["effective_artifact"] = renamed.value(effective_config);
+    published["config_provenance"] = published_provenance;
+    published["output_directory"] = QFileInfo(game_directory).absoluteFilePath();
+    artifacts.push_back(
+        {"hstream_telemetry",
+         manifest_info.fileName(),
+         "hstream_telemetry" + destination_suffix + ".json",
+         QJsonDocument(published).toJson(QJsonDocument::Indented)});
   }
 
   const QByteArray encoded_game_directory = QFile::encodeName(QFileInfo(game_directory).absoluteFilePath());
@@ -1161,16 +1350,15 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     return rollback_error;
   };
 
-  for (const auto& [stem, source_filename] : artifacts) {
-    const QString destination_filename = stem + destination_suffix + ".csv";
+  for (const auto& definition : artifacts) {
     CopiedArtifact artifact;
     QString copy_error;
     if (!copy_regular_file_to_staging(
             source_directory_fd.get(),
-            source_filename,
+            definition.source,
             game_directory_fd.get(),
-            stem,
-            destination_filename,
+            definition.stem,
+            definition.destination,
             destination_suffix,
             test_hooks && test_hooks->force_named_temporary_files,
             &staging_area,
@@ -1179,6 +1367,19 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
       result.error = copy_error;
       append_error(&result.error, cleanup_staging());
       return result;
+    }
+    if (!definition.replacement.isEmpty()) {
+      if (::ftruncate(artifact.destination_fd.get(), 0) != 0 ||
+          ::lseek(artifact.destination_fd.get(), 0, SEEK_SET) != 0 ||
+          !write_all(artifact.destination_fd.get(), definition.replacement, &copy_error) ||
+          !sync_fd(artifact.destination_fd.get())) {
+        copied.push_back(std::move(artifact));
+        result.error =
+            "could not write copied telemetry provenance: " + (copy_error.isEmpty() ? errno_string(errno) : copy_error);
+        append_error(&result.error, cleanup_staging());
+        return result;
+      }
+      artifact.size = definition.replacement.size();
     }
     copied.push_back(std::move(artifact));
   }
@@ -1189,6 +1390,10 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   auto sources_are_stable = [&]() {
     if (!revalidate_open_file(source_directory_fd.get(), open_manifest))
       return false;
+    for (const auto& source : provenance_inputs) {
+      if (!revalidate_open_file(source_directory_fd.get(), source))
+        return false;
+    }
     return std::all_of(copied.cbegin(), copied.cend(), [&](const CopiedArtifact& artifact) {
       return revalidate_open_file(source_directory_fd.get(), artifact.source);
     });
