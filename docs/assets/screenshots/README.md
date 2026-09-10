@@ -36,3 +36,25 @@ To refresh these assets:
 These are window captures of the real GPU previews. Image processing is limited
 to cropping the runtime log and WebP compression. Check `docs/index.html` at
 desktop and mobile widths, including every full-size image link, after updating.
+
+## Camera experiments
+
+`camera-experiment-original.webp` and `camera-experiment-slower-pan.webp` were
+captured from the real Camera experiments dialog on 2026-09-10 on an NVIDIA
+RTX 5090/X11 display. The input is the uncropped `sabercats-16a` stitched archive;
+a fresh production detection/tracking run recorded the exact native replay
+inputs and checkpoints from that video.
+
+Both images show sample 1200, 9.994 seconds into a 20-second selected range
+(video PTS 619.886 seconds). The trial overrides follower pan speed X to 1.5
+and acceleration X to 0.2. The original camera's left edge is 15.9 pixels and
+the trial's is 754.2 pixels at this same sample, demonstrating the effect of
+slower panning from identical historical state and observations.
+
+The opt-in `camera_experiment_dialog_test --e2e` exercises actual GPU playback,
+paused matching-frame stepping, original/trial comparison, and looping. It
+captures the presented GPU texture once and combines it with the actual Qt
+dialog. Processing is limited to resizing to 1600 pixels wide and WebP quality
+88 compression. No video frames or UI controls were fabricated. See the
+[experiment workflow](../../camera-experiments.md) to reproduce with your own
+recording and corresponding media time binding.

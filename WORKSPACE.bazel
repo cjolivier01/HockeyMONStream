@@ -180,7 +180,7 @@ local_cuda_sdk_repository(
 
 git_repository(
     name = "hm",
-    commit = "08a52ccf31e9f2d212c64d2bd35039a5cde25d68",
+    commit = "f60f963188ced506ee6a98977aa2d2e15ffada23",
     remote = "ssh://git@github.com/cjolivier01/HockeyMON",
 )
 
