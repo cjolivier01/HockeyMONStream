@@ -159,7 +159,19 @@ bool replay_publication_test(const QString& root) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // Opt-in integration exercise against a real completed recording. The
+  // published manifest can then be passed to playtracker_replay_test --recording.
+  if (argc == 5 && std::string(argv[1]) == "--publish") {
+    const QString destination = QString::fromLocal8Bit(argv[3]);
+    if (!QDir().mkpath(destination))
+      return 1;
+    const auto result = hm::ui_internal::publish_telemetry_csvs(
+        QString::fromLocal8Bit(argv[2]), destination, QString::fromLocal8Bit(argv[4]));
+    if (!result.ok)
+      std::cerr << result.error.toStdString() << '\n';
+    return result.ok ? 0 : 1;
+  }
   QTemporaryDir root;
   if (!expect(root.isValid(), "temporary directory must be available"))
     return 1;
