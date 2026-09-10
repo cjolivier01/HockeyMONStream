@@ -22,6 +22,11 @@ filegroup(
     srcs = [
         "HStreamWindow.cpp",
         "HStreamWindow.h",
+        "CameraControlSpecs.h",
+        "CameraExperimentDialog.cpp",
+        "CameraExperimentDialog.h",
+        "CameraExperimentPreview.cpp",
+        "CameraExperimentPreview.h",
         "RinkLevelingDialog.cpp",
         "RinkLevelingDialog.h",
         "ProjectionCropDialog.cpp",
@@ -108,6 +113,37 @@ cc_library(
 )
 
 cc_library(
+    name = "camera_experiment_preview",
+    srcs = ["CameraExperimentPreview.cpp"],
+    hdrs = ["CameraExperimentPreview.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/apps/apps-common:hm_gpu_preview",
+        "//src/libs/playtracker_replay",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_library(
+    name = "camera_experiment_dialog",
+    srcs = ["CameraExperimentDialog.cpp"],
+    hdrs = ["CameraExperimentDialog.h", "CameraControlSpecs.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":camera_experiment_preview",
+        "//src/libs/playtracker_replay",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp"],
     hdrs = ["HStreamWindow.h"],
@@ -116,6 +152,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":camera_experiment_dialog",
         ":pipeline_inspector_widget",
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
@@ -133,6 +170,16 @@ cc_library(
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "camera_experiment_dialog_test",
+    srcs = ["CameraExperimentDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
+    deps = [":camera_experiment_dialog", "@qt//:qt_widgets"],
 )
 
 cc_test(

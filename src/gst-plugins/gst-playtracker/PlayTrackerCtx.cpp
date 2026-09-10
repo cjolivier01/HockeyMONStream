@@ -2,6 +2,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "hockeymon/csrc/play_tracker/PlayTracker.h"
+#include "hockeymon/csrc/play_tracker/PlayTrackerSnapshot.h"
 #include "hockeymon/csrc/play_tracker/ResizingBox.h"
 #include "hockeymon/csrc/play_tracker/TranslatingBox.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
@@ -629,19 +630,12 @@ hm::play_tracker::PlayTracker* get_or_create_play_tracker(DsPlayTrackerCtx* ctx,
     try {
       YAML::Node yaml = YAML::LoadFile(ctx->initParams.play_tracker_config_file);
       if (yaml["play-tracker"]) {
-        ctx->play_trackers[source_id].play_tracker_config = create_play_tracker_config(arena_box, yaml["play-tracker"]);
-        ctx->play_trackers[source_id].base_play_tracker_config = ctx->play_trackers[source_id].play_tracker_config;
-        if (!ctx->play_trackers[source_id].base_play_tracker_config.living_boxes.empty()) {
-          const int zoom_in_aggressiveness = yaml["play-tracker"]["zoom-in-aggressiveness"]
-              ? yaml["play-tracker"]["zoom-in-aggressiveness"].as<int>()
-              : kDefaultZoomInAggressiveness;
-          const float multiplier = DsPlayTrackerZoomInThresholdMultiplier(zoom_in_aggressiveness);
-          auto& base_follower = ctx->play_trackers[source_id].base_play_tracker_config.living_boxes.back();
-          base_follower.size_ratio_thresh_shrink_dw /= multiplier;
-          base_follower.size_ratio_thresh_shrink_dh /= multiplier;
+        auto initialized = DsPlayTrackerCreateCpuTracker(arena_box, yaml["play-tracker"]);
+        if (!initialized.ok()) {
+          g_printerr("Could not initialize playtracker: %s\n", initialized.status().ToString().c_str());
+          return nullptr;
         }
-        ctx->play_trackers[source_id].play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(
-            arena_box, ctx->play_trackers[source_id].play_tracker_config);
+        ctx->play_trackers[source_id] = std::move(*initialized);
         const absl::Status tuning_status = apply_accumulated_runtime_tuning(ctx, &ctx->play_trackers[source_id]);
         if (!tuning_status.ok()) {
           g_printerr("Could not apply accumulated playtracker runtime tuning: %s\n", tuning_status.ToString().c_str());
@@ -1064,6 +1058,58 @@ void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx) {
   }
 }
 
+absl::StatusOr<DsPlayTrackerCtx::PlayTracker> DsPlayTrackerCreateCpuTracker(
+    const hm::BBox& arena, const YAML::Node& yaml) {
+  try {
+    DsPlayTrackerCtx::PlayTracker result;
+    result.play_tracker_config = gst_hm_playtracker::create_play_tracker_config(arena, yaml);
+    result.base_play_tracker_config = result.play_tracker_config;
+    if (!result.base_play_tracker_config.living_boxes.empty()) {
+      const int zoom = yaml["zoom-in-aggressiveness"]
+          ? yaml["zoom-in-aggressiveness"].as<int>() : kDefaultZoomInAggressiveness;
+      auto& follower = result.base_play_tracker_config.living_boxes.back();
+      const float multiplier = DsPlayTrackerZoomInThresholdMultiplier(zoom);
+      follower.size_ratio_thresh_shrink_dw /= multiplier;
+      follower.size_ratio_thresh_shrink_dh /= multiplier;
+    }
+    result.play_tracker = std::make_unique<hm::play_tracker::PlayTracker>(arena, result.play_tracker_config);
+    return result;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(error.what());
+  }
+}
+
+absl::Status DsPlayTrackerApplyCpuRuntimeTuning(
+    DsPlayTrackerCtx::PlayTracker* tracker, const DsPlayTrackerRuntimeTuning& tuning) {
+  return gst_hm_playtracker::apply_runtime_tuning_to_tracker(tracker, tuning);
+}
+
+hm::play_tracker::PlayTrackerResults DsPlayTrackerStepCpu(
+    DsPlayTrackerCtx::PlayTracker* tracker, std::vector<size_t> ids, std::vector<hm::BBox> boxes) {
+  if (boxes.empty() && !tracker->has_received_tracks)
+    return {};
+  if (!boxes.empty())
+    tracker->has_received_tracks = true;
+  return tracker->play_tracker->forward(ids, boxes);
+}
+
+DsPlayTrackerReplayInput DsPlayTrackerCaptureReplayInput(
+    const DsPlayTrackerCtx::PlayTracker& tracker, const hm::BBox& arena,
+    const std::vector<size_t>& ids, const std::vector<hm::BBox>& boxes, bool checkpoint) {
+  DsPlayTrackerReplayInput result;
+  result.arena = arena;
+  result.tracking_ids = ids;
+  result.tracking_boxes = boxes;
+  result.has_received_tracks = tracker.has_received_tracks;
+  result.stepped = tracker.has_received_tracks || !boxes.empty();
+  if (checkpoint) {
+    result.checkpoint = hm::play_tracker::serialize_snapshot(tracker.play_tracker->snapshot());
+    hm::play_tracker::PlayTracker base(arena, tracker.base_play_tracker_config);
+    result.base_checkpoint = hm::play_tracker::serialize_snapshot(base.snapshot());
+  }
+  return result;
+}
+
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream) {
   // We always do our calculations wrt the original image, since we tune based upon the camera
   // type, which is generally tied to the resolution. We scale in the play tracker when possible, but
@@ -1098,7 +1144,8 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 #endif
     }
 #endif
-    gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box);
+    if (!gst_hm_playtracker::get_or_create_play_tracker(ctx, frame.frame_meta->source_id, ctx->arena_box))
+      return false;
     play_tracker_ctx = &ctx->play_trackers.at(frame.frame_meta->source_id);
   } else {
     play_tracker_ctx = &ctx->play_trackers.at(frame.frame_meta->source_id);
@@ -1106,8 +1153,6 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   if (!play_tracker_ctx || !play_tracker_ctx->play_tracker) {
     return false;
   }
-  hm::play_tracker::PlayTracker* play_tracker = play_tracker_ctx->play_tracker.get();
-
   std::vector<size_t> tracking_ids;
   std::vector<hm::BBox> tracking_boxes;
 
@@ -1141,6 +1186,15 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
     tracking_ids.push_back(tracking_id);
   }
 
+  if (frame.capture_replay) {
+    try {
+      frame.replay_input = DsPlayTrackerCaptureReplayInput(
+          *play_tracker_ctx, ctx->arena_box, tracking_ids, tracking_boxes, frame.checkpoint_replay);
+    } catch (const std::exception& error) {
+      g_printerr("Could not capture playtracker replay state: %s\n", error.what());
+      return false;
+    }
+  }
   if (tracking_boxes.empty() && !play_tracker_ctx->has_received_tracks) {
     // Keep the frame and defer tracker initialization until real tracks
     // arrive. Empty results intentionally leave playcropper on its centered,
@@ -1151,11 +1205,7 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
     return true;
   }
 
-  if (!tracking_boxes.empty()) {
-    play_tracker_ctx->has_received_tracks = true;
-  }
-
-  frame.play_tracker_results = play_tracker->forward(tracking_ids, tracking_boxes);
+  frame.play_tracker_results = DsPlayTrackerStepCpu(play_tracker_ctx, std::move(tracking_ids), std::move(tracking_boxes));
   if (ctx->draw.load(std::memory_order_relaxed)) {
     if (!DsPlayTrackerDrawToDisplayMeta(ctx, frame).ok()) {
       return false;

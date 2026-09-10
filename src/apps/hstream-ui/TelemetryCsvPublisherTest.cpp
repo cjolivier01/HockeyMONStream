@@ -2,6 +2,8 @@
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QTemporaryDir>
 
 #include <sys/stat.h>
@@ -72,9 +74,104 @@ void note_after_publication_lock(void* context) {
   race->changed.notify_all();
 }
 
+bool replay_publication_test(const QString& root) {
+  const QString working = QDir(root).filePath("replay-working");
+  const QString game = QDir(root).filePath("replay-game");
+  if (!QDir().mkpath(working) || !QDir().mkpath(game))
+    return false;
+  QJsonObject compatibility;
+  for (const auto& stem : {"tracking", "detections", "camera", "camera_fast"}) {
+    const QString filename = QString(stem) + "-3.csv";
+    if (!write_file(QDir(working).filePath(filename), "1,2,3,4,5\n"))
+      return false;
+    compatibility[QString(stem) + "_csv"] = QJsonObject{{"file", filename}};
+  }
+  const QStringList configs = {
+      "play_tracker_source-3.yaml", "play_tracker_effective-3.yaml", "play_tracker_runtime_tuning-3-1.yaml"};
+  for (const auto& name : configs) {
+    if (!write_file(QDir(working).filePath(name), "play-tracker: {}\n"))
+      return false;
+  }
+  const QByteArray events =
+      "Event,SampleBoundary,Kind,Key,Value,Artifact\n"
+      "0,1,base-config,config-file,\"path,with,commas\",play_tracker_source-3.yaml\n"
+      "1,12,runtime-tuning,runtime-tuning-config-file,\"a\"\"b\",play_tracker_runtime_tuning-3-1.yaml\n";
+  if (!write_file(QDir(working).filePath("hstream_config_events-3.csv"), events) ||
+      !write_file(QDir(working).filePath("hstream_frame_index-3.csv"), "index\n") ||
+      !write_file(QDir(working).filePath("hstream_replay-3.jsonl"), "{\"schema\":1}\n"))
+    return false;
+  QJsonObject manifest{
+      {"completed", true},
+      {"publication_state", "committed"},
+      {"hm_compatibility", compatibility},
+      {"sidecars",
+       QJsonObject{
+           {"frame_index", "hstream_frame_index-3.csv"},
+           {"config_events", "hstream_config_events-3.csv"},
+           {"replay", "hstream_replay-3.jsonl"}}},
+      {"config_provenance", QJsonObject{{"source_artifact", configs[0]}, {"effective_artifact", configs[1]}}}};
+  const QString path = QDir(working).filePath("hstream_telemetry-3.json");
+  if (!write_file(path, QJsonDocument(manifest).toJson()))
+    return false;
+  hm::ui_internal::TelemetryCsvPublicationTestHooks hooks;
+  hooks.force_named_temporary_files = true;
+  const auto result = hm::ui_internal::publish_telemetry_csvs(path, game, "-8", &hooks);
+  bool ok = expect(result.ok, result.error.toStdString().c_str()) &&
+      expect(result.published_paths.size() == 11, "replay publication must include manifest and every config artifact");
+  QFile copied_manifest(QDir(game).filePath("hstream_telemetry-8.json"));
+  ok &= expect(copied_manifest.open(QIODevice::ReadOnly), "copied replay manifest must be readable");
+  const auto published = QJsonDocument::fromJson(copied_manifest.readAll()).object();
+  ok &= expect(
+      published.value("sidecars").toObject().value("replay").toString() == "hstream_replay-8.jsonl",
+      "copied manifest must point to published replay generation");
+  ok &= expect(
+      published.value("config_provenance").toObject().value("source_artifact").toString() ==
+          "play_tracker_source-8.yaml",
+      "copied config paths must use destination generation");
+  QFile copied_events(QDir(game).filePath("hstream_config_events-8.csv"));
+  ok &= expect(copied_events.open(QIODevice::ReadOnly), "copied config events must be readable");
+  const QByteArray copied_contents = copied_events.readAll();
+  ok &= expect(
+      copied_contents.contains("play_tracker_runtime_tuning-8-1.yaml") &&
+          copied_contents.contains("\"path,with,commas\"") && copied_contents.contains("\"a\"\"b\""),
+      "event rewrite must preserve quoted values and remap referenced tuning artifacts");
+  ok &= expect(
+      QFileInfo::exists(QDir(game).filePath("play_tracker_runtime_tuning-8-1.yaml")),
+      "referenced runtime tuning must be published");
+  QFile original_events(QDir(working).filePath("hstream_config_events-3.csv"));
+  ok &= expect(
+      original_events.open(QIODevice::ReadOnly) && original_events.readAll() == events,
+      "publication must preserve original working provenance");
+  ok &= expect_no_staging_files(game);
+  const QString collision = QDir(root).filePath("replay-collision");
+  QDir().mkpath(collision);
+  write_file(QDir(collision).filePath("hstream_replay-8.jsonl"), "existing");
+  ok &= expect(
+      !hm::ui_internal::telemetry_csv_destination_paths_available(collision, "-8"),
+      "orphan replay metadata must reserve its generation");
+  const auto failed = hm::ui_internal::publish_telemetry_csvs(path, collision, "-8", &hooks);
+  ok &= expect(
+      !failed.ok && !QFileInfo::exists(QDir(collision).filePath("tracking-8.csv")),
+      "replay collision must prevent the tracking commit");
+  ok &= expect_no_staging_files(collision);
+  return ok;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // Opt-in integration exercise against a real completed recording. The
+  // published manifest can then be passed to playtracker_replay_test --recording.
+  if (argc == 5 && std::string(argv[1]) == "--publish") {
+    const QString destination = QString::fromLocal8Bit(argv[3]);
+    if (!QDir().mkpath(destination))
+      return 1;
+    const auto result = hm::ui_internal::publish_telemetry_csvs(
+        QString::fromLocal8Bit(argv[2]), destination, QString::fromLocal8Bit(argv[4]));
+    if (!result.ok)
+      std::cerr << result.error.toStdString() << '\n';
+    return result.ok ? 0 : 1;
+  }
   QTemporaryDir root;
   if (!expect(root.isValid(), "temporary directory must be available"))
     return 1;
@@ -296,5 +393,6 @@ int main() {
         "ambiguous tracking rollback must retain every companion CSV");
   }
   valid &= expect_no_staging_files(ambiguous_game);
+  valid &= replay_publication_test(root.path());
   return valid ? 0 : 1;
 }

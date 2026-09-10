@@ -71,6 +71,11 @@ void set_source_geometry(GstElement* sink, unsigned width, unsigned height);
 // window can be destroyed. Returns false only when the sink is unavailable.
 bool quiesce(GstElement* sink, std::uint64_t generation);
 
+// The timestamp is acknowledged only after the GPU frame has been presented.
+// It lets paused replay/stepping distinguish a newly rendered frame from the
+// previous texture, without reading pixels back to the CPU.
+bool presented_frame(GstElement* sink, std::uint64_t* generation, GstClockTime* pts);
+
 // Preserves aspect ratio while enforcing the diagnostic readback budget.
 // This calculation is exposed so callers and regression tests can reason
 // about the dimensions returned by capture_presented_frame().

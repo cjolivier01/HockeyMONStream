@@ -2,6 +2,7 @@
 
 #include "absl/status/status.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -45,6 +46,21 @@ struct TelemetryBox {
   float height{0.0f};
 };
 
+// Exact native policy inputs and optional state immediately before this sample.
+// Kept separate from HM's TLWH CSVs, whose scaled widths cannot always recover
+// the native TLBR float values without rounding.
+struct TelemetryReplaySample {
+  std::array<float, 4> arena{};
+  std::vector<std::pair<uint64_t, std::array<float, 4>>> tracks;
+  bool stepped{false};
+  bool has_received_tracks{false};
+  uint64_t reset_epoch{0};
+  std::string checkpoint;
+  std::string base_checkpoint;
+  float edge_rotation_left{0};
+  float edge_rotation_right{0};
+};
+
 struct TelemetrySample {
   uint64_t source_frame{0};
   uint32_t source_id{0};
@@ -60,6 +76,7 @@ struct TelemetrySample {
   // Native playtracker order: first is the fast policy box, last is the
   // follower/Program camera box. A one-box policy uses the same box for both.
   std::vector<TelemetryBox> policy_boxes;
+  std::optional<TelemetryReplaySample> replay;
 };
 
 struct TelemetryConfigEvent {
@@ -233,6 +250,7 @@ class PlayTrackerTelemetryCsv {
   std::string camera_fast_filename_;
   std::string frame_index_filename_;
   std::string config_events_filename_;
+  std::string replay_filename_;
   std::string source_config_filename_;
   std::string effective_config_filename_;
   std::string source_config_path_;
@@ -244,6 +262,7 @@ class PlayTrackerTelemetryCsv {
   std::ofstream camera_fast_;
   std::ofstream frame_index_;
   std::ofstream config_events_;
+  std::ofstream replay_;
 };
 
 std::string ReadTelemetryConfigArtifact(const std::string& path);

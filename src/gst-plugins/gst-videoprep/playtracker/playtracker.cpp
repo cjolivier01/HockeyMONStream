@@ -225,10 +225,13 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig(const std::string& config_
   init_params_ = std::move(next_params);
   play_tracker_effective_config_contents_ = next_effective_config_contents;
   pt_context_ = next_context;
+  ++replay_reset_epoch_;
+  replay_checkpoint_pending_ = true;
   return absl::OkStatus();
 }
 
 void PlayTrackerPriv::RememberRuntimeTuning(DsPlayTrackerRuntimeTuning tuning, TelemetryConfigEvent provenance) {
+  replay_checkpoint_pending_ = true;
   const std::string group = runtime_tuning_group(tuning);
   const auto previous_group = std::find(runtime_tuning_groups_.begin(), runtime_tuning_groups_.end(), group);
   if (previous_group != runtime_tuning_groups_.end()) {
@@ -411,6 +414,8 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
     prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
     frame_counter_ = 0;
     ++telemetry_seek_epoch_;
+    ++replay_reset_epoch_;
+    replay_checkpoint_pending_ = true;
     telemetry_csv_.TryRecordDiscontinuity(
         {"seek", "flush-stop", std::to_string(telemetry_seek_epoch_), /*artifact_stem=*/{}, /*artifact_contents=*/{}});
     return handled;
@@ -435,6 +440,11 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     frame.input_surf_params = &in_surface->surfaceList[frame.batch_index];
     TelemetrySample telemetry_sample;
     const bool export_telemetry = telemetry_csv_.active();
+    frame.capture_replay = export_telemetry;
+    frame.checkpoint_replay = export_telemetry &&
+        (replay_checkpoint_pending_ || frame_counter_ % 120 == 0 ||
+         pt_context_->play_trackers.count(frame.frame_meta->source_id) == 0);
+    frame.replay_input.reset();
     if (export_telemetry) {
       const auto* detection_snapshot = hm::detection_snapshot::find_meta(batch_meta, frame.frame_meta);
       if (!detection_snapshot) {
@@ -495,8 +505,12 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       }
     }
     if (frame_counter_ % frame_calculation_interval_ == 0) {
-      if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
-        return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
+      try {
+        if (!DsPlayTrackerProcessFrame(pt_context_, frame, cuda_stream_)) {
+          return absl::InternalError("Error calling DsPlayTrackerProcessFrame()");
+        }
+      } catch (const std::exception& error) {
+        return absl::InternalError(absl::StrCat("playtracker processing/replay capture failed: ", error.what()));
       }
 #ifdef HAS_USER_APPLICATION_PAYLOAD
       PlayTrackerPayload::create_and_add<PlayTrackerPayload>(frame.frame_meta, pt_context_->arena_box);
@@ -512,6 +526,27 @@ absl::Status PlayTrackerPriv::GenerateOutput(
       DsPlayTrackerAttachMetadataFullFrame(frame.frame_meta, frame.play_tracker_results);
     }
     if (export_telemetry) {
+      if (!frame.replay_input) {
+        return absl::DataLossError("native replay inputs missing from a frame during lossless telemetry export");
+      }
+      const auto& input = *frame.replay_input;
+      TelemetryReplaySample replay;
+      replay.arena = {input.arena.left, input.arena.top, input.arena.right, input.arena.bottom};
+      replay.stepped = input.stepped;
+      replay.has_received_tracks = input.has_received_tracks;
+      replay.reset_epoch = replay_reset_epoch_;
+      replay.checkpoint = input.checkpoint;
+      replay.base_checkpoint = input.base_checkpoint;
+      replay.edge_rotation_left = fixed_edge_rotation_angle_left_;
+      replay.edge_rotation_right = fixed_edge_rotation_angle_right_;
+      replay.tracks.reserve(input.tracking_ids.size());
+      for (size_t i = 0; i < input.tracking_ids.size(); ++i) {
+        const auto& box = input.tracking_boxes.at(i);
+        replay.tracks.push_back({input.tracking_ids[i], {box.left, box.top, box.right, box.bottom}});
+      }
+      telemetry_sample.replay = std::move(replay);
+      if (frame.checkpoint_replay)
+        replay_checkpoint_pending_ = false;
       telemetry_sample.policy_boxes.reserve(frame.play_tracker_results.tracking_boxes.size());
       for (const hm::BBox& box : frame.play_tracker_results.tracking_boxes) {
         telemetry_sample.policy_boxes.push_back(

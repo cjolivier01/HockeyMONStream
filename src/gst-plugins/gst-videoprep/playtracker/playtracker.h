@@ -51,6 +51,8 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   PlayTrackerTelemetryCsv telemetry_csv_;
   std::atomic<bool> telemetry_shutdown_ready_{false};
   uint64_t telemetry_seek_epoch_{0};
+  uint64_t replay_reset_epoch_{0};
+  bool replay_checkpoint_pending_{true};
   std::vector<DsPlayTrackerRuntimeTuning> runtime_tuning_history_;
   std::vector<TelemetryConfigEvent> runtime_tuning_provenance_history_;
   std::vector<std::string> runtime_tuning_groups_;

@@ -1,0 +1,105 @@
+# Camera experiments
+
+Camera experiments replay a short passage from its historical play-tracker state.
+Change pan speed, acceleration, braking, zoom, or player filtering and compare the
+result with the recorded camera. Every trial starts from the same state immediately
+before the first selected sample, including living boxes, motion, and player history.
+
+## Record the inputs
+
+Enable **DriveGPT CSV** when recording. New completed exports include
+`hstream_telemetry*.json`, the existing CSVs, archived policy files, and an
+`hstream_replay*.jsonl` sidecar. Keep the bundle together. The sidecar stores exact
+ordered tracker inputs and periodic native checkpoints; the camera CSV alone does
+not contain all the state needed to resume a tracker.
+
+Keep an **uncropped Stitched archive** covering the passage. A Program archive
+contains only the old camera view and cannot reveal pixels outside that crop.
+The preview currently accepts one continuous panorama video, with the same canvas
+and stitching geometry as the recording.
+
+## Try a camera change
+
+1. Click **Camera experiments** in the HStream window.
+2. Select the completed **DriveGPT recording** manifest and **Uncropped panorama**.
+3. Set **In recording** (seconds relative to the first telemetry sample) and
+   **Duration** (normally 10–30 seconds). The end is exclusive.
+4. Set **First selected frame in video** to the matching video's timestamp, in
+   seconds. This is an explicit time binding: matching dimensions cannot establish
+   that a file contains the same footage. Confirm **This is the corresponding
+   uncropped canvas** after checking the source and alignment.
+5. Click **Prepare historical start**. Preparation restores a checkpoint and
+   advances through the original inputs to the selected boundary. It verifies the
+   recorded camera trajectory before making the session available.
+6. Select the fast and/or Program/follower box, enable the parameters to override,
+   give the trial a name, and click **Apply & replay**. Unchecked parameters retain
+   their historical values.
+7. Use **View** to compare the recorded original, recomputed baseline, and named
+   trials. **Repeat range**, the timeline, and the frame buttons revisit the same
+   passage. A frame step completes when the GPU renderer presents its matching
+   video frame. The camera plot compares the original and selected Program
+   camera's horizontal position.
+8. **Save trial** writes a YAML descriptor with the starting checkpoint, selected
+   inputs, overrides, camera trajectory, and media/time binding. **Screenshot**
+   captures the displayed frame and experiment controls.
+
+Original means the camera trajectory in the CSV. Recomputed baseline means the
+historical starting configuration held constant across this passage. A candidate
+holds that configuration plus its overrides. Recorded control changes after the
+selected start therefore remain visible in Original, but do not overwrite a trial.
+Experiments use their own controls and tracker instances, independent of live
+Program controls and presets.
+
+Changing recording, range, or media invalidates the prepared session. A range must
+stay within one source, seek/reset epoch, and canvas/arena geometry. Preparation
+reports missing or inconsistent artifacts instead of substituting default state.
+
+## Older CSV recordings
+
+The **Legacy recording** controls accept the historical arena as
+`left, top, right, bottom` in recorded canvas pixels, and the original policy file
+if its archived copy is unavailable. Reconstruction replays the recorded player
+tracks and configuration events from the actual initialization boundary. Both
+camera trajectories must match the recording within the stated tolerance.
+
+This mode is labeled trajectory-verified reconstruction. It cannot promise an
+exact historical internal state from camera boxes alone, and refuses recordings
+whose missing inputs or mismatched trajectory prevent verification. Do not supply
+today's arena or policy unless it is also the one used for that recording.
+
+## Implementation and validation
+
+`src/libs/playtracker_replay` provides CPU preparation and trial computation using
+the same native tracker and runtime tuning code as production. The native snapshot
+schema is versioned and bounded. Compatibility is checked before restoring a fresh
+tracker; deterministic continuation is tested on the same build/platform.
+
+The Qt preview reuses GPU decoding, the production playcropper, and the existing
+GPU renderer. Loops reuse the decoder graph. Video stays GPU-resident during
+playback; an explicit screenshot performs one bounded readback of the displayed
+preview. Qt preview requires the existing x86_64/X11 GPU environment. Native replay,
+capture, and backend tests also run on ARM64/Jetson.
+
+Relevant test targets:
+
+```sh
+bazelisk test --config=opt --cpu=k8 \
+  //src/libs/playtracker_replay:playtracker_replay_test \
+  //src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_csv_test \
+  //src/apps/hstream-ui:telemetry_csv_publisher_test \
+  //src/apps/hstream-ui:camera_experiment_dialog_test
+```
+
+The dialog test also has an opt-in real GPU exercise. Supply a completed recording,
+the corresponding panorama, output directory, recording offset, duration, and the
+first selected video's timestamp:
+
+```sh
+QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/camera_experiment_dialog_test \
+  --e2e /path/hstream_telemetry.json /path/panorama.mp4 /tmp/experiment-ui \
+  10 20 609.892
+```
+
+The example timestamp is recording-specific; determine the correct mapping for
+your own media. See [telemetry format](playtracker-telemetry-csv.md) and the
+[accepted design](camera-experiments-design.md) for persistence and replay details.

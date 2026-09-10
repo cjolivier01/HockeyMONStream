@@ -53,6 +53,11 @@ The working generation also contains:
   number, decoded source/sequence when present, buffer PTS, NTP timestamp, seek
   epoch, canvas dimensions, detection count, track count, and camera-action
   availability.
+- `hstream_replay[-N].jsonl`: exact ordered native TLBR policy inputs, arena,
+  source/reset identity, whether the policy stepped, original crop rotations,
+  and periodic/boundary checkpoints immediately before a frame. Checkpoints
+  preserve resolved native configuration, pan/zoom/braking state, and player
+  history; the existing HM CSV formats are unchanged.
 - `hstream_config_events[-N].csv`: the sample boundary for seek events, live
   camera geometry changes, base-config reloads, and runtime tuning updates.
 - `play_tracker_source[-N].yaml` and `play_tracker_effective[-N].yaml`: exact
@@ -101,13 +106,21 @@ CSV files into the game directory:
 - `hstream_frame_index[-N].csv`
 - `hstream_config_events[-N].csv`
 
+New recordings also publish the replay JSONL, telemetry manifest, startup
+configuration YAMLs, and all configuration artifacts referenced by events.
+The copied manifest and event artifact references are rewritten to the game
+generation; original working files keep their original bytes and names.
+Every replay/config companion is synchronized before the final `tracking`
+commit marker. Legacy generations without a replay sidecar retain the
+six-file publication behavior.
+
 The game files are independent copies, not links back to working storage. Their
 suffix is taken from the finalized
 `<game-id>-tracking_output-with-audio[-N].mp4`, even when the working telemetry
 generation used a different suffix. Archive naming skips suffixes that already
 have any of these CSV names. After the video commit and identity-guard cleanup
 finish, a background finalization worker copies and synchronizes each CSV to an
-unnamed inode in the game filesystem. It then atomically links the five final
+unnamed inode in the game filesystem. It then atomically links the final
 companion names, synchronizes the directory, and atomically links `tracking`
 last. A final `tracking` name is therefore never visible while its bytes are
 still being copied. No hidden telemetry files are staged in the game directory,
@@ -135,3 +148,20 @@ full, the streaming/config producer blocks until space is available and emits
 a one-time warning to the log. It never drops a frame sample or config event.
 If an accepted config event cannot be written with its required provenance,
 the generation is failed and its HM training inputs are not published.
+
+## Camera experiments
+
+See [Camera experiments](camera-experiments.md) for selecting a short range,
+restoring its historical state, and comparing camera parameter trials. The
+replay reader accepts only a completed recording. A camera CSV alone contains
+positions and sizes, not the motion and player history required for restoration.
+
+Checkpoints and exact inputs are metadata only. Capturing them does not map or
+read video pixels. They share the existing bounded, lossless writer queue and
+are flushed and synchronized before the completed generation is committed.
+A native checkpoint is tied to its explicit schema/implementation version;
+incompatible snapshots are rejected. Older CSVs require explicit archived
+arena geometry and measured reconstruction agreement instead of silently
+initializing the camera from defaults. The Experiment media binding separately
+identifies an uncropped panorama and the relationship between its PTS and the
+recording's PTS; matching image dimensions alone do not prove source identity.
