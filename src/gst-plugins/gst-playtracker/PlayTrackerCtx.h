@@ -55,6 +55,29 @@ struct DsPlayTrackerCtx {
   hm::BBox arena_box;
 };
 
+// CPU policy inputs and pre-frame state. These contain metadata only; recording
+// never maps or copies video pixels. The base checkpoint preserves the origin
+// used by production's reset-to-default motion and absolute zoom controls.
+struct DsPlayTrackerReplayInput {
+  hm::BBox arena;
+  std::vector<size_t> tracking_ids;
+  std::vector<hm::BBox> tracking_boxes;
+  bool has_received_tracks{false};
+  bool stepped{false};
+  std::string checkpoint;
+  std::string base_checkpoint;
+};
+
+absl::StatusOr<DsPlayTrackerCtx::PlayTracker> DsPlayTrackerCreateCpuTracker(
+    const hm::BBox& arena, const YAML::Node& play_tracker_yaml);
+absl::Status DsPlayTrackerApplyCpuRuntimeTuning(
+    DsPlayTrackerCtx::PlayTracker* tracker, const DsPlayTrackerRuntimeTuning& tuning);
+hm::play_tracker::PlayTrackerResults DsPlayTrackerStepCpu(
+    DsPlayTrackerCtx::PlayTracker* tracker, std::vector<size_t> ids, std::vector<hm::BBox> boxes);
+DsPlayTrackerReplayInput DsPlayTrackerCaptureReplayInput(
+    const DsPlayTrackerCtx::PlayTracker& tracker, const hm::BBox& arena,
+    const std::vector<size_t>& ids, const std::vector<hm::BBox>& boxes, bool checkpoint);
+
 // Initialize library context
 DsPlayTrackerCtx* DsPlayTrackerCtxInit(DsPlayTrackerInitParams* init_params);
 
@@ -93,6 +116,9 @@ void DsPlayTrackerAttachMetadataFullFrame(
     const hm::play_tracker::PlayTrackerResults& play_results);
 
 struct GstDsPlayTrackerFrame {
+  bool capture_replay{false};
+  bool checkpoint_replay{false};
+  std::optional<DsPlayTrackerReplayInput> replay_input;
   /** NvDsObjectParams belonging to the object to be classified. */
   // NvDsObjectMeta* obj_meta = nullptr;
   NvDsFrameMeta* frame_meta = nullptr;
