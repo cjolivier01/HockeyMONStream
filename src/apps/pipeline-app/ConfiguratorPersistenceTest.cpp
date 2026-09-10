@@ -431,7 +431,7 @@ play-tracker:
           mapped_defaults["ds-playtracker"]["draw"].as<int>() == 0 &&
           mapped_defaults["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.1 &&
           mapped_defaults["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.1 &&
-          mapped_defaults["sink0"]["bitrate"].as<int>() == 55000000 &&
+          !mapped_defaults["sink0"]["bitrate"].IsDefined() &&
           !mapped_defaults["sink0"]["output-file"].IsDefined() && !mapped_defaults["sink0"]["width"].IsDefined() &&
           !mapped_defaults["sink0"]["height"].IsDefined() &&
           mapped_defaults["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
@@ -642,6 +642,26 @@ play-tracker:
         archive_status.ok() && archive_pipeline["sink0"]["output-file"].as<std::string>() == "tracking_output.mkv" &&
             archive_pipeline["sink0"]["bitrate"].as<int>() == 23000000,
         "Calibration archives must preserve explicit canonical output path and bitrate overrides");
+  } else {
+    ok = false;
+  }
+
+  auto automatic_calibration_archive = prepare_tone_routing("automatic-calibration-archive", "0");
+  if (automatic_calibration_archive) {
+    YAML::Node automatic_video_out = automatic_calibration_archive->config()["video_out"];
+    automatic_video_out["bit_rate"] = YAML::Node(YAML::NodeType::Null);
+    hm::ConfiguratorTestAccess::set_explicit_rank(automatic_calibration_archive.get(), "video_out.bit_rate", 3);
+    YAML::Node archive_pipeline = automatic_calibration_archive->config()["pipeline"];
+    archive_pipeline["sink0"]["enable"] = 1;
+    archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
+    archive_pipeline["sink0"]["bitrate"] = 23000000;
+    ok &= expect(
+        hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
+            automatic_calibration_archive.get()).ok() &&
+            hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
+                automatic_calibration_archive.get()).ok() &&
+            !archive_pipeline["sink0"]["bitrate"].IsDefined(),
+        "Explicit canonical null must restore automatic calibration bitrate and remain valid on repeated mapping");
   } else {
     ok = false;
   }
@@ -1429,6 +1449,7 @@ play-tracker:
   const fs::path clear_game_dir = games / "mapping-explicit-clear";
   fs::create_directories(clear_game_dir);
   YAML::Node explicit_clears(YAML::NodeType::Map);
+  explicit_clears["video_out"]["bit_rate"] = YAML::Node(YAML::NodeType::Null);
   explicit_clears["video_out"]["output_video_path"] = YAML::Node(YAML::NodeType::Null);
   explicit_clears["video_out"]["output_width"] = "auto";
   explicit_clears["video_out"]["output_height"] = YAML::Node(YAML::NodeType::Null);
@@ -1444,6 +1465,7 @@ play-tracker:
   const YAML::Node mapped_clear = mapping_explicit_clear.config()["pipeline"];
   ok &= expect(
       mapping_explicit_clear_status.ok() && !mapped_clear["sink0"]["output-file"].IsDefined() &&
+          !mapped_clear["sink0"]["bitrate"].IsDefined() &&
           !mapped_clear["sink0"]["width"].IsDefined() && !mapped_clear["sink0"]["height"].IsDefined() &&
           !mapped_clear["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Explicit canonical null/auto values must clear lower-ranked native output and scoreboard fields");
