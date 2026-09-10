@@ -2919,15 +2919,27 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       panini_top_squeeze->property("huginParameterName") == "phi2";
   projection->setCurrentIndex(projection->findData("biplane"));
   QApplication::processEvents();
-  const bool biplane_parameters_visible = !panini_compression->isHidden() && !panini_top_squeeze->isHidden() &&
-      panini_bottom_squeeze->isHidden() && panini_compression->value() == 45.0 && panini_top_squeeze->value() == 0.0 &&
-      panini_top_squeeze->maximum() == 1.0 && panini_top_squeeze->decimals() == 0 &&
-      panini_top_squeeze->toolTip().contains("cylindrical section");
+  auto* rounded_corners = require_child<QCheckBox>(window, "projectionParameter2Check");
+  if (!rounded_corners)
+    return false;
+  const bool biplane_parameters_visible = !panini_compression->isHidden() && panini_top_squeeze->isHidden() &&
+      panini_bottom_squeeze->isHidden() && panini_compression->value() == 45.0 && !rounded_corners->isHidden() &&
+      !rounded_corners->isChecked() && rounded_corners->text() == "Rounded corners" &&
+      rounded_corners->toolTip().contains("cylindrical section");
+  rounded_corners->click();
+  if (!expect(
+          panini_top_squeeze->value() == 1,
+          "Rounded-corner checkbox should update the numeric projection parameter"))
+    return false;
   projection->setCurrentIndex(projection->findData("triplane"));
   QApplication::processEvents();
   const bool triplane_parameters_visible = !panini_compression->isHidden() && panini_top_squeeze->isHidden() &&
       panini_bottom_squeeze->isHidden() && panini_compression->value() == 60.0 &&
-      panini_compression->maximum() == 120.0;
+      panini_compression->maximum() == 120.0 && rounded_corners->isHidden();
+  projection->setCurrentIndex(projection->findData("biplane"));
+  if (!expect(rounded_corners->isChecked(), "Switching projections should retain the rounded-corner choice"))
+    return false;
+  rounded_corners->click();
   projection->setCurrentIndex(projection->findData("equirectangular-panini"));
   QApplication::processEvents();
   const bool fixed_panini_parameters_hidden =
@@ -2958,6 +2970,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       QLabel* label = projection_parameter_labels[parameter_index];
       QDoubleSpinBox* spin = projection_parameter_spins[parameter_index];
       const bool expected_visible = parameter_index < expected_parameter_count;
+      const bool boolean = expected_visible &&
+          std::string_view(hm::stitching::StitchProjectionParameters(*parsed_projection)[parameter_index].name) ==
+              "corners";
+      auto* checkbox = window->findChild<QCheckBox*>(QString("projectionParameter%1Check").arg(parameter_index + 1));
+      legible = legible && checkbox && checkbox->isVisible() == boolean;
+      if (boolean) {
+        legible = legible && !label->isVisible() && !spin->isVisible() &&
+            checkbox->width() >= checkbox->sizeHint().width() &&
+            algorithms_page->contentsRect().contains(checkbox->geometry());
+        continue;
+      }
       legible = legible && label->isVisible() == expected_visible && spin->isVisible() == expected_visible;
       if (!expected_visible)
         continue;
@@ -5712,13 +5735,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         !after_rejected_rotation["rink"]["stitched_output_pending_generation"].IsDefined() &&
         after_rejected_rotation["rink"]["scoreboard"]["perspective_polygon"].as<std::vector<std::vector<int>>>() ==
             rejection_scoreboard_polygon;
-    auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
+    auto* fixed_edge_link = require_child<QCheckBox>(window, "cameraCheck_Link_Fixed_Edge_Rotation_Left_Right");
     auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
     if (!fixed_edge_link || !fixed_edge_left) {
       activate(stop);
       return false;
     }
-    fixed_edge_link->setValue(1);
+    fixed_edge_link->setChecked(true);
     fixed_edge_left->setValue(310);
     for (int i = 0; i < 50 &&
          !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=save/restart");
@@ -8044,7 +8067,7 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
   auto* backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* pitch = require_child<QDoubleSpinBox>(window, "rinkPitchSpin");
   auto* roll = require_child<QDoubleSpinBox>(window, "rinkRollSpin");
-  auto* link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
+  auto* link = require_child<QCheckBox>(window, "cameraCheck_Link_Fixed_Edge_Rotation_Left_Right");
   auto* left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* explanation = require_child<QLabel>(window, "cropRotationExplanation");
@@ -8065,6 +8088,8 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
   };
   auto suppressed = [&]() {
     return left->value() == 0 && right->value() == 0 && !left->isEnabled() && !right->isEnabled() &&
+        !window->findChild<QLabel*>("cameraLabel_Left_Fixed_Edge_Rotation_Angle_x10")->isEnabled() &&
+        !window->findChild<QLabel*>("cameraValue_Right_Fixed_Edge_Rotation_Angle_x10")->isEnabled() &&
         !link->isEnabled() && !explanation->isHidden();
   };
   bool ok = true;
@@ -8097,7 +8122,7 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
   ok &= expect(pitch->value() == -35 && suppressed(), "Inherited Vallco pitch must suppress crop rotation");
   pitch->setValue(0);
   ok &= expect(
-      left->value() == 170 && right->value() == 170 && link->value() == 1,
+      left->value() == 170 && right->value() == 170 && link->isChecked(),
       "A new preset must replace the previous game's dormant angles");
   load("[12, 0, 0]", "18");
   ok &= expect(left->isEnabled() && left->value() == 180, "Yaw alone must retain manual crop rotation");
@@ -8819,7 +8844,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   auto* rotate = require_child<QSlider>(window, "cameraSlider_Stitch_Rotate_Degrees");
-  auto* fixed_edge_link = require_child<QSlider>(window, "cameraSlider_Link_Fixed_Edge_Rotation_Left_Right");
+  auto* fixed_edge_link = require_child<QCheckBox>(window, "cameraCheck_Link_Fixed_Edge_Rotation_Left_Right");
   auto* fixed_edge_left = require_child<QSlider>(window, "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10");
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
@@ -8830,10 +8855,10 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           ignore_largest_count && ignore_oversized && oversized_percent && ignore_largest_count->value() == 1 &&
               ignore_largest_count->maximum() == std::numeric_limits<int>::max() && !ignore_oversized->isChecked() &&
-              oversized_percent->value() == 100,
+              oversized_percent->value() == 100 && !oversized_percent->isEnabled(),
           "Player filters default to one largest and a disabled twice-average-area threshold"))
     return false;
-  auto* apply_to_fast = require_child<QSlider>(window, "cameraSlider_Apply_To_Fast_Box");
+  auto* apply_to_fast = require_child<QCheckBox>(window, "cameraCheck_Apply_To_Fast_Box");
   auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
   auto* max_speed_y = require_child<QSlider>(window, "cameraSlider_Max_Speed_Y_x10");
@@ -8918,6 +8943,10 @@ bool test_camera_controls(HStreamWindow* window) {
       "playbackSeekForward10Button",
       "cameraSlider_Zoom_In_Aggressiveness",
       "cameraSlider_Stop_Direction_Change_Delay_Frames",
+      "cameraCheck_Cancel_Stop_On_Opposite_Direction",
+      "cameraCheck_Apply_To_Fast_Box",
+      "cameraCheck_Apply_To_Follower_Box",
+      "cameraCheck_Link_Fixed_Edge_Rotation_Left_Right",
       "cameraSlider_Left_Fixed_Edge_Rotation_Angle_x10",
       "cameraSlider_Bring_Up_Shadows",
       "cameraSlider_Exposure_x100",
@@ -9046,6 +9075,98 @@ bool test_camera_controls(HStreamWindow* window) {
           "Camera control defaults should be transformed directly from the bundled baseline")) {
     return false;
   }
+  // Exercise real checkbox activation and preserve dormant settings through
+  // saving, signal-blocked preset loading, re-enabling, and reset.
+  game_id->setText("ui-feature-dependencies-game");
+  activate(create);
+  for (const QString& id :
+       {QString("Apply_To_Fast_Box"),
+        QString("Apply_To_Follower_Box"),
+        QString("Cancel_Stop_On_Opposite_Direction"),
+        QString("Link_Fixed_Edge_Rotation_Left_Right")}) {
+    auto* checkbox = window->findChild<QCheckBox*>("cameraCheck_" + id);
+    if (!expect(
+            checkbox && !checkbox->isTristate() && !window->findChild<QSlider*>("cameraSlider_" + id),
+            "Boolean camera settings should use two-state checkboxes"))
+      return false;
+    const bool checked = checkbox->isChecked();
+    checkbox->click();
+    if (!expect(
+            window->cameraControlValue(id) == (checked ? 0 : 1),
+            "Checkbox activation should update the existing numeric config value"))
+      return false;
+    checkbox->click();
+  }
+  const auto row_enabled = [window](const QString& id, bool enabled) {
+    auto* row = window->findChild<QWidget*>("cameraRow_" + id);
+    if (!row || row->isEnabled() != enabled)
+      return false;
+    for (auto* child : row->findChildren<QWidget*>()) {
+      if (child->isEnabled() != enabled)
+        return false;
+    }
+    return true;
+  };
+  auto* cancel_stop = require_child<QCheckBox>(window, "cameraCheck_Cancel_Stop_On_Opposite_Direction");
+  auto* overshoot_delay = require_child<QSlider>(window, "cameraSlider_Overshoot_Stop_Delay_Frames");
+  if (!cancel_stop || !overshoot_delay ||
+      !expect(
+          row_enabled("Oversized_Player_Percent", false) && row_enabled("Overshoot_Speed_Ratio_x100", false) &&
+              !lift_shadow_black_point->isEnabled() && !stitched_lift_shadow_black_point->isEnabled(),
+          "Inactive features should gray out their controls, labels, and values at startup"))
+    return false;
+  ignore_oversized->click();
+  oversized_percent->setValue(175.5);
+  ignore_oversized->click();
+  cancel_stop->click();
+  if (!capture_widget_artifact(
+          window->findChild<QTabWidget*>("programControlTabs")->widget(0), "tracking-disabled-features.png"))
+    return false;
+  overshoot_delay->setValue(0);
+  if (!expect(
+          row_enabled("Oversized_Player_Percent", false) && oversized_percent->value() == 175.5 &&
+              row_enabled("Stop_Cancel_Hysteresis_Frames", false) && row_enabled("Overshoot_Speed_Ratio_x100", true),
+          "Feature changes should update whole dependent rows without discarding their values"))
+    return false;
+  activate(save);
+  ignore_oversized->click();
+  cancel_stop->click();
+  activate(create);
+  if (!expect(
+          !ignore_oversized->isChecked() && !cancel_stop->isChecked() &&
+              row_enabled("Oversized_Player_Percent", false) && oversized_percent->value() == 175.5 &&
+              row_enabled("Stop_Cancel_Hysteresis_Frames", false) && !save->isEnabled(),
+          "Loading a saved preset should restore disabled dependencies and retained numeric values"))
+    return false;
+  ignore_oversized->click();
+  cancel_stop->click();
+  if (!expect(
+          row_enabled("Oversized_Player_Percent", true) && oversized_percent->value() == 175.5 &&
+              row_enabled("Stop_Cancel_Hysteresis_Frames", true),
+          "Re-enabling features should restore access to their retained settings"))
+    return false;
+  activate(reset);
+  if (!expect(
+          !ignore_oversized->isChecked() && row_enabled("Oversized_Player_Percent", false) &&
+              oversized_percent->value() == 100 && row_enabled("Stop_Cancel_Hysteresis_Frames", true) &&
+              row_enabled("Overshoot_Speed_Ratio_x100", false),
+          "Reset should restore feature defaults and all dependent rows"))
+    return false;
+  bring_up_shadows->setValue(35);
+  lift_shadow_black_point->click();
+  bring_up_shadows->setValue(0);
+  if (!expect(
+          !lift_shadow_black_point->isEnabled() && !stitched_lift_shadow_black_point->isEnabled() &&
+              lift_shadow_black_point->isChecked() && stitched_lift_shadow_black_point->isChecked(),
+          "Disabling shadow lift should disable both black-point checkboxes while retaining their choice"))
+    return false;
+  stitched_bring_up_shadows->setValue(35);
+  if (!expect(
+          lift_shadow_black_point->isEnabled() && stitched_lift_shadow_black_point->isEnabled(),
+          "Changing the mirrored shadow-lift slider should restore both black-point controls"))
+    return false;
+  game_id->setText("ui-camera-control-game");
+  activate(create);
   bring_up_shadows->setValue(35);
   lift_shadow_black_point->setChecked(true);
   exposure->setValue(60);
@@ -9296,7 +9417,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
+          fixed_edge_link->isChecked() && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
           "Camera controls should load the scalar rink.camera.fixed_edge_rotation_angle value") ||
       !expect(!save->isEnabled(), "Save Preset should be disabled after loading the saved control snapshot")) {
     return false;
@@ -9310,7 +9431,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 &&
+          fixed_edge_link->isChecked() && fixed_edge_left->value() == 0 && fixed_edge_right->value() == 0 &&
               !save->isEnabled(),
           "An explicit null fixed-edge rotation should load as a clean neutral UI value")) {
     return false;
@@ -9606,7 +9727,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
+          fixed_edge_link->isChecked() && fixed_edge_left->value() == 220 && fixed_edge_right->value() == 220,
           "Camera controls should recover after a malformed saved config is corrected") ||
       !expect(!save->isEnabled(), "Loading the corrected config should restore the clean preset snapshot")) {
     return false;
@@ -9661,7 +9782,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          fixed_edge_link->value() == 1 && fixed_edge_left->value() == 100 && fixed_edge_right->value() == 100 &&
+          fixed_edge_link->isChecked() && fixed_edge_left->value() == 100 && fixed_edge_right->value() == 100 &&
               save->isEnabled(),
           "Out-of-domain selector values should be rejected visibly without partially applying the preset")) {
     return false;
@@ -9785,7 +9906,7 @@ bool test_camera_controls(HStreamWindow* window) {
 
   rotate->setValue(72);
   fixed_edge_left->setValue(250);
-  fixed_edge_link->setValue(0);
+  fixed_edge_link->setChecked(false);
   fixed_edge_right->setValue(750);
   stop_delay->setValue(14);
   max_speed_x->setValue(450);
@@ -10546,7 +10667,7 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
-  fixed_edge_link->setValue(1);
+  fixed_edge_link->setChecked(true);
   fixed_edge_left->setValue(300);
   for (int i = 0; i < 50 &&
        (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle=30.0") ||
@@ -10564,7 +10685,7 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(stop);
     return false;
   }
-  fixed_edge_link->setValue(0);
+  fixed_edge_link->setChecked(false);
   fixed_edge_right->setValue(650);
   for (int i = 0; i < 50 &&
        (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-right=65.0") ||
@@ -10799,7 +10920,7 @@ bool test_camera_controls(HStreamWindow* window) {
     std::cerr << live_playtracker << '\n';
     return false;
   }
-  apply_to_fast->setValue(1);
+  apply_to_fast->setChecked(true);
   max_speed_x->setValue(510);
   max_accel_x->setValue(35);
   for (int i = 0; i < 50; ++i) {
