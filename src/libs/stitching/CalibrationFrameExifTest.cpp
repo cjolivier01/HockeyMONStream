@@ -4,12 +4,12 @@
 
 #include <cmath>
 #include <cstring>
-#include <memory>
-#include <sstream>
-
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <sstream>
+
 #include "hstream/src/libs/common/Process.h"
 #include "tools/cpp/runfiles/runfiles.h"
 #include "yaml-cpp/yaml.h"
@@ -27,6 +27,11 @@ std::string read(const std::filesystem::path& path) {
 void append_le(std::string& bytes, uint64_t value, size_t count) {
   for (size_t i = 0; i < count; ++i)
     bytes += static_cast<char>(value >> (8 * i));
+}
+void append_double(std::string& bytes, double value) {
+  uint64_t bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  append_le(bytes, bits, 8);
 }
 std::string atom(const std::string& type, const std::string& data) {
   std::string bytes;
@@ -98,6 +103,30 @@ int main(int argc, char** argv) {
         ForFrame(*gopro, -1).empty() && ForFrame(*gopro, std::numeric_limits<double>::quiet_NaN()).empty(),
         "Invalid timestamps must not select metadata");
   }
+  for (int count : {30, 60}) {
+    Metadata rational;
+    rational.camera["Make"] = "GoPro";
+    Tags arrays;
+    for (int i = 0; i < count; ++i) {
+      arrays["ISOSpeeds"] += std::to_string((i + 1) * 100) + " ";
+      arrays["ExposureTimes"] += std::to_string((i + 1) * 0.0001) + " ";
+    }
+    for (double start : {0.0, 13 * 1.001}) {
+      rational.samples = {{start, 1.001, arrays}};
+      for (int i = 0; i < count; ++i) {
+        const double pts = std::floor((start + 1.001 * i / count) * 1e9) / 1e9;
+        const auto tags = ForFrame(rational, pts);
+        ok &= expect(
+            tags.at("ISO") == std::to_string((i + 1) * 100) &&
+                std::abs(std::stod(tags.at("ExposureTime")) - (i + 1) * 0.0001) < 1e-10,
+            "Nanosecond-rounded 29.97/59.94 fps PTS must select the matching exposure and ISO");
+        if (i > 0)
+          ok &= expect(
+              ForFrame(rational, pts - 2e-6).at("ISO") == std::to_string(i * 100),
+              "Times outside the rounding tolerance must still select the earlier sample");
+      }
+    }
+  }
   const auto gps = Parse(
       R"([{
     "GoPro:Main:Model": "HERO13 Black",
@@ -133,6 +162,49 @@ int main(int argc, char** argv) {
   ok &= expect(
       no_clock.ok() && !ForFrame(*no_clock, 0.085).count("ExposureTime"),
       "Must not guess the origin or units of an undocumented clock");
+  const auto utc_gps = [](const std::string& created, const std::string& first = "2026:09:04 12:00:00.5Z") {
+    return Parse(
+        R"([{"Insta360:Main:Model":"Insta360 Ace Pro 2", "QuickTime:Main:CreateDate":")" + created +
+            R"(", "Insta360:Doc1:GPSDateTime":")" + first + R"(",
+        "Insta360:Doc1:GPSLatitude":40, "Insta360:Doc1:GPSLongitude":-70,
+        "Insta360:Doc2:GPSDateTime":"2026:09:04 12:00:00.75Z",
+        "Insta360:Doc2:GPSLatitude":41, "Insta360:Doc2:GPSLongitude":-71,
+        "Insta360:Doc3:GPSDateTime":"2026:09:04 12:00:03.5Z",
+        "Insta360:Doc3:GPSLatitude":42, "Insta360:Doc3:GPSLongitude":-72}])",
+        std::nullopt);
+  };
+  const auto insta_gps = utc_gps("2026:09:04 12:00:00");
+  ok &= expect(insta_gps.ok(), "Insta360 UTC GPS must parse without an exposure clock");
+  if (insta_gps.ok()) {
+    ok &= expect(!ForFrame(*insta_gps, 0.49).count("GPSLatitude"), "Do not use a future GPS fix");
+    ok &= expect(
+        ForFrame(*insta_gps, 0.5).at("GPSLatitude") == "40" && ForFrame(*insta_gps, 0.75).at("GPSLatitude") == "41" &&
+            ForFrame(*insta_gps, 3.5).at("GPSLongitude") == "72",
+        "UTC GPS fixes must align to chapter PTS, ending at the next fix");
+    ok &= expect(
+        !ForFrame(*insta_gps, 1.75).count("GPSLatitude") && !ForFrame(*insta_gps, 4.5).count("GPSLatitude"),
+        "UTC GPS fixes must expire after one second, including gaps and the final fix");
+  }
+  for (const char* invalid :
+       {"", "0000:00:00 00:00:00", "2026:02:30 12:00:00", "2026:09:04 12:00:00+02:00", "2026:09:04 12:00:00junk"}) {
+    const auto missing_origin = utc_gps(invalid);
+    ok &= expect(
+        missing_origin.ok() && !ForFrame(*missing_origin, 0.5).count("GPSLatitude") &&
+            !ForFrame(*missing_origin, 0.5).count("DateTimeOriginal"),
+        "Missing, invalid or non-UTC chapter origins must not produce timed GPS or capture time");
+  }
+  for (const char* invalid :
+       {"2026:09:04 12:00:00.5", "2026:09:04 12:00:00.Z", "2026:02:30 12:00:00.5Z", "2026:09:04 12:00:00.5+02:00"}) {
+    const auto invalid_fix = utc_gps("2026:09:04 12:00:00", invalid);
+    ok &= expect(
+        invalid_fix.ok() && !ForFrame(*invalid_fix, 0.5).count("GPSLatitude"),
+        "Invalid or unzoned GPS timestamps must be skipped");
+  }
+  const auto fractional_origin = utc_gps("2026:09:04 12:00:00.25Z");
+  ok &= expect(
+      fractional_origin.ok() && ForFrame(*fractional_origin, 0.25).at("GPSLatitude") == "40" &&
+          ForFrame(*fractional_origin, 0.25).at("SubSecTimeOriginal") == "500000",
+      "GPS selection and capture time must agree for fractional UTC origins");
   ok &= expect(!Parse("[broken", std::nullopt).ok(), "Malformed metadata must be rejected");
   const auto ordinary = Parse(R"([{"QuickTime:Main:Model":"Other camera"}])", std::nullopt);
   ok &= expect(ordinary.ok() && ForFrame(*ordinary, 0).empty(), "Ordinary videos must remain untouched");
@@ -195,19 +267,35 @@ int main(int argc, char** argv) {
              "1",
              "-c:v",
              "mpeg4",
+             "-metadata",
+             "creation_time=2026-09-04T12:00:00Z",
              path.string()},
             nullptr) == 0,
         "Must create a tiny MP4 fixture");
     std::string exposure;
     for (uint64_t time : {1000000, 1040000}) {
       append_le(exposure, time, 8);
-      const double value = time == 1000000 ? 0.005 : 0.01;
-      uint64_t bits;
-      std::memcpy(&bits, &value, sizeof(bits));
-      append_le(exposure, bits, 8);
+      append_double(exposure, time == 1000000 ? 0.005 : 0.01);
     }
     append_le(exposure, 0x400, 2);
     append_le(exposure, 32, 4);
+    // Actual 53-byte Insta360 GPS records use Unix seconds and milliseconds,
+    // not SampleTime or the exposure clock. ExifTool must recover these fixes.
+    std::string gps_records;
+    for (int milliseconds : {25, 500}) {
+      append_le(gps_records, 1788523200, 8); // 2026-09-04 12:00:00 UTC
+      append_le(gps_records, milliseconds, 2);
+      gps_records += 'A';
+      append_double(gps_records, milliseconds == 25 ? 40 : 41);
+      gps_records += 'N';
+      append_double(gps_records, 70);
+      gps_records += 'W';
+      append_double(gps_records, 10); // m/s
+      append_double(gps_records, 180); // track
+      append_double(gps_records, -2.5); // altitude
+    }
+    append_le(gps_records, 0x700, 2);
+    append_le(gps_records, 106, 4);
     std::string camera;
     for (const auto& [field, value] :
          {std::pair{0x0a, std::string("serial-test")},
@@ -218,7 +306,7 @@ int main(int argc, char** argv) {
       camera += value;
     }
     camera.append(reinterpret_cast<const char*>(proto), sizeof(proto) - 4);
-    std::string trailer = exposure + camera;
+    std::string trailer = exposure + gps_records + camera;
     append_le(trailer, 0x101, 2);
     append_le(trailer, camera.size(), 4);
     trailer += std::string(32, '\0');
@@ -272,6 +360,13 @@ int main(int argc, char** argv) {
                 tags["ExifIFD:SerialNumber"].as<std::string>() == "serial-test" &&
                 std::abs(tags["ExifIFD:ExposureTime"].as<double>() - 0.01) < 1e-8,
             "Written EXIF must contain camera serial and the selected frame exposure");
+        ok &= expect(
+            tags["GPS:GPSLatitude"].as<double>() == 40 && tags["GPS:GPSLongitude"].as<double>() == 70 &&
+                tags["GPS:GPSLongitudeRef"].as<std::string>() == "W" && tags["GPS:GPSSpeed"].as<double>() == 36 &&
+                tags["GPS:GPSAltitudeRef"].as<int>() == 1 &&
+                tags["GPS:GPSDateStamp"].as<std::string>() == "2026:09:04" &&
+                tags["GPS:GPSTimeStamp"].as<std::string>() == "12:00:00.025",
+            "Written EXIF must recover the UTC GPS record with fractional timestamp, signs and speed units");
       } catch (const YAML::Exception& e) {
         std::cerr << e.what() << "\n";
         ok = false;

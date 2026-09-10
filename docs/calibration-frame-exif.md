@@ -18,9 +18,11 @@ seeks and camera synchronization do not reset the timestamp used to select
 metadata. GPMF packets are selected by their interval, and exposure/ISO arrays
 and GPS fixes within each packet are sampled at the frame's time. Insta360
 exposure timestamps use the first-frame clock origin and clock units from its
-protobuf metadata. Unknown clocks and telemetry gaps do not inherit stale
-values. Capture time uses the chapter's QuickTime UTC creation time plus the
-frame's original presentation timestamp.
+protobuf metadata. Insta360 GPS timestamps are aligned to the chapter's
+QuickTime UTC creation time; each fix covers at most one second, ending earlier
+if the next fix arrives. Missing or invalid UTC origins skip these GPS records.
+Unknown clocks and telemetry gaps do not inherit stale values. Capture time
+uses the same chapter UTC origin plus the frame's original presentation timestamp.
 
 ExifTool 13.50 is downloaded with a pinned SHA-256 by Bazel. Debian packages
 (including Jetson and the Windows WSL installer) carry that same runtime under

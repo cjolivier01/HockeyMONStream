@@ -62,6 +62,54 @@ const char* const kTags[] = {
     "TimeCode",
     "VideoFrameRate"};
 
+// Source PTS is rounded to nanoseconds, while metadata intervals may use a
+// rational frame rate. Use the same bounded tolerance at packet and frame edges.
+constexpr double kTimestampTolerance = 1e-6;
+
+struct UtcTime {
+  time_t seconds;
+  double fraction;
+};
+
+std::optional<UtcTime> utc_time(const std::string& value, bool require_zone) {
+  if (value.size() < 19)
+    return std::nullopt;
+  for (size_t i = 0; i < 19; ++i) {
+    const char separator = i == 4 || i == 7 || i == 13 || i == 16 ? ':' : i == 10 ? ' ' : '\0';
+    if (separator ? value[i] != separator : value[i] < '0' || value[i] > '9')
+      return std::nullopt;
+  }
+  size_t end = 19;
+  double fraction = 0;
+  if (end < value.size() && value[end] == '.') {
+    const size_t begin = ++end;
+    double place = 0.1;
+    while (end < value.size() && value[end] >= '0' && value[end] <= '9') {
+      fraction += (value[end++] - '0') * place;
+      place *= 0.1;
+    }
+    if (end == begin)
+      return std::nullopt;
+  }
+  if (value.substr(end) != "Z" && (require_zone || end != value.size()))
+    return std::nullopt;
+  std::tm date{};
+  std::istringstream input(value.substr(0, 19));
+  input >> std::get_time(&date, "%Y:%m:%d %H:%M:%S");
+  if (input.fail() || value.substr(0, 4) == "0000")
+    return std::nullopt;
+  const time_t epoch = timegm(&date);
+  std::tm utc{};
+  if (!gmtime_r(&epoch, &utc))
+    return std::nullopt;
+  std::ostringstream normalized;
+  normalized << std::put_time(&utc, "%Y:%m:%d %H:%M:%S");
+  // timegm normalizes impossible calendar dates and leap seconds; reject them.
+  if (normalized.str() != value.substr(0, 19))
+    return std::nullopt;
+  return UtcTime{epoch, fraction};
+}
+
 std::optional<double> number(const std::string& value) {
   try {
     size_t end = 0;
@@ -339,6 +387,9 @@ absl::StatusOr<Metadata> Parse(const std::string& json, const std::optional<Inst
   result.camera["Make"] = gopro ? "GoPro" : "Insta360";
   const auto fps = number(result.camera, "VideoFrameRate");
   const double frame_duration = fps && *fps > 0 ? 1.0 / *fps : 0;
+  const auto created = result.camera.find("CreateDate");
+  const auto chapter_utc = created != result.camera.end() ? utc_time(created->second, false) : std::nullopt;
+  std::vector<Sample> insta_gps;
   // GPMF stores the first GPS fix in the parent document and further fixes as
   // DocN-1, DocN-2, etc. Divide the packet interval across the entire series.
   std::map<std::string, std::map<unsigned, Tags>> gps_series;
@@ -357,6 +408,16 @@ absl::StatusOr<Metadata> Parse(const std::string& json, const std::optional<Inst
       if (const auto code = number(tags, "TimeCode")) {
         time = (*code - clock->origin) * clock->scale;
         duration = frame_duration;
+      }
+    }
+    // Insta360 GPS records use absolute UTC, independently of the exposure
+    // clock. Align them to the same chapter UTC origin used for capture time.
+    if (!time && chapter_utc && group.find("Insta360") != std::string::npos && tags.count("GPSLatitude") &&
+        tags.count("GPSDateTime")) {
+      if (const auto gps_utc = utc_time(tags.at("GPSDateTime"), true)) {
+        const double relative =
+            std::difftime(gps_utc->seconds, chapter_utc->seconds) + gps_utc->fraction - chapter_utc->fraction;
+        insta_gps.push_back({relative, 1.0, tags});
       }
     }
     if (!time || !std::isfinite(*time) || !std::isfinite(duration) || duration <= 0)
@@ -388,6 +449,15 @@ absl::StatusOr<Metadata> Parse(const std::string& json, const std::optional<Inst
     }
     result.samples.push_back({*time, duration, std::move(parent)});
   }
+  std::sort(insta_gps.begin(), insta_gps.end(), [](const auto& a, const auto& b) { return a.seconds < b.seconds; });
+  for (size_t i = 0; i < insta_gps.size(); ++i) {
+    // A fix covers at most one second, shortened by the next fix. Never bridge
+    // GPS outages or extrapolate the last fix through the rest of the chapter.
+    if (i + 1 < insta_gps.size())
+      insta_gps[i].duration = std::min(1.0, insta_gps[i + 1].seconds - insta_gps[i].seconds);
+    if (insta_gps[i].duration > 0)
+      result.samples.push_back(std::move(insta_gps[i]));
+  }
   std::sort(
       result.samples.begin(), result.samples.end(), [](const auto& a, const auto& b) { return a.seconds < b.seconds; });
   return result;
@@ -398,9 +468,9 @@ Tags ForFrame(const Metadata& metadata, double seconds) {
     return {};
   Tags values = metadata.camera;
   for (const auto& sample : metadata.samples) {
-    if (sample.seconds > seconds + 1e-6)
+    if (sample.seconds > seconds + kTimestampTolerance)
       break;
-    if (seconds + 1e-6 >= sample.seconds + sample.duration)
+    if (seconds + kTimestampTolerance >= sample.seconds + sample.duration)
       continue;
     for (const auto& [key, value] : sample.tags)
       values[key] = value;
@@ -413,7 +483,7 @@ Tags ForFrame(const Metadata& metadata, double seconds) {
       for (std::string item; input >> item;)
         entries.push_back(item);
       if (!entries.empty()) {
-        const double fraction = std::max(0.0, (seconds - sample.seconds) / sample.duration);
+        const double fraction = std::max(0.0, (seconds + kTimestampTolerance - sample.seconds) / sample.duration);
         values[singular] = entries[std::min(entries.size() - 1, size_t(fraction * entries.size()))];
       }
     }
@@ -485,20 +555,21 @@ Tags ForFrame(const Metadata& metadata, double seconds) {
       out["GPSSpeed"] = decimal(*speed);
       out["GPSSpeedRef"] = "K";
     }
-    if (values.count("GPSDateTime") && values["GPSDateTime"].size() >= 19) {
-      out["GPSDateStamp"] = values["GPSDateTime"].substr(0, 10);
-      out["GPSTimeStamp"] = values["GPSDateTime"].substr(11);
+    if (values.count("GPSDateTime") && utc_time(values["GPSDateTime"], false)) {
+      const auto& date = values["GPSDateTime"];
+      out["GPSDateStamp"] = date.substr(0, 10);
+      // GPSTimeStamp is UTC by definition; ExifTool's numeric writer expects
+      // the time only, without the trailing Z used by Insta360 GPSDateTime.
+      out["GPSTimeStamp"] = date.substr(11, date.size() - 11 - (date.back() == 'Z' ? 1 : 0));
     }
   }
   // These camera formats store chapter creation time as QuickTime UTC. Add the
   // original chapter PTS, not the pipeline's zero-based synchronized time.
   const auto created = values.find("CreateDate");
-  if (created != values.end() && created->second.size() == 19 && created->second.substr(0, 4) != "0000") {
-    std::tm date{};
-    std::istringstream input(created->second);
-    input >> std::get_time(&date, "%Y:%m:%d %H:%M:%S");
-    if (!input.fail() && seconds < 366 * 86400.0) {
-      const time_t epoch = timegm(&date) + static_cast<time_t>(std::floor(seconds));
+  if (created != values.end() && seconds < 366 * 86400.0) {
+    if (const auto origin = utc_time(created->second, false)) {
+      const double elapsed = seconds + origin->fraction;
+      const time_t epoch = origin->seconds + static_cast<time_t>(std::floor(elapsed));
       std::tm utc{};
       if (gmtime_r(&epoch, &utc)) {
         std::ostringstream timestamp;
@@ -506,7 +577,7 @@ Tags ForFrame(const Metadata& metadata, double seconds) {
         out["DateTimeOriginal"] = timestamp.str();
         out["OffsetTimeOriginal"] = "+00:00";
         std::ostringstream fraction;
-        fraction << std::setw(6) << std::setfill('0') << static_cast<int>((seconds - std::floor(seconds)) * 1000000);
+        fraction << std::setw(6) << std::setfill('0') << static_cast<int>((elapsed - std::floor(elapsed)) * 1000000);
         out["SubSecTimeOriginal"] = fraction.str();
       }
     }
