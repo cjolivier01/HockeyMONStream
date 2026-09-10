@@ -441,6 +441,7 @@ class HStreamWindow : public QMainWindow {
       QString* published_playtracker_sidecar,
       int selected_max_output_width,
       const std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>& max_width_decision = std::nullopt);
+  std::map<QString, int> readPlayerSizeControls(const YAML::Node& game_config, bool inherited) const;
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, int value);
   bool publishRuntimeControlBatch(
@@ -749,6 +750,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QCheckBox*> output_toggles_;
   std::map<QString, QSlider*> camera_sliders_;
   std::map<QString, QSpinBox*> camera_spinboxes_;
+  std::map<QString, int> inherited_player_size_controls_;
   std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, QSlider*> stitched_color_sliders_;

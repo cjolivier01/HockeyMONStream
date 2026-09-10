@@ -10271,6 +10271,51 @@ bool test_camera_controls(HStreamWindow* window) {
     out << saved << "\n";
   }
 
+  // Native settings win over same-layer canonical settings until the operator
+  // explicitly overrides them. A reset must remain effective after reloading.
+  {
+    const YAML::Node original_native = YAML::LoadFile(custom_playtracker_config.string());
+    YAML::Node probe_native = YAML::Clone(original_native);
+    probe_native["play-tracker"]["ignore-largest-bbox"] = true;
+    probe_native["play-tracker"]["ignore-largest-bbox-count"] = 3;
+    probe_native["play-tracker"]["ignore-oversized-bboxes"] = true;
+    probe_native["play-tracker"]["oversized-bbox-percent"] = 175;
+    YAML::Node probe_game = YAML::Clone(saved);
+    probe_game["rink"]["tracking"]["cam_ignore_largest_count"] = 2;
+    probe_game["rink"]["tracking"]["cam_ignore_oversized"] = false;
+    probe_game["rink"]["tracking"]["cam_oversized_percent"] = 50;
+    std::ofstream(custom_playtracker_config) << probe_native << '\n';
+    std::ofstream(config) << probe_game << '\n';
+    activate(create);
+    const QStringList native_arguments = HStreamWindowTestAccess::pipelineArguments(window);
+    if (!expect(
+            ignore_largest_count->value() == 3 && ignore_oversized->isChecked() && oversized_percent->value() == 175 &&
+                native_arguments.contains("--options=rink.tracking.cam_ignore_largest_count=3") &&
+                native_arguments.contains("--options=rink.tracking.cam_ignore_oversized=true") &&
+                native_arguments.contains("--options=rink.tracking.cam_oversized_percent=175"),
+            "Untouched native player size settings must populate controls and survive Program startup"))
+      return false;
+    probe_native["play-tracker"]["ignore-largest-bbox"] = false;
+    std::ofstream(custom_playtracker_config) << probe_native << '\n';
+    activate(create);
+    if (!expect(
+            ignore_largest_count->value() == 0 &&
+                HStreamWindowTestAccess::pipelineArguments(window).contains(
+                    "--options=rink.tracking.cam_ignore_largest=false"),
+            "Legacy native disable must survive UI startup"))
+      return false;
+    activate(reset);
+    activate(save);
+    activate(create);
+    if (!expect(
+            ignore_largest_count->value() == 1 && !ignore_oversized->isChecked() && oversized_percent->value() == 100,
+            "Reset and Save must override a differing native base even when the UI values equal baseline defaults"))
+      return false;
+    std::ofstream(custom_playtracker_config) << original_native << '\n';
+    std::ofstream(config) << saved << '\n';
+    activate(create);
+  }
+
   activate(reset);
   if (!expect(
           window->cameraControlValue("Stop_Direction_Change_Delay_Frames") == 10,

@@ -6282,7 +6282,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* content = new QWidget();
     content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* content_layout = new QVBoxLayout(content);
-    if (!specs.empty() && specs.front().id == "Zoom_In_Aggressiveness") {
+    if (!specs.empty() && std::string_view(specs.front().id) == "Zoom_In_Aggressiveness") {
       addCameraSpinBox(
           content_layout,
           "Ignore_Largest_Count",
@@ -14581,7 +14581,96 @@ void HStreamWindow::updatePresetDirtyState() {
     set_control_help(save_preset_button_, description);
 }
 
+std::map<QString, int> HStreamWindow::readPlayerSizeControls(const YAML::Node& game_config, bool inherited) const {
+  const auto user = hm::user_config::load_or_create();
+  if (!user.ok())
+    throw std::runtime_error(user.status().ToString());
+  constexpr const char* file_key = "pipeline.ds-playtracker.config-file";
+  YAML::Node configured_file;
+  int native_rank = 0;
+  if (lookup_yaml_path(game_config, file_key, &configured_file)) {
+    native_rank = 2;
+  } else if (lookup_yaml_path(*user, file_key, &configured_file)) {
+    native_rank = 1;
+  } else {
+    lookup_yaml_path(baseline_config_, file_key, &configured_file);
+  }
+  // On Save/Reset compare against the original native file, not a generated
+  // sidecar containing a previous UI override.
+  if (inherited) {
+    YAML::Node original_file;
+    if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &original_file))
+      configured_file.reset(original_file);
+  }
+  YAML::Node native(YAML::NodeType::Map);
+  if (configured_file.IsDefined() && !configured_file.IsNull()) {
+    if (!configured_file.IsScalar())
+      throw std::invalid_argument("pipeline.ds-playtracker.config-file must be a file path");
+    const QString configured = QString::fromStdString(configured_file.as<std::string>());
+    QStringList candidates;
+    const QString game_dir = game_id_edit_ ? gameDirectory(game_id_edit_->text()) : gameRoot();
+    if (QFileInfo(configured).isAbsolute()) {
+      candidates << configured;
+    } else {
+      if (native_rank == 2)
+        candidates << QDir(game_dir).filePath(configured);
+      if (native_rank == 1) {
+        const auto user_path = hm::user_config::file_path();
+        if (!user_path.ok())
+          throw std::runtime_error(user_path.status().ToString());
+        candidates << QDir(QString::fromStdString(user_path->parent_path().string())).filePath(configured);
+      }
+      candidates << QDir(QFileInfo(pipelineConfigPath("ds_hockey_app_config.yaml")).absolutePath()).filePath(configured)
+                 << QDir(baseline_config_root_).filePath(configured) << QDir(game_dir).filePath(configured)
+                 << QDir(pipelineWorkingDirectory()).filePath(configured);
+    }
+    bool found = false;
+    for (const QString& candidate : candidates) {
+      if (!QFileInfo(candidate).isFile())
+        continue;
+      const YAML::Node document = YAML::LoadFile(candidate.toStdString());
+      if (!document["play-tracker"].IsMap())
+        throw std::invalid_argument("Native tracker config must contain a play-tracker map");
+      native.reset(document["play-tracker"]);
+      found = true;
+      break;
+    }
+    if (!found)
+      throw std::invalid_argument("Could not locate native playtracker config: " + configured.toStdString());
+  }
+  auto effective = [&](const char* canonical_key, const char* native_key) {
+    YAML::Node value;
+    lookup_yaml_path(baseline_config_, canonical_key, &value);
+    int canonical_rank = lookup_yaml_path(*user, canonical_key, nullptr) ? 1 : 0;
+    YAML::Node game_value;
+    if (!inherited && lookup_yaml_path(game_config, canonical_key, &game_value)) {
+      value.reset(game_value);
+      canonical_rank = 2;
+    }
+    if (native[native_key].IsDefined() && !native[native_key].IsNull() && canonical_rank <= native_rank)
+      value.reset(native[native_key]);
+    if (!value.IsScalar())
+      throw std::invalid_argument(std::string(canonical_key) + " must be a scalar");
+    return value;
+  };
+  auto nonnegative_int = [&](const char* canonical_key, const char* native_key) {
+    const int value = effective(canonical_key, native_key).as<int>();
+    if (value < 0)
+      throw std::invalid_argument(std::string(canonical_key) + " must be nonnegative");
+    return value;
+  };
+  const int count = nonnegative_int("rink.tracking.cam_ignore_largest_count", "ignore-largest-bbox-count");
+  const bool enabled = effective("rink.tracking.cam_ignore_largest", "ignore-largest-bbox").as<bool>();
+  return {
+      {"Ignore_Largest_Count", enabled ? count : 0},
+      {"Ignore_Oversized_Players",
+       effective("rink.tracking.cam_ignore_oversized", "ignore-oversized-bboxes").as<bool>() ? 1 : 0},
+      {"Oversized_Player_Percent", nonnegative_int("rink.tracking.cam_oversized_percent", "oversized-bbox-percent")},
+  };
+}
+
 void HStreamWindow::loadSavedControlConfig() {
+  inherited_player_size_controls_.clear();
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     captureSavedControlState();
     return;
@@ -14717,13 +14806,8 @@ void HStreamWindow::loadSavedControlConfig() {
     updatePresetDirtyState();
     return;
   }
-  if (!loaded_config->has_value()) {
-    updateStitchFrameTimeAvailability();
-    captureSavedControlState();
-    return;
-  }
   try {
-    YAML::Node config = **loaded_config;
+    YAML::Node config = loaded_config->has_value() ? **loaded_config : YAML::Node(YAML::NodeType::Map);
     hm::stitching::restore_generated_stitch_rink_context(config);
     std::map<QString, int> staged_controls;
     QString staged_high_bit_depth_mode = highBitDepthMode();
@@ -14799,18 +14883,9 @@ void HStreamWindow::loadSavedControlConfig() {
       staged_high_bit_depth_mode = forced < 0 ? "auto" : forced != 0 ? "1" : "0";
       stage_control(id, forced > 0 ? 1 : 0);
     };
-    for (const auto& [path, id] : std::map<QString, QString>{
-             {"rink.tracking.cam_ignore_largest_count", "Ignore_Largest_Count"},
-             {"rink.tracking.cam_oversized_percent", "Oversized_Player_Percent"}}) {
-      YAML::Node value;
-      if (lookup_yaml_path(config, path, &value))
-        stage_control(id, bounded_integer_control(path, value, 0, std::numeric_limits<int>::max()));
-    }
-    YAML::Node ignore_largest;
-    if (lookup_yaml_path(config, "rink.tracking.cam_ignore_largest", &ignore_largest) &&
-        !strict_boolean_control("rink.tracking.cam_ignore_largest", ignore_largest))
-      stage_control("Ignore_Largest_Count", 0);
-    stage_boolean_path("rink.tracking.cam_ignore_oversized", "Ignore_Oversized_Players");
+    inherited_player_size_controls_ = readPlayerSizeControls(config, true);
+    for (const auto& [id, value] : readPlayerSizeControls(config, false))
+      stage_control(id, value);
     stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
     stage_boolean_path("rink.camera.cancel_stop_on_opposite_dir", "Cancel_Stop_On_Opposite_Direction");
     stage_integer_path("rink.camera.stop_cancel_hysteresis_frames", "Stop_Cancel_Hysteresis_Frames");
@@ -15484,7 +15559,9 @@ bool HStreamWindow::applySavedControlConfig(
     if (id == "Use_10_Bit_Grading")
       continue;
     const int value = cameraPresetControlValue(id);
-    if (value == default_value) {
+    const auto inherited_size = inherited_player_size_controls_.find(id);
+    if (value == default_value &&
+        (inherited_size == inherited_player_size_controls_.end() || value == inherited_size->second)) {
       continue;
     }
     const std::string key = id.toStdString();
