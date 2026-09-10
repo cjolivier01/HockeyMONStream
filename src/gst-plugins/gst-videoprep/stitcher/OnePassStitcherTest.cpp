@@ -74,7 +74,7 @@ bool expect_oversized_seam_repair_artifact_rejected(const fs::path& tmpdir) {
   fs::create_directories(game_dir);
   std::ofstream(game_dir / "mapping_0000.tif", std::ios::binary) << "tiff";
   std::ofstream(game_dir / "mapping_0001.tif", std::ios::binary) << "tiff";
-  if (::truncate((game_dir / "mapping_0000.tif").c_str(), 1024LL * 1024LL * 1024LL + 1) != 0)
+  if (::truncate((game_dir / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0)
     return false;
 
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);

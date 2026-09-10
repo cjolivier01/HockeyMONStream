@@ -117,7 +117,11 @@ int main() {
       std::cerr << "FAIL: " << matcher_case.name << " model contract: " << matcher.status() << '\n';
       return 1;
     }
-    auto matches = (*matcher)->Infer(left, right, 32);
+    // AKAZE expects the right half of the left camera to overlap the left half of the right camera.
+    const bool akaze = matcher_case.matcher == hm::stitching::ControlPointMatcher::kAkazeHamming;
+    const cv::Mat matcher_left = akaze ? left(cv::Rect(0, 0, 640, left.rows)).clone() : left;
+    const cv::Mat matcher_right = akaze ? left(cv::Rect(320, 0, 640, left.rows)).clone() : right;
+    auto matches = (*matcher)->Infer(matcher_left, matcher_right, 32);
     if (!matches.ok() || matches->accepted_match_count < 8 || matches->selected.empty() ||
         matches->selected.size() > 32) {
       std::cerr << "FAIL: " << matcher_case.name
