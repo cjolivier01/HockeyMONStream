@@ -1,4 +1,6 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/CameraControlSpecs.h"
+#include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
@@ -296,14 +298,6 @@ absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& 
     contents = YAML::Dump(config) + "\n";
   return hm::stitching::publish_game_config(config_path.parent_path(), contents);
 }
-
-struct CameraSliderSpec {
-  const char* id;
-  const char* label;
-  int minimum;
-  int maximum;
-  int default_value;
-};
 
 struct AnsiTextStyle {
   QString foreground = "#d8dee9";
@@ -5611,6 +5605,22 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   auto* action_bar = new QHBoxLayout();
   action_bar->setSpacing(8);
+  auto* experiments = new QPushButton("Camera experiments…");
+  experiments->setObjectName("cameraExperimentsButton");
+  experiments->setToolTip(
+      "Replay a short DriveGPT recording from its historical camera state with independent trial settings.");
+  connect(experiments, &QPushButton::clicked, this, [this]() {
+    if (auto* existing = findChild<QDialog*>("cameraExperimentDialog")) {
+      existing->show();
+      existing->raise();
+      existing->activateWindow();
+      return;
+    }
+    auto* dialog = new CameraExperimentDialog(gameDirectoryText(), this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+  });
+  action_bar->addWidget(experiments);
   action_bar->addStretch(1);
   action_bar->addWidget(start_button_);
   action_bar->addWidget(pause_button_);
@@ -6348,49 +6358,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     return page;
   };
 
-  const std::vector<CameraSliderSpec> tracking_controls = {
-      {"Zoom_In_Aggressiveness", "Zoom-in aggressiveness", 0, 100, default_value("Zoom_In_Aggressiveness")},
-      {"Stop_Direction_Change_Delay_Frames",
-       "Stop direction-change delay frames",
-       0,
-       60,
-       default_value("Stop_Direction_Change_Delay_Frames")},
-      {"Cancel_Stop_On_Opposite_Direction",
-       "Cancel stop on opposite direction",
-       0,
-       1,
-       default_value("Cancel_Stop_On_Opposite_Direction")},
-      {"Stop_Cancel_Hysteresis_Frames",
-       "Stop cancel hysteresis frames",
-       0,
-       10,
-       default_value("Stop_Cancel_Hysteresis_Frames")},
-      {"Stop_Delay_Cooldown_Frames", "Stop-delay cooldown frames", 0, 30, default_value("Stop_Delay_Cooldown_Frames")},
-      {"Time_To_Dest_Speed_Limit_Frames",
-       "Time-to-destination speed limit frames",
-       0,
-       120,
-       default_value("Time_To_Dest_Speed_Limit_Frames")},
-      {"Apply_To_Fast_Box", "Apply to fast box", 0, 1, default_value("Apply_To_Fast_Box")},
-      {"Apply_To_Follower_Box", "Apply to follower box", 0, 1, default_value("Apply_To_Follower_Box")},
-  };
-  const std::vector<CameraSliderSpec> motion_controls = {
-      {"Overshoot_Stop_Delay_Frames",
-       "Overshoot stop-delay frames",
-       0,
-       60,
-       default_value("Overshoot_Stop_Delay_Frames")},
-      {"Post_Nonstop_Stop_Delay_Frames",
-       "Post-nonstop stop-delay frames",
-       0,
-       60,
-       default_value("Post_Nonstop_Stop_Delay_Frames")},
-      {"Overshoot_Speed_Ratio_x100", "Overshoot speed ratio x100", 0, 200, default_value("Overshoot_Speed_Ratio_x100")},
-      {"Max_Speed_X_x10", "Max speed X override x10 (0 = configured)", 0, 2000, default_value("Max_Speed_X_x10")},
-      {"Max_Speed_Y_x10", "Max speed Y override x10 (0 = configured)", 0, 2000, default_value("Max_Speed_Y_x10")},
-      {"Max_Accel_X_x10", "Max accel X override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_X_x10")},
-      {"Max_Accel_Y_x10", "Max accel Y override x10 (0 = configured)", 0, 1000, default_value("Max_Accel_Y_x10")},
-  };
+  const auto tracking_controls = tracking_control_specs(default_value);
+  const auto motion_controls = motion_control_specs(default_value);
   const std::vector<CameraSliderSpec> color_controls = {
       {"Bring_Up_Shadows", "Bring up shadows (%)", 0, 100, 0},
       {"Exposure_x100", "Exposure x100", 0, 130, 0},

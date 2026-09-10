@@ -542,6 +542,8 @@ struct RendererState {
   guint negotiated_height{0};
   std::atomic<guint64> generation{0};
   guint64 ready_generation{G_MAXUINT64};
+  guint64 presented_generation{G_MAXUINT64};
+  GstClockTime presented_pts{GST_CLOCK_TIME_NONE};
   GstVideoInfo video_info{};
   bool have_caps{false};
   Display* display{nullptr};
@@ -1623,6 +1625,10 @@ GstFlowReturn preview_sink_render_impl(GstBaseSink* base_sink, GstBuffer* buffer
   if (!state->failed.load()) {
     draw_texture(self, overlays);
     const guint64 generation = state->generation.load();
+    if (!state->failed.load()) {
+      state->presented_generation = generation;
+      state->presented_pts = GST_BUFFER_PTS(buffer);
+    }
     if (!state->failed.load() && state->ready_generation != generation) {
       state->ready_generation = generation;
       post_preview_status(
@@ -2016,6 +2022,9 @@ void gst_hm_gpu_preview_sink_class_init(GstHmGpuPreviewSinkClass* klass) {
   base_sink_class->stop = preview_sink_stop;
   base_sink_class->set_caps = preview_sink_set_caps;
   base_sink_class->render = preview_sink_render;
+  // A replay seek in PAUSED must present its preroll frame as well. The same
+  // bounded GPU rendering and exception/lifetime barriers apply to both paths.
+  base_sink_class->preroll = preview_sink_render;
   base_sink_class->unlock = preview_sink_unlock;
   base_sink_class->unlock_stop = preview_sink_unlock_stop;
 }
@@ -2142,6 +2151,28 @@ bool quiesce(GstElement* sink, std::uint64_t generation) {
 #else
   (void)sink;
   (void)generation;
+  return false;
+#endif
+}
+
+bool presented_frame(GstElement* sink, std::uint64_t* generation, GstClockTime* pts) {
+#if defined(__x86_64__)
+  if (!sink || !generation || !pts || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return false;
+  auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
+  if (!self->state)
+    return false;
+  std::lock_guard<std::mutex> lock(self->state->mutex);
+  if (self->state->failed.load() || self->state->stopping.load() ||
+      !GST_CLOCK_TIME_IS_VALID(self->state->presented_pts))
+    return false;
+  *generation = self->state->presented_generation;
+  *pts = self->state->presented_pts;
+  return true;
+#else
+  (void)sink;
+  (void)generation;
+  (void)pts;
   return false;
 #endif
 }
