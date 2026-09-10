@@ -4789,6 +4789,13 @@ void HStreamWindow::loadBaselineDefaults() {
   checked("Stop_Cancel_Hysteresis_Frames", integer("rink.camera.stop_cancel_hysteresis_frames"), 0, 10);
   checked("Stop_Delay_Cooldown_Frames", integer("rink.camera.stop_delay_cooldown_frames"), 0, 30);
   checked("Time_To_Dest_Speed_Limit_Frames", integer("rink.camera.time_to_dest_speed_limit_frames"), 0, 120);
+  checked(
+      "Ignore_Largest_Count", integer("rink.tracking.cam_ignore_largest_count"), 0, std::numeric_limits<int>::max());
+  if (!boolean("rink.tracking.cam_ignore_largest"))
+    camera_defaults_["Ignore_Largest_Count"] = 0;
+  checked("Ignore_Oversized_Players", boolean("rink.tracking.cam_ignore_oversized"), 0, 1);
+  checked(
+      "Oversized_Player_Percent", integer("rink.tracking.cam_oversized_percent"), 0, std::numeric_limits<int>::max());
   checked("Zoom_In_Aggressiveness", integer("rink.camera.zoom_in_aggressiveness"), 0, 100);
   checked("Overshoot_Stop_Delay_Frames", integer("rink.camera.breakaway_detection.overshoot_stop_delay_count"), 0, 60);
   checked(
@@ -4996,6 +5003,9 @@ int HStreamWindow::cameraControlValue(const QString& id) const {
   if (slider != camera_sliders_.end() && slider->second) {
     return slider->second->value();
   }
+  const auto spin = camera_spinboxes_.find(id);
+  if (spin != camera_spinboxes_.end() && spin->second)
+    return spin->second->value();
   const auto checkbox = camera_checkboxes_.find(id);
   if (id == "Use_10_Bit_Grading" && checkbox != camera_checkboxes_.end() && checkbox->second)
     return checkbox->second->checkState() == Qt::Checked ? 1 : 0;
@@ -6159,6 +6169,12 @@ void HStreamWindow::configureControlHelp() {
       {"Stop_Delay_Cooldown_Frames", "Cooldown frames before another direction-change stop delay may begin."},
       {"Time_To_Dest_Speed_Limit_Frames",
        "Limit tracking speed when the estimated time to the destination falls below this frame count."},
+      {"Ignore_Largest_Count",
+       "Ignore this many largest tracked player areas. Zero disables this filter. Size filters leave at least three players."},
+      {"Ignore_Oversized_Players",
+       "Exclude unusually large player areas after the largest-count filter, such as a nearby referee or a player at the bench."},
+      {"Oversized_Player_Percent",
+       "Percent larger than the average area of the OTHER remaining players. 100 means more than twice that average. All comparisons use the same snapshot."},
       {"Zoom_In_Aggressiveness",
        "How readily play tracking zooms in. 25 exactly preserves the established behavior; higher values lower "
        "only the shrink threshold so the camera zooms in sooner and more often."},
@@ -6202,8 +6218,9 @@ void HStreamWindow::configureControlHelp() {
        "Right fixed-edge crop rotation in tenths of a degree; 250 means 25.0 degrees."},
   };
   for (const auto& [id, description] : camera_help) {
-    const QString object_name =
-        id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading" ? "cameraCheck_" + id : "cameraSlider_" + id;
+    const QString object_name = camera_spinboxes_.count(id) ? "cameraSpin_" + id
+        : camera_checkboxes_.count(id)                      ? "cameraCheck_" + id
+                                                            : "cameraSlider_" + id;
     help(object_name, description + " Changes apply live where supported; Save Preset stores the value for this game.");
     if (id == "Bring_Up_Shadows" || id == "Exposure_x100" || id == "Lift_Shadow_Black_Point" ||
         id == "Use_10_Bit_Grading") {
@@ -6265,6 +6282,24 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* content = new QWidget();
     content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* content_layout = new QVBoxLayout(content);
+    if (!specs.empty() && specs.front().id == "Zoom_In_Aggressiveness") {
+      addCameraSpinBox(
+          content_layout,
+          "Ignore_Largest_Count",
+          "Ignore largest players (0 = off)",
+          default_value("Ignore_Largest_Count"));
+      addCameraCheckBox(
+          content_layout,
+          "Ignore_Oversized_Players",
+          "Ignore oversized players",
+          default_value("Ignore_Oversized_Players") != 0);
+      auto* percent = addCameraSpinBox(
+          content_layout,
+          "Oversized_Player_Percent",
+          "Larger than other players' average (%)",
+          default_value("Oversized_Player_Percent"));
+      percent->setSuffix("%");
+    }
     for (const CameraSliderSpec& spec : specs) {
       addSlider(content_layout, spec.id, spec.label, spec.minimum, spec.maximum, spec.default_value);
     }
@@ -8595,6 +8630,14 @@ QStringList HStreamWindow::pipelineArguments() const {
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
   if (!isCalibrationRun()) {
+    args << QString("--options=rink.tracking.cam_ignore_largest=%1")
+                .arg(cameraControlValue("Ignore_Largest_Count") != 0 ? "true" : "false")
+         << QString("--options=rink.tracking.cam_ignore_largest_count=%1")
+                .arg(cameraControlValue("Ignore_Largest_Count"))
+         << QString("--options=rink.tracking.cam_ignore_oversized=%1")
+                .arg(cameraControlValue("Ignore_Oversized_Players") != 0 ? "true" : "false")
+         << QString("--options=rink.tracking.cam_oversized_percent=%1")
+                .arg(cameraControlValue("Oversized_Player_Percent"));
     args
         << QString("--options=rink.camera.zoom_in_aggressiveness=%1").arg(cameraControlValue("Zoom_In_Aggressiveness"));
     if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
@@ -14292,6 +14335,11 @@ void HStreamWindow::resetCameraControls() {
       suppressed->second = value;
       continue;
     }
+    const auto spin = camera_spinboxes_.find(id);
+    if (spin != camera_spinboxes_.end()) {
+      spin->second->setValue(value);
+      continue;
+    }
     const auto it = camera_sliders_.find(id);
     if (it != camera_sliders_.end()) {
       it->second->setValue(value);
@@ -14359,6 +14407,9 @@ void HStreamWindow::resetCameraControls() {
     // was tuned before its target selector was returned to the default.
     const QStringList playtracker_reset_controls = {
         "Zoom_In_Aggressiveness",
+        "Ignore_Largest_Count",
+        "Ignore_Oversized_Players",
+        "Oversized_Player_Percent",
         "Stop_Direction_Change_Delay_Frames",
         "Cancel_Stop_On_Opposite_Direction",
         "Stop_Cancel_Hysteresis_Frames",
@@ -14626,6 +14677,12 @@ void HStreamWindow::loadSavedControlConfig() {
     stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
+    const auto spin = camera_spinboxes_.find(id);
+    if (spin != camera_spinboxes_.end()) {
+      const QSignalBlocker blocker(spin->second);
+      spin->second->setValue(value);
+      continue;
+    }
     const auto slider_it = camera_sliders_.find(id);
     if (slider_it == camera_sliders_.end()) {
       const auto checkbox = camera_checkboxes_.find(id);
@@ -14678,7 +14735,7 @@ void HStreamWindow::loadSavedControlConfig() {
     auto stage_control = [this, &staged_controls](const QString& id, int value) {
       const auto slider = camera_sliders_.find(id);
       const auto checkbox = camera_checkboxes_.find(id);
-      if ((slider == camera_sliders_.end() || !slider->second) &&
+      if (!camera_spinboxes_.count(id) && (slider == camera_sliders_.end() || !slider->second) &&
           (checkbox == camera_checkboxes_.end() || !checkbox->second)) {
         return false;
       }
@@ -14742,6 +14799,18 @@ void HStreamWindow::loadSavedControlConfig() {
       staged_high_bit_depth_mode = forced < 0 ? "auto" : forced != 0 ? "1" : "0";
       stage_control(id, forced > 0 ? 1 : 0);
     };
+    for (const auto& [path, id] : std::map<QString, QString>{
+             {"rink.tracking.cam_ignore_largest_count", "Ignore_Largest_Count"},
+             {"rink.tracking.cam_oversized_percent", "Oversized_Player_Percent"}}) {
+      YAML::Node value;
+      if (lookup_yaml_path(config, path, &value))
+        stage_control(id, bounded_integer_control(path, value, 0, std::numeric_limits<int>::max()));
+    }
+    YAML::Node ignore_largest;
+    if (lookup_yaml_path(config, "rink.tracking.cam_ignore_largest", &ignore_largest) &&
+        !strict_boolean_control("rink.tracking.cam_ignore_largest", ignore_largest))
+      stage_control("Ignore_Largest_Count", 0);
+    stage_boolean_path("rink.tracking.cam_ignore_oversized", "Ignore_Oversized_Players");
     stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
     stage_boolean_path("rink.camera.cancel_stop_on_opposite_dir", "Cancel_Stop_On_Opposite_Direction");
     stage_integer_path("rink.camera.stop_cancel_hysteresis_frames", "Stop_Cancel_Hysteresis_Frames");
@@ -15088,15 +15157,19 @@ void HStreamWindow::loadSavedControlConfig() {
             : entry.second.as<int>();
         if (id == "Exposure_x100") {
           value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 130);
+        } else if (id == "Ignore_Largest_Count" || id == "Oversized_Player_Percent") {
+          value = bounded_integer_control(
+              "hstream_ui.camera_controls." + id, entry.second, 0, std::numeric_limits<int>::max());
         } else if (id == "Bring_Up_Shadows" || id == "Zoom_In_Aggressiveness") {
           value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 100);
         }
         if ((id == "Link_Fixed_Edge_Rotation_Left_Right" || id == "Apply_To_Fast_Box" ||
-             id == "Apply_To_Follower_Box" || id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading") &&
+             id == "Apply_To_Follower_Box" || id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading" ||
+             id == "Ignore_Oversized_Players") &&
             value != 0 && value != 1) {
           throw std::invalid_argument(QString("%1 must be 0 or 1").arg(id).toStdString());
         }
-        if ((camera_sliders_.find(id) != camera_sliders_.end() ||
+        if ((camera_spinboxes_.count(id) || camera_sliders_.find(id) != camera_sliders_.end() ||
              camera_checkboxes_.find(id) != camera_checkboxes_.end()) &&
             stage_control(id, value)) {
           if (id == "Use_10_Bit_Grading")
@@ -15202,6 +15275,12 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     updateStitchFrameTimeAvailability();
     for (const auto& [id, value] : staged_controls) {
+      const auto spin = camera_spinboxes_.find(id);
+      if (spin != camera_spinboxes_.end()) {
+        const QSignalBlocker blocker(spin->second);
+        spin->second->setValue(value);
+        continue;
+      }
       const auto slider_it = camera_sliders_.find(id);
       if (slider_it == camera_sliders_.end() || !slider_it->second) {
         const auto checkbox = camera_checkboxes_.find(id);
@@ -15376,6 +15455,10 @@ bool HStreamWindow::applySavedControlConfig(
            "rink.camera.stop_delay_cooldown_frames",
            "rink.camera.time_to_dest_speed_limit_frames",
            "rink.camera.zoom_in_aggressiveness",
+           "rink.tracking.cam_ignore_largest",
+           "rink.tracking.cam_ignore_largest_count",
+           "rink.tracking.cam_ignore_oversized",
+           "rink.tracking.cam_oversized_percent",
            "rink.camera.breakaway_detection.overshoot_stop_delay_count",
            "rink.camera.breakaway_detection.post_nonstop_stop_delay_count",
            "rink.camera.breakaway_detection.overshoot_scale_speed_ratio",
@@ -15632,8 +15715,24 @@ bool HStreamWindow::applySavedControlConfig(
     config["rink"]["camera"]["zoom_in_aggressiveness"] = slider_value("Zoom_In_Aggressiveness");
     mark_runtime_key("rink.camera.zoom_in_aggressiveness");
   }
-  const bool has_playtracker_runtime_controls = has_control(controls, "Stop_Direction_Change_Delay_Frames") ||
-      has_control(controls, "Zoom_In_Aggressiveness") || has_control(controls, "Cancel_Stop_On_Opposite_Direction") ||
+  if (has_control(controls, "Ignore_Largest_Count")) {
+    config["rink"]["tracking"]["cam_ignore_largest"] = slider_value("Ignore_Largest_Count") != 0;
+    config["rink"]["tracking"]["cam_ignore_largest_count"] = slider_value("Ignore_Largest_Count");
+    mark_runtime_key("rink.tracking.cam_ignore_largest");
+    mark_runtime_key("rink.tracking.cam_ignore_largest_count");
+  }
+  if (has_control(controls, "Ignore_Oversized_Players")) {
+    config["rink"]["tracking"]["cam_ignore_oversized"] = slider_value("Ignore_Oversized_Players") != 0;
+    mark_runtime_key("rink.tracking.cam_ignore_oversized");
+  }
+  if (has_control(controls, "Oversized_Player_Percent")) {
+    config["rink"]["tracking"]["cam_oversized_percent"] = slider_value("Oversized_Player_Percent");
+    mark_runtime_key("rink.tracking.cam_oversized_percent");
+  }
+  const bool has_playtracker_runtime_controls = has_control(controls, "Ignore_Largest_Count") ||
+      has_control(controls, "Ignore_Oversized_Players") || has_control(controls, "Oversized_Player_Percent") ||
+      has_control(controls, "Stop_Direction_Change_Delay_Frames") || has_control(controls, "Zoom_In_Aggressiveness") ||
+      has_control(controls, "Cancel_Stop_On_Opposite_Direction") ||
       has_control(controls, "Stop_Cancel_Hysteresis_Frames") || has_control(controls, "Stop_Delay_Cooldown_Frames") ||
       has_control(controls, "Time_To_Dest_Speed_Limit_Frames") ||
       has_control(controls, "Overshoot_Stop_Delay_Frames") || has_control(controls, "Post_Nonstop_Stop_Delay_Frames") ||
@@ -15704,6 +15803,14 @@ bool HStreamWindow::applySavedControlConfig(
           throw std::invalid_argument(live_box_roles.status().ToString());
 
         YAML::Node play_tracker = play_tracker_config["play-tracker"];
+        if (has_control(controls, "Ignore_Largest_Count")) {
+          play_tracker["ignore-largest-bbox"] = slider_value("Ignore_Largest_Count") != 0;
+          play_tracker["ignore-largest-bbox-count"] = slider_value("Ignore_Largest_Count");
+        }
+        if (has_control(controls, "Ignore_Oversized_Players"))
+          play_tracker["ignore-oversized-bboxes"] = slider_value("Ignore_Oversized_Players") != 0;
+        if (has_control(controls, "Oversized_Player_Percent"))
+          play_tracker["oversized-bbox-percent"] = slider_value("Oversized_Player_Percent");
         if (has_control(controls, "Zoom_In_Aggressiveness")) {
           play_tracker["zoom-in-aggressiveness"] = slider_value("Zoom_In_Aggressiveness");
         }
@@ -17133,10 +17240,7 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       return {};
     }
 
-    auto slider_value = [this](const QString& id) -> int {
-      const auto it = camera_sliders_.find(id);
-      return it == camera_sliders_.end() ? 0 : it->second->value();
-    };
+    auto slider_value = [this](const QString& id) -> int { return cameraControlValue(id); };
     auto slider_changed = [this, &slider_value](const QString& id) -> bool {
       const auto default_it = camera_defaults_.find(id);
       return default_it != camera_defaults_.end() && slider_value(id) != default_it->second;
@@ -17182,6 +17286,10 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
     };
     set_changed_int("stop-translation-on-dir-change-delay", "Stop_Direction_Change_Delay_Frames");
     set_changed_int("zoom-in-aggressiveness", "Zoom_In_Aggressiveness");
+    set_changed_int("ignore-largest-bbox-count", "Ignore_Largest_Count");
+    set_changed_int("oversized-bbox-percent", "Oversized_Player_Percent");
+    if (publishing_controls.count("Ignore_Oversized_Players"))
+      runtime_tuning["ignore-oversized-bboxes"] = slider_value("Ignore_Oversized_Players") != 0;
     if (publishing_controls.count("Cancel_Stop_On_Opposite_Direction"))
       runtime_tuning["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
     set_changed_int("cancel-stop-hysteresis-frames", "Stop_Cancel_Hysteresis_Frames");
@@ -17509,6 +17617,9 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   const QSet<QString> playtracker_live_controls = {
       "Stop_Direction_Change_Delay_Frames",
       "Zoom_In_Aggressiveness",
+      "Ignore_Largest_Count",
+      "Ignore_Oversized_Players",
+      "Oversized_Player_Percent",
       "Cancel_Stop_On_Opposite_Direction",
       "Stop_Cancel_Hysteresis_Frames",
       "Stop_Delay_Cooldown_Frames",
@@ -17997,6 +18108,27 @@ QSlider* HStreamWindow::addSlider(
   return slider;
 }
 
+QSpinBox* HStreamWindow::addCameraSpinBox(QVBoxLayout* layout, const QString& id, const QString& label, int value) {
+  auto* row = new QHBoxLayout();
+  auto* name = new QLabel(label);
+  auto* spin = new QSpinBox();
+  spin->setObjectName("cameraSpin_" + id);
+  spin->setRange(0, std::numeric_limits<int>::max());
+  spin->setKeyboardTracking(false);
+  spin->setValue(value);
+  name->setBuddy(spin);
+  camera_spinboxes_[id] = spin;
+  camera_defaults_[id] = value;
+  connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, [this, id](int new_value) {
+    sendLiveCameraControl(id, new_value);
+    updatePresetDirtyState();
+  });
+  row->addWidget(name, 1);
+  row->addWidget(spin);
+  layout->addLayout(row);
+  return spin;
+}
+
 QCheckBox* HStreamWindow::addCameraCheckBox(
     QVBoxLayout* layout,
     const QString& id,
@@ -18018,7 +18150,9 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
     const bool sent_live = sendLiveCameraControl(id, new_value);
     if (sent_live) {
       appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
-    } else if (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value) {
+    } else if (
+        (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value) ||
+        (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value)) {
       // The scheduler already reported the coalesced live update.
     } else {
       appendLog(QString("camera control %1=%2 apply=save/restart").arg(id).arg(new_value));

@@ -310,6 +310,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
           "max-speed-ratio-x",
           "max-speed-ratio-y",
           "zoom-in-aggressiveness",
+          "oversized-bbox-percent",
       },
   };
   std::vector<YAML::Node> live_box_yamls;
@@ -361,7 +362,14 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   SET_LOCATOR(locator, config, no_wide_start);
   SET_LOCATOR(locator, config, max_lost_track_age);
   SET_LOCATOR(locator, config, ignore_largest_bbox);
+  SET_LOCATOR(locator, config, ignore_largest_bbox_count);
+  SET_LOCATOR(locator, config, ignore_oversized_bboxes);
+  if (yaml["oversized-bbox-percent"])
+    config.oversized_bbox_percent = yaml["oversized-bbox-percent"].as<double>();
   set_config_from_yaml(yaml, locator);
+  if (config.ignore_largest_bbox_count < 0 || !std::isfinite(config.oversized_bbox_percent) ||
+      config.oversized_bbox_percent < 0)
+    throw std::invalid_argument("Player size count and percentage must be finite and nonnegative");
 
   const int zoom_in_aggressiveness =
       yaml["zoom-in-aggressiveness"] ? yaml["zoom-in-aggressiveness"].as<int>() : kDefaultZoomInAggressiveness;
@@ -413,6 +421,18 @@ absl::Status apply_runtime_tuning_to_tracker(
     return status;
   }
   auto* tracker = tracker_context->play_tracker.get();
+  if (tuning.ignore_largest_bbox_count || tuning.ignore_oversized_bboxes || tuning.oversized_bbox_percent) {
+    auto& applied = tracker_context->play_tracker_config;
+    const int count =
+        tuning.ignore_largest_bbox_count.value_or(applied.ignore_largest_bbox ? applied.ignore_largest_bbox_count : 0);
+    const bool oversized = tuning.ignore_oversized_bboxes.value_or(applied.ignore_oversized_bboxes);
+    const double percent = tuning.oversized_bbox_percent.value_or(applied.oversized_bbox_percent);
+    tracker->set_player_size_filter(count, oversized, percent);
+    applied.ignore_largest_bbox = count != 0;
+    applied.ignore_largest_bbox_count = count;
+    applied.ignore_oversized_bboxes = oversized;
+    applied.oversized_bbox_percent = percent;
+  }
   if (tuning.update_motion_tuning &&
       (tuning.overshoot_stop_delay_count.has_value() || tuning.overshoot_scale_speed_ratio.has_value())) {
     auto& applied = tracker_context->play_tracker_config.play_detector;
@@ -518,6 +538,9 @@ void merge_detector_runtime_tuning(DsPlayTrackerRuntimeTuning* state, const DsPl
   state->update_motion_tuning = true;
   state->apply_to_fast_box = false;
   state->apply_to_follower_box = false;
+  merge_optional(&state->ignore_largest_bbox_count, update.ignore_largest_bbox_count);
+  merge_optional(&state->ignore_oversized_bboxes, update.ignore_oversized_bboxes);
+  merge_optional(&state->oversized_bbox_percent, update.oversized_bbox_percent);
   merge_optional(&state->overshoot_stop_delay_count, update.overshoot_stop_delay_count);
   merge_optional(&state->overshoot_scale_speed_ratio, update.overshoot_scale_speed_ratio);
 }
@@ -549,7 +572,8 @@ void merge_box_runtime_tuning(
 }
 
 void accumulate_runtime_tuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning) {
-  if (tuning.overshoot_stop_delay_count.has_value() || tuning.overshoot_scale_speed_ratio.has_value()) {
+  if (tuning.overshoot_stop_delay_count.has_value() || tuning.overshoot_scale_speed_ratio.has_value() ||
+      tuning.ignore_largest_bbox_count || tuning.ignore_oversized_bboxes || tuning.oversized_bbox_percent) {
     if (!ctx->detector_runtime_tuning.has_value()) {
       ctx->detector_runtime_tuning.emplace();
     }
@@ -948,6 +972,11 @@ absl::Status DsPlayTrackerCtxApplyRuntimeTuning(DsPlayTrackerCtx* ctx, const DsP
   if (!ctx) {
     return absl::InvalidArgumentError("playtracker context is null");
   }
+  if (tuning.ignore_largest_bbox_count && *tuning.ignore_largest_bbox_count < 0)
+    return absl::InvalidArgumentError("ignore-largest-bbox-count must be nonnegative");
+  if (tuning.oversized_bbox_percent &&
+      (!std::isfinite(*tuning.oversized_bbox_percent) || *tuning.oversized_bbox_percent < 0))
+    return absl::InvalidArgumentError("oversized-bbox-percent must be finite and nonnegative");
   std::vector<std::pair<hm::play_tracker::PlayTracker*, DsPlayTrackerCtx::PlayTracker*>> targets;
   for (auto& [source_id, tracker_context] : ctx->play_trackers) {
     (void)source_id;

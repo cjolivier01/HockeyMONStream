@@ -8820,6 +8820,15 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* fixed_edge_right = require_child<QSlider>(window, "cameraSlider_Right_Fixed_Edge_Rotation_Angle_x10");
   auto* stop_delay = require_child<QSlider>(window, "cameraSlider_Stop_Direction_Change_Delay_Frames");
   auto* zoom_in_aggressiveness = require_child<QSlider>(window, "cameraSlider_Zoom_In_Aggressiveness");
+  auto* ignore_largest_count = require_child<QSpinBox>(window, "cameraSpin_Ignore_Largest_Count");
+  auto* ignore_oversized = require_child<QCheckBox>(window, "cameraCheck_Ignore_Oversized_Players");
+  auto* oversized_percent = require_child<QSpinBox>(window, "cameraSpin_Oversized_Player_Percent");
+  if (!expect(
+          ignore_largest_count && ignore_oversized && oversized_percent && ignore_largest_count->value() == 1 &&
+              ignore_largest_count->maximum() == std::numeric_limits<int>::max() && !ignore_oversized->isChecked() &&
+              oversized_percent->value() == 100,
+          "Player filters default to one largest and a disabled twice-average-area threshold"))
+    return false;
   auto* apply_to_fast = require_child<QSlider>(window, "cameraSlider_Apply_To_Fast_Box");
   auto* max_accel_x = require_child<QSlider>(window, "cameraSlider_Max_Accel_X_x10");
   auto* max_speed_x = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
@@ -9319,6 +9328,9 @@ bool test_camera_controls(HStreamWindow* window) {
     direct_overrides["rink"]["camera"]["stop_delay_cooldown_frames"] = 5;
     direct_overrides["rink"]["camera"]["time_to_dest_speed_limit_frames"] = 30;
     direct_overrides["rink"]["camera"]["zoom_in_aggressiveness"] = 80;
+    direct_overrides["rink"]["tracking"]["cam_ignore_largest_count"] = 3;
+    direct_overrides["rink"]["tracking"]["cam_ignore_oversized"] = true;
+    direct_overrides["rink"]["tracking"]["cam_oversized_percent"] = 150;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_stop_delay_count"] = 8;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["post_nonstop_stop_delay_count"] = 9;
     direct_overrides["rink"]["camera"]["breakaway_detection"]["overshoot_scale_speed_ratio"] = 0.83;
@@ -9336,7 +9348,8 @@ bool test_camera_controls(HStreamWindow* window) {
               window->cameraControlValue("Stop_Cancel_Hysteresis_Frames") == 4 &&
               window->cameraControlValue("Stop_Delay_Cooldown_Frames") == 5 &&
               window->cameraControlValue("Time_To_Dest_Speed_Limit_Frames") == 30 &&
-              window->cameraControlValue("Zoom_In_Aggressiveness") == 80 &&
+              window->cameraControlValue("Zoom_In_Aggressiveness") == 80 && ignore_largest_count->value() == 3 &&
+              ignore_oversized->isChecked() && oversized_percent->value() == 150 &&
               window->cameraControlValue("Overshoot_Stop_Delay_Frames") == 8 &&
               window->cameraControlValue("Post_Nonstop_Stop_Delay_Frames") == 9 &&
               window->cameraControlValue("Overshoot_Speed_Ratio_x100") == 83 &&
@@ -9349,7 +9362,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(reset);
   if (!expect(
-          stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
+          ignore_largest_count->value() == 1 && !ignore_oversized->isChecked() && oversized_percent->value() == 100 &&
+              stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
               bring_up_shadows->value() == 0 && exposure->value() == 0 && !lift_shadow_black_point->isChecked() &&
               stitched_bring_up_shadows->value() == 0 && stitched_exposure->value() == 0 &&
               !stitched_lift_shadow_black_point->isChecked() && save->isEnabled(),
@@ -9374,7 +9388,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
+          ignore_largest_count->value() == 1 && !ignore_oversized->isChecked() && oversized_percent->value() == 100 &&
+              stop_delay->value() == 10 && zoom_in_aggressiveness->value() == 25 && rotate->value() == 90 &&
               bring_up_shadows->value() == 0 && exposure->value() == 0 && !lift_shadow_black_point->isChecked() &&
               stitched_bring_up_shadows->value() == 0 && stitched_exposure->value() == 0 &&
               !stitched_lift_shadow_black_point->isChecked() && !save->isEnabled(),
@@ -10646,6 +10661,33 @@ bool test_camera_controls(HStreamWindow* window) {
       !expect(live_preserved_follower_y_speed, "Live playtracker update should preserve untouched motion limits") ||
       !expect(native_runtime_tuning_ok, "The native playtracker loader should accept the exact UI runtime sidecar")) {
     std::cerr << live_playtracker << '\n';
+    activate(stop);
+    return false;
+  }
+  ignore_largest_count->setValue(3);
+  ignore_oversized->setChecked(true);
+  oversized_percent->setValue(125);
+  for (int i = 0; i < 100 && !window->logText().contains("camera control Oversized_Player_Percent=125 apply=live");
+       ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const auto size_runtime = DsPlayTrackerLoadRuntimeTuning(newest_live_playtracker_config().string());
+  if (!expect(
+          size_runtime.ok() && size_runtime->ignore_largest_bbox_count == 3 &&
+              size_runtime->ignore_oversized_bboxes == true && size_runtime->oversized_bbox_percent == 125 &&
+              window->logText().contains("camera control Ignore_Largest_Count=3 apply=live"),
+          "Numeric and checkbox controls publish an acknowledged live size-filter delta")) {
+    activate(stop);
+    return false;
+  }
+  activate(save);
+  const YAML::Node size_saved = YAML::LoadFile(config.string());
+  if (!expect(
+          size_saved["rink"]["tracking"]["cam_ignore_largest_count"].as<int>() == 3 &&
+              size_saved["rink"]["tracking"]["cam_ignore_oversized"].as<bool>() &&
+              size_saved["rink"]["tracking"]["cam_oversized_percent"].as<int>() == 125,
+          "Save Preset persists the live player size settings to canonical YAML")) {
     activate(stop);
     return false;
   }

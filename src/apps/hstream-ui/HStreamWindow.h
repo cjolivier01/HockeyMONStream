@@ -485,6 +485,7 @@ class HStreamWindow : public QMainWindow {
   void handleRuntimeControlResponse(const QString& line);
   void failPendingRuntimeControls(const QString& reason);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
+  QSpinBox* addCameraSpinBox(QVBoxLayout* layout, const QString& id, const QString& label, int value);
   QCheckBox* addCameraCheckBox(QVBoxLayout* layout, const QString& id, const QString& label, bool checked);
 
   QLabel* backend_mode_{nullptr};
@@ -747,6 +748,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> output_states_;
   std::map<QString, QCheckBox*> output_toggles_;
   std::map<QString, QSlider*> camera_sliders_;
+  std::map<QString, QSpinBox*> camera_spinboxes_;
   std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, QSlider*> stitched_color_sliders_;

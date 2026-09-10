@@ -78,6 +78,19 @@ live-boxes:
   const auto& follower = config.living_boxes[1];
   bool ok = true;
   ok &= expect(!config.no_wide_start && !config.ignore_largest_bbox, "Global baseline booleans should be honored");
+  ok &= expect(
+      config.ignore_largest_bbox_count == 1 && !config.ignore_oversized_bboxes &&
+          config.oversized_bbox_percent == 100.0,
+      "Legacy configs retain the default count and disabled percentage filter");
+  YAML::Node size_yaml = YAML::Clone(yaml);
+  size_yaml["ignore-largest-bbox-count"] = 3;
+  size_yaml["ignore-oversized-bboxes"] = true;
+  size_yaml["oversized-bbox-percent"] = 150;
+  const auto size_config = gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), size_yaml);
+  ok &= expect(
+      size_config.ignore_largest_bbox_count == 3 && size_config.ignore_oversized_bboxes &&
+          size_config.oversized_bbox_percent == 150,
+      "Native YAML player size settings are parsed");
   ok &= expect(config.play_detector.overshoot_stop_delay_count == 6, "Breakaway braking should come from YAML");
   ok &= expect(
       near(fast.max_speed_x, 36.0f) && near(fast.max_speed_y, 54.0f) && near(fast.max_accel_x, 4.4f) &&
@@ -221,6 +234,44 @@ live-boxes:
           near(draw_tracker.play_tracker_config.living_boxes.back().size_ratio_thresh_shrink_dh, 0.010f) &&
           near(draw_tracker.play_tracker_config.living_boxes.front().size_ratio_thresh_shrink_dw, 0.08f),
       "Live zoom tuning must update only the follower shrink decision without recreating the tracker");
+  const auto size_tuning = DsPlayTrackerLoadRuntimeTuningContents(R"(
+play-tracker:
+  hstream-apply-to-fast-box: false
+  hstream-apply-to-follower-box: false
+  hstream-runtime-tuning:
+    ignore-largest-bbox-count: 2
+    ignore-oversized-bboxes: true
+    oversized-bbox-percent: 100
+)");
+  auto* original_tracker = draw_tracker.play_tracker.get();
+  ok &= expect(
+      size_tuning.ok() && DsPlayTrackerCtxApplyRuntimeTuning(&draw_context, *size_tuning).ok() &&
+          draw_tracker.play_tracker.get() == original_tracker &&
+          draw_tracker.play_tracker_config.ignore_largest_bbox_count == 2 &&
+          draw_tracker.play_tracker_config.ignore_oversized_bboxes,
+      "Live size filters apply independently of box selection and retain tracker history");
+  DsPlayTrackerRuntimeTuning percent_only;
+  percent_only.apply_to_follower_box = false;
+  percent_only.oversized_bbox_percent = 125;
+  ok &= expect(
+      DsPlayTrackerCtxApplyRuntimeTuning(&draw_context, percent_only).ok() &&
+          draw_tracker.play_tracker_config.ignore_largest_bbox_count == 2 && draw_context.detector_runtime_tuning &&
+          draw_context.detector_runtime_tuning->ignore_largest_bbox_count == 2 &&
+          draw_context.detector_runtime_tuning->ignore_oversized_bboxes == true &&
+          draw_context.detector_runtime_tuning->oversized_bbox_percent == 125,
+      "Sparse updates preserve previous size settings for newly created sources and seeks");
+  for (const std::string field :
+       {"ignore-largest-bbox-count: -1",
+        "ignore-largest-bbox-count: 1.5",
+        "oversized-bbox-percent: -1",
+        "oversized-bbox-percent: .nan",
+        "ignore-oversized-bboxes: invalid"}) {
+    ok &= expect(
+        !DsPlayTrackerLoadRuntimeTuningContents(
+             "play-tracker:\n  hstream-apply-to-follower-box: false\n  hstream-runtime-tuning:\n    " + field + "\n")
+             .ok(),
+        "Invalid live size filtering settings must be rejected");
+  }
   nvds_destroy_batch_meta(draw_batch);
 
   YAML::Node one_box_yaml = YAML::Clone(yaml);
