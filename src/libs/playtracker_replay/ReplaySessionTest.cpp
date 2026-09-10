@@ -64,7 +64,7 @@ std::string fixture(const fs::path& directory, bool legacy = false, bool skipped
           exporter.TryRecordConfigEvent(
               {"runtime-tuning",
                "runtime-tuning-config-file",
-               "tuning.yaml",
+               "tuning,\"config\npath.yaml",
                "play_tracker_runtime_tuning",
                tuning_yaml}),
           "write event");
@@ -218,6 +218,13 @@ int main(int argc, char** argv) {
     check(
         same_frames((*legacy)->baseline(), (*session)->baseline(), 0.01),
         "legacy reconstruction agrees with exact checkpoint replay");
+    const fs::path explicit_config = directory / "explicit-legacy.yaml";
+    fs::copy_file(directory / "legacy" / "play_tracker_effective.yaml", explicit_config);
+    options.legacy_config_path = explicit_config.string();
+    auto explicit_legacy = ReplaySession::Prepare(options);
+    check(explicit_legacy.ok(), explicit_legacy.status().ToString());
+    auto legacy_trial = (*explicit_legacy)->RunTrial("legacy", unchanged);
+    check(legacy_trial.ok(), legacy_trial.status().ToString());
     options.legacy_arena = hm::BBox(500, 0, 3000, 2160);
     check(!ReplaySession::Prepare(options).ok(), "wrong arena fails measured parity");
     PrepareOptions cadence_options;
@@ -252,6 +259,23 @@ int main(int argc, char** argv) {
         !(*session)->SaveTrial((*session)->manifest_path(), *candidate, binding).ok(),
         "cannot overwrite original telemetry manifest");
     check(!(*session)->SaveTrial(binding.path, *candidate, binding).ok(), "cannot overwrite bound source media");
+    const auto runtime_config = directory / "exact" / "play_tracker_runtime_tuning-1.yaml";
+    check(fs::is_regular_file(runtime_config), "fixture records runtime configuration artifact");
+    const auto runtime_before = YAML::Dump(YAML::LoadFile(runtime_config.string()));
+    check(
+        !(*session)->SaveTrial(runtime_config.string(), *candidate, binding).ok(),
+        "cannot overwrite a configuration-event artifact");
+    check(
+        YAML::Dump(YAML::LoadFile(runtime_config.string())) == runtime_before,
+        "rejected save preserves historical runtime configuration");
+    const auto alias = directory / "runtime-alias.yaml";
+    fs::create_hard_link(runtime_config, alias);
+    check(
+        !(*session)->SaveTrial(alias.string(), *candidate, binding).ok(),
+        "cannot overwrite an alias of historical configuration");
+    check(
+        !(*explicit_legacy)->SaveTrial(explicit_config.string(), *legacy_trial, binding).ok(),
+        "cannot overwrite explicitly supplied historical configuration");
     const auto saved = (*session)->SaveTrial((directory / "trial.yaml").string(), *candidate, binding);
     check(saved.ok(), saved.ToString());
     auto descriptor = YAML::LoadFile((directory / "trial.yaml").string());

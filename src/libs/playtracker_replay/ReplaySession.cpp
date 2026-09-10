@@ -328,6 +328,26 @@ std::vector<Event> events(const std::string& path, const std::atomic<bool>* canc
   while (lines.next(&line)) {
     total_bytes += line.size();
     require(total_bytes <= kMaxArtifact, "Configuration-event history exceeds 16 MiB");
+    bool quoted = false;
+    size_t scanned = 0;
+    for (;;) {
+      for (; scanned < line.size(); ++scanned) {
+        if (line[scanned] == '"') {
+          if (quoted && scanned + 1 < line.size() && line[scanned + 1] == '"')
+            ++scanned;
+          else
+            quoted = !quoted;
+        }
+      }
+      if (!quoted)
+        break;
+      std::string continuation;
+      require(lines.next(&continuation), "Truncated quoted configuration event");
+      total_bytes += continuation.size() + 1;
+      require(total_bytes <= kMaxArtifact, "Configuration-event history exceeds 16 MiB");
+      line += '\n';
+      line += continuation;
+    }
     auto row = csv(line);
     require(row.size() == 6 && result.size() < 10000, "Invalid/excessive configuration events");
     const uint64_t current = u64(row[1]);
@@ -343,6 +363,7 @@ struct ReplaySession::Impl {
   PrepareOptions options;
   std::string provenance;
   std::string manifest_contents;
+  std::vector<std::string> configuration_artifacts;
   StartingState start;
   std::vector<Sample> samples;
   std::vector<Frame> original, baseline;
@@ -384,7 +405,13 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::Prepare(
     SparseCsv follower(artifact_path(directory, manifest["hm_compatibility"]["camera_csv"]["file"]), cancelled, 5);
     std::unique_ptr<Lines> replay;
     std::unique_ptr<SparseCsv> tracks;
-    std::vector<Event> history_events;
+    const auto history_events = events(artifact_path(directory, sidecars["config_events"]), cancelled);
+    for (const auto& event : history_events) {
+      if (!event.artifact.empty())
+        impl->configuration_artifacts.push_back(artifact_path(directory, YAML::Node(event.artifact)));
+    }
+    if (!options.legacy_config_path.empty())
+      impl->configuration_artifacts.push_back(fs::absolute(options.legacy_config_path).string());
     size_t event_index = 0;
     YAML::Node legacy_yaml;
     hm::BBox legacy_arena;
@@ -406,7 +433,6 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::Prepare(
       require(legacy_yaml && legacy_yaml.IsMap(), "Original effective configuration is missing play-tracker");
       tracks = std::make_unique<SparseCsv>(
           artifact_path(directory, manifest["hm_compatibility"]["tracking_csv"]["file"]), cancelled, 13);
-      history_events = events(artifact_path(directory, sidecars["config_events"]), cancelled);
       require(
           !history_events.empty() && history_events.front().boundary == 1 &&
               history_events.front().kind == "base-config",
@@ -755,6 +781,8 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
             !protects(artifact_path(directory, recording["config_provenance"][key])),
             "A trial descriptor cannot replace original configuration artifacts");
     }
+    for (const auto& artifact : impl_->configuration_artifacts)
+      require(!protects(artifact), "A trial descriptor cannot replace historical or supplied configuration artifacts");
     YAML::Node document;
     document["schema"] = "hstream-camera-experiment-v1";
     document["name"] = trial.name;
