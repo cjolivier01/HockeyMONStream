@@ -175,6 +175,10 @@ struct HStreamWindowTestAccess {
     return window->pipeline_process_ ? window->pipeline_process_->write("@test-exit\n") : -1;
   }
 
+  static void setDevelopmentRuntimeRoot(HStreamWindow* window, const QString& path) {
+    window->development_runtime_root_ = path;
+  }
+
   static QStringList pipelineArguments(HStreamWindow* window) {
     return window->pipelineArguments();
   }
@@ -8822,7 +8826,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* zoom_in_aggressiveness = require_child<QSlider>(window, "cameraSlider_Zoom_In_Aggressiveness");
   auto* ignore_largest_count = require_child<QSpinBox>(window, "cameraSpin_Ignore_Largest_Count");
   auto* ignore_oversized = require_child<QCheckBox>(window, "cameraCheck_Ignore_Oversized_Players");
-  auto* oversized_percent = require_child<QSpinBox>(window, "cameraSpin_Oversized_Player_Percent");
+  auto* oversized_percent = require_child<QDoubleSpinBox>(window, "cameraSpin_Oversized_Player_Percent");
   if (!expect(
           ignore_largest_count && ignore_oversized && oversized_percent && ignore_largest_count->value() == 1 &&
               ignore_largest_count->maximum() == std::numeric_limits<int>::max() && !ignore_oversized->isChecked() &&
@@ -10279,7 +10283,7 @@ bool test_camera_controls(HStreamWindow* window) {
     probe_native["play-tracker"]["ignore-largest-bbox"] = true;
     probe_native["play-tracker"]["ignore-largest-bbox-count"] = 3;
     probe_native["play-tracker"]["ignore-oversized-bboxes"] = true;
-    probe_native["play-tracker"]["oversized-bbox-percent"] = 175;
+    probe_native["play-tracker"]["oversized-bbox-percent"] = 175.5;
     YAML::Node probe_game = YAML::Clone(saved);
     probe_game["rink"]["tracking"]["cam_ignore_largest_count"] = 2;
     probe_game["rink"]["tracking"]["cam_ignore_oversized"] = false;
@@ -10289,11 +10293,19 @@ bool test_camera_controls(HStreamWindow* window) {
     activate(create);
     const QStringList native_arguments = HStreamWindowTestAccess::pipelineArguments(window);
     if (!expect(
-            ignore_largest_count->value() == 3 && ignore_oversized->isChecked() && oversized_percent->value() == 175 &&
+            ignore_largest_count->value() == 3 && ignore_oversized->isChecked() &&
+                oversized_percent->value() == 175.5 &&
                 native_arguments.contains("--options=rink.tracking.cam_ignore_largest_count=3") &&
                 native_arguments.contains("--options=rink.tracking.cam_ignore_oversized=true") &&
-                native_arguments.contains("--options=rink.tracking.cam_oversized_percent=175"),
+                native_arguments.contains("--options=rink.tracking.cam_oversized_percent=175.5"),
             "Untouched native player size settings must populate controls and survive Program startup"))
+      return false;
+    probe_native["play-tracker"]["oversized-bbox-percent"] = "100.0";
+    std::ofstream(custom_playtracker_config) << probe_native << '\n';
+    activate(create);
+    if (!expect(
+            ignore_largest_count->value() == 3 && ignore_oversized->isChecked() && oversized_percent->value() == 100,
+            "Integer-valued decimal YAML percentages must hydrate all size controls"))
       return false;
     probe_native["play-tracker"]["ignore-largest-bbox"] = false;
     std::ofstream(custom_playtracker_config) << probe_native << '\n';
@@ -10711,8 +10723,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   ignore_largest_count->setValue(3);
   ignore_oversized->setChecked(true);
-  oversized_percent->setValue(125);
-  for (int i = 0; i < 100 && !window->logText().contains("camera control Oversized_Player_Percent=125 apply=live");
+  oversized_percent->setValue(125.5);
+  for (int i = 0; i < 100 && !window->logText().contains("camera control Oversized_Player_Percent=125.5 apply=live");
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -10720,7 +10732,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const auto size_runtime = DsPlayTrackerLoadRuntimeTuning(newest_live_playtracker_config().string());
   if (!expect(
           size_runtime.ok() && size_runtime->ignore_largest_bbox_count == 3 &&
-              size_runtime->ignore_oversized_bboxes == true && size_runtime->oversized_bbox_percent == 125 &&
+              size_runtime->ignore_oversized_bboxes == true && size_runtime->oversized_bbox_percent == 125.5 &&
               window->logText().contains("camera control Ignore_Largest_Count=3 apply=live"),
           "Numeric and checkbox controls publish an acknowledged live size-filter delta")) {
     activate(stop);
@@ -10731,7 +10743,7 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           size_saved["rink"]["tracking"]["cam_ignore_largest_count"].as<int>() == 3 &&
               size_saved["rink"]["tracking"]["cam_ignore_oversized"].as<bool>() &&
-              size_saved["rink"]["tracking"]["cam_oversized_percent"].as<int>() == 125,
+              size_saved["rink"]["tracking"]["cam_oversized_percent"].as<double>() == 125.5,
           "Save Preset persists the live player size settings to canonical YAML")) {
     activate(stop);
     return false;
@@ -11178,6 +11190,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   user_config["stitching"]["mapping_backend"] = "RANSAC";
   user_config["stitching"]["run_autooptimizer"] = true;
   user_config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Node(YAML::NodeType::Null);
+  user_config["rink"]["tracking"]["cam_oversized_percent"] = "100.0";
   {
     std::ofstream out(QDir(user_config_directory).filePath("hstream.yaml").toStdString());
     out << YAML::Dump(user_config) << '\n';
@@ -11232,6 +11245,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   bool ok = true;
   {
     HStreamWindow user_default_window;
+    ok &= expect(
+        user_default_window.cameraControlValue("Oversized_Player_Percent") == 100,
+        "Decimal baseline percentage spelling must initialize the UI");
     user_default_window.show();
     auto* game_id = require_child<QLineEdit>(&user_default_window, "gameIdEdit");
     auto* create = require_child<QPushButton>(&user_default_window, "createGameButton");
@@ -11427,6 +11443,125 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
         game_id && create && save && stitch_max_output_width && stitch_max_output_width->value() == 1234 &&
             !save->isEnabled(),
         "A baseline native null must not mask a later numeric private max-width alias used by the pipeline");
+  }
+  // User-relative native files must remain the base of generated presets and
+  // retain unrelated tracker configuration through fractional edits and reset.
+  {
+    const QString native_path = QDir(user_config_directory).filePath("size_tracker.yaml");
+    YAML::Node native(YAML::NodeType::Map);
+    native["play-tracker"]["ignore-largest-bbox"] = true;
+    native["play-tracker"]["ignore-largest-bbox-count"] = 3;
+    native["play-tracker"]["ignore-oversized-bboxes"] = true;
+    native["play-tracker"]["oversized-bbox-percent"] = 175.5;
+    native["play-tracker"]["min-tracked-players"] = 7;
+    std::ofstream(native_path.toStdString()) << native << '\n';
+    user_config["pipeline"]["ds-playtracker"]["config-file"] = "size_tracker.yaml";
+    user_config["rink"]["tracking"]["cam_oversized_percent"] = 125.5;
+    std::ofstream(QDir(user_config_directory).filePath("hstream.yaml").toStdString()) << user_config << '\n';
+    std::ofstream(copied_config) << "{}\n";
+    HStreamWindow native_window;
+    ok &= expect(
+        native_window.cameraControlValue("Oversized_Player_Percent") == 175.5,
+        "Fractional inherited native settings must initialize without rounding");
+    auto* game_id = require_child<QLineEdit>(&native_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&native_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&native_window, "savePresetButton");
+    auto* reset = require_child<QPushButton>(&native_window, "resetCameraButton");
+    auto* count = require_child<QSpinBox>(&native_window, "cameraSpin_Ignore_Largest_Count");
+    auto* percent = require_child<QDoubleSpinBox>(&native_window, "cameraSpin_Oversized_Player_Percent");
+    if (game_id && create && save && reset && count && percent) {
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+      ok &= expect(
+          count->value() == 3 && percent->value() == 175.5,
+          "User-relative native file must supply effective size settings");
+      count->setValue(std::numeric_limits<int>::max());
+      ok &= expect(
+          HStreamWindowTestAccess::pipelineArguments(&native_window)
+              .contains("--options=rink.tracking.cam_ignore_largest_count=2147483647"),
+          "Large counts must launch as exact integers");
+      count->setValue(4);
+      percent->setValue(185.25);
+      activate(save);
+      const YAML::Node saved_native_game = YAML::LoadFile(copied_config.string());
+      const YAML::Node sidecar =
+          YAML::LoadFile(saved_native_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>());
+      ok &= expect(
+          sidecar["play-tracker"]["min-tracked-players"].as<int>() == 7 &&
+              sidecar["play-tracker"]["oversized-bbox-percent"].as<double>() == 185.25 &&
+              saved_native_game["hstream_ui"]["playtracker_config_base"].as<std::string>() == native_path.toStdString(),
+          "Saving size filters must retain the user native base and its unrelated settings");
+      activate(create);
+      ok &= expect(
+          count->value() == 4 && percent->value() == 185.25,
+          "Fractional percentages must survive Save Preset and reload");
+      activate(reset);
+      activate(save);
+      activate(create);
+      ok &= expect(
+          count->value() == 1 && percent->value() == 125.5,
+          "Reset must persist fractional user defaults over a differing native file");
+    } else {
+      ok = false;
+    }
+  }
+  // The structural app file can select a native file without a user/game
+  // config-file override. Its size settings have native rank zero.
+  {
+    QTemporaryDir runtime_root;
+    const QString app_dir = QDir(runtime_root.path()).filePath("configs");
+    if (!runtime_root.isValid() || !QDir().mkpath(app_dir))
+      return false;
+    const QString default_native_path = QDir(app_dir).filePath("default_tracker.yaml");
+    YAML::Node native(YAML::NodeType::Map);
+    native["play-tracker"]["ignore-largest-bbox"] = false;
+    native["play-tracker"]["ignore-largest-bbox-count"] = 3;
+    native["play-tracker"]["ignore-oversized-bboxes"] = true;
+    native["play-tracker"]["oversized-bbox-percent"] = 175.5;
+    native["play-tracker"]["min-tracked-players"] = 7;
+    std::ofstream(default_native_path.toStdString()) << native << '\n';
+    std::ofstream(QDir(app_dir).filePath("ds_hockey_app_config.yaml").toStdString())
+        << "ds-playtracker:\n  config-file: default_tracker.yaml\n";
+    std::ofstream(QDir(user_config_directory).filePath("hstream.yaml").toStdString())
+        << "rink:\n  tracking:\n    cam_oversized_percent: 125.5\n    cam_ignore_oversized: false\n";
+    std::ofstream(copied_config) << "{}\n";
+    HStreamWindow structural_window;
+    HStreamWindowTestAccess::setDevelopmentRuntimeRoot(&structural_window, runtime_root.path());
+    auto* game_id = require_child<QLineEdit>(&structural_window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&structural_window, "createGameButton");
+    auto* save = require_child<QPushButton>(&structural_window, "savePresetButton");
+    auto* count = require_child<QSpinBox>(&structural_window, "cameraSpin_Ignore_Largest_Count");
+    if (game_id && create && save && count) {
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+      const QStringList arguments = HStreamWindowTestAccess::pipelineArguments(&structural_window);
+      ok &= expect(
+          count->value() == 0 && arguments.contains("--options=rink.tracking.cam_ignore_largest=false") &&
+              arguments.contains("--options=rink.tracking.cam_ignore_oversized=false") &&
+              arguments.contains("--options=rink.tracking.cam_oversized_percent=125.5"),
+          "The structural app native file must hydrate size settings before launch");
+      count->setValue(2);
+      activate(save);
+      const YAML::Node saved_game = YAML::LoadFile(copied_config.string());
+      const YAML::Node sidecar =
+          YAML::LoadFile(saved_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>());
+      ok &= expect(
+          sidecar["play-tracker"]["min-tracked-players"].as<int>() == 7 &&
+              !sidecar["play-tracker"]["ignore-oversized-bboxes"].as<bool>() &&
+              sidecar["play-tracker"]["oversized-bbox-percent"].as<double>() == 125.5 &&
+              saved_game["hstream_ui"]["playtracker_config_base"].as<std::string>() ==
+                  default_native_path.toStdString(),
+          "Save must preserve the structural native base and higher-priority effective size values");
+      activate(create);
+      ok &= expect(
+          count->value() == 2 && structural_window.cameraControlValue("Oversized_Player_Percent") == 125.5 &&
+              structural_window.cameraControlValue("Ignore_Oversized_Players") == 0,
+          "Saving a count change must not replace untouched user size settings with structural native values");
+    } else {
+      ok = false;
+    }
+    // The temporary structural file is removed after this block.
+    std::ofstream(copied_config) << "{}\n";
   }
   baseline["stitching"].remove("mapping_backend");
   baseline["stitching"].remove("run_autooptimizer");
