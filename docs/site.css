@@ -162,6 +162,8 @@ h1 {
 }
 
 .hero-visual {
+  margin: 0;
+  min-width: 0;
   position: relative;
 }
 
@@ -176,11 +178,10 @@ h1 {
 }
 
 .hero-visual img {
-  aspect-ratio: 16 / 10;
   border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 22px;
+  border-radius: 10px;
   box-shadow: var(--shadow);
-  object-fit: cover;
+  height: auto;
   position: relative;
 }
 
@@ -233,6 +234,60 @@ h2 {
 .section-head p,
 .muted {
   color: var(--muted);
+}
+
+.screenshot-grid {
+  display: grid;
+  gap: 28px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.screenshot {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.screenshot-wide {
+  grid-column: 1 / -1;
+}
+
+.screenshot a,
+.hero-visual a {
+  display: block;
+}
+
+.hero-visual figcaption a {
+  display: inline;
+}
+
+.screenshot a:focus-visible,
+.hero-visual > a:focus-visible {
+  outline: 3px solid var(--ice);
+  outline-offset: -3px;
+}
+
+.screenshot img {
+  height: auto;
+  width: 100%;
+}
+
+.screenshot figcaption {
+  padding: 24px 28px;
+}
+
+.screenshot h3 {
+  font-size: 1.25rem;
+  margin: 0 0 10px;
+}
+
+.screenshot p {
+  color: var(--muted);
+  margin: 0;
+  max-width: 760px;
 }
 
 .grid-3,
@@ -461,7 +516,8 @@ footer {
   }
 
   .grid-3,
-  .steps {
+  .steps,
+  .screenshot-grid {
     grid-template-columns: 1fr;
   }
 

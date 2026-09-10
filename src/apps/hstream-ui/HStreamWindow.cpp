@@ -121,6 +121,21 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// Keep fractional percentages without displaying a long tail of zeroes.
+class CameraDoubleSpinBox : public QDoubleSpinBox {
+ protected:
+  QString textFromValue(double value) const override {
+    return locale().toString(value, 'g', std::numeric_limits<double>::max_digits10);
+  }
+};
+
+double nonnegative_percentage(const YAML::Node& node) {
+  const double value = node.as<double>();
+  if (!std::isfinite(value) || value < 0)
+    throw std::invalid_argument("Oversized player percentage must be finite and nonnegative");
+  return value;
+}
+
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr int kDefaultStitchCalibrationFrameCount = 4;
@@ -4789,6 +4804,12 @@ void HStreamWindow::loadBaselineDefaults() {
   checked("Stop_Cancel_Hysteresis_Frames", integer("rink.camera.stop_cancel_hysteresis_frames"), 0, 10);
   checked("Stop_Delay_Cooldown_Frames", integer("rink.camera.stop_delay_cooldown_frames"), 0, 30);
   checked("Time_To_Dest_Speed_Limit_Frames", integer("rink.camera.time_to_dest_speed_limit_frames"), 0, 120);
+  checked(
+      "Ignore_Largest_Count", integer("rink.tracking.cam_ignore_largest_count"), 0, std::numeric_limits<int>::max());
+  if (!boolean("rink.tracking.cam_ignore_largest"))
+    camera_defaults_["Ignore_Largest_Count"] = 0;
+  checked("Ignore_Oversized_Players", boolean("rink.tracking.cam_ignore_oversized"), 0, 1);
+  camera_defaults_["Oversized_Player_Percent"] = nonnegative_percentage(require("rink.tracking.cam_oversized_percent"));
   checked("Zoom_In_Aggressiveness", integer("rink.camera.zoom_in_aggressiveness"), 0, 100);
   checked("Overshoot_Stop_Delay_Frames", integer("rink.camera.breakaway_detection.overshoot_stop_delay_count"), 0, 60);
   checked(
@@ -4988,7 +5009,7 @@ int HStreamWindow::videoSetCount() const {
   return video_set_list_ ? video_set_list_->count() : 0;
 }
 
-int HStreamWindow::cameraControlValue(const QString& id) const {
+double HStreamWindow::cameraControlValue(const QString& id) const {
   if (cropRotationSuppressed() &&
       (id == "Left_Fixed_Edge_Rotation_Angle_x10" || id == "Right_Fixed_Edge_Rotation_Angle_x10"))
     return 0;
@@ -4996,13 +5017,19 @@ int HStreamWindow::cameraControlValue(const QString& id) const {
   if (slider != camera_sliders_.end() && slider->second) {
     return slider->second->value();
   }
+  const auto double_spin = camera_double_spinboxes_.find(id);
+  if (double_spin != camera_double_spinboxes_.end() && double_spin->second)
+    return double_spin->second->value();
+  const auto spin = camera_spinboxes_.find(id);
+  if (spin != camera_spinboxes_.end() && spin->second)
+    return spin->second->value();
   const auto checkbox = camera_checkboxes_.find(id);
   if (id == "Use_10_Bit_Grading" && checkbox != camera_checkboxes_.end() && checkbox->second)
     return checkbox->second->checkState() == Qt::Checked ? 1 : 0;
   return checkbox != camera_checkboxes_.end() && checkbox->second && checkbox->second->isChecked() ? 1 : 0;
 }
 
-int HStreamWindow::cameraPresetControlValue(const QString& id) const {
+double HStreamWindow::cameraPresetControlValue(const QString& id) const {
   const auto suppressed = suppressed_crop_rotation_controls_.find(id);
   if (suppressed != suppressed_crop_rotation_controls_.end())
     return suppressed->second;
@@ -6159,6 +6186,12 @@ void HStreamWindow::configureControlHelp() {
       {"Stop_Delay_Cooldown_Frames", "Cooldown frames before another direction-change stop delay may begin."},
       {"Time_To_Dest_Speed_Limit_Frames",
        "Limit tracking speed when the estimated time to the destination falls below this frame count."},
+      {"Ignore_Largest_Count",
+       "Ignore this many largest tracked player areas. Zero disables this filter. Size filters leave at least three players."},
+      {"Ignore_Oversized_Players",
+       "Exclude unusually large player areas after the largest-count filter, such as a nearby referee or a player at the bench."},
+      {"Oversized_Player_Percent",
+       "Percent larger than the average area of the OTHER remaining players. 100 means more than twice that average. All comparisons use the same snapshot."},
       {"Zoom_In_Aggressiveness",
        "How readily play tracking zooms in. 25 exactly preserves the established behavior; higher values lower "
        "only the shrink threshold so the camera zooms in sooner and more often."},
@@ -6202,8 +6235,9 @@ void HStreamWindow::configureControlHelp() {
        "Right fixed-edge crop rotation in tenths of a degree; 250 means 25.0 degrees."},
   };
   for (const auto& [id, description] : camera_help) {
-    const QString object_name =
-        id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading" ? "cameraCheck_" + id : "cameraSlider_" + id;
+    const QString object_name = (camera_spinboxes_.count(id) || camera_double_spinboxes_.count(id)) ? "cameraSpin_" + id
+        : camera_checkboxes_.count(id) ? "cameraCheck_" + id
+                                       : "cameraSlider_" + id;
     help(object_name, description + " Changes apply live where supported; Save Preset stores the value for this game.");
     if (id == "Bring_Up_Shadows" || id == "Exposure_x100" || id == "Lift_Shadow_Black_Point" ||
         id == "Use_10_Bit_Grading") {
@@ -6223,7 +6257,7 @@ void HStreamWindow::configureControlHelp() {
 }
 
 void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage) {
-  auto default_value = [this](const QString& id) {
+  auto default_value = [this](const QString& id) -> int {
     const auto found = camera_defaults_.find(id);
     if (found == camera_defaults_.end())
       throw std::logic_error(QString("No initialized camera-control default for %1").arg(id).toStdString());
@@ -6265,6 +6299,24 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* content = new QWidget();
     content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* content_layout = new QVBoxLayout(content);
+    if (!specs.empty() && std::string_view(specs.front().id) == "Zoom_In_Aggressiveness") {
+      addCameraSpinBox(
+          content_layout,
+          "Ignore_Largest_Count",
+          "Ignore largest players (0 = off)",
+          default_value("Ignore_Largest_Count"));
+      addCameraCheckBox(
+          content_layout,
+          "Ignore_Oversized_Players",
+          "Ignore oversized players",
+          default_value("Ignore_Oversized_Players") != 0);
+      auto* percent = addCameraDoubleSpinBox(
+          content_layout,
+          "Oversized_Player_Percent",
+          "Larger than other players' average (%)",
+          camera_defaults_.at("Oversized_Player_Percent"));
+      percent->setSuffix("%");
+    }
     for (const CameraSliderSpec& spec : specs) {
       addSlider(content_layout, spec.id, spec.label, spec.minimum, spec.maximum, spec.default_value);
     }
@@ -8595,6 +8647,18 @@ QStringList HStreamWindow::pipelineArguments() const {
               .arg(cameraControlValue("Lift_Shadow_Black_Point"));
   args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
   if (!isCalibrationRun()) {
+    args << QString("--options=rink.tracking.cam_ignore_largest=%1")
+                .arg(cameraControlValue("Ignore_Largest_Count") != 0 ? "true" : "false")
+         << QString("--options=rink.tracking.cam_ignore_largest_count=%1")
+                .arg(static_cast<int>(cameraControlValue("Ignore_Largest_Count")))
+         << QString("--options=rink.tracking.cam_ignore_oversized=%1")
+                .arg(cameraControlValue("Ignore_Oversized_Players") != 0 ? "true" : "false")
+         << QString("--options=rink.tracking.cam_oversized_percent=%1")
+                .arg(
+                    QString::number(
+                        cameraControlValue("Oversized_Player_Percent"),
+                        'g',
+                        std::numeric_limits<double>::max_digits10));
     args
         << QString("--options=rink.camera.zoom_in_aggressiveness=%1").arg(cameraControlValue("Zoom_In_Aggressiveness"));
     if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
@@ -14292,6 +14356,16 @@ void HStreamWindow::resetCameraControls() {
       suppressed->second = value;
       continue;
     }
+    const auto double_spin = camera_double_spinboxes_.find(id);
+    if (double_spin != camera_double_spinboxes_.end()) {
+      double_spin->second->setValue(value);
+      continue;
+    }
+    const auto spin = camera_spinboxes_.find(id);
+    if (spin != camera_spinboxes_.end()) {
+      spin->second->setValue(value);
+      continue;
+    }
     const auto it = camera_sliders_.find(id);
     if (it != camera_sliders_.end()) {
       it->second->setValue(value);
@@ -14359,6 +14433,9 @@ void HStreamWindow::resetCameraControls() {
     // was tuned before its target selector was returned to the default.
     const QStringList playtracker_reset_controls = {
         "Zoom_In_Aggressiveness",
+        "Ignore_Largest_Count",
+        "Ignore_Oversized_Players",
+        "Oversized_Player_Percent",
         "Stop_Direction_Change_Delay_Frames",
         "Cancel_Stop_On_Opposite_Direction",
         "Stop_Cancel_Hysteresis_Frames",
@@ -14530,7 +14607,110 @@ void HStreamWindow::updatePresetDirtyState() {
     set_control_help(save_preset_button_, description);
 }
 
+std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
+    const YAML::Node& game_config,
+    bool original,
+    const QString& game_dir) const {
+  const auto user = hm::user_config::load_or_create();
+  if (!user.ok())
+    throw std::runtime_error(user.status().ToString());
+  constexpr const char* file_key = "pipeline.ds-playtracker.config-file";
+  YAML::Node configured_file;
+  int native_rank = 0;
+  if (lookup_yaml_path(game_config, file_key, &configured_file)) {
+    native_rank = 2;
+  } else if (lookup_yaml_path(*user, file_key, &configured_file)) {
+    native_rank = 1;
+  } else if (!lookup_yaml_path(baseline_config_, file_key, &configured_file)) {
+    const QString app_config_path = pipelineConfigPath("ds_hockey_app_config.yaml");
+    if (QFileInfo(app_config_path).isFile()) {
+      const YAML::Node app_config = YAML::LoadFile(app_config_path.toStdString());
+      lookup_yaml_path(app_config, "ds-playtracker.config-file", &configured_file);
+    }
+  }
+  // On Save/Reset compare against the original native file, not a generated
+  // sidecar containing a previous UI override.
+  if (original) {
+    YAML::Node original_file;
+    if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &original_file))
+      configured_file.reset(original_file);
+  }
+  if (configured_file.IsDefined() && !configured_file.IsNull()) {
+    if (!configured_file.IsScalar())
+      throw std::invalid_argument("pipeline.ds-playtracker.config-file must be a file path");
+    const QString configured = QString::fromStdString(configured_file.as<std::string>());
+    QStringList candidates;
+    if (QFileInfo(configured).isAbsolute()) {
+      candidates << configured;
+    } else {
+      if (native_rank == 2)
+        candidates << QDir(game_dir).filePath(configured);
+      if (native_rank == 1) {
+        const auto user_path = hm::user_config::file_path();
+        if (!user_path.ok())
+          throw std::runtime_error(user_path.status().ToString());
+        candidates << QDir(QString::fromStdString(user_path->parent_path().string())).filePath(configured);
+      }
+      candidates << QDir(QFileInfo(pipelineConfigPath("ds_hockey_app_config.yaml")).absolutePath()).filePath(configured)
+                 << QDir(baseline_config_root_).filePath(configured) << QDir(game_dir).filePath(configured)
+                 << QDir(pipelineWorkingDirectory()).filePath(configured);
+    }
+    for (const QString& candidate : candidates) {
+      if (QFileInfo(candidate).isFile())
+        return {QFileInfo(candidate).absoluteFilePath(), native_rank};
+    }
+    throw std::invalid_argument("Could not locate native playtracker config: " + configured.toStdString());
+  }
+  return {QString(), native_rank};
+}
+
+std::map<QString, double> HStreamWindow::readPlayerSizeControls(const YAML::Node& game_config, bool inherited) const {
+  const auto user = hm::user_config::load_or_create();
+  if (!user.ok())
+    throw std::runtime_error(user.status().ToString());
+  const QString game_dir = game_id_edit_ ? gameDirectory(game_id_edit_->text()) : gameRoot();
+  const auto [native_file, native_rank] = resolvePlaytrackerConfig(game_config, inherited, game_dir);
+  YAML::Node native(YAML::NodeType::Map);
+  if (!native_file.isEmpty()) {
+    const YAML::Node document = YAML::LoadFile(native_file.toStdString());
+    if (!document["play-tracker"].IsMap())
+      throw std::invalid_argument("Native tracker config must contain a play-tracker map");
+    native.reset(document["play-tracker"]);
+  }
+  auto effective = [&](const char* canonical_key, const char* native_key) {
+    YAML::Node value;
+    lookup_yaml_path(baseline_config_, canonical_key, &value);
+    int canonical_rank = lookup_yaml_path(*user, canonical_key, nullptr) ? 1 : 0;
+    YAML::Node game_value;
+    if (!inherited && lookup_yaml_path(game_config, canonical_key, &game_value)) {
+      value.reset(game_value);
+      canonical_rank = 2;
+    }
+    if (native[native_key].IsDefined() && !native[native_key].IsNull() && canonical_rank <= native_rank)
+      value.reset(native[native_key]);
+    if (!value.IsScalar())
+      throw std::invalid_argument(std::string(canonical_key) + " must be a scalar");
+    return value;
+  };
+  auto nonnegative_int = [&](const char* canonical_key, const char* native_key) {
+    const int value = effective(canonical_key, native_key).as<int>();
+    if (value < 0)
+      throw std::invalid_argument(std::string(canonical_key) + " must be nonnegative");
+    return value;
+  };
+  const int count = nonnegative_int("rink.tracking.cam_ignore_largest_count", "ignore-largest-bbox-count");
+  const bool enabled = effective("rink.tracking.cam_ignore_largest", "ignore-largest-bbox").as<bool>();
+  return {
+      {"Ignore_Largest_Count", enabled ? count : 0},
+      {"Ignore_Oversized_Players",
+       effective("rink.tracking.cam_ignore_oversized", "ignore-oversized-bboxes").as<bool>() ? 1 : 0},
+      {"Oversized_Player_Percent",
+       nonnegative_percentage(effective("rink.tracking.cam_oversized_percent", "oversized-bbox-percent"))},
+  };
+}
+
 void HStreamWindow::loadSavedControlConfig() {
+  inherited_player_size_controls_.clear();
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     captureSavedControlState();
     return;
@@ -14626,6 +14806,18 @@ void HStreamWindow::loadSavedControlConfig() {
     stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
+    const auto double_spin = camera_double_spinboxes_.find(id);
+    if (double_spin != camera_double_spinboxes_.end()) {
+      const QSignalBlocker blocker(double_spin->second);
+      double_spin->second->setValue(value);
+      continue;
+    }
+    const auto spin = camera_spinboxes_.find(id);
+    if (spin != camera_spinboxes_.end()) {
+      const QSignalBlocker blocker(spin->second);
+      spin->second->setValue(value);
+      continue;
+    }
     const auto slider_it = camera_sliders_.find(id);
     if (slider_it == camera_sliders_.end()) {
       const auto checkbox = camera_checkboxes_.find(id);
@@ -14660,25 +14852,21 @@ void HStreamWindow::loadSavedControlConfig() {
     updatePresetDirtyState();
     return;
   }
-  if (!loaded_config->has_value()) {
-    updateStitchFrameTimeAvailability();
-    captureSavedControlState();
-    return;
-  }
   try {
-    YAML::Node config = **loaded_config;
+    YAML::Node config = loaded_config->has_value() ? **loaded_config : YAML::Node(YAML::NodeType::Map);
     hm::stitching::restore_generated_stitch_rink_context(config);
-    std::map<QString, int> staged_controls;
+    std::map<QString, double> staged_controls;
     QString staged_high_bit_depth_mode = highBitDepthMode();
     bool native_high_bit_depth_mode_present = false;
     for (const auto& [id, default_value] : camera_defaults_) {
       Q_UNUSED(default_value);
       staged_controls[id] = cameraPresetControlValue(id);
     }
-    auto stage_control = [this, &staged_controls](const QString& id, int value) {
+    auto stage_control = [this, &staged_controls](const QString& id, double value) {
       const auto slider = camera_sliders_.find(id);
       const auto checkbox = camera_checkboxes_.find(id);
-      if ((slider == camera_sliders_.end() || !slider->second) &&
+      if (!camera_double_spinboxes_.count(id) && !camera_spinboxes_.count(id) &&
+          (slider == camera_sliders_.end() || !slider->second) &&
           (checkbox == camera_checkboxes_.end() || !checkbox->second)) {
         return false;
       }
@@ -14742,6 +14930,9 @@ void HStreamWindow::loadSavedControlConfig() {
       staged_high_bit_depth_mode = forced < 0 ? "auto" : forced != 0 ? "1" : "0";
       stage_control(id, forced > 0 ? 1 : 0);
     };
+    inherited_player_size_controls_ = readPlayerSizeControls(config, true);
+    for (const auto& [id, value] : readPlayerSizeControls(config, false))
+      stage_control(id, value);
     stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
     stage_boolean_path("rink.camera.cancel_stop_on_opposite_dir", "Cancel_Stop_On_Opposite_Direction");
     stage_integer_path("rink.camera.stop_cancel_hysteresis_frames", "Stop_Cancel_Hysteresis_Frames");
@@ -15083,20 +15274,25 @@ void HStreamWindow::loadSavedControlConfig() {
         const QString id = QString::fromStdString(entry.first.as<std::string>());
         if (id == "Use_10_Bit_Grading" && native_high_bit_depth_mode_present)
           continue;
-        int value = id == "Use_10_Bit_Grading"
-            ? strict_boolean_control("hstream_ui.camera_controls." + id, entry.second)
-            : entry.second.as<int>();
+        double value = id == "Oversized_Player_Percent" ? nonnegative_percentage(entry.second)
+            : id == "Use_10_Bit_Grading" ? strict_boolean_control("hstream_ui.camera_controls." + id, entry.second)
+                                         : entry.second.as<int>();
         if (id == "Exposure_x100") {
           value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 130);
+        } else if (id == "Ignore_Largest_Count") {
+          value = bounded_integer_control(
+              "hstream_ui.camera_controls." + id, entry.second, 0, std::numeric_limits<int>::max());
         } else if (id == "Bring_Up_Shadows" || id == "Zoom_In_Aggressiveness") {
           value = bounded_integer_control("hstream_ui.camera_controls." + id, entry.second, 0, 100);
         }
         if ((id == "Link_Fixed_Edge_Rotation_Left_Right" || id == "Apply_To_Fast_Box" ||
-             id == "Apply_To_Follower_Box" || id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading") &&
+             id == "Apply_To_Follower_Box" || id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading" ||
+             id == "Ignore_Oversized_Players") &&
             value != 0 && value != 1) {
           throw std::invalid_argument(QString("%1 must be 0 or 1").arg(id).toStdString());
         }
-        if ((camera_sliders_.find(id) != camera_sliders_.end() ||
+        if ((camera_double_spinboxes_.count(id) || camera_spinboxes_.count(id) ||
+             camera_sliders_.find(id) != camera_sliders_.end() ||
              camera_checkboxes_.find(id) != camera_checkboxes_.end()) &&
             stage_control(id, value)) {
           if (id == "Use_10_Bit_Grading")
@@ -15202,6 +15398,18 @@ void HStreamWindow::loadSavedControlConfig() {
     }
     updateStitchFrameTimeAvailability();
     for (const auto& [id, value] : staged_controls) {
+      const auto double_spin = camera_double_spinboxes_.find(id);
+      if (double_spin != camera_double_spinboxes_.end()) {
+        const QSignalBlocker blocker(double_spin->second);
+        double_spin->second->setValue(value);
+        continue;
+      }
+      const auto spin = camera_spinboxes_.find(id);
+      if (spin != camera_spinboxes_.end()) {
+        const QSignalBlocker blocker(spin->second);
+        spin->second->setValue(value);
+        continue;
+      }
       const auto slider_it = camera_sliders_.find(id);
       if (slider_it == camera_sliders_.end() || !slider_it->second) {
         const auto checkbox = camera_checkboxes_.find(id);
@@ -15218,7 +15426,8 @@ void HStreamWindow::loadSavedControlConfig() {
       }
       const bool blocked = slider_it->second->blockSignals(true);
       slider_it->second->setRange(
-          std::min(slider_it->second->minimum(), value), std::max(slider_it->second->maximum(), value));
+          std::min(slider_it->second->minimum(), static_cast<int>(value)),
+          std::max(slider_it->second->maximum(), static_cast<int>(value)));
       slider_it->second->setValue(value);
       slider_it->second->blockSignals(blocked);
       const auto label_it = camera_value_labels_.find(id);
@@ -15321,7 +15530,11 @@ bool HStreamWindow::applySavedControlConfig(
   remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
   YAML::Node current_playtracker_config;
   if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar() &&
-      !lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config)) {
+      (!lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config) ||
+       (game_id_edit_ &&
+        !resolve_ui_persistent_playtracker_config(
+             config, gameDirectory(game_id_edit_->text()), pipelineWorkingDirectory())
+             .isEmpty()))) {
     config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
   }
 
@@ -15376,6 +15589,10 @@ bool HStreamWindow::applySavedControlConfig(
            "rink.camera.stop_delay_cooldown_frames",
            "rink.camera.time_to_dest_speed_limit_frames",
            "rink.camera.zoom_in_aggressiveness",
+           "rink.tracking.cam_ignore_largest",
+           "rink.tracking.cam_ignore_largest_count",
+           "rink.tracking.cam_ignore_oversized",
+           "rink.tracking.cam_oversized_percent",
            "rink.camera.breakaway_detection.overshoot_stop_delay_count",
            "rink.camera.breakaway_detection.post_nonstop_stop_delay_count",
            "rink.camera.breakaway_detection.overshoot_scale_speed_ratio",
@@ -15400,12 +15617,17 @@ bool HStreamWindow::applySavedControlConfig(
   for (const auto& [id, default_value] : camera_defaults_) {
     if (id == "Use_10_Bit_Grading")
       continue;
-    const int value = cameraPresetControlValue(id);
-    if (value == default_value) {
+    const double value = cameraPresetControlValue(id);
+    const auto inherited_size = inherited_player_size_controls_.find(id);
+    if (value == default_value &&
+        (inherited_size == inherited_player_size_controls_.end() || value == inherited_size->second)) {
       continue;
     }
     const std::string key = id.toStdString();
-    controls[key.c_str()] = value;
+    if (camera_double_spinboxes_.count(id))
+      controls[key.c_str()] = value;
+    else
+      controls[key.c_str()] = static_cast<int>(value);
     ++changed;
   }
   config["hstream_ui"]["camera_controls"] = controls;
@@ -15632,8 +15854,24 @@ bool HStreamWindow::applySavedControlConfig(
     config["rink"]["camera"]["zoom_in_aggressiveness"] = slider_value("Zoom_In_Aggressiveness");
     mark_runtime_key("rink.camera.zoom_in_aggressiveness");
   }
-  const bool has_playtracker_runtime_controls = has_control(controls, "Stop_Direction_Change_Delay_Frames") ||
-      has_control(controls, "Zoom_In_Aggressiveness") || has_control(controls, "Cancel_Stop_On_Opposite_Direction") ||
+  if (has_control(controls, "Ignore_Largest_Count")) {
+    config["rink"]["tracking"]["cam_ignore_largest"] = slider_value("Ignore_Largest_Count") != 0;
+    config["rink"]["tracking"]["cam_ignore_largest_count"] = slider_value("Ignore_Largest_Count");
+    mark_runtime_key("rink.tracking.cam_ignore_largest");
+    mark_runtime_key("rink.tracking.cam_ignore_largest_count");
+  }
+  if (has_control(controls, "Ignore_Oversized_Players")) {
+    config["rink"]["tracking"]["cam_ignore_oversized"] = slider_value("Ignore_Oversized_Players") != 0;
+    mark_runtime_key("rink.tracking.cam_ignore_oversized");
+  }
+  if (has_control(controls, "Oversized_Player_Percent")) {
+    config["rink"]["tracking"]["cam_oversized_percent"] = cameraControlValue("Oversized_Player_Percent");
+    mark_runtime_key("rink.tracking.cam_oversized_percent");
+  }
+  const bool has_playtracker_runtime_controls = has_control(controls, "Ignore_Largest_Count") ||
+      has_control(controls, "Ignore_Oversized_Players") || has_control(controls, "Oversized_Player_Percent") ||
+      has_control(controls, "Stop_Direction_Change_Delay_Frames") || has_control(controls, "Zoom_In_Aggressiveness") ||
+      has_control(controls, "Cancel_Stop_On_Opposite_Direction") ||
       has_control(controls, "Stop_Cancel_Hysteresis_Frames") || has_control(controls, "Stop_Delay_Cooldown_Frames") ||
       has_control(controls, "Time_To_Dest_Speed_Limit_Frames") ||
       has_control(controls, "Overshoot_Stop_Delay_Frames") || has_control(controls, "Post_Nonstop_Stop_Delay_Frames") ||
@@ -15650,37 +15888,10 @@ bool HStreamWindow::applySavedControlConfig(
       const QString runtime_config_path = runtime_dir.filePath(
           QString("play_tracker_config_%1.yaml").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
       try {
-        QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
-        QString configured_playtracker_config;
-        YAML::Node configured_config_file;
-        if (lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &configured_config_file) &&
-            configured_config_file.IsScalar()) {
-          QString configured = QString::fromStdString(configured_config_file.as<std::string>());
-          const QString working_dir = pipelineWorkingDirectory();
-          const QStringList candidates = playtracker_config_candidates(configured, game_dir, working_dir);
-          for (const QString& candidate : candidates) {
-            if (same_file_path(candidate, runtime_config_path) ||
-                is_ui_persistent_playtracker_config(candidate, game_dir)) {
-              if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar()) {
-                configured = QString::fromStdString(previous_playtracker_config_base.as<std::string>());
-                const QStringList base_candidates = playtracker_config_candidates(configured, game_dir, working_dir);
-                for (const QString& base_candidate : base_candidates) {
-                  if (QFileInfo::exists(base_candidate)) {
-                    base_playtracker_config = base_candidate;
-                    configured_playtracker_config = configured;
-                    break;
-                  }
-                }
-              }
-              break;
-            }
-            if (QFileInfo::exists(candidate)) {
-              base_playtracker_config = candidate;
-              configured_playtracker_config = configured;
-              break;
-            }
-          }
-        }
+        const QString configured_playtracker_config = resolvePlaytrackerConfig(config, true, game_dir).first;
+        const QString base_playtracker_config = configured_playtracker_config.isEmpty()
+            ? pipelineConfigPath("play_tracker_config.yaml")
+            : configured_playtracker_config;
         YAML::Node play_tracker_config = QFileInfo::exists(base_playtracker_config)
             ? YAML::LoadFile(base_playtracker_config.toStdString())
             : YAML::Node(YAML::NodeType::Map);
@@ -15704,6 +15915,13 @@ bool HStreamWindow::applySavedControlConfig(
           throw std::invalid_argument(live_box_roles.status().ToString());
 
         YAML::Node play_tracker = play_tracker_config["play-tracker"];
+        // The generated native file gains game-level precedence. Capture all
+        // effective size settings so it cannot resurrect lower-priority values
+        // from the original file when an untouched control inherits a user default.
+        play_tracker["ignore-largest-bbox"] = slider_value("Ignore_Largest_Count") != 0;
+        play_tracker["ignore-largest-bbox-count"] = slider_value("Ignore_Largest_Count");
+        play_tracker["ignore-oversized-bboxes"] = slider_value("Ignore_Oversized_Players") != 0;
+        play_tracker["oversized-bbox-percent"] = cameraControlValue("Oversized_Player_Percent");
         if (has_control(controls, "Zoom_In_Aggressiveness")) {
           play_tracker["zoom-in-aggressiveness"] = slider_value("Zoom_In_Aggressiveness");
         }
@@ -17068,7 +17286,6 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       ? runtime_dir.filePath(QString("play_tracker_runtime_%1.yaml").arg(scheduled_playtracker_control_generation_))
       : persistent_runtime_config;
   try {
-    QString base_playtracker_config = pipelineConfigPath("play_tracker_config.yaml");
     const fs::path game_config_path = fs::path(game_dir.toStdString()) / "config.yaml";
     auto loaded_game_config = hm::stitching::load_game_config_file(game_config_path);
     if (!loaded_game_config.ok()) {
@@ -17076,38 +17293,12 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
           QString("could not read playtracker game config: %1").arg(loaded_game_config.status().ToString().c_str()));
       return {};
     }
-    if (loaded_game_config->has_value()) {
-      YAML::Node game_config = **loaded_game_config;
-      YAML::Node configured_config_file;
-      if (lookup_yaml_path(game_config, "pipeline.ds-playtracker.config-file", &configured_config_file) &&
-          configured_config_file.IsScalar()) {
-        QString configured = QString::fromStdString(configured_config_file.as<std::string>());
-        const QString working_dir = pipelineWorkingDirectory();
-        const QStringList candidates = playtracker_config_candidates(configured, game_dir, working_dir);
-        for (const QString& candidate : candidates) {
-          if (same_file_path(candidate, runtime_config_path) || same_file_path(candidate, persistent_runtime_config) ||
-              is_ui_persistent_playtracker_config(candidate, game_dir)) {
-            YAML::Node base_config_file;
-            if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &base_config_file) &&
-                base_config_file.IsScalar()) {
-              configured = QString::fromStdString(base_config_file.as<std::string>());
-              const QStringList base_candidates = playtracker_config_candidates(configured, game_dir, working_dir);
-              for (const QString& base_candidate : base_candidates) {
-                if (QFileInfo::exists(base_candidate)) {
-                  base_playtracker_config = base_candidate;
-                  break;
-                }
-              }
-            }
-            break;
-          }
-          if (QFileInfo::exists(candidate)) {
-            base_playtracker_config = candidate;
-            break;
-          }
-        }
-      }
-    }
+    const YAML::Node game_config =
+        loaded_game_config->has_value() ? **loaded_game_config : YAML::Node(YAML::NodeType::Map);
+    const QString configured_playtracker_config = resolvePlaytrackerConfig(game_config, true, game_dir).first;
+    const QString base_playtracker_config = configured_playtracker_config.isEmpty()
+        ? pipelineConfigPath("play_tracker_config.yaml")
+        : configured_playtracker_config;
     YAML::Node play_tracker_config = QFileInfo::exists(base_playtracker_config)
         ? YAML::LoadFile(base_playtracker_config.toStdString())
         : YAML::Node(YAML::NodeType::Map);
@@ -17133,10 +17324,7 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       return {};
     }
 
-    auto slider_value = [this](const QString& id) -> int {
-      const auto it = camera_sliders_.find(id);
-      return it == camera_sliders_.end() ? 0 : it->second->value();
-    };
+    auto slider_value = [this](const QString& id) -> int { return cameraControlValue(id); };
     auto slider_changed = [this, &slider_value](const QString& id) -> bool {
       const auto default_it = camera_defaults_.find(id);
       return default_it != camera_defaults_.end() && slider_value(id) != default_it->second;
@@ -17182,6 +17370,11 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
     };
     set_changed_int("stop-translation-on-dir-change-delay", "Stop_Direction_Change_Delay_Frames");
     set_changed_int("zoom-in-aggressiveness", "Zoom_In_Aggressiveness");
+    set_changed_int("ignore-largest-bbox-count", "Ignore_Largest_Count");
+    if (publishing_controls.count("Oversized_Player_Percent"))
+      runtime_tuning["oversized-bbox-percent"] = cameraControlValue("Oversized_Player_Percent");
+    if (publishing_controls.count("Ignore_Oversized_Players"))
+      runtime_tuning["ignore-oversized-bboxes"] = slider_value("Ignore_Oversized_Players") != 0;
     if (publishing_controls.count("Cancel_Stop_On_Opposite_Direction"))
       runtime_tuning["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
     set_changed_int("cancel-stop-hysteresis-frames", "Stop_Cancel_Hysteresis_Frames");
@@ -17435,7 +17628,7 @@ void HStreamWindow::timeoutRuntimeControlBatch(quint64 batch_id) {
 }
 
 bool HStreamWindow::publishRuntimeControlBatch(
-    const std::map<QString, int>& controls,
+    const std::map<QString, double>& controls,
     const std::vector<RuntimePropertyCommand>& commands,
     const std::optional<LiveRotationAuthorization>& live_rotation_authorization) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || controls.empty() ||
@@ -17485,7 +17678,7 @@ bool HStreamWindow::publishRuntimeControlBatch(
   return true;
 }
 
-bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
+bool HStreamWindow::sendLiveCameraControl(const QString& id, double value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
@@ -17509,6 +17702,9 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, int value) {
   const QSet<QString> playtracker_live_controls = {
       "Stop_Direction_Change_Delay_Frames",
       "Zoom_In_Aggressiveness",
+      "Ignore_Largest_Count",
+      "Ignore_Oversized_Players",
+      "Oversized_Player_Percent",
       "Cancel_Stop_On_Opposite_Direction",
       "Stop_Cancel_Hysteresis_Frames",
       "Stop_Delay_Cooldown_Frames",
@@ -17553,7 +17749,7 @@ void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value)
   });
 }
 
-void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, int value) {
+void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, double value) {
   appendLog(QString("camera control %1=%2 apply=scheduled").arg(id).arg(value));
   scheduled_playtracker_controls_[id] = value;
   scheduled_playtracker_controls_ready_ = false;
@@ -17632,7 +17828,8 @@ bool HStreamWindow::publishRotationRuntimeControls(
   }
   if (epoch_command.has_value())
     commands.push_back(std::move(*epoch_command));
-  return !controls.empty() && publishRuntimeControlBatch(controls, commands, live_rotation_authorization);
+  return !controls.empty() &&
+      publishRuntimeControlBatch({controls.begin(), controls.end()}, commands, live_rotation_authorization);
 }
 
 void HStreamWindow::enqueueLiveRotationConfigTask(std::function<void()> work, std::function<void()> complete) {
@@ -17882,7 +18079,7 @@ void HStreamWindow::flushScheduledRuntimeControls() {
       commands.push_back(
           {tone_element, "exposure", QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2)});
     }
-    publishRuntimeControlBatch(controls, commands);
+    publishRuntimeControlBatch({controls.begin(), controls.end()}, commands);
     return;
   }
   if (scheduled_playtracker_controls_ready_ && !scheduled_playtracker_controls_.empty()) {
@@ -17997,6 +18194,54 @@ QSlider* HStreamWindow::addSlider(
   return slider;
 }
 
+QSpinBox* HStreamWindow::addCameraSpinBox(QVBoxLayout* layout, const QString& id, const QString& label, int value) {
+  auto* row = new QHBoxLayout();
+  auto* name = new QLabel(label);
+  auto* spin = new QSpinBox();
+  spin->setObjectName("cameraSpin_" + id);
+  spin->setRange(0, std::numeric_limits<int>::max());
+  spin->setKeyboardTracking(false);
+  spin->setValue(value);
+  name->setBuddy(spin);
+  camera_spinboxes_[id] = spin;
+  camera_defaults_[id] = value;
+  connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, [this, id](int new_value) {
+    sendLiveCameraControl(id, new_value);
+    updatePresetDirtyState();
+  });
+  row->addWidget(name, 1);
+  row->addWidget(spin);
+  layout->addLayout(row);
+  return spin;
+}
+
+QDoubleSpinBox* HStreamWindow::addCameraDoubleSpinBox(
+    QVBoxLayout* layout,
+    const QString& id,
+    const QString& label,
+    double value) {
+  auto* row = new QHBoxLayout();
+  auto* name = new QLabel(label);
+  auto* spin = new CameraDoubleSpinBox();
+  spin->setObjectName("cameraSpin_" + id);
+  spin->setDecimals(std::numeric_limits<double>::max_digits10);
+  spin->setRange(0, std::numeric_limits<double>::max());
+  spin->setMaximumWidth(180);
+  spin->setKeyboardTracking(false);
+  spin->setValue(value);
+  name->setBuddy(spin);
+  camera_double_spinboxes_[id] = spin;
+  camera_defaults_[id] = value;
+  connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, id](double new_value) {
+    sendLiveCameraControl(id, new_value);
+    updatePresetDirtyState();
+  });
+  row->addWidget(name, 1);
+  row->addWidget(spin);
+  layout->addLayout(row);
+  return spin;
+}
+
 QCheckBox* HStreamWindow::addCameraCheckBox(
     QVBoxLayout* layout,
     const QString& id,
@@ -18018,7 +18263,9 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
     const bool sent_live = sendLiveCameraControl(id, new_value);
     if (sent_live) {
       appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
-    } else if (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value) {
+    } else if (
+        (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value) ||
+        (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value)) {
       // The scheduler already reported the coalesced live update.
     } else {
       appendLog(QString("camera control %1=%2 apply=save/restart").arg(id).arg(new_value));

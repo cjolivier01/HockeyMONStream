@@ -218,6 +218,9 @@ play-tracker:
         play_tracker["preserve-me"].as<std::string>() == "yes" && fast["preserve-fast"].as<int>() == 1 &&
             follower["preserve-follower"].as<int>() == 1 && play_tracker["camera-name"].as<std::string>() == "GoPro" &&
             play_tracker["no-wide-start"].as<bool>() && play_tracker["ignore-largest-bbox"].as<bool>() &&
+            play_tracker["ignore-largest-bbox-count"].as<int>() == 1 &&
+            !play_tracker["ignore-oversized-bboxes"].as<bool>() &&
+            play_tracker["oversized-bbox-percent"].as<double>() == 100.0 &&
             play_tracker["min-considered-group-velocity"].as<double>() == 3.0 &&
             play_tracker["group-ratio-threshold"].as<double>() == 0.5 &&
             play_tracker["group-velocity-speed-ratio"].as<double>() == 0.3 &&

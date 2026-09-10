@@ -63,6 +63,14 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> parse_runtime_tuning(const YAML::Node
          *zoom_in_aggressiveness > kMaximumZoomInAggressiveness)) {
       return absl::InvalidArgumentError("zoom-in-aggressiveness must be from 0 through 100");
     }
+    const auto ignore_largest_count = read_int(runtime, "ignore-largest-bbox-count");
+    const std::optional<double> oversized_percent = runtime["oversized-bbox-percent"]
+        ? std::optional<double>(runtime["oversized-bbox-percent"].as<double>())
+        : std::nullopt;
+    if (ignore_largest_count && *ignore_largest_count < 0)
+      return absl::InvalidArgumentError("ignore-largest-bbox-count must be nonnegative");
+    if (oversized_percent && (!std::isfinite(*oversized_percent) || *oversized_percent < 0))
+      return absl::InvalidArgumentError("oversized-bbox-percent must be finite and nonnegative");
     if (apply_to_fast && live_box_count < 1)
       return absl::FailedPreconditionError("playtracker runtime tuning requires a fast live box");
     if (apply_to_follower && live_box_count < 1)
@@ -83,6 +91,11 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> parse_runtime_tuning(const YAML::Node
         .max_accel_x = read_float(runtime, "max-accel-x"),
         .max_accel_y = read_float(runtime, "max-accel-y"),
         .zoom_in_aggressiveness = zoom_in_aggressiveness,
+        .ignore_largest_bbox_count = ignore_largest_count,
+        .ignore_oversized_bboxes = runtime["ignore-oversized-bboxes"]
+            ? std::optional<bool>(read_bool(runtime, "ignore-oversized-bboxes", false))
+            : std::nullopt,
+        .oversized_bbox_percent = oversized_percent,
         .apply_to_fast_box = apply_to_fast,
         .apply_to_follower_box = apply_to_follower,
         .arena_angle_from_vertical = read_float(runtime, "arena-angle-from-vertical"),

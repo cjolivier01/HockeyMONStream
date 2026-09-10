@@ -35,6 +35,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 class QProcessEnvironment;
@@ -108,7 +109,7 @@ class HStreamWindow : public QMainWindow {
   QString gameIdText() const;
   QString gameDirectoryText() const;
   int videoSetCount() const;
-  int cameraControlValue(const QString& id) const;
+  double cameraControlValue(const QString& id) const;
   int cameraTabCount() const;
 
  protected:
@@ -144,7 +145,7 @@ class HStreamWindow : public QMainWindow {
   };
 
   struct RuntimeControlBatch {
-    std::map<QString, int> controls;
+    std::map<QString, double> controls;
     size_t pending_commands;
     bool failed;
     std::optional<LiveRotationAuthorization> live_rotation_authorization;
@@ -362,7 +363,7 @@ class HStreamWindow : public QMainWindow {
   void recordStitchingCalibrationDiagnostic(const QString& line);
   QString stitchingCalibrationFailureAnalysis(const QString& message) const;
   QString writePlaytrackerRuntimeConfig();
-  void schedulePlaytrackerRuntimeControl(const QString& id, int value);
+  void schedulePlaytrackerRuntimeControl(const QString& id, double value);
   void schedulePlaycropperRuntimeControl(const QString& id, int value);
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
@@ -394,7 +395,7 @@ class HStreamWindow : public QMainWindow {
   void updateRinkLevelingControls();
   bool cropRotationSuppressed() const;
   void updateCropRotationControls();
-  int cameraPresetControlValue(const QString& id) const;
+  double cameraPresetControlValue(const QString& id) const;
   void selectRinkLeveling();
   void selectProjectionCrop();
   bool hasPendingCropSelection() const;
@@ -441,10 +442,15 @@ class HStreamWindow : public QMainWindow {
       QString* published_playtracker_sidecar,
       int selected_max_output_width,
       const std::optional<hm::ui_internal::StitchingCanvasConstraintDecision>& max_width_decision = std::nullopt);
+  std::pair<QString, int> resolvePlaytrackerConfig(
+      const YAML::Node& game_config,
+      bool original,
+      const QString& game_dir) const;
+  std::map<QString, double> readPlayerSizeControls(const YAML::Node& game_config, bool inherited) const;
   void loadSavedControlConfig();
-  bool sendLiveCameraControl(const QString& id, int value);
+  bool sendLiveCameraControl(const QString& id, double value);
   bool publishRuntimeControlBatch(
-      const std::map<QString, int>& controls,
+      const std::map<QString, double>& controls,
       const std::vector<RuntimePropertyCommand>& commands,
       const std::optional<LiveRotationAuthorization>& live_rotation_authorization = std::nullopt);
   bool publishRotationRuntimeControls(
@@ -485,6 +491,8 @@ class HStreamWindow : public QMainWindow {
   void handleRuntimeControlResponse(const QString& line);
   void failPendingRuntimeControls(const QString& reason);
   QSlider* addSlider(QVBoxLayout* layout, const QString& id, const QString& label, int minimum, int maximum, int value);
+  QSpinBox* addCameraSpinBox(QVBoxLayout* layout, const QString& id, const QString& label, int value);
+  QDoubleSpinBox* addCameraDoubleSpinBox(QVBoxLayout* layout, const QString& id, const QString& label, double value);
   QCheckBox* addCameraCheckBox(QVBoxLayout* layout, const QString& id, const QString& label, bool checked);
 
   QLabel* backend_mode_{nullptr};
@@ -747,13 +755,16 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QLabel*> output_states_;
   std::map<QString, QCheckBox*> output_toggles_;
   std::map<QString, QSlider*> camera_sliders_;
+  std::map<QString, QSpinBox*> camera_spinboxes_;
+  std::map<QString, QDoubleSpinBox*> camera_double_spinboxes_;
+  std::map<QString, double> inherited_player_size_controls_;
   std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, QSlider*> stitched_color_sliders_;
   std::map<QString, QCheckBox*> stitched_color_checkboxes_;
   std::map<QString, QLabel*> stitched_color_value_labels_;
   QLabel* stitched_color_precision_status_{nullptr};
-  std::map<QString, int> camera_defaults_;
+  std::map<QString, double> camera_defaults_;
   YAML::Node baseline_config_;
   QString baseline_config_root_;
   QString default_stitch_frame_time_{"00:00:00"};
@@ -767,7 +778,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, std::vector<double>> default_projection_parameters_;
   hm::stitching::StitchProjectionFraming default_projection_framing_;
   hm::stitching::StitchProjectionFraming loaded_projection_framing_;
-  std::map<QString, int> saved_camera_controls_;
+  std::map<QString, double> saved_camera_controls_;
   // Preserve preset angles while the visible/effective values are forced to zero.
   std::map<QString, int> suppressed_crop_rotation_controls_;
   QLabel* crop_rotation_explanation_{nullptr};
@@ -794,7 +805,7 @@ class HStreamWindow : public QMainWindow {
   std::vector<PendingRuntimeControl> pending_runtime_controls_;
   std::map<quint64, RuntimeControlBatch> runtime_control_batches_;
   std::map<QString, int> scheduled_rotation_controls_;
-  std::map<QString, int> scheduled_playtracker_controls_;
+  std::map<QString, double> scheduled_playtracker_controls_;
   std::map<QString, int> scheduled_playcropper_controls_;
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
@@ -807,7 +818,7 @@ class HStreamWindow : public QMainWindow {
   bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};
-  std::optional<std::map<QString, int>> publishing_playtracker_controls_;
+  std::optional<std::map<QString, double>> publishing_playtracker_controls_;
   bool scheduled_playtracker_force_all_targets_{false};
   bool publishing_playtracker_force_all_targets_{false};
   quint64 next_runtime_control_batch_id_{0};

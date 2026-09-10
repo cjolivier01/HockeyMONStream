@@ -1603,6 +1603,13 @@ absl::StatusOr<YAML::Node> configurator_internal::build_effective_playtracker_co
   HM_RETURN_IF_ERROR(copy_global("camera-name", "camera.name", ScalarType::kString));
   HM_RETURN_IF_ERROR(copy_global("no-wide-start", "play_tracker.no_wide_start", ScalarType::kBool));
   HM_RETURN_IF_ERROR(copy_global("ignore-largest-bbox", "rink.tracking.cam_ignore_largest", ScalarType::kBool));
+  HM_RETURN_IF_ERROR(
+      copy_global("ignore-largest-bbox-count", "rink.tracking.cam_ignore_largest_count", ScalarType::kInt));
+  HM_RETURN_IF_ERROR(copy_global("ignore-oversized-bboxes", "rink.tracking.cam_ignore_oversized", ScalarType::kBool));
+  HM_RETURN_IF_ERROR(copy_global("oversized-bbox-percent", "rink.tracking.cam_oversized_percent", ScalarType::kDouble));
+  if (play_tracker["ignore-largest-bbox-count"].as<int>() < 0 ||
+      play_tracker["oversized-bbox-percent"].as<double>() < 0)
+    return absl::InvalidArgumentError("Player size count and percentage must be nonnegative");
   HM_RETURN_IF_ERROR(copy_required(
       play_tracker,
       "min-considered-group-velocity",
