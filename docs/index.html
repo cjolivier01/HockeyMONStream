@@ -117,6 +117,7 @@
       <a class="brand" href="./">HockeyMON<span>Stream</span></a>
       <div class="nav-links">
         <a href="#how-it-works">How it works</a>
+        <a href="#screenshots">Screenshots</a>
         <a href="#features">Features</a>
         <a href="install.html">Install</a>
         <a href="#faq">FAQ</a>
@@ -137,8 +138,10 @@
         </div>
       </div>
       <figure class="hero-visual">
-        <img src="assets/sports-video-pipeline.svg" width="1200" height="750" alt="Two fixed sports cameras feeding a stitched panorama with automatic play tracking">
-        <figcaption>Two fixed views become one panorama; detections drive the program crop.</figcaption>
+        <a href="assets/screenshots/vegas-kings-program.webp">
+          <img src="assets/screenshots/vegas-kings-program.webp" width="1600" height="900" fetchpriority="high" alt="HStream UI playing Vegas Kings footage with the program preview and live tracking controls">
+        </a>
+        <figcaption>Real footage, live controls. <a href="#screenshots">Explore the desktop UI.</a></figcaption>
       </figure>
     </div>
 
@@ -148,6 +151,41 @@
       <div class="stat"><strong>GPU-native</strong><span>CUDA video path</span></div>
       <div class="stat"><strong>Local-first</strong><span>your compute and footage</span></div>
     </div>
+
+    <section id="screenshots" class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Inside the desktop UI</p>
+        <h2>See the rink. Shape the view.</h2>
+        <p>See actual play from later in <strong>vegas-kings-1</strong>, using General Panini mapping, adjusted rink leveling, and a custom crop. Switch between the program feed, stitched panorama, and source cameras as the video plays.</p>
+        <p>Select any screenshot to view it at full size.</p>
+      </div>
+      <div class="screenshot-grid">
+        <figure class="screenshot screenshot-wide">
+          <a href="assets/screenshots/vegas-kings-stitched.webp">
+            <img src="assets/screenshots/vegas-kings-stitched.webp" width="1600" height="800" loading="lazy" decoding="async" alt="Live Stitched tab showing both ends of the Vegas Kings rink in one General Panini panorama during second-period play">
+          </a>
+          <figcaption><h3>The whole rink, in one preview</h3><p>The Stitched tab shows the combined camera view, so you can inspect the overlap, rink alignment, and framing during playback.</p></figcaption>
+        </figure>
+        <figure class="screenshot">
+          <a href="assets/screenshots/vegas-kings-program.webp">
+            <img src="assets/screenshots/vegas-kings-program.webp" width="1600" height="900" loading="lazy" decoding="async" alt="Live Program tab with the automatic camera view beside zoom and tracking controls">
+          </a>
+          <figcaption><h3>Follow the play and tune the camera</h3><p>Watch the program feed while adjusting zoom and tracking behavior with the controls beside the preview.</p></figcaption>
+        </figure>
+        <figure class="screenshot">
+          <a href="assets/screenshots/vegas-kings-camera.webp">
+            <img src="assets/screenshots/vegas-kings-camera.webp" width="1600" height="900" loading="lazy" decoding="async" alt="Camera 1 tab showing the original GoPro view of the Vegas Kings rink during playback">
+          </a>
+          <figcaption><h3>Check the source cameras</h3><p>Open a camera tab to inspect its original view alongside the program and panorama tabs.</p></figcaption>
+        </figure>
+        <figure class="screenshot screenshot-wide">
+          <a href="assets/screenshots/vegas-kings-mapping.webp">
+            <img src="assets/screenshots/vegas-kings-mapping.webp" width="1600" height="900" loading="lazy" decoding="async" alt="Stitched preview during second-period play with the General Panini projection, field of view, and crop settings visible">
+          </a>
+          <figcaption><h3>Inspect the mapping behind the panorama</h3><p>Keep the projection, field of view, and crop settings beside the stitched preview. Stop playback to adjust the geometry and framing for the next run.</p></figcaption>
+        </figure>
+      </div>
+    </section>
 
     <section id="how-it-works" class="wrap">
       <div class="section-head">
