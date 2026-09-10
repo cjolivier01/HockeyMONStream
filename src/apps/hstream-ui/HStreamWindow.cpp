@@ -18334,6 +18334,7 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
     if (sent_live) {
       appendLog(QString("camera control %1=%2 apply=pending").arg(id).arg(new_value));
     } else if (
+        (scheduled_rotation_controls_.count(id) && scheduled_rotation_controls_.at(id) == new_value) ||
         (scheduled_playcropper_controls_.count(id) && scheduled_playcropper_controls_.at(id) == new_value) ||
         (scheduled_playtracker_controls_.count(id) && scheduled_playtracker_controls_.at(id) == new_value)) {
       // The scheduler already reported the coalesced live update.
