@@ -3176,16 +3176,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Turning the autooptimizer off while NONA is selected must return to the default MAGSAC++ backend")) {
     return false;
   }
+  auto* reference_frame_label = require_child<QLabel>(window, "stitchFrameTimeLabel");
+  if (!reference_frame_label)
+    return false;
   calibration_frame_count->setValue(1);
   QApplication::processEvents();
   if (!expect(
-          stitch_frame_time->isEnabled(), "Single-frame stitching calibration should enable reference-frame time")) {
+          stitch_frame_time->isEnabled() && reference_frame_label->isEnabled(),
+          "Single-frame stitching calibration should enable reference-frame time and its label")) {
     return false;
   }
   calibration_frame_count->setValue(4);
   QApplication::processEvents();
   if (!expect(
-          !stitch_frame_time->isEnabled(), "Multi-frame stitching calibration should gray out reference-frame time")) {
+          !stitch_frame_time->isEnabled() && !reference_frame_label->isEnabled(),
+          "Multi-frame stitching calibration should gray out reference-frame time and its label")) {
     return false;
   }
 
@@ -8131,8 +8136,20 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
       expect(left->isEnabled() && left->value() == 190, "Dormant NONA leveling must not disable OpenCV crop rotation");
   backend->setCurrentIndex(backend->findData("nona"));
   ok &= expect(suppressed(), "Switching to NONA must apply existing leveling suppression");
+  const auto rink_labels_enabled = [window](bool enabled) {
+    for (const auto* name : {"rinkConfigurationLabel", "rinkPitchLabel", "rinkRollLabel"}) {
+      auto* label = window->findChild<QLabel*>(name);
+      if (!label || label->isEnabled() != enabled)
+        return false;
+    }
+    return true;
+  };
+  ok &= expect(rink_labels_enabled(true), "NONA should enable labels for its rink-leveling controls");
   backend->setCurrentIndex(backend->findData("opencv-magsac"));
   ok &= expect(left->isEnabled() && left->value() == 190, "Switching away from NONA must restore manual crop rotation");
+  ok &= expect(
+      !pitch->isEnabled() && !roll->isEnabled() && rink_labels_enabled(false),
+      "Other mapping backends should gray out rink-leveling controls and labels together");
   load("[0, -30, 0]", "null");
   roll->setValue(1);
   activate(save);

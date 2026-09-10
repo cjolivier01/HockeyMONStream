@@ -6616,11 +6616,20 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     algorithms_layout->addWidget(stitch_max_output_width_spin_, 15, 1);
     algorithms_layout->addWidget(run_autooptimizer_check_, 16, 0, 1, 2);
     algorithms_layout->addWidget(clean_stitching_button_, 17, 0, 1, 2);
-    algorithms_layout->addWidget(new QLabel("Rink"), 18, 0);
+    auto* rink_label = new QLabel("Rink");
+    rink_label->setObjectName("rinkConfigurationLabel");
+    rink_label->setBuddy(rink_configuration_combo_);
+    auto* pitch_label = new QLabel("Rink pitch");
+    pitch_label->setObjectName("rinkPitchLabel");
+    pitch_label->setBuddy(rink_angle_spins_[0]);
+    auto* roll_label = new QLabel("Rink roll");
+    roll_label->setObjectName("rinkRollLabel");
+    roll_label->setBuddy(rink_angle_spins_[1]);
+    algorithms_layout->addWidget(rink_label, 18, 0);
     algorithms_layout->addWidget(rink_configuration_combo_, 18, 1);
-    algorithms_layout->addWidget(new QLabel("Rink pitch"), 19, 0);
+    algorithms_layout->addWidget(pitch_label, 19, 0);
     algorithms_layout->addWidget(rink_angle_spins_[0], 19, 1);
-    algorithms_layout->addWidget(new QLabel("Rink roll"), 20, 0);
+    algorithms_layout->addWidget(roll_label, 20, 0);
     algorithms_layout->addWidget(rink_angle_spins_[1], 20, 1);
     algorithms_layout->addWidget(rink_rotation_source_, 21, 0, 1, 2);
     algorithms_layout->addWidget(rink_default_button_, 22, 0);
@@ -7039,6 +7048,11 @@ void HStreamWindow::updateRinkLevelingControls() {
   const bool enabled = mappingBackend() == "nona" && !isArchiveFinalizing() &&
       (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning);
   rink_configuration_combo_->setEnabled(enabled);
+  for (const auto* name : {"rinkConfigurationLabel", "rinkPitchLabel", "rinkRollLabel"}) {
+    if (auto* label = findChild<QLabel*>(name))
+      label->setEnabled(enabled);
+  }
+  rink_rotation_source_->setEnabled(enabled);
   for (auto* spin : rink_angle_spins_)
     if (spin)
       spin->setEnabled(enabled);
@@ -14556,7 +14570,10 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = isArchiveFinalizing();
   const bool single_frame = calibration_frame_count_spin_ && calibration_frame_count_spin_->value() == 1;
-  stitch_frame_time_edit_->setEnabled(!running && !finalizing && single_frame);
+  const bool enabled = !running && !finalizing && single_frame;
+  stitch_frame_time_edit_->setEnabled(enabled);
+  if (auto* label = findChild<QLabel*>("stitchFrameTimeLabel"))
+    label->setEnabled(enabled);
   set_control_help(
       stitch_frame_time_edit_,
       single_frame
