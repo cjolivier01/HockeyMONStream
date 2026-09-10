@@ -39,6 +39,11 @@ int main(int argc, char** argv) {
   const std::string windows_powershell = read(argv[12]);
   bool ok = true;
   ok &= expect(
+      contains(packager, " perl,") && contains(packager, "${HSTREAM_CLI}.runfiles/exiftool") &&
+          contains(packager, "/share/exiftool/") && contains(packager, "${exiftool_runtime}/lib") &&
+          contains(packager, "${exiftool_runtime}/LICENSE"),
+      "desktop and Jetson packages must include pinned ExifTool modules, license, and the Perl dependency");
+  ok &= expect(
       contains(bazelrc, "build:deb_ubuntu24 --repo_env=CUDA_PATH=/usr/local/cuda-13.2") &&
           !contains(bazelrc, "build:deb_ubuntu24 --repo_env=CUDA_PATH=/usr/local/cuda-12"),
       "Ubuntu 24 package config must use the same CUDA 13.2 ABI as DeepStream 9.1");

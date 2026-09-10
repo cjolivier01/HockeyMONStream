@@ -11,12 +11,16 @@ struct PreRegisteredSequenceMeta {
   GstMeta meta;
   guint source_id;
   guint64 sequence;
+  GQuark source_uri;
+  GstClockTime source_pts;
 };
 
 gboolean initialize_meta(GstMeta* meta, gpointer /*params*/, GstBuffer* /*buffer*/) {
   auto* sequence_meta = reinterpret_cast<PreRegisteredSequenceMeta*>(meta);
   sequence_meta->source_id = 0;
   sequence_meta->sequence = 0;
+  sequence_meta->source_uri = 0;
+  sequence_meta->source_pts = GST_CLOCK_TIME_NONE;
   return TRUE;
 }
 
@@ -32,6 +36,8 @@ gboolean transform_meta(GstBuffer* destination, GstMeta* meta, GstBuffer* /*sour
   }
   destination_meta->source_id = source_meta->source_id;
   destination_meta->sequence = source_meta->sequence;
+  destination_meta->source_uri = source_meta->source_uri;
+  destination_meta->source_pts = source_meta->source_pts;
   return TRUE;
 }
 
@@ -59,7 +65,8 @@ int main(int argc, char** argv) {
   }
 
   GstBuffer* buffer = gst_buffer_new();
-  const bool added = hm::add_decoded_frame_sequence_meta(buffer, 7, 1234);
+  const bool added = hm::add_decoded_frame_sequence_meta(
+      buffer, 7, 1234, g_quark_from_static_string("file:///cam2/chapter%202.mp4"), 345 * GST_SECOND);
   const std::optional<hm::DecodedFrameSequence> sequence = hm::decoded_frame_sequence(buffer);
   GstBuffer* copy = gst_buffer_copy_deep(buffer);
   const std::optional<hm::DecodedFrameSequence> copied_sequence = hm::decoded_frame_sequence(copy);
@@ -67,7 +74,9 @@ int main(int argc, char** argv) {
   gst_buffer_unref(buffer);
 
   if (!added || !sequence.has_value() || sequence->source_id != 7 || sequence->sequence != 1234 ||
-      !copied_sequence.has_value() || copied_sequence->source_id != 7 || copied_sequence->sequence != 1234) {
+      !copied_sequence.has_value() || copied_sequence->source_id != 7 || copied_sequence->sequence != 1234 ||
+      g_strcmp0(g_quark_to_string(copied_sequence->source_uri), "file:///cam2/chapter%202.mp4") != 0 ||
+      copied_sequence->source_pts != 345 * GST_SECOND) {
     std::cerr << "Did not reuse the process-global decoded-frame sequence metadata registration\n";
     return 1;
   }

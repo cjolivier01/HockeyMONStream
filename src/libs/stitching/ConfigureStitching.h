@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hstream/src/libs/stitching/CalibrationFrameExif.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -87,6 +88,8 @@ struct LockedCanvasRegenerationCheck {
 struct StitchingCalibrationFramePair {
   surface::Surface left;
   surface::Surface right;
+  CalibrationFrameSource left_source;
+  CalibrationFrameSource right_source;
 };
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(

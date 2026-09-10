@@ -15,6 +15,8 @@ struct GstHmDecodedFrameSequenceMeta {
   GstMeta meta;
   guint source_id;
   guint64 sequence;
+  GQuark source_uri;
+  GstClockTime source_pts;
 };
 
 GRecMutex* process_global_registration_mutex() {
@@ -88,6 +90,8 @@ gboolean decoded_frame_sequence_meta_init(GstMeta* meta, gpointer /*params*/, Gs
   auto* sequence_meta = reinterpret_cast<GstHmDecodedFrameSequenceMeta*>(meta);
   sequence_meta->source_id = 0;
   sequence_meta->sequence = 0;
+  sequence_meta->source_uri = 0;
+  sequence_meta->source_pts = GST_CLOCK_TIME_NONE;
   return TRUE;
 }
 
@@ -130,6 +134,8 @@ gboolean decoded_frame_sequence_meta_transform(
   }
   destination_meta->source_id = source_meta->source_id;
   destination_meta->sequence = source_meta->sequence;
+  destination_meta->source_uri = source_meta->source_uri;
+  destination_meta->source_pts = source_meta->source_pts;
   return TRUE;
 }
 
@@ -183,7 +189,12 @@ const GstHmDecodedFrameSequenceMeta* find_sequence_meta(GstBuffer* buffer) {
 
 } // namespace
 
-bool add_decoded_frame_sequence_meta(GstBuffer* buffer, guint source_id, uint64_t sequence) {
+bool add_decoded_frame_sequence_meta(
+    GstBuffer* buffer,
+    guint source_id,
+    uint64_t sequence,
+    GQuark source_uri,
+    GstClockTime source_pts) {
   if (!buffer || !gst_buffer_is_writable(buffer)) {
     return false;
   }
@@ -197,6 +208,8 @@ bool add_decoded_frame_sequence_meta(GstBuffer* buffer, guint source_id, uint64_
   }
   meta->source_id = source_id;
   meta->sequence = sequence;
+  meta->source_uri = source_uri;
+  meta->source_pts = source_pts;
   return true;
 }
 
@@ -205,7 +218,7 @@ std::optional<DecodedFrameSequence> decoded_frame_sequence(GstBuffer* buffer) {
   if (!meta) {
     return std::nullopt;
   }
-  return DecodedFrameSequence{meta->source_id, meta->sequence};
+  return DecodedFrameSequence{meta->source_id, meta->sequence, meta->source_uri, meta->source_pts};
 }
 
 std::optional<DecodedFrameSequence> decoded_frame_sequence(const NvDsFrameMeta* frame_meta) {
@@ -219,7 +232,7 @@ std::optional<DecodedFrameSequence> decoded_frame_sequence(const NvDsFrameMeta* 
     }
     const auto* meta = find_sequence_meta(static_cast<GstBuffer*>(user_meta->user_meta_data));
     if (meta) {
-      return DecodedFrameSequence{meta->source_id, meta->sequence};
+      return DecodedFrameSequence{meta->source_id, meta->sequence, meta->source_uri, meta->source_pts};
     }
   }
   return std::nullopt;

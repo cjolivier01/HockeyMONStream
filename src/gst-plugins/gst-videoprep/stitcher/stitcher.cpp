@@ -948,12 +948,36 @@ absl::StatusOr<StitcherPriv::CalibrationSurfaceSnapshot> StitcherPriv::capture_c
   return snapshot;
 }
 
-absl::Status StitcherPriv::capture_calibration_pair(hm::surface::Surface left, hm::surface::Surface right) {
+namespace {
+hm::stitching::CalibrationFrameSource calibration_frame_source(const NvDsFrameMeta* meta) {
+  const auto sequence = hm::decoded_frame_sequence(meta);
+  if (!sequence || !sequence->source_uri || !GST_CLOCK_TIME_IS_VALID(sequence->source_pts))
+    return {};
+  // Restrict source-file metadata reads to local recordings. g_filename_from_uri
+  // also decodes escaped spaces and non-ASCII pathnames.
+  gchar* host = nullptr;
+  gchar* path = g_filename_from_uri(g_quark_to_string(sequence->source_uri), &host, nullptr);
+  hm::stitching::CalibrationFrameSource source;
+  if (path && (!host || !*host || g_strcmp0(host, "localhost") == 0))
+    source = {path, static_cast<double>(sequence->source_pts) / GST_SECOND};
+  g_free(host);
+  g_free(path);
+  return source;
+}
+} // namespace
+
+absl::Status StitcherPriv::capture_calibration_pair(
+    hm::surface::Surface left,
+    hm::surface::Surface right,
+    const NvDsFrameMeta* left_meta,
+    const NvDsFrameMeta* right_meta) {
   const size_t required_frame_count = calibration_frame_count_;
   if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
     return absl::OkStatus();
   }
   CalibrationFramePairSnapshot snapshot;
+  snapshot.left_source = calibration_frame_source(left_meta);
+  snapshot.right_source = calibration_frame_source(right_meta);
   HM_ASSIGN_OR_RETURN(snapshot.left, capture_calibration_surface(left));
   HM_ASSIGN_OR_RETURN(snapshot.right, capture_calibration_surface(right));
   captured_calibration_frame_pairs_.push_back(std::move(snapshot));
@@ -968,7 +992,11 @@ std::vector<hm::stitching::StitchingCalibrationFramePair> StitcherPriv::captured
   std::vector<hm::stitching::StitchingCalibrationFramePair> frame_pairs;
   frame_pairs.reserve(captured_calibration_frame_pairs_.size());
   for (CalibrationFramePairSnapshot& snapshot : captured_calibration_frame_pairs_) {
-    frame_pairs.push_back({hm::surface::Surface(&snapshot.left.params), hm::surface::Surface(&snapshot.right.params)});
+    frame_pairs.push_back(
+        {hm::surface::Surface(&snapshot.left.params),
+         hm::surface::Surface(&snapshot.right.params),
+         snapshot.left_source,
+         snapshot.right_source});
   }
   return frame_pairs;
 }
@@ -1144,6 +1172,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     NvBufSurfaceParams* surface_params;
     size_t incoming_surface_index;
     uint64_t buf_pts{GST_CLOCK_TIME_NONE};
+    NvDsFrameMeta* frame_meta;
   };
   std::vector<RuntimeFrameInfo> runtime_frames;
   std::vector<RuntimeFrameKey> runtime_frame_keys;
@@ -1169,6 +1198,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
             .surface_params = surface_params,
             .incoming_surface_index = surface_index,
             .buf_pts = static_cast<uint64_t>(frame_meta->buf_pts),
+            .frame_meta = frame_meta,
         });
     runtime_frame_keys.push_back(RuntimeFrameKey{frame_meta->frame_num, frame_meta->source_id});
     ++surface_index;
@@ -1236,10 +1266,14 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
         in_surface, selected_right.incoming_surface_index, /*read_only=*/true);
     HM_RETURN_IF_ERROR(to_status(incoming_right_egl_surface_mapper->status()));
     hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
-    HM_RETURN_IF_ERROR(capture_calibration_pair(incoming_surface_left, incoming_surface_right));
+    HM_RETURN_IF_ERROR(capture_calibration_pair(
+        incoming_surface_left, incoming_surface_right, selected_left.frame_meta, selected_right.frame_meta));
 #else
     HM_RETURN_IF_ERROR(capture_calibration_pair(
-        hm::surface::Surface(selected_left.surface_params), hm::surface::Surface(selected_right.surface_params)));
+        hm::surface::Surface(selected_left.surface_params),
+        hm::surface::Surface(selected_right.surface_params),
+        selected_left.frame_meta,
+        selected_right.frame_meta));
 #endif
     if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
       break;
@@ -1818,10 +1852,14 @@ absl::Status StitcherPriv::GenerateOutput(
       HM_RETURN_IF_ERROR(to_status(incoming_right_egl_surface_mapper->status()));
       hm::surface::Surface incoming_surface_right = incoming_right_egl_surface_mapper->get_surface();
       calibration_egl_surface_mappers.push_back(std::move(incoming_right_egl_surface_mapper));
-      HM_RETURN_IF_ERROR(capture_calibration_pair(incoming_surface_left, incoming_surface_right));
+      HM_RETURN_IF_ERROR(capture_calibration_pair(
+          incoming_surface_left, incoming_surface_right, frame_info_left.frame_meta, frame_info_right.frame_meta));
 #else
       HM_RETURN_IF_ERROR(capture_calibration_pair(
-          hm::surface::Surface(frame_info_left.surface_params), hm::surface::Surface(frame_info_right.surface_params)));
+          hm::surface::Surface(frame_info_left.surface_params),
+          hm::surface::Surface(frame_info_right.surface_params),
+          frame_info_left.frame_meta,
+          frame_info_right.frame_meta));
 #endif
     }
     batch_calibration_frame_pairs = captured_calibration_frame_pairs();

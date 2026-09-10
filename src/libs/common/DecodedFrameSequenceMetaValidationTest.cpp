@@ -19,6 +19,8 @@ struct TestSequenceMeta {
   GstMeta meta;
   guint source_id;
   guint64 sequence;
+  GQuark source_uri;
+  GstClockTime source_pts;
 };
 
 gboolean initialize_meta(GstMeta* /*meta*/, gpointer /*params*/, GstBuffer* /*buffer*/) {

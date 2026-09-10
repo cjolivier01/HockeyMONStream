@@ -335,3 +335,14 @@ conditional_local_repository(
         "/usr",
     ],
 )
+
+# New camera/inst-box support is newer than Ubuntu 22.04/24.04's ExifTool.
+# Use the same pure-Perl runtime on desktop, SBSA and Jetson.
+http_archive(
+    name = "exiftool",
+    type = "tar.gz",
+    urls = ["https://codeload.github.com/exiftool/exiftool/tar.gz/refs/tags/13.50"],
+    sha256 = "f392ec4f5471d0bc5d4de20ab23efe61392eb6e09e780781b9407e2eb95ad31e",
+    strip_prefix = "exiftool-13.50",
+    build_file = "//buildfiles:third_party/exiftool.BUILD",
+)
