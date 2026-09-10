@@ -20,7 +20,7 @@ and stitching geometry as the recording.
 
 ## Try a camera change
 
-1. Open **Camera experiments** in HStream's camera controls.
+1. Click **Camera experiments** in the HStream window.
 2. Select the completed **DriveGPT recording** manifest and **Uncropped panorama**.
 3. Set **In recording** (seconds relative to the first telemetry sample) and
    **Duration** (normally 10–30 seconds). The end is exclusive.
@@ -37,7 +37,8 @@ and stitching geometry as the recording.
 7. Use **View** to compare the recorded original, recomputed baseline, and named
    trials. **Repeat range**, the timeline, and the frame buttons revisit the same
    passage. A frame step completes when the GPU renderer presents its matching
-   video frame. The camera plot shows the fast and follower boxes.
+   video frame. The camera plot compares the original and selected Program
+   camera's horizontal position.
 8. **Save trial** writes a YAML descriptor with the starting checkpoint, selected
    inputs, overrides, camera trajectory, and media/time binding. **Screenshot**
    captures the displayed frame and experiment controls.
