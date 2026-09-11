@@ -98,7 +98,8 @@ class ReplaySession {
 
  private:
   static absl::StatusOr<std::shared_ptr<ReplaySession>> PrepareDatabase(
-      const PrepareOptions&, const std::atomic<bool>* cancelled);
+      const PrepareOptions&,
+      const std::atomic<bool>* cancelled);
   struct Impl;
   explicit ReplaySession(std::shared_ptr<const Impl> impl);
   std::shared_ptr<const Impl> impl_;

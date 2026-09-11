@@ -12,11 +12,16 @@ namespace fieldmask {
 #ifdef HAS_NVDS_CUSTOMUSERMETA
 class FieldMaskPayload : public UserApplicationPayload {
  public:
-  FieldMaskPayload(cv::Point2f centroid, const cv::Rect2i& field_box,
-                   const cv::Mat& mask = {}, std::string revision = {})
-      : mask_(std::move(mask)), revision_(std::move(revision)), centroid_(centroid), field_box_(field_box) {}
+  FieldMaskPayload(
+      cv::Point2f centroid,
+      const cv::Rect2i& field_box,
+      const cv::Mat& mask = {},
+      std::string revision = {})
+      : revision_(std::move(revision)), centroid_(centroid), field_box_(field_box), mask_(mask) {}
 
-  const std::string& revision() const { return revision_; }
+  const std::string& revision() const {
+    return revision_;
+  }
 
   static HmPayloadType PayloadSubType() {
     return HmPayloadType::HM_PAYLOAD_TYPE_FIELDMASK;

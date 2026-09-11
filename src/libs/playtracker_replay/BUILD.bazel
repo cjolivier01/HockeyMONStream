@@ -19,6 +19,7 @@ cc_test(
     srcs = ["ReplaySessionTest.cpp"],
     deps = [
         ":playtracker_replay",
+        "@opencv_linux//:opencv",
         "//src/libs/recording",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_db",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_csv",

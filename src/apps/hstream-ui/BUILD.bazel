@@ -334,3 +334,15 @@ cc_test(
         "@qt//:qt_widgets",
     ],
 )
+cc_test(
+    name = "telemetry_db_publisher_test",
+    srcs = ["TelemetryDbPublisherTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":telemetry_csv_publisher",
+        "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_db",
+        "//src/libs/recording",
+        "@qt//:qt_core",
+    ],
+)

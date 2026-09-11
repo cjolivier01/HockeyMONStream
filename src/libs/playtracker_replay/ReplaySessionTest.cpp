@@ -1,5 +1,6 @@
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 
+#include <opencv2/opencv.hpp>
 #include <unistd.h>
 #include <cmath>
 #include <filesystem>
@@ -7,12 +8,13 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
-#include "yaml-cpp/yaml.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
 #include "hstream/src/libs/recording/Database.h"
+#include "yaml-cpp/yaml.h"
 
 namespace {
 namespace fs = std::filesystem;
@@ -38,7 +40,7 @@ const char* kConfig = R"(play-tracker:
       sticky-translation: false
       sticky-sizing: false
 )";
-template<class Exporter = hm::playtracker::PlayTrackerTelemetryCsv>
+template <class Exporter = hm::playtracker::PlayTrackerTelemetryCsv>
 std::string fixture(
     const fs::path& directory,
     bool legacy = false,
@@ -57,6 +59,16 @@ std::string fixture(
       hm::playtracker::TelemetryConfigArtifact{"original.yaml", kConfig},
       hm::playtracker::TelemetryConfigArtifact{"effective.yaml", kConfig});
   check(status.ok(), status.ToString());
+  auto geometry = std::make_shared<hm::playtracker::TelemetryGeometry>();
+  geometry->width = width;
+  geometry->height = height;
+  geometry->revision = "test-rink";
+  geometry->encode_mask = [width, height] {
+    cv::Mat mask(height, width, CV_8UC1, cv::Scalar(255));
+    std::vector<unsigned char> png;
+    check(cv::imencode(".png", mask, png), "encode fixture mask");
+    return std::string(png.begin(), png.end());
+  };
   hm::play_tracker::PlayTrackerResults previous_results;
   for (size_t tick = 0; tick <= 300; ++tick) {
     bool checkpoint = tick % 30 == 0;
@@ -120,7 +132,10 @@ std::string fixture(
         replay.tracks.push_back({ids[i], {boxes[i].left, boxes[i].top, boxes[i].right, boxes[i].bottom}});
       sample.replay = std::move(replay);
     }
-    check(exporter.TryEnqueue(std::move(sample)), "enqueue fixture sample");
+    if constexpr (std::is_same_v<Exporter, hm::playtracker::PlayTrackerTelemetryDb>)
+      check(exporter.TryEnqueue(std::move(sample), geometry), "enqueue database fixture sample");
+    else
+      check(exporter.TryEnqueue(std::move(sample)), "enqueue fixture sample");
   }
   const std::string path = exporter.output_manifest();
   exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
@@ -155,9 +170,14 @@ bool same_frames(const std::vector<Frame>& a, const std::vector<Frame>& b, float
 int main(int argc, char** argv) {
   try {
     if ((argc == 3 || argc == 6) && std::string(argv[1]) == "--make-db-fixture") {
-      std::cout << fixture<hm::playtracker::PlayTrackerTelemetryDb>(argv[2],false,false,
-          argc==6 ? std::stoul(argv[3]) : 3840, argc==6 ? std::stoul(argv[4]) : 2160,
-          argc==6 ? std::stod(argv[5]) : 10) << '\n';
+      std::cout << fixture<hm::playtracker::PlayTrackerTelemetryDb>(
+                       argv[2],
+                       false,
+                       false,
+                       argc == 6 ? std::stoul(argv[3]) : 3840,
+                       argc == 6 ? std::stoul(argv[4]) : 2160,
+                       argc == 6 ? std::stod(argv[5]) : 10)
+                << '\n';
       return 0;
     }
     if ((argc == 3 || argc == 6) && std::string(argv[1]) == "--make-fixture") {
@@ -198,19 +218,26 @@ int main(int argc, char** argv) {
     check(
         (*session)->original().front().sample_id == 51 && (*session)->original().back().sample_id == 201,
         "sample gap is preserved rather than treated as a media frame");
-    PrepareOptions database_options=options;
-    database_options.manifest_path=fixture<hm::playtracker::PlayTrackerTelemetryDb>(directory / "database");
-    auto database_session=ReplaySession::Prepare(database_options);
-    check(database_session.ok(),database_session.status().ToString());
-    check(same_frames((*database_session)->original(),(*session)->original()),"database preserves exact camera outputs");
-    check(same_frames((*database_session)->baseline(),(*session)->baseline()),"database checkpoint replay matches CSV history");
+    PrepareOptions database_options = options;
+    database_options.manifest_path = fixture<hm::playtracker::PlayTrackerTelemetryDb>(directory / "database");
+    auto database_session = ReplaySession::Prepare(database_options);
+    check(database_session.ok(), database_session.status().ToString());
+    check(
+        same_frames((*database_session)->original(), (*session)->original()),
+        "database preserves exact camera outputs");
+    check(
+        same_frames((*database_session)->baseline(), (*session)->baseline()),
+        "database checkpoint replay matches CSV history");
     {
-      hm::recording::Database db(database_options.manifest_path,true);
+      hm::recording::Database db(database_options.manifest_path, true);
       db.Exec("UPDATE checkpoints SET state='unreadable old checkpoint' WHERE sample_id=1");
     }
-    check(ReplaySession::Prepare(database_options).ok(),"database range lookup does not parse checkpoints before warmup");
-    database_options.start_seconds=24; database_options.duration_seconds=2;
-    check(!ReplaySession::Prepare(database_options).ok(),"database rejects reset-crossing ranges");
+    check(
+        ReplaySession::Prepare(database_options).ok(),
+        "database range lookup does not parse checkpoints before warmup");
+    database_options.start_seconds = 24;
+    database_options.duration_seconds = 2;
+    check(!ReplaySession::Prepare(database_options).ok(), "database rejects reset-crossing ranges");
     DsPlayTrackerRuntimeTuning unchanged;
     auto baseline = (*session)->RunTrial("baseline", unchanged);
     check(baseline.ok(), baseline.status().ToString());

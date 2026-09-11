@@ -1088,7 +1088,8 @@ qint64 next_archive_generation(const QString& game_directory) {
           QRegularExpression::CaseInsensitiveOption),
       QRegularExpression(
           R"(^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)(?:-(\d+))?\.csv$)"),
-      QRegularExpression(R"(^(?:rink_mask_\d+|hstream_telemetry|hstream_replay)(?:-(\d+))?\.(?:png|json|jsonl)$)"),
+      QRegularExpression(
+          R"(^(?:rink_mask_\d+|hstream_telemetry|hstream_replay)(?:-(\d+))?\.(?:png|json|jsonl|db|sqlite)$)"),
   }};
   qint64 next = 1;
   for (const auto& entry : entries) {
@@ -1119,7 +1120,8 @@ bool telemetry_csv_destination_paths_available(const QString& game_directory, co
   if (!read_directory_entries(game_directory_fd.get(), &entries, &error))
     return false;
   for (const QByteArray& entry : entries) {
-    if (entry == ("hstream_telemetry" + destination_suffix + ".db").toUtf8() || allowed_staging_artifact(entry, destination_suffix))
+    if (entry == ("hstream_telemetry" + destination_suffix + ".db").toUtf8() ||
+        allowed_staging_artifact(entry, destination_suffix))
       return false;
   }
   return true;

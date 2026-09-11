@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
+#include "hstream/src/libs/recording/Database.h"
 
 #include "absl/status/status.h"
 
@@ -44,14 +45,6 @@ std::string read_file(const fs::path& path) {
   std::ostringstream contents;
   contents << input.rdbuf();
   return contents.str();
-}
-
-size_t count_occurrences(const std::string& value, const std::string& needle) {
-  size_t count = 0;
-  for (size_t position = 0; (position = value.find(needle, position)) != std::string::npos; position += needle.size()) {
-    ++count;
-  }
-  return count;
 }
 
 bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
@@ -569,9 +562,11 @@ int main() {
   // explicitly finalizes it after a successful transition to NULL.
   priv.Shutdown();
   priv.Shutdown();
-  if (fs::exists(telemetry_dir / "tracking.csv") || fs::exists(telemetry_dir / "detections.csv") ||
-      read_file(telemetry_dir / "hstream_telemetry.json").find("\"publication_state\": \"pending\"") ==
-          std::string::npos) {
+  if (fs::exists(telemetry_dir / "tracking.csv") || fs::exists(telemetry_dir / "detections.csv") || [&] {
+        hm::recording::Database db((telemetry_dir / "hstream_telemetry.db").string());
+        hm::recording::Statement q(db.get(), "SELECT completed FROM runs");
+        return !q.Next() || q.Int(0) != 0;
+      }()) {
     std::cerr << "element shutdown committed telemetry before pipeline-wide shutdown succeeded\n";
     return 37;
   }
@@ -579,37 +574,38 @@ int main() {
     std::cerr << "post-shutdown telemetry finalization was rejected\n";
     return 38;
   }
-  const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
-  const std::string detections = read_file(telemetry_dir / "detections.csv");
-  const std::string telemetry_manifest = read_file(telemetry_dir / "hstream_telemetry.json");
-  std::string first_detection = detections.substr(0, detections.find('\n'));
-  std::replace(first_detection.begin(), first_detection.end(), ',', ' ');
-  uint64_t detection_frame = 0;
-  float detection_x1 = 0.0f;
-  float detection_y1 = 0.0f;
-  float detection_x2 = 0.0f;
-  float detection_y2 = 0.0f;
-  float detection_score = 0.0f;
-  int detection_label = -1;
-  std::istringstream detection_fields(first_detection);
-  detection_fields >> detection_frame >> detection_x1 >> detection_y1 >> detection_x2 >> detection_y2 >>
-      detection_score >> detection_label;
-  if (!detection_fields || detection_frame == 0 || std::abs(detection_x1 - 236.0f) > 0.001f ||
-      std::abs(detection_y1 - 196.0f) > 0.001f || std::abs(detection_x2 - 1044.0f) > 0.001f ||
-      std::abs(detection_y2 - 724.0f) > 0.001f || std::abs(detection_score - 0.8f) > 0.001f || detection_label != 0) {
-    std::cerr << "detection export did not scale inference-surface coordinates to source-frame coordinates\n";
-    return 36;
-  }
-  if (config_events.find("1,1,runtime-tuning,runtime-tuning-config-file,") == std::string::npos ||
-      read_file(telemetry_dir / "play_tracker_runtime_tuning-1.yaml") != original_runtime_contents ||
-      read_file(telemetry_dir / "play_tracker_source.yaml") != original_cfg_contents ||
-      config_events.find(",11,property,fixed-edge-rotation-angle-left,32.0,") == std::string::npos ||
-      config_events.find(",13,seek,flush-stop,1,") == std::string::npos ||
-      count_occurrences(config_events, repeated_tuning.string()) != 128 ||
-      telemetry_manifest.find("\"run_outcome\": \"end-of-stream\"") == std::string::npos ||
-      telemetry_manifest.find("\"eligible_for_training\": true") == std::string::npos) {
-    std::cerr << "geometry or seek event was not committed at the correct attempted-sample boundary\n";
-    return 21;
+  {
+    hm::recording::Database db((telemetry_dir / "hstream_telemetry.db").string());
+    hm::recording::Statement detection(
+        db.get(),
+        "SELECT sample_id,left,top,width,height,score,class_id FROM detections ORDER BY sample_id,ordinal LIMIT 1");
+    if (!detection.Next() || detection.Int(0) == 0 || std::abs(detection.Real(1) - 236) > 0.001 ||
+        std::abs(detection.Real(2) - 196) > 0.001 || std::abs(detection.Real(1) + detection.Real(3) - 1044) > 0.001 ||
+        std::abs(detection.Real(2) + detection.Real(4) - 724) > 0.001 || std::abs(detection.Real(5) - 0.8) > 0.001 ||
+        detection.Int(6) != 0) {
+      std::cerr << "Database detection coordinates were not scaled to the source canvas\n";
+      return 36;
+    }
+    hm::recording::Statement run(db.get(), "SELECT completed,outcome,source_config FROM runs");
+    if (!run.Next() || run.Int(0) != 1 || run.Text(1) != "end-of-stream" || run.Text(2) != original_cfg_contents)
+      return 21;
+    hm::recording::Statement startup(
+        db.get(), "SELECT artifact_contents FROM config_events WHERE sample_boundary=1 AND kind='runtime-tuning'");
+    if (!startup.Next() || startup.Text(0) != original_runtime_contents)
+      return 21;
+    hm::recording::Statement geometry(
+        db.get(),
+        "SELECT count(*) FROM config_events WHERE sample_boundary=11 AND kind='property' AND key='fixed-edge-rotation-angle-left' AND value='32.0'");
+    if (!geometry.Next() || geometry.Int(0) != 1)
+      return 21;
+    hm::recording::Statement seek(
+        db.get(), "SELECT count(*) FROM config_events WHERE sample_boundary=13 AND kind='seek' AND key='flush-stop'");
+    if (!seek.Next() || seek.Int(0) != 1)
+      return 21;
+    hm::recording::Statement repeated(db.get(), "SELECT count(*) FROM config_events WHERE value=?");
+    repeated.Bind(1, repeated_tuning.string());
+    if (!repeated.Next() || repeated.Int(0) != 128)
+      return 21;
   }
 
   // Model a sibling element failing its NULL transition after playtracker has
@@ -634,11 +630,11 @@ int main() {
   const bool late_failure_handled = late_failure_priv.HandleEvent(late_failure);
   gst_event_unref(late_failure);
   const bool late_failure_finalized = late_failure_priv.SetProperty(hm::Property("finalize-telemetry", "1"));
-  const std::string late_failure_manifest = read_file(late_failure_dir / "hstream_telemetry.json");
-  if (!late_eos_handled || !late_failure_handled || !late_failure_finalized ||
-      late_failure_manifest.find("\"run_outcome\": \"failed\"") == std::string::npos ||
-      late_failure_manifest.find("\"completed\": false") == std::string::npos ||
-      fs::exists(late_failure_dir / "tracking.csv") || fs::exists(late_failure_dir / "detections.csv")) {
+  hm::recording::Database late_db((late_failure_dir / "hstream_telemetry.db").string());
+  hm::recording::Statement late_run(late_db.get(), "SELECT completed,outcome FROM runs");
+  if (!late_eos_handled || !late_failure_handled || !late_failure_finalized || !late_run.Next() ||
+      late_run.Int(0) != 0 || late_run.Text(1) != "failed" || fs::exists(late_failure_dir / "tracking.csv") ||
+      fs::exists(late_failure_dir / "detections.csv")) {
     std::cerr << "late pipeline stop failure published a successful telemetry generation\n";
     return 40;
   }

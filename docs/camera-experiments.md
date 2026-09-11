@@ -7,11 +7,11 @@ before the first selected sample, including living boxes, motion, and player his
 
 ## Record the inputs
 
-Enable **DriveGPT CSV** when recording. New completed exports include
-`hstream_telemetry*.json`, the existing CSVs, archived policy files, and an
-`hstream_replay*.jsonl` sidecar. Keep the bundle together. The sidecar stores exact
-ordered tracker inputs and periodic native checkpoints; the camera CSV alone does
-not contain all the state needed to resume a tracker.
+Enable **DriveGPT database** when recording. Each completed run publishes one
+`hstream_telemetry-N.db` in the game directory. It contains detections, ordered
+tracks, camera outputs, timestamps, configuration history, rink masks, exact
+native inputs, and periodic checkpoints. No CSV companions or saved stitched MP4
+are required. See [telemetry databases](telemetry-database.md) for the shared format.
 
 Keep the **original camera chapters, game `config.yaml`, and stitching maps used
 for the recording**. Experiment preview can decode and stitch those sources on
@@ -29,7 +29,8 @@ the old camera view and cannot reveal pixels outside that crop.
 ## Try a camera change
 
 1. Click **Camera experiments** in the HStream window.
-2. Select the completed **DriveGPT recording** manifest. Choose **Original cameras ·
+2. Select the completed **DriveGPT recording** database. For a merged database,
+   select the game/run in **Recording**. Choose **Original cameras ·
    stitch during replay** and the original game directory, or **Saved uncropped
    panorama** and an existing archive.
 3. Set **In recording** (seconds relative to the first telemetry sample) and
@@ -40,7 +41,7 @@ the old camera view and cannot reveal pixels outside that crop.
    binding: matching dimensions cannot establish that the sources contain the
    same footage or use the historical maps. Confirm the source and geometry
    checkbox after checking their identity and alignment.
-5. Click **Prepare historical start**. Preparation restores a checkpoint and
+5. Click **Prepare historical start**. Preparation queries the nearest preceding checkpoint and
    advances through the original inputs to the selected boundary. It verifies the
    recorded camera trajectory before making the session available.
 6. Select the fast and/or Program/follower box, enable the parameters to override,

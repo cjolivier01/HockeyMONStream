@@ -1,4 +1,9 @@
-# Play-tracker telemetry CSV export
+# Legacy play-tracker telemetry CSV format
+
+New recordings use [one SQLite database](telemetry-database.md). The legacy
+`telemetry-csv-dir` property is accepted as an alias for `telemetry-db-dir`; it now
+records a database. This document describes older CSV recordings, which remain
+readable by experiments and training.
 
 HStream can save the detector/tracker inputs and camera-policy outputs used by
 HockeyMOM camera-model and DriveGPT tooling. In `hstream-ui`, select **Save

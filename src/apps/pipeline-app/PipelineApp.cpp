@@ -3796,8 +3796,7 @@ gboolean PipelineApplication::check_for_interrupt() {
     last_progress_wall = timed_run_last_progress_wall_;
   }
   if (time_limit_seconds_ > 0 &&
-      hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitching_calibration_blocks_playback_accounting()) &&
+      hm::pipeline_internal::stitch_frame_should_account_playback(stitching_calibration_blocks_playback_accounting()) &&
       last_progress_wall != std::chrono::steady_clock::time_point{}) {
     constexpr int kTimedRunNoProgressTimeoutSeconds = 60;
     const auto stalled_seconds =
@@ -7195,8 +7194,7 @@ gboolean PipelineApplication::overlay_graphics(
     }
   }
   if (time_limit_seconds_ > 0 && batch_meta &&
-      hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitching_calibration_blocks_playback_accounting())) {
+      hm::pipeline_internal::stitch_frame_should_account_playback(stitching_calibration_blocks_playback_accounting())) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (buf) {
       GstClockTime pts = GST_BUFFER_PTS(buf);

@@ -11,7 +11,9 @@
 #include <vector>
 #include "absl/status/status.h"
 
-namespace cv { class Mat; }
+namespace cv {
+class Mat;
+}
 
 namespace hm {
 namespace playtracker {

@@ -1,5 +1,5 @@
-#include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#include "hstream/src/libs/recording/Database.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentPreview.h"
@@ -128,10 +128,14 @@ QString completed_manifest(const QString& directory) {
   const QDir dir(directory);
   for (const QFileInfo& info : dir.entryInfoList({"hstream_telemetry*.db"}, QDir::Files, QDir::Time)) {
     try {
-      hm::recording::Database db(info.absoluteFilePath().toStdString()); db.Validate();
+      hm::recording::Database db(info.absoluteFilePath().toStdString());
+      db.Validate();
       hm::recording::Statement runs(db.get(), "SELECT 1 FROM runs WHERE completed=1 LIMIT 1");
-      if (runs.Next()) return info.absoluteFilePath();
-    } catch (const std::exception& e) { qWarning("Cannot inspect recording: %s", e.what()); }
+      if (runs.Next())
+        return info.absoluteFilePath();
+    } catch (const std::exception& e) {
+      qWarning("Cannot inspect recording: %s", e.what());
+    }
   }
   for (const QFileInfo& info : dir.entryInfoList({"hstream_telemetry*.json"}, QDir::Files, QDir::Time)) {
     QFile file(info.absoluteFilePath());
@@ -179,7 +183,7 @@ struct CameraExperimentDialog::Impl {
   };
   CameraExperimentDialog* dialog;
   QLineEdit* manifest{nullptr};
-  QLineEdit* run_id{nullptr};
+  QComboBox* run_id{nullptr};
   QLineEdit* media_path{nullptr};
   QLineEdit* game_path{nullptr};
   QComboBox* source_mode{nullptr};
@@ -325,7 +329,7 @@ struct CameraExperimentDialog::Impl {
       return;
     replay::PrepareOptions options;
     options.manifest_path = manifest->text().trimmed().toStdString();
-    options.run_id = run_id->text().trimmed().toStdString();
+    options.run_id = run_id->currentData().toString().toStdString();
     options.start_seconds = in->value();
     options.duration_seconds = duration->value();
     options.legacy_config_path = legacy_config->text().trimmed().toStdString();
@@ -624,7 +628,11 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
     });
     source_layout->addRow(label, row);
   };
-  file_row("experimentManifest", "DriveGPT recording", "Telemetry database (*.db *.sqlite);;Legacy recording (hstream_telemetry*.json)", &s.manifest);
+  file_row(
+      "experimentManifest",
+      "DriveGPT recording",
+      "Telemetry database (*.db *.sqlite);;Legacy recording (hstream_telemetry*.json)",
+      &s.manifest);
   s.source_mode = new QComboBox();
   s.source_mode->setObjectName("experimentSourceMode");
   s.source_mode->addItems({"Original cameras · stitch during replay", "Saved uncropped panorama"});
@@ -633,10 +641,37 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.game_path->setText(game_directory);
   file_row("experimentMedia", "Uncropped panorama", "Video (*.mp4 *.mkv *.mov *.MP4)", &s.media_path);
   s.manifest->setPlaceholderText("Select a completed telemetry database");
-  s.run_id = new QLineEdit;
+  s.run_id = new QComboBox;
   s.run_id->setObjectName("experimentRunId");
-  s.run_id->setPlaceholderText("Optional for a database containing one recording");
-  source_layout->addRow("Recording GUID", s.run_id);
+  source_layout->addRow("Recording", s.run_id);
+  const auto update_recordings = [&s]() {
+    const QString previous = s.run_id->currentData().toString();
+    const QSignalBlocker blocker(s.run_id);
+    s.run_id->clear();
+    const QString path = s.manifest->text().trimmed();
+    if (path.endsWith(".db") || path.endsWith(".sqlite")) {
+      try {
+        hm::recording::Database db(path.toStdString());
+        db.Validate();
+        hm::recording::Statement runs(
+            db.get(),
+            "SELECT run_id,game_id,started_utc FROM runs WHERE completed=1 ORDER BY started_utc DESC LIMIT 10000");
+        while (runs.Next()) {
+          const QString id = QString::fromStdString(runs.Text(0));
+          s.run_id->addItem(QString::fromStdString(runs.Text(1) + " · " + runs.Text(2)) + " · " + id.left(8), id);
+        }
+      } catch (const std::exception& e) {
+        qWarning("Cannot list recordings: %s", e.what());
+      }
+    }
+    if (s.run_id->count() == 0)
+      s.run_id->addItem("Select a completed recording", QString());
+    const int index = s.run_id->findData(previous);
+    if (index >= 0)
+      s.run_id->setCurrentIndex(index);
+    s.run_id->setEnabled(s.run_id->count() > 1);
+  };
+  connect(s.manifest, &QLineEdit::textChanged, this, update_recordings);
   s.media_path->setPlaceholderText("Optional uncropped archive; proportional downsizing is supported");
   QString selected_manifest = completed_manifest(game_directory);
   if (selected_manifest.isEmpty()) {
@@ -644,6 +679,7 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
     selected_manifest = completed_manifest(QDir(output_root).filePath(QFileInfo(game_directory).fileName()));
   }
   s.manifest->setText(selected_manifest);
+  update_recordings();
   const QStringList panoramas = QDir(game_directory).entryList({"*-stitched_output*.mp4"}, QDir::Files, QDir::Time);
   if (!panoramas.empty())
     s.media_path->setText(QDir(game_directory).filePath(panoramas.front()));
@@ -840,8 +876,9 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.source_mode->setCurrentIndex(QFileInfo(QDir(game_directory).filePath("config.yaml")).isFile() ? 0 : 1);
   update_source_mode();
   connect(s.in, &QDoubleSpinBox::valueChanged, s.video_origin, &QDoubleSpinBox::setValue);
-  for (QLineEdit* source : {s.manifest, s.run_id, s.media_path, s.game_path, s.legacy_arena, s.legacy_config})
+  for (QLineEdit* source : {s.manifest, s.media_path, s.game_path, s.legacy_arena, s.legacy_config})
     connect(source, &QLineEdit::textChanged, this, [this]() { impl_->invalidate_source(); });
+  connect(s.run_id, &QComboBox::currentIndexChanged, this, [this]() { impl_->invalidate_source(); });
   for (QDoubleSpinBox* source : {s.in, s.duration})
     connect(source, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->invalidate_source(); });
   connect(s.video_origin, &QDoubleSpinBox::valueChanged, this, [this]() {

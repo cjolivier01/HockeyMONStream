@@ -87,7 +87,9 @@ struct HStreamWindowTestAccess {
   static void stageTestLeveling(HStreamWindow* window, const QByteArray& revision = "test-selection") {
     window->pending_leveling_revision_ = revision;
   }
-  static void discardTestLeveling(HStreamWindow* window) { window->pending_leveling_revision_.clear(); }
+  static void discardTestLeveling(HStreamWindow* window) {
+    window->pending_leveling_revision_.clear();
+  }
   static bool hasPendingCalibrationView(HStreamWindow* window) {
     return !window->pending_leveling_revision_.isEmpty() || window->hasPendingCropSelection();
   }
@@ -2928,8 +2930,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       rounded_corners->toolTip().contains("cylindrical section");
   rounded_corners->click();
   if (!expect(
-          panini_top_squeeze->value() == 1,
-          "Rounded-corner checkbox should update the numeric projection parameter"))
+          panini_top_squeeze->value() == 1, "Rounded-corner checkbox should update the numeric projection parameter"))
     return false;
   projection->setCurrentIndex(projection->findData("triplane"));
   QApplication::processEvents();
@@ -3369,10 +3370,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   game_id->setText(valid_game_id);
-  if (!expect(!drivegpt_csv->isChecked(), "DriveGPT CSV export must default off so Program seeking is available")) {
+  if (!expect(
+          !drivegpt_csv->isChecked(), "DriveGPT database export must default off so Program seeking is available")) {
     return false;
   }
-  const QString telemetry_option_prefix = "--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=";
+  const QString telemetry_option_prefix = "--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=";
   const QStringList telemetry_disabled_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   if (!expect(
           std::none_of(
@@ -3381,7 +3383,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               [&telemetry_option_prefix](const QString& argument) {
                 return argument.startsWith(telemetry_option_prefix);
               }),
-          "The default Program run must leave DriveGPT CSV disabled so seeking remains available")) {
+          "The default Program run must leave DriveGPT database disabled so seeking remains available")) {
     return false;
   }
   drivegpt_csv->setChecked(true);
@@ -6883,7 +6885,7 @@ bool test_output_controls(HStreamWindow* window) {
       finalize_headline && finalize_headline->text() == "Saving completed video safely…" && finalize_progress &&
           finalize_progress->maximum() == 0 && ui_timer_fired_during_sync,
       "Durability sync must keep an indeterminate finalization popup active without blocking the Qt event loop");
-  for (int i = 0; i < 300 && finalize_headline && finalize_headline->text() != "Copying DriveGPT CSVs…"; ++i) {
+  for (int i = 0; i < 300 && finalize_headline && finalize_headline->text() != "Copying DriveGPT database…"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
@@ -6892,10 +6894,10 @@ bool test_output_controls(HStreamWindow* window) {
       0, window, [&ui_timer_fired_during_telemetry_copy]() { ui_timer_fired_during_telemetry_copy = true; });
   QApplication::processEvents();
   const bool telemetry_copy_responsive = expect(
-      finalize_headline && finalize_headline->text() == "Copying DriveGPT CSVs…" && finalize_progress &&
+      finalize_headline && finalize_headline->text() == "Copying DriveGPT database…" && finalize_progress &&
           finalize_progress->maximum() == 0 && ui_timer_fired_during_telemetry_copy &&
           window->outputStateText("archive-file") == "FINALIZING",
-      "DriveGPT CSV publication must remain asynchronous and keep the Qt event loop responsive");
+      "DriveGPT database publication must remain asynchronous and keep the Qt event loop responsive");
   for (int i = 0; i < 300 && window->outputStateText("archive-file") != "SAVED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -6961,7 +6963,7 @@ bool test_output_controls(HStreamWindow* window) {
       preserved_tracking.open(QIODevice::ReadOnly) && preserved_tracking.readAll() == "existing HM generation\n";
   telemetry_deployed = expect(
       telemetry_deployed,
-      "archive suffix selection must skip existing HM CSVs and copy all six DriveGPT CSVs with the video suffix");
+      "archive suffix selection must skip existing HM CSVs and copy all six DriveGPT database with the video suffix");
 
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
     QApplication::processEvents();
@@ -7757,14 +7759,13 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QString program_finalize_log = QString("finalizing archive without re-encoding: %1").arg(program_source);
   const QString stitched_finalize_log = QString("finalizing archive without re-encoding: %1").arg(stitched_source);
   const int program_finalize_index = window->logText().lastIndexOf(program_finalize_log);
-  const int telemetry_finalize_index = window->logText().lastIndexOf("DriveGPT CSVs copied to the game directory");
+  const int telemetry_finalize_index = window->logText().lastIndexOf("DriveGPT database copied to the game directory");
   const int stitched_finalize_index = window->logText().lastIndexOf(stitched_finalize_log);
   const QString completed_base = QFileInfo(program_completed).completeBaseName();
   const QString unsuffixed_base = QString("%1-tracking_output-with-audio").arg(window->gameIdText());
   const QString telemetry_suffix =
       completed_base.startsWith(unsuffixed_base) ? completed_base.mid(unsuffixed_base.size()) : QString("invalid");
-  bool dual_telemetry_deployed =
-      QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch() &&
+  bool dual_telemetry_deployed = QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch() &&
       QFileInfo(stitched_completed).completeBaseName() ==
           QString("%1-stitched_output-with-audio%2").arg(window->gameIdText(), telemetry_suffix);
   for (const QString& stem : telemetry_stems) {
@@ -7782,7 +7783,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
           telemetry_finalize_index > program_finalize_index && stitched_finalize_index > telemetry_finalize_index &&
           dual_telemetry_deployed && combined_log_opened && combined_log_text.contains(program_finalize_log) &&
           combined_log_text.contains(stitched_finalize_log) &&
-          combined_log_text.contains("DriveGPT CSVs copied to the game directory") &&
+          combined_log_text.contains("DriveGPT database copied to the game directory") &&
           combined_log_text.contains(QString("completed archive published: %1").arg(program_completed)) &&
           combined_log_text.contains(QString("completed archive published: %1").arg(stitched_completed)),
       "A successful Program run with both archives must publish Program telemetry, finalize both work files "
@@ -7836,8 +7837,8 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     auto* failed_telemetry_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
     auto* failed_telemetry_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
     auto* failed_telemetry_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-    const QString telemetry_warning = "DriveGPT CSV publication failed:";
-    const int telemetry_warning_index = window->logText().lastIndexOf("WARNING: completed DriveGPT CSVs");
+    const QString telemetry_warning = "DriveGPT database publication failed:";
+    const int telemetry_warning_index = window->logText().lastIndexOf("WARNING: completed DriveGPT database");
     const int stitched_after_warning_index = window->logText().lastIndexOf(
         QString("finalizing archive without re-encoding: %1").arg(failed_telemetry_stitched_source));
     const bool result = expect(
@@ -8259,15 +8260,21 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           !inherited_rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
       "Editing projection controls must keep a rink-only game's rotation inherited");
 
-  if (!expect(HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Saved calibration controls permit leveling")) return false;
+  if (!expect(
+          HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Saved calibration controls permit leveling"))
+    return false;
   const double original_camera_fov = camera_horizontal_fov->value();
   camera_horizontal_fov->setValue(original_camera_fov + 1);
-  if (!expect(!HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Unsaved camera/FOV changes reject leveling")) return false;
+  if (!expect(
+          !HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Unsaved camera/FOV changes reject leveling"))
+    return false;
   HStreamWindowTestAccess::stageTestLeveling(window);
   const std::string before_rejected_leveling = YAML::Dump(YAML::LoadFile(config_path.string()));
   activate(save);
-  if (!expect(YAML::Dump(YAML::LoadFile(config_path.string())) == before_rejected_leveling,
-              "A staged estimate cannot be saved alongside changed camera inputs")) return false;
+  if (!expect(
+          YAML::Dump(YAML::LoadFile(config_path.string())) == before_rejected_leveling,
+          "A staged estimate cannot be saved alongside changed camera inputs"))
+    return false;
   HStreamWindowTestAccess::discardTestLeveling(window);
   camera_horizontal_fov->setValue(original_camera_fov);
 
@@ -8314,20 +8321,26 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   YAML::Node custom_rink_config = YAML::Clone(config);
   custom_rink_config["stitching"]["rink_config"] = "practice";
-  custom_rink_config["stitching"]["rink_configs"] = YAML::Load(
-      "{practice: {display_name: Practice, rotation_degrees: [0, -42, 1]}}");
+  custom_rink_config["stitching"]["rink_configs"] =
+      YAML::Load("{practice: {display_name: Practice, rotation_degrees: [0, -42, 1]}}");
   std::ofstream(config_path) << YAML::Dump(custom_rink_config) << '\n';
   activate(create);
-  if (!expect(rink_configuration->currentData().toString() == "practice" && rink_pitch->value() == -42,
-              "A partial private catalog loads alongside the standard rinks")) return false;
+  if (!expect(
+          rink_configuration->currentData().toString() == "practice" && rink_pitch->value() == -42,
+          "A partial private catalog loads alongside the standard rinks"))
+    return false;
   rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
   activate(save);
   const auto custom_to_standard = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
-  if (!expect(custom_to_standard.ok() && custom_to_standard->rotation_degrees[1] == -25,
-              "Switching from a custom catalog to a standard rink remains readable by private-only workers")) return false;
+  if (!expect(
+          custom_to_standard.ok() && custom_to_standard->rotation_degrees[1] == -25,
+          "Switching from a custom catalog to a standard rink remains readable by private-only workers"))
+    return false;
   activate(create);
-  if (!expect(rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -25,
-              "Reload keeps the selected standard rink after a custom profile")) return false;
+  if (!expect(
+          rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -25,
+          "Reload keeps the selected standard rink after a custom profile"))
+    return false;
 
   YAML::Node leveled_config = YAML::Clone(config);
   leveled_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
@@ -8618,13 +8631,15 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   explicit_zero_generated["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
   std::ofstream(config_path) << YAML::Dump(explicit_zero_generated) << '\n';
   activate(create);
-  const bool explicit_zero_is_private_intent = expect(auto_fov->isChecked(),
+  const bool explicit_zero_is_private_intent = expect(
+      auto_fov->isChecked(),
       "An explicit zero added to generated inherited framing must stop generated-tuple restoration");
   top_squeeze->setValue(17);
   activate(save);
   const auto zero_saved_view = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
-  const bool explicit_zero_survives_ui_save = expect(zero_saved_view.ok() && !zero_saved_view->rotation_inherited &&
-      zero_saved_view->rotation_degrees == std::array<double, 3>{0, 0, 0},
+  const bool explicit_zero_survives_ui_save = expect(
+      zero_saved_view.ok() && !zero_saved_view->rotation_inherited &&
+          zero_saved_view->rotation_degrees == std::array<double, 3>{0, 0, 0},
       "Loading and saving a generated view with an explicit zero must retain that override");
 
   auto malformed_previous_choice_rejects_marker = [&](const char* key, const char* value, const char* message) {
@@ -8786,9 +8801,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
 
   game_id->setText(original_game_id);
   activate(create);
-  return explicit_zero_is_private_intent && explicit_zero_survives_ui_save &&
-      inherited_rink_loads_clean && inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved &&
-      camera_defaults_available && hero_defaults_applied && ace_defaults_applied && saved && camera_override_reloaded &&
+  return explicit_zero_is_private_intent && explicit_zero_survives_ui_save && inherited_rink_loads_clean &&
+      inherited_rink_preserved && leveled_view_loads_clean && leveled_view_preserved && camera_defaults_available &&
+      hero_defaults_applied && ace_defaults_applied && saved && camera_override_reloaded &&
       generated_parameters_restored && generated_projection_parameters_discarded &&
       displaced_inactive_parameters_restored && edited_inactive_parameters_are_preserved &&
       edited_generated_parameters_are_user_intent && generated_backend_aliases_restore_previous &&
@@ -8840,8 +8855,7 @@ bool test_rink_leveling_save_retry(HStreamWindow* window) {
   if (!expect(
           visible_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -31 &&
               visible_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
-              RinkLevelingDialog::sourceRevision(window->gameDirectoryText()) != selected_revision &&
-              save->isEnabled(),
+              RinkLevelingDialog::sourceRevision(window->gameDirectoryText()) != selected_revision && save->isEnabled(),
           "Post-commit failure must expose the selected angles and preserve the durability retry"))
     return false;
   // Retry immediately, without reloading the game or opening the dialog again.
@@ -11762,7 +11776,7 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
   for (int i = 0; i < 100 &&
        (window->pipelineStateText() != "PLAYING" ||
         HStreamWindowTestAccess::playbackDurationNs(window) != 600'000'000'000LL ||
-        !seek_slider->toolTip().contains("DriveGPT CSV capture"));
+        !seek_slider->toolTip().contains("DriveGPT database capture"));
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -11773,9 +11787,9 @@ bool test_window_close_stops_pipeline(HStreamWindow* window) {
   if (!expect(
           HStreamWindowTestAccess::playbackDurationNs(window) == 600'000'000'000LL && !seek_slider->isEnabled() &&
               !seek_back->isEnabled() && !seek_forward->isEnabled() &&
-              seek_slider->toolTip().contains("DriveGPT CSV capture") &&
-              seek_back->toolTip().contains("DriveGPT CSV capture") &&
-              seek_forward->toolTip().contains("DriveGPT CSV capture"),
+              seek_slider->toolTip().contains("DriveGPT database capture") &&
+              seek_back->toolTip().contains("DriveGPT database capture") &&
+              seek_forward->toolTip().contains("DriveGPT database capture"),
           "Lossless DriveGPT capture must disable every seek control and explain the reason on hover")) {
     return false;
   }
@@ -12972,11 +12986,9 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
       analysis.contains("Bounded fallback search") && analysis.contains("1 projective hypothesis") &&
       analysis.contains("1 frame-set candidate") && analysis.contains("pressing Play is required");
   HStreamWindowTestAccess::recordCalibrationDiagnostic(
-      window,
-      "FAILED_PRECONDITION: enblend failed to generate seam_file.png after control points were accepted");
+      window, "FAILED_PRECONDITION: enblend failed to generate seam_file.png after control points were accepted");
   const QString seam_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
-      window,
-      "No stitching calibration frame pair produced a usable Hugin solution after 4 candidate attempts");
+      window, "No stitching calibration frame pair produced a usable Hugin solution after 4 candidate attempts");
   const bool seam_failure_is_not_misclassified =
       seam_analysis.contains("seam/panorama generation or artifact publication step failed") &&
       seam_analysis.contains("enblend failed to generate seam_file.png") &&
@@ -12989,9 +13001,8 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
              "Runtime log must follow new output only while the operator remains at the bottom") &&
       expect(diagnosis_is_actionable,
              "Calibration failures must explain the cause, bounded fallbacks, and corrective action") &&
-      expect(
-          seam_failure_is_not_misclassified,
-          "A late seam/publication failure must retain its cause instead of being presented as non-overlap");
+      expect(seam_failure_is_not_misclassified,
+             "A late seam/publication failure must retain its cause instead of being presented as non-overlap");
 }
 
 } // namespace

@@ -2334,7 +2334,8 @@ gboolean create_pipeline(
   if (config->dsplaytracker_config.enable) {
     std::string telemetry_csv_dir;
     for (const hm::gst::PluginProperty& property : config->dsplaytracker_config.private_properties) {
-      if (property.name == "telemetry-csv-dir" || property.name == "telemetry_csv_dir" || property.name == "telemetry-db-dir" || property.name == "telemetry_db_dir")
+      if (property.name == "telemetry-csv-dir" || property.name == "telemetry_csv_dir" ||
+          property.name == "telemetry-db-dir" || property.name == "telemetry_db_dir")
         telemetry_csv_dir = property.value;
     }
     appCtx->capture_playtracker_detections = !telemetry_csv_dir.empty();
@@ -2535,13 +2536,10 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
   GstState stopped_pending = GST_STATE_VOID_PENDING;
   if (stop_result != GST_STATE_CHANGE_FAILURE) {
     stop_result = gst_element_get_state(
-        pipeline,
-        &stopped_current,
-        &stopped_pending,
-        stop_result == GST_STATE_CHANGE_ASYNC ? remaining_timeout() : 0);
+        pipeline, &stopped_current, &stopped_pending, stop_result == GST_STATE_CHANGE_ASYNC ? remaining_timeout() : 0);
   }
   const gboolean stopped = stop_result == GST_STATE_CHANGE_SUCCESS && stopped_current == GST_STATE_NULL &&
-                           stopped_pending == GST_STATE_VOID_PENDING;
+      stopped_pending == GST_STATE_VOID_PENDING;
   if (!stopped) {
     mark_playtracker_telemetry_failed(appCtx);
     g_printerr("Pipeline NULL transition did not complete; DriveGPT CSVs will remain unpublished\n");
