@@ -12,6 +12,7 @@ cc_library(
     hdrs = [
         "ApplicationPayload.h",
         "ConfigYaml.h",
+        "PinnedFile.h",
         "PlotContext.h",
         "RenderSet.h",
         "TempFile.h",

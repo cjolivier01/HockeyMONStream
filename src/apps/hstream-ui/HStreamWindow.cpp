@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/libs/common/PinnedFile.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
@@ -1384,7 +1385,7 @@ bool path_has_file_identity(const QString& path, const struct stat& expected_sta
 bool link_open_file_no_replace(int source_fd, const QString& destination, int* saved_errno) {
 #ifdef Q_OS_LINUX
   const QByteArray encoded_destination = QFile::encodeName(destination);
-  if (::linkat(source_fd, "", AT_FDCWD, encoded_destination.constData(), AT_EMPTY_PATH) == 0)
+  if (hm::link_pinned_file(source_fd, AT_FDCWD, encoded_destination.constData()) == 0)
     return true;
   if (saved_errno)
     *saved_errno = errno;
@@ -2721,7 +2722,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         const bool guard_pinned = guard_fd >= 0 && ::fstat(guard_fd, &pinned_guard_stat) == 0 &&
             same_file_identity(pinned_guard_stat, guard_entry->identity);
         const int publish_result =
-            guard_pinned ? ::linkat(guard_fd, "", parent_fd, owned_target_name.constData(), AT_EMPTY_PATH) : -1;
+            guard_pinned ? hm::link_pinned_file(guard_fd, parent_fd, owned_target_name.constData()) : -1;
         const int publish_errno = guard_pinned ? errno : (guard_fd < 0 ? errno : ESTALE);
         if (guard_fd >= 0)
           ::close(guard_fd);

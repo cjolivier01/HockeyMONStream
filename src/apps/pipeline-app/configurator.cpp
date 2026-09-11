@@ -1,4 +1,5 @@
 #include "configurator.h"
+#include "hstream/src/libs/common/PinnedFile.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -2278,7 +2279,7 @@ absl::StatusOr<DurableArchiveRemovalFallback> ensure_durable_archive_removal_fal
     const struct stat& expected_stat,
     const char* description) {
   const std::string fallback_name = filename + ".hstream-cleanup-pin";
-  bool created = ::linkat(pinned_fd, "", parent_fd, fallback_name.c_str(), AT_EMPTY_PATH) == 0;
+  bool created = hm::link_pinned_file(pinned_fd, parent_fd, fallback_name.c_str()) == 0;
   if (!created) {
     const int link_errno = errno;
     struct stat fallback_stat{};
@@ -2809,7 +2810,7 @@ absl::Status remove_archive_entry_if_owned(
     directory_sync_result = ::fsync(parent_fd);
     directory_sync_errno = errno;
     if (directory_sync_result != 0) {
-      restore_after_sync_result = ::linkat(pinned_fd, "", parent_fd, filename.c_str(), AT_EMPTY_PATH);
+      restore_after_sync_result = hm::link_pinned_file(pinned_fd, parent_fd, filename.c_str());
       restore_after_sync_errno = errno;
       if (restore_after_sync_result == 0)
         ::fsync(parent_fd);
@@ -2857,7 +2858,7 @@ absl::Status create_archive_recovery_link(
     return absl::FailedPreconditionError(
         TO_STRING("Refusing to link replaced " << description << " \"" << source.string() << "\""));
   }
-  if (::linkat(source_fd, "", AT_FDCWD, destination.c_str(), AT_EMPTY_PATH) != 0) {
+  if (hm::link_pinned_file(source_fd, AT_FDCWD, destination.c_str()) != 0) {
     const int saved_errno = errno;
     if (saved_errno == EEXIST)
       return absl::AlreadyExistsError(
@@ -2887,7 +2888,7 @@ absl::StatusOr<std::string> publish_unique_archive_reconciliation_guard(
     gchar* uuid = g_uuid_string_random();
     const std::string candidate = ".hstream-reconcile-" + cleanup_id + "-" + guard_kind + "-" + uuid;
     g_free(uuid);
-    if (::linkat(source_fd, "", parent_fd, candidate.c_str(), AT_EMPTY_PATH) != 0) {
+    if (hm::link_pinned_file(source_fd, parent_fd, candidate.c_str()) != 0) {
       if (errno == EEXIST)
         continue;
       return absl::InternalError(TO_STRING("Failed to publish archive reconciliation guard: " << std::strerror(errno)));
@@ -3358,7 +3359,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
         const bool guard_pinned = guard_fd >= 0 && ::fstat(guard_fd, &pinned_guard_stat) == 0 &&
             same_file_identity(pinned_guard_stat, guard_entry->identity);
         const int publish_result =
-            guard_pinned ? ::linkat(guard_fd, "", parent_fd, owned_target_name->c_str(), AT_EMPTY_PATH) : -1;
+            guard_pinned ? hm::link_pinned_file(guard_fd, parent_fd, owned_target_name->c_str()) : -1;
         const int publish_errno = guard_pinned ? errno : (guard_fd < 0 ? errno : ESTALE);
         if (guard_fd >= 0)
           ::close(guard_fd);
