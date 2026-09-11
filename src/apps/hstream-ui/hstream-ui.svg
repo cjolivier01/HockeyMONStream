@@ -7,17 +7,14 @@
     </linearGradient>
   </defs>
   <rect x="18" y="18" width="476" height="476" rx="108" fill="url(#background)"/>
-  <rect x="80.5" y="154.5" width="351" height="203" rx="99.5" fill="none" stroke="#42e1ef"
-        stroke-opacity="0.57" stroke-width="17"/>
-  <g fill="#f7fbff">
-    <rect x="124" y="112" width="76" height="288" rx="27"/>
-    <rect x="312" y="112" width="76" height="288" rx="27"/>
-    <rect x="174" y="218" width="164" height="76" rx="27"/>
-  </g>
-  <path d="M76 304 C159 246 217 329 304 265 C350 231 397 215 440 228" fill="none" stroke="#00cedf"
-        stroke-width="39" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M76 304 C159 246 217 329 304 265 C350 231 397 215 440 228" fill="none" stroke="#8ff8ff"
-        stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="399" cy="105" r="36" fill="#f7fbff"/>
-  <circle cx="399" cy="105" r="26" fill="#ff4f64"/>
+  <rect x="81" y="155" width="350" height="202" rx="99" fill="none" stroke="#42e1ef"
+        stroke-opacity="0.35" stroke-width="16"/>
+  <path d="M340 106 L217 335" fill="none" stroke="#f7fbff" stroke-width="34" stroke-linecap="round"/>
+  <path d="M217 335 Q210 348 195 348 H108" fill="none" stroke="#f7fbff" stroke-width="48"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M312 132 L342 148 M302 152 L332 168" fill="none" stroke="#0a3552" stroke-width="9"/>
+  <path d="M303 350 V373 A49 20 0 0 0 401 373 V350" fill="#05131e" stroke="#42e1ef" stroke-width="8"/>
+  <ellipse cx="352" cy="350" rx="49" ry="20" fill="#142f43" stroke="#8ff8ff" stroke-width="8"/>
+  <path d="M329 347 Q352 337 375 347" fill="none" stroke="#42e1ef" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="119" cy="111" r="25" fill="#ff4f64" stroke="#f7fbff" stroke-width="8"/>
 </svg>

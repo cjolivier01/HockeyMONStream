@@ -121,6 +121,13 @@ source game untouched. It retains the complete pipeline log, UI screenshots,
 an encoded sample frame, a panorama preview, and feature-match diagnostics
 under `test-artifacts/`. See `docs/hstream-ui-e2e-testing.md`.
 
+Launch the desktop UI with `make run-hstream-ui`, or run the built
+`bazel-bin/src/apps/hstream-ui/hstream-ui` directly. On Linux, an uninstalled
+build registers its HStream launcher and hockey icon under the user data
+directory (`~/.local/share`, or `XDG_DATA_HOME`) before showing its window, so
+the desktop taskbar can identify command-line launches. Existing custom or
+package-installed desktop entries take precedence.
+
 ## Models / Pretrained Assets
 
 The default `configs/config_infer_yolox_hockey.yaml` declares the YOLOX-s COCO assets it needs under

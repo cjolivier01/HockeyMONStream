@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 
+#include <QtCore/QDebug>
 #include <QtCore/QtGlobal>
 #include <QtGui/QIcon>
 #include <QtWidgets/QApplication>
@@ -20,6 +21,9 @@ int main(int argc, char** argv) {
 #endif
   QApplication app(argc, argv);
   app.setWindowIcon(hm::ui_internal::application_icon());
+  const QString desktop_error = hm::ui_internal::ensure_desktop_integration(QCoreApplication::applicationFilePath());
+  if (!desktop_error.isEmpty())
+    qWarning().noquote() << "HStream desktop integration:" << desktop_error;
   try {
     HStreamWindow window;
     window.show();
