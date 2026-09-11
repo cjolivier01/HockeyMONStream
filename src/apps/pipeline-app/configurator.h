@@ -40,9 +40,7 @@ struct RenderSinkDimensions {
 
 AutomaticHighBitDepthDecision decide_automatic_high_bit_depth(
     const std::vector<std::optional<unsigned int>>& source_bit_depths);
-std::optional<RenderSinkDimensions> scaled_render_sink_dimensions(
-    const YAML::Node& pipeline,
-    double show_render_scale);
+std::optional<RenderSinkDimensions> scaled_render_sink_dimensions(const YAML::Node& pipeline, double show_render_scale);
 
 bool bitrate_density_greater(
     uint64_t candidate_numerator,
@@ -148,6 +146,8 @@ class Configurator {
   const YAML::Node& game_private_config() const {
     return private_config_;
   }
+  // Detached snapshots of the loaded layers and the full resolved launch YAML.
+  YAML::Node recording_configuration() const;
 
   bool stitching_calibration_required() const {
     return stitching_calibration_required_;
@@ -269,6 +269,8 @@ class Configurator {
 
   // The fully-realzied merged config
   YAML::Node config_;
+  YAML::Node recording_config_layers_;
+  YAML::Node recording_config_documents_;
   // Bundled baseline plus the user overlay, before per-game values. This is
   // the lower layer used to decide whether a game must persist an explicit
   // zero/nonzero override.

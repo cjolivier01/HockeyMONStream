@@ -26,8 +26,9 @@ cc_library(
     copts = ["-std=c++17"],
     deps = [
         ":playtracker_payload",
-        ":playtracker_telemetry_csv",
+        ":playtracker_telemetry_db",
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
+        ":playtracker_telemetry_csv",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "//src/libs/common:decoded_frame_sequence_meta",
@@ -69,7 +70,10 @@ cc_test(
         "PlayTrackerPrivInitTest.cpp",
     ],
     deps = [
+        "//src/libs/playtracker_replay",
+        "//src/libs/recording",
         ":playtracker",
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "//src/libs/common:detection_snapshot_meta",
@@ -86,4 +90,19 @@ cc_test(
     linkopts = [
         "-lnvdsbufferpool",
     ],
+)
+
+cc_library(
+    name = "playtracker_telemetry_db",
+    srcs = ["PlayTrackerTelemetryDb.cpp"],
+    hdrs = ["PlayTrackerTelemetryDb.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    linkopts = ["-lcrypto"],
+    deps = [":playtracker_telemetry_csv", "//src/libs/recording"],
+)
+cc_test(
+    name = "playtracker_telemetry_db_test",
+    srcs = ["PlayTrackerTelemetryDbTest.cpp"],
+    deps = [":playtracker_telemetry_db", "//src/libs/recording"],
 )

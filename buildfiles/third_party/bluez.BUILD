@@ -6,9 +6,8 @@ cc_library(
         "include/bluetooth/**/*.h",
         "include/bluetooth/*.h",
     ]),
-    includes = [
-        "include",
-    ],
+    # This repository points at /usr. An early -isystem of its include directory
+    # breaks libstdc++'s include_next lookup of libc headers. Stage only Bluetooth.
+    strip_include_prefix = "include",
     visibility = ["//visibility:public"],
 )
-

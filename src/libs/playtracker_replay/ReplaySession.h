@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -25,6 +26,7 @@ struct Frame {
 
 struct PrepareOptions {
   std::string manifest_path;
+  std::string run_id; // Required when a database contains multiple completed recordings.
   // Offset from the recording's first PTS, and exclusive duration. The first
   // sample at or after in is selected; out must not cross a reset/seek segment.
   double start_seconds{0};
@@ -36,13 +38,37 @@ struct PrepareOptions {
   double legacy_tolerance_pixels{0.5};
 };
 
+struct CameraMedia {
+  std::vector<std::string> files;
+  uint64_t offset_ns{0};
+  uint32_t width{0}, height{0};
+};
+
+struct StitchingMedia {
+  std::string directory;
+  std::string artifact_revision;
+  std::string config_contents;
+  std::vector<std::string> artifact_paths;
+  std::array<CameraMedia, 2> cameras;
+  double rotation{0};
+  bool high_bit_depth{false};
+  double exposure{0};
+  double shadow_lift{0};
+  bool shadow_lift_black_point{false};
+};
+
 struct MediaBinding {
   std::string path;
   uint64_t telemetry_origin_pts_ns{0};
   uint64_t video_origin_pts_ns{0};
   uint32_t width{0};
   uint32_t height{0};
+  std::optional<StitchingMedia> stitching;
 };
+
+// A scaled panorama must still cover the same canvas, without padding or
+// cropping. Allow up to two pixels of encoder alignment rounding.
+absl::Status ValidatePanoramaGeometry(uint32_t width, uint32_t height, uint32_t canvas_width, uint32_t canvas_height);
 
 struct TrialResult {
   std::string name;
@@ -72,6 +98,9 @@ class ReplaySession {
   const std::string& manifest_path() const;
 
  private:
+  static absl::StatusOr<std::shared_ptr<ReplaySession>> PrepareDatabase(
+      const PrepareOptions&,
+      const std::atomic<bool>* cancelled);
   struct Impl;
   explicit ReplaySession(std::shared_ptr<const Impl> impl);
   std::shared_ptr<const Impl> impl_;

@@ -688,7 +688,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   private_config = hm::gst::serialize_plugin_properties(config->private_properties, ppc.str());
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-private-config", private_config.c_str(), NULL);
 
-  g_object_set(G_OBJECT(bin->elem_hmstitcher), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->elem_hmstitcher), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
@@ -973,7 +973,7 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
   NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->elem_dsplaytracker, "src");
   assert(strlen(config->config_file) > 0);
-  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "unique-id", config->unique_id, "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->elem_dsplaytracker), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "config-file", config->config_file, NULL);
   g_object_set(G_OBJECT(bin->elem_dsplaytracker), "plugin-type", "vpplaytracker", NULL);
   // g_object_set(G_OBJECT(bin->elem_dsplaytracker), "draw", config->draw, NULL);

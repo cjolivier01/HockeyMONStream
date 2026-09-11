@@ -15,6 +15,7 @@
 
 #include "hockeymon/csrc/play_tracker/PlayTrackerSnapshot.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
+#include "hstream/src/libs/recording/Database.h"
 #include "yaml-cpp/yaml.h"
 
 namespace hm::playtracker_replay {
@@ -359,6 +360,15 @@ std::vector<Event> events(const std::string& path, const std::atomic<bool>* canc
 }
 } // namespace
 
+absl::Status ValidatePanoramaGeometry(uint32_t width, uint32_t height, uint32_t canvas_width, uint32_t canvas_height) {
+  if (!width || !height || !canvas_width || !canvas_height)
+    return absl::InvalidArgumentError("Panorama and recorded canvas dimensions must be positive");
+  const double scale = std::min(double(width) / canvas_width, double(height) / canvas_height);
+  if (std::abs(width - canvas_width * scale) > 2.0 || std::abs(height - canvas_height * scale) > 2.0)
+    return absl::InvalidArgumentError("Select the corresponding uncropped panorama with the same aspect ratio");
+  return absl::OkStatus();
+}
+
 struct ReplaySession::Impl {
   PrepareOptions options;
   std::string provenance;
@@ -372,9 +382,231 @@ struct ReplaySession::Impl {
 };
 ReplaySession::ReplaySession(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
 
+absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
+    const PrepareOptions& options,
+    const std::atomic<bool>* cancelled) {
+  using hm::recording::Database;
+  using hm::recording::Statement;
+  try {
+    check_cancel(cancelled);
+    require(
+        std::isfinite(options.start_seconds) && options.start_seconds >= 0 && options.start_seconds < 1e8 &&
+            std::isfinite(options.duration_seconds) && options.duration_seconds > 0 && options.duration_seconds <= 120,
+        "Select a finite range of at most 120 seconds");
+    Database db(options.manifest_path);
+    db.Validate();
+    // A stable read transaction also protects against concurrent database merges.
+    db.Exec("BEGIN");
+    sqlite3_progress_handler(
+        db.get(),
+        1000,
+        [](void* context) {
+          const auto* flag = static_cast<const std::atomic<bool>*>(context);
+          return flag && flag->load(std::memory_order_relaxed) ? 1 : 0;
+        },
+        const_cast<std::atomic<bool>*>(cancelled));
+    Statement runs(
+        db.get(),
+        "SELECT run_id,game_id,source_config,effective_config FROM runs WHERE completed=1 AND (?='' OR run_id=?) ORDER BY run_id");
+    runs.Bind(1, options.run_id);
+    runs.Bind(2, options.run_id);
+    require(runs.Next(), "No completed recording matches the selected GUID");
+    const std::string run = runs.Text(0), game = runs.Text(1), source = runs.Text(2), effective = runs.Text(3);
+    require(!runs.Next(), "This database contains multiple recordings; select a recording GUID");
+    auto impl = std::make_shared<Impl>();
+    impl->options = options;
+    impl->options.run_id = run;
+    impl->options.manifest_path = fs::absolute(options.manifest_path).string();
+    YAML::Node identity;
+    identity["schema"] = "hockey-telemetry-db-v1";
+    identity["run_id"] = run;
+    identity["game_id"] = game;
+    identity["source_config"] = source;
+    identity["effective_config"] = effective;
+    impl->manifest_contents = YAML::Dump(identity);
+    impl->provenance = "SQLite recording " + run + "; restored indexed native checkpoint and exact ordered inputs";
+    Statement first(db.get(), "SELECT pts_ns FROM frames WHERE run_id=? ORDER BY sample_id LIMIT 1");
+    first.Bind(1, run);
+    require(first.Next() && !first.IsNull(0) && first.Int(0) >= 0, "Recording has no initial timestamp");
+    const uint64_t origin = first.Int(0);
+    require(
+        origin < uint64_t(std::numeric_limits<int64_t>::max()) - uint64_t((options.start_seconds + 121) * 1e9),
+        "Recording timestamp overflows range");
+    const uint64_t in = origin + uint64_t(options.start_seconds * 1e9),
+                   out = in + uint64_t(options.duration_seconds * 1e9);
+    Statement selected(
+        db.get(),
+        "SELECT sample_id,source_id,seek_epoch,reset_epoch,geometry_id FROM frames WHERE run_id=? AND pts_ns>=? AND pts_ns<? ORDER BY sample_id LIMIT 1");
+    selected.Bind(1, run);
+    selected.Bind(2, in);
+    selected.Bind(3, out);
+    require(selected.Next(), "Selected range contains no recorded frames");
+    const uint64_t start = selected.Int(0), source_id = selected.Int(1), seek = selected.Int(2),
+                   reset = selected.Int(3), geometry = selected.Int(4);
+    Statement checkpoint(
+        db.get(),
+        "SELECT c.sample_id FROM checkpoints c JOIN frames f USING(run_id,sample_id) WHERE c.run_id=? AND c.sample_id<=? AND f.source_id=? AND f.seek_epoch=? AND f.reset_epoch=? AND f.geometry_id=? ORDER BY c.sample_id DESC LIMIT 1");
+    checkpoint.Bind(1, run);
+    checkpoint.Bind(2, start);
+    checkpoint.Bind(3, source_id);
+    checkpoint.Bind(4, seek);
+    checkpoint.Bind(5, reset);
+    checkpoint.Bind(6, geometry);
+    require(checkpoint.Next(), "A native checkpoint is required before the selected sample in this segment");
+    const uint64_t warmup = checkpoint.Int(0);
+    auto camera = [&](uint64_t sample, Frame& result) {
+      Statement q(
+          db.get(), "SELECT role,left,top,width,height FROM cameras WHERE run_id=? AND sample_id=? ORDER BY role");
+      q.Bind(1, run);
+      q.Bind(2, sample);
+      while (q.Next()) {
+        hm::BBox box(q.Real(1), q.Real(2), q.Real(1) + q.Real(3), q.Real(2) + q.Real(4));
+        validate_box(box);
+        if (q.Text(0) == "fast")
+          result.fast = box;
+        else if (q.Text(0) == "program")
+          result.follower = box;
+      }
+      require(result.fast.has_value() == result.follower.has_value(), "Recording has unmatched camera outputs");
+    };
+    Frame previous_reference, previous_baseline;
+    Statement previous(
+        db.get(),
+        "SELECT sample_id,pts_ns FROM frames WHERE run_id=? AND sample_id<? AND source_id=? AND seek_epoch=? AND reset_epoch=? AND geometry_id=? ORDER BY sample_id DESC LIMIT 1");
+    previous.Bind(1, run);
+    previous.Bind(2, warmup);
+    previous.Bind(3, source_id);
+    previous.Bind(4, seek);
+    previous.Bind(5, reset);
+    previous.Bind(6, geometry);
+    if (previous.Next()) {
+      previous_reference.sample_id = previous.Int(0);
+      previous_reference.pts_ns = previous.Int(1);
+      camera(previous.Int(0), previous_reference);
+    }
+    Statement rows(
+        db.get(),
+        "SELECT f.sample_id,f.pts_ns,f.source_id,f.seek_epoch,f.reset_epoch,f.geometry_id,g.width,g.height,r.arena_left,r.arena_top,r.arena_right,r.arena_bottom,r.stepped,r.has_received_tracks,r.edge_rotation_left,r.edge_rotation_right,c.state,c.base_state,c.schema_version FROM frames f JOIN geometries g USING(run_id,geometry_id) LEFT JOIN replay_frames r USING(run_id,sample_id) LEFT JOIN checkpoints c USING(run_id,sample_id) WHERE f.run_id=? AND f.sample_id>=? ORDER BY f.sample_id");
+    rows.Bind(1, run);
+    rows.Bind(2, warmup);
+    std::optional<Tracker> reference, baseline;
+    std::optional<Sample> previous_sample;
+    size_t retained_tracks = 0;
+    bool reached_out = false;
+    while (rows.Next()) {
+      check_cancel(cancelled);
+      Sample sample;
+      require(!rows.IsNull(1) && rows.Int(1) >= 0, "Missing or negative recording timestamp");
+      sample.original.sample_id = rows.Int(0);
+      sample.original.pts_ns = rows.Int(1);
+      sample.source = rows.Int(2);
+      sample.seek = rows.Int(3);
+      sample.reset = rows.Int(4);
+      // Check the excluded boundary too: a timestamp jump is not evidence that the requested passage exists.
+      require(
+          sample.source == source_id && sample.seek == seek && sample.reset == reset &&
+              uint64_t(rows.Int(5)) == geometry,
+          "Selected range crosses a source, seek, reset or geometry boundary");
+      if (previous_sample)
+        require(sample.original.pts_ns > previous_sample->original.pts_ns, "Nonmonotonic recording timeline");
+      if (baseline && sample.original.pts_ns >= out) {
+        impl->end_pts_ns = sample.original.pts_ns;
+        reached_out = true;
+        break;
+      }
+      require(!rows.IsNull(8), "Missing exact native replay inputs");
+      sample.width = rows.Int(6);
+      sample.height = rows.Int(7);
+      require(
+          sample.width && sample.height && sample.width <= 32768 && sample.height <= 32768, "Invalid recording canvas");
+      sample.arena = hm::BBox(rows.Real(8), rows.Real(9), rows.Real(10), rows.Real(11));
+      validate_box(sample.arena);
+      require(
+          sample.arena.left >= 0 && sample.arena.top >= 0 && sample.arena.right <= sample.width &&
+              sample.arena.bottom <= sample.height,
+          "Historical arena lies outside canvas");
+      if (previous_sample)
+        require(same_box(sample.arena, previous_sample->arena), "Selected range crosses an arena boundary");
+      sample.stepped = rows.Int(12);
+      sample.has_received_tracks = rows.Int(13);
+      sample.original.edge_rotation_left = rows.Real(14);
+      sample.original.edge_rotation_right = rows.Real(15);
+      require(
+          std::isfinite(sample.original.edge_rotation_left) && std::isfinite(sample.original.edge_rotation_right),
+          "Invalid camera rotation");
+      camera(sample.original.sample_id, sample.original);
+      Statement tracks(
+          db.get(),
+          "SELECT tracking_id,left,top,right,bottom FROM replay_tracks WHERE run_id=? AND sample_id=? ORDER BY ordinal");
+      tracks.Bind(1, run);
+      tracks.Bind(2, sample.original.sample_id);
+      while (tracks.Next()) {
+        require(sample.ids.size() < 4096, "Excessive tracks in recording frame");
+        sample.ids.push_back(u64(tracks.Text(0)));
+        hm::BBox box(tracks.Real(1), tracks.Real(2), tracks.Real(3), tracks.Real(4));
+        validate_box(box);
+        sample.boxes.push_back(box);
+      }
+      if (!rows.IsNull(16)) {
+        require(rows.Int(18) == 1, "Unsupported native checkpoint schema");
+        StartingState state;
+        state.snapshot = hm::play_tracker::deserialize_snapshot(rows.Text(16));
+        state.base = hm::play_tracker::deserialize_snapshot(rows.Text(17)).config;
+        state.has_received_tracks = sample.has_received_tracks;
+        require(state.base.living_boxes.size() == state.snapshot.living_boxes.size(), "Checkpoint topology differs");
+        for (size_t i = 0; i < state.base.living_boxes.size(); ++i) {
+          const auto& box = state.base.living_boxes[i];
+          const auto& live = state.snapshot.living_boxes[i];
+          require(
+              box.arena_box && live.config.arena_box && same_box(*box.arena_box, sample.arena) &&
+                  same_box(*live.config.arena_box, sample.arena) && box.name == live.config.name,
+              "Checkpoint arena or box order differs");
+        }
+        reference = restore(state);
+      }
+      require(reference.has_value(), "Missing initialization checkpoint");
+      require(
+          reference->has_received_tracks == sample.has_received_tracks,
+          "Native wrapper state differs from recorded history");
+      if (!baseline && sample.original.sample_id >= start) {
+        impl->start = capture(*reference, previous_reference);
+        baseline = restore(impl->start);
+        previous_baseline = previous_reference;
+        impl->width = sample.width;
+        impl->height = sample.height;
+      }
+      previous_reference = step(&*reference, sample, previous_reference);
+      parity(sample.original, previous_reference, 0.02);
+      if (baseline) {
+        retained_tracks += sample.ids.size();
+        require(
+            impl->samples.size() < kMaxRangeSamples && retained_tracks <= kMaxRangeTracks,
+            "Selected range exceeds replay storage limit");
+        previous_baseline = step(&*baseline, sample, previous_baseline);
+        previous_baseline.edge_rotation_left =
+            impl->original.empty() ? sample.original.edge_rotation_left : impl->original.front().edge_rotation_left;
+        previous_baseline.edge_rotation_right =
+            impl->original.empty() ? sample.original.edge_rotation_right : impl->original.front().edge_rotation_right;
+        impl->samples.push_back(sample);
+        impl->original.push_back(sample.original);
+        impl->baseline.push_back(previous_baseline);
+      }
+      previous_sample = std::move(sample);
+    }
+    require(reached_out && !impl->samples.empty(), "Selected out point extends beyond this recording segment");
+    return std::shared_ptr<ReplaySession>(new ReplaySession(std::move(impl)));
+  } catch (const std::exception& e) {
+    if (cancelled && cancelled->load())
+      return absl::CancelledError("Replay cancelled");
+    return absl::InvalidArgumentError(e.what());
+  }
+}
+
 absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::Prepare(
     const PrepareOptions& options,
     const std::atomic<bool>* cancelled) {
+  if (fs::path(options.manifest_path).extension() == ".db" || fs::path(options.manifest_path).extension() == ".sqlite")
+    return PrepareDatabase(options, cancelled);
   try {
     check_cancel(cancelled);
     require(
@@ -754,10 +986,9 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
   try {
     require(
         trial.frames.size() == impl_->samples.size() && !trial.frames.empty(), "Trial does not belong to this range");
-    require(
-        media.width == impl_->width && media.height == impl_->height,
-        "Bind an uncropped panorama with the recording's canvas dimensions");
-    require(fs::is_regular_file(media.path), "Bound panorama file is missing");
+    const auto geometry = ValidatePanoramaGeometry(media.width, media.height, impl_->width, impl_->height);
+    require(geometry.ok(), geometry.ToString());
+    require(fs::is_regular_file(media.path), "Bound source file is missing");
     const auto recording = YAML::Load(impl_->manifest_contents);
     const fs::path directory = fs::path(impl_->options.manifest_path).parent_path();
     const auto protects = [&path](const std::string& artifact) {
@@ -766,6 +997,21 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
     require(
         !protects(media.path) && !protects(impl_->options.manifest_path),
         "A trial descriptor cannot replace its source media or recording manifest");
+    if (media.stitching) {
+      require(
+          media.width == impl_->width && media.height == impl_->height,
+          "Original-camera stitching must use the recorded canvas dimensions");
+      require(!media.stitching->artifact_revision.empty(), "Prepare the original-camera stitching maps before saving");
+      for (const auto& artifact : media.stitching->artifact_paths)
+        require(!protects(artifact), "A trial descriptor cannot replace an original stitching artifact");
+      for (const auto& camera : media.stitching->cameras) {
+        require(!camera.files.empty(), "Original camera playlist is empty");
+        for (const auto& file : camera.files) {
+          require(fs::is_regular_file(file), "Original camera chapter is missing: " + file);
+          require(!protects(file), "A trial descriptor cannot replace an original camera chapter");
+        }
+      }
+    }
     for (const auto& artifact : recording["sidecars"])
       require(
           !protects(artifact_path(directory, artifact.second)), "A trial descriptor cannot replace recording sidecars");
@@ -787,6 +1033,7 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
     document["schema"] = "hstream-camera-experiment-v1";
     document["name"] = trial.name;
     document["manifest"] = impl_->options.manifest_path;
+    document["run_id"] = impl_->options.run_id;
     document["manifest_contents"] = impl_->manifest_contents;
     document["provenance"] = impl_->provenance;
     document["first_sample"] = impl_->original.front().sample_id;
@@ -813,9 +1060,38 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
     binding["modified_ticks"] = fs::last_write_time(media.path).time_since_epoch().count();
     binding["width"] = media.width;
     binding["height"] = media.height;
+    binding["canvas_width"] = impl_->width;
+    binding["canvas_height"] = impl_->height;
     binding["telemetry_origin_pts_ns"] = media.telemetry_origin_pts_ns;
     binding["video_origin_pts_ns"] = media.video_origin_pts_ns;
-    binding["identity"] = "Manually bound uncropped panorama; content identity requires operator verification";
+    binding["kind"] = media.stitching ? "original-cameras" : "panorama";
+    binding["identity"] =
+        "Manually bound sources, stitching geometry and time; content identity requires operator verification";
+    if (media.stitching) {
+      auto stitching = binding["stitching"];
+      stitching["directory"] = media.stitching->directory;
+      stitching["artifact_revision"] = media.stitching->artifact_revision;
+      for (const auto& artifact : media.stitching->artifact_paths)
+        stitching["artifact_paths"].push_back(artifact);
+      stitching["config_contents"] = media.stitching->config_contents;
+      stitching["post_stitch_rotate_degrees"] = media.stitching->rotation;
+      stitching["high_bit_depth"] = media.stitching->high_bit_depth;
+      stitching["exposure"] = media.stitching->exposure;
+      stitching["shadow_lift"] = media.stitching->shadow_lift;
+      stitching["shadow_lift_black_point"] = media.stitching->shadow_lift_black_point;
+      for (const auto& source : media.stitching->cameras) {
+        YAML::Node camera;
+        camera["offset_ns"] = source.offset_ns;
+        for (const auto& file : source.files) {
+          YAML::Node chapter;
+          chapter["path"] = fs::absolute(file).string();
+          chapter["size_bytes"] = fs::file_size(file);
+          chapter["modified_ticks"] = fs::last_write_time(file).time_since_epoch().count();
+          camera["chapters"].push_back(chapter);
+        }
+        stitching["cameras"].push_back(camera);
+      }
+    }
     for (size_t i = 0; i < trial.frames.size(); ++i) {
       const auto& frame = trial.frames[i];
       const auto& sample = impl_->samples[i];

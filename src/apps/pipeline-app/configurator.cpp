@@ -1,4 +1,5 @@
 #include "configurator.h"
+#include "hstream/src/libs/common/PinnedFile.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -698,9 +699,8 @@ bool normalize_generated_stitching_backend_choices(YAML::Node& config) {
   if (generated_projection_framing.has_value()) {
     const auto generated_value = parsed_framing(generated_projection_framing);
     const auto private_value = parsed_framing(private_projection_framing);
-    generated_projection_framing_matches_private =
-        generated_value.has_value() && private_value.has_value() && *generated_value == *private_value &&
-        generated_value->rotation_inherited == private_value->rotation_inherited;
+    generated_projection_framing_matches_private = generated_value.has_value() && private_value.has_value() &&
+        *generated_value == *private_value && generated_value->rotation_inherited == private_value->rotation_inherited;
   }
   const auto metadata_parameters_valid = [&numeric_sequence](
                                              const std::optional<YAML::Node>& parameters,
@@ -2279,7 +2279,7 @@ absl::StatusOr<DurableArchiveRemovalFallback> ensure_durable_archive_removal_fal
     const struct stat& expected_stat,
     const char* description) {
   const std::string fallback_name = filename + ".hstream-cleanup-pin";
-  bool created = ::linkat(pinned_fd, "", parent_fd, fallback_name.c_str(), AT_EMPTY_PATH) == 0;
+  bool created = hm::link_pinned_file(pinned_fd, parent_fd, fallback_name.c_str()) == 0;
   if (!created) {
     const int link_errno = errno;
     struct stat fallback_stat{};
@@ -2810,7 +2810,7 @@ absl::Status remove_archive_entry_if_owned(
     directory_sync_result = ::fsync(parent_fd);
     directory_sync_errno = errno;
     if (directory_sync_result != 0) {
-      restore_after_sync_result = ::linkat(pinned_fd, "", parent_fd, filename.c_str(), AT_EMPTY_PATH);
+      restore_after_sync_result = hm::link_pinned_file(pinned_fd, parent_fd, filename.c_str());
       restore_after_sync_errno = errno;
       if (restore_after_sync_result == 0)
         ::fsync(parent_fd);
@@ -2858,7 +2858,7 @@ absl::Status create_archive_recovery_link(
     return absl::FailedPreconditionError(
         TO_STRING("Refusing to link replaced " << description << " \"" << source.string() << "\""));
   }
-  if (::linkat(source_fd, "", AT_FDCWD, destination.c_str(), AT_EMPTY_PATH) != 0) {
+  if (hm::link_pinned_file(source_fd, AT_FDCWD, destination.c_str()) != 0) {
     const int saved_errno = errno;
     if (saved_errno == EEXIST)
       return absl::AlreadyExistsError(
@@ -2888,7 +2888,7 @@ absl::StatusOr<std::string> publish_unique_archive_reconciliation_guard(
     gchar* uuid = g_uuid_string_random();
     const std::string candidate = ".hstream-reconcile-" + cleanup_id + "-" + guard_kind + "-" + uuid;
     g_free(uuid);
-    if (::linkat(source_fd, "", parent_fd, candidate.c_str(), AT_EMPTY_PATH) != 0) {
+    if (hm::link_pinned_file(source_fd, parent_fd, candidate.c_str()) != 0) {
       if (errno == EEXIST)
         continue;
       return absl::InternalError(TO_STRING("Failed to publish archive reconciliation guard: " << std::strerror(errno)));
@@ -3359,7 +3359,7 @@ absl::StatusOr<ArchiveCleanupReconciliationPass> reconcile_scoped_archive_cleanu
         const bool guard_pinned = guard_fd >= 0 && ::fstat(guard_fd, &pinned_guard_stat) == 0 &&
             same_file_identity(pinned_guard_stat, guard_entry->identity);
         const int publish_result =
-            guard_pinned ? ::linkat(guard_fd, "", parent_fd, owned_target_name->c_str(), AT_EMPTY_PATH) : -1;
+            guard_pinned ? hm::link_pinned_file(guard_fd, parent_fd, owned_target_name->c_str()) : -1;
         const int publish_errno = guard_pinned ? errno : (guard_fd < 0 ? errno : ESTALE);
         if (guard_fd >= 0)
           ::close(guard_fd);
@@ -8124,11 +8124,12 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       displaced_generated_projection_parameters->IsSequence() &&
       (!private_parameter_projection.has_value() || *private_parameter_projection != projection_name);
 
-  const bool private_matches = !rink_context_changed && private_matcher_value.has_value() && *private_matcher_value == matcher &&
-      private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
-      *private_projection_value == projection && private_autooptimizer_value.has_value() &&
-      *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters &&
-      private_projection_framing == projection_framing && private_camera == camera;
+  const bool private_matches = !rink_context_changed && private_matcher_value.has_value() &&
+      *private_matcher_value == matcher && private_backend_value.has_value() && *private_backend_value == backend &&
+      private_projection_value.has_value() && *private_projection_value == projection &&
+      private_autooptimizer_value.has_value() && *private_autooptimizer_value == run_autooptimizer &&
+      private_projection_parameters == projection_parameters && private_projection_framing == projection_framing &&
+      private_camera == camera;
   if (private_matches) {
     if (loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
       HM_RETURN_IF_ERROR(
@@ -8432,6 +8433,11 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   YAML::Node config = YAML::Clone(baseline->values);
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const YAML::Node user_overlay = YAML::Clone(*user_config_snapshot_);
+  recording_config_layers_ = YAML::Node(YAML::NodeType::Map);
+  recording_config_documents_ = YAML::Node(YAML::NodeType::Sequence);
+  recording_config_layers_["baseline"] = YAML::Clone(baseline->values);
+  recording_config_layers_["baseline-path"] = baseline->path.string();
+  recording_config_layers_["user"] = YAML::Clone(user_overlay);
   explicit_value_ranks_.clear();
   record_explicit_overlay(user_overlay, {}, 1);
   config = merge_nodes(
@@ -8441,13 +8447,14 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   lower_layer_config_ = YAML::Clone(config);
   std::optional<YAML::Node> private_config;
   HM_ASSIGN_OR_RETURN(private_config, load_private_config());
+  recording_config_layers_["game"] = private_config ? YAML::Clone(*private_config) : YAML::Node(YAML::NodeType::Map);
   loaded_generated_stitching_backend_choices_ = false;
   if (private_config.has_value()) {
     const YAML::Node original_private_config = YAML::Clone(*private_config);
     private_config_ = YAML::Clone(*private_config);
     const bool restored_rink_context = stitching::restore_generated_stitch_rink_context(private_config_);
-    loaded_generated_stitching_backend_choices_ = normalize_generated_stitching_backend_choices(private_config_) ||
-        restored_rink_context;
+    loaded_generated_stitching_backend_choices_ =
+        normalize_generated_stitching_backend_choices(private_config_) || restored_rink_context;
     persisted_private_config_ =
         YAML::Clone(loaded_generated_stitching_backend_choices_ ? original_private_config : private_config_);
     record_explicit_overlay(private_config_, {}, 2);
@@ -8469,6 +8476,11 @@ bool Configurator::underlay_config(const std::string& node_name, const std::stri
     return false;
   }
   YAML::Node underlaid_config = YAML::LoadFile(filename);
+  YAML::Node document;
+  document["path"] = filename;
+  document["role"] = "underlay:" + node_name;
+  document["values"] = YAML::Clone(underlaid_config);
+  recording_config_documents_.push_back(document);
   if (node_name.empty()) {
     config_ = merge_nodes(
         underlaid_config,
@@ -8491,6 +8503,11 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
   }
   // std::cout << config_ << std::endl;
   YAML::Node overlaid_config = YAML::LoadFile(filename);
+  YAML::Node document;
+  document["path"] = filename;
+  document["role"] = "overlay:" + node_name;
+  document["values"] = YAML::Clone(overlaid_config);
+  recording_config_documents_.push_back(document);
   record_explicit_overlay(overlaid_config, node_name, 2);
   if (node_name.empty()) {
     config_ = merge_nodes(
@@ -8505,6 +8522,16 @@ bool Configurator::overlay_config(const std::string& node_name, const std::strin
   }
   // std::cout << config_ << std::endl;
   return true;
+}
+
+YAML::Node Configurator::recording_configuration() const {
+  YAML::Node archive;
+  archive["schema"] = "hstream-run-configuration-v1";
+  archive["resolved"] = YAML::Clone(config_);
+  archive["input-layers"] = YAML::Clone(recording_config_layers_);
+  archive["input-documents"] = YAML::Clone(recording_config_documents_);
+  archive["game-at-launch"] = YAML::Clone(private_config_);
+  return archive;
 }
 
 YAML::Node Configurator::merge_nodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
@@ -9190,6 +9217,11 @@ absl::Status Configurator::load_sub_configs(
         // Have a prefix match
         std::optional<YAML::Node> subconfig_node = maybe_get_config_file(node.second, config_path);
         if (subconfig_node.has_value()) {
+          YAML::Node document;
+          document["role"] = "subconfig:" + parent_node_name + "." + key;
+          document["directory"] = config_path;
+          document["values"] = YAML::Clone(*subconfig_node);
+          recording_config_documents_.push_back(document);
           subconfigs[prefix].emplace_back(key, *subconfig_node);
         }
       }

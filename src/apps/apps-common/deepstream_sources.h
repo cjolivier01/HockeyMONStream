@@ -295,6 +295,9 @@ gboolean link_uri_source_audio_src(NvDsSrcBin* bin, GstElement* sinkelem);
  */
 gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, NvDsSrcParentBin* bin);
 
+/** Release playlist storage after callbacks are suspended and the graph reaches NULL. */
+void release_uri_playlist_generation_state(NvDsSrcParentBin* bin);
+
 /** Wake every URI-playlist frame waiter before an error/stop transitions the pipeline to NULL. */
 void cancel_uri_playlist_frame_barrier(NvDsSrcParentBin* bin);
 

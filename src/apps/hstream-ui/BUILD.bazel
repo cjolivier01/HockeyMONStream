@@ -29,6 +29,8 @@ filegroup(
         "CameraExperimentDialog.h",
         "CameraExperimentPreview.cpp",
         "CameraExperimentPreview.h",
+        "CameraExperimentSource.cpp",
+        "CameraExperimentSource.h",
         "RinkLevelingDialog.cpp",
         "RinkLevelingDialog.h",
         "ProjectionCropDialog.cpp",
@@ -72,12 +74,12 @@ cc_library(
 
 cc_library(
     name = "telemetry_csv_publisher",
-    srcs = ["TelemetryCsvPublisher.cpp"],
-    hdrs = ["TelemetryCsvPublisher.h"],
+    srcs = ["TelemetryCsvPublisher.cpp", "TelemetryDbPublisher.cpp"],
+    hdrs = ["TelemetryCsvPublisher.h", "TelemetryDbPublisher.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = ["@qt//:qt_core"],
+    deps = ["@qt//:qt_core", "//src/libs/recording"],
 )
 
 cc_library(
@@ -115,6 +117,31 @@ cc_library(
 )
 
 cc_library(
+    name = "camera_experiment_source",
+    srcs = ["CameraExperimentSource.cpp"],
+    hdrs = ["CameraExperimentSource.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/libs/common:utils",
+        "//src/apps/apps-common:deepstream_apps_common",
+        "//src/libs/playtracker_replay",
+        "//src/libs/stitching:stitching",
+        "@gstreamer",
+        "@qt//:qt_core",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "camera_experiment_source_test",
+    srcs = ["CameraExperimentSourceTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":camera_experiment_source", "@yaml-cpp"],
+)
+
+cc_library(
     name = "camera_experiment_preview",
     srcs = ["CameraExperimentPreview.cpp"],
     hdrs = ["CameraExperimentPreview.h"],
@@ -122,12 +149,24 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":camera_experiment_source",
         "//src/apps/apps-common:hm_gpu_preview",
         "//src/libs/playtracker_replay",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@qt//:qt_widgets",
     ],
+)
+
+cc_binary(
+    name = "camera_experiment_source_benchmark",
+    testonly = True,
+    srcs = ["CameraExperimentSourceBenchmark.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["manual"],
+    data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
+    deps = [":camera_experiment_source", "@gstreamer", "@qt//:qt_core"],
 )
 
 cc_library(
@@ -138,6 +177,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/recording",
+        ":camera_experiment_source",
         ":camera_experiment_preview",
         "//src/libs/playtracker_replay",
         "@qt//:qt_widgets",
@@ -321,5 +362,17 @@ cc_test(
         ":projection_crop_dialog",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
+    ],
+)
+cc_test(
+    name = "telemetry_db_publisher_test",
+    srcs = ["TelemetryDbPublisherTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":telemetry_csv_publisher",
+        "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_db",
+        "//src/libs/recording",
+        "@qt//:qt_core",
     ],
 )

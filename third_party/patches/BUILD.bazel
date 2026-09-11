@@ -1,3 +1,4 @@
 exports_files([
     "rules_cuda_sm120.patch",
+    "rules_cuda_quote_includes.patch",
 ])

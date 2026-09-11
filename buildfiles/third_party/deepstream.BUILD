@@ -40,7 +40,8 @@ cc_library(
     }) + [
         "-l:libnvdsgst_meta.so",
         "-l:libnvbufsurface.so",
-        "-l:libnvdsgst_inferbase.so",
+        # Inference plugins load their own base library. Linking it globally
+        # interposes its incompatible gst_nvinfer_logger on DS 9.1 nvinfer.
         "-l:libnvdsgst_helper.so",
         "-l:libnvds_meta.so",
         "-l:libnvbufsurftransform.so",

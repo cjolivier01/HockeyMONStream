@@ -58,6 +58,7 @@
 #include <utility>
 #include <vector>
 
+#include "TelemetryConfiguration.h"
 #include "TensorRtModelCache.h"
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
@@ -65,8 +66,10 @@
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 #include "hstream/src/libs/camera/AutoFocus.h"
+#include "hstream/src/libs/common/ManagedObject.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/common/TempFile.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/pipeline_controller/GstPropertyService.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
@@ -1446,6 +1449,46 @@ absl::Status PipelineApplication::configureInstances(
     } else if (*stage_video_converter != video_converter) {
       return absl::InvalidArgumentError(
           "All active pipeline instances in a stage must use the same application.video-converter value");
+    }
+    auto& tracker_properties = app_ctx->config.dsplaytracker_config.private_properties;
+    const bool record_database =
+        app_ctx->config.dsplaytracker_config.enable &&
+        std::any_of(tracker_properties.begin(), tracker_properties.end(), [](const hm::gst::PluginProperty& property) {
+          std::string name = property.name;
+          std::replace(name.begin(), name.end(), '_', '-');
+          return (name == "telemetry-db-dir" || name == "telemetry-csv-dir") && !property.value.empty();
+        });
+    if (record_database) {
+      YAML::Node archive = app_ctx->configurator().recording_configuration();
+      archive["launch"]["stage-index"] = stage_index;
+      archive["launch"]["gpu-override"] = override_gpu_id_;
+      archive["launch"]["ui-preview"] = app_ctx->config.hmsticher_config.ui_preview != 0;
+      YAML::Node reference_inputs;
+      reference_inputs["resolved"] = YAML::Clone(archive["resolved"]);
+      reference_inputs["app"]["config-file"] = fs::absolute(app_ctx->app_config_file()).string();
+      YAML::Node files;
+      HM_ASSIGN_OR_RETURN(
+          files,
+          SnapshotTelemetryConfigFiles(
+              reference_inputs, {fs::path(app_ctx->app_config_file()).parent_path(), fs::current_path()}));
+      archive["referenced-files"] = files;
+      auto snapshot_file = std::make_shared<hm::utils::TempFile>();
+      fs::permissions(snapshot_file->getPath(), fs::perms::owner_read | fs::perms::owner_write);
+      std::ofstream output(snapshot_file->getPath(), std::ios::binary);
+      output << YAML::Dump(archive) << '\n';
+      output.close();
+      if (!output)
+        return absl::InternalError("Cannot create the telemetry run configuration snapshot");
+      tracker_properties.erase(
+          std::remove_if(
+              tracker_properties.begin(),
+              tracker_properties.end(),
+              [](const hm::gst::PluginProperty& property) {
+                return property.name == "telemetry-run-config-file" || property.name == "telemetry_run_config_file";
+              }),
+          tracker_properties.end());
+      tracker_properties.push_back({"telemetry-run-config-file", snapshot_file->getPath().string()});
+      app_ctx->telemetry_configuration_file = std::move(snapshot_file);
     }
     valid_app_contexts.emplace_back(std::move(app_ctx));
   }
@@ -3796,8 +3839,7 @@ gboolean PipelineApplication::check_for_interrupt() {
     last_progress_wall = timed_run_last_progress_wall_;
   }
   if (time_limit_seconds_ > 0 &&
-      hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitching_calibration_blocks_playback_accounting()) &&
+      hm::pipeline_internal::stitch_frame_should_account_playback(stitching_calibration_blocks_playback_accounting()) &&
       last_progress_wall != std::chrono::steady_clock::time_point{}) {
     constexpr int kTimedRunNoProgressTimeoutSeconds = 60;
     const auto stalled_seconds =
@@ -5441,7 +5483,7 @@ bool PipelineApplication::seek_runtime_impl(
   for (const hm::gst::PluginProperty& property : app_context->config.dsplaytracker_config.private_properties) {
     std::string normalized_name = property.name;
     std::replace(normalized_name.begin(), normalized_name.end(), '_', '-');
-    if (normalized_name == "telemetry-csv-dir") {
+    if (normalized_name == "telemetry-csv-dir" || normalized_name == "telemetry-db-dir") {
       configured_telemetry_csv_dir = property.value;
     }
   }
@@ -7195,8 +7237,7 @@ gboolean PipelineApplication::overlay_graphics(
     }
   }
   if (time_limit_seconds_ > 0 && batch_meta &&
-      hm::pipeline_internal::stitch_frame_should_account_playback(
-          stitching_calibration_blocks_playback_accounting())) {
+      hm::pipeline_internal::stitch_frame_should_account_playback(stitching_calibration_blocks_playback_accounting())) {
     const uint64_t limit_ns = static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND;
     if (buf) {
       GstClockTime pts = GST_BUFFER_PTS(buf);

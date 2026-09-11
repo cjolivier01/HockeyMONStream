@@ -1,0 +1,14 @@
+genrule(
+    name = "schema_header",
+    srcs = ["schema.sql"],
+    outs = ["Schema.h"],
+    cmd = "(echo 'constexpr const char* kRecordingSchema = R\"sql('; cat $(location schema.sql); echo ')sql\";') > $@",
+)
+cc_library(
+    name = "recording",
+    srcs = ["Database.cpp"],
+    hdrs = ["Database.h", ":schema_header"],
+    include_prefix = "hstream/src/libs/recording",
+    linkopts = ["-lsqlite3"],
+    visibility = ["//visibility:public"],
+)

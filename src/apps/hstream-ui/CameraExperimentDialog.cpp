@@ -1,7 +1,9 @@
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#include "hstream/src/libs/recording/Database.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentPreview.h"
+#include "src/apps/hstream-ui/CameraExperimentSource.h"
 
 #include <QtCore/QDebug>
 #include <QtCore/QDir>
@@ -124,6 +126,17 @@ class CameraPathPlot : public QWidget {
 
 QString completed_manifest(const QString& directory) {
   const QDir dir(directory);
+  for (const QFileInfo& info : dir.entryInfoList({"hstream_telemetry*.db"}, QDir::Files, QDir::Time)) {
+    try {
+      hm::recording::Database db(info.absoluteFilePath().toStdString());
+      db.Validate();
+      hm::recording::Statement runs(db.get(), "SELECT 1 FROM runs WHERE completed=1 LIMIT 1");
+      if (runs.Next())
+        return info.absoluteFilePath();
+    } catch (const std::exception& e) {
+      qWarning("Cannot inspect recording: %s", e.what());
+    }
+  }
   for (const QFileInfo& info : dir.entryInfoList({"hstream_telemetry*.json"}, QDir::Files, QDir::Time)) {
     QFile file(info.absoluteFilePath());
     if (file.open(QIODevice::ReadOnly) && QJsonDocument::fromJson(file.readAll()).object()["completed"].toBool())
@@ -166,10 +179,14 @@ struct CameraExperimentDialog::Impl {
     std::string error;
     std::pair<unsigned, unsigned> media_size;
     QString media_path;
+    std::optional<replay::StitchingMedia> stitching;
   };
   CameraExperimentDialog* dialog;
   QLineEdit* manifest{nullptr};
+  QComboBox* run_id{nullptr};
   QLineEdit* media_path{nullptr};
+  QLineEdit* game_path{nullptr};
+  QComboBox* source_mode{nullptr};
   QDoubleSpinBox* in{nullptr};
   QDoubleSpinBox* duration{nullptr};
   QDoubleSpinBox* video_origin{nullptr};
@@ -208,9 +225,26 @@ struct CameraExperimentDialog::Impl {
   std::size_t current{0};
   std::pair<unsigned, unsigned> media_size;
   QString prepared_media;
+  std::optional<replay::StitchingMedia> prepared_stitching;
   replay::MediaBinding binding;
 
   explicit Impl(CameraExperimentDialog* owner) : dialog(owner) {}
+
+  bool original_cameras() const {
+    return source_mode->currentIndex() == 0;
+  }
+  QString source_path() const {
+    return (original_cameras() ? game_path : media_path)->text().trimmed();
+  }
+  replay::MediaBinding media_binding() const {
+    return {
+        prepared_stitching ? QDir(prepared_media).filePath("config.yaml").toStdString() : prepared_media.toStdString(),
+        selected->front().pts_ns,
+        static_cast<std::uint64_t>(std::llround(video_origin->value() * 1e9)),
+        media_size.first,
+        media_size.second,
+        prepared_stitching};
+  }
 
   void show_status(const QString& text, bool error = false) {
     status->setText(text);
@@ -295,6 +329,7 @@ struct CameraExperimentDialog::Impl {
       return;
     replay::PrepareOptions options;
     options.manifest_path = manifest->text().trimmed().toStdString();
+    options.run_id = run_id->currentData().toString().toStdString();
     options.start_seconds = in->value();
     options.duration_seconds = duration->value();
     options.legacy_config_path = legacy_config->text().trimmed().toStdString();
@@ -313,12 +348,13 @@ struct CameraExperimentDialog::Impl {
       }
       options.legacy_arena = hm::BBox(coordinates[0], coordinates[1], coordinates[2], coordinates[3]);
     }
-    const QString media = media_path->text().trimmed();
+    const QString media = source_path();
+    const bool raw = original_cameras();
     cancellation = std::make_shared<std::atomic<bool>>(false);
     auto token = cancellation;
     busy(true);
     show_status("Preparing historical state and verifying the original camera trajectory…");
-    work = std::async(std::launch::async, [options, token, media]() {
+    work = std::async(std::launch::async, [options, token, media, raw]() {
       WorkResult result;
       auto prepared = replay::ReplaySession::Prepare(options, token.get());
       if (!prepared.ok()) {
@@ -327,8 +363,17 @@ struct CameraExperimentDialog::Impl {
       }
       result.session = *prepared;
       result.media_path = media;
-      if (!media.isEmpty())
+      if (raw) {
+        auto sources = PrepareExperimentSources(media.toStdString(), result.session->width(), result.session->height());
+        if (!sources.ok())
+          result.error = sources.status().ToString();
+        else {
+          result.stitching = std::move(*sources);
+          result.media_size = {result.session->width(), result.session->height()};
+        }
+      } else if (!media.isEmpty()) {
         result.media_size = probe_media(media, &result.error);
+      }
       return result;
     });
   }
@@ -365,21 +410,22 @@ struct CameraExperimentDialog::Impl {
       return false;
     if (!uncropped->isChecked()) {
       show_status(
-          "Confirm that the selected video is the uncropped panorama for this recording to enable video preview.");
+          "Confirm that these are the corresponding camera sources and stitching geometry, or the uncropped panorama.");
       return false;
     }
     if (QGuiApplication::platformName() != "xcb") {
       show_status("Video preview requires an X11 display. Camera trajectories remain available here.", true);
       return false;
     }
-    if (media_path->text().trimmed() != prepared_media || prepared_media.isEmpty()) {
-      show_status("Select the panorama video and prepare the recording again to validate its dimensions.", true);
+    if (source_path() != prepared_media || prepared_media.isEmpty()) {
+      show_status("Select the original game directory or panorama, then prepare the recording again.", true);
       return false;
     }
-    if (media_size.first != session->width() || media_size.second != session->height()) {
+    if (!replay::ValidatePanoramaGeometry(media_size.first, media_size.second, session->width(), session->height())
+             .ok()) {
       show_status(
           QString(
-              "Panorama is %1×%2; this recording uses %3×%4. Prepare an uncropped panorama with the recorded canvas.")
+              "Panorama is %1×%2; this recording uses %3×%4. Select the uncropped canvas with the same aspect ratio.")
               .arg(media_size.first)
               .arg(media_size.second)
               .arg(session->width())
@@ -387,12 +433,7 @@ struct CameraExperimentDialog::Impl {
           true);
       return false;
     }
-    binding = {
-        prepared_media.toStdString(),
-        selected->front().pts_ns,
-        static_cast<std::uint64_t>(std::llround(video_origin->value() * 1000000000.0)),
-        media_size.first,
-        media_size.second};
+    binding = media_binding();
     std::string error;
     if (!preview_open) {
       const auto& first = selected->front();
@@ -505,6 +546,7 @@ struct CameraExperimentDialog::Impl {
         trials.clear();
         media_size = result.media_size;
         prepared_media = result.media_path;
+        prepared_stitching = std::move(result.stitching);
         changing_selection = true;
         comparison->clear();
         comparison->addItems({"Recorded original", "Recomputed baseline"});
@@ -577,23 +619,67 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
     layout->addWidget(browse);
     QLineEdit* edit = *field;
     connect(browse, &QPushButton::clicked, this, [this, edit, filter, game_directory]() {
-      const QString path = QFileDialog::getOpenFileName(
-          this, "Select experiment artifact", edit->text().isEmpty() ? game_directory : edit->text(), filter);
+      const QString initial = edit->text().isEmpty() ? game_directory : edit->text();
+      const QString path = filter == "directory"
+          ? QFileDialog::getExistingDirectory(this, "Select original game directory", initial)
+          : QFileDialog::getOpenFileName(this, "Select experiment artifact", initial, filter);
       if (!path.isEmpty())
         edit->setText(path);
     });
     source_layout->addRow(label, row);
   };
-  file_row("experimentManifest", "DriveGPT recording", "Completed telemetry (hstream_telemetry*.json)", &s.manifest);
+  file_row(
+      "experimentManifest",
+      "DriveGPT recording",
+      "Telemetry database (*.db *.sqlite);;Legacy recording (hstream_telemetry*.json)",
+      &s.manifest);
+  s.source_mode = new QComboBox();
+  s.source_mode->setObjectName("experimentSourceMode");
+  s.source_mode->addItems({"Original cameras · stitch during replay", "Saved uncropped panorama"});
+  source_layout->addRow("Video source", s.source_mode);
+  file_row("experimentGameDirectory", "Original game directory", "directory", &s.game_path);
+  s.game_path->setText(game_directory);
   file_row("experimentMedia", "Uncropped panorama", "Video (*.mp4 *.mkv *.mov *.MP4)", &s.media_path);
-  s.manifest->setPlaceholderText("Select the completed recording manifest beside the DriveGPT CSVs");
-  s.media_path->setPlaceholderText("Original stitched canvas video; a Program crop cannot provide alternate views");
+  s.manifest->setPlaceholderText("Select a completed telemetry database");
+  s.run_id = new QComboBox;
+  s.run_id->setObjectName("experimentRunId");
+  source_layout->addRow("Recording", s.run_id);
+  const auto update_recordings = [&s]() {
+    const QString previous = s.run_id->currentData().toString();
+    const QSignalBlocker blocker(s.run_id);
+    s.run_id->clear();
+    const QString path = s.manifest->text().trimmed();
+    if (path.endsWith(".db") || path.endsWith(".sqlite")) {
+      try {
+        hm::recording::Database db(path.toStdString());
+        db.Validate();
+        hm::recording::Statement runs(
+            db.get(),
+            "SELECT run_id,game_id,started_utc FROM runs WHERE completed=1 ORDER BY started_utc DESC LIMIT 10000");
+        while (runs.Next()) {
+          const QString id = QString::fromStdString(runs.Text(0));
+          s.run_id->addItem(QString::fromStdString(runs.Text(1) + " · " + runs.Text(2)) + " · " + id.left(8), id);
+        }
+      } catch (const std::exception& e) {
+        qWarning("Cannot list recordings: %s", e.what());
+      }
+    }
+    if (s.run_id->count() == 0)
+      s.run_id->addItem("Select a completed recording", QString());
+    const int index = s.run_id->findData(previous);
+    if (index >= 0)
+      s.run_id->setCurrentIndex(index);
+    s.run_id->setEnabled(s.run_id->count() > 1);
+  };
+  connect(s.manifest, &QLineEdit::textChanged, this, update_recordings);
+  s.media_path->setPlaceholderText("Optional uncropped archive; proportional downsizing is supported");
   QString selected_manifest = completed_manifest(game_directory);
   if (selected_manifest.isEmpty()) {
     const QString output_root = qEnvironmentVariable("HM_OUTPUT_WORK_DIR", QDir::home().filePath("hstream_output"));
     selected_manifest = completed_manifest(QDir(output_root).filePath(QFileInfo(game_directory).fileName()));
   }
   s.manifest->setText(selected_manifest);
+  update_recordings();
   const QStringList panoramas = QDir(game_directory).entryList({"*-stitched_output*.mp4"}, QDir::Files, QDir::Time);
   if (!panoramas.empty())
     s.media_path->setText(QDir(game_directory).filePath(panoramas.front()));
@@ -614,7 +700,7 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.duration->setMinimum(0.1);
   s.video_origin = time_control("experimentVideoOrigin", "First selected frame in video", 0, 86400);
   range->addStretch();
-  s.uncropped = new QCheckBox("This is the corresponding uncropped canvas");
+  s.uncropped = new QCheckBox();
   s.uncropped->setObjectName("experimentUncropped");
   range->addWidget(s.uncropped);
   source_layout->addRow(range);
@@ -773,9 +859,26 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
       impl_->cancellation->store(true);
     impl_->show_status("Cancelling preparation…");
   });
+  auto update_source_mode = [&s]() {
+    s.game_path->parentWidget()->setEnabled(s.original_cameras());
+    s.media_path->parentWidget()->setEnabled(!s.original_cameras());
+    s.uncropped->setText(
+        s.original_cameras() ? "These are the corresponding sources and stitching geometry"
+                             : "This is the corresponding uncropped canvas, without padding");
+  };
+  connect(s.source_mode, &QComboBox::currentIndexChanged, this, [this, update_source_mode]() {
+    update_source_mode();
+    impl_->uncropped->setChecked(false);
+    impl_->invalidate_source();
+  });
+  // A configured game defaults to direct replay; empty standalone dialogs
+  // retain the metadata-only / optional panorama workflow.
+  s.source_mode->setCurrentIndex(QFileInfo(QDir(game_directory).filePath("config.yaml")).isFile() ? 0 : 1);
+  update_source_mode();
   connect(s.in, &QDoubleSpinBox::valueChanged, s.video_origin, &QDoubleSpinBox::setValue);
-  for (QLineEdit* source : {s.manifest, s.media_path, s.legacy_arena, s.legacy_config})
+  for (QLineEdit* source : {s.manifest, s.media_path, s.game_path, s.legacy_arena, s.legacy_config})
     connect(source, &QLineEdit::textChanged, this, [this]() { impl_->invalidate_source(); });
+  connect(s.run_id, &QComboBox::currentIndexChanged, this, [this]() { impl_->invalidate_source(); });
   for (QDoubleSpinBox* source : {s.in, s.duration})
     connect(source, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->invalidate_source(); });
   connect(s.video_origin, &QDoubleSpinBox::valueChanged, this, [this]() {
@@ -822,12 +925,7 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
         QFileDialog::getSaveFileName(this, "Save camera experiment", "camera-trial.yaml", "YAML (*.yaml)");
     if (path.isEmpty())
       return;
-    replay::MediaBinding media{
-        state.prepared_media.toStdString(),
-        state.selected->front().pts_ns,
-        static_cast<std::uint64_t>(std::llround(state.video_origin->value() * 1e9)),
-        state.media_size.first,
-        state.media_size.second};
+    const auto media = state.media_binding();
     const auto status = state.session->SaveTrial(path.toStdString(), state.trials[index], media);
     state.show_status(
         status.ok() ? "Trial and its source/video binding saved." : QString::fromStdString(status.ToString()),

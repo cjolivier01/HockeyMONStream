@@ -1,5 +1,8 @@
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
+#include "hstream/src/libs/playtracker_replay/ReplaySession.h"
+#include "hstream/src/libs/recording/Database.h"
 
 #include "absl/status/status.h"
 
@@ -37,6 +40,17 @@ class TestPlayTrackerPriv : public hm::playtracker::PlayTrackerPriv {
   size_t retainedRuntimeProvenanceCount() const {
     return runtime_tuning_provenance_history_.size();
   }
+
+  bool enqueueFailingFinalSample() {
+    hm::playtracker::TelemetrySample sample;
+    sample.width = 3840;
+    sample.height = 1080;
+    auto geometry = std::make_shared<hm::playtracker::TelemetryGeometry>();
+    geometry->width = sample.width;
+    geometry->height = sample.height;
+    geometry->encode_mask = []() -> std::string { throw std::runtime_error("injected final queued writer failure"); };
+    return telemetry_csv_.TryEnqueue(std::move(sample), geometry);
+  }
 };
 
 std::string read_file(const fs::path& path) {
@@ -46,15 +60,11 @@ std::string read_file(const fs::path& path) {
   return contents.str();
 }
 
-size_t count_occurrences(const std::string& value, const std::string& needle) {
-  size_t count = 0;
-  for (size_t position = 0; (position = value.find(needle, position)) != std::string::npos; position += needle.size()) {
-    ++count;
-  }
-  return count;
-}
-
-bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
+bool generate_export_sample(
+    TestPlayTrackerPriv& priv,
+    uint64_t frame_number,
+    const cv::Mat& mask = {},
+    int canvas_width = 3840) {
   NvDsBatchMeta* batch = nvds_create_batch_meta(1);
   NvDsFrameMeta* frame_meta = batch ? nvds_acquire_frame_meta_from_pool(batch) : nullptr;
   NvDsObjectMeta* object_meta = batch ? nvds_acquire_obj_meta_from_pool(batch) : nullptr;
@@ -66,7 +76,8 @@ bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
   }
   frame_meta->source_id = 0;
   frame_meta->frame_num = frame_number;
-  frame_meta->source_frame_width = 3840;
+  frame_meta->buf_pts = (frame_number - 1) * 100000000;
+  frame_meta->source_frame_width = canvas_width;
   frame_meta->source_frame_height = 1080;
   frame_meta->pipeline_width = 3840;
   frame_meta->pipeline_height = 1080;
@@ -79,6 +90,12 @@ bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
   object_meta->tracker_bbox_info.org_bbox_coords = NvBbox_Coords{120.0f, 100.0f, 400.0f, 260.0f};
   nvds_add_obj_meta_to_frame(frame_meta, object_meta, nullptr);
   nvds_add_frame_meta_to_batch(batch, frame_meta);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+  if (!mask.empty()) {
+    hm::fieldmask::FieldMaskPayload::create_and_add<hm::fieldmask::FieldMaskPayload>(
+        frame_meta, cv::Point2f(canvas_width / 2, 540), cv::Rect2i(0, 0, canvas_width, 1080), mask, "test-mask");
+  }
+#endif
   if (!hm::detection_snapshot::add_meta(batch, 1)) {
     nvds_destroy_batch_meta(batch);
     return false;
@@ -262,6 +279,14 @@ int main() {
 
   TestPlayTrackerPriv priv(/*gpu_id=*/0, /*batch_size=*/1);
   const fs::path telemetry_dir = tmpdir / "telemetry";
+  const fs::path run_config_path = tmpdir / "run-config.yaml";
+  const std::string run_config =
+      "schema: hstream-run-configuration-v1\nresolved:\n  pipeline:\n    detector: example\n"
+      "  stitching:\n    projection: panini\ninput-layers:\n  baseline: {version: 1}\n";
+  std::ofstream(run_config_path) << run_config;
+  if (!priv.SetProperty(hm::Property("telemetry-run-config-file", run_config_path.string())))
+    return 45;
+  std::ofstream(run_config_path) << "replaced: true\n";
   if (!priv.SetProperty(hm::Property("telemetry-csv-dir", telemetry_dir.string()))) {
     std::cerr << "vpplaytracker rejected telemetry directory before caps initialization\n";
     return 19;
@@ -569,9 +594,11 @@ int main() {
   // explicitly finalizes it after a successful transition to NULL.
   priv.Shutdown();
   priv.Shutdown();
-  if (fs::exists(telemetry_dir / "tracking.csv") || fs::exists(telemetry_dir / "detections.csv") ||
-      read_file(telemetry_dir / "hstream_telemetry.json").find("\"publication_state\": \"pending\"") ==
-          std::string::npos) {
+  if (fs::exists(telemetry_dir / "tracking.csv") || fs::exists(telemetry_dir / "detections.csv") || [&] {
+        hm::recording::Database db((telemetry_dir / "hstream_telemetry.db").string());
+        hm::recording::Statement q(db.get(), "SELECT completed FROM runs");
+        return !q.Next() || q.Int(0) != 0;
+      }()) {
     std::cerr << "element shutdown committed telemetry before pipeline-wide shutdown succeeded\n";
     return 37;
   }
@@ -579,37 +606,44 @@ int main() {
     std::cerr << "post-shutdown telemetry finalization was rejected\n";
     return 38;
   }
-  const std::string config_events = read_file(telemetry_dir / "hstream_config_events.csv");
-  const std::string detections = read_file(telemetry_dir / "detections.csv");
-  const std::string telemetry_manifest = read_file(telemetry_dir / "hstream_telemetry.json");
-  std::string first_detection = detections.substr(0, detections.find('\n'));
-  std::replace(first_detection.begin(), first_detection.end(), ',', ' ');
-  uint64_t detection_frame = 0;
-  float detection_x1 = 0.0f;
-  float detection_y1 = 0.0f;
-  float detection_x2 = 0.0f;
-  float detection_y2 = 0.0f;
-  float detection_score = 0.0f;
-  int detection_label = -1;
-  std::istringstream detection_fields(first_detection);
-  detection_fields >> detection_frame >> detection_x1 >> detection_y1 >> detection_x2 >> detection_y2 >>
-      detection_score >> detection_label;
-  if (!detection_fields || detection_frame == 0 || std::abs(detection_x1 - 236.0f) > 0.001f ||
-      std::abs(detection_y1 - 196.0f) > 0.001f || std::abs(detection_x2 - 1044.0f) > 0.001f ||
-      std::abs(detection_y2 - 724.0f) > 0.001f || std::abs(detection_score - 0.8f) > 0.001f || detection_label != 0) {
-    std::cerr << "detection export did not scale inference-surface coordinates to source-frame coordinates\n";
-    return 36;
-  }
-  if (config_events.find("1,1,runtime-tuning,runtime-tuning-config-file,") == std::string::npos ||
-      read_file(telemetry_dir / "play_tracker_runtime_tuning-1.yaml") != original_runtime_contents ||
-      read_file(telemetry_dir / "play_tracker_source.yaml") != original_cfg_contents ||
-      config_events.find(",11,property,fixed-edge-rotation-angle-left,32.0,") == std::string::npos ||
-      config_events.find(",13,seek,flush-stop,1,") == std::string::npos ||
-      count_occurrences(config_events, repeated_tuning.string()) != 128 ||
-      telemetry_manifest.find("\"run_outcome\": \"end-of-stream\"") == std::string::npos ||
-      telemetry_manifest.find("\"eligible_for_training\": true") == std::string::npos) {
-    std::cerr << "geometry or seek event was not committed at the correct attempted-sample boundary\n";
-    return 21;
+  {
+    hm::recording::Database db((telemetry_dir / "hstream_telemetry.db").string());
+    hm::recording::Statement detection(
+        db.get(),
+        "SELECT sample_id,left,top,width,height,score,class_id FROM detections ORDER BY sample_id,ordinal LIMIT 1");
+    if (!detection.Next() || detection.Int(0) == 0 || std::abs(detection.Real(1) - 236) > 0.001 ||
+        std::abs(detection.Real(2) - 196) > 0.001 || std::abs(detection.Real(1) + detection.Real(3) - 1044) > 0.001 ||
+        std::abs(detection.Real(2) + detection.Real(4) - 724) > 0.001 || std::abs(detection.Real(5) - 0.8) > 0.001 ||
+        detection.Int(6) != 0) {
+      std::cerr << "Database detection coordinates were not scaled to the source canvas\n";
+      return 36;
+    }
+    hm::recording::Statement run(db.get(), "SELECT completed,outcome,source_config FROM runs");
+    if (!run.Next() || run.Int(0) != 1 || run.Text(1) != "end-of-stream" || run.Text(2) != original_cfg_contents)
+      return 21;
+    hm::recording::Statement startup(
+        db.get(), "SELECT artifact_contents FROM config_events WHERE sample_boundary=1 AND kind='runtime-tuning'");
+    if (!startup.Next() || startup.Text(0) != original_runtime_contents)
+      return 21;
+    hm::recording::Statement full_config(
+        db.get(), "SELECT sample_boundary,artifact_contents FROM config_events WHERE kind='run-configuration'");
+    if (!full_config.Next() || full_config.Int(0) != 1 || full_config.Text(1) != run_config) {
+      std::cerr << "full run configuration did not preserve the pre-launch snapshot\n";
+      return 46;
+    }
+    hm::recording::Statement geometry(
+        db.get(),
+        "SELECT count(*) FROM config_events WHERE sample_boundary=11 AND kind='property' AND key='fixed-edge-rotation-angle-left' AND value='32.0'");
+    if (!geometry.Next() || geometry.Int(0) != 1)
+      return 21;
+    hm::recording::Statement seek(
+        db.get(), "SELECT count(*) FROM config_events WHERE sample_boundary=13 AND kind='seek' AND key='flush-stop'");
+    if (!seek.Next() || seek.Int(0) != 1)
+      return 21;
+    hm::recording::Statement repeated(db.get(), "SELECT count(*) FROM config_events WHERE value=?");
+    repeated.Bind(1, repeated_tuning.string());
+    if (!repeated.Next() || repeated.Int(0) != 128)
+      return 21;
   }
 
   // Model a sibling element failing its NULL transition after playtracker has
@@ -634,13 +668,68 @@ int main() {
   const bool late_failure_handled = late_failure_priv.HandleEvent(late_failure);
   gst_event_unref(late_failure);
   const bool late_failure_finalized = late_failure_priv.SetProperty(hm::Property("finalize-telemetry", "1"));
-  const std::string late_failure_manifest = read_file(late_failure_dir / "hstream_telemetry.json");
-  if (!late_eos_handled || !late_failure_handled || !late_failure_finalized ||
-      late_failure_manifest.find("\"run_outcome\": \"failed\"") == std::string::npos ||
-      late_failure_manifest.find("\"completed\": false") == std::string::npos ||
-      fs::exists(late_failure_dir / "tracking.csv") || fs::exists(late_failure_dir / "detections.csv")) {
+  hm::recording::Database late_db((late_failure_dir / "hstream_telemetry.db").string());
+  hm::recording::Statement late_run(late_db.get(), "SELECT completed,outcome FROM runs");
+  if (!late_eos_handled || !late_failure_handled || !late_failure_finalized || !late_run.Next() ||
+      late_run.Int(0) != 0 || late_run.Text(1) != "failed" || fs::exists(late_failure_dir / "tracking.csv") ||
+      fs::exists(late_failure_dir / "detections.csv")) {
     std::cerr << "late pipeline stop failure published a successful telemetry generation\n";
     return 40;
+  }
+
+  TestPlayTrackerPriv final_failure_priv(/*gpu_id=*/0, /*batch_size=*/1);
+  if (!final_failure_priv.SetProperty(
+          hm::Property("telemetry-db-dir", (tmpdir / "telemetry-final-failure").string())) ||
+      !final_failure_priv.PreCapsInit(&params).ok() || !final_failure_priv.PostCapsInit(&params).ok() ||
+      !generate_export_sample(final_failure_priv, 1) || !final_failure_priv.enqueueFailingFinalSample())
+    return 47;
+  // No subsequent frame can observe failed(); finalization must propagate it.
+  final_failure_priv.Shutdown();
+  if (final_failure_priv.SetProperty(hm::Property("finalize-telemetry", "1"))) {
+    std::cerr << "Final writer failure was reported as successful pipeline shutdown\n";
+    return 48;
+  }
+
+  // Each new geometry must be usable immediately, before the next periodic
+  // checkpoint. Also cover mask removal and canvas changes without a mask.
+  const fs::path geometry_dir = tmpdir / "telemetry-geometry-boundaries";
+  TestPlayTrackerPriv geometry_priv(/*gpu_id=*/0, /*batch_size=*/1);
+  const cv::Mat mask_a(1080, 3840, CV_8UC1, cv::Scalar(255));
+  const cv::Mat mask_b = mask_a.clone();
+  if (!geometry_priv.SetProperty(hm::Property("telemetry-db-dir", geometry_dir.string())) ||
+      !geometry_priv.PreCapsInit(&params).ok() || !geometry_priv.PostCapsInit(&params).ok() ||
+      !generate_export_sample(geometry_priv, 1, mask_a) || !generate_export_sample(geometry_priv, 2, mask_a) ||
+      !generate_export_sample(geometry_priv, 3, mask_b) || !generate_export_sample(geometry_priv, 4, mask_b) ||
+      !generate_export_sample(geometry_priv, 5) || !generate_export_sample(geometry_priv, 6, {}, 4000)) {
+    std::cerr << "could not record geometry boundary regression\n";
+    return 42;
+  }
+  GstEvent* geometry_eos = gst_event_new_custom(
+      GST_EVENT_CUSTOM_DOWNSTREAM_OOB, gst_structure_new_empty("hstream-playtracker-telemetry-eos"));
+  geometry_priv.HandleEvent(geometry_eos);
+  gst_event_unref(geometry_eos);
+  geometry_priv.Shutdown();
+  if (!geometry_priv.SetProperty(hm::Property("finalize-telemetry", "1")))
+    return 43;
+  {
+    hm::recording::Database db((geometry_dir / "hstream_telemetry.db").string());
+    hm::recording::Statement checkpoints(db.get(), "SELECT sample_id FROM checkpoints ORDER BY sample_id");
+    std::vector<int64_t> samples;
+    while (checkpoints.Next())
+      samples.push_back(checkpoints.Int(0));
+    if (samples != std::vector<int64_t>({1, 3, 5, 6})) {
+      std::cerr << "geometry changes did not capture exactly the required pre-step checkpoints\n";
+      return 43;
+    }
+  }
+  hm::playtracker_replay::PrepareOptions geometry_options;
+  geometry_options.manifest_path = (geometry_dir / "hstream_telemetry.db").string();
+  geometry_options.start_seconds = 0.2;
+  geometry_options.duration_seconds = 0.05;
+  const auto geometry_session = hm::playtracker_replay::ReplaySession::Prepare(geometry_options);
+  if (!geometry_session.ok()) {
+    std::cerr << "could not replay immediately after a mask revision: " << geometry_session.status() << '\n';
+    return 44;
   }
 
   if (params.m_inCaps) {

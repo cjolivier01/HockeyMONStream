@@ -365,7 +365,11 @@ absl::Status DsFieldMaskProcessFrame(
 #ifdef HAS_NVDS_CUSTOMUSERMETA
   if (frame_meta && frame_meta->base_meta.batch_meta) {
     FieldMaskPayload::create_and_add<FieldMaskPayload>(
-        frame_meta, ctx->detection_mask_centroid, ctx->field_box, ctx->detection_u8_mask);
+        frame_meta,
+        ctx->detection_mask_centroid,
+        ctx->field_box,
+        ctx->detection_u8_mask,
+        ctx->loaded_output_generation + ":" + ctx->loaded_output_authorization_id);
   }
 #endif
   ++ctx->total_frame_count;

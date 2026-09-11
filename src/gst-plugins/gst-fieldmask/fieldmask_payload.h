@@ -3,6 +3,8 @@
 #include "hstream/src/libs/common/ApplicationPayload.h"
 
 #include <opencv2/opencv.hpp>
+#include <memory>
+#include <string>
 
 namespace hm {
 namespace fieldmask {
@@ -10,8 +12,16 @@ namespace fieldmask {
 #ifdef HAS_NVDS_CUSTOMUSERMETA
 class FieldMaskPayload : public UserApplicationPayload {
  public:
-  FieldMaskPayload(cv::Point2f centroid, const cv::Rect2i& field_box, const cv::Mat& mask = {})
-      : centroid_(centroid), field_box_(field_box), mask_(mask) {}
+  FieldMaskPayload(
+      cv::Point2f centroid,
+      const cv::Rect2i& field_box,
+      const cv::Mat& mask = {},
+      std::string revision = {})
+      : revision_(std::move(revision)), centroid_(centroid), field_box_(field_box), mask_(mask) {}
+
+  const std::string& revision() const {
+    return revision_;
+  }
 
   static HmPayloadType PayloadSubType() {
     return HmPayloadType::HM_PAYLOAD_TYPE_FIELDMASK;
@@ -36,6 +46,7 @@ class FieldMaskPayload : public UserApplicationPayload {
   }
 
  private:
+  std::string revision_;
   cv::Point2f centroid_;
   cv::Rect2i field_box_;
   cv::Mat mask_;

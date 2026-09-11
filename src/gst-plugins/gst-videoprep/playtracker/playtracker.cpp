@@ -154,15 +154,28 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   }
   if (!telemetry_csv_dir_.empty()) {
     telemetry_rink_mask_.release();
+    telemetry_canvas_ = {};
+    telemetry_geometry_.reset();
+    auto startup_events = runtime_tuning_provenance_history_;
+    if (!telemetry_run_configuration_.empty()) {
+      startup_events.push_back(
+          {"run-configuration",
+           "startup",
+           "hstream-run-configuration-v1",
+           "run-config.yaml",
+           telemetry_run_configuration_});
+    }
     const absl::Status telemetry_status = telemetry_csv_.Start(
         telemetry_csv_dir_,
         TelemetryConfigArtifact{play_tracker_config_source_file_, play_tracker_config_source_contents_},
         TelemetryConfigArtifact{init_params_.play_tracker_config_file, play_tracker_effective_config_contents_},
-        runtime_tuning_provenance_history_);
+        std::move(startup_events),
+        2048,
+        telemetry_game_id_);
     if (!telemetry_status.ok()) {
       return telemetry_status;
     }
-    std::cout << "Playtracker telemetry CSV export: " << telemetry_csv_.output_manifest() << std::endl;
+    std::cout << "Playtracker telemetry database: " << telemetry_csv_.output_manifest() << std::endl;
     std::cout << "HSTREAM_TELEMETRY manifest=" << telemetry_csv_.output_manifest() << std::endl;
   }
   return absl::OkStatus();
@@ -272,7 +285,24 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     preview_overlay_flags_ = static_cast<unsigned>(parsed);
     DsPlayTrackerCtxSetPreviewOverlayFlags(pt_context_, preview_overlay_flags_);
     return true;
-  } else if (key == "telemetry-csv-dir") {
+  } else if (key == "telemetry-run-config-file") {
+    if (telemetry_csv_.active())
+      return false;
+    const auto contents = ReadTelemetryConfigArtifact(prop.value);
+    try {
+      const auto archive = YAML::Load(contents);
+      if (archive["schema"].as<std::string>() != "hstream-run-configuration-v1" || !archive["resolved"].IsMap())
+        return false;
+    } catch (const std::exception& error) {
+      std::cerr << "Invalid telemetry run configuration archive: " << error.what() << '\n';
+      return false;
+    }
+    telemetry_run_configuration_ = contents;
+  } else if (key == "telemetry-game-id") {
+    if (telemetry_csv_.active())
+      return false;
+    telemetry_game_id_ = prop.value;
+  } else if (key == "telemetry-csv-dir" || key == "telemetry-db-dir") {
     if (telemetry_csv_.active() && prop.value != telemetry_csv_dir_) {
       std::cerr << "telemetry-csv-dir can only be changed before the pipeline starts" << std::endl;
       return false;
@@ -284,7 +314,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     telemetry_csv_.Stop();
-    return true;
+    return !telemetry_csv_.failed();
   } else if (key == "fixed-edge-rotation-angle") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {
@@ -441,6 +471,8 @@ absl::Status PlayTrackerPriv::GenerateOutput(
     frame.frame_meta = (NvDsFrameMeta*)fl->data;
     frame.input_surf_params = &in_surface->surfaceList[frame.batch_index];
     TelemetrySample telemetry_sample;
+    if (telemetry_csv_.failed())
+      return absl::DataLossError("Telemetry database writer failed");
     const bool export_telemetry = telemetry_csv_.active();
     frame.capture_replay = export_telemetry;
     frame.checkpoint_replay = export_telemetry &&
@@ -448,18 +480,37 @@ absl::Status PlayTrackerPriv::GenerateOutput(
          pt_context_->play_trackers.count(frame.frame_meta->source_id) == 0);
     frame.replay_input.reset();
     if (export_telemetry) {
-      const auto* field_mask = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(
-          frame.frame_meta);
-      if (field_mask && !field_mask->mask().empty() && field_mask->mask().data != telemetry_rink_mask_.data) {
-        // Encode the already-loaded calibration mask once per mask identity.
-        // No video pixels are mapped or transferred from the GPU.
-        telemetry_rink_mask_ = field_mask->mask();
-        std::vector<uchar> png;
-        if (!cv::imencode(".png", telemetry_rink_mask_, png))
-          return absl::InternalError("could not encode the run's telemetry rink mask");
-        if (!telemetry_csv_.StageRinkMask(std::string(reinterpret_cast<const char*>(png.data()), png.size())))
-          return absl::InternalError("could not preserve the run's rink mask in telemetry working storage");
+      const cv::Size canvas(frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+      if (canvas != telemetry_canvas_) {
+        telemetry_canvas_ = canvas;
+        frame.checkpoint_replay = true;
       }
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+      const auto* rink =
+          hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
+      const cv::Mat mask = rink ? rink->mask() : cv::Mat();
+      if (mask.data != telemetry_rink_mask_.data) {
+        // Replay cannot warm up across geometry revisions. Capture the state
+        // before the first step using a new mask (including mask removal).
+        frame.checkpoint_replay = true;
+        telemetry_rink_mask_ = mask;
+        telemetry_geometry_.reset();
+        if (!mask.empty()) {
+          auto geometry = std::make_shared<TelemetryGeometry>();
+          geometry->width = mask.cols;
+          geometry->height = mask.rows;
+          geometry->revision = rink->revision();
+          // Share the existing immutable CPU mask. Encode on the writer thread.
+          geometry->encode_mask = [mask] {
+            std::vector<unsigned char> bytes;
+            if (!cv::imencode(".png", mask, bytes))
+              throw std::runtime_error("Cannot encode telemetry rink mask");
+            return std::string(bytes.begin(), bytes.end());
+          };
+          telemetry_geometry_ = std::move(geometry);
+        }
+      }
+#endif
       const auto* detection_snapshot = hm::detection_snapshot::find_meta(batch_meta, frame.frame_meta);
       if (!detection_snapshot) {
         return absl::DataLossError("primary detection snapshot missing from a frame during lossless telemetry export");
@@ -571,7 +622,8 @@ absl::Status PlayTrackerPriv::GenerateOutput(
                 static_cast<float>(box.height()),
             });
       }
-      if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample)))
+
+      if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample), telemetry_geometry_))
         return absl::DataLossError("lossless telemetry exporter stopped before accepting a frame sample");
     }
     if (show_) {

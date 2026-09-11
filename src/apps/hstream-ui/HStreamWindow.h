@@ -244,6 +244,7 @@ class HStreamWindow : public QMainWindow {
   void readArchiveFinalizationProgress();
   void finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status);
   bool startArchiveDurabilitySync(const QString& path, ArchiveFinalizeStage stage, QString* error);
+  void startStandaloneTelemetryPublication(const QString& game_id);
   void startTelemetryCsvPublication(
       const QString& manifest_path,
       const QString& game_directory,

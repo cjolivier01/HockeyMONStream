@@ -1,5 +1,6 @@
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 
+#include <opencv2/opencv.hpp>
 #include <unistd.h>
 #include <cmath>
 #include <filesystem>
@@ -7,9 +8,12 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
+#include "hstream/src/libs/recording/Database.h"
 #include "yaml-cpp/yaml.h"
 
 namespace {
@@ -36,18 +40,35 @@ const char* kConfig = R"(play-tracker:
       sticky-translation: false
       sticky-sizing: false
 )";
-std::string fixture(const fs::path& directory, bool legacy = false, bool skipped_tick = false) {
+template <class Exporter = hm::playtracker::PlayTrackerTelemetryCsv>
+std::string fixture(
+    const fs::path& directory,
+    bool legacy = false,
+    bool skipped_tick = false,
+    unsigned width = 3840,
+    unsigned height = 2160,
+    double fps = 10) {
   fs::create_directories(directory);
-  const hm::BBox arena(40, 0, 3800, 2160);
+  const hm::BBox arena(40, 0, width - 40, height);
   auto created = DsPlayTrackerCreateCpuTracker(arena, YAML::Load(kConfig)["play-tracker"]);
   check(created.ok(), created.status().ToString());
   auto tracker = std::move(*created);
-  hm::playtracker::PlayTrackerTelemetryCsv exporter;
+  Exporter exporter;
   const auto status = exporter.Start(
       directory.string(),
       hm::playtracker::TelemetryConfigArtifact{"original.yaml", kConfig},
       hm::playtracker::TelemetryConfigArtifact{"effective.yaml", kConfig});
   check(status.ok(), status.ToString());
+  auto geometry = std::make_shared<hm::playtracker::TelemetryGeometry>();
+  geometry->width = width;
+  geometry->height = height;
+  geometry->revision = "test-rink";
+  geometry->encode_mask = [width, height] {
+    cv::Mat mask(height, width, CV_8UC1, cv::Scalar(255));
+    std::vector<unsigned char> png;
+    check(cv::imencode(".png", mask, png), "encode fixture mask");
+    return std::string(png.begin(), png.end());
+  };
   hm::play_tracker::PlayTrackerResults previous_results;
   for (size_t tick = 0; tick <= 300; ++tick) {
     bool checkpoint = tick % 30 == 0;
@@ -79,9 +100,9 @@ std::string fixture(const fs::path& directory, bool legacy = false, bool skipped
     hm::playtracker::TelemetrySample sample;
     sample.source_frame = tick;
     sample.source_id = 0;
-    sample.width = 3840;
-    sample.height = 2160;
-    sample.pts_ns = 2000000000ULL + tick * 100000000ULL;
+    sample.width = width;
+    sample.height = height;
+    sample.pts_ns = 2000000000ULL + static_cast<uint64_t>(tick * 1e9 / fps);
     sample.seek_epoch = tick >= 250 ? 1 : 0;
     std::vector<size_t> ids;
     std::vector<hm::BBox> boxes;
@@ -111,7 +132,10 @@ std::string fixture(const fs::path& directory, bool legacy = false, bool skipped
         replay.tracks.push_back({ids[i], {boxes[i].left, boxes[i].top, boxes[i].right, boxes[i].bottom}});
       sample.replay = std::move(replay);
     }
-    check(exporter.TryEnqueue(std::move(sample)), "enqueue fixture sample");
+    if constexpr (std::is_same_v<Exporter, hm::playtracker::PlayTrackerTelemetryDb>)
+      check(exporter.TryEnqueue(std::move(sample), geometry), "enqueue database fixture sample");
+    else
+      check(exporter.TryEnqueue(std::move(sample)), "enqueue fixture sample");
   }
   const std::string path = exporter.output_manifest();
   exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
@@ -145,8 +169,26 @@ bool same_frames(const std::vector<Frame>& a, const std::vector<Frame>& b, float
 } // namespace
 int main(int argc, char** argv) {
   try {
-    if (argc == 3 && std::string(argv[1]) == "--make-fixture") {
-      std::cout << fixture(argv[2]) << '\n';
+    if ((argc == 3 || argc == 6) && std::string(argv[1]) == "--make-db-fixture") {
+      std::cout << fixture<hm::playtracker::PlayTrackerTelemetryDb>(
+                       argv[2],
+                       false,
+                       false,
+                       argc == 6 ? std::stoul(argv[3]) : 3840,
+                       argc == 6 ? std::stoul(argv[4]) : 2160,
+                       argc == 6 ? std::stod(argv[5]) : 10)
+                << '\n';
+      return 0;
+    }
+    if ((argc == 3 || argc == 6) && std::string(argv[1]) == "--make-fixture") {
+      std::cout << fixture(
+                       argv[2],
+                       false,
+                       false,
+                       argc == 6 ? std::stoul(argv[3]) : 3840,
+                       argc == 6 ? std::stoul(argv[4]) : 2160,
+                       argc == 6 ? std::stod(argv[5]) : 10)
+                << '\n';
       return 0;
     }
     if (argc >= 3 && std::string(argv[1]) == "--recording") {
@@ -176,6 +218,34 @@ int main(int argc, char** argv) {
     check(
         (*session)->original().front().sample_id == 51 && (*session)->original().back().sample_id == 201,
         "sample gap is preserved rather than treated as a media frame");
+    PrepareOptions database_options = options;
+    database_options.manifest_path = fixture<hm::playtracker::PlayTrackerTelemetryDb>(directory / "database");
+    auto database_session = ReplaySession::Prepare(database_options);
+    check(database_session.ok(), database_session.status().ToString());
+    check(
+        same_frames((*database_session)->original(), (*session)->original()),
+        "database preserves exact camera outputs");
+    check(
+        same_frames((*database_session)->baseline(), (*session)->baseline()),
+        "database checkpoint replay matches CSV history");
+    {
+      hm::recording::Database db(database_options.manifest_path, true);
+      db.Exec("UPDATE checkpoints SET state='unreadable old checkpoint' WHERE sample_id=1");
+    }
+    check(
+        ReplaySession::Prepare(database_options).ok(),
+        "database range lookup does not parse checkpoints before warmup");
+    database_options.start_seconds = 24;
+    database_options.duration_seconds = 2;
+    check(!ReplaySession::Prepare(database_options).ok(), "database rejects reset-crossing ranges");
+    {
+      hm::recording::Database db(database_options.manifest_path, true);
+      db.Exec("UPDATE frames SET pts_ns=pts_ns+600000000000 WHERE source_frame>=250");
+    }
+    database_options.start_seconds = 30;
+    database_options.duration_seconds = 1;
+    check(
+        !ReplaySession::Prepare(database_options).ok(), "database rejects a range entirely inside a forward-seek gap");
     DsPlayTrackerRuntimeTuning unchanged;
     auto baseline = (*session)->RunTrial("baseline", unchanged);
     check(baseline.ok(), baseline.status().ToString());
@@ -283,6 +353,72 @@ int main(int argc, char** argv) {
         descriptor["frames"].size() == 150 &&
             descriptor["media"]["telemetry_origin_pts_ns"].as<uint64_t>() == 2000000000,
         "saved trial includes exact input range and manual media mapping");
+    binding.width = 1920;
+    binding.height = 1080;
+    check(
+        (*session)->SaveTrial((directory / "scaled.yaml").string(), *candidate, binding).ok(),
+        "proportionally downsized panorama is accepted");
+    descriptor = YAML::LoadFile((directory / "scaled.yaml").string());
+    check(
+        descriptor["media"]["width"].as<unsigned>() == 1920 &&
+            descriptor["media"]["canvas_width"].as<unsigned>() == 3840 &&
+            descriptor["frames"][0]["sample_id"].as<uint64_t>() == candidate->frames.front().sample_id,
+        "saved binding distinguishes media resolution from recorded camera coordinates");
+    binding.height = 720;
+    check(
+        !(*session)->SaveTrial((directory / "bad-scale.yaml").string(), *candidate, binding).ok(),
+        "different panorama aspect ratio rejected");
+    check(ValidatePanoramaGeometry(3840, 1660, 7680, 3321).ok(), "encoder even-dimension rounding accepted");
+    check(!ValidatePanoramaGeometry(0, 1080, 3840, 2160).ok(), "zero media dimensions rejected");
+    binding.width = 3840;
+    binding.height = 2160;
+    binding.path = (directory / "config.yaml").string();
+    std::ofstream(binding.path) << "live: original\n";
+    binding.stitching.emplace();
+    auto& stitching = *binding.stitching;
+    stitching.directory = directory.string();
+    stitching.artifact_revision = "prepared-map-revision";
+    const auto mapping = directory / "mapping_0000.tif";
+    std::ofstream(mapping) << "mapping input";
+    stitching.artifact_paths.push_back(mapping.string());
+    stitching.config_contents = "live: original\n";
+    for (unsigned i = 0; i < 2; ++i) {
+      const auto chapter = directory / ("camera-" + std::to_string(i) + ".mp4");
+      std::ofstream(chapter) << "original camera chapter";
+      stitching.cameras[i].files.push_back(chapter.string());
+    }
+    stitching.cameras[1].offset_ns = 5000000;
+    // Live controls may change after preparation. Saving retains the frozen
+    // source plan and must not require unrelated live settings to match it.
+    std::ofstream(binding.path) << "live: changed\n";
+    check(
+        (*session)->SaveTrial((directory / "raw.yaml").string(), *candidate, binding).ok(),
+        "original camera plan saves independently of subsequent live controls");
+    descriptor = YAML::LoadFile((directory / "raw.yaml").string());
+    check(
+        descriptor["media"]["kind"].as<std::string>() == "original-cameras" &&
+            descriptor["media"]["stitching"]["config_contents"].as<std::string>() == "live: original\n" &&
+            descriptor["media"]["stitching"]["cameras"][1]["offset_ns"].as<uint64_t>() == 5000000 &&
+            descriptor["media"]["stitching"]["cameras"][0]["chapters"][0]["size_bytes"].as<unsigned>() > 0,
+        "raw descriptor preserves the prepared settings, synchronization and chapter identities");
+    check(
+        !(*session)->SaveTrial(stitching.cameras[0].files.front(), *candidate, binding).ok(),
+        "saving a raw trial cannot overwrite its camera chapter");
+    const auto mapping_alias = directory / "mapping-alias.yaml";
+    fs::create_hard_link(mapping, mapping_alias);
+    check(
+        !(*session)->SaveTrial(mapping_alias.string(), *candidate, binding).ok(),
+        "saving a raw trial cannot overwrite an alias of its stitching maps");
+    const auto chapter_alias = directory / "camera-alias.yaml";
+    fs::create_hard_link(stitching.cameras[0].files.front(), chapter_alias);
+    check(
+        !(*session)->SaveTrial(chapter_alias.string(), *candidate, binding).ok(),
+        "saving a raw trial cannot overwrite an alias of a camera chapter");
+    binding.width /= 2;
+    binding.height /= 2;
+    check(
+        !(*session)->SaveTrial((directory / "scaled-raw.yaml").string(), *candidate, binding).ok(),
+        "original camera stitching must retain the actual recorded canvas dimensions");
     fs::remove_all(directory);
     std::cout << "ReplaySessionTest passed\n";
     return 0;

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/libs/common/PinnedFile.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "src/apps/hstream-ui/PipelineInspectorWidget.h"
@@ -6,6 +7,7 @@
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
+#include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
@@ -1228,9 +1230,8 @@ QString available_final_archive_path(
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
   const QString base = QString("%1-%2_output-with-audio").arg(safe_game_id, stitched_archive ? "stitched" : "tracking");
-  const qint64 first = shared_run_suffix.isNull()
-      ? hm::ui_internal::next_archive_generation(game_dir)
-      : shared_run_suffix.mid(1).toLongLong();
+  const qint64 first = shared_run_suffix.isNull() ? hm::ui_internal::next_archive_generation(game_dir)
+                                                  : shared_run_suffix.mid(1).toLongLong();
   if (first < 1)
     return {};
   for (int attempt = 0; attempt < (shared_run_suffix.isNull() ? 1000 : 1); ++attempt) {
@@ -1336,7 +1337,7 @@ bool path_has_file_identity(const QString& path, const struct stat& expected_sta
 bool link_open_file_no_replace(int source_fd, const QString& destination, int* saved_errno) {
 #ifdef Q_OS_LINUX
   const QByteArray encoded_destination = QFile::encodeName(destination);
-  if (::linkat(source_fd, "", AT_FDCWD, encoded_destination.constData(), AT_EMPTY_PATH) == 0)
+  if (hm::link_pinned_file(source_fd, AT_FDCWD, encoded_destination.constData()) == 0)
     return true;
   if (saved_errno)
     *saved_errno = errno;
@@ -2673,7 +2674,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         const bool guard_pinned = guard_fd >= 0 && ::fstat(guard_fd, &pinned_guard_stat) == 0 &&
             same_file_identity(pinned_guard_stat, guard_entry->identity);
         const int publish_result =
-            guard_pinned ? ::linkat(guard_fd, "", parent_fd, owned_target_name.constData(), AT_EMPTY_PATH) : -1;
+            guard_pinned ? hm::link_pinned_file(guard_fd, parent_fd, owned_target_name.constData()) : -1;
         const int publish_errno = guard_pinned ? errno : (guard_fd < 0 ? errno : ESTALE);
         if (guard_fd >= 0)
           ::close(guard_fd);
@@ -5513,13 +5514,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     connect(toggle, &QCheckBox::toggled, this, [this]() { setRuntimePreviewOverlays(); });
   }
 
-  drivegpt_csv_toggle_ = new QCheckBox("DriveGPT CSV");
+  drivegpt_csv_toggle_ = new QCheckBox("DriveGPT database");
   drivegpt_csv_toggle_->setObjectName("drivegptCsvCheck");
   drivegpt_csv_toggle_->setChecked(false);
   drivegpt_csv_toggle_->setToolTip(
-      "Save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv metadata in working storage, "
-      "then copy the completed CSV set and run mask beside the finalized video with its suffix. Lossless CSV capture disables seeking "
-      "for that run.");
+      "Save detections, tracks, cameras, replay state, settings and rink masks in one database. "
+      "Copy the completed database to the game directory, using the saved video's suffix when available. "
+      "Capture disables seeking for this run.");
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
@@ -6050,10 +6051,9 @@ void HStreamWindow::configureControlHelp() {
       "Show GPU video previews and local monitor audio. This can be toggled while running without stopping the processing pipeline.");
   help(
       "drivegptCsvCheck",
-      "For the next Program run, save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv "
-      "in HStream working storage, plus the run mask and timestamp/config sidecars. After an archive is finalized, "
-      "copies are placed in the game directory with the video's suffix. Video pixels remain "
-      "on the GPU. Lossless DriveGPT CSV capture disables seeking for that run.");
+      "Save detections, tracking, camera motion, replay checkpoints, settings and the rink mask in one database. "
+      "The completed database is copied to the game directory with the video's suffix, or the next available "
+      "suffix when no video is saved. Video pixels stay on the GPU. Capture disables seeking for this run.");
   help(
       "startPipelineButton",
       "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run.");
@@ -8627,8 +8627,9 @@ QStringList HStreamWindow::pipelineArguments() const {
       const QString telemetry_work_directory =
           QDir(archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory()))
               .filePath(game_id);
-      args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=%1")
+      args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=%1")
                   .arg(QDir::cleanPath(telemetry_work_directory));
+      args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-game-id=%1").arg(game_id);
     }
   }
   args << "--options=pipeline.hmaudio.enable=1";
@@ -9409,16 +9410,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   if (!pending_archive_finalizations_.empty()) {
     startNextArchiveFinalization();
   } else {
-    if (active_run_telemetry_requested_ && completed_successfully) {
-      appendLog(
-          active_telemetry_manifest_path_.isEmpty()
-              ? "DriveGPT CSV export was requested, but the pipeline did not report its working manifest"
-              : QString(
-                    "DriveGPT CSVs completed in working storage at %1; no finalized video archive exists to "
-                    "provide a matching game-directory suffix")
-                    .arg(QFileInfo(active_telemetry_manifest_path_).absolutePath()));
-      active_run_telemetry_requested_ = false;
-      active_telemetry_manifest_path_.clear();
+    if (active_run_telemetry_requested_ && completed_successfully && !active_telemetry_manifest_path_.isEmpty()) {
+      releaseArchiveFinalizerOwnership(true);
+      startStandaloneTelemetryPublication(archive_game_id);
+      updateRunControls();
+      return;
     }
     releaseArchiveFinalizerOwnership(true);
     finishArchiveJobLog(!retain_archive_log_guard_for_recovery);
@@ -10046,7 +10042,7 @@ void HStreamWindow::updatePlaybackSeekControls() {
   } else if (!playback_seek_channel_available_) {
     reason = "Seeking is unavailable because the pipeline command channel failed.";
   } else if (active_run_telemetry_requested_) {
-    reason = "Seeking is disabled because lossless DriveGPT CSV capture is active for this run.";
+    reason = "Seeking is disabled because lossless DriveGPT database capture is active for this run.";
   } else if (!active_run_local_render_only_ || active_run_is_calibration_) {
     reason = "Seeking is disabled because this run includes a nonlocal output or is not Program playback.";
   } else if (!rendering) {
@@ -10369,7 +10365,7 @@ void HStreamWindow::handleTelemetryOutputStatus(const QString& line) {
   if (manifest.isEmpty())
     return;
   active_telemetry_manifest_path_ = manifest;
-  appendLog(QString("DriveGPT CSV working manifest: %1").arg(manifest));
+  appendLog(QString("DriveGPT database working manifest: %1").arg(manifest));
 }
 
 void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, const QString& run_id) {
@@ -11945,6 +11941,33 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   }
 }
 
+void HStreamWindow::startStandaloneTelemetryPublication(const QString& game_id) {
+  const QString path = active_telemetry_manifest_path_;
+  const QString directory = gameDirectory(game_id);
+  active_run_telemetry_requested_ = false;
+  active_telemetry_manifest_path_.clear();
+  appendLog("Copying completed DriveGPT database to the game directory");
+  auto result = std::make_shared<hm::ui_internal::TelemetryCsvPublicationResult>();
+  auto* worker = QThread::create(
+      [path, directory, result] { *result = hm::ui_internal::publish_telemetry_database(path, directory); });
+  telemetry_publication_worker_ = worker;
+  connect(worker, &QThread::finished, this, [this, worker, result, path] {
+    if (telemetry_publication_worker_ != worker)
+      return;
+    telemetry_publication_worker_ = nullptr;
+    if (result->ok)
+      appendLog("DriveGPT database copied to the game directory: " + result->published_paths.join(", "));
+    else
+      appendLog("DriveGPT database publication failed: " + result->error + "; recording retained at " + path);
+    finishArchiveJobLog();
+    updateRunControls();
+    maybeStartDeferredRestart();
+  });
+  connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+  worker->start();
+  updateRunControls();
+}
+
 void HStreamWindow::startTelemetryCsvPublication(
     const QString& manifest_path,
     const QString& game_directory,
@@ -11953,12 +11976,12 @@ void HStreamWindow::startTelemetryCsvPublication(
     bool source_removed,
     bool source_was_replaced) {
   archive_finalize_stage_ = ArchiveFinalizeStage::kPublishTelemetry;
-  archive_finalize_headline_->setText("Copying DriveGPT CSVs…");
+  archive_finalize_headline_->setText("Copying DriveGPT database…");
   archive_finalize_detail_->setText(
       QString("The completed video is safe. Its telemetry is being copied to:\n%1").arg(game_directory));
   archive_finalize_progress_->setRange(0, 0);
   archive_finalize_progress_->setFormat("Copying telemetry safely");
-  appendLog(QString("copying completed DriveGPT CSVs to the game directory with video suffix '%1'")
+  appendLog(QString("copying completed DriveGPT database to the game directory with video suffix '%1'")
                 .arg(destination_suffix.isEmpty() ? QString("<none>") : destination_suffix));
 
   auto result = std::make_shared<hm::ui_internal::TelemetryCsvPublicationResult>();
@@ -11982,19 +12005,20 @@ void HStreamWindow::startTelemetryCsvPublication(
         telemetry_publication_worker_ = nullptr;
         archive_finalize_stage_ = ArchiveFinalizeStage::kIdle;
         if (result->ok) {
-          appendLog(QString("DriveGPT CSVs copied to the game directory with video suffix '%1': %2")
+          appendLog(QString("DriveGPT database copied to the game directory with video suffix '%1': %2")
                         .arg(
                             destination_suffix.isEmpty() ? QString("<none>") : destination_suffix,
                             result->published_paths.join(", ")));
         } else {
           const QString working_storage = QFileInfo(manifest_path).absolutePath();
-          const QString warning = QString("DriveGPT CSV publication failed: %1\nTelemetry working storage: %2")
+          const QString warning = QString("DriveGPT database publication failed: %1\nTelemetry working storage: %2")
                                       .arg(result->error, working_storage);
           archive_finalize_failure_summaries_.append(warning);
-          appendLog(QString(
-                        "WARNING: completed DriveGPT CSVs remain available in working storage at %1, but copying them "
-                        "beside the finalized video failed: %2")
-                        .arg(working_storage, result->error));
+          appendLog(
+              QString(
+                  "WARNING: completed DriveGPT database remain available in working storage at %1, but copying them "
+                  "beside the finalized video failed: %2")
+                  .arg(working_storage, result->error));
         }
         finishCompletedArchivePresentation(final_size, source_removed, source_was_replaced);
       });
@@ -12139,10 +12163,10 @@ void HStreamWindow::completeArchiveFinalization() {
     active_telemetry_manifest_path_.clear();
     if (manifest_path.isEmpty()) {
       appendLog(
-          "WARNING: DriveGPT CSV export was requested, but the completed pipeline did not report a telemetry manifest");
+          "WARNING: DriveGPT database export was requested, but the completed pipeline did not report a telemetry manifest");
     } else if (csv_suffix.isNull()) {
       appendLog(QString(
-                    "WARNING: DriveGPT CSVs remain in working storage because the finalized video name does not "
+                    "WARNING: DriveGPT database remain in working storage because the finalized video name does not "
                     "have a usable generation suffix: %1")
                     .arg(archive_finalize_target_path_));
     } else {
@@ -12197,9 +12221,9 @@ void HStreamWindow::finishCompletedArchivePresentation(
   if (!more_archives && active_run_telemetry_requested_) {
     appendLog(
         active_telemetry_manifest_path_.isEmpty()
-            ? "DriveGPT CSV export was requested, but the pipeline did not report its working manifest"
+            ? "DriveGPT database export was requested, but the pipeline did not report its working manifest"
             : QString(
-                  "DriveGPT CSVs completed in working storage at %1; no finalized video archive exists to "
+                  "DriveGPT database completed in working storage at %1; no finalized Program archive exists to "
                   "provide a matching game-directory suffix")
                   .arg(QFileInfo(active_telemetry_manifest_path_).absolutePath()));
     active_run_telemetry_requested_ = false;
@@ -12266,9 +12290,9 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   if (active_run_telemetry_requested_ && !more_archives) {
     appendLog(
         active_telemetry_manifest_path_.isEmpty()
-            ? "DriveGPT CSV export was requested, but the pipeline did not report its working manifest"
+            ? "DriveGPT database export was requested, but the pipeline did not report its working manifest"
             : QString(
-                  "DriveGPT CSVs remain in working storage at %1 because no video archive was finalized "
+                  "DriveGPT database remain in working storage at %1 because no Program archive was finalized "
                   "successfully")
                   .arg(QFileInfo(active_telemetry_manifest_path_).absolutePath()));
     active_run_telemetry_requested_ = false;

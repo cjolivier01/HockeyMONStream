@@ -8,9 +8,10 @@ config_setting(
     constraint_values = ["@platforms//cpu:x86_64"],
 )
 
-qt_includes = [
-    "include",
-] + select({
+# Do not add the entire sysroot include directory as an early -isystem path:
+# on a native build it moves /usr/include ahead of libstdc++, breaking its
+# include_next <stdlib.h>. Qt headers only need the versioned directory.
+qt_includes = select({
     ":aarch64-linux-gnu": ["include/aarch64-linux-gnu/qt6"],
     ":x86_64-linux-gnu": ["include/x86_64-linux-gnu/qt6"],
     "//conditions:default": ["include/x86_64-linux-gnu/qt6"],

@@ -601,6 +601,15 @@ absl::Status StitcherPriv::ensure_stitcher() {
   if (!artifacts.ok()) {
     return artifacts.status();
   }
+  if (!expected_artifact_revision_.empty()) {
+    gchar* digest = g_compute_checksum_for_string(
+        G_CHECKSUM_SHA256, artifacts->artifact_revision.data(), artifacts->artifact_revision.size());
+    const bool matches = artifacts->artifact_lock && expected_artifact_revision_ == digest;
+    g_free(digest);
+    if (!matches)
+      return absl::FailedPreconditionError(
+          "Stitching maps changed since experiment preparation; select the recorded geometry and prepare again");
+  }
   if (!artifacts->artifact_lock) {
     const absl::Status repair_bounds = hm::stitching::validate_stitch_seam_repair_artifact_bounds(config_file_);
     if (!repair_bounds.ok() && !absl::IsNotFound(repair_bounds)) {
@@ -1315,7 +1324,11 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
 }
 
 bool StitcherPriv::SetProperty(const Property& prop) {
-  if (prop.key == "left-frame-offset-ns") {
+  if (prop.key == "expected-artifact-revision") {
+    if (caps_initialized_)
+      return false;
+    expected_artifact_revision_ = prop.value;
+  } else if (prop.key == "left-frame-offset-ns") {
     left_frame_offset_ns_ = std::atol(prop.value.c_str());
   } else if (prop.key == "right-frame-offset-ns") {
     right_frame_offset_ns_ = std::atol(prop.value.c_str());

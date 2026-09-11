@@ -4,12 +4,16 @@
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
-#include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
+#include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
 
 #include <atomic>
 #include <mutex>
 #include <vector>
 #include "absl/status/status.h"
+
+namespace cv {
+class Mat;
+}
 
 namespace hm {
 namespace playtracker {
@@ -50,8 +54,12 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   std::string telemetry_csv_dir_;
   std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
-  PlayTrackerTelemetryCsv telemetry_csv_;
+  PlayTrackerTelemetryDb telemetry_csv_;
+  std::string telemetry_game_id_;
+  std::string telemetry_run_configuration_;
   cv::Mat telemetry_rink_mask_;
+  cv::Size telemetry_canvas_;
+  std::shared_ptr<const TelemetryGeometry> telemetry_geometry_;
   std::atomic<bool> telemetry_shutdown_ready_{false};
   uint64_t telemetry_seek_epoch_{0};
   uint64_t replay_reset_epoch_{0};
