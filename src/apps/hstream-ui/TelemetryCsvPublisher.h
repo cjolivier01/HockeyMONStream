@@ -24,7 +24,7 @@ struct TelemetryCsvPublicationTestHooks {
   void (*after_named_marker_close)(void*){nullptr};
 };
 
-// Returns the suffix shared by a finalized Program video and its CSVs: an
+// Returns the suffix shared by a finalized video and its CSVs: an
 // empty string for legacy archives, or "-N" for numbered generations.
 // An invalid or unrelated archive path returns a null QString.
 QString finalized_archive_csv_suffix(const QString& archive_path, const QString& game_id);

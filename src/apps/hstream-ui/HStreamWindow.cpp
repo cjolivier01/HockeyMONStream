@@ -5576,7 +5576,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   drivegpt_csv_toggle_->setChecked(false);
   drivegpt_csv_toggle_->setToolTip(
       "Save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv metadata in working storage, "
-      "then copy the completed CSV set beside the finalized Program video. Lossless CSV capture disables seeking "
+      "then copy the completed CSV set and run mask beside the finalized video with its suffix. Lossless CSV capture disables seeking "
       "for that run.");
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
@@ -6109,8 +6109,8 @@ void HStreamWindow::configureControlHelp() {
   help(
       "drivegptCsvCheck",
       "For the next Program run, save HM-compatible detections.csv, tracking.csv, camera.csv, and camera_fast.csv "
-      "in HStream working storage, plus timestamp/config sidecars. After a completed archive is finalized, non-hidden "
-      "copies are placed in the game directory with the video's suffix. Only metadata is copied; video pixels remain "
+      "in HStream working storage, plus the run mask and timestamp/config sidecars. After an archive is finalized, "
+      "copies are placed in the game directory with the video's suffix. Video pixels remain "
       "on the GPU. Lossless DriveGPT CSV capture disables seeking for that run.");
   help(
       "startPipelineButton",
