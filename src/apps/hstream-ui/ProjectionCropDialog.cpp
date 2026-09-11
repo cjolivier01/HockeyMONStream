@@ -209,9 +209,12 @@ ProjectionCropDialog::ProjectionCropDialog(
     const std::vector<double>& projection_parameters,
     const hm::stitching::StitchCameraSelection& camera,
     const QString& preview_unavailable_reason,
-    QWidget* parent)
+    QWidget* parent,
+    bool in_progress_calibration,
+    bool apply_on_accept)
     : QDialog(parent),
       game_directory_(game_directory),
+      in_progress_calibration_(in_progress_calibration),
       initial_(framing),
       projection_(projection),
       projection_parameters_(projection_parameters),
@@ -230,7 +233,7 @@ ProjectionCropDialog::ProjectionCropDialog(
   mode_ = new QComboBox();
   mode_->setObjectName("projectionCropMode");
   mode_->addItem("Auto — crop valid pixels", "auto");
-  mode_->addItem("Full canvas", "full");
+  mode_->addItem("Full canvas — no cropping", "full");
   mode_->addItem("Manual", "manual");
   mode_->setCurrentIndex(initial_.auto_crop ? 0 : initial_.crop == kFullCrop ? 1 : 2);
   layout->addWidget(mode_);
@@ -270,10 +273,15 @@ ProjectionCropDialog::ProjectionCropDialog(
   status_->setObjectName("projectionCropStatus");
   status_->setWordWrap(true);
   layout->addWidget(status_);
-  auto* note = new QLabel("Use crop returns this selection to the controls. Save Preset applies it to this game.");
+  auto* note = new QLabel(
+      (in_progress_calibration_ || apply_on_accept)
+          ? "Use crop saves this choice for the game and continues setup. Full canvas keeps the entire projection."
+          : "Use crop returns this selection to the controls. Save Preset applies it to this game.");
   note->setWordWrap(true);
   layout->addWidget(note);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+  if (in_progress_calibration_)
+    buttons->button(QDialogButtonBox::Cancel)->setText("Cancel calibration");
   accept_ = buttons->addButton("Use crop", QDialogButtonBox::AcceptRole);
   accept_->setObjectName("acceptProjectionCropButton");
   layout->addWidget(buttons);
@@ -361,140 +369,158 @@ void ProjectionCropDialog::previewFailed(const QString& message) {
 }
 
 void ProjectionCropDialog::loadPreview() {
-  const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
-  if (!lock.ok()) {
-    previewFailed("Could not access the saved stitching calibration. Check access to the game folder and try again.");
-    return;
-  }
-  if (!*lock) {
-    previewFailed("Stitching calibration is being updated. Wait for it to finish, then reopen Adjust crop.");
-    return;
-  }
-  const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
-  if (!config_lock.ok()) {
-    previewFailed("Game settings are being updated. Reopen Adjust crop after the update finishes.");
-    return;
-  }
-  // Explain calibration readiness before attempting to load its images. A
-  // partial/failed run may leave old files, or have no images to snapshot yet.
-  const QString config_path = QDir(game_directory_).filePath("config.yaml");
-  if (!QFileInfo::exists(config_path)) {
-    previewFailed(
-        "Stitching calibration is not available yet. Save the game settings and run stitching calibration, "
-        "then reopen Adjust crop to drag the crop rectangle.");
-    return;
-  }
-  const auto config_contents = readFile(config_path);
-  try {
-    if (config_contents.isEmpty())
-      throw std::invalid_argument("Unreadable game settings");
-    const auto config = YAML::Load(config_contents.toStdString());
-    const auto ui = config["hstream_ui"];
-    if (ui && !ui.IsNull() && !ui.IsMap())
-      throw std::invalid_argument("Invalid UI settings");
-    const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
-    if (calibration && !calibration.IsNull() && !calibration.IsMap())
-      throw std::invalid_argument("Invalid calibration settings");
-    const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
-    if (status && !status.IsNull() && status.as<std::string>() != "complete") {
-      previewFailed(
-          status.as<std::string>() == "failed"
-              ? "Stitching calibration failed, so its crop preview is not ready. Resolve the calibration "
-                "error and run calibration again, then reopen Adjust crop."
-              : "Stitching calibration is incomplete. Finish calibration with the current camera and "
-                "projection settings, then reopen Adjust crop to drag the crop rectangle.");
+  if (in_progress_calibration_) {
+    source_revision_ = RinkLevelingDialog::inProgressSourceRevision(game_directory_);
+    if (!temporary_.isValid() || source_revision_.isEmpty()) {
+      previewFailed("The current calibration preview is unavailable.");
       return;
     }
-  } catch (const std::exception&) {
-    previewFailed("Could not read the game's calibration status. Check the game settings and reopen Adjust crop.");
-    return;
-  }
-  for (const QString name : {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"}) {
-    const QFileInfo file(QDir(game_directory_).filePath(name));
-    if (!file.exists() || file.size() == 0) {
-      previewFailed(
-          "Stitching calibration has not produced all the saved camera images and projection needed for "
-          "the crop preview. Complete stitching calibration, then reopen Adjust crop.");
-      return;
-    }
-  }
-  if (!temporary_.isValid()) {
-    previewFailed(
-        "Could not create the temporary crop preview folder. Check temporary-folder access and free disk space.");
-    return;
-  }
-  source_revision_ = RinkLevelingDialog::sourceRevision(game_directory_);
-  if (source_revision_.isEmpty()) {
-    previewFailed(
-        "The saved calibration files could not be read for the crop preview. Check the game files and try again.");
-    return;
-  }
-  for (const QString name :
-       {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png", "config.yaml"}) {
-    const QString source = QDir(game_directory_).filePath(name);
-    if (QFileInfo(source).isSymLink() || !QFile::copy(source, temporary_.filePath(name))) {
-      previewFailed(
-          "Could not copy the saved calibration into the crop preview folder. Check file access and free disk space.");
-      return;
-    }
-  }
-  if (RinkLevelingDialog::sourceRevision(temporary_.path()) != source_revision_ ||
-      readFile(temporary_.filePath("config.yaml")) != config_contents) {
-    previewFailed("The saved calibration changed. Reopen the crop editor.");
-    return;
-  }
-  QMap<QString, QString> fields;
-  for (const auto& line : readFile(temporary_.filePath("stitching_canvas_provenance")).split('\n')) {
-    const int separator = line.indexOf('=');
-    if (separator < 0)
-      continue;
-    const QString key = QString::fromUtf8(line.left(separator));
-    if (fields.contains(key)) {
-      previewFailed("Calibration metadata contains duplicate fields.");
-      return;
-    }
-    fields[key] = QString::fromUtf8(line.mid(separator + 1));
-  }
-  try {
-    YAML::Node wrapper, saved = wrapper["stitching"]["projection_framing"];
-    for (const auto& key : {"auto-fov", "auto-canvas", "horizontal-fov"}) {
-      QString yaml_key(key);
-      yaml_key.replace('-', '_');
-      const QString value = fields.value("projection-" + QString(key));
-      if (value.isEmpty())
-        throw std::invalid_argument("Missing framing metadata");
-      if (QString(key) == "horizontal-fov") {
-        saved[yaml_key.toStdString()] = YAML::Load(value.toStdString());
-      } else {
-        if (value != "0" && value != "1")
-          throw std::invalid_argument("Invalid framing metadata");
-        saved[yaml_key.toStdString()] = value == "1";
+    for (const QString name : {"autooptimiser_out.pto", ".autooptimiser_out.aligned.pto", "left.png", "right.png"}) {
+      if (!QFile::copy(QDir(game_directory_).filePath(name), temporary_.filePath(name))) {
+        previewFailed("Could not copy the current calibration preview.");
+        return;
       }
     }
-    for (int index = 0; index < 3; ++index) {
-      bool ok = false;
-      const double angle = fields.value(QString("projection-rotation-%1").arg(index)).toDouble(&ok);
-      if (!ok)
-        throw std::invalid_argument("Missing rotation metadata");
-      saved["rotation_degrees"].push_back(angle);
-    }
-    const auto parsed = hm::stitching::read_stitch_projection_framing(wrapper);
-    bool h_ok = false, v_ok = false;
-    const double horizontal = fields.value("camera-horizontal-fov").toDouble(&h_ok);
-    const double vertical = fields.value("camera-vertical-fov").toDouble(&v_ok);
-    const QString parameters = projection_parameters_.empty()
-        ? "none"
-        : QString::fromStdString(hm::stitching::FormatStitchProjectionParameters(projection_parameters_));
-    if (!parsed.ok() || withoutCrop(*parsed) != withoutCrop(initial_) || fields.value("mapping-backend") != "nona" ||
-        fields.value("projection") != projection_ || fields.value("projection-parameters") != parameters ||
-        fields.value("camera-configuration").toStdString() != camera_.configuration || !h_ok || !v_ok ||
-        horizontal != camera_.horizontal_fov || vertical != camera_.vertical_fov) {
-      previewFailed("Calibrate the current projection and camera settings before previewing the crop.");
+    if (RinkLevelingDialog::inProgressSourceRevision(temporary_.path()) != source_revision_) {
+      previewFailed("Calibration changed while opening the crop editor.");
       return;
     }
-  } catch (const std::exception&) {
-    previewFailed("Saved calibration metadata is incomplete. Recalibrate to enable the preview.");
-    return;
+  } else {
+    const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
+    if (!lock.ok()) {
+      previewFailed("Could not access the saved stitching calibration. Check access to the game folder and try again.");
+      return;
+    }
+    if (!*lock) {
+      previewFailed("Stitching calibration is being updated. Wait for it to finish, then reopen Adjust crop.");
+      return;
+    }
+    const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
+    if (!config_lock.ok()) {
+      previewFailed("Game settings are being updated. Reopen Adjust crop after the update finishes.");
+      return;
+    }
+    // Explain calibration readiness before attempting to load its images. A
+    // partial/failed run may leave old files, or have no images to snapshot yet.
+    const QString config_path = QDir(game_directory_).filePath("config.yaml");
+    if (!QFileInfo::exists(config_path)) {
+      previewFailed(
+          "Stitching calibration is not available yet. Save the game settings and run stitching calibration, "
+          "then reopen Adjust crop to drag the crop rectangle.");
+      return;
+    }
+    const auto config_contents = readFile(config_path);
+    try {
+      if (config_contents.isEmpty())
+        throw std::invalid_argument("Unreadable game settings");
+      const auto config = YAML::Load(config_contents.toStdString());
+      const auto ui = config["hstream_ui"];
+      if (ui && !ui.IsNull() && !ui.IsMap())
+        throw std::invalid_argument("Invalid UI settings");
+      const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
+      if (calibration && !calibration.IsNull() && !calibration.IsMap())
+        throw std::invalid_argument("Invalid calibration settings");
+      const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
+      if (status && !status.IsNull() && status.as<std::string>() != "complete") {
+        previewFailed(
+            status.as<std::string>() == "failed"
+                ? "Stitching calibration failed, so its crop preview is not ready. Resolve the calibration "
+                  "error and run calibration again, then reopen Adjust crop."
+                : "Stitching calibration is incomplete. Finish calibration with the current camera and "
+                  "projection settings, then reopen Adjust crop to drag the crop rectangle.");
+        return;
+      }
+    } catch (const std::exception&) {
+      previewFailed("Could not read the game's calibration status. Check the game settings and reopen Adjust crop.");
+      return;
+    }
+    for (const QString name : {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"}) {
+      const QFileInfo file(QDir(game_directory_).filePath(name));
+      if (!file.exists() || file.size() == 0) {
+        previewFailed(
+            "Stitching calibration has not produced all the saved camera images and projection needed for "
+            "the crop preview. Complete stitching calibration, then reopen Adjust crop.");
+        return;
+      }
+    }
+    if (!temporary_.isValid()) {
+      previewFailed(
+          "Could not create the temporary crop preview folder. Check temporary-folder access and free disk space.");
+      return;
+    }
+    source_revision_ = RinkLevelingDialog::sourceRevision(game_directory_);
+    if (source_revision_.isEmpty()) {
+      previewFailed(
+          "The saved calibration files could not be read for the crop preview. Check the game files and try again.");
+      return;
+    }
+    for (const QString name :
+         {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png", "config.yaml"}) {
+      const QString source = QDir(game_directory_).filePath(name);
+      if (QFileInfo(source).isSymLink() || !QFile::copy(source, temporary_.filePath(name))) {
+        previewFailed(
+            "Could not copy the saved calibration into the crop preview folder. Check file access and free disk space.");
+        return;
+      }
+    }
+    if (RinkLevelingDialog::sourceRevision(temporary_.path()) != source_revision_ ||
+        readFile(temporary_.filePath("config.yaml")) != config_contents) {
+      previewFailed("The saved calibration changed. Reopen the crop editor.");
+      return;
+    }
+    QMap<QString, QString> fields;
+    for (const auto& line : readFile(temporary_.filePath("stitching_canvas_provenance")).split('\n')) {
+      const int separator = line.indexOf('=');
+      if (separator < 0)
+        continue;
+      const QString key = QString::fromUtf8(line.left(separator));
+      if (fields.contains(key)) {
+        previewFailed("Calibration metadata contains duplicate fields.");
+        return;
+      }
+      fields[key] = QString::fromUtf8(line.mid(separator + 1));
+    }
+    try {
+      YAML::Node wrapper, saved = wrapper["stitching"]["projection_framing"];
+      for (const auto& key : {"auto-fov", "auto-canvas", "horizontal-fov"}) {
+        QString yaml_key(key);
+        yaml_key.replace('-', '_');
+        const QString value = fields.value("projection-" + QString(key));
+        if (value.isEmpty())
+          throw std::invalid_argument("Missing framing metadata");
+        if (QString(key) == "horizontal-fov") {
+          saved[yaml_key.toStdString()] = YAML::Load(value.toStdString());
+        } else {
+          if (value != "0" && value != "1")
+            throw std::invalid_argument("Invalid framing metadata");
+          saved[yaml_key.toStdString()] = value == "1";
+        }
+      }
+      for (int index = 0; index < 3; ++index) {
+        bool ok = false;
+        const double angle = fields.value(QString("projection-rotation-%1").arg(index)).toDouble(&ok);
+        if (!ok)
+          throw std::invalid_argument("Missing rotation metadata");
+        saved["rotation_degrees"].push_back(angle);
+      }
+      const auto parsed = hm::stitching::read_stitch_projection_framing(wrapper);
+      bool h_ok = false, v_ok = false;
+      const double horizontal = fields.value("camera-horizontal-fov").toDouble(&h_ok);
+      const double vertical = fields.value("camera-vertical-fov").toDouble(&v_ok);
+      const QString parameters = projection_parameters_.empty()
+          ? "none"
+          : QString::fromStdString(hm::stitching::FormatStitchProjectionParameters(projection_parameters_));
+      if (!parsed.ok() || withoutCrop(*parsed) != withoutCrop(initial_) || fields.value("mapping-backend") != "nona" ||
+          fields.value("projection") != projection_ || fields.value("projection-parameters") != parameters ||
+          fields.value("camera-configuration").toStdString() != camera_.configuration || !h_ok || !v_ok ||
+          horizontal != camera_.horizontal_fov || vertical != camera_.vertical_fov) {
+        previewFailed("Calibrate the current projection and camera settings before previewing the crop.");
+        return;
+      }
+    } catch (const std::exception&) {
+      previewFailed("Saved calibration metadata is incomplete. Recalibrate to enable the preview.");
+      return;
+    }
   }
   const QByteArray pto = readFile(temporary_.filePath("autooptimiser_out.pto"));
   const auto prepared = hm::stitching::PrepareRinkLevelingProject(pto.toStdString());
@@ -507,6 +533,7 @@ void ProjectionCropDialog::loadPreview() {
     previewFailed("The saved project does not reference the calibrated camera images.");
     return;
   }
+  geometry_ = hm::stitching::projection_crop_geometry(pto.toStdString(), initial_);
   const auto dimensions = QRegularExpression("(?m)^p .*?\\bw(\\d+) .*?\\bh(\\d+)").match(QString::fromUtf8(pto));
   const int width = dimensions.captured(1).toInt(), height = dimensions.captured(2).toInt();
   if (width <= 0 || height <= 0) {
@@ -613,7 +640,13 @@ void ProjectionCropDialog::stopTool() {
 }
 
 void ProjectionCropDialog::acceptCrop() {
-  if (preview_ready_) {
+  if (in_progress_calibration_) {
+    if (!source_revision_.isEmpty() &&
+        RinkLevelingDialog::inProgressSourceRevision(game_directory_) != source_revision_) {
+      status_->setText("Calibration changed. Cancel calibration and retry.");
+      return;
+    }
+  } else if (preview_ready_) {
     const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
     if (!lock.ok() || !*lock) {
       status_->setText("Calibration is being updated. Cancel and reopen afterward.");
@@ -632,4 +665,9 @@ void ProjectionCropDialog::acceptCrop() {
 void ProjectionCropDialog::reject() {
   stopTool();
   QDialog::reject();
+}
+
+void ProjectionCropDialog::closeAfterBackendCompletion() {
+  backend_completed_ = true;
+  reject();
 }

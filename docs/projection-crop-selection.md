@@ -1,9 +1,16 @@
+During desktop setup, the crop editor opens after panorama alignment and post leveling, before final stitching
+maps and scoreboard selection. **Full canvas — no cropping** is selected by default. **Use crop** saves the
+choice and continues setup; cancelling stops setup. The choice is remembered, including no cropping. The
+editor is offered again when the projected camera geometry changes, such as a new alignment, projection,
+projection parameters, or leveling angles. Changing only crop bounds or output resolution does not require
+another confirmation. Games with an existing calibration and no recorded choice are prompted before playback.
+
 Use **Adjust crop…** in the stitching controls to control how much of the projected rink is retained. Stop
 playback before editing. This control is available with the Nona mapping backend.
 
 - **Auto — crop valid pixels** lets Hugin choose its valid-image rectangle during calibration. The editor shows
   an estimate of that rectangle when a saved calibration is available.
-- **Full canvas** removes all cropping, including any saved manual trim.
+- **Full canvas — no cropping** removes all cropping, including any saved manual trim.
 - **Manual** lets you drag the rectangle's edges or corners, move it by dragging inside, or enter the percentage
   trimmed from each side. **Keep full width** sets left and right trim to zero while preserving the top and bottom.
   Turn it off again to restore the previous horizontal trim.

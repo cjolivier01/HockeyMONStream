@@ -2109,7 +2109,8 @@ absl::Status HuginProject::Configure(
     }
   }
   const fs::path aligned_project_path = staging / ".autooptimiser_out.aligned.pto";
-  if (options.mapping_backend == MappingBackend::kNona && options.projection.has_value() && options.select_leveling) {
+  if (options.mapping_backend == MappingBackend::kNona && options.projection.has_value() &&
+      (options.select_leveling || options.select_crop)) {
     fs::copy_file(staging / "autooptimiser_out.pto", aligned_project_path, fs::copy_options::overwrite_existing, error);
     if (error)
       return absl::InternalError("Unable to preserve the aligned Hugin project for rink leveling: " + error.message());
@@ -2160,6 +2161,29 @@ absl::Status HuginProject::Configure(
     if (options.progress) {
       options.progress(
           "leveling", "complete", selected->has_value() ? "Rink leveling angles selected" : "Rink leveling skipped");
+    }
+  }
+  if (options.mapping_backend == MappingBackend::kNona && options.projection.has_value() && options.select_crop) {
+    auto selected = options.select_crop(staging, effective_projection_framing);
+    if (!selected.ok())
+      return selected.status();
+    const bool changed = selected->auto_crop != effective_projection_framing.auto_crop ||
+        selected->crop != effective_projection_framing.crop;
+    effective_projection_framing.auto_crop = selected->auto_crop;
+    effective_projection_framing.crop = selected->crop;
+    if (effective_expected_backend_choices.has_value())
+      effective_expected_backend_choices->projection_framing = effective_projection_framing;
+    if (changed) {
+      fs::copy_file(
+          aligned_project_path, staging / "autooptimiser_out.pto", fs::copy_options::overwrite_existing, error);
+      if (error)
+        return absl::InternalError("Unable to restore alignment after crop selection: " + error.message());
+      HM_RETURN_IF_ERROR(ApplyProjection(
+          staging,
+          *options.projection,
+          options.projection_parameters,
+          effective_projection_framing,
+          options.is_cancelled));
     }
   }
   if (options.progress)

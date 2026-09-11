@@ -1927,6 +1927,84 @@ absl::StatusOr<StitchingBackendChoices> apply_stitching_leveling_rotation(
   return updated;
 }
 
+std::string projection_crop_geometry(const std::string& pto, const StitchProjectionFraming& framing) {
+  // PTO panorama dimensions and S bounds change when applying a crop/output
+  // cap. Camera dimensions, lens parameters and poses remain in camera space.
+  static const std::regex camera_geometry(R"(^(?:w|h|f|v|a|b|c|d|e|g|t|y|p|r|TrX|TrY|TrZ|Tpy|Tpp)[=+\-.0-9].*$)");
+  static const std::regex panorama_geometry(R"(^(?:f|v|P)[=+\-.0-9].*$)");
+  std::istringstream lines(pto);
+  std::ostringstream result;
+  result.imbue(std::locale::classic());
+  result.precision(17);
+  result << "crop-geometry-v1\n" << framing.auto_fov << ' ' << framing.horizontal_fov << ' ' << framing.auto_canvas;
+  for (double angle : framing.rotation_degrees)
+    result << ' ' << angle;
+  result << '\n';
+  size_t cameras = 0, panoramas = 0;
+  for (std::string line; std::getline(lines, line);) {
+    std::istringstream fields(line);
+    std::string kind;
+    fields >> kind;
+    if (kind != "p" && kind != "i")
+      continue;
+    kind == "p" ? ++panoramas : ++cameras;
+    result << kind;
+    for (std::string field; fields >> field;) {
+      if (kind == "p" && field.rfind("P\"", 0) == 0) {
+        for (std::string rest; field.back() != '"' && fields >> rest;)
+          field += " " + rest;
+        result << ' ' << field;
+      } else if (std::regex_match(field, kind == "p" ? panorama_geometry : camera_geometry)) {
+        result << ' ' << field;
+      }
+    }
+    result << '\n';
+  }
+  return cameras == 2 && panoramas == 1 ? result.str() : std::string();
+}
+
+bool projection_crop_reviewed(const YAML::Node& config, const std::string& geometry) {
+  const auto ui = config["hstream_ui"];
+  const auto review = ui && ui.IsMap() ? ui["projection_crop_geometry"] : YAML::Node();
+  return !geometry.empty() && review && review.IsScalar() && review.as<std::string>() == geometry;
+}
+
+void write_projection_crop_review(YAML::Node& config, const std::string& geometry) {
+  if (!geometry.empty())
+    config["hstream_ui"]["projection_crop_geometry"] = geometry;
+}
+
+absl::StatusOr<StitchingBackendChoices> apply_stitching_crop_selection(
+    const fs::path& game_dir,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices,
+    const StitchProjectionFraming& framing,
+    const std::string& geometry) {
+  if (expected_choices.mapping_backend != "nona" || expected_invalidation_id.empty() || geometry.empty())
+    return absl::InvalidArgumentError("Crop selection requires owned NONA calibration geometry");
+  StitchingBackendChoices updated = expected_choices;
+  updated.projection_framing.auto_crop = framing.auto_crop;
+  updated.projection_framing.crop = framing.crop;
+  HM_RETURN_IF_ERROR(validate_projection_view(updated.projection_framing));
+  auto transaction = GameConfigTransactionLock::Acquire(game_dir);
+  if (!transaction.ok())
+    return transaction.status();
+  try {
+    YAML::Node config = YAML::LoadFile((game_dir / "config.yaml").string());
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, expected_choices));
+    write_stitch_projection_framing(config, updated.projection_framing);
+    write_projection_framing_node(
+        config["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection_framing"],
+        updated.projection_framing);
+    write_projection_crop_review(config, geometry);
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, updated));
+    HM_RETURN_IF_ERROR(publish_game_config(game_dir, YAML::Dump(config) + "\n"));
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to apply crop selection: " + std::string(exception.what()));
+  }
+  return updated;
+}
+
 YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {
   const bool empty_map_baseline = !baseline.IsDefined() || baseline.IsNull();
   if ((baseline.IsMap() || empty_map_baseline) && desired.IsMap()) {

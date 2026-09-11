@@ -389,7 +389,7 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
   return absl::DeadlineExceededError("Timed out waiting for optional rink leveling; choose Skip leveling to continue");
 }
 
-absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file_impl(const fs::path& path) {
+absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
   constexpr size_t kMaximumResponseBytes = 256;
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0) {
@@ -434,7 +434,84 @@ absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response
       return absl::UnavailableError("Rink leveling response is not ready for a bounded read");
     return absl::InternalError("Unable to read the rink leveling response: " + std::string(std::strerror(errno)));
   }
-  return parse_rink_leveling_response(contents);
+  return contents;
+}
+
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file_impl(const fs::path& path) {
+  auto contents = read_selection_response_file(path);
+  if (!contents.ok())
+    return contents.status();
+  return parse_rink_leveling_response(*contents);
+}
+
+absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
+    const fs::path& game_dir,
+    const fs::path& staging,
+    StitchingBackendChoices expected,
+    const StitchProjectionFraming& framing,
+    const std::string& invalidation_id,
+    const std::function<bool()>& is_cancelled) {
+  expected.projection_framing = framing; // Leveling may have updated the owner tuple.
+  std::ifstream project(staging / "autooptimiser_out.pto");
+  const std::string pto((std::istreambuf_iterator<char>(project)), std::istreambuf_iterator<char>());
+  const std::string geometry = projection_crop_geometry(pto, framing);
+  if (geometry.empty())
+    return absl::FailedPreconditionError("Crop selection requires valid projected camera geometry");
+  {
+    auto lock = GameConfigTransactionLock::Acquire(game_dir);
+    if (!lock.ok())
+      return lock.status();
+    try {
+      const auto config = YAML::LoadFile((game_dir / "config.yaml").string());
+      HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, invalidation_id, expected));
+      if (projection_crop_reviewed(config, geometry))
+        return framing;
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError(error.what());
+    }
+  }
+  const fs::path response_path = staging / ".projection-crop-response";
+  std::error_code error;
+  fs::remove(response_path, error);
+  if (error)
+    return absl::InternalError("Unable to reset crop response: " + error.message());
+  std::cout << "HSTREAM_PROJECTION_CROP status=ready directory-hex=" << hex_encode(staging.string()) << std::endl;
+  const auto deadline = std::chrono::steady_clock::now() + rink_leveling_selection_timeout();
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (is_cancelled && is_cancelled())
+      return absl::CancelledError("Crop selection cancelled with stitching calibration");
+    auto contents = read_selection_response_file(response_path);
+    if (absl::IsNotFound(contents.status())) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+      continue;
+    }
+    if (!contents.ok())
+      return contents.status();
+    std::istringstream input(*contents);
+    input.imbue(std::locale::classic());
+    std::string action;
+    int automatic = 0;
+    auto selected = framing;
+    if (!(input >> action >> automatic >> selected.crop[0] >> selected.crop[1] >> selected.crop[2] >>
+          selected.crop[3]) ||
+        action != "use" || (automatic != 0 && automatic != 1))
+      return absl::InvalidArgumentError("Invalid crop selection response");
+    input >> std::ws;
+    if (!input.eof())
+      return absl::InvalidArgumentError("Crop selection response has trailing data");
+    selected.auto_crop = automatic != 0;
+    auto updated = apply_stitching_crop_selection(game_dir, invalidation_id, expected, selected, geometry);
+    if (!updated.ok())
+      return updated.status();
+    std::cout.imbue(std::locale::classic());
+    std::cout << std::setprecision(std::numeric_limits<double>::max_digits10)
+              << "HSTREAM_PROJECTION_CROP status=selected auto=" << automatic;
+    for (double edge : selected.crop)
+      std::cout << " " << edge;
+    std::cout << std::endl;
+    return selected;
+  }
+  return absl::DeadlineExceededError("Timed out waiting for crop selection");
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root);
@@ -3097,6 +3174,16 @@ absl::Status create_control_points(
                                               const fs::path& staging, const StitchProjectionFraming&) {
         return wait_for_rink_leveling_selection(
             game_dir, staging, expected_choices, expected_invalidation_id, is_cancelled);
+      };
+    }
+    const char* crop_flow = std::getenv("HSTREAM_PROJECTION_CROP_FLOW");
+    if (mapping_backend == MappingBackend::kNona && crop_flow && std::string(crop_flow) == "1") {
+      if (!candidate_options.expected_backend_choices.has_value() || expected_invalidation_id.empty())
+        return absl::FailedPreconditionError("Interactive cropping requires a reserved calibration generation");
+      const auto expected = *candidate_options.expected_backend_choices;
+      candidate_options.select_crop = [game_dir, expected, expected_invalidation_id, is_cancelled](
+                                          const fs::path& staging, const StitchProjectionFraming& framing) {
+        return wait_for_crop_selection(game_dir, staging, expected, framing, expected_invalidation_id, is_cancelled);
       };
     }
     absl::Status configure_status = HuginProject::Configure(

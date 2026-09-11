@@ -130,6 +130,18 @@ struct HStreamWindowTestAccess {
     window->loaded_projection_framing_ = window->active_projection_framing_;
   }
 
+  static bool ensureProjectionCropReviewed(HStreamWindow* window) {
+    return window->ensureProjectionCropReviewed();
+  }
+
+  static hm::stitching::StitchProjectionFraming cropFraming(HStreamWindow* window) {
+    return window->stitchProjectionFraming();
+  }
+
+  static void handleProjectionCropOutput(HStreamWindow* window, const QString& line) {
+    window->handleProjectionCropOutput(line);
+  }
+
   static void handleRinkLevelingOutput(HStreamWindow* window, const QString& line) {
     window->handleRinkLevelingOutput(line);
   }
@@ -2517,8 +2529,43 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
       HStreamWindowTestAccess::pendingLevelingRevision(window).isEmpty();
   HStreamWindowTestAccess::handleRinkLevelingOutput(window, "HSTREAM_RINK_LEVELING status=skipped");
   const bool skipped_event_ok = window->logText().contains("calibration continuing with the configured angles");
+  const QString crop_ready = QString("HSTREAM_PROJECTION_CROP status=ready directory-hex=%1")
+                                 .arg(QString::fromLatin1(QByteArray::fromStdString(staging_dir.string()).toHex()));
+  bool crop_opened = false;
+  QTimer::singleShot(0, window, [&]() {
+    auto* dialog = dynamic_cast<ProjectionCropDialog*>(window->findChild<QDialog*>("projectionCropDialog"));
+    crop_opened = dialog && dialog->findChild<QComboBox*>("projectionCropMode")->currentData() == "full";
+    if (dialog)
+      dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+  });
+  HStreamWindowTestAccess::handleProjectionCropOutput(window, crop_ready);
+  QFile crop_response(QString::fromStdString((staging_dir / ".projection-crop-response").string()));
+  const bool crop_default_ok = crop_response.open(QIODevice::ReadOnly) && crop_response.readAll() == "use 0 0 1 0 1\n";
+  crop_response.close();
+  fs::remove(staging_dir / ".projection-crop-response");
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  bool crop_closed = false;
+  QTimer::singleShot(0, window, [&]() {
+    auto* dialog = dynamic_cast<ProjectionCropDialog*>(window->findChild<QDialog*>("projectionCropDialog"));
+    crop_closed = dialog != nullptr;
+    if (dialog)
+      dialog->closeAfterBackendCompletion();
+  });
+  HStreamWindowTestAccess::handleProjectionCropOutput(window, crop_ready);
+  const bool crop_no_stale_response = !fs::exists(staging_dir / ".projection-crop-response");
+  HStreamWindowTestAccess::handleProjectionCropOutput(
+      window, "HSTREAM_PROJECTION_CROP status=selected auto=0 0 1 0.2 0.9");
+  const bool crop_applied = HStreamWindowTestAccess::cropFraming(window).crop == std::array<double, 4>{0, 1, 0.2, 0.9};
+  HStreamWindowTestAccess::setPipelineStopRequested(window, true);
+  HStreamWindowTestAccess::handleProjectionCropOutput(window, crop_ready);
+  const bool crop_stop_ignored = !fs::exists(staging_dir / ".projection-crop-response");
+  HStreamWindowTestAccess::setPipelineStopRequested(window, false);
   fs::remove_all(staging_dir, error);
-  return expect(inactive_ignored, "Ready events outside the active pending NONA generation must be ignored") &&
+  return expect(
+             crop_opened && crop_default_ok && crop_closed && crop_no_stale_response && crop_applied &&
+                 crop_stop_ignored,
+             "Crop setup must default to full canvas, apply its result and suppress shutdown/stale responses") &&
+      expect(inactive_ignored, "Ready events outside the active pending NONA generation must be ignored") &&
       expect(stop_ignored, "A buffered ready event must not open a modal once pipeline shutdown starts") &&
       expect(final_drain_ignored, "A buffered ready event must not open a modal while final output is being drained") &&
       expect(saw_skip_dialog && skip_ok,
@@ -2548,15 +2595,18 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qputenv("HSTREAM_RINK_LEVELING_FLOW", "inherited-stale-value");
+  qputenv("HSTREAM_PROJECTION_CROP_FLOW", "inherited-stale-value");
   activate(start);
   qunsetenv("HSTREAM_RINK_LEVELING_FLOW");
+  qunsetenv("HSTREAM_PROJECTION_CROP_FLOW");
   for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(
           mapping_backend->currentData() != "nona" &&
-              HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_RINK_LEVELING_FLOW").isEmpty(),
+              HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_RINK_LEVELING_FLOW").isEmpty() &&
+              HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_PROJECTION_CROP_FLOW").isEmpty(),
           "OpenCV calibration must remove an inherited NONA rink-leveling flow request")) {
     activate(stop);
     return false;
@@ -2621,7 +2671,8 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "failure");
   activate(start);
   if (!expect(
-          HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_RINK_LEVELING_FLOW") == "1",
+          HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_RINK_LEVELING_FLOW") == "1" &&
+              HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_PROJECTION_CROP_FLOW") == "1",
           "Pending NONA calibration must opt the backend into the in-progress rink-leveling flow")) {
     activate(stop);
     qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
@@ -8756,6 +8807,21 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   const QByteArray crop_original_path = qgetenv("PATH");
   qputenv("PATH", crop_tools.path().toUtf8() + ":/usr/bin:/bin");
+  bool startup_crop_opened = false;
+  QTimer::singleShot(0, [&]() {
+    auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
+    startup_crop_opened = dialog && dialog->findChild<QComboBox*>("projectionCropMode")->currentData() == "full";
+    if (dialog)
+      dialog->close();
+  });
+  const bool startup_cancelled = !HStreamWindowTestAccess::ensureProjectionCropReviewed(window);
+  QApplication::processEvents();
+  if (!expect(
+          startup_crop_opened && startup_cancelled,
+          "An existing unreviewed calibration must prompt with no cropping and allow startup cancellation")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
   bool crop_preview_ready = false;
   QTimer::singleShot(0, [&]() {
     auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
@@ -8771,8 +8837,30 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   });
   activate(crop_button);
   if (!expect(
-          crop_preview_ready && !save->isEnabled() && !HStreamWindowTestAccess::hasPendingCalibrationView(window),
-          "A parameter-free projection can preview an unchanged crop without attaching a save guard")) {
+          crop_preview_ready && save->isEnabled() && HStreamWindowTestAccess::hasPendingCalibrationView(window),
+          "Confirming an unchanged crop for the first time must remember that the geometry was reviewed")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
+  activate(save);
+  if (!expect(
+          !save->isEnabled() && !HStreamWindowTestAccess::hasPendingCalibrationView(window),
+          "Saving crop confirmation should clear its pending state")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
+  startup_crop_opened = false;
+  QTimer::singleShot(0, [&]() {
+    auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
+    startup_crop_opened = dialog != nullptr;
+    if (dialog)
+      dialog->close();
+  });
+  const bool startup_reused = HStreamWindowTestAccess::ensureProjectionCropReviewed(window);
+  QApplication::processEvents();
+  if (!expect(
+          startup_reused && !startup_crop_opened,
+          "An unchanged, reviewed calibration must start without another crop popup")) {
     qputenv("PATH", crop_original_path);
     return false;
   }
@@ -13356,12 +13444,22 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   const bool rink_leveling_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RINK_LEVELING_FLOW_ONLY");
-  if (!rink_leveling_flow_only && !test_cleanup_transaction_protocol()) {
+  const bool crop_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_CROP_FLOW_ONLY");
+  if (!rink_leveling_flow_only && !crop_flow_only && !test_cleanup_transaction_protocol()) {
     std::cerr << "test_cleanup_transaction_protocol failed\n";
     return 1;
   }
   HStreamWindow window;
   window.show();
+
+  if (crop_flow_only) {
+    if (!test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
+        !test_projection_parameter_persistence(&window)) {
+      std::cerr << "focused crop setup tests failed\n";
+      return 1;
+    }
+    return 0;
+  }
 
   if (rink_leveling_flow_only) {
     if (!test_window_title_tracks_selected_game(&window) || !test_cuda_oom_calibration_failure_analysis(&window) ||

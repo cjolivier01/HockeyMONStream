@@ -690,12 +690,26 @@ int main() {
         read_text_file(nona_invocations).empty() && read_text_file(enblend_invocations).empty();
     return std::optional<std::array<double, 3>>(selected_rotation);
   };
+  bool crop_selection_called = false;
+  leveling_selection_options.select_crop = [&](const fs::path& staging,
+                                               const hm::stitching::StitchProjectionFraming& current)
+      -> absl::StatusOr<hm::stitching::StitchProjectionFraming> {
+    crop_selection_called = current.rotation_degrees == selected_rotation &&
+        !read_text_file(staging / "autooptimiser_out.pto").empty() && read_text_file(nona_invocations).empty() &&
+        read_text_file(enblend_invocations).empty();
+    auto chosen = current;
+    chosen.auto_crop = false;
+    chosen.crop = {0.1, 0.9, 0.2, 0.8};
+    return chosen;
+  };
   const auto leveling_selected = hm::stitching::HuginProject::Configure(
       leveling_selection_game,
       root / "private-inputs" / "left.png",
       root / "private-inputs" / "right.png",
       matches,
       leveling_selection_options);
+  if (!leveling_selected.ok())
+    std::cerr << "crop calibration: " << leveling_selected << "\n";
   auto leveling_selection_lock = hm::stitching::HuginProject::RecoverAndLock(leveling_selection_game);
   std::optional<hm::stitching::HuginProject::CanvasProvenance> leveling_selection_provenance;
   if (leveling_selection_lock.ok()) {
@@ -712,9 +726,12 @@ int main() {
   const auto leveling_complete = std::find(leveling_progress.begin(), leveling_progress.end(), "leveling:complete");
   const auto canvas_started = std::find(leveling_progress.begin(), leveling_progress.end(), "canvas:started");
   ok &= expect(
-      leveling_selected.ok() && leveling_selection_called && leveling_selection_preceded_rendering &&
-          leveling_selection_provenance.has_value() && leveling_selection_provenance->projection_framing.has_value() &&
+      leveling_selected.ok() && leveling_selection_called && crop_selection_called &&
+          leveling_selection_preceded_rendering && leveling_selection_provenance.has_value() &&
+          leveling_selection_provenance->projection_framing.has_value() &&
           leveling_selection_provenance->projection_framing->rotation_degrees == selected_rotation &&
+          !leveling_selection_provenance->projection_framing->auto_crop &&
+          leveling_selection_provenance->projection_framing->crop == std::array<double, 4>{0.1, 0.9, 0.2, 0.8} &&
           leveling_projection_runs.find("--rotate=0,-35,3") != std::string::npos &&
           leveling_projection_runs.find("--rotate=12,-30,1.5") != std::string::npos &&
           std::count(leveling_nona_runs.begin(), leveling_nona_runs.end(), '\n') == 1 &&

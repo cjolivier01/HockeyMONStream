@@ -53,6 +53,7 @@ class QToolButton;
 class PipelineInspectorWidget;
 class RinkLevelingDialog;
 class ScoreboardSelectionDialog;
+class ProjectionCropDialog;
 
 namespace hm::ui_internal {
 
@@ -271,6 +272,7 @@ class HStreamWindow : public QMainWindow {
   void closeStitchingCalibrationDialog();
   void handleScoreboardSelectorOutput(const QString& line);
   void handleRinkLevelingOutput(const QString& line);
+  void handleProjectionCropOutput(const QString& line);
   void switchPipelineRenderTarget(int tab_index);
   bool requestPipelinePreviewChannel(const QString& channel, PreviewRequestReason reason);
   QString selectedPipelinePreviewChannel() const;
@@ -400,6 +402,7 @@ class HStreamWindow : public QMainWindow {
   double cameraPresetControlValue(const QString& id) const;
   void selectRinkLeveling();
   void selectProjectionCrop();
+  bool ensureProjectionCropReviewed();
   bool hasPendingCropSelection() const;
   bool rinkLevelingInputsUnchanged() const;
   bool writeRinkLevelingSelection(YAML::Node& config);
@@ -748,6 +751,8 @@ class HStreamWindow : public QMainWindow {
   QString complete_log_;
   QString scoreboard_selector_url_;
   ScoreboardSelectionDialog* scoreboard_selection_dialog_{nullptr};
+  ProjectionCropDialog* projection_crop_dialog_{nullptr};
+  std::string pending_crop_geometry_;
   RinkLevelingDialog* rink_leveling_dialog_{nullptr};
   QDialog* calibration_dialog_{nullptr};
   QLabel* calibration_icon_{nullptr};

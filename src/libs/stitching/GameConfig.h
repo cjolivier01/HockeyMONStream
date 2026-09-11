@@ -260,6 +260,18 @@ absl::StatusOr<StitchingBackendChoices> apply_stitching_leveling_rotation(
     const StitchingBackendChoices& expected_choices,
     const std::array<double, 3>& rotation_degrees);
 
+// Identifies the projected camera geometry independently of crop and output scaling.
+// Empty means the project cannot establish a reusable crop decision.
+std::string projection_crop_geometry(const std::string& pto, const StitchProjectionFraming& framing);
+bool projection_crop_reviewed(const YAML::Node& config, const std::string& geometry);
+void write_projection_crop_review(YAML::Node& config, const std::string& geometry);
+absl::StatusOr<StitchingBackendChoices> apply_stitching_crop_selection(
+    const std::filesystem::path& game_dir,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices,
+    const StitchProjectionFraming& framing,
+    const std::string& geometry);
+
 // Applies only changes made between baseline and desired to latest. This is a
 // three-way merge for independently owned config paths, not a conflict
 // resolver: when both owners change the same path, desired wins.
