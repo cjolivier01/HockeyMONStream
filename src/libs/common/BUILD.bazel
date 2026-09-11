@@ -6,7 +6,6 @@ cc_library(
         "ApplicationPayload.cpp",
         "ConfigYaml.cpp",
         "PlotContext.cpp",
-        "Process.cpp",
         "RenderSet.cpp",
         "pipeline_utils.cpp",
     ],
@@ -14,7 +13,6 @@ cc_library(
         "ApplicationPayload.h",
         "ConfigYaml.h",
         "PlotContext.h",
-        "Process.h",
         "RenderSet.h",
         "TempFile.h",
         "VideoBitrate.h",
@@ -27,6 +25,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":process",
         ":utils_base",
         ":status",
         ":managed_object",
@@ -305,4 +304,12 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
     ],
+)
+
+cc_library(
+    name = "process",
+    srcs = ["Process.cpp"],
+    hdrs = ["Process.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
 )

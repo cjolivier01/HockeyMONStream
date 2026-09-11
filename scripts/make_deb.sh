@@ -352,6 +352,17 @@ if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
 fi
 ln -s hstream-cli "${STAGING}${INSTALL_PREFIX}/bin/pipeline-app"
 
+# Keep the pinned ExifTool and its Perl modules together, as in Bazel runfiles.
+# Distro ExifTool versions (especially Jammy on Jetson) lack current camera tags.
+exiftool_runtime="${HSTREAM_CLI}.runfiles/exiftool"
+if [[ ! -f "${exiftool_runtime}/exiftool" || ! -f "${exiftool_runtime}/lib/Image/ExifTool.pm" ]]; then
+  echo "ERROR: pinned ExifTool runtime is missing from hstream-cli runfiles." >&2
+  exit 1
+fi
+mkdir -p "${STAGING}${INSTALL_PREFIX}/share/exiftool"
+cp -L "${exiftool_runtime}/exiftool" "${exiftool_runtime}/LICENSE" "${STAGING}${INSTALL_PREFIX}/share/exiftool/"
+cp -RL "${exiftool_runtime}/lib" "${STAGING}${INSTALL_PREFIX}/share/exiftool/"
+
 # Ubuntu 22.04 arm64 publishes no hugin-tools package. Jetson releases include
 # pinned source-built copies of the required commands and their private
 # Hugin/VIGRA libraries, with upstream licenses, so clean-state calibration is
@@ -1286,6 +1297,7 @@ Depends: ${SHLIB_DEPENDS},
  ca-certificates,
  ${DEEPSTREAM_DEPENDS},
  ffmpeg,
+ perl,
  gstreamer1.0-plugins-bad,
  gstreamer1.0-nice${RUNTIME_TOOL_DEPENDS}
 Description: ${PACKAGE_DESCRIPTION}

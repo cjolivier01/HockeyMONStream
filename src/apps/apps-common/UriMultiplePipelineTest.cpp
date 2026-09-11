@@ -195,7 +195,9 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
     if (!decoded_sequence.has_value()) {
       ++stats->missing_decoded_sequence_meta;
     } else if (
-        decoded_sequence->source_id != frame_meta->source_id ||
+        decoded_sequence->source_id != frame_meta->source_id || decoded_sequence->source_uri == 0 ||
+        !GST_CLOCK_TIME_IS_VALID(decoded_sequence->source_pts) ||
+        !g_str_has_prefix(g_quark_to_string(decoded_sequence->source_uri), "file://") ||
         decoded_sequence->sequence != static_cast<uint64_t>(frame_meta->frame_num) ||
         decoded_sequence->sequence != stats->next_decoded_sequence_by_source[frame_meta->source_id]) {
       ++stats->decode_mux_sequence_mismatches;
@@ -635,8 +637,7 @@ int run_headless_render_video_sink() {
     g_object_get(G_OBJECT(sink_bin.sub_bins[0].sink), "sync", &sync, "qos", &qos, NULL);
     if (g_strcmp0(factory_name, "fakesink") != 0 || sync || qos) {
       std::cerr << "Headless render-video type " << render_type << " must use an unsynchronized, non-QoS fakesink; "
-                << "factory=" << (factory_name ? factory_name : "(null)") << " sync=" << sync << " qos=" << qos
-                << '\n';
+                << "factory=" << (factory_name ? factory_name : "(null)") << " sync=" << sync << " qos=" << qos << '\n';
       gst_object_unref(GST_OBJECT(sink_bin.bin));
       return 3;
     }
@@ -648,8 +649,7 @@ int run_headless_render_video_sink() {
 int run_scaled_render_sink_caps() {
   const auto vegas_size = hm::deepstream_sink_internal::fit_render_size_to_aspect(1600, 900, 15287, 6958);
   const auto native_size = hm::deepstream_sink_internal::fit_render_size_to_aspect(1600, 900, 16, 9);
-  if (vegas_size.first != 1600 || vegas_size.second != 728 || native_size.first != 1600 ||
-      native_size.second != 900) {
+  if (vegas_size.first != 1600 || vegas_size.second != 728 || native_size.first != 1600 || native_size.second != 900) {
     std::cerr << "Scaled render aspect fitting failed; vegas=" << vegas_size.first << 'x' << vegas_size.second
               << " native=" << native_size.first << 'x' << native_size.second << '\n';
     return 1;

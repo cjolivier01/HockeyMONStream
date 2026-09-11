@@ -135,7 +135,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends enblend ffmpeg hugin-tools \
+    && apt-get install -y --no-install-recommends enblend ffmpeg hugin-tools perl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY build-hstream-deb.sh /usr/local/bin/build-hstream-deb

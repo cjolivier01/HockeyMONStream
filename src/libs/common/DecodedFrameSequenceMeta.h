@@ -12,13 +12,21 @@ namespace hm {
 struct DecodedFrameSequence {
   guint source_id{0};
   uint64_t sequence{0};
+  // Interned physical chapter URI and its PTS before playlist rebasing/seek synchronization.
+  GQuark source_uri{0};
+  GstClockTime source_pts{GST_CLOCK_TIME_NONE};
 };
 
 /**
  * Adds a decoder-output sequence number that survives nvvideoconvert and nvstreammux. The sequence starts at zero and
  * never resets at URI chapter boundaries.
  */
-bool add_decoded_frame_sequence_meta(GstBuffer* buffer, guint source_id, uint64_t sequence);
+bool add_decoded_frame_sequence_meta(
+    GstBuffer* buffer,
+    guint source_id,
+    uint64_t sequence,
+    GQuark source_uri = 0,
+    GstClockTime source_pts = GST_CLOCK_TIME_NONE);
 
 /** Returns decoder-output sequence metadata directly from a pre-mux buffer, when present. */
 std::optional<DecodedFrameSequence> decoded_frame_sequence(GstBuffer* buffer);

@@ -1670,7 +1670,13 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
           GST_BUFFER_DTS(buf) += probe_data->base;
         }
       }
-      if (!buf || !hm::add_decoded_frame_sequence_meta(buf, bin->source_id, decoded_sequence)) {
+      if (!buf ||
+          !hm::add_decoded_frame_sequence_meta(
+              buf,
+              bin->source_id,
+              decoded_sequence,
+              g_quark_from_string(bin->uri_list[probe_data->uri_index]),
+              raw_buffer_pts)) {
         cancel_uri_playlist_source(bin, TRUE);
         GST_ELEMENT_ERROR(
             bin->src_elem,

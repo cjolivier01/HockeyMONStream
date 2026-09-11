@@ -112,6 +112,7 @@ cc_library(
   visibility = ["//visibility:public"],
   implementation_deps = [":orientation_internal"],
   deps = [
+    ":calibration_frame_exif",
     ":canvas_constraint_check",
     ":game_config",
     ":correlation",
@@ -568,4 +569,31 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
   ],
+)
+
+cc_library(
+    name = "calibration_frame_exif",
+    srcs = ["CalibrationFrameExif.cpp"],
+    data = ["@exiftool//:runtime"],
+    hdrs = ["CalibrationFrameExif.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:process",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@yaml-cpp",
+        "@com_google_absl//absl/status:status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "calibration_frame_exif_test",
+    srcs = ["CalibrationFrameExifTest.cpp"],
+    deps = [
+        ":calibration_frame_exif",
+        "//src/libs/common:process",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@yaml-cpp",
+    ],
 )

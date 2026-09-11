@@ -7,6 +7,7 @@
 #include "cupano/pano/cudaPano.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
+#include "hstream/src/libs/stitching/CalibrationFrameExif.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 
 #include <atomic>
@@ -143,6 +144,8 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   struct CalibrationFramePairSnapshot {
     CalibrationSurfaceSnapshot left;
     CalibrationSurfaceSnapshot right;
+    hm::stitching::CalibrationFrameSource left_source;
+    hm::stitching::CalibrationFrameSource right_source;
   };
   absl::Status ensure_stitcher();
   absl::Status ensure_stitcher_with_artifact_lock();
@@ -174,7 +177,11 @@ class StitcherPriv : public STITCH_PRIV_BASE {
       hm::surface::Surface incoming_surface_right);
   absl::StatusOr<std::pair<hm::surface::Surface, hm::surface::Surface>> high_bit_calibration_surfaces();
   absl::StatusOr<CalibrationSurfaceSnapshot> capture_calibration_surface(hm::surface::Surface surface);
-  absl::Status capture_calibration_pair(hm::surface::Surface left, hm::surface::Surface right);
+  absl::Status capture_calibration_pair(
+      hm::surface::Surface left,
+      hm::surface::Surface right,
+      const NvDsFrameMeta* left_meta,
+      const NvDsFrameMeta* right_meta);
   std::vector<hm::stitching::StitchingCalibrationFramePair> captured_calibration_frame_pairs();
   bool should_capture_calibration_pair(uint64_t pair_pts_ns) const;
   bool calibration_input_exhausted(const EosSnapshot& eos_snapshot);
