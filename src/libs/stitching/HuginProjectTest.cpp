@@ -96,6 +96,42 @@ bool write_remap_pair(
       cv::imwrite((directory / (prefix + "_y.tif")).string(), y);
 }
 
+// Native OpenCV fits can round an integer translation to either side of a pixel boundary.
+// Like enblend, size this fixture from the emitted TIFF rectangles, not a guessed fitted canvas.
+bool write_native_enblend_fixture() {
+  std::array<cv::Rect, 2> bounds;
+  for (size_t index = 0; index < bounds.size(); ++index) {
+    const std::string path = "mapping_000" + std::to_string(index) + ".tif";
+    TIFF* tif = TIFFOpen(path.c_str(), "r");
+    if (!tif)
+      return false;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float x_resolution = 0.0f;
+    float y_resolution = 0.0f;
+    const bool valid = TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) &&
+        TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height) && TIFFGetField(tif, TIFFTAG_XPOSITION, &x) &&
+        TIFFGetField(tif, TIFFTAG_YPOSITION, &y) && TIFFGetField(tif, TIFFTAG_XRESOLUTION, &x_resolution) &&
+        TIFFGetField(tif, TIFFTAG_YRESOLUTION, &y_resolution);
+    TIFFClose(tif);
+    // These small native fixtures use integer pixel positions and unit resolution.
+    if (!valid || width == 0 || width > 256 || height == 0 || height > 256 || x_resolution != 1.0f ||
+        y_resolution != 1.0f || !std::isfinite(x) || !std::isfinite(y) || x < 0 || x > 256 || y < 0 || y > 256 ||
+        x != std::floor(x) || y != std::floor(y)) {
+      return false;
+    }
+    bounds[index] =
+        cv::Rect(static_cast<int>(x), static_cast<int>(y), static_cast<int>(width), static_cast<int>(height));
+  }
+  const cv::Rect canvas = bounds[0] | bounds[1];
+  cv::Mat seam(canvas.size(), CV_8UC1, cv::Scalar(0));
+  seam.colRange(seam.cols / 2, seam.cols).setTo(cv::Scalar(255));
+  return cv::imwrite("seam_file.png", seam) &&
+      cv::imwrite("panorama.tif", cv::Mat(canvas.size(), CV_8UC3, cv::Scalar(1, 2, 3)));
+}
+
 uint32_t png_crc32(const unsigned char* data, size_t size) {
   uint32_t crc = 0xffffffffU;
   for (size_t index = 0; index < size; ++index) {
@@ -259,7 +295,9 @@ bool move_png_pixel_offset_after_first_image_data(const std::filesystem::path& p
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--native-enblend-fixture")
+    return write_native_enblend_fixture() ? 0 : 1;
   ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
   std::vector<hm::stitching::FeatureMatch> matches;
@@ -1104,19 +1142,11 @@ int main() {
            0.9f});
     }
   }
-  cv::Mat optimizer_disabled_seam(51, 73, CV_8UC1, cv::Scalar(0));
-  optimizer_disabled_seam.colRange(36, optimizer_disabled_seam.cols).setTo(cv::Scalar(255));
+  const std::string native_enblend_command =
+      "'" + fs::read_symlink("/proc/self/exe").string() + "' --native-enblend-fixture\n";
   ok &= expect(
-      cv::imwrite((root / "optimizer-disabled-seam.png").string(), optimizer_disabled_seam),
-      "optimizer-disabled seam fixture must exist");
-  ok &= expect(
-      write_tool(
-          enblend,
-          "cp '" + (root / "optimizer-disabled-seam.png").string() +
-              "' seam_file.png\n"
-              "cp '" +
-              fixtures.string() + "/panorama.tif' panorama.tif\n"),
-      "optimizer-disabled fake enblend must preserve the native seam");
+      write_tool(enblend, native_enblend_command),
+      "optimizer-disabled fake enblend must use the emitted mapping geometry");
   optimizer_disabled_options.progress =
       [&](const std::string& stage, const std::string& status, const std::string& message) {
         if (stage == "optimizer" && status == "complete")
@@ -1244,10 +1274,9 @@ int main() {
           enblend,
           "printf '%s\\n' \"$*\" > '" + opencv_enblend_args.string() +
               "'\n"
-              "test -f seam_file.png\n"
-              "cp '" +
-              fixtures.string() + "/panorama.tif' panorama.tif\n"),
-      "OpenCV fake enblend must preserve the native seam");
+              "test -f seam_file.png\n" +
+              native_enblend_command),
+      "OpenCV fake enblend must use the emitted mapping geometry");
   ::setenv("HM_AUTOOPTIMISER", (root / "missing-autooptimiser-for-opencv").c_str(), 1);
   hm::stitching::HuginProject::Options opencv_options;
   opencv_options.mapping_backend = hm::stitching::MappingBackend::kOpenCvAffineRansac;

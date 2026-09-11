@@ -7853,8 +7853,16 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", no_log_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_DROP_LOG_BEFORE_RECOVERY", "1");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT", "1");
+  // The recovery path is shown before its asynchronous durability sync completes.
+  // Keep that interval observable so the next scenario cannot accidentally rely on a fast sync helper.
+  qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.25");
   activate(start);
-  for (int i = 0; i < 300 && (!finalize_detail || !finalize_detail->text().contains(no_log_recovery)); ++i) {
+  const auto no_log_finalization_complete = [&] {
+    return window->outputStateText("archive-file") == "ERROR" && finalize_detail &&
+        finalize_detail->text().contains(no_log_recovery) && finalize_ok && finalize_ok->isVisible() &&
+        start->isEnabled();
+  };
+  for (int i = 0; i < 300 && !no_log_finalization_complete(); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
@@ -7863,16 +7871,14 @@ bool test_output_controls(HStreamWindow* window) {
   const QByteArray replaced_marker_text = replaced_marker_opened ? replaced_marker_file.readAll() : QByteArray();
   const bool no_log_recovery_reserved = expect(
       replaced_marker_text == "injected recovery marker replacement" && QFileInfo(no_log_recovery).size() > 0 &&
-          !QFileInfo::exists(no_log_recovery + ".log") && !QFileInfo::exists(no_log_source) && finalize_detail &&
-          finalize_detail->text().contains(no_log_recovery),
+          !QFileInfo::exists(no_log_recovery + ".log") && !QFileInfo::exists(no_log_source) &&
+          no_log_finalization_complete(),
       "Recovery without a UI log must atomically reserve the sidecar name, roll back a replaced reservation, and retry a clean basename");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_DROP_LOG_BEFORE_RECOVERY");
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT");
-  if (finalize_ok) {
+  qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
+  if (finalize_ok)
     activate(finalize_ok);
-    QApplication::processEvents();
-    QTest::qWait(20);
-  }
 
   const QString cleanup_race_source =
       QDir(QDir(output_root.path()).filePath(window->gameIdText()))
