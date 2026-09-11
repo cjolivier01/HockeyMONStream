@@ -20,6 +20,8 @@ QT_UI_COMPATIBILITY = select({
 filegroup(
     name = "runtime_sources",
     srcs = [
+        "ApplicationIdentity.cpp",
+        "ApplicationIdentity.h",
         "HStreamWindow.cpp",
         "HStreamWindow.h",
         "CameraControlSpecs.h",
@@ -144,6 +146,24 @@ cc_library(
 )
 
 cc_library(
+    name = "application_identity",
+    srcs = ["ApplicationIdentity.cpp"],
+    hdrs = ["ApplicationIdentity.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "application_identity_test",
+    srcs = ["ApplicationIdentityTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":application_identity", "@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp"],
     hdrs = ["HStreamWindow.h"],
@@ -152,6 +172,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":application_identity",
         ":camera_experiment_dialog",
         ":pipeline_inspector_widget",
         ":projection_crop_dialog",

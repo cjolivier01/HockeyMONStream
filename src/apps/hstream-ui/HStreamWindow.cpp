@@ -572,54 +572,6 @@ QIcon preview_focus_icon(bool focused) {
   return QIcon(pixmap);
 }
 
-QIcon hstream_application_icon() {
-  static const QIcon icon = [] {
-    QIcon result;
-    for (const int size : {16, 24, 32, 48, 64, 128, 256}) {
-      QPixmap pixmap(size, size);
-      pixmap.fill(Qt::transparent);
-      QPainter painter(&pixmap);
-      painter.setRenderHint(QPainter::Antialiasing);
-      painter.scale(size / 512.0, size / 512.0);
-
-      QLinearGradient background(64, 42, 448, 470);
-      background.setColorAt(0.0, QColor("#071523"));
-      background.setColorAt(0.55, QColor("#0a3552"));
-      background.setColorAt(1.0, QColor("#08718a"));
-      painter.setPen(Qt::NoPen);
-      painter.setBrush(background);
-      painter.drawRoundedRect(QRectF(18, 18, 476, 476), 108, 108);
-
-      painter.setBrush(Qt::NoBrush);
-      painter.setPen(QPen(QColor(66, 225, 239, 145), 17, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-      painter.drawRoundedRect(QRectF(72, 146, 368, 220), 108, 108);
-
-      painter.setPen(Qt::NoPen);
-      painter.setBrush(QColor("#f7fbff"));
-      painter.drawRoundedRect(QRectF(124, 112, 76, 288), 27, 27);
-      painter.drawRoundedRect(QRectF(312, 112, 76, 288), 27, 27);
-      painter.drawRoundedRect(QRectF(174, 218, 164, 76), 27, 27);
-
-      QPainterPath stream;
-      stream.moveTo(76, 304);
-      stream.cubicTo(159, 246, 217, 329, 304, 265);
-      stream.cubicTo(350, 231, 397, 215, 440, 228);
-      painter.setPen(QPen(QColor("#00cedf"), 39, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-      painter.drawPath(stream);
-      painter.setPen(QPen(QColor("#8ff8ff"), 10, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-      painter.drawPath(stream);
-
-      painter.setPen(QPen(QColor("#f7fbff"), 10));
-      painter.setBrush(QColor("#ff4f64"));
-      painter.drawEllipse(QPointF(399, 105), 31, 31);
-      painter.end();
-      result.addPixmap(pixmap);
-    }
-    return result;
-  }();
-  return icon;
-}
-
 class LetterboxRenderHost : public QWidget {
  public:
   explicit LetterboxRenderHost(double aspect_ratio, QWidget* parent = nullptr)
@@ -4437,16 +4389,6 @@ void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YA
   restore_child(current["game"]["videos"], map_value(map_value(previous, "game"), "videos"), "right");
   restore_child(current["game"]["stitching"], map_value(map_value(previous, "game"), "stitching"), "frame_offsets");
   restore_child(current["stitching"], map_value(previous, "stitching"), "frame_offsets");
-}
-
-void hm::ui_internal::configure_application_identity() {
-  QCoreApplication::setApplicationName("hstream-ui");
-  QGuiApplication::setApplicationDisplayName("HStream");
-  QGuiApplication::setDesktopFileName("hstream-ui");
-}
-
-QIcon hm::ui_internal::application_icon() {
-  return hstream_application_icon();
 }
 
 bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool tegra_runtime) {
