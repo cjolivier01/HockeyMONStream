@@ -167,8 +167,8 @@ bool sync_fd(int fd) {
   return true;
 }
 
-bool lock_fd_exclusively(int fd, QString* error) {
-  while (::flock(fd, LOCK_EX) != 0) {
+bool acquire_file_lock(int fd, int operation, QString* error) {
+  while (::flock(fd, operation) != 0) {
     if (errno == EINTR)
       continue;
     if (error)
@@ -178,15 +178,11 @@ bool lock_fd_exclusively(int fd, QString* error) {
   return true;
 }
 
-bool open_and_lock_publication_file(int game_directory_fd, UniqueFd* publication_lock, QString* error) {
-  if (!publication_lock)
+bool open_and_lock_file(int directory_fd, const char* filename, int operation, UniqueFd* file_lock, QString* error) {
+  if (!file_lock)
     return false;
   UniqueFd lock_fd(
-      ::openat(
-          game_directory_fd,
-          kPublicationLockFilename,
-          O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
-          S_IRUSR | S_IWUSR));
+      ::openat(directory_fd, filename, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, S_IRUSR | S_IWUSR));
   if (lock_fd.get() < 0) {
     if (error)
       *error = errno_string(errno);
@@ -198,31 +194,31 @@ bool open_and_lock_publication_file(int game_directory_fd, UniqueFd* publication
     return ::fstat(lock_fd.get(), &descriptor_info) == 0 && S_ISREG(descriptor_info.st_mode) &&
         (descriptor_info.st_mode & 0777) == (S_IRUSR | S_IWUSR) && descriptor_info.st_uid == ::geteuid() &&
         descriptor_info.st_nlink == 1 && descriptor_info.st_size == 0 &&
-        ::fstatat(game_directory_fd, kPublicationLockFilename, &named_info, AT_SYMLINK_NOFOLLOW) == 0 &&
-        S_ISREG(named_info.st_mode) && same_identity(descriptor_info, named_info);
+        ::fstatat(directory_fd, filename, &named_info, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(named_info.st_mode) &&
+        same_identity(descriptor_info, named_info);
   };
   if (!identity_is_valid()) {
     if (error)
-      *error = "publication lock has the wrong identity";
+      *error = "telemetry lock has the wrong identity";
     return false;
   }
   QString lock_error;
-  if (!lock_fd_exclusively(lock_fd.get(), &lock_error)) {
+  if (!acquire_file_lock(lock_fd.get(), operation, &lock_error)) {
     if (error)
       *error = lock_error;
     return false;
   }
   if (!identity_is_valid()) {
     if (error)
-      *error = "publication lock changed while it was being acquired";
+      *error = "telemetry lock changed while it was being acquired";
     return false;
   }
-  if (!sync_fd(lock_fd.get()) || !sync_fd(game_directory_fd)) {
+  if (!sync_fd(lock_fd.get()) || !sync_fd(directory_fd)) {
     if (error)
       *error = errno_string(errno);
     return false;
   }
-  *publication_lock = std::move(lock_fd);
+  *file_lock = std::move(lock_fd);
   return true;
 }
 
@@ -1197,6 +1193,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   };
   std::vector<PublicationArtifact> artifacts;
   std::vector<OpenRegularFile> provenance_inputs;
+  UniqueFd source_snapshot_lock;
   for (const auto& [stem, filename] : csv_artifacts) {
     if (filename != stem + source_suffix + ".csv" || QFileInfo(filename).fileName() != filename) {
       result.error = QString("telemetry manifest has an unsafe or inconsistent %1 filename").arg(stem);
@@ -1208,6 +1205,16 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     const QString mask = sidecars.value("rink_mask").toString();
     if (mask != "rink_mask_0" + source_suffix + ".png") {
       result.error = "telemetry manifest has an unsafe or inconsistent rink mask filename";
+      return result;
+    }
+    // A new run may reuse this mask's inode through a hard link, which changes
+    // ctime without changing bytes. Hold the writer's directory lock shared
+    // until final source validation completes, so reuse cannot race the copy.
+    // Always acquire this before the destination publication lock below.
+    QString lock_error;
+    if (!open_and_lock_file(
+            source_directory_fd.get(), ".hstream-telemetry.lock", LOCK_SH, &source_snapshot_lock, &lock_error)) {
+      result.error = "could not lock telemetry working snapshots: " + lock_error;
       return result;
     }
     artifacts.push_back({"rink_mask_0", mask, "rink_mask_0" + destination_suffix + ".png", {}});
@@ -1315,7 +1322,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     test_hooks->before_publication_lock(test_hooks->callback_context);
   UniqueFd publication_lock;
   QString lock_error;
-  if (!open_and_lock_publication_file(game_directory_fd.get(), &publication_lock, &lock_error)) {
+  if (!open_and_lock_file(game_directory_fd.get(), kPublicationLockFilename, LOCK_EX, &publication_lock, &lock_error)) {
     result.error =
         QString("could not lock telemetry publication in game directory %1: %2").arg(game_directory, lock_error);
     return result;
@@ -1424,6 +1431,8 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     }
     copied.push_back(std::move(artifact));
   }
+  if (test_hooks && test_hooks->after_staging_copy)
+    test_hooks->after_staging_copy(test_hooks->callback_context);
   if (test_hooks && test_hooks->abandon_named_staging_after_copy && staging_area.directory_fd.get() >= 0) {
     result.error = "simulated interruption after telemetry staging copy";
     return result;

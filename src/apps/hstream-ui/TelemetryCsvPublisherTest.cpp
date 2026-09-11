@@ -6,9 +6,13 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QTemporaryDir>
 
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
@@ -102,6 +106,29 @@ bool archive_generation_test(const QString& root) {
   return ok;
 }
 
+struct RinkMaskReuse {
+  QByteArray working_directory;
+  bool blocked{false};
+  bool linked{false};
+};
+
+void try_reuse_rink_mask(void* context) {
+  auto* reuse = static_cast<RinkMaskReuse*>(context);
+  const int directory_fd = ::open(reuse->working_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory_fd < 0)
+    return;
+  const int lock_fd = ::openat(directory_fd, ".hstream-telemetry.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  if (lock_fd >= 0) {
+    if (::flock(lock_fd, LOCK_EX | LOCK_NB) == 0) {
+      reuse->linked = ::linkat(directory_fd, "rink_mask_0-3.png", directory_fd, "rink_mask_0-4.png", 0) == 0;
+    } else {
+      reuse->blocked = errno == EWOULDBLOCK;
+    }
+    ::close(lock_fd);
+  }
+  ::close(directory_fd);
+}
+
 bool replay_publication_test(const QString& root) {
   const QString working = QDir(root).filePath("replay-working");
   const QString game = QDir(root).filePath("replay-game");
@@ -146,9 +173,16 @@ bool replay_publication_test(const QString& root) {
     return false;
   hm::ui_internal::TelemetryCsvPublicationTestHooks hooks;
   hooks.force_named_temporary_files = true;
+  RinkMaskReuse reuse{QFile::encodeName(working)};
+  hooks.callback_context = &reuse;
+  hooks.after_staging_copy = try_reuse_rink_mask;
   const auto result = hm::ui_internal::publish_telemetry_csvs(path, game, "-8", &hooks);
   bool ok = expect(result.ok, result.error.toStdString().c_str()) &&
       expect(result.published_paths.size() == 12, "replay publication must include manifest and every config artifact");
+  ok &= expect(reuse.blocked && !reuse.linked, "mask reuse must wait while publication validates its working snapshot");
+  try_reuse_rink_mask(&reuse);
+  ok &= expect(reuse.linked, "mask reuse must proceed after publication releases its source snapshot lock");
+  hooks.after_staging_copy = nullptr;
   QFile copied_manifest(QDir(game).filePath("hstream_telemetry-8.json"));
   ok &= expect(copied_manifest.open(QIODevice::ReadOnly), "copied replay manifest must be readable");
   const auto published = QJsonDocument::fromJson(copied_manifest.readAll()).object();

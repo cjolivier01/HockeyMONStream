@@ -196,8 +196,24 @@ int main() {
     return 1;
   }
 
+  if (!expect(exporter.StageRinkMask(std::string("PNG\0mask", 8)), "startup mask staging should succeed") ||
+      !expect(
+          read_file(directory / "rink_mask_0-10.png") == std::string("PNG\0mask", 8) &&
+              read_file(directory / "hstream_telemetry-10.json").find("rink_mask_0-10.png") != std::string::npos,
+          "the working mask and manifest must exist before processing the first telemetry sample"))
+    return 1;
+  const auto startup_events = hm::playtracker::PlayTrackerTelemetryCsvTestPeer::DurabilityEvents(exporter);
+  if (!expect(
+          event_position(startup_events, "fsync:rink-mask") <
+                  event_position(startup_events, "fsync:directory:rink-mask") &&
+              event_position(startup_events, "fsync:directory:rink-mask") <
+                  event_position(startup_events, "fsync:manifest:rink-mask") &&
+              event_position(startup_events, "fsync:directory:manifest:fsync:manifest:rink-mask") <
+                  startup_events.size(),
+          "startup must wait for durable mask bytes, directory entry, and manifest"))
+    return 1;
+
   hm::playtracker::TelemetrySample sample;
-  sample.rink_mask_png = std::string("PNG\0mask", 8);
   sample.source_id = 7;
   sample.source_frame = 991;
   sample.decoded_source_id = 2;
@@ -765,17 +781,124 @@ int main() {
   hm::playtracker::PlayTrackerTelemetryCsv changed_mask_exporter;
   bool changed_mask_valid = changed_mask_exporter.Start(
       changed_mask_directory.string(), source_config.string(), effective_config.string()).ok();
-  auto first_mask_sample = make_policy_sample(true);
-  first_mask_sample.rink_mask_png = "first mask";
-  auto second_mask_sample = make_policy_sample(true);
-  second_mask_sample.rink_mask_png = "different mask";
-  changed_mask_valid &= changed_mask_exporter.TryEnqueue(std::move(first_mask_sample));
-  changed_mask_valid &= changed_mask_exporter.TryEnqueue(std::move(second_mask_sample));
+  changed_mask_valid &= changed_mask_exporter.StageRinkMask("first mask");
+  changed_mask_valid &= changed_mask_exporter.TryEnqueue(make_policy_sample(true));
+  changed_mask_valid &=
+      expect(!changed_mask_exporter.StageRinkMask("different mask"), "a changed mask must immediately fail staging");
   changed_mask_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
   changed_mask_exporter.Stop();
   changed_mask_valid &= expect(!fs::exists(changed_mask_directory / "tracking.csv") &&
       read_file(changed_mask_directory / "hstream_telemetry.json").find("\"completed\": false") != std::string::npos,
       "a changed mask must not publish a generation with a mismatched single snapshot");
+
+  const fs::path mask_working_directory = directory / "mask-working";
+  const fs::path game_mask = directory / "game-rink-mask.png";
+  std::ofstream(game_mask) << "original mask";
+  bool mask_reuse_valid = true;
+  fs::file_time_type original_mtime;
+  for (int run = 0; run < 3; ++run) {
+    hm::playtracker::PlayTrackerTelemetryCsv run_exporter;
+    mask_reuse_valid &=
+        run_exporter.Start(mask_working_directory.string(), source_config.string(), effective_config.string()).ok();
+    const std::string suffix = run == 0 ? "" : "-" + std::to_string(run);
+    const fs::path working_mask = mask_working_directory / ("rink_mask_0" + suffix + ".png");
+    mask_reuse_valid &=
+        expect(run_exporter.StageRinkMask(read_file(game_mask)), "each run must stage its loaded mask at startup");
+    if (run == 0) {
+      original_mtime = fs::last_write_time(working_mask);
+      mask_reuse_valid &= expect(
+          !fs::equivalent(game_mask, working_mask), "working snapshot must have storage independent of the game mask");
+    } else if (run == 1) {
+      mask_reuse_valid &= expect(
+          fs::equivalent(working_mask, mask_working_directory / "rink_mask_0.png") &&
+              fs::last_write_time(working_mask) == original_mtime,
+          "an unchanged mask must reuse working storage without rewriting it");
+      std::ofstream(game_mask) << "updated mask";
+      mask_reuse_valid &= expect(
+          read_file(working_mask) == "original mask",
+          "editing the game mask during a run must not change its working snapshot");
+    } else {
+      mask_reuse_valid &= expect(
+          !fs::equivalent(working_mask, mask_working_directory / "rink_mask_0-1.png") &&
+              read_file(working_mask) == "updated mask" &&
+              read_file(mask_working_directory / "rink_mask_0-1.png") == "original mask",
+          "a changed mask in a later run must retain both versions");
+      fs::remove(game_mask);
+      fs::remove(mask_working_directory / "rink_mask_0.png");
+      mask_reuse_valid &= expect(
+          read_file(working_mask) == "updated mask" &&
+              read_file(mask_working_directory / "rink_mask_0-1.png") == "original mask",
+          "removing source or earlier snapshot names must preserve run copies");
+    }
+    run_exporter.TryEnqueue(make_policy_sample(true));
+    run_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
+    run_exporter.Stop();
+    mask_reuse_valid &= expect(
+        fs::exists(mask_working_directory / ("tracking" + suffix + ".csv")),
+        "staged masks must support normal final publication");
+  }
+
+  bool mask_failure_valid = true;
+  for (const std::string phase :
+       {"fsync:rink-mask",
+        "fsync:directory:rink-mask",
+        "fsync:manifest:rink-mask",
+        "fsync:directory:manifest:fsync:manifest:rink-mask"}) {
+    const fs::path failure_directory = directory / phase;
+    hm::playtracker::PlayTrackerTelemetryCsv failure_exporter;
+    mask_failure_valid &=
+        failure_exporter.Start(failure_directory.string(), source_config.string(), effective_config.string()).ok();
+    hm::playtracker::PlayTrackerTelemetryCsvTestPeer::FailSync(failure_exporter, phase);
+    mask_failure_valid &= expect(
+        !failure_exporter.StageRinkMask("mask"), "startup must report a mask durability failure immediately: " + phase);
+    failure_exporter.TryEnqueue(make_policy_sample(true));
+    failure_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
+    failure_exporter.Stop();
+    mask_failure_valid &= expect(
+        !fs::exists(failure_directory / "tracking.csv"),
+        "failed mask staging must prevent training publication: " + phase);
+  }
+
+  const fs::path mask_symlink_directory = directory / "mask-symlink";
+  fs::create_directories(mask_symlink_directory);
+  std::ofstream(game_mask) << "mask";
+  fs::create_symlink(game_mask, mask_symlink_directory / ".hstream-rink-mask.png");
+  hm::playtracker::PlayTrackerTelemetryCsv symlink_mask_exporter;
+  bool mask_symlink_valid =
+      symlink_mask_exporter.Start(mask_symlink_directory.string(), source_config.string(), effective_config.string())
+          .ok();
+  mask_symlink_valid &= symlink_mask_exporter.StageRinkMask("mask");
+  std::ofstream(game_mask) << "edited";
+  mask_symlink_valid &= expect(
+      read_file(mask_symlink_directory / "rink_mask_0-1.png") == "mask",
+      "reuse must not follow a symlink to mutable source storage");
+  symlink_mask_exporter.Stop();
+
+  bool calibration_isolation_valid = true;
+  for (const bool same_directory : {true, false}) {
+    const fs::path working_directory = directory / (same_directory ? "shared-game-working" : "foreign-mask-link");
+    fs::create_directories(working_directory);
+    const fs::path calibration = same_directory ? working_directory / "rink_mask_0.png" : game_mask;
+    std::ofstream(calibration) << "editable calibration";
+    if (!same_directory)
+      fs::create_hard_link(calibration, working_directory / "rink_mask_0.png");
+    hm::playtracker::PlayTrackerTelemetryCsv isolation_exporter;
+    calibration_isolation_valid &=
+        isolation_exporter.Start(working_directory.string(), source_config.string(), effective_config.string()).ok();
+    calibration_isolation_valid &= isolation_exporter.StageRinkMask(read_file(calibration));
+    std::ofstream(calibration) << "changed during recording";
+    calibration_isolation_valid &= expect(
+        read_file(working_directory / "rink_mask_0-1.png") == "editable calibration" &&
+            !fs::equivalent(calibration, working_directory / "rink_mask_0-1.png"),
+        "regular calibration files and foreign hard links must never become shared snapshot storage");
+    isolation_exporter.TryEnqueue(make_policy_sample(true));
+    isolation_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
+    isolation_exporter.Stop();
+    calibration_isolation_valid &= expect(
+        fs::exists(working_directory / "tracking-1.csv") &&
+            read_file(working_directory / "rink_mask_0-1.png") == "editable calibration",
+        "calibration edits must not affect the archived run mask");
+  }
 
   const fs::path failed_directory = directory / "failed-start";
   hm::playtracker::PlayTrackerTelemetryCsv failed_exporter;
@@ -793,7 +916,8 @@ int main() {
   return valid && saturation_valid && config_block_valid && event_io_failure_valid && aborted_valid && empty_valid &&
           publication_conflict_valid && failed_outcome_valid && final_sync_failure_valid &&
           camera_commit_failure_valid && tracking_commit_failure_valid && atomic_manifest_valid &&
-          descriptor_bound_valid && atomic_reservation_valid && startup_cleanup_valid && changed_mask_valid
+          descriptor_bound_valid && atomic_reservation_valid && startup_cleanup_valid && changed_mask_valid &&
+          mask_reuse_valid && mask_failure_valid && mask_symlink_valid && calibration_isolation_valid
       ? 0
       : 1;
 }
