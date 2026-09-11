@@ -98,6 +98,14 @@ int main(int argc, char** argv) {
       "custom launchers and explicit hiding must remain unchanged");
   QFile::remove(launcher);
   ok &= hm::ui_internal::ensure_desktop_integration(executable).isEmpty();
+  QFile::remove(executable);
+  if (!gio.isEmpty()) {
+    QProcess missing;
+    missing.start(gio, {"launch", launcher});
+    ok &= expect(
+        missing.waitForFinished(5000) && missing.exitCode() != 0,
+        "a missing development binary must make the entry unavailable, including percent-path env wrappers");
+  }
   QDir().mkpath(QDir(system_data).filePath("applications"));
   const QString installed_launcher = QDir(system_data).filePath("applications/hstream-ui.desktop");
   ok &= write_file(installed_launcher, "[Desktop Entry]\nName=HStream\nIcon=hstream-ui\n");

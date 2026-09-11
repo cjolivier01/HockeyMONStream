@@ -153,13 +153,14 @@ QString ensure_desktop_integration(const QString& executable_path) {
   const QString icon_error = save_if_changed(icon_path, png);
   if (!icon_error.isEmpty())
     return icon_error;
+  const QString executable = QFileInfo(executable_path).absoluteFilePath();
   const QByteArray entry =
       QString::fromLatin1(kManagedLauncher)
           .append(
               "[Desktop Entry]\nType=Application\nName=HStream\nGenericName=Live Video Production\n"
-              "Comment=GPU video stitching and live production control\nExec=%1\nIcon=%2\n"
+              "Comment=GPU video stitching and live production control\nExec=%1\nTryExec=%2\nIcon=%3\n"
               "Terminal=false\nCategories=AudioVideo;Video;\nStartupNotify=true\nStartupWMClass=hstream-ui\n")
-          .arg(desktop_command(QFileInfo(executable_path).absoluteFilePath()), desktop_string(icon_path))
+          .arg(desktop_command(executable), desktop_string(executable), desktop_string(icon_path))
           .toUtf8();
   return save_if_changed(launcher, entry);
 #else
