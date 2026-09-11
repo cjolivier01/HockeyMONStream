@@ -9077,6 +9077,7 @@ void HStreamWindow::startPipeline() {
 #endif
   pipeline_paused_ = false;
   pipeline_stop_requested_ = false;
+  pipeline_final_output_draining_ = false;
 
   setPlaybackStartupStage("process", "Starting the pipeline process");
   if (active_run_is_calibration_) {
@@ -9285,8 +9286,10 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pending_playback_seek_target_ns_.reset();
   resume_progress_reset_waiting_for_seek_ = false;
   playback_seek_channel_available_ = false;
+  pipeline_final_output_draining_ = true;
   readPipelineOutput();
   flushPipelineOutputFragments();
+  pipeline_final_output_draining_ = false;
   if (pipeline_inspector_)
     pipeline_inspector_->setPipelineRunning(false);
   const bool stopped_by_user = pipeline_stop_requested_;
@@ -9542,6 +9545,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     // QProcess emits errorOccurred(Crashed) before finished(). Keep the
     // calibration state intact until finished() drains and processes the last
     // stdout/stderr bytes, so the failure dialog can report the real cause.
+    pipeline_final_output_draining_ = true;
     readPipelineOutput();
     appendLog(error_message + "; collecting final calibration diagnostics");
     return;
@@ -12934,6 +12938,10 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
   const auto ready = ready_pattern.match(line);
   if (!ready.hasMatch())
     return;
+  if (pipeline_final_output_draining_) {
+    appendLog("ignored rink leveling ready event while draining output from a terminated pipeline");
+    return;
+  }
   if (rink_leveling_dialog_) {
     rink_leveling_dialog_->show();
     rink_leveling_dialog_->raise();

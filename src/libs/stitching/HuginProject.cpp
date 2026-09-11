@@ -1702,6 +1702,12 @@ absl::Status HuginProject::ApplyProjection(
   return ApplyProjection(staging_directory, selected_projection, projection_parameters, framing, is_cancelled);
 }
 
+absl::StatusOr<std::string> HuginProject::ResolveExecutable(
+    const std::string& override_name,
+    const std::string& executable_name) {
+  return executable(override_name.c_str(), executable_name.c_str());
+}
+
 absl::StatusOr<std::vector<std::string>> HuginProject::ProjectionPanoModifyArguments(
     StitchProjection selected_projection,
     const std::vector<double>& projection_parameters,

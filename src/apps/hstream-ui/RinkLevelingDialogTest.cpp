@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
   ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
   ok &= script(
       bin.filePath("pano_modify"),
-      "if [ -n \"$RINK_PREVIEW_ARGS\" ]; then printf 'BEGIN\\n' >>\"$RINK_PREVIEW_ARGS\"; printf '%s\\n' \"$@\" >>\"$RINK_PREVIEW_ARGS\"; fi\n"
+      "if [ -n \"$RINK_PREVIEW_ARGS\" ]; then printf 'BEGIN\\nLC_ALL=%s\\n' \"$LC_ALL\" >>\"$RINK_PREVIEW_ARGS\"; printf '%s\\n' \"$@\" >>\"$RINK_PREVIEW_ARGS\"; fi\n"
       "output=\ninput=\nexpect_output=0\n"
       "for argument do\n"
       "  if [ \"$expect_output\" = 1 ]; then output=$argument; expect_output=0; continue; fi\n"
@@ -147,7 +147,13 @@ int main(int argc, char** argv) {
   if (!ok)
     return 1;
   const QByteArray old_path = qgetenv("PATH");
+  const QByteArray old_pano_trafo = qgetenv("HM_PANO_TRAFO");
+  const QByteArray old_pano_modify = qgetenv("HM_PANO_MODIFY");
+  const QByteArray old_nona = qgetenv("HM_NONA");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
+  qputenv("HM_PANO_TRAFO", bin.filePath("pano_trafo").toUtf8());
+  qputenv("HM_PANO_MODIFY", bin.filePath("pano_modify").toUtf8());
+  qputenv("HM_NONA", bin.filePath("nona").toUtf8());
   qputenv("RINK_PREVIEW_ARGS", bin.filePath("rink-preview-arguments").toUtf8());
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
@@ -323,8 +329,8 @@ int main(int argc, char** argv) {
     ok &= expect(
         preview_arguments.contains("--projection=0\n") && preview_arguments.contains("--fov=AUTO\n") &&
             preview_arguments.contains("--canvas=AUTO\n") && preview_arguments.contains("--crop=AUTO\n") &&
-            preview_arguments.contains(".autooptimiser_out.aligned.pto\n"),
-        "in-progress preview applies final projection framing to the preserved aligned PTO before downscaling");
+            preview_arguments.contains(".autooptimiser_out.aligned.pto\n") && preview_arguments.contains("LC_ALL=C\n"),
+        "in-progress preview shares final projection framing, executable overrides, and C locale before downscaling");
     accept->click();
     ok &= expect(
         dialog.result() == QDialog::Accepted && dialog.rotationDegrees()[0] == 7,
@@ -430,6 +436,18 @@ int main(int argc, char** argv) {
         "mismatched camera dimensions fail closed");
   }
   qunsetenv("RINK_PREVIEW_ARGS");
+  if (old_pano_trafo.isNull())
+    qunsetenv("HM_PANO_TRAFO");
+  else
+    qputenv("HM_PANO_TRAFO", old_pano_trafo);
+  if (old_pano_modify.isNull())
+    qunsetenv("HM_PANO_MODIFY");
+  else
+    qputenv("HM_PANO_MODIFY", old_pano_modify);
+  if (old_nona.isNull())
+    qunsetenv("HM_NONA");
+  else
+    qputenv("HM_NONA", old_nona);
   qputenv("PATH", old_path);
   return ok ? 0 : 1;
 }

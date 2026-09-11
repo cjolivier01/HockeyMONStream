@@ -104,6 +104,12 @@ class HuginProject {
   static absl::StatusOr<double> ParseHorizontalFov(const std::string& pto);
   static absl::StatusOr<CameraPose> ParseCameraPose(const std::string& pto, size_t image_index);
 
+  // Resolves the configured Hugin override, then /usr/bin, then PATH. Shared
+  // with the desktop preview so calibration and preview use the same tool.
+  static absl::StatusOr<std::string> ResolveExecutable(
+      const std::string& override_name,
+      const std::string& executable_name);
+
   // Builds the exact pano_modify argument list used to apply projection and
   // framing. The desktop leveling preview shares this with final calibration
   // so automatic FOV/canvas/crop decisions cannot diverge.

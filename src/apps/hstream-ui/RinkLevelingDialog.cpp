@@ -4,9 +4,9 @@
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QMap>
+#include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
-#include <QtCore/QStandardPaths>
 #include <QtCore/QTimer>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
@@ -378,15 +378,30 @@ void RinkLevelingDialog::startTool(
     const QStringList& arguments,
     const QByteArray& input,
     std::function<void(const QByteArray&)> completed) {
-  const QString executable = QStandardPaths::findExecutable(program);
-  if (executable.isEmpty()) {
-    fail(QString("%1 is required for leveling. Install the Hugin tools.").arg(program));
+  static const QMap<QString, QString> overrides = {
+      {"pano_trafo", "HM_PANO_TRAFO"},
+      {"pano_modify", "HM_PANO_MODIFY"},
+      {"nona", "HM_NONA"},
+  };
+  const auto override = overrides.find(program);
+  if (override == overrides.end()) {
+    fail(QString("Unsupported rink leveling tool: %1").arg(program));
     return;
   }
+  const auto resolved =
+      hm::stitching::HuginProject::ResolveExecutable(override.value().toStdString(), program.toStdString());
+  if (!resolved.ok()) {
+    fail(QString::fromStdString(resolved.status().ToString()));
+    return;
+  }
+  const QString executable = QString::fromStdString(*resolved);
   setBusy(true);
   auto* process = new QProcess(this);
   process_ = process;
   process->setWorkingDirectory(temporary_.path());
+  QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("LC_ALL", "C");
+  process->setProcessEnvironment(environment);
   auto* timeout = new QTimer(process);
   timeout->setSingleShot(true);
   connect(timeout, &QTimer::timeout, process, [process]() { process->kill(); });

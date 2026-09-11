@@ -128,6 +128,10 @@ struct HStreamWindowTestAccess {
     window->handleRinkLevelingOutput(line);
   }
 
+  static void setPipelineFinalOutputDraining(HStreamWindow* window, bool draining) {
+    window->pipeline_final_output_draining_ = draining;
+  }
+
   static bool rinkLevelingRotationMatches(HStreamWindow* window, const std::array<double, 3>& rotation) {
     return window->active_projection_framing_.rotation_degrees == rotation &&
         window->loaded_projection_framing_.rotation_degrees == rotation &&
@@ -2325,6 +2329,12 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
       !fs::exists(staging_dir / ".rink-leveling-response") &&
       window->logText().contains("outside an active pending NONA calibration generation");
   HStreamWindowTestAccess::prepareRinkLevelingProtocol(window, game_id, {11, -30, 2});
+  HStreamWindowTestAccess::setPipelineFinalOutputDraining(window, true);
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  HStreamWindowTestAccess::setPipelineFinalOutputDraining(window, false);
+  const bool final_drain_ignored = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(staging_dir / ".rink-leveling-response") &&
+      window->logText().contains("draining output from a terminated pipeline");
   const fs::path unowned_dir = game_dir / "hstream-stitch-Zz91Qp";
   fs::create_directory(unowned_dir, error);
   const QString unowned_ready =
@@ -2390,6 +2400,7 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   const bool skipped_event_ok = window->logText().contains("calibration continuing with the configured angles");
   fs::remove_all(staging_dir, error);
   return expect(inactive_ignored, "Ready events outside the active pending NONA generation must be ignored") &&
+      expect(final_drain_ignored, "A buffered ready event must not open a modal while final output is being drained") &&
       expect(saw_skip_dialog && skip_ok,
              "A ready event must open the in-progress dialog and atomically return the Skip choice") &&
       expect(unowned_rejected, "Ready events must require an exactly named, marked calibration staging directory") &&

@@ -607,6 +607,7 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
+  bool pipeline_final_output_draining_{false};
   bool pipeline_render_embedded_{false};
   QString playback_elapsed_;
   QString playback_total_;
