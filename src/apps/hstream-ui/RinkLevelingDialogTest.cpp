@@ -184,6 +184,36 @@ int main(int argc, char** argv) {
         "disabled mutation buttons preserve the estimated selection");
   }
   {
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    markPosts(dialog);
+    QApplication::processEvents();
+    auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
+    canvas->fitImage();
+    const double scale = canvas->viewScale();
+    const QPointF offset(
+        (canvas->width() - canvas->imageSize().width() * scale) / 2.0,
+        (canvas->height() - canvas->imageSize().height() * scale) / 2.0);
+    const QPoint press = ((QPointF(10.5, 10.5) * scale) + offset).toPoint();
+    const QPoint moved = press + QPoint(20, 0);
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, press);
+    QTest::mouseMove(canvas, moved, 10);
+    QTest::qWait(250);
+    ok &= expect(
+        canvas->isEnabled() && canvas->pointerInteractionActive(),
+        "automatic estimate waits for a paused point drag to finish");
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, moved);
+    const QVector<QPoint> released_points = canvas->points();
+    ok &= expect(
+        waitUntil([canvas]() { return !canvas->isEnabled(); }),
+        "automatic estimate starts after the dragged point is released");
+    ok &= expect(estimateComplete(dialog), "post-drag automatic estimate completes");
+    QTest::mouseMove(canvas, moved + QPoint(20, 0), 10);
+    ok &= expect(
+        !canvas->pointerInteractionActive() && canvas->points() == released_points,
+        "hover after automatic estimation does not continue the completed drag");
+  }
+  {
     ScoreboardSelectionCanvas canvas;
     canvas.setLineSelectionMode();
     canvas.setImage(game.filePath("left.png"));

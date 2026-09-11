@@ -12938,8 +12938,11 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
   const auto ready = ready_pattern.match(line);
   if (!ready.hasMatch())
     return;
-  if (pipeline_final_output_draining_) {
-    appendLog("ignored rink leveling ready event while draining output from a terminated pipeline");
+  if (pipeline_stop_requested_ || pipeline_final_output_draining_) {
+    appendLog(
+        pipeline_stop_requested_
+            ? "ignored rink leveling ready event while pipeline shutdown is in progress"
+            : "ignored rink leveling ready event while draining output from a terminated pipeline");
     return;
   }
   if (rink_leveling_dialog_) {

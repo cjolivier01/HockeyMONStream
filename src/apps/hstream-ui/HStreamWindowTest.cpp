@@ -132,6 +132,10 @@ struct HStreamWindowTestAccess {
     window->pipeline_final_output_draining_ = draining;
   }
 
+  static void setPipelineStopRequested(HStreamWindow* window, bool requested) {
+    window->pipeline_stop_requested_ = requested;
+  }
+
   static bool rinkLevelingRotationMatches(HStreamWindow* window, const std::array<double, 3>& rotation) {
     return window->active_projection_framing_.rotation_degrees == rotation &&
         window->loaded_projection_framing_.rotation_degrees == rotation &&
@@ -2329,6 +2333,12 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
       !fs::exists(staging_dir / ".rink-leveling-response") &&
       window->logText().contains("outside an active pending NONA calibration generation");
   HStreamWindowTestAccess::prepareRinkLevelingProtocol(window, game_id, {11, -30, 2});
+  HStreamWindowTestAccess::setPipelineStopRequested(window, true);
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  HStreamWindowTestAccess::setPipelineStopRequested(window, false);
+  const bool stop_ignored = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(staging_dir / ".rink-leveling-response") &&
+      window->logText().contains("while pipeline shutdown is in progress");
   HStreamWindowTestAccess::setPipelineFinalOutputDraining(window, true);
   HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
   HStreamWindowTestAccess::setPipelineFinalOutputDraining(window, false);
@@ -2400,6 +2410,7 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   const bool skipped_event_ok = window->logText().contains("calibration continuing with the configured angles");
   fs::remove_all(staging_dir, error);
   return expect(inactive_ignored, "Ready events outside the active pending NONA generation must be ignored") &&
+      expect(stop_ignored, "A buffered ready event must not open a modal once pipeline shutdown starts") &&
       expect(final_drain_ignored, "A buffered ready event must not open a modal while final output is being drained") &&
       expect(saw_skip_dialog && skip_ok,
              "A ready event must open the in-progress dialog and atomically return the Skip choice") &&

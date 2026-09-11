@@ -33,6 +33,7 @@ class ScoreboardSelectionCanvas : public QWidget {
   QSize previewSize() const;
   double viewScale() const;
   quint64 viewportRenderCount() const;
+  bool pointerInteractionActive() const;
   void fitImage();
   void actualSize();
   void focusPoints();

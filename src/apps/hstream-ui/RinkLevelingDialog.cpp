@@ -440,6 +440,14 @@ void RinkLevelingDialog::startTool(
 void RinkLevelingDialog::estimate() {
   if (busy_ || !load_error_.isEmpty())
     return;
+  // A pause while dragging a point must not disable the canvas before it can
+  // receive the release event. Wait until the interaction ends, then apply the
+  // normal debounce to the final endpoint position.
+  if (std::any_of(
+          canvases_.begin(), canvases_.end(), [](const auto* canvas) { return canvas->pointerInteractionActive(); })) {
+    estimate_timer_.start();
+    return;
+  }
   std::vector<hm::stitching::RinkLevelingLine> lines;
   for (size_t camera = 0; camera < canvases_.size(); ++camera) {
     const auto& points = canvases_[camera]->points();
