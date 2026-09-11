@@ -5,6 +5,10 @@ are even, preserve the canvas aspect ratio to rounding precision, and never
 increase the image size. Tracking, preview, and the `max-output-width` stitching
 setting retain their existing behavior.
 
+Jetson Main10 uses its VIC hardware converter because CUDA conversion does not
+support packed 10-bit RGB/BGR surface-array input. This conversion and resize
+remain in NVMM and require no CPU frame readback. Other archive modes use CUDA.
+
 The limit is queried for the selected codec and GPU at startup:
 
 - Discrete GPUs and ARM64/SBSA use `NvEncGetEncodeCaps` for minimum/maximum width
@@ -40,7 +44,11 @@ bazelisk run --config=opt //src/apps/apps-common:encoder_dimensions_gpu_test -- 
 bazelisk run --config=opt //src/apps/apps-common:encoder_dimensions_gpu_test -- main10
 ```
 
-The manual GPU test encodes three 10000x3000 synthetic frames and verifies both
-the encoder's fitted NVMM input and a sibling branch's unchanged NVMM canvas.
+The manual GPU test requires three nonempty encoded frames from 10000x3000
+RGBA input (BGR10A2 for Main10), and verifies both the encoder's fitted NVMM
+input and a sibling branch's unchanged NVMM canvas.
+It uses `ffmpeg` to decode one test frame to 32x32 RGB and checks its expected
+color: unsupported NVIDIA transforms can emit nonempty encoded buffers containing
+blank pixels. This bounded CPU decode exists only in the manual test.
 On Jetson, add `--config=jetson` to these commands. For headless SSH checks,
 unset a forwarded `DISPLAY` so NVIDIA EGL uses the local device.

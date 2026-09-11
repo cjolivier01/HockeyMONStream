@@ -28,6 +28,7 @@ std::optional<EncoderDimensionLimits> query_encoder_dimensions(GstElement* encod
 bool install_encoder_dimension_limit(
     GstElement* converter,
     GstElement* caps_filter,
-    const EncoderDimensionLimits& limits);
+    const EncoderDimensionLimits& limits,
+    bool main10 = false);
 
 } // namespace hm

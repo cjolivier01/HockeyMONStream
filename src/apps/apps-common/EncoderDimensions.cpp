@@ -207,7 +207,15 @@ std::optional<EncoderDimensionLimits> query_encoder_dimensions(GstElement* encod
 bool install_encoder_dimension_limit(
     GstElement* converter,
     GstElement* caps_filter,
-    const EncoderDimensionLimits& limits) {
+    const EncoderDimensionLimits& limits,
+    bool main10) {
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+  // Jetson's CUDA converter cannot convert RGB10A2/BGR10A2 surface arrays.
+  // VIC handles both that color conversion and the resize without CPU readback.
+  g_object_set(converter, "compute-hw", main10 ? 2 : 1, nullptr);
+#else
+  g_object_set(converter, "compute-hw", 1, nullptr);
+#endif
   GstPad* sink = gst_element_get_static_pad(converter, "sink");
   if (!sink)
     return false;

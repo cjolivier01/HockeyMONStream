@@ -1723,13 +1723,10 @@ static gboolean create_encode_file_bin(
 
   if (stitched_output && config->enc_type == NV_DS_ENCODER_TYPE_HW) {
     const auto limits = hm::query_encoder_dimensions(bin->encoder, config->codec == NV_DS_ENCODER_H265, config->gpu_id);
-    if (!limits || !hm::install_encoder_dimension_limit(bin->transform, bin->cap_filter, *limits)) {
+    if (!limits || !hm::install_encoder_dimension_limit(bin->transform, bin->cap_filter, *limits, main10_output)) {
       NVGSTDS_ERR_MSG_V("Could not determine the stitched archive encoder's supported dimensions");
       goto done;
     }
-    // This converter is after the archive tee. Keep the full canvas upstream,
-    // including tracking/preview, and avoid Jetson VIC input-size restrictions.
-    g_object_set(G_OBJECT(bin->transform), "compute-hw", 1, NULL);
   }
 
   switch (config->codec) {
