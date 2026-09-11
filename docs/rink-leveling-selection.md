@@ -22,13 +22,16 @@ To measure the angle during calibration:
    poorly conditioned selections and reports how many posts agreed and their angular residual. Scroll to zoom and
    drag the background to pan.
 3. Click **Preview angles**. Inspect both rink ends and the walls. Adjust pitch or roll and preview again if desired.
-4. Click **Use angles** to continue calibration with the displayed rotation, or **Skip leveling** to continue with the
-   previously configured rotation.
+4. Click **Use angles** to continue calibration with the displayed rotation, **Skip leveling** to continue with the
+   previously configured rotation, or **Cancel calibration** to stop the whole calibration run.
 
-There is no second feature-match or panorama-optimizer pass. The initial projected PTO is enough for the explicit,
-small preview, which runs `pano_modify` and `nona` in a private snapshot copied from calibration staging. Only after
-**Use angles** or **Skip leveling** does calibration generate the final full-resolution Nona maps and Enblend seam.
-If the rotation changed, HStream reapplies only the inexpensive projection/framing step before those final outputs.
+There is no second feature-match or panorama-optimizer pass. The explicit preview starts from a private copy of the
+preserved aligned PTO, applies the same projection, parameters, rotation, FOV, canvas, and crop rules as final
+calibration, then downscales that framed PTO and runs `nona`. This keeps automatic framing in the preview identical to
+the approved final view. Only after **Use angles** or **Skip leveling** does calibration generate the final
+full-resolution Nona maps and Enblend seam. If the rotation changed, HStream reapplies only the inexpensive
+projection/framing step before those final outputs. If the calibration backend terminates while selection is open,
+the selector closes without returning a stale Skip response.
 
 **Algorithms → Level from posts** remains available for an already calibrated game. That version uses **Cancel**
 instead of **Skip leveling** and returns the accepted angles to the controls; choose **Save Preset** to apply them and

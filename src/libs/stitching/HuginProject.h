@@ -104,6 +104,16 @@ class HuginProject {
   static absl::StatusOr<double> ParseHorizontalFov(const std::string& pto);
   static absl::StatusOr<CameraPose> ParseCameraPose(const std::string& pto, size_t image_index);
 
+  // Builds the exact pano_modify argument list used to apply projection and
+  // framing. The desktop leveling preview shares this with final calibration
+  // so automatic FOV/canvas/crop decisions cannot diverge.
+  static absl::StatusOr<std::vector<std::string>> ProjectionPanoModifyArguments(
+      StitchProjection projection,
+      const std::vector<double>& projection_parameters,
+      const StitchProjectionFraming& projection_framing,
+      const std::string& output_path,
+      const std::string& input_path);
+
   // Rewrites autooptimiser_out.pto to the selected Nona/Hugin projection in an
   // unpublished staging directory before mapping TIFF generation.
   static absl::Status ApplyProjection(

@@ -8380,6 +8380,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
 }
 
 void HStreamWindow::completeStitchingCalibration() {
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   if (!calibration_pending_ || active_run_game_id_.isEmpty())
     return;
   bool state_applied = false;
@@ -8464,6 +8466,8 @@ void HStreamWindow::completeStitchingCalibration() {
 }
 
 void HStreamWindow::failStitchingCalibration(const QString& message) {
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   if (calibration_dialog_failed_)
     return;
   calibration_waiting_for_playback_restart_ = false;
@@ -9159,6 +9163,8 @@ void HStreamWindow::pauseOrResumePipeline() {
 }
 
 void HStreamWindow::stopPipeline() {
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     deferred_playback_seek_ns_.reset();
     pending_playback_seek_target_ns_.reset();
@@ -9344,6 +9350,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pipeline_render_embedded_ = false;
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   clearPreviewFrames();
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
@@ -9553,6 +9561,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   clearPreviewFrames();
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   rollbackActiveLiveRotationAuthorization("pipeline error");
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
@@ -12886,6 +12896,14 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
       R"(^HSTREAM_RINK_LEVELING\s+status=ready\s+directory-hex=([0-9a-f]+)$)");
   static const QRegularExpression selected_pattern(
       R"(^HSTREAM_RINK_LEVELING\s+status=selected\s+yaw=([-+0-9.eE]+)\s+pitch=([-+0-9.eE]+)\s+roll=([-+0-9.eE]+)$)");
+  const bool recognized = ready_pattern.match(line).hasMatch() || selected_pattern.match(line).hasMatch() ||
+      line == "HSTREAM_RINK_LEVELING status=skipped";
+  const bool active_generation = calibration_pending_ && active_mapping_backend_ == "nona" &&
+      !active_run_game_id_.isEmpty() && !active_calibration_invalidation_id_.isEmpty() && pipeline_run_generation_ != 0;
+  if (recognized && !active_generation) {
+    appendLog("ignored stale rink leveling event outside an active pending NONA calibration generation");
+    return;
+  }
   const auto selected = selected_pattern.match(line);
   if (selected.hasMatch()) {
     bool yaw_ok = false, pitch_ok = false, roll_ok = false;
@@ -12916,6 +12934,13 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
   const auto ready = ready_pattern.match(line);
   if (!ready.hasMatch())
     return;
+  if (rink_leveling_dialog_) {
+    rink_leveling_dialog_->show();
+    rink_leveling_dialog_->raise();
+    rink_leveling_dialog_->activateWindow();
+    appendLog("ignored duplicate rink leveling ready event while the selector is already open");
+    return;
+  }
   const QByteArray encoded = ready.captured(1).toLatin1();
   if (encoded.size() % 2 != 0) {
     appendLog("invalid in-progress rink leveling path from calibration; stopping safely");
@@ -12927,26 +12952,67 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
   const QString canonical_directory = QDir(requested_directory).canonicalPath();
   const QString canonical_game = QDir(gameDirectory(active_run_game_id_)).canonicalPath();
   const QFileInfo staging_info(canonical_directory);
+  static const QRegularExpression staging_name_pattern(R"(^hstream-stitch-[A-Za-z0-9]{6}$)");
+  const QString marker_path = QDir(canonical_directory).filePath("journal_version");
+  const QFileInfo marker_info(marker_path);
+  QFile marker(marker_path);
+  const bool marker_valid = !marker_info.isSymLink() && marker_info.isFile() && marker_info.size() == 2 &&
+      marker.open(QIODevice::ReadOnly) && marker.readAll() == "2\n";
   if (canonical_directory.isEmpty() || canonical_game.isEmpty() || !staging_info.isDir() ||
-      staging_info.dir().canonicalPath() != canonical_game || !staging_info.fileName().startsWith("hstream-stitch-")) {
+      staging_info.dir().canonicalPath() != canonical_game ||
+      !staging_name_pattern.match(staging_info.fileName()).hasMatch() || !marker_valid) {
     appendLog("rejected an invalid in-progress rink leveling directory; stopping safely");
+    stopPipeline();
+    return;
+  }
+  const auto parsed_projection = hm::stitching::ParseStitchProjection(active_projection_.toStdString());
+  if (!parsed_projection.ok()) {
+    appendLog("could not preview the active projection during rink leveling; stopping safely");
     stopPipeline();
     return;
   }
   if (preview_status_)
     preview_status_->setText("Waiting for optional rink leveling");
   QWidget* dialog_parent = calibration_dialog_ ? static_cast<QWidget*>(calibration_dialog_) : this;
-  RinkLevelingDialog dialog(
+  auto* dialog = new RinkLevelingDialog(
       canonical_directory,
       active_projection_framing_.rotation_degrees,
       dialog_parent,
       std::nullopt,
-      /*in_progress_calibration=*/true);
+      /*in_progress_calibration=*/true,
+      *parsed_projection,
+      active_projection_parameters_,
+      active_projection_framing_);
+  rink_leveling_dialog_ = dialog;
+  connect(dialog, &QObject::destroyed, this, [this, dialog]() {
+    if (rink_leveling_dialog_ == dialog)
+      rink_leveling_dialog_ = nullptr;
+  });
+  const quint64 selection_generation = pipeline_run_generation_;
+  const QString selection_invalidation_id = active_calibration_invalidation_id_;
   appendLog("optional rink leveling selector opened after panorama alignment");
-  const int result = dialog.exec();
+  const int result = dialog->exec();
+  const bool cancel_calibration = dialog->calibrationCancellationRequested();
+  const bool backend_completed = dialog->closedAfterBackendCompletion();
+  if (rink_leveling_dialog_ == dialog)
+    rink_leveling_dialog_ = nullptr;
+  std::optional<std::array<double, 3>> selected_rotation;
+  if (result == QDialog::Accepted)
+    selected_rotation = dialog->rotationDegrees();
+  dialog->deleteLater();
+  if (backend_completed || selection_generation != pipeline_run_generation_ ||
+      selection_invalidation_id != active_calibration_invalidation_id_ || !calibration_pending_) {
+    appendLog("rink leveling selector closed after its calibration generation ended; no response written");
+    return;
+  }
+  if (cancel_calibration) {
+    appendLog("rink leveling selector requested cancellation of the stitching calibration");
+    stopPipeline();
+    return;
+  }
   QByteArray response("skip\n");
-  if (result == QDialog::Accepted) {
-    const auto rotation = dialog.rotationDegrees();
+  if (selected_rotation.has_value()) {
+    const auto& rotation = *selected_rotation;
     response = QString("use %1 %2 %3\n")
                    .arg(rotation[0], 0, 'g', 17)
                    .arg(rotation[1], 0, 'g', 17)

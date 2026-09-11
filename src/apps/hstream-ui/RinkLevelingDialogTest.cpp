@@ -57,6 +57,19 @@ bool estimateComplete(RinkLevelingDialog& dialog, int timeout = 10000) {
   auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
   return status && waitUntil([status]() { return status->text().startsWith("Used "); }, timeout);
 }
+hm::stitching::StitchProjectionFraming previewFraming(const std::array<double, 3>& rotation) {
+  hm::stitching::StitchProjectionFraming framing;
+  framing.auto_fov = true;
+  framing.auto_canvas = true;
+  framing.auto_crop = true;
+  framing.rotation_degrees = rotation;
+  return framing;
+}
+bool writeInProgressSnapshot(const QTemporaryDir& staging, const QImage& source, const QByteArray& pto) {
+  return source.save(staging.filePath("left.png")) && source.save(staging.filePath("right.png")) &&
+      write(staging.filePath("autooptimiser_out.pto"), pto) &&
+      write(staging.filePath(".autooptimiser_out.aligned.pto"), pto);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -121,12 +134,21 @@ int main(int argc, char** argv) {
     }
   }
   ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
-  ok &= script(bin.filePath("pano_modify"), "cp autooptimiser_out.pto preview.pto\n");
+  ok &= script(
+      bin.filePath("pano_modify"),
+      "if [ -n \"$RINK_PREVIEW_ARGS\" ]; then printf 'BEGIN\\n' >>\"$RINK_PREVIEW_ARGS\"; printf '%s\\n' \"$@\" >>\"$RINK_PREVIEW_ARGS\"; fi\n"
+      "output=\ninput=\nexpect_output=0\n"
+      "for argument do\n"
+      "  if [ \"$expect_output\" = 1 ]; then output=$argument; expect_output=0; continue; fi\n"
+      "  case \"$argument\" in --output=*) output=${argument#--output=} ;; -o) expect_output=1 ;; -*) ;; *) input=$argument ;; esac\n"
+      "done\n"
+      "cp \"$input\" \"$output\"\n");
   ok &= script(bin.filePath("nona"), "cp left.png preview.png\n");
   if (!ok)
     return 1;
   const QByteArray old_path = qgetenv("PATH");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
+  qputenv("RINK_PREVIEW_ARGS", bin.filePath("rink-preview-arguments").toUtf8());
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
     const auto producer_lock = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
@@ -271,23 +293,38 @@ int main(int argc, char** argv) {
   }
   {
     QTemporaryDir staging;
-    ok &= staging.isValid() && source.save(staging.filePath("left.png")) &&
-        source.save(staging.filePath("right.png")) && write(staging.filePath("autooptimiser_out.pto"), pto);
-    RinkLevelingDialog dialog(staging.path(), {7, -33, 2}, nullptr, std::nullopt, true);
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{7, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
     auto* skip = dialog.findChild<QPushButton*>("skipRinkLevelingButton");
+    auto* cancel_calibration = dialog.findChild<QPushButton*>("cancelRinkCalibrationButton");
     auto* preview = dialog.findChild<QPushButton*>("previewRinkLevelingButton");
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(
-        dialog.loadError().isEmpty() && skip && preview && accept &&
+        dialog.loadError().isEmpty() && skip && cancel_calibration && preview && accept &&
             !dialog.findChild<QPushButton*>("cancelRinkLevelingButton") &&
             !dialog.findChild<QPushButton*>("estimateRinkLevelingButton"),
-        "in-progress selection loads from its three staging artifacts and offers Skip without an Estimate button");
+        "in-progress selection loads the aligned snapshot and offers Skip and whole-calibration cancellation");
     dialog.show();
     markPosts(dialog);
     ok &= expect(estimateComplete(dialog), "in-progress post edits automatically update the estimated angles");
     ok &= expect(!accept->isEnabled(), "in-progress angles cannot be used before an explicit preview");
     preview->click();
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "in-progress preview enables Use angles");
+    const QByteArray preview_arguments = read(bin.filePath("rink-preview-arguments"));
+    ok &= expect(
+        preview_arguments.contains("--projection=0\n") && preview_arguments.contains("--fov=AUTO\n") &&
+            preview_arguments.contains("--canvas=AUTO\n") && preview_arguments.contains("--crop=AUTO\n") &&
+            preview_arguments.contains(".autooptimiser_out.aligned.pto\n"),
+        "in-progress preview applies final projection framing to the preserved aligned PTO before downscaling");
     accept->click();
     ok &= expect(
         dialog.result() == QDialog::Accepted && dialog.rotationDegrees()[0] == 7,
@@ -295,10 +332,18 @@ int main(int argc, char** argv) {
   }
   {
     QTemporaryDir staging;
-    ok &= staging.isValid() && source.save(staging.filePath("left.png")) &&
-        source.save(staging.filePath("right.png")) && write(staging.filePath("autooptimiser_out.pto"), pto) &&
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto) &&
         script(bin.filePath("pano_trafo"), "cat >/dev/null\nsleep 30\n");
-    RinkLevelingDialog dialog(staging.path(), {0, -33, 2}, nullptr, std::nullopt, true);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
     dialog.show();
     markPosts(dialog);
     auto* skip = dialog.findChild<QPushButton*>("skipRinkLevelingButton");
@@ -317,9 +362,17 @@ int main(int argc, char** argv) {
   }
   {
     QTemporaryDir staging;
-    ok &= staging.isValid() && source.save(staging.filePath("left.png")) &&
-        source.save(staging.filePath("right.png")) && write(staging.filePath("autooptimiser_out.pto"), pto);
-    RinkLevelingDialog dialog(staging.path(), {0, -33, 2}, nullptr, std::nullopt, true);
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
     dialog.show();
     dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
@@ -331,6 +384,43 @@ int main(int argc, char** argv) {
         "Use angles rejects an in-progress calibration generation that changed after preview");
   }
   {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.findChild<QPushButton*>("cancelRinkCalibrationButton")->click();
+    ok &= expect(
+        dialog.result() == QDialog::Rejected && dialog.calibrationCancellationRequested(),
+        "Cancel calibration is distinct from Skip leveling");
+  }
+  {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.closeAfterBackendCompletion();
+    ok &= expect(
+        dialog.result() == QDialog::Rejected && dialog.closedAfterBackendCompletion() &&
+            !dialog.calibrationCancellationRequested(),
+        "backend completion closes an open selector without turning it into Skip or user cancellation");
+  }
+  {
     QImage mismatch(20, 20, QImage::Format_RGB32);
     mismatch.fill(Qt::black);
     mismatch.save(game.filePath("right.png"));
@@ -339,6 +429,7 @@ int main(int argc, char** argv) {
         !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("previewRinkLevelingButton")->isEnabled(),
         "mismatched camera dimensions fail closed");
   }
+  qunsetenv("RINK_PREVIEW_ARGS");
   qputenv("PATH", old_path);
   return ok ? 0 : 1;
 }

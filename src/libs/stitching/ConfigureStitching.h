@@ -156,6 +156,11 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
 // a non-overlap summary.
 bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool alignment_complete);
 
+// Opens one selector response without following links or blocking on special
+// files. NotFound means the atomically published response is not present yet.
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file(
+    const std::filesystem::path& path);
+
 absl::StatusOr<std::string> stitched_output_generation_id(
     const std::string& hugin_generation,
     double post_stitch_rotate_degrees,

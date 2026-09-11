@@ -114,7 +114,11 @@ struct HStreamWindowTestAccess {
       const std::array<double, 3>& rotation) {
     window->active_run_game_id_ = game_id;
     window->active_mapping_backend_ = "nona";
+    window->active_projection_ = "rectilinear";
+    window->active_projection_parameters_.clear();
     window->calibration_pending_ = true;
+    window->active_calibration_invalidation_id_ = "rink-leveling-protocol-generation";
+    window->pipeline_run_generation_ = std::max<quint64>(1, window->pipeline_run_generation_);
     window->active_projection_framing_.rotation_degrees = rotation;
     window->active_projection_framing_.rotation_inherited = false;
     window->loaded_projection_framing_ = window->active_projection_framing_;
@@ -129,8 +133,7 @@ struct HStreamWindowTestAccess {
         window->loaded_projection_framing_.rotation_degrees == rotation &&
         window->saved_projection_framing_.rotation_degrees == rotation &&
         !window->active_projection_framing_.rotation_inherited &&
-        !window->loaded_projection_framing_.rotation_inherited &&
-        !window->saved_projection_framing_.rotation_inherited;
+        !window->loaded_projection_framing_.rotation_inherited && !window->saved_projection_framing_.rotation_inherited;
   }
 
   static QString pipelineEnvironmentValue(HStreamWindow* window, const QString& name) {
@@ -2287,7 +2290,7 @@ bool set_test_calibration_status(HStreamWindow* window, const std::string& statu
 
 bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   const fs::path game_dir(window->gameDirectoryText().toStdString());
-  const fs::path staging_dir = game_dir / "hstream-stitch-ui-protocol-test";
+  const fs::path staging_dir = game_dir / "hstream-stitch-Ab12Z9";
   std::error_code error;
   fs::remove_all(staging_dir, error);
   error.clear();
@@ -2299,24 +2302,44 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
       "p f2 w400 h200 v180 n\"PNG\"\ni w100 h100 f0 v90 y-30 p0 r0 n\"left.png\"\n"
       "i w100 h100 f0 v90 y30 p0 r0 n\"right.png\"\n";
   QFile pto_file(QString::fromStdString((staging_dir / "autooptimiser_out.pto").string()));
+  QFile aligned_file(QString::fromStdString((staging_dir / ".autooptimiser_out.aligned.pto").string()));
+  QFile marker_file(QString::fromStdString((staging_dir / "journal_version").string()));
   if (!source.save(QString::fromStdString((staging_dir / "left.png").string())) ||
       !source.save(QString::fromStdString((staging_dir / "right.png").string())) ||
-      !pto_file.open(QIODevice::WriteOnly | QIODevice::Truncate) || pto_file.write(pto) != pto.size()) {
+      !pto_file.open(QIODevice::WriteOnly | QIODevice::Truncate) || pto_file.write(pto) != pto.size() ||
+      !aligned_file.open(QIODevice::WriteOnly | QIODevice::Truncate) || aligned_file.write(pto) != pto.size() ||
+      !marker_file.open(QIODevice::WriteOnly | QIODevice::Truncate) || marker_file.write("2\n") != 2) {
     fs::remove_all(staging_dir, error);
     return expect(false, "Could not populate the in-progress rink-leveling protocol fixture");
   }
   pto_file.close();
+  aligned_file.close();
+  marker_file.close();
 
   const QString game_id = QString::fromStdString(game_dir.filename().string());
   const QString ready =
       QString("HSTREAM_RINK_LEVELING status=ready directory-hex=%1")
           .arg(QString::fromLatin1(QFile::encodeName(QString::fromStdString(staging_dir.string())).toHex()));
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  const bool inactive_ignored = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(staging_dir / ".rink-leveling-response") &&
+      window->logText().contains("outside an active pending NONA calibration generation");
   HStreamWindowTestAccess::prepareRinkLevelingProtocol(window, game_id, {11, -30, 2});
+  const fs::path unowned_dir = game_dir / "hstream-stitch-Zz91Qp";
+  fs::create_directory(unowned_dir, error);
+  const QString unowned_ready =
+      QString("HSTREAM_RINK_LEVELING status=ready directory-hex=%1")
+          .arg(QString::fromLatin1(QFile::encodeName(QString::fromStdString(unowned_dir.string())).toHex()));
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, unowned_ready);
+  const bool unowned_rejected = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(unowned_dir / ".rink-leveling-response") &&
+      window->logText().contains("rejected an invalid in-progress rink leveling directory");
   bool saw_skip_dialog = false;
   QTimer::singleShot(0, window, [window, &saw_skip_dialog]() {
     auto* dialog = window->findChild<QDialog*>("rinkLevelingDialog");
     auto* skip = dialog ? dialog->findChild<QPushButton*>("skipRinkLevelingButton") : nullptr;
-    saw_skip_dialog = skip && !dialog->findChild<QPushButton*>("cancelRinkLevelingButton");
+    saw_skip_dialog = skip && dialog->findChild<QPushButton*>("cancelRinkCalibrationButton") &&
+        !dialog->findChild<QPushButton*>("cancelRinkLevelingButton");
     if (skip)
       skip->click();
   });
@@ -2334,6 +2357,8 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
     if (pitch && roll) {
       pitch->setValue(-22.5);
       roll->setValue(3.25);
+      // The dialog's focused test exercises preview-before-Use. This protocol
+      // test closes the modal directly so it does not depend on host Hugin.
       dialog->accept();
     }
   });
@@ -2345,6 +2370,17 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   const QByteArray use_response = response.readAll();
   response.close();
 
+  fs::remove(staging_dir / ".rink-leveling-response", error);
+  bool selector_was_tracked = false;
+  QTimer::singleShot(0, window, [window, &selector_was_tracked]() {
+    auto* dialog = dynamic_cast<RinkLevelingDialog*>(window->findChild<QDialog*>("rinkLevelingDialog"));
+    selector_was_tracked = dialog != nullptr;
+    if (dialog)
+      dialog->closeAfterBackendCompletion();
+  });
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  const bool backend_close_ok = selector_was_tracked && !fs::exists(staging_dir / ".rink-leveling-response");
+
   HStreamWindowTestAccess::stageTestLeveling(window, "pending-in-progress-selection");
   HStreamWindowTestAccess::handleRinkLevelingOutput(
       window, "HSTREAM_RINK_LEVELING status=selected yaw=11 pitch=-22.5 roll=3.25");
@@ -2353,13 +2389,16 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   HStreamWindowTestAccess::handleRinkLevelingOutput(window, "HSTREAM_RINK_LEVELING status=skipped");
   const bool skipped_event_ok = window->logText().contains("calibration continuing with the configured angles");
   fs::remove_all(staging_dir, error);
-  return expect(
-             saw_skip_dialog && skip_ok,
+  return expect(inactive_ignored, "Ready events outside the active pending NONA generation must be ignored") &&
+      expect(saw_skip_dialog && skip_ok,
              "A ready event must open the in-progress dialog and atomically return the Skip choice") &&
+      expect(unowned_rejected, "Ready events must require an exactly named, marked calibration staging directory") &&
       expect(saw_use_dialog && use_response == "use 11 -22.5 3.25\n",
              "A ready event must return the dialog's absolute yaw, pitch, and roll for Use angles") &&
       expect(selected_ok, "The selected event must feed active and loaded framing used by calibration completion") &&
-      expect(skipped_event_ok, "Skip protocol events must be reported without changing angles");
+      expect(skipped_event_ok, "Skip protocol events must be reported without changing angles") &&
+      expect(backend_close_ok,
+             "Backend completion must close the tracked selector without publishing a stale Skip response");
 }
 
 bool test_calibration_progress_dialog(HStreamWindow* window) {

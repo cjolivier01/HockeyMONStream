@@ -156,7 +156,7 @@ std::string generation_stat_identity(const std::filesystem::path& directory, boo
   };
   std::ostringstream identity;
   for (size_t index = 0; index < names.size(); ++index) {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::stat((directory / names[index]).c_str(), &metadata) != 0) {
       if (index + 1 == names.size() && errno == ENOENT)
         continue;
@@ -676,8 +676,12 @@ int main() {
   const std::array<double, 3> selected_rotation{12.0, -30.0, 1.5};
   bool leveling_selection_called = false;
   bool leveling_selection_preceded_rendering = false;
-  leveling_selection_options.select_leveling =
-      [&](const fs::path& staging, const hm::stitching::StitchProjectionFraming& initial_framing)
+  std::vector<std::string> leveling_progress;
+  leveling_selection_options.progress = [&](const std::string& stage, const std::string& status, const std::string&) {
+    leveling_progress.push_back(stage + ":" + status);
+  };
+  leveling_selection_options.select_leveling = [&](const fs::path& staging,
+                                                   const hm::stitching::StitchProjectionFraming& initial_framing)
       -> absl::StatusOr<std::optional<std::array<double, 3>>> {
     leveling_selection_called = initial_framing.rotation_degrees == options.projection_framing.rotation_degrees &&
         fs::is_regular_file(staging / "autooptimiser_out.pto") &&
@@ -695,8 +699,8 @@ int main() {
   auto leveling_selection_lock = hm::stitching::HuginProject::RecoverAndLock(leveling_selection_game);
   std::optional<hm::stitching::HuginProject::CanvasProvenance> leveling_selection_provenance;
   if (leveling_selection_lock.ok()) {
-    const auto read = hm::stitching::HuginProject::ReadCanvasProvenance(
-        leveling_selection_game, **leveling_selection_lock);
+    const auto read =
+        hm::stitching::HuginProject::ReadCanvasProvenance(leveling_selection_game, **leveling_selection_lock);
     if (read.ok())
       leveling_selection_provenance = *read;
     leveling_selection_lock->reset();
@@ -704,6 +708,9 @@ int main() {
   const std::string leveling_projection_runs = read_text_file(pano_modify_args);
   const std::string leveling_nona_runs = read_text_file(nona_invocations);
   const std::string leveling_enblend_runs = read_text_file(enblend_invocations);
+  const auto leveling_started = std::find(leveling_progress.begin(), leveling_progress.end(), "leveling:started");
+  const auto leveling_complete = std::find(leveling_progress.begin(), leveling_progress.end(), "leveling:complete");
+  const auto canvas_started = std::find(leveling_progress.begin(), leveling_progress.end(), "canvas:started");
   ok &= expect(
       leveling_selected.ok() && leveling_selection_called && leveling_selection_preceded_rendering &&
           leveling_selection_provenance.has_value() && leveling_selection_provenance->projection_framing.has_value() &&
@@ -711,19 +718,19 @@ int main() {
           leveling_projection_runs.find("--rotate=0,-35,3") != std::string::npos &&
           leveling_projection_runs.find("--rotate=12,-30,1.5") != std::string::npos &&
           std::count(leveling_nona_runs.begin(), leveling_nona_runs.end(), '\n') == 1 &&
-          std::count(leveling_enblend_runs.begin(), leveling_enblend_runs.end(), '\n') == 1,
+          std::count(leveling_enblend_runs.begin(), leveling_enblend_runs.end(), '\n') == 1 &&
+          leveling_started < leveling_complete && leveling_complete < canvas_started &&
+          canvas_started != leveling_progress.end(),
       "interactive leveling must run after alignment but before one final Nona/Enblend pass and publish its rotation");
 
   const fs::path leveling_skip_game = root / "leveling-skip-game";
   fs::create_directories(leveling_skip_game);
   hm::stitching::HuginProject::Options leveling_skip_options = options;
   bool leveling_skip_called = false;
-  leveling_skip_options.select_leveling =
-      [&](const fs::path&, const hm::stitching::StitchProjectionFraming&) {
-        leveling_skip_called = true;
-        return absl::StatusOr<std::optional<std::array<double, 3>>>(
-            std::optional<std::array<double, 3>>{});
-      };
+  leveling_skip_options.select_leveling = [&](const fs::path&, const hm::stitching::StitchProjectionFraming&) {
+    leveling_skip_called = true;
+    return absl::StatusOr<std::optional<std::array<double, 3>>>(std::optional<std::array<double, 3>>{});
+  };
   const auto leveling_skipped = hm::stitching::HuginProject::Configure(
       leveling_skip_game,
       root / "private-inputs" / "left.png",
@@ -2200,7 +2207,7 @@ int main() {
       const auto unreliable_before = hm::stitching::HuginProject::GenerationId(unreliable_root, **unreliable_lock);
       const std::string old_bindings = generation_stat_identity(unreliable_root, false);
       const fs::path unreliable_target = unreliable_root / "hm_project.pto";
-      struct stat unreliable_metadata{};
+      struct stat unreliable_metadata {};
       const bool unreliable_metadata_read = ::stat(unreliable_target.c_str(), &unreliable_metadata) == 0;
       std::fstream changed_file(unreliable_target, std::ios::in | std::ios::out | std::ios::binary);
       char first_byte = '\0';
@@ -2241,7 +2248,7 @@ int main() {
     fs::remove_all(unreliable_root);
 
     const fs::path target = replacement_root / "hm_project.pto";
-    struct stat metadata{};
+    struct stat metadata {};
     const std::string original = read_text_file(target);
     std::string changed = original;
     if (!changed.empty())

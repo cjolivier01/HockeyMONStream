@@ -322,6 +322,34 @@ std::chrono::milliseconds rink_leveling_selection_timeout() {
   return fallback;
 }
 
+absl::StatusOr<std::optional<std::array<double, 3>>> parse_rink_leveling_response(const std::string& contents) {
+  std::istringstream input(contents);
+  input.imbue(std::locale::classic());
+  std::string action;
+  if (!(input >> action))
+    return absl::InvalidArgumentError("Rink leveling response is empty");
+  if (action == "skip") {
+    input >> std::ws;
+    if (!input.eof())
+      return absl::InvalidArgumentError("Rink leveling skip response has unexpected data");
+    return std::optional<std::array<double, 3>>{};
+  }
+  std::array<double, 3> rotation{};
+  if (action != "use" || !(input >> rotation[0] >> rotation[1] >> rotation[2]))
+    return absl::InvalidArgumentError("Rink leveling response must be 'skip' or 'use <yaw> <pitch> <roll>'");
+  input >> std::ws;
+  if (!input.eof())
+    return absl::InvalidArgumentError("Rink leveling response has unexpected trailing data");
+  if (std::any_of(rotation.begin(), rotation.end(), [](double angle) {
+        return !std::isfinite(angle) || std::abs(angle) > 180.0;
+      })) {
+    return absl::InvalidArgumentError("Rink leveling response angles must be finite and within [-180, 180]");
+  }
+  return std::optional<std::array<double, 3>>(rotation);
+}
+
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file_impl(const fs::path& path);
+
 absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_selection(
     const fs::path& game_dir,
     const fs::path& staging,
@@ -337,30 +365,18 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
   while (std::chrono::steady_clock::now() < deadline) {
     if (is_cancelled && is_cancelled())
       return absl::CancelledError("Rink leveling selection cancelled with stitching calibration");
-    if (!fs::exists(response_path, error)) {
-      if (error)
-        return absl::InternalError("Unable to inspect the rink leveling response: " + error.message());
+    auto selected = read_rink_leveling_response_file_impl(response_path);
+    if (absl::IsNotFound(selected.status())) {
       std::this_thread::sleep_for(std::chrono::milliseconds(25));
       continue;
     }
-    std::ifstream input(response_path);
-    input.imbue(std::locale::classic());
-    std::string action;
-    if (!(input >> action))
-      return absl::InvalidArgumentError("Rink leveling response is empty");
-    if (action == "skip") {
-      input >> std::ws;
-      if (!input.eof())
-        return absl::InvalidArgumentError("Rink leveling skip response has unexpected data");
+    if (!selected.ok())
+      return selected.status();
+    if (!selected->has_value()) {
       std::cout << "HSTREAM_RINK_LEVELING status=skipped" << std::endl;
       return std::optional<std::array<double, 3>>{};
     }
-    std::array<double, 3> rotation{};
-    if (action != "use" || !(input >> rotation[0] >> rotation[1] >> rotation[2]))
-      return absl::InvalidArgumentError("Rink leveling response must be 'skip' or 'use <yaw> <pitch> <roll>'");
-    input >> std::ws;
-    if (!input.eof())
-      return absl::InvalidArgumentError("Rink leveling response has unexpected trailing data");
+    const std::array<double, 3>& rotation = **selected;
     auto updated = apply_stitching_leveling_rotation(game_dir, invalidation_id, expected_choices, rotation);
     if (!updated.ok())
       return updated.status();
@@ -371,6 +387,54 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
     return std::optional<std::array<double, 3>>(rotation);
   }
   return absl::DeadlineExceededError("Timed out waiting for optional rink leveling; choose Skip leveling to continue");
+}
+
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file_impl(const fs::path& path) {
+  constexpr size_t kMaximumResponseBytes = 256;
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return absl::NotFoundError("Rink leveling response is not present");
+    return absl::FailedPreconditionError(
+        "Unable to open the rink leveling response safely: " + std::string(std::strerror(errno)));
+  }
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+    }
+  } close_descriptor{descriptor};
+  struct stat metadata {};
+  if (::fstat(descriptor, &metadata) != 0)
+    return absl::InternalError("Unable to inspect the rink leveling response: " + std::string(std::strerror(errno)));
+  if (!S_ISREG(metadata.st_mode))
+    return absl::FailedPreconditionError("Rink leveling response must be a regular file");
+  if (metadata.st_size <= 0)
+    return absl::InvalidArgumentError("Rink leveling response is empty");
+  if (static_cast<uintmax_t>(metadata.st_size) > kMaximumResponseBytes)
+    return absl::ResourceExhaustedError("Rink leveling response exceeds the 256-byte limit");
+
+  std::string contents;
+  contents.reserve(static_cast<size_t>(metadata.st_size));
+  std::array<char, kMaximumResponseBytes + 1> buffer{};
+  for (;;) {
+    const ssize_t count = ::read(descriptor, buffer.data(), buffer.size());
+    if (count > 0) {
+      contents.append(buffer.data(), static_cast<size_t>(count));
+      if (contents.size() > kMaximumResponseBytes)
+        return absl::ResourceExhaustedError("Rink leveling response exceeds the 256-byte limit");
+      continue;
+    }
+    if (count == 0)
+      break;
+    if (errno == EINTR)
+      continue;
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      return absl::UnavailableError("Rink leveling response is not ready for a bounded read");
+    return absl::InternalError("Unable to read the rink leveling response: " + std::string(std::strerror(errno)));
+  }
+  return parse_rink_leveling_response(contents);
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root);
@@ -1651,6 +1715,10 @@ absl::Status preflight_stitched_snapshot_generation(
 }
 
 } // namespace
+
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file(const fs::path& path) {
+  return read_rink_leveling_response_file_impl(path);
+}
 
 absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const fs::path& game_dir) {
   return load_akaze_matching_calibration_impl(game_dir);

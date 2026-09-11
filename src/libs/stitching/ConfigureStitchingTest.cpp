@@ -2089,6 +2089,57 @@ bool expect_akaze_calibration_loading_contract(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_rink_leveling_response_reader_is_bounded(const fs::path& tmpdir) {
+  const fs::path directory = tmpdir / "rink-leveling-response-reader";
+  fs::create_directories(directory);
+  const fs::path response = directory / "response";
+  if (!absl::IsNotFound(hm::stitching::read_rink_leveling_response_file(response).status())) {
+    std::cerr << "Missing rink leveling response must remain pollable" << std::endl;
+    return false;
+  }
+  if (!write_text_file(response, "skip\n"))
+    return false;
+  auto skip = hm::stitching::read_rink_leveling_response_file(response);
+  if (!skip.ok() || skip->has_value()) {
+    std::cerr << "Valid rink leveling skip response was not parsed: " << skip.status() << std::endl;
+    return false;
+  }
+  if (!write_text_file(response, "use 11 -22.5 3.25\n"))
+    return false;
+  auto use = hm::stitching::read_rink_leveling_response_file(response);
+  if (!use.ok() || !use->has_value() || **use != std::array<double, 3>{11.0, -22.5, 3.25}) {
+    std::cerr << "Valid rink leveling angle response was not parsed: " << use.status() << std::endl;
+    return false;
+  }
+  if (!write_text_file(response, std::string(257, 'x')) ||
+      !absl::IsResourceExhausted(hm::stitching::read_rink_leveling_response_file(response).status())) {
+    std::cerr << "Oversized rink leveling response was not rejected" << std::endl;
+    return false;
+  }
+  fs::remove(response);
+  const fs::path target = directory / "target";
+  if (!write_text_file(target, "skip\n"))
+    return false;
+  fs::create_symlink(target, response);
+  if (!absl::IsFailedPrecondition(hm::stitching::read_rink_leveling_response_file(response).status())) {
+    std::cerr << "Symlinked rink leveling response was not rejected" << std::endl;
+    return false;
+  }
+  fs::remove(response);
+  if (::mkfifo(response.c_str(), 0600) != 0) {
+    std::cerr << "Could not create rink leveling response FIFO fixture" << std::endl;
+    return false;
+  }
+  const auto before = std::chrono::steady_clock::now();
+  const auto fifo = hm::stitching::read_rink_leveling_response_file(response);
+  const auto elapsed = std::chrono::steady_clock::now() - before;
+  if (!absl::IsFailedPrecondition(fifo.status()) || elapsed > std::chrono::seconds(1)) {
+    std::cerr << "FIFO rink leveling response was not rejected promptly: " << fifo.status() << std::endl;
+    return false;
+  }
+  return true;
+}
+
 void finish(const fs::path& tmpdir, int code) {
   fs::remove_all(tmpdir);
   _exit(code);
@@ -2105,6 +2156,9 @@ int main() {
       fs::temp_directory_path() / ("configure_stitching_canvas_cap_test_" + std::to_string(::getpid()));
   fs::remove_all(tmpdir);
   fs::create_directories(tmpdir);
+  if (!expect_rink_leveling_response_reader_is_bounded(tmpdir)) {
+    finish(tmpdir, 48);
+  }
   if (!expect_akaze_calibration_loading_contract(tmpdir)) {
     finish(tmpdir, 47);
   }

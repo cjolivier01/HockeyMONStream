@@ -1702,6 +1702,59 @@ absl::Status HuginProject::ApplyProjection(
   return ApplyProjection(staging_directory, selected_projection, projection_parameters, framing, is_cancelled);
 }
 
+absl::StatusOr<std::vector<std::string>> HuginProject::ProjectionPanoModifyArguments(
+    StitchProjection selected_projection,
+    const std::vector<double>& projection_parameters,
+    const StitchProjectionFraming& projection_framing,
+    const std::string& output_path,
+    const std::string& input_path) {
+  const auto& projection_info = StitchProjectionDetails(selected_projection);
+  const std::vector<double> effective_projection_parameters =
+      projection_parameters.empty() ? DefaultStitchProjectionParameters(selected_projection) : projection_parameters;
+  HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(selected_projection, effective_projection_parameters));
+  HM_RETURN_IF_ERROR(
+      ValidateStitchProjectionFraming(selected_projection, effective_projection_parameters, projection_framing));
+  if (output_path.empty() || input_path.empty())
+    return absl::InvalidArgumentError("pano_modify projection input and output paths must not be empty");
+
+  std::vector<std::string> arguments = {"--projection=" + std::to_string(projection_info.hugin_projection)};
+  if (!effective_projection_parameters.empty()) {
+    arguments.emplace_back(
+        "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
+  }
+  if (projection_framing.rotation_degrees != StitchProjectionFraming{}.rotation_degrees) {
+    std::ostringstream rotation;
+    rotation.imbue(std::locale::classic());
+    rotation << std::setprecision(std::numeric_limits<double>::max_digits10);
+    rotation << projection_framing.rotation_degrees[0] << ',' << projection_framing.rotation_degrees[1] << ','
+             << projection_framing.rotation_degrees[2];
+    arguments.emplace_back("--rotate=" + rotation.str());
+  }
+  if (projection_framing.auto_fov) {
+    arguments.emplace_back("--fov=AUTO");
+  } else {
+    std::ostringstream configured_fov;
+    configured_fov.imbue(std::locale::classic());
+    configured_fov << std::setprecision(std::numeric_limits<double>::max_digits10) << projection_framing.horizontal_fov;
+    arguments.emplace_back("--fov=" + configured_fov.str());
+  }
+  if (projection_framing.auto_canvas)
+    arguments.emplace_back("--canvas=AUTO");
+  if (projection_framing.auto_crop) {
+    arguments.emplace_back("--crop=AUTO");
+  } else {
+    std::ostringstream crop;
+    crop.imbue(std::locale::classic());
+    crop << std::setprecision(std::numeric_limits<double>::max_digits10);
+    for (size_t index = 0; index < projection_framing.crop.size(); ++index)
+      crop << (index == 0 ? "" : ",") << 100.0 * projection_framing.crop[index];
+    arguments.emplace_back("--crop=" + crop.str() + "%");
+  }
+  arguments.emplace_back("--output=" + output_path);
+  arguments.emplace_back(input_path);
+  return arguments;
+}
+
 absl::Status HuginProject::ApplyProjection(
     const fs::path& staging_directory,
     StitchProjection selected_projection,
@@ -1742,40 +1795,6 @@ absl::Status HuginProject::ApplyProjection(
   std::ostringstream configured_fov;
   configured_fov.imbue(std::locale::classic());
   configured_fov << std::setprecision(std::numeric_limits<double>::max_digits10) << projection_framing.horizontal_fov;
-  auto convert_project = [&](const std::optional<std::string>& canvas) -> absl::Status {
-    std::error_code remove_error;
-    fs::remove(temporary_path, remove_error);
-    std::vector<std::string> command = {
-        *pano_modify, "--projection=" + std::to_string(projection_info.hugin_projection)};
-    if (!effective_projection_parameters.empty()) {
-      command.emplace_back(
-          "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
-    }
-    if (projection_framing.rotation_degrees != StitchProjectionFraming{}.rotation_degrees) {
-      std::ostringstream rotation;
-      rotation.imbue(std::locale::classic());
-      rotation << std::setprecision(std::numeric_limits<double>::max_digits10);
-      rotation << projection_framing.rotation_degrees[0] << ',' << projection_framing.rotation_degrees[1] << ','
-               << projection_framing.rotation_degrees[2];
-      command.emplace_back("--rotate=" + rotation.str());
-    }
-    command.emplace_back(projection_framing.auto_fov ? "--fov=AUTO" : "--fov=" + configured_fov.str());
-    if (canvas.has_value())
-      command.emplace_back("--canvas=" + *canvas);
-    if (projection_framing.auto_crop) {
-      command.emplace_back("--crop=AUTO");
-    } else {
-      std::ostringstream crop;
-      crop.imbue(std::locale::classic());
-      crop << std::setprecision(std::numeric_limits<double>::max_digits10);
-      for (size_t index = 0; index < projection_framing.crop.size(); ++index)
-        crop << (index == 0 ? "" : ",") << 100.0 * projection_framing.crop[index];
-      command.emplace_back("--crop=" + crop.str() + "%");
-    }
-    command.emplace_back("--output=" + temporary_path.filename().string());
-    command.emplace_back(project_path.filename().string());
-    return run_checked(command, staging_directory, nullptr, is_cancelled);
-  };
   auto validate_converted_project = [&]() -> absl::StatusOr<std::pair<size_t, size_t>> {
     HM_RETURN_IF_ERROR(validate_nonempty_file(temporary_path));
     auto converted_project = read_file(temporary_path);
@@ -1875,8 +1894,17 @@ absl::Status HuginProject::ApplyProjection(
     return effective_size;
   };
 
-  HM_RETURN_IF_ERROR(
-      convert_project(projection_framing.auto_canvas ? std::optional<std::string>("AUTO") : std::nullopt));
+  auto projection_arguments = ProjectionPanoModifyArguments(
+      selected_projection,
+      effective_projection_parameters,
+      projection_framing,
+      temporary_path.filename().string(),
+      project_path.filename().string());
+  if (!projection_arguments.ok())
+    return projection_arguments.status();
+  std::vector<std::string> command{*pano_modify};
+  command.insert(command.end(), projection_arguments->begin(), projection_arguments->end());
+  HM_RETURN_IF_ERROR(run_checked(command, staging_directory, nullptr, is_cancelled));
   auto validated_project = validate_converted_project();
   if (!validated_project.ok())
     return validated_project.status();
@@ -2074,8 +2102,6 @@ absl::Status HuginProject::Configure(
               : "Panorama optimizer disabled; native OpenCV mapping does not require Hugin optimization");
     }
   }
-  if (options.progress)
-    options.progress("canvas", "started", "Building stitch maps and panorama preview");
   const fs::path aligned_project_path = staging / ".autooptimiser_out.aligned.pto";
   if (options.mapping_backend == MappingBackend::kNona && options.projection.has_value() && options.select_leveling) {
     fs::copy_file(staging / "autooptimiser_out.pto", aligned_project_path, fs::copy_options::overwrite_existing, error);
@@ -2130,6 +2156,8 @@ absl::Status HuginProject::Configure(
           "leveling", "complete", selected->has_value() ? "Rink leveling angles selected" : "Rink leveling skipped");
     }
   }
+  if (options.progress)
+    options.progress("canvas", "started", "Building stitch maps and panorama preview");
   std::optional<double> output_scale;
   std::pair<size_t, size_t> source_canvas{0, 0};
   bool max_output_width_applied = false;

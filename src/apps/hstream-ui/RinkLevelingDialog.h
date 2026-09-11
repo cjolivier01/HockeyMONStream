@@ -29,7 +29,10 @@ class RinkLevelingDialog : public QDialog {
       const std::array<double, 3>& current_rotation,
       QWidget* parent = nullptr,
       std::optional<hm::stitching::StitchCameraSelection> expected_camera = std::nullopt,
-      bool in_progress_calibration = false);
+      bool in_progress_calibration = false,
+      std::optional<hm::stitching::StitchProjection> preview_projection = std::nullopt,
+      std::vector<double> preview_projection_parameters = {},
+      hm::stitching::StitchProjectionFraming preview_projection_framing = {});
   ~RinkLevelingDialog() override;
   QString loadError() const {
     return load_error_;
@@ -41,6 +44,13 @@ class RinkLevelingDialog : public QDialog {
   // Caller holds artifact -> config locks when this is used at publication.
   static QByteArray sourceRevision(const QString& game_directory);
   static QByteArray inProgressSourceRevision(const QString& calibration_directory);
+  bool calibrationCancellationRequested() const {
+    return calibration_cancellation_requested_;
+  }
+  bool closedAfterBackendCompletion() const {
+    return closed_after_backend_completion_;
+  }
+  void closeAfterBackendCompletion();
 
  protected:
   void reject() override;
@@ -58,6 +68,7 @@ class RinkLevelingDialog : public QDialog {
   void setBusy(bool busy);
   void fail(const QString& message);
   void acceptAngles();
+  void cancelCalibration();
 
   QString game_directory_;
   QTemporaryDir temporary_;
@@ -68,6 +79,9 @@ class RinkLevelingDialog : public QDialog {
   std::array<double, 3> initial_rotation_{};
   std::optional<hm::stitching::StitchCameraSelection> expected_camera_;
   bool in_progress_calibration_{false};
+  std::optional<hm::stitching::StitchProjection> preview_projection_;
+  std::vector<double> preview_projection_parameters_;
+  hm::stitching::StitchProjectionFraming preview_projection_framing_;
   std::array<ScoreboardSelectionCanvas*, 2> canvases_{};
   std::array<QDoubleSpinBox*, 2> angle_spins_{};
   QLabel* status_{nullptr};
@@ -80,4 +94,6 @@ class RinkLevelingDialog : public QDialog {
   bool busy_{false};
   bool estimated_{false};
   bool previewed_{false};
+  bool calibration_cancellation_requested_{false};
+  bool closed_after_backend_completion_{false};
 };

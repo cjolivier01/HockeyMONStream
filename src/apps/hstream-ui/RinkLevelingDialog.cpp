@@ -20,12 +20,17 @@
 #include <cmath>
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 namespace {
 const QStringList kSnapshotFiles =
     {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png", "config.yaml"};
-const QStringList kInProgressSnapshotFiles = {"autooptimiser_out.pto", "left.png", "right.png"};
+const QStringList kInProgressSnapshotFiles = {
+    "autooptimiser_out.pto",
+    ".autooptimiser_out.aligned.pto",
+    "left.png",
+    "right.png"};
 
 QByteArray readFile(const QString& path, qint64 limit = 1024 * 1024) {
   QFile file(path);
@@ -56,12 +61,18 @@ RinkLevelingDialog::RinkLevelingDialog(
     const std::array<double, 3>& current_rotation,
     QWidget* parent,
     std::optional<hm::stitching::StitchCameraSelection> expected_camera,
-    bool in_progress_calibration)
+    bool in_progress_calibration,
+    std::optional<hm::stitching::StitchProjection> preview_projection,
+    std::vector<double> preview_projection_parameters,
+    hm::stitching::StitchProjectionFraming preview_projection_framing)
     : QDialog(parent),
       game_directory_(game_directory),
       initial_rotation_(current_rotation),
       expected_camera_(std::move(expected_camera)),
-      in_progress_calibration_(in_progress_calibration) {
+      in_progress_calibration_(in_progress_calibration),
+      preview_projection_(preview_projection),
+      preview_projection_parameters_(std::move(preview_projection_parameters)),
+      preview_projection_framing_(preview_projection_framing) {
   setObjectName("rinkLevelingDialog");
   setWindowTitle("Level the rink from vertical posts");
   resize(1120, 820);
@@ -153,10 +164,15 @@ RinkLevelingDialog::RinkLevelingDialog(
       ? buttons->addButton("Skip leveling", QDialogButtonBox::RejectRole)
       : buttons->button(QDialogButtonBox::Cancel);
   reject_button->setObjectName(in_progress_calibration_ ? "skipRinkLevelingButton" : "cancelRinkLevelingButton");
+  if (in_progress_calibration_) {
+    auto* cancel_calibration = buttons->addButton("Cancel calibration", QDialogButtonBox::DestructiveRole);
+    cancel_calibration->setObjectName("cancelRinkCalibrationButton");
+    connect(cancel_calibration, &QPushButton::clicked, this, [this]() { cancelCalibration(); });
+  }
   accept_button_ = buttons->addButton("Use angles", QDialogButtonBox::AcceptRole);
   accept_button_->setObjectName("acceptRinkLevelingButton");
   accept_button_->setEnabled(false);
-  connect(buttons, &QDialogButtonBox::rejected, this, &RinkLevelingDialog::reject);
+  connect(reject_button, &QPushButton::clicked, this, &RinkLevelingDialog::reject);
   connect(accept_button_, &QPushButton::clicked, this, [this]() { acceptAngles(); });
   layout->addWidget(buttons);
   loadSnapshot();
@@ -196,6 +212,10 @@ void RinkLevelingDialog::loadSnapshot() {
   };
 
   if (in_progress_calibration_) {
+    if (!preview_projection_.has_value()) {
+      load_error_ = "The in-progress projection settings are unavailable. Cancel calibration and retry.";
+      return;
+    }
     if (!copy_snapshot(kInProgressSnapshotFiles, inProgressSourceRevision(game_directory_))) {
       load_error_ = "The in-progress calibration snapshot is unavailable. Skip leveling and retry calibration.";
       return;
@@ -453,58 +473,83 @@ void RinkLevelingDialog::estimate() {
 void RinkLevelingDialog::preview() {
   if (busy_ || !load_error_.isEmpty())
     return;
+  previewed_ = false;
+  accept_button_->setEnabled(false);
+  status_->setText("Rendering a temporary still preview…");
+  auto render_preview = [this](const QString& framed_project) {
+    const auto canvas =
+        hm::stitching::HuginProject::ParseCanvasSize(readFile(temporary_.filePath(framed_project)).toStdString());
+    if (!canvas.ok() || canvas->first == 0 || canvas->second == 0 || canvas->second > canvas->first * 4ULL) {
+      fail(
+          canvas.ok() ? "Saved preview canvas dimensions are invalid."
+                      : QString::fromStdString(canvas.status().ToString()));
+      return;
+    }
+    const size_t preview_width = std::min<size_t>(1600, canvas->first);
+    const size_t preview_height =
+        std::max<size_t>(1, size_t(std::llround(double(canvas->second) * preview_width / canvas->first)));
+    startTool(
+        "pano_modify",
+        {QString("--canvas=%1x%2").arg(preview_width).arg(preview_height), "--output=preview.pto", framed_project},
+        {},
+        [this](const QByteArray&) {
+          QFile::remove(temporary_.filePath("preview.png"));
+          startTool(
+              "nona",
+              {"-m", "PNG", "--ignore-exposure", "--seam=blend", "-o", "preview.png", "preview.pto"},
+              {},
+              [this](const QByteArray&) {
+                if (!preview_canvas_->setImage(temporary_.filePath("preview.png"))) {
+                  fail("Hugin did not produce a readable preview.");
+                  return;
+                }
+                preview_canvas_->fitImage();
+                previewed_ = true;
+                tabs_->setTabEnabled(2, true);
+                tabs_->setCurrentIndex(2);
+                accept_button_->setEnabled(true);
+                status_->setText(
+                    estimated_ ? "Inspect the walls and both ends of the rink. Use angles when satisfied."
+                               : "Preview of the displayed angles. Add or adjust posts to estimate automatically.");
+              });
+        });
+  };
+
+  if (in_progress_calibration_) {
+    auto framing = preview_projection_framing_;
+    framing.rotation_degrees = rotationDegrees();
+    const auto arguments = hm::stitching::HuginProject::ProjectionPanoModifyArguments(
+        *preview_projection_,
+        preview_projection_parameters_,
+        framing,
+        "preview-framed.pto",
+        ".autooptimiser_out.aligned.pto");
+    if (!arguments.ok()) {
+      fail(QString::fromStdString(arguments.status().ToString()));
+      return;
+    }
+    QStringList qt_arguments;
+    for (const std::string& argument : *arguments)
+      qt_arguments.push_back(QString::fromStdString(argument));
+    startTool(
+        "pano_modify", qt_arguments, {}, [render_preview](const QByteArray&) { render_preview("preview-framed.pto"); });
+    return;
+  }
+
   const auto delta = hm::stitching::RinkLevelingRotationDelta(published_rotation_, rotationDegrees());
   if (!delta.ok()) {
     fail(QString::fromStdString(delta.status().ToString()));
     return;
   }
-  previewed_ = false;
-  accept_button_->setEnabled(false);
-  status_->setText("Rendering a temporary still preview…");
-  // Bound this offline CPU preview to 1600 pixels wide, keeping the saved
-  // projection, canvas aspect and crop. No steady-state video readback.
-  const QString original = QString::fromUtf8(readFile(temporary_.filePath("autooptimiser_out.pto")));
-  const auto match = QRegularExpression("(?m)^p .*?\\bw(\\d+) .*?\\bh(\\d+)").match(original);
-  const int width = match.captured(1).toInt(), height = match.captured(2).toInt();
-  if (width <= 0 || height <= 0 || height > width * 4LL) {
-    fail("Saved preview canvas dimensions are invalid.");
-    return;
-  }
-  const int preview_width = std::min(1600, width);
-  const int preview_height = std::max(1, int(std::round(double(height) * preview_width / width)));
   const QString rotation = QString("--rotate=%1,%2,%3")
                                .arg((*delta)[0], 0, 'g', 16)
                                .arg((*delta)[1], 0, 'g', 16)
                                .arg((*delta)[2], 0, 'g', 16);
   startTool(
       "pano_modify",
-      {rotation,
-       QString("--canvas=%1x%2").arg(preview_width).arg(preview_height),
-       "-o",
-       "preview.pto",
-       "autooptimiser_out.pto"},
+      {rotation, "--output=preview-framed.pto", "autooptimiser_out.pto"},
       {},
-      [this](const QByteArray&) {
-        QFile::remove(temporary_.filePath("preview.png"));
-        startTool(
-            "nona",
-            {"-m", "PNG", "--ignore-exposure", "--seam=blend", "-o", "preview.png", "preview.pto"},
-            {},
-            [this](const QByteArray&) {
-              if (!preview_canvas_->setImage(temporary_.filePath("preview.png"))) {
-                fail("Hugin did not produce a readable preview.");
-                return;
-              }
-              preview_canvas_->fitImage();
-              previewed_ = true;
-              tabs_->setTabEnabled(2, true);
-              tabs_->setCurrentIndex(2);
-              accept_button_->setEnabled(true);
-              status_->setText(
-                  estimated_ ? "Inspect the walls and both ends of the rink. Use angles when satisfied."
-                             : "Preview of the displayed angles. Add or adjust posts to estimate automatically.");
-            });
-      });
+      [render_preview](const QByteArray&) { render_preview("preview-framed.pto"); });
 }
 
 void RinkLevelingDialog::acceptAngles() {
@@ -542,4 +587,14 @@ void RinkLevelingDialog::reject() {
     process_ = nullptr;
   }
   QDialog::reject();
+}
+
+void RinkLevelingDialog::cancelCalibration() {
+  calibration_cancellation_requested_ = true;
+  reject();
+}
+
+void RinkLevelingDialog::closeAfterBackendCompletion() {
+  closed_after_backend_completion_ = true;
+  reject();
 }
