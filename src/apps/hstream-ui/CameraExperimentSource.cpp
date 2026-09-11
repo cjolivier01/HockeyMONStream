@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/CameraExperimentSource.h"
 
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
+#include "hstream/src/libs/common/pipeline_utils.h"
 
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -12,6 +13,8 @@
 
 #include <gst-nvquery.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <mutex>
@@ -52,6 +55,52 @@ void set_batch_query_contract(GstElement* element, guint size) {
   gst_object_unref(pad);
 }
 } // namespace
+
+absl::Status ResolveExperimentStitchingSettings(
+    const YAML::Node& config,
+    bool automatic_high_bit_depth,
+    hm::playtracker_replay::StitchingMedia* media) {
+  try {
+    media->rotation = 0;
+    for (const char* path :
+         {"pipeline.hmstitcher.post-stitch-rotate-degrees",
+          "pipeline.hmstitcher.post_stitch_rotate_degrees",
+          "stitching.post_stitch_rotate_degrees"}) {
+      const auto value = hm::get_node(config, path);
+      if (value && !value->IsNull()) {
+        media->rotation = value->as<double>();
+        break;
+      }
+    }
+    media->high_bit_depth = automatic_high_bit_depth;
+    for (const char* path :
+         {"pipeline.hmstitcher.properties.high-bit-depth", "hstream_ui.camera_controls.Use_10_Bit_Grading"}) {
+      const auto value = hm::get_node(config, path);
+      if (!value || value->IsNull())
+        continue;
+      std::string mode = value->as<std::string>();
+      std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return std::tolower(c); });
+      if (mode == "true" || mode == "1")
+        media->high_bit_depth = true;
+      else if (mode == "false" || mode == "0")
+        media->high_bit_depth = false;
+      else if (mode != "auto")
+        return absl::InvalidArgumentError(std::string(path) + " must be auto, true, false, 1, or 0");
+      break;
+    }
+    const auto exposure = hm::get_node(config, "pipeline.hmstitcher.properties.exposure");
+    const auto shadow_lift = hm::get_node(config, "pipeline.hmstitcher.properties.shadow-lift");
+    media->exposure = exposure && !exposure->IsNull() ? exposure->as<double>() : 0;
+    media->shadow_lift = shadow_lift && !shadow_lift->IsNull() ? shadow_lift->as<double>() : 0;
+    if (!std::isfinite(media->rotation) || !std::isfinite(media->exposure) || media->exposure < 0 ||
+        media->exposure > 1.3 || !std::isfinite(media->shadow_lift) || media->shadow_lift < 0 ||
+        media->shadow_lift > 100)
+      return absl::InvalidArgumentError("Recorded stitching rotation or color settings are invalid");
+    return absl::OkStatus();
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid recorded stitching settings: ") + error.what());
+  }
+}
 
 absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
     const std::string& directory,
@@ -122,25 +171,16 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
     }
     if (media.cameras[0].offset_ns && media.cameras[1].offset_ns)
       return absl::InvalidArgumentError("One camera must have the recorded zero synchronization offset");
-    const auto pipeline = config["pipeline"];
-    const auto stitcher = pipeline ? pipeline["hmstitcher"] : YAML::Node();
-    const auto stitching = config["stitching"];
-    if (stitcher && stitcher["post-stitch-rotate-degrees"])
-      media.rotation = stitcher["post-stitch-rotate-degrees"].as<double>();
-    else if (stitcher && stitcher["post_stitch_rotate_degrees"])
-      media.rotation = stitcher["post_stitch_rotate_degrees"].as<double>();
-    else if (stitching && stitching["post_stitch_rotate_degrees"])
-      media.rotation = stitching["post_stitch_rotate_degrees"].as<double>();
-    const auto properties = stitcher ? stitcher["properties"] : YAML::Node();
-    if (properties && properties["high-bit-depth"])
-      media.high_bit_depth = properties["high-bit-depth"].as<bool>();
-    if (properties && properties["exposure"])
-      media.exposure = properties["exposure"].as<double>();
-    if (properties && properties["shadow-lift"])
-      media.shadow_lift = properties["shadow-lift"].as<double>();
-    if (!std::isfinite(media.rotation) || !std::isfinite(media.exposure) || media.exposure < 0 ||
-        media.exposure > 1.3 || !std::isfinite(media.shadow_lift) || media.shadow_lift < 0 || media.shadow_lift > 100)
-      return absl::InvalidArgumentError("Recorded stitching rotation or color settings are invalid");
+    bool automatic_high_bit_depth = true;
+    for (const auto& camera : media.cameras) {
+      for (const auto& path : camera.files) {
+        const auto depth = hm::getVideoBitDepth(path);
+        automatic_high_bit_depth = automatic_high_bit_depth && depth.has_value() && *depth >= 10;
+      }
+    }
+    const auto settings = ResolveExperimentStitchingSettings(config, automatic_high_bit_depth, &media);
+    if (!settings.ok())
+      return settings;
     auto artifacts = hm::stitching::lock_validated_stitching_artifacts(media.directory);
     if (!artifacts.ok())
       return artifacts.status();

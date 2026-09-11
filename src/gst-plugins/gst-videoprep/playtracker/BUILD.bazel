@@ -70,8 +70,10 @@ cc_test(
         "PlayTrackerPrivInitTest.cpp",
     ],
     deps = [
+        "//src/libs/playtracker_replay",
         "//src/libs/recording",
         ":playtracker",
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "//src/libs/common:detection_snapshot_meta",

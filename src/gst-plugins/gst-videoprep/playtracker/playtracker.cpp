@@ -154,6 +154,7 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
   }
   if (!telemetry_csv_dir_.empty()) {
     telemetry_rink_mask_.release();
+    telemetry_canvas_ = {};
     telemetry_geometry_.reset();
     const absl::Status telemetry_status = telemetry_csv_.Start(
         telemetry_csv_dir_,
@@ -457,11 +458,19 @@ absl::Status PlayTrackerPriv::GenerateOutput(
          pt_context_->play_trackers.count(frame.frame_meta->source_id) == 0);
     frame.replay_input.reset();
     if (export_telemetry) {
+      const cv::Size canvas(frame.frame_meta->source_frame_width, frame.frame_meta->source_frame_height);
+      if (canvas != telemetry_canvas_) {
+        telemetry_canvas_ = canvas;
+        frame.checkpoint_replay = true;
+      }
 #ifdef HAS_NVDS_CUSTOMUSERMETA
       const auto* rink =
           hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
       const cv::Mat mask = rink ? rink->mask() : cv::Mat();
       if (mask.data != telemetry_rink_mask_.data) {
+        // Replay cannot warm up across geometry revisions. Capture the state
+        // before the first step using a new mask (including mask removal).
+        frame.checkpoint_replay = true;
         telemetry_rink_mask_ = mask;
         telemetry_geometry_.reset();
         if (!mask.empty()) {

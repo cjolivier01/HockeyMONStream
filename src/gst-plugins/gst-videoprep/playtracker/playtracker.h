@@ -57,6 +57,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   PlayTrackerTelemetryDb telemetry_csv_;
   std::string telemetry_game_id_;
   cv::Mat telemetry_rink_mask_;
+  cv::Size telemetry_canvas_;
   std::shared_ptr<const TelemetryGeometry> telemetry_geometry_;
   std::atomic<bool> telemetry_shutdown_ready_{false};
   uint64_t telemetry_seek_epoch_{0};

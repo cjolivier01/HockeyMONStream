@@ -121,6 +121,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/common:utils",
         "//src/apps/apps-common:deepstream_apps_common",
         "//src/libs/playtracker_replay",
         "//src/libs/stitching:stitching",
@@ -128,6 +129,14 @@ cc_library(
         "@qt//:qt_core",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "camera_experiment_source_test",
+    srcs = ["CameraExperimentSourceTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":camera_experiment_source", "@yaml-cpp"],
 )
 
 cc_library(

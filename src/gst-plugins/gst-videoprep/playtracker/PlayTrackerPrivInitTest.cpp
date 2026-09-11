@@ -1,5 +1,7 @@
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
+#include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/recording/Database.h"
 
 #include "absl/status/status.h"
@@ -47,7 +49,11 @@ std::string read_file(const fs::path& path) {
   return contents.str();
 }
 
-bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
+bool generate_export_sample(
+    TestPlayTrackerPriv& priv,
+    uint64_t frame_number,
+    const cv::Mat& mask = {},
+    int canvas_width = 3840) {
   NvDsBatchMeta* batch = nvds_create_batch_meta(1);
   NvDsFrameMeta* frame_meta = batch ? nvds_acquire_frame_meta_from_pool(batch) : nullptr;
   NvDsObjectMeta* object_meta = batch ? nvds_acquire_obj_meta_from_pool(batch) : nullptr;
@@ -59,7 +65,8 @@ bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
   }
   frame_meta->source_id = 0;
   frame_meta->frame_num = frame_number;
-  frame_meta->source_frame_width = 3840;
+  frame_meta->buf_pts = (frame_number - 1) * 100000000;
+  frame_meta->source_frame_width = canvas_width;
   frame_meta->source_frame_height = 1080;
   frame_meta->pipeline_width = 3840;
   frame_meta->pipeline_height = 1080;
@@ -72,6 +79,12 @@ bool generate_export_sample(TestPlayTrackerPriv& priv, uint64_t frame_number) {
   object_meta->tracker_bbox_info.org_bbox_coords = NvBbox_Coords{120.0f, 100.0f, 400.0f, 260.0f};
   nvds_add_obj_meta_to_frame(frame_meta, object_meta, nullptr);
   nvds_add_frame_meta_to_batch(batch, frame_meta);
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+  if (!mask.empty()) {
+    hm::fieldmask::FieldMaskPayload::create_and_add<hm::fieldmask::FieldMaskPayload>(
+        frame_meta, cv::Point2f(canvas_width / 2, 540), cv::Rect2i(0, 0, canvas_width, 1080), mask, "test-mask");
+  }
+#endif
   if (!hm::detection_snapshot::add_meta(batch, 1)) {
     nvds_destroy_batch_meta(batch);
     return false;
@@ -637,6 +650,48 @@ int main() {
       fs::exists(late_failure_dir / "detections.csv")) {
     std::cerr << "late pipeline stop failure published a successful telemetry generation\n";
     return 40;
+  }
+
+  // Each new geometry must be usable immediately, before the next periodic
+  // checkpoint. Also cover mask removal and canvas changes without a mask.
+  const fs::path geometry_dir = tmpdir / "telemetry-geometry-boundaries";
+  TestPlayTrackerPriv geometry_priv(/*gpu_id=*/0, /*batch_size=*/1);
+  const cv::Mat mask_a(1080, 3840, CV_8UC1, cv::Scalar(255));
+  const cv::Mat mask_b = mask_a.clone();
+  if (!geometry_priv.SetProperty(hm::Property("telemetry-db-dir", geometry_dir.string())) ||
+      !geometry_priv.PreCapsInit(&params).ok() || !geometry_priv.PostCapsInit(&params).ok() ||
+      !generate_export_sample(geometry_priv, 1, mask_a) || !generate_export_sample(geometry_priv, 2, mask_a) ||
+      !generate_export_sample(geometry_priv, 3, mask_b) || !generate_export_sample(geometry_priv, 4, mask_b) ||
+      !generate_export_sample(geometry_priv, 5) || !generate_export_sample(geometry_priv, 6, {}, 4000)) {
+    std::cerr << "could not record geometry boundary regression\n";
+    return 42;
+  }
+  GstEvent* geometry_eos = gst_event_new_custom(
+      GST_EVENT_CUSTOM_DOWNSTREAM_OOB, gst_structure_new_empty("hstream-playtracker-telemetry-eos"));
+  geometry_priv.HandleEvent(geometry_eos);
+  gst_event_unref(geometry_eos);
+  geometry_priv.Shutdown();
+  if (!geometry_priv.SetProperty(hm::Property("finalize-telemetry", "1")))
+    return 43;
+  {
+    hm::recording::Database db((geometry_dir / "hstream_telemetry.db").string());
+    hm::recording::Statement checkpoints(db.get(), "SELECT sample_id FROM checkpoints ORDER BY sample_id");
+    std::vector<int64_t> samples;
+    while (checkpoints.Next())
+      samples.push_back(checkpoints.Int(0));
+    if (samples != std::vector<int64_t>({1, 3, 5, 6})) {
+      std::cerr << "geometry changes did not capture exactly the required pre-step checkpoints\n";
+      return 43;
+    }
+  }
+  hm::playtracker_replay::PrepareOptions geometry_options;
+  geometry_options.manifest_path = (geometry_dir / "hstream_telemetry.db").string();
+  geometry_options.start_seconds = 0.2;
+  geometry_options.duration_seconds = 0.05;
+  const auto geometry_session = hm::playtracker_replay::ReplaySession::Prepare(geometry_options);
+  if (!geometry_session.ok()) {
+    std::cerr << "could not replay immediately after a mask revision: " << geometry_session.status() << '\n';
+    return 44;
   }
 
   if (params.m_inCaps) {

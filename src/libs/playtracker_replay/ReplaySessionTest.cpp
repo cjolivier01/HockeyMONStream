@@ -238,6 +238,14 @@ int main(int argc, char** argv) {
     database_options.start_seconds = 24;
     database_options.duration_seconds = 2;
     check(!ReplaySession::Prepare(database_options).ok(), "database rejects reset-crossing ranges");
+    {
+      hm::recording::Database db(database_options.manifest_path, true);
+      db.Exec("UPDATE frames SET pts_ns=pts_ns+600000000000 WHERE source_frame>=250");
+    }
+    database_options.start_seconds = 30;
+    database_options.duration_seconds = 1;
+    check(
+        !ReplaySession::Prepare(database_options).ok(), "database rejects a range entirely inside a forward-seek gap");
     DsPlayTrackerRuntimeTuning unchanged;
     auto baseline = (*session)->RunTrial("baseline", unchanged);
     check(baseline.ok(), baseline.status().ToString());

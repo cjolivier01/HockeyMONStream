@@ -436,10 +436,11 @@ absl::StatusOr<std::shared_ptr<ReplaySession>> ReplaySession::PrepareDatabase(
                    out = in + uint64_t(options.duration_seconds * 1e9);
     Statement selected(
         db.get(),
-        "SELECT sample_id,source_id,seek_epoch,reset_epoch,geometry_id FROM frames WHERE run_id=? AND pts_ns>=? ORDER BY sample_id LIMIT 1");
+        "SELECT sample_id,source_id,seek_epoch,reset_epoch,geometry_id FROM frames WHERE run_id=? AND pts_ns>=? AND pts_ns<? ORDER BY sample_id LIMIT 1");
     selected.Bind(1, run);
     selected.Bind(2, in);
-    require(selected.Next(), "Selected in point is outside the recording");
+    selected.Bind(3, out);
+    require(selected.Next(), "Selected range contains no recorded frames");
     const uint64_t start = selected.Int(0), source_id = selected.Int(1), seek = selected.Int(2),
                    reset = selected.Int(3), geometry = selected.Int(4);
     Statement checkpoint(

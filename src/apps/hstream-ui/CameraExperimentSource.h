@@ -3,7 +3,15 @@
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 
 #include <gst/gst.h>
+#include <yaml-cpp/yaml.h>
 #include <memory>
+
+// Resolve persisted aliases/null defaults with the production configuration
+// semantics. Automatic grading requires every original chapter to be >=10 bit.
+absl::Status ResolveExperimentStitchingSettings(
+    const YAML::Node& config,
+    bool automatic_high_bit_depth,
+    hm::playtracker_replay::StitchingMedia* media);
 
 // Resolves the previously configured left/right playlists and validates the
 // existing maps. Never recalibrates a historical experiment implicitly.
