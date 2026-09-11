@@ -2003,7 +2003,7 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue;
     if (matcher_present)
       HM_ASSIGN_OR_RETURN(matcher, ParseControlPointMatcher(matcher_node.as<std::string>()));
-    MappingBackend backend = MappingBackend::kOpenCvMagsac;
+    MappingBackend backend = MappingBackend::kNona;
     if (backend_present)
       HM_ASSIGN_OR_RETURN(backend, ParseMappingBackend(backend_node.as<std::string>()));
     StitchProjection projection =
@@ -2774,9 +2774,9 @@ absl::StatusOr<bool> read_bool_or_default(
 
 absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAML::Node& config) {
   ControlPointMatcher control_point_matcher = ControlPointMatcher::kSuperPointLightGlue;
-  MappingBackend mapping_backend = MappingBackend::kOpenCvMagsac;
-  bool run_autooptimizer = false;
-  StitchProjection projection = StitchProjection::kRectilinear;
+  MappingBackend mapping_backend = MappingBackend::kNona;
+  bool run_autooptimizer = true;
+  StitchProjection projection = StitchProjection::kGeneralPanini;
   HM_ASSIGN_OR_RETURN(
       control_point_matcher,
       ParseControlPointMatcher(read_scalar_or_default(

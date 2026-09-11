@@ -23,7 +23,9 @@ Remove the guessed one-pass `hmstitcher` dimensions. Let the first input batch d
 
 ## Projection-aware calibration
 
-Fresh calibration selects `stitching.mapping_backend` and `stitching.projection` before mapping TIFF generation. With
+Fresh calibration defaults to NONA (`stitching.mapping_backend: nona`) and General Panini
+(`stitching.projection: general-panini`), with `stitching.run_autooptimizer: true` for NONA's required alignment pass.
+It selects the backend and projection before mapping TIFF generation. With
 `nona`, Hugin optimizes the camera alignment, converts the unpublished PTO directly to the selected output projection,
 generates both camera remap sets in one mapping phase, and runs `enblend` once. The existing bounds-safety logic may
 rerender that same selected projection at a smaller scale when TIFF placement rounding exceeds the canvas; it does not

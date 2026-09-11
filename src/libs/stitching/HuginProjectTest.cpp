@@ -1091,6 +1091,8 @@ int main() {
 
   const auto optimizer_args_size = fs::file_size(autooptimiser_args);
   hm::stitching::HuginProject::Options optimizer_disabled_options;
+  optimizer_disabled_options.mapping_backend = hm::stitching::MappingBackend::kOpenCvMagsac;
+  optimizer_disabled_options.run_autooptimizer = false;
   std::string optimizer_disabled_message;
   fs::create_directories(root / "optimizer-disabled-game");
   std::vector<hm::stitching::FeatureMatch> optimizer_disabled_matches;
@@ -1120,7 +1122,7 @@ int main() {
         if (stage == "optimizer" && status == "complete")
           optimizer_disabled_message = message;
       };
-  ::setenv("HM_AUTOOPTIMISER", (root / "missing-autooptimiser-disabled-by-default").c_str(), 1);
+  ::setenv("HM_AUTOOPTIMISER", (root / "missing-autooptimiser-explicitly-disabled").c_str(), 1);
   const auto optimizer_disabled = hm::stitching::HuginProject::Configure(
       root / "optimizer-disabled-game",
       root / "private-inputs" / "left.png",
@@ -1130,10 +1132,10 @@ int main() {
   ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
   if (!optimizer_disabled.ok())
     std::cerr << optimizer_disabled << '\n';
-  ok &= expect(optimizer_disabled.ok(), "Hugin calibration must succeed with its default optimizer setting disabled");
+  ok &= expect(optimizer_disabled.ok(), "OpenCV calibration must succeed with the optimizer explicitly disabled");
   ok &= expect(
       fs::file_size(autooptimiser_args) == optimizer_args_size,
-      "Hugin calibration must skip autooptimiser unless explicitly enabled");
+      "OpenCV calibration must skip the disabled autooptimiser");
   ok &= expect(
       optimizer_disabled_message.find("disabled") != std::string::npos,
       "Optimizer-disabled calibration progress must explain that the stage was skipped");
@@ -1147,7 +1149,8 @@ int main() {
         "optimizer-disabled calibration must publish the generated Hugin project without modifying its geometry");
   }
 
-  hm::stitching::HuginProject::Options six_point_akaze_options;
+  hm::stitching::HuginProject::Options six_point_akaze_options = optimizer_disabled_options;
+  six_point_akaze_options.progress = {};
   six_point_akaze_options.control_point_matcher = hm::stitching::ControlPointMatcher::kAkazeHamming;
   std::vector<hm::stitching::FeatureMatch> six_point_akaze_matches;
   for (const int y : {6, 36}) {
@@ -1172,7 +1175,7 @@ int main() {
   ok &= expect(six_point_akaze.ok(), "native AKAZE mapping must honor its six-control-point minimum");
 
   hm::stitching::HuginProject::Options invalid_nona_options;
-  invalid_nona_options.mapping_backend = hm::stitching::MappingBackend::kNona;
+  invalid_nona_options.run_autooptimizer = false;
   const auto invalid_nona = hm::stitching::HuginProject::Configure(
       root / "optimizer-disabled-game",
       root / "private-inputs" / "left.png",
