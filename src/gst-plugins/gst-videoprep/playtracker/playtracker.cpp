@@ -153,6 +153,8 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     return status;
   }
   if (!telemetry_csv_dir_.empty()) {
+    telemetry_rink_mask_.release();
+    telemetry_geometry_.reset();
     const absl::Status telemetry_status = telemetry_csv_.Start(
         telemetry_csv_dir_,
         TelemetryConfigArtifact{play_tracker_config_source_file_, play_tracker_config_source_contents_},
@@ -450,6 +452,18 @@ absl::Status PlayTrackerPriv::GenerateOutput(
          pt_context_->play_trackers.count(frame.frame_meta->source_id) == 0);
     frame.replay_input.reset();
     if (export_telemetry) {
+      const auto* field_mask = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(
+          frame.frame_meta);
+      if (field_mask && !field_mask->mask().empty() && field_mask->mask().data != telemetry_rink_mask_.data) {
+        // Encode the already-loaded calibration mask once per mask identity.
+        // No video pixels are mapped or transferred from the GPU.
+        telemetry_rink_mask_ = field_mask->mask();
+        std::vector<uchar> png;
+        if (!cv::imencode(".png", telemetry_rink_mask_, png))
+          return absl::InternalError("could not encode the run's telemetry rink mask");
+        if (!telemetry_csv_.StageRinkMask(std::string(reinterpret_cast<const char*>(png.data()), png.size())))
+          return absl::InternalError("could not preserve the run's rink mask in telemetry working storage");
+      }
       const auto* detection_snapshot = hm::detection_snapshot::find_meta(batch_meta, frame.frame_meta);
       if (!detection_snapshot) {
         return absl::DataLossError("primary detection snapshot missing from a frame during lossless telemetry export");
@@ -561,25 +575,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
                 static_cast<float>(box.height()),
             });
       }
-#ifdef HAS_NVDS_CUSTOMUSERMETA
-      const auto* rink = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
-      const auto mask = rink ? rink->mask() : std::shared_ptr<const cv::Mat>();
-      if (mask != telemetry_mask_) {
-        telemetry_mask_ = mask;
-        telemetry_geometry_.reset();
-        if (mask) {
-          auto geometry = std::make_shared<TelemetryGeometry>();
-          geometry->width = mask->cols; geometry->height = mask->rows;
-          geometry->revision = rink->revision();
-          geometry->encode_mask = [mask] {
-            std::vector<unsigned char> bytes;
-            if (!cv::imencode(".png", *mask, bytes)) throw std::runtime_error("Cannot encode telemetry rink mask");
-            return std::string(bytes.begin(), bytes.end());
-          };
-          telemetry_geometry_ = std::move(geometry);
-        }
-      }
-#endif
+
       if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample), telemetry_geometry_))
         return absl::DataLossError("lossless telemetry exporter stopped before accepting a frame sample");
     }

@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -130,6 +132,9 @@ class PlayTrackerTelemetryCsv {
   void Stop();
 
   bool active() const;
+  // Persist the loaded calibration mask and its manifest before processing
+  // frames. Unchanged working snapshots share storage; game files never do.
+  bool StageRinkMask(std::string png);
   bool TryEnqueue(TelemetrySample sample);
   bool TryRecordConfigEvent(TelemetryConfigEvent event);
   bool TryRecordDiscontinuity(TelemetryConfigEvent event);
@@ -159,6 +164,10 @@ class PlayTrackerTelemetryCsv {
     uint64_t sample_boundary{0};
     TelemetryConfigEvent event;
   };
+  struct QueuedRinkMask {
+    std::string png;
+    std::shared_ptr<std::promise<bool>> completed;
+  };
   struct OwnedArtifact {
     std::string filename;
     // Training inputs are written to filename while the run is active, then
@@ -171,7 +180,7 @@ class PlayTrackerTelemetryCsv {
     int reservation_fd{-1};
     bool training_input{false};
   };
-  using WorkItem = std::variant<QueuedSample, QueuedConfigEvent>;
+  using WorkItem = std::variant<QueuedSample, QueuedConfigEvent, QueuedRinkMask>;
 
   absl::Status OpenOutputs(
       const std::string& output_directory,
@@ -181,6 +190,7 @@ class PlayTrackerTelemetryCsv {
   void WriterLoop();
   void WriteSample(const QueuedSample& queued);
   bool WriteConfigEvent(const QueuedConfigEvent& queued);
+  bool WriteRinkMask(const std::string& png);
   std::string BuildManifestContents() const;
   bool WriteManifestAndSync(const std::string& phase);
   bool WriteExclusiveConfigArtifact(const std::string& stem, const std::string& contents, std::string* filename);
@@ -251,6 +261,8 @@ class PlayTrackerTelemetryCsv {
   std::string frame_index_filename_;
   std::string config_events_filename_;
   std::string replay_filename_;
+  std::string rink_mask_filename_;
+  std::string rink_mask_contents_;
   std::string source_config_filename_;
   std::string effective_config_filename_;
   std::string source_config_path_;

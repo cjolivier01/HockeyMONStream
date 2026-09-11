@@ -604,6 +604,7 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* drivegpt_csv_toggle_{nullptr};
   bool active_run_telemetry_requested_{false};
   QString active_telemetry_manifest_path_;
+  QString active_run_completed_archive_suffix_;
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};

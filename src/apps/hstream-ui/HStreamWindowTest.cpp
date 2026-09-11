@@ -6773,10 +6773,10 @@ bool test_output_controls(HStreamWindow* window) {
           .filePath(QString("%1-tracking_output-with-audio.mp4").arg(window->gameIdText()));
   const QString completed_target =
       QDir(window->gameDirectoryText())
-          .filePath(QString("%1-tracking_output-with-audio-2.mp4").arg(window->gameIdText()));
+          .filePath(QString("%1-tracking_output-with-audio-4.mp4").arg(window->gameIdText()));
   const QString replaced_completed_target =
       QDir(window->gameDirectoryText())
-          .filePath(QString("%1-tracking_output-with-audio-4.mp4").arg(window->gameIdText()));
+          .filePath(QString("%1-tracking_output-with-audio-5.mp4").arg(window->gameIdText()));
   const QString dangling_completed_target =
       QDir(window->gameDirectoryText())
           .filePath(QString("%1-tracking_output-with-audio-1.mp4").arg(window->gameIdText()));
@@ -6944,7 +6944,7 @@ bool test_output_controls(HStreamWindow* window) {
           argument_text.contains(QRegularExpression(R"(-i\n/proc/self/fd/[0-9]+\n)")) &&
           !argument_text.contains("/proc/self/fd/197") && !argument_text.contains("/proc/self/fd/198") &&
           argument_text.contains(
-              QString("/%1-tracking_output-with-audio-hstream-finalize-").arg(window->gameIdText())) &&
+              QString("/%1-hstream-finalize-").arg(QFileInfo(completed_target).completeBaseName())) &&
           argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
           argument_text.contains("-tag:v\nhvc1") &&
           window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),
@@ -6952,7 +6952,7 @@ bool test_output_controls(HStreamWindow* window) {
       "and leave replacement source, target, and ownership-lock paths untouched");
   bool telemetry_deployed = true;
   for (const QString& stem : telemetry_stems) {
-    QFile published_file(QDir(window->gameDirectoryText()).filePath(stem + "-4.csv"));
+    QFile published_file(QDir(window->gameDirectoryText()).filePath(stem + "-5.csv"));
     telemetry_deployed &=
         published_file.open(QIODevice::ReadOnly) && published_file.readAll() == (stem + " async contents\n").toUtf8();
   }
@@ -7764,7 +7764,9 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QString telemetry_suffix =
       completed_base.startsWith(unsuffixed_base) ? completed_base.mid(unsuffixed_base.size()) : QString("invalid");
   bool dual_telemetry_deployed =
-      telemetry_suffix.isEmpty() || QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch();
+      QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch() &&
+      QFileInfo(stitched_completed).completeBaseName() ==
+          QString("%1-stitched_output-with-audio%2").arg(window->gameIdText(), telemetry_suffix);
   for (const QString& stem : telemetry_stems) {
     QFile published(QDir(window->gameDirectoryText()).filePath(stem + telemetry_suffix + ".csv"));
     dual_telemetry_deployed &=

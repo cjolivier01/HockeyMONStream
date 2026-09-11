@@ -29,6 +29,7 @@ cc_library(
         ":playtracker_telemetry_db",
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         ":playtracker_telemetry_csv",
+        "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "//src/libs/common:decoded_frame_sequence_meta",

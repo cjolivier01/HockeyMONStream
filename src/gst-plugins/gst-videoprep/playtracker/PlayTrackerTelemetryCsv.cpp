@@ -20,6 +20,7 @@
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <regex>
 #include <sstream>
 #include <system_error>
 
@@ -114,6 +115,27 @@ bool write_all(int fd, const std::string& contents) {
     offset += static_cast<size_t>(written);
   }
   return true;
+}
+
+bool file_matches(int fd, const std::string& contents) {
+  struct stat before{};
+  if (::fstat(fd, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size < 0 ||
+      static_cast<uint64_t>(before.st_size) != contents.size())
+    return false;
+  std::array<char, 64 * 1024> buffer;
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const ssize_t count = ::pread(fd, buffer.data(), std::min(buffer.size(), contents.size() - offset), offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0 || std::memcmp(buffer.data(), contents.data() + offset, static_cast<size_t>(count)) != 0)
+      return false;
+    offset += static_cast<size_t>(count);
+  }
+  struct stat after{};
+  return ::fstat(fd, &after) == 0 && before.st_size == after.st_size && before.st_mtim.tv_sec == after.st_mtim.tv_sec &&
+      before.st_mtim.tv_nsec == after.st_mtim.tv_nsec && before.st_ctim.tv_sec == after.st_ctim.tv_sec &&
+      before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
 }
 
 bool open_reserved_stream(int fd, std::ofstream* output) {
@@ -345,6 +367,8 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       {"play_tracker_source", ".yaml"},
       {"play_tracker_effective", ".yaml"},
       {"hstream_replay", ".jsonl"},
+      {"rink_mask_0", ".png"},
+      {".hstream-rink-mask", ".png"},
   };
   uint64_t first_generation = 0;
   fs::directory_iterator entry(output_directory_, error);
@@ -619,6 +643,21 @@ bool PlayTrackerTelemetryCsv::TryEnqueue(TelemetrySample sample) {
   return true;
 }
 
+bool PlayTrackerTelemetryCsv::StageRinkMask(std::string png) {
+  if (png.empty())
+    return false;
+  std::lock_guard<std::mutex> producer_lock(producer_mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!active_ || stopping_ || !WaitForQueueSpace(lock))
+    return false;
+  auto completed = std::make_shared<std::promise<bool>>();
+  auto result = completed->get_future();
+  queue_.emplace_back(QueuedRinkMask{std::move(png), std::move(completed)});
+  lock.unlock();
+  ready_.notify_one();
+  return result.get();
+}
+
 bool PlayTrackerTelemetryCsv::WaitForQueueSpace(std::unique_lock<std::mutex>& lock) {
   if (queue_.size() < queue_capacity_)
     return active_ && !stopping_;
@@ -693,6 +732,16 @@ void PlayTrackerTelemetryCsv::WriterLoop() {
     space_available_.notify_one();
     if (const auto* sample = std::get_if<QueuedSample>(&item)) {
       WriteSample(*sample);
+    } else if (const auto* mask = std::get_if<QueuedRinkMask>(&item)) {
+      // Manifest state can also change on the pipeline bus thread.
+      std::lock_guard<std::mutex> lock(mutex_);
+      const bool staged = !writer_failed_ && WriteRinkMask(mask->png) && SyncDirectory("rink-mask") &&
+          WriteManifestAndSync("fsync:manifest:rink-mask");
+      if (!staged) {
+        std::cerr << "Could not preserve telemetry rink mask, or the mask changed during the run\n";
+        writer_failed_ = true;
+      }
+      mask->completed->set_value(staged);
     } else {
       if (!WriteConfigEvent(std::get<QueuedConfigEvent>(item))) {
         writer_failed_ = true;
@@ -812,6 +861,74 @@ bool PlayTrackerTelemetryCsv::WriteConfigEvent(const QueuedConfigEvent& queued) 
   }
   config_events_buffered_.fetch_add(1, std::memory_order_acq_rel);
   return true;
+}
+
+bool PlayTrackerTelemetryCsv::WriteRinkMask(const std::string& png) {
+  if (!rink_mask_filename_.empty())
+    return png == rink_mask_contents_;
+  if (::flock(directory_lock_fd_, LOCK_EX) != 0)
+    return false;
+  const bool staged = [&]() {
+    const std::string filename = suffixed_name("rink_mask_0", suffix_, ".png");
+    int fd = -1;
+    // Only reuse our private snapshot cache. A regular rink_mask_0*.png could
+    // be editable calibration when working storage is also the game directory,
+    // or a foreign hard link to that calibration. The cache is populated only
+    // from our independently written snapshots, never from those source names.
+    std::error_code error;
+    static const std::regex mask_pattern(R"(^\.hstream-rink-mask(-[0-9]+)?\.png$)");
+    fs::directory_iterator entry(absl::StrCat("/proc/self/fd/", output_directory_fd_), error);
+    const fs::directory_iterator end;
+    for (; !error && entry != end; entry.increment(error)) {
+      const std::string candidate = entry->path().filename().string();
+      if (!std::regex_match(candidate, mask_pattern))
+        continue;
+      const int existing_fd =
+          ::openat(output_directory_fd_, candidate.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+      if (existing_fd < 0)
+        continue;
+      if (file_matches(existing_fd, png)) {
+        const std::string pinned_source = absl::StrCat("/proc/self/fd/", existing_fd);
+        if (::linkat(AT_FDCWD, pinned_source.c_str(), output_directory_fd_, filename.c_str(), AT_SYMLINK_FOLLOW) != 0) {
+          ::close(existing_fd);
+          return false;
+        }
+        fd = existing_fd;
+        break;
+      }
+      ::close(existing_fd);
+    }
+    if (error)
+      return false;
+    const bool reused = fd >= 0;
+    if (!reused)
+      fd = ::openat(output_directory_fd_, filename.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0)
+      return false;
+    struct stat info{};
+    if (::fstat(fd, &info) != 0) {
+      ::close(fd);
+      return false;
+    }
+    owned_artifacts_.push_back(
+        {filename, {}, static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino), fd, false});
+    if ((!reused && !write_all(fd, png)) || !SyncFd(fd, "fsync:rink-mask"))
+      return false;
+    if (!reused) {
+      const std::string cache_filename = suffixed_name(".hstream-rink-mask", suffix_, ".png");
+      const std::string pinned_source = absl::StrCat("/proc/self/fd/", fd);
+      if (::linkat(AT_FDCWD, pinned_source.c_str(), output_directory_fd_, cache_filename.c_str(), AT_SYMLINK_FOLLOW) !=
+          0)
+        return false;
+      owned_artifacts_.push_back(
+          {cache_filename, {}, static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino), -1, false});
+    }
+    rink_mask_filename_ = filename;
+    rink_mask_contents_ = png;
+    return true;
+  }();
+  ::flock(directory_lock_fd_, LOCK_UN);
+  return staged;
 }
 
 bool PlayTrackerTelemetryCsv::WriteExclusiveConfigArtifact(
@@ -1211,7 +1328,8 @@ std::string PlayTrackerTelemetryCsv::BuildManifestContents() const {
            << "  },\n"
            << "  \"sidecars\": {\"frame_index\": " << json_string(frame_index_filename_)
            << ", \"config_events\": " << json_string(config_events_filename_)
-           << ", \"replay\": " << json_string(replay_filename_) << "},\n"
+           << ", \"replay\": " << json_string(replay_filename_)
+           << (rink_mask_filename_.empty() ? "" : ", \"rink_mask\": " + json_string(rink_mask_filename_)) << "},\n"
            << "  \"config_provenance\": {\n"
            << "    \"source_path\": " << json_string(source_config_path_) << ",\n"
            << "    \"effective_path\": " << json_string(effective_config_path_) << ",\n"
@@ -1265,6 +1383,8 @@ void PlayTrackerTelemetryCsv::ResetOutputPaths() {
   frame_index_filename_.clear();
   config_events_filename_.clear();
   replay_filename_.clear();
+  rink_mask_filename_.clear();
+  rink_mask_contents_.clear();
   source_config_filename_.clear();
   effective_config_filename_.clear();
   owned_artifacts_.clear();

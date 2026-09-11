@@ -34,6 +34,7 @@
 #include "deepstream_common.h"
 #include "deepstream_sinks.h"
 
+#include "hstream/src/apps/apps-common/EncoderDimensions.h"
 #include "hstream/src/apps/apps-common/HStreamBatchDemux.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
@@ -1719,6 +1720,14 @@ static gboolean create_encode_file_bin(
     }
   }
   install_file_encoder_bitrate_scaling(config, bin->encoder);
+
+  if (stitched_output && config->enc_type == NV_DS_ENCODER_TYPE_HW) {
+    const auto limits = hm::query_encoder_dimensions(bin->encoder, config->codec == NV_DS_ENCODER_H265, config->gpu_id);
+    if (!limits || !hm::install_encoder_dimension_limit(bin->transform, bin->cap_filter, *limits, main10_output)) {
+      NVGSTDS_ERR_MSG_V("Could not determine the stitched archive encoder's supported dimensions");
+      goto done;
+    }
+  }
 
   switch (config->codec) {
     case NV_DS_ENCODER_H264:

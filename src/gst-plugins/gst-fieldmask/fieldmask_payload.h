@@ -13,10 +13,9 @@ namespace fieldmask {
 class FieldMaskPayload : public UserApplicationPayload {
  public:
   FieldMaskPayload(cv::Point2f centroid, const cv::Rect2i& field_box,
-                   std::shared_ptr<const cv::Mat> mask = {}, std::string revision = {})
+                   const cv::Mat& mask = {}, std::string revision = {})
       : mask_(std::move(mask)), revision_(std::move(revision)), centroid_(centroid), field_box_(field_box) {}
 
-  const std::shared_ptr<const cv::Mat>& mask() const { return mask_; }
   const std::string& revision() const { return revision_; }
 
   static HmPayloadType PayloadSubType() {
@@ -35,11 +34,17 @@ class FieldMaskPayload : public UserApplicationPayload {
     return centroid_;
   }
 
+  // Shares the immutable, CPU-resident calibration mask already used for
+  // filtering. This does not reference or read a video surface.
+  const cv::Mat& mask() const {
+    return mask_;
+  }
+
  private:
-  std::shared_ptr<const cv::Mat> mask_;
   std::string revision_;
   cv::Point2f centroid_;
   cv::Rect2i field_box_;
+  cv::Mat mask_;
 };
 #endif
 } // namespace fieldmask
