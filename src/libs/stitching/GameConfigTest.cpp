@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <thread>
 
@@ -1094,6 +1095,65 @@ stitching:
           absl::IsAborted(
               hm::stitching::validate_stitching_backend_generation(edited_rink, "backend-generation-b", rink_choices)),
       "a selected rink or inherited default change must fence stale map publication");
+
+  const fs::path leveling_root = root.parent_path() / (root.filename().string() + "-leveling-rotation");
+  fs::remove_all(leveling_root);
+  fs::create_directories(leveling_root);
+  YAML::Node leveling_generation = YAML::Clone(parameter_generation);
+  YAML::Node leveling_calibration = leveling_generation["hstream_ui"]["stitching_calibration"];
+  leveling_calibration["invalidation_id"] = "leveling-generation";
+  leveling_calibration.remove("backend_generation");
+  leveling_generation["unrelated"]["keep"] = true;
+  hm::stitching::StitchingBackendChoices leveling_choices = panini_choices;
+  leveling_choices.projection_framing.rotation_inherited = true;
+  const absl::Status leveling_reserved = hm::stitching::reserve_stitching_backend_generation_in_config(
+      leveling_generation, "leveling-generation", leveling_choices);
+  std::ofstream(leveling_root / "config.yaml") << YAML::Dump(leveling_generation) << '\n';
+  const std::array<double, 3> selected_leveling{12.5, -31.25, 1.75};
+  const auto applied_leveling = hm::stitching::apply_stitching_leveling_rotation(
+      leveling_root, "leveling-generation", leveling_choices, selected_leveling);
+  auto applied_leveling_config = hm::stitching::load_game_config_file(leveling_root / "config.yaml");
+  bool applied_leveling_valid = false;
+  if (applied_leveling.ok() && applied_leveling_config.ok() && applied_leveling_config->has_value()) {
+    const auto framing = hm::stitching::read_stitch_projection_framing(**applied_leveling_config);
+    applied_leveling_valid = framing.ok() && framing->rotation_degrees == selected_leveling &&
+        !framing->rotation_inherited && applied_leveling->projection_framing.rotation_degrees == selected_leveling &&
+        !applied_leveling->projection_framing.rotation_inherited &&
+        hm::stitching::validate_stitching_backend_generation(
+            **applied_leveling_config, "leveling-generation", *applied_leveling)
+            .ok() &&
+        absl::IsAborted(hm::stitching::validate_stitching_backend_generation(
+            **applied_leveling_config, "leveling-generation", leveling_choices)) &&
+        (**applied_leveling_config)["unrelated"]["keep"].as<bool>();
+  }
+  ok &= expect(
+      leveling_reserved.ok() && applied_leveling_valid,
+      "interactive leveling must atomically replace the worker rotation and generation claim while preserving config");
+  const auto repeated_leveling = applied_leveling.ok()
+      ? hm::stitching::apply_stitching_leveling_rotation(
+            leveling_root, "leveling-generation", *applied_leveling, selected_leveling)
+      : absl::StatusOr<hm::stitching::StitchingBackendChoices>(
+            absl::FailedPreconditionError("initial leveling fixture failed"));
+  auto opencv_leveling_choices = leveling_choices;
+  opencv_leveling_choices.mapping_backend = "opencv-magsac";
+  ok &= expect(
+      repeated_leveling.ok() &&
+          absl::IsAborted(
+              hm::stitching::apply_stitching_leveling_rotation(
+                  leveling_root, "superseded-generation", leveling_choices, selected_leveling)
+                  .status()) &&
+          absl::IsFailedPrecondition(
+              hm::stitching::apply_stitching_leveling_rotation(
+                  leveling_root, "leveling-generation", opencv_leveling_choices, selected_leveling)
+                  .status()) &&
+          absl::IsInvalidArgument(
+              hm::stitching::apply_stitching_leveling_rotation(
+                  leveling_root,
+                  "leveling-generation",
+                  leveling_choices,
+                  {0.0, std::numeric_limits<double>::quiet_NaN(), 0.0})
+                  .status()),
+      "interactive leveling must be idempotent and reject stale generations, other backends, and invalid angles");
 
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);

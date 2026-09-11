@@ -250,6 +250,16 @@ absl::Status validate_stitching_backend_generation_file_locked(
     const std::string& expected_invalidation_id,
     const StitchingBackendChoices& expected_choices);
 
+// Replaces only the shared projection rotation owned by an in-flight NONA
+// calibration, updating the worker-visible tuple and its immutable generation
+// claim in one config transaction. The returned tuple is the value subsequent
+// artifact publication must validate.
+absl::StatusOr<StitchingBackendChoices> apply_stitching_leveling_rotation(
+    const std::filesystem::path& game_dir,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices,
+    const std::array<double, 3>& rotation_degrees);
+
 // Applies only changes made between baseline and desired to latest. This is a
 // three-way merge for independently owned config paths, not a conflict
 // resolver: when both owners change the same path, desired wins.

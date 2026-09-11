@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -62,6 +63,9 @@ class HuginProject {
   struct Options {
     using ProgressCallback =
         std::function<void(const std::string& stage, const std::string& status, const std::string& message)>;
+    using LevelingSelectionCallback = std::function<absl::StatusOr<std::optional<std::array<double, 3>>>(
+        const std::filesystem::path& staging_directory,
+        const StitchProjectionFraming& published_framing)>;
 
     double horizontal_fov{127.2};
     double vertical_fov{95.0};
@@ -82,6 +86,11 @@ class HuginProject {
     // after this boundary are canvas, seam, validation, or publication errors
     // and must not be hidden by trying a different sampled frame.
     std::function<void()> alignment_complete;
+    // Optional interactive boundary used by the desktop configuration flow.
+    // It runs after alignment and an initial projection have succeeded, but
+    // before full-resolution Nona maps and the Enblend seam are generated.
+    // nullopt keeps the configured rotation; a value replaces it.
+    LevelingSelectionCallback select_leveling;
     std::function<bool()> is_cancelled;
   };
 

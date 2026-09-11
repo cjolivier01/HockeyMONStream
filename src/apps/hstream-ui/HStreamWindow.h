@@ -269,6 +269,7 @@ class HStreamWindow : public QMainWindow {
   void failStitchingCalibration(const QString& message);
   void closeStitchingCalibrationDialog();
   void handleScoreboardSelectorOutput(const QString& line);
+  void handleRinkLevelingOutput(const QString& line);
   void switchPipelineRenderTarget(int tab_index);
   bool requestPipelinePreviewChannel(const QString& channel, PreviewRequestReason reason);
   QString selectedPipelinePreviewChannel() const;

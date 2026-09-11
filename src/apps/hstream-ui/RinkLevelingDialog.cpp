@@ -16,6 +16,7 @@
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
@@ -24,6 +25,7 @@
 namespace {
 const QStringList kSnapshotFiles =
     {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png", "config.yaml"};
+const QStringList kInProgressSnapshotFiles = {"autooptimiser_out.pto", "left.png", "right.png"};
 
 QByteArray readFile(const QString& path, qint64 limit = 1024 * 1024) {
   QFile file(path);
@@ -37,20 +39,35 @@ bool writeFile(const QString& path, const QByteArray& contents) {
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size() &&
       file.flush();
 }
+
+QByteArray sourceRevisionForFiles(const QString& directory, const QStringList& files) {
+  QCryptographicHash hash(QCryptographicHash::Sha256);
+  for (const QString& name : files) {
+    QFile file(QDir(directory).filePath(name));
+    if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > 128 * 1024 * 1024 || !hash.addData(&file))
+      return {};
+  }
+  return hash.result();
+}
 } // namespace
 
 RinkLevelingDialog::RinkLevelingDialog(
     const QString& game_directory,
     const std::array<double, 3>& current_rotation,
     QWidget* parent,
-    std::optional<hm::stitching::StitchCameraSelection> expected_camera)
+    std::optional<hm::stitching::StitchCameraSelection> expected_camera,
+    bool in_progress_calibration)
     : QDialog(parent),
       game_directory_(game_directory),
       initial_rotation_(current_rotation),
-      expected_camera_(std::move(expected_camera)) {
+      expected_camera_(std::move(expected_camera)),
+      in_progress_calibration_(in_progress_calibration) {
   setObjectName("rinkLevelingDialog");
   setWindowTitle("Level the rink from vertical posts");
   resize(1120, 820);
+  estimate_timer_.setSingleShot(true);
+  estimate_timer_.setInterval(150);
+  connect(&estimate_timer_, &QTimer::timeout, this, [this]() { estimate(); });
   auto* layout = new QVBoxLayout(this);
   auto* instructions = new QLabel(
       "Mark the top and bottom of at least three tall, upright wall or glass posts, spread across both cameras. "
@@ -112,25 +129,30 @@ RinkLevelingDialog::RinkLevelingDialog(
     });
     angles->addWidget(spin);
   }
-  estimate_button_ = new QPushButton("Estimate from posts");
-  estimate_button_->setObjectName("estimateRinkLevelingButton");
   preview_button_ = new QPushButton("Preview angles");
   preview_button_->setObjectName("previewRinkLevelingButton");
-  connect(estimate_button_, &QPushButton::clicked, this, [this]() { estimate(); });
   connect(preview_button_, &QPushButton::clicked, this, [this]() { preview(); });
-  angles->addWidget(estimate_button_);
   angles->addWidget(preview_button_);
   layout->addLayout(angles);
-  status_ = new QLabel("The current angles are shown. Mark posts, estimate, then preview before using the result.");
+  status_ = new QLabel("The current angles are shown. Mark posts to estimate automatically, then preview the result.");
   status_->setObjectName("rinkLevelingStatus");
   status_->setWordWrap(true);
   layout->addWidget(status_);
   auto* note = new QLabel(
-      "Preview uses the saved projection and crop. The estimate levels the scene; you can fine-tune pitch and roll. "
-      "Use angles returns the result to the controls. Save Preset applies it to this game. Cancel keeps existing settings.");
+      QString("Preview uses the saved projection and crop. The estimate levels the scene; you can fine-tune pitch "
+              "and roll. ") +
+      (in_progress_calibration_
+           ? "Use angles continues calibration with the result. Skip leveling keeps the configured angles."
+           : "Use angles returns the result to the controls. Save Preset applies it to this game. Cancel keeps "
+             "existing settings."));
   note->setWordWrap(true);
   layout->addWidget(note);
-  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+  auto* buttons =
+      new QDialogButtonBox(in_progress_calibration_ ? QDialogButtonBox::NoButton : QDialogButtonBox::Cancel);
+  QPushButton* reject_button = in_progress_calibration_
+      ? buttons->addButton("Skip leveling", QDialogButtonBox::RejectRole)
+      : buttons->button(QDialogButtonBox::Cancel);
+  reject_button->setObjectName(in_progress_calibration_ ? "skipRinkLevelingButton" : "cancelRinkLevelingButton");
   accept_button_ = buttons->addButton("Use angles", QDialogButtonBox::AcceptRole);
   accept_button_->setObjectName("acceptRinkLevelingButton");
   accept_button_->setEnabled(false);
@@ -153,54 +175,61 @@ RinkLevelingDialog::~RinkLevelingDialog() {
 }
 
 QByteArray RinkLevelingDialog::sourceRevision(const QString& directory) {
-  QCryptographicHash hash(QCryptographicHash::Sha256);
-  for (const QString& name : kSnapshotFiles) {
-    QFile file(QDir(directory).filePath(name));
-    if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > 128 * 1024 * 1024 || !hash.addData(&file))
-      return {};
-  }
-  return hash.result();
+  return sourceRevisionForFiles(directory, kSnapshotFiles);
+}
+
+QByteArray RinkLevelingDialog::inProgressSourceRevision(const QString& directory) {
+  return sourceRevisionForFiles(directory, kInProgressSnapshotFiles);
 }
 
 void RinkLevelingDialog::loadSnapshot() {
-  const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
-  if (!lock.ok() || !*lock) {
-    load_error_ = "Stitching is being updated. Stop playback and try again after calibration finishes.";
-    return;
-  }
-  const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
-  if (!config_lock.ok()) {
-    load_error_ = "Game settings are being updated. Try again after the update finishes.";
-    return;
-  }
-  source_revision_ = sourceRevision(game_directory_);
-  if (!temporary_.isValid() || source_revision_.isEmpty()) {
-    load_error_ = "Run stitching calibration first. Its saved camera images and panorama project are needed.";
-    return;
-  }
-  for (const QString& name : kSnapshotFiles) {
-    if (!QFile::copy(QDir(game_directory_).filePath(name), temporary_.filePath(name))) {
-      load_error_ = "Could not create a temporary calibration snapshot.";
+  auto copy_snapshot = [&](const QStringList& files, const QByteArray& revision) {
+    source_revision_ = revision;
+    if (!temporary_.isValid() || source_revision_.isEmpty())
+      return false;
+    for (const QString& name : files) {
+      if (!QFile::copy(QDir(game_directory_).filePath(name), temporary_.filePath(name)))
+        return false;
+    }
+    return (in_progress_calibration_ ? inProgressSourceRevision(temporary_.path())
+                                     : sourceRevision(temporary_.path())) == source_revision_;
+  };
+
+  if (in_progress_calibration_) {
+    if (!copy_snapshot(kInProgressSnapshotFiles, inProgressSourceRevision(game_directory_))) {
+      load_error_ = "The in-progress calibration snapshot is unavailable. Skip leveling and retry calibration.";
       return;
     }
-  }
-  if (sourceRevision(temporary_.path()) != source_revision_) {
-    load_error_ = "The source calibration changed while opening. Reopen the dialog.";
-    return;
-  }
-  try {
-    const YAML::Node config = YAML::Load(readFile(temporary_.filePath("config.yaml")).toStdString());
-    const auto ui = config["hstream_ui"];
-    const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
-    const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
-    if (status && !status.IsNull() && (!status.IsScalar() || status.as<std::string>() != "complete")) {
-      load_error_ =
-          "Stitching calibration is pending or incomplete. Finish calibration with the current camera and reference-frame settings first.";
+    published_rotation_ = initial_rotation_;
+  } else {
+    const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
+    if (!lock.ok() || !*lock) {
+      load_error_ = "Stitching is being updated. Stop playback and try again after calibration finishes.";
       return;
     }
-  } catch (const YAML::Exception&) {
-    load_error_ = "Could not read the game's calibration settings. Repair the config and recalibrate first.";
-    return;
+    const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(game_directory_.toStdString());
+    if (!config_lock.ok()) {
+      load_error_ = "Game settings are being updated. Try again after the update finishes.";
+      return;
+    }
+    if (!copy_snapshot(kSnapshotFiles, sourceRevision(game_directory_))) {
+      load_error_ = "Could not create a stable temporary calibration snapshot. Reopen the dialog.";
+      return;
+    }
+    try {
+      const YAML::Node config = YAML::Load(readFile(temporary_.filePath("config.yaml")).toStdString());
+      const auto ui = config["hstream_ui"];
+      const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
+      const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
+      if (status && !status.IsNull() && (!status.IsScalar() || status.as<std::string>() != "complete")) {
+        load_error_ =
+            "Stitching calibration is pending or incomplete. Finish calibration with the current camera and reference-frame settings first.";
+        return;
+      }
+    } catch (const YAML::Exception&) {
+      load_error_ = "Could not read the game's calibration settings. Repair the config and recalibrate first.";
+      return;
+    }
   }
   const auto prepared =
       hm::stitching::PrepareRinkLevelingProject(readFile(temporary_.filePath("autooptimiser_out.pto")).toStdString());
@@ -221,49 +250,51 @@ void RinkLevelingDialog::loadSnapshot() {
     load_error_ = "The saved project does not reference the expected left and right camera images. Recalibrate first.";
     return;
   }
-  QMap<QString, QString> fields;
-  for (const QByteArray& line : readFile(temporary_.filePath("stitching_canvas_provenance")).split('\n')) {
-    const int separator = line.indexOf('=');
-    if (separator < 0)
-      continue;
-    const QString key = QString::fromUtf8(line.left(separator));
-    if (fields.contains(key)) {
-      load_error_ = "The saved calibration metadata has duplicate fields. Recalibrate before leveling.";
+  if (!in_progress_calibration_) {
+    QMap<QString, QString> fields;
+    for (const QByteArray& line : readFile(temporary_.filePath("stitching_canvas_provenance")).split('\n')) {
+      const int separator = line.indexOf('=');
+      if (separator < 0)
+        continue;
+      const QString key = QString::fromUtf8(line.left(separator));
+      if (fields.contains(key)) {
+        load_error_ = "The saved calibration metadata has duplicate fields. Recalibrate before leveling.";
+        return;
+      }
+      fields[key] = QString::fromUtf8(line.mid(separator + 1));
+    }
+    const int version = fields.value("version").toInt();
+    if (version < 2 || version > 8 || fields.value("mapping-backend") != "nona") {
+      load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
       return;
     }
-    fields[key] = QString::fromUtf8(line.mid(separator + 1));
-  }
-  const int version = fields.value("version").toInt();
-  if (version < 2 || version > 8 || fields.value("mapping-backend") != "nona") {
-    load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
-    return;
-  }
-  if (expected_camera_ && version < 7) {
-    load_error_ =
-        "This older calibration has no camera-model metadata. Recalibrate once with the current camera settings before selecting posts.";
-    return;
-  }
-  if (expected_camera_) {
-    bool horizontal_ok = false, vertical_ok = false;
-    const double horizontal = fields.value("camera-horizontal-fov").toDouble(&horizontal_ok);
-    const double vertical = fields.value("camera-vertical-fov").toDouble(&vertical_ok);
-    if (!horizontal_ok || !vertical_ok ||
-        fields.value("camera-configuration").toStdString() != expected_camera_->configuration ||
-        horizontal != expected_camera_->horizontal_fov || vertical != expected_camera_->vertical_fov) {
-      load_error_ = "The camera model or FOV differs from the saved calibration. Recalibrate before selecting posts.";
+    if (expected_camera_ && version < 7) {
+      load_error_ =
+          "This older calibration has no camera-model metadata. Recalibrate once with the current camera settings before selecting posts.";
       return;
     }
-  }
-  // Versions 2-7 predate the shared camera-space rotation and imply zero.
-  for (size_t index = 0; index < published_rotation_.size(); ++index) {
-    const QString key = QString("projection-rotation-%1").arg(index);
-    if (version < 8 && !fields.contains(key))
-      continue;
-    bool ok = false;
-    published_rotation_[index] = fields.value(key).toDouble(&ok);
-    if (!ok || !std::isfinite(published_rotation_[index]) || std::abs(published_rotation_[index]) > 180) {
-      load_error_ = "The saved calibration rotation is invalid. Recalibrate before leveling.";
-      return;
+    if (expected_camera_) {
+      bool horizontal_ok = false, vertical_ok = false;
+      const double horizontal = fields.value("camera-horizontal-fov").toDouble(&horizontal_ok);
+      const double vertical = fields.value("camera-vertical-fov").toDouble(&vertical_ok);
+      if (!horizontal_ok || !vertical_ok ||
+          fields.value("camera-configuration").toStdString() != expected_camera_->configuration ||
+          horizontal != expected_camera_->horizontal_fov || vertical != expected_camera_->vertical_fov) {
+        load_error_ = "The camera model or FOV differs from the saved calibration. Recalibrate before selecting posts.";
+        return;
+      }
+    }
+    // Versions 2-7 predate the shared camera-space rotation and imply zero.
+    for (size_t index = 0; index < published_rotation_.size(); ++index) {
+      const QString key = QString("projection-rotation-%1").arg(index);
+      if (version < 8 && !fields.contains(key))
+        continue;
+      bool ok = false;
+      published_rotation_[index] = fields.value(key).toDouble(&ok);
+      if (!ok || !std::isfinite(published_rotation_[index]) || std::abs(published_rotation_[index]) > 180) {
+        load_error_ = "The saved calibration rotation is invalid. Recalibrate before leveling.";
+        return;
+      }
     }
   }
   if (!writeFile(temporary_.filePath("sphere.pto"), QByteArray::fromStdString(project_.pto))) {
@@ -291,7 +322,6 @@ void RinkLevelingDialog::setBusy(bool busy) {
     canvas->setEnabled(enabled);
   for (auto* spin : angle_spins_)
     spin->setEnabled(enabled);
-  estimate_button_->setEnabled(enabled);
   preview_button_->setEnabled(enabled);
   accept_button_->setEnabled(enabled && previewed_);
 }
@@ -309,7 +339,18 @@ void RinkLevelingDialog::selectionChanged() {
   accept_button_->setEnabled(false);
   tabs_->setTabEnabled(2, false);
   const auto count = canvases_[0]->points().size() / 2 + canvases_[1]->points().size() / 2;
-  status_->setText(QString("%1 complete posts selected. Use at least three, spread across both cameras.").arg(count));
+  const bool complete_pairs = std::all_of(canvases_.begin(), canvases_.end(), [](const auto* canvas) {
+    return canvas->points().size() >= 2 && canvas->points().size() % 2 == 0;
+  });
+  if (count < 3 || !complete_pairs) {
+    estimate_timer_.stop();
+    preview_button_->setEnabled(!busy_ && load_error_.isEmpty());
+    status_->setText(QString("%1 complete posts selected. Use at least three, spread across both cameras.").arg(count));
+    return;
+  }
+  status_->setText("Updating pitch and roll from the selected posts…");
+  preview_button_->setEnabled(false);
+  estimate_timer_.start();
 }
 
 void RinkLevelingDialog::startTool(
@@ -461,7 +502,7 @@ void RinkLevelingDialog::preview() {
               accept_button_->setEnabled(true);
               status_->setText(
                   estimated_ ? "Inspect the walls and both ends of the rink. Use angles when satisfied."
-                             : "Preview of the displayed angles. You can use these or estimate from selected posts.");
+                             : "Preview of the displayed angles. Add or adjust posts to estimate automatically.");
             });
       });
 }
@@ -469,6 +510,15 @@ void RinkLevelingDialog::preview() {
 void RinkLevelingDialog::acceptAngles() {
   if (busy_ || !previewed_)
     return;
+  if (in_progress_calibration_) {
+    if (inProgressSourceRevision(game_directory_) != source_revision_) {
+      fail("The in-progress calibration changed. Skip leveling and retry calibration.");
+      accept_button_->setEnabled(false);
+      return;
+    }
+    accept();
+    return;
+  }
   const auto lock = hm::stitching::try_lock_canvas_constraint_artifacts(game_directory_.toStdString());
   if (!lock.ok() || !*lock) {
     fail("The stitching calibration is being updated. Cancel and reopen after it finishes.");

@@ -9,21 +9,35 @@ This applies to angles selected from posts, manually entered angles, and inherit
 angles are retained and restored when pitch and roll are both zero or the mapping backend changes to OpenCV.
 Yaw alone does not disable crop rotation. Final stitched-output rotation remains a separate setting.
 
-To measure the angle from a calibrated game:
+During a NONA stitching calibration, HStream now opens the post selector immediately after panorama alignment. This
+step is optional: **Skip leveling** continues with the configured angles. It is not shown for the OpenCV mapping
+backends because their planar transforms do not consume Hugin's shared camera-space rotation.
 
-1. Finish a NONA stitching calibration so the two source stills and calibrated project are available.
-2. Open **Algorithms → Level from posts**. In each source image, click the top and bottom of upright wall or glass
+To measure the angle during calibration:
+
+1. In each source image, click the top and bottom of upright wall or glass
    posts. Select at least three posts total, including both cameras, with good horizontal separation. Four or more
    long posts work better than short or clustered marks. Ceiling beams and rink corners are unsuitable references.
-3. Click **Estimate from posts**. The dialog rejects poorly conditioned selections and reports how many posts agreed
-   and their angular residual. Drag marks to refine them; scroll to zoom and drag the background to pan.
-4. Click **Preview angles**. Inspect both rink ends and the walls. Adjust pitch or roll and preview again if desired.
-   The still preview uses the saved projection and crop, so its framing may differ from unsaved projection controls.
-5. Click **Use angles**, then **Save Preset**. The normal stitching invalidation flow rebuilds the GPU maps next run.
+2. The estimate updates automatically shortly after every selection or dragged-point adjustment. The dialog rejects
+   poorly conditioned selections and reports how many posts agreed and their angular residual. Scroll to zoom and
+   drag the background to pan.
+3. Click **Preview angles**. Inspect both rink ends and the walls. Adjust pitch or roll and preview again if desired.
+4. Click **Use angles** to continue calibration with the displayed rotation, or **Skip leveling** to continue with the
+   previously configured rotation.
 
-**Cancel**, Escape, and closing the dialog discard its changes, even after estimating or rendering a preview.
-An accepted selection also remains staged until Save Preset (starting playback saves a staged selection first).
-The dialog and preset save both check that the original calibration still matches before accepting an estimate.
+There is no second feature-match or panorama-optimizer pass. The initial projected PTO is enough for the explicit,
+small preview, which runs `pano_modify` and `nona` in a private snapshot copied from calibration staging. Only after
+**Use angles** or **Skip leveling** does calibration generate the final full-resolution Nona maps and Enblend seam.
+If the rotation changed, HStream reapplies only the inexpensive projection/framing step before those final outputs.
+
+**Algorithms → Level from posts** remains available for an already calibrated game. That version uses **Cancel**
+instead of **Skip leveling** and returns the accepted angles to the controls; choose **Save Preset** to apply them and
+trigger the normal stitching invalidation flow.
+
+In the post-calibration editor, **Cancel**, Escape, and closing the dialog discard its changes, even after estimating
+or rendering a preview. An accepted selection also remains staged until Save Preset (starting playback saves a
+staged selection first). The dialog and preset save both check that the original calibration still matches before
+accepting an estimate.
 Camera/FOV, matcher, and reference-frame changes require calibration before selecting posts. A staged estimate
 cannot be saved with changed input controls. The snapshot also records the private config, so concurrent changes
 to game settings reject the estimate; saved calibration marked pending or incomplete must finish first.

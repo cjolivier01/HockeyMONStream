@@ -3,6 +3,7 @@
 #include <QtCore/QByteArray>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
+#include <QtCore/QTimer>
 #include <QtWidgets/QDialog>
 
 #include <array>
@@ -27,7 +28,8 @@ class RinkLevelingDialog : public QDialog {
       const QString& game_directory,
       const std::array<double, 3>& current_rotation,
       QWidget* parent = nullptr,
-      std::optional<hm::stitching::StitchCameraSelection> expected_camera = std::nullopt);
+      std::optional<hm::stitching::StitchCameraSelection> expected_camera = std::nullopt,
+      bool in_progress_calibration = false);
   ~RinkLevelingDialog() override;
   QString loadError() const {
     return load_error_;
@@ -38,6 +40,7 @@ class RinkLevelingDialog : public QDialog {
   }
   // Caller holds artifact -> config locks when this is used at publication.
   static QByteArray sourceRevision(const QString& game_directory);
+  static QByteArray inProgressSourceRevision(const QString& calibration_directory);
 
  protected:
   void reject() override;
@@ -64,14 +67,15 @@ class RinkLevelingDialog : public QDialog {
   std::array<double, 3> published_rotation_{};
   std::array<double, 3> initial_rotation_{};
   std::optional<hm::stitching::StitchCameraSelection> expected_camera_;
+  bool in_progress_calibration_{false};
   std::array<ScoreboardSelectionCanvas*, 2> canvases_{};
   std::array<QDoubleSpinBox*, 2> angle_spins_{};
   QLabel* status_{nullptr};
   QTabWidget* tabs_{nullptr};
   ScoreboardSelectionCanvas* preview_canvas_{nullptr};
-  QPushButton* estimate_button_{nullptr};
   QPushButton* preview_button_{nullptr};
   QPushButton* accept_button_{nullptr};
+  QTimer estimate_timer_;
   QProcess* process_{nullptr};
   bool busy_{false};
   bool estimated_{false};
