@@ -421,6 +421,16 @@ play-tracker:
   const auto mapping_defaults_rotation =
       hm::configurator_internal::effective_stitch_output_rotation(mapping_defaults.config());
   const YAML::Node mapped_defaults = mapping_defaults.config()["pipeline"];
+  YAML::Node recording_snapshot = mapping_defaults.recording_configuration();
+  ok &= expect(
+      recording_snapshot["resolved"].IsMap() && recording_snapshot["input-layers"]["baseline"].IsMap() &&
+          recording_snapshot["input-layers"]["user"].IsMap() && recording_snapshot["input-documents"].size() == 1 &&
+          recording_snapshot["input-documents"][0]["path"].as<std::string>() == mapping_structure_path.string(),
+      "Recording configuration must contain all loaded layers and structural app configuration");
+  recording_snapshot["resolved"]["pipeline"]["hmstitcher"]["enable"] = 999;
+  ok &= expect(
+      mapping_defaults.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 1,
+      "Recording configuration snapshots must not alias live configuration");
   ok &= expect(
       mapping_defaults_status.ok() && mapping_defaults_second_status.ok() && mapping_defaults_rotation.ok() &&
           *mapping_defaults_rotation == 0.0 && mapped_defaults["hmstitcher"]["enable"].as<int>() == 1 &&
@@ -434,9 +444,8 @@ play-tracker:
           mapped_defaults["ds-playtracker"]["draw"].as<int>() == 0 &&
           mapped_defaults["ds-fieldmask"]["properties"]["raise-bbox-center-by-height-ratio"].as<double>() == -0.1 &&
           mapped_defaults["ds-fieldmask"]["properties"]["lower-bbox-bottom-by-height-ratio"].as<double>() == 0.1 &&
-          !mapped_defaults["sink0"]["bitrate"].IsDefined() &&
-          !mapped_defaults["sink0"]["output-file"].IsDefined() && !mapped_defaults["sink0"]["width"].IsDefined() &&
-          !mapped_defaults["sink0"]["height"].IsDefined() &&
+          !mapped_defaults["sink0"]["bitrate"].IsDefined() && !mapped_defaults["sink0"]["output-file"].IsDefined() &&
+          !mapped_defaults["sink0"]["width"].IsDefined() && !mapped_defaults["sink0"]["height"].IsDefined() &&
           mapped_defaults["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%10" &&
@@ -659,10 +668,11 @@ play-tracker:
     archive_pipeline["sink0"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_STITCHED_FILE);
     archive_pipeline["sink0"]["bitrate"] = 23000000;
     ok &= expect(
-        hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
-            automatic_calibration_archive.get()).ok() &&
+        hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(automatic_calibration_archive.get())
+                .ok() &&
             hm::ConfiguratorTestAccess::configure_stitching_calibration_archive_name(
-                automatic_calibration_archive.get()).ok() &&
+                automatic_calibration_archive.get())
+                .ok() &&
             !archive_pipeline["sink0"]["bitrate"].IsDefined(),
         "Explicit canonical null must restore automatic calibration bitrate and remain valid on repeated mapping");
   } else {
@@ -1468,8 +1478,8 @@ play-tracker:
   const YAML::Node mapped_clear = mapping_explicit_clear.config()["pipeline"];
   ok &= expect(
       mapping_explicit_clear_status.ok() && !mapped_clear["sink0"]["output-file"].IsDefined() &&
-          !mapped_clear["sink0"]["bitrate"].IsDefined() &&
-          !mapped_clear["sink0"]["width"].IsDefined() && !mapped_clear["sink0"]["height"].IsDefined() &&
+          !mapped_clear["sink0"]["bitrate"].IsDefined() && !mapped_clear["sink0"]["width"].IsDefined() &&
+          !mapped_clear["sink0"]["height"].IsDefined() &&
           !mapped_clear["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Explicit canonical null/auto values must clear lower-ranked native output and scoreboard fields");
 

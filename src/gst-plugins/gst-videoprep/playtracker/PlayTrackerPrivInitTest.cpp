@@ -268,6 +268,14 @@ int main() {
 
   TestPlayTrackerPriv priv(/*gpu_id=*/0, /*batch_size=*/1);
   const fs::path telemetry_dir = tmpdir / "telemetry";
+  const fs::path run_config_path = tmpdir / "run-config.yaml";
+  const std::string run_config =
+      "schema: hstream-run-configuration-v1\nresolved:\n  pipeline:\n    detector: example\n"
+      "  stitching:\n    projection: panini\ninput-layers:\n  baseline: {version: 1}\n";
+  std::ofstream(run_config_path) << run_config;
+  if (!priv.SetProperty(hm::Property("telemetry-run-config-file", run_config_path.string())))
+    return 45;
+  std::ofstream(run_config_path) << "replaced: true\n";
   if (!priv.SetProperty(hm::Property("telemetry-csv-dir", telemetry_dir.string()))) {
     std::cerr << "vpplaytracker rejected telemetry directory before caps initialization\n";
     return 19;
@@ -606,6 +614,12 @@ int main() {
         db.get(), "SELECT artifact_contents FROM config_events WHERE sample_boundary=1 AND kind='runtime-tuning'");
     if (!startup.Next() || startup.Text(0) != original_runtime_contents)
       return 21;
+    hm::recording::Statement full_config(
+        db.get(), "SELECT sample_boundary,artifact_contents FROM config_events WHERE kind='run-configuration'");
+    if (!full_config.Next() || full_config.Int(0) != 1 || full_config.Text(1) != run_config) {
+      std::cerr << "full run configuration did not preserve the pre-launch snapshot\n";
+      return 46;
+    }
     hm::recording::Statement geometry(
         db.get(),
         "SELECT count(*) FROM config_events WHERE sample_boundary=11 AND kind='property' AND key='fixed-edge-rotation-angle-left' AND value='32.0'");

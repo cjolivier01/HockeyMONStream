@@ -266,8 +266,13 @@ inline gboolean mark_terminal_source_error_failure(AppCtx* app_ctx) {
   return TRUE;
 }
 
+namespace hm::utils {
+class TempFile;
+}
+
 class HmApp : public _AppCtx {
  public:
+  std::shared_ptr<hm::utils::TempFile> telemetry_configuration_file;
   HmApp(std::string game_id, std::string app_config_file, int override_gpu_id)
       : game_id_(std::move(game_id)), app_config_file_(std::move(app_config_file)), override_gpu_id_(override_gpu_id) {
     g_mutex_init(&app_lock);

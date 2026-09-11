@@ -156,11 +156,20 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     telemetry_rink_mask_.release();
     telemetry_canvas_ = {};
     telemetry_geometry_.reset();
+    auto startup_events = runtime_tuning_provenance_history_;
+    if (!telemetry_run_configuration_.empty()) {
+      startup_events.push_back(
+          {"run-configuration",
+           "startup",
+           "hstream-run-configuration-v1",
+           "run-config.yaml",
+           telemetry_run_configuration_});
+    }
     const absl::Status telemetry_status = telemetry_csv_.Start(
         telemetry_csv_dir_,
         TelemetryConfigArtifact{play_tracker_config_source_file_, play_tracker_config_source_contents_},
         TelemetryConfigArtifact{init_params_.play_tracker_config_file, play_tracker_effective_config_contents_},
-        runtime_tuning_provenance_history_,
+        std::move(startup_events),
         2048,
         telemetry_game_id_);
     if (!telemetry_status.ok()) {
@@ -276,6 +285,19 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     preview_overlay_flags_ = static_cast<unsigned>(parsed);
     DsPlayTrackerCtxSetPreviewOverlayFlags(pt_context_, preview_overlay_flags_);
     return true;
+  } else if (key == "telemetry-run-config-file") {
+    if (telemetry_csv_.active())
+      return false;
+    const auto contents = ReadTelemetryConfigArtifact(prop.value);
+    try {
+      const auto archive = YAML::Load(contents);
+      if (archive["schema"].as<std::string>() != "hstream-run-configuration-v1" || !archive["resolved"].IsMap())
+        return false;
+    } catch (const std::exception& error) {
+      std::cerr << "Invalid telemetry run configuration archive: " << error.what() << '\n';
+      return false;
+    }
+    telemetry_run_configuration_ = contents;
   } else if (key == "telemetry-game-id") {
     if (telemetry_csv_.active())
       return false;

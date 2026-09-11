@@ -97,6 +97,13 @@ cc_test(
 )
 
 cc_test(
+    name = "telemetry_configuration_test",
+    srcs = ["TelemetryConfiguration.h", "TelemetryConfigurationTest.cpp"],
+    copts = PIPELINE_APP_COPTS,
+    deps = ["@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
     name = "pipeline_clean_only_test",
     srcs = ["PipelineCleanOnlyTest.cpp"],
     args = [
