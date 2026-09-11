@@ -8807,6 +8807,12 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   const QByteArray crop_original_path = qgetenv("PATH");
   qputenv("PATH", crop_tools.path().toUtf8() + ":/usr/bin:/bin");
+  // Editing an inactive projection must not bypass review of the unchanged,
+  // currently calibrated projection: no backend recalibration will run.
+  projection->setCurrentIndex(projection->findData("general-panini"));
+  const double inactive_compression = compression->value();
+  compression->setValue(inactive_compression + 1);
+  projection->setCurrentIndex(projection->findData("cylindrical"));
   bool startup_crop_opened = false;
   QTimer::singleShot(0, [&]() {
     auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
@@ -8818,10 +8824,13 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   QApplication::processEvents();
   if (!expect(
           startup_crop_opened && startup_cancelled,
-          "An existing unreviewed calibration must prompt with no cropping and allow startup cancellation")) {
+          "Unreviewed calibration must prompt with no cropping even after an inactive projection was edited")) {
     qputenv("PATH", crop_original_path);
     return false;
   }
+  projection->setCurrentIndex(projection->findData("general-panini"));
+  compression->setValue(inactive_compression);
+  projection->setCurrentIndex(projection->findData("cylindrical"));
   bool crop_preview_ready = false;
   QTimer::singleShot(0, [&]() {
     auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());

@@ -7129,9 +7129,13 @@ void HStreamWindow::selectProjectionCrop() {
 }
 
 bool HStreamWindow::ensureProjectionCropReviewed() {
+  const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
+  const bool parameters_changed = saved_parameters == saved_projection_parameters_.end()
+      ? !stitchProjectionParameters().empty()
+      : saved_parameters->second != stitchProjectionParameters();
   if (mappingBackend() != "nona" || calibration_restart_requested_ || !rinkLevelingInputsUnchanged() ||
       saved_projection_ != stitchProjection() || saved_projection_framing_ != stitchProjectionFraming() ||
-      saved_projection_parameters_ != projection_parameter_values_ || hasPendingCropSelection())
+      parameters_changed || hasPendingCropSelection())
     return true; // Changed inputs will be reviewed against the new calibration.
   const QString game_id = game_id_edit_->text().trimmed();
   const QString directory = gameDirectory(game_id);
