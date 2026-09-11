@@ -368,6 +368,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       {"play_tracker_effective", ".yaml"},
       {"hstream_replay", ".jsonl"},
       {"rink_mask_0", ".png"},
+      {".hstream-rink-mask", ".png"},
   };
   uint64_t first_generation = 0;
   fs::directory_iterator entry(output_directory_, error);
@@ -870,16 +871,17 @@ bool PlayTrackerTelemetryCsv::WriteRinkMask(const std::string& png) {
   const bool staged = [&]() {
     const std::string filename = suffixed_name("rink_mask_0", suffix_, ".png");
     int fd = -1;
-    // Each run gets an immutable name. Reuse identical working bytes through a
-    // no-replace hard link, so a new mask can never overwrite an earlier run's
-    // only copy. The final game-directory publisher still makes independent copies.
+    // Only reuse our private snapshot cache. A regular rink_mask_0*.png could
+    // be editable calibration when working storage is also the game directory,
+    // or a foreign hard link to that calibration. The cache is populated only
+    // from our independently written snapshots, never from those source names.
     std::error_code error;
-    static const std::regex mask_pattern(R"(^rink_mask_0(-[0-9]+)?\.png$)");
+    static const std::regex mask_pattern(R"(^\.hstream-rink-mask(-[0-9]+)?\.png$)");
     fs::directory_iterator entry(absl::StrCat("/proc/self/fd/", output_directory_fd_), error);
     const fs::directory_iterator end;
     for (; !error && entry != end; entry.increment(error)) {
       const std::string candidate = entry->path().filename().string();
-      if (candidate == filename || !std::regex_match(candidate, mask_pattern))
+      if (!std::regex_match(candidate, mask_pattern))
         continue;
       const int existing_fd =
           ::openat(output_directory_fd_, candidate.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
@@ -912,6 +914,15 @@ bool PlayTrackerTelemetryCsv::WriteRinkMask(const std::string& png) {
         {filename, {}, static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino), fd, false});
     if ((!reused && !write_all(fd, png)) || !SyncFd(fd, "fsync:rink-mask"))
       return false;
+    if (!reused) {
+      const std::string cache_filename = suffixed_name(".hstream-rink-mask", suffix_, ".png");
+      const std::string pinned_source = absl::StrCat("/proc/self/fd/", fd);
+      if (::linkat(AT_FDCWD, pinned_source.c_str(), output_directory_fd_, cache_filename.c_str(), AT_SYMLINK_FOLLOW) !=
+          0)
+        return false;
+      owned_artifacts_.push_back(
+          {cache_filename, {}, static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino), -1, false});
+    }
     rink_mask_filename_ = filename;
     rink_mask_contents_ = png;
     return true;

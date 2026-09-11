@@ -150,9 +150,11 @@ At startup, the run mask is encoded once from the filter's already-loaded CPU
 calibration image. Processing waits for the working snapshot and its manifest
 reference to be synchronized to disk before the first telemetry sample. In
 one-pass stitching, this happens as soon as the generated mask is loaded.
-An unchanged mask reuses existing working storage through a hard link under
-the new run's name; a changed mask gets separate storage, preserving earlier
-runs. The final suffixed game-directory mask is an independent copy of this
+An unchanged mask reuses the exporter's private `.hstream-rink-mask[-N].png`
+cache through a hard link under the new run's name; a changed mask gets separate
+storage, preserving earlier runs. Ordinary `rink_mask_0*.png` files never seed
+this cache, so working storage may safely share the game directory. The final
+suffixed game-directory mask is an independent copy of this
 working snapshot, so editing or deleting the game calibration during the run
 cannot change the archived mask. No video frame is captured and no D2H transfer
 is added. A mask change within one recording fails telemetry publication rather

@@ -862,7 +862,7 @@ int main() {
   const fs::path mask_symlink_directory = directory / "mask-symlink";
   fs::create_directories(mask_symlink_directory);
   std::ofstream(game_mask) << "mask";
-  fs::create_symlink(game_mask, mask_symlink_directory / "rink_mask_0.png");
+  fs::create_symlink(game_mask, mask_symlink_directory / ".hstream-rink-mask.png");
   hm::playtracker::PlayTrackerTelemetryCsv symlink_mask_exporter;
   bool mask_symlink_valid =
       symlink_mask_exporter.Start(mask_symlink_directory.string(), source_config.string(), effective_config.string())
@@ -873,6 +873,32 @@ int main() {
       read_file(mask_symlink_directory / "rink_mask_0-1.png") == "mask",
       "reuse must not follow a symlink to mutable source storage");
   symlink_mask_exporter.Stop();
+
+  bool calibration_isolation_valid = true;
+  for (const bool same_directory : {true, false}) {
+    const fs::path working_directory = directory / (same_directory ? "shared-game-working" : "foreign-mask-link");
+    fs::create_directories(working_directory);
+    const fs::path calibration = same_directory ? working_directory / "rink_mask_0.png" : game_mask;
+    std::ofstream(calibration) << "editable calibration";
+    if (!same_directory)
+      fs::create_hard_link(calibration, working_directory / "rink_mask_0.png");
+    hm::playtracker::PlayTrackerTelemetryCsv isolation_exporter;
+    calibration_isolation_valid &=
+        isolation_exporter.Start(working_directory.string(), source_config.string(), effective_config.string()).ok();
+    calibration_isolation_valid &= isolation_exporter.StageRinkMask(read_file(calibration));
+    std::ofstream(calibration) << "changed during recording";
+    calibration_isolation_valid &= expect(
+        read_file(working_directory / "rink_mask_0-1.png") == "editable calibration" &&
+            !fs::equivalent(calibration, working_directory / "rink_mask_0-1.png"),
+        "regular calibration files and foreign hard links must never become shared snapshot storage");
+    isolation_exporter.TryEnqueue(make_policy_sample(true));
+    isolation_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
+    isolation_exporter.Stop();
+    calibration_isolation_valid &= expect(
+        fs::exists(working_directory / "tracking-1.csv") &&
+            read_file(working_directory / "rink_mask_0-1.png") == "editable calibration",
+        "calibration edits must not affect the archived run mask");
+  }
 
   const fs::path failed_directory = directory / "failed-start";
   hm::playtracker::PlayTrackerTelemetryCsv failed_exporter;
@@ -891,7 +917,7 @@ int main() {
           publication_conflict_valid && failed_outcome_valid && final_sync_failure_valid &&
           camera_commit_failure_valid && tracking_commit_failure_valid && atomic_manifest_valid &&
           descriptor_bound_valid && atomic_reservation_valid && startup_cleanup_valid && changed_mask_valid &&
-          mask_reuse_valid && mask_failure_valid && mask_symlink_valid
+          mask_reuse_valid && mask_failure_valid && mask_symlink_valid && calibration_isolation_valid
       ? 0
       : 1;
 }
