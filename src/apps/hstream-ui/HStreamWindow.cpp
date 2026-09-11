@@ -8252,6 +8252,11 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(diagnostic);
   const bool gpu_buffer_allocation_failure = normalized.contains("gst_nvds_buffer_pool_alloc_buffer") ||
       normalized.contains("failed to activate bufferpool") || normalized.contains("error(-1) in buffer allocation");
+  const bool hmstitcher_input_pool_failure =
+      normalized.contains("hmstitcher_conv0") && normalized.contains("failed to activate bufferpool");
+  calibration_cuda_out_of_memory_ = calibration_cuda_out_of_memory_ || cuda_out_of_memory;
+  calibration_hmstitcher_input_pool_failure_ =
+      calibration_hmstitcher_input_pool_failure_ || hmstitcher_input_pool_failure;
   const bool rejected_hypothesis = diagnostic.startsWith("Rejected calibrated MAGSAC hypothesis");
   const bool rejected_candidate = diagnostic.startsWith("Skipping pooled stitching calibration") ||
       diagnostic.startsWith("Skipping stitching calibration frame pair");
@@ -8290,16 +8295,10 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
 
 QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& message) const {
   QString root_cause = message.trimmed();
-  const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(root_cause) ||
-      std::any_of(
-          calibration_diagnostic_lines_.cbegin(),
-          calibration_diagnostic_lines_.cend(),
-          is_cuda_out_of_memory_diagnostic);
-  const bool hmstitcher_input_pool_failure = std::any_of(
-      calibration_diagnostic_lines_.cbegin(), calibration_diagnostic_lines_.cend(), [](const QString& diagnostic) {
-        const QString normalized = diagnostic.toLower();
-        return normalized.contains("hmstitcher_conv0") && normalized.contains("failed to activate bufferpool");
-      });
+  const QString normalized_message = root_cause.toLower();
+  const bool cuda_out_of_memory = calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(root_cause);
+  const bool hmstitcher_input_pool_failure = calibration_hmstitcher_input_pool_failure_ ||
+      (normalized_message.contains("hmstitcher_conv0") && normalized_message.contains("failed to activate bufferpool"));
   if (cuda_out_of_memory) {
     root_cause = hmstitcher_input_pool_failure
         ? "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while activating hmstitcher's pre-stitch "
@@ -8327,10 +8326,13 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
         ? "The GPU ran out of VRAM while preparing the native-resolution camera frames for stitching. This happened "
           "before frame matching, NONA, or optional rink leveling began."
         : "The GPU ran out of VRAM while calibration was allocating a required GPU buffer.";
-    action =
-        "Close other GPU-intensive applications and press Play to retry. If VRAM is still insufficient, set 10-bit / "
-        "FP16 mode to Force off or use lower-resolution source video. Max stitched width does not reduce this "
-        "pre-stitch native-resolution allocation.";
+    action = hmstitcher_input_pool_failure
+        ? "Close other GPU-intensive applications and press Play to retry. If VRAM is still insufficient, set 10-bit "
+          "/ FP16 mode to Force off or use lower-resolution source video. Max stitched width does not reduce this "
+          "pre-stitch native-resolution allocation."
+        : "Close other GPU-intensive applications and press Play to retry. Lower Max stitched width if output-canvas "
+          "generation exhausted VRAM; if the failure occurred before canvas generation, set 10-bit / FP16 mode to "
+          "Force off or use lower-resolution source video.";
   } else if (
       evidence.contains("enblend") || evidence.contains("seam_file") || evidence.contains("seam file") ||
       evidence.contains("artifact publication") || evidence.contains("publish stitch artifact")) {
@@ -8797,6 +8799,8 @@ void HStreamWindow::startPipeline() {
   active_calibration_invalidation_id_.clear();
   calibration_failure_message_.clear();
   calibration_diagnostic_lines_.clear();
+  calibration_cuda_out_of_memory_ = false;
+  calibration_hmstitcher_input_pool_failure_ = false;
   calibration_rejected_hypotheses_ = 0;
   calibration_rejected_candidates_ = 0;
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
@@ -9441,10 +9445,12 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   } else if (stopped_by_user) {
     setPlaybackProgressState(PlaybackProgressState::kStopped);
   } else {
-    const QString calibration_analysis =
-        calibration_ended_incomplete ? stitchingCalibrationFailureAnalysis(calibration_failure_message_) : QString();
-    const QString terminal_detail = calibration_analysis.contains("CUDA out of memory")
-        ? "GPU out of memory in the pre-stitch input-conversion buffer pool"
+    const bool calibration_cuda_oom = calibration_ended_incomplete &&
+        (calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(calibration_failure_message_));
+    const QString terminal_detail = calibration_cuda_oom
+        ? (calibration_hmstitcher_input_pool_failure_
+               ? QString("GPU out of memory in the pre-stitch input-conversion buffer pool")
+               : QString("GPU out of memory during stitching calibration"))
         : QString("Pipeline exited with code %1 (%2)")
               .arg(exit_code)
               .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed");

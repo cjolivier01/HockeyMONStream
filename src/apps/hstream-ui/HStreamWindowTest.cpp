@@ -110,6 +110,8 @@ struct HStreamWindowTestAccess {
 
   static void clearCalibrationDiagnostics(HStreamWindow* window) {
     window->calibration_diagnostic_lines_.clear();
+    window->calibration_cuda_out_of_memory_ = false;
+    window->calibration_hmstitcher_input_pool_failure_ = false;
   }
 
   static void prepareRinkLevelingProtocol(
@@ -1524,7 +1526,14 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
       "ERROR from hmstitcher_conv0: failed to activate bufferpool",
       "INTERNAL: App run failed",
   };
-  if (!expect_clear_oom(analyze(delayed_cuda_diagnostic), "CUDA diagnostic follows the calibration failure"))
+  QString delayed_analysis = analyze(delayed_cuda_diagnostic);
+  for (int index = 0; index < 30; ++index) {
+    HStreamWindowTestAccess::recordCalibrationDiagnostic(
+        window, QString("INTERNAL: noisy teardown diagnostic %1").arg(index));
+  }
+  delayed_analysis =
+      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Pipeline failed during stitching calibration");
+  if (!expect_clear_oom(delayed_analysis, "CUDA diagnostic precedes more than 24 teardown diagnostics"))
     return false;
 
   const QStringList early_cuda_diagnostic = {
@@ -1537,8 +1546,22 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
   };
   const bool valid =
       expect_clear_oom(analyze(early_cuda_diagnostic), "CUDA diagnostic precedes the calibration failure");
+  if (!valid)
+    return false;
+
+  const QString generic_oom_analysis = analyze({
+      "Cuda failure: status=2",
+      "Error(-1) in buffer allocation",
+      "INTERNAL: App run failed",
+  });
+  const bool generic_valid = expect(
+      generic_oom_analysis.contains("allocating a calibration GPU buffer") &&
+          generic_oom_analysis.contains("Lower Max stitched width if output-canvas generation exhausted VRAM") &&
+          !generic_oom_analysis.contains("pre-stitch input-conversion buffer pool") &&
+          !generic_oom_analysis.contains("Max stitched width does not reduce"),
+      "A generic CUDA OOM should not be presented as an hmstitcher input-pool failure");
   HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
-  return valid;
+  return generic_valid;
 }
 
 bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
