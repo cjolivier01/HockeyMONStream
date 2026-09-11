@@ -21,6 +21,7 @@ struct TelemetryCsvPublicationTestHooks {
   void* callback_context{nullptr};
   void (*before_publication_lock)(void*){nullptr};
   void (*after_publication_lock)(void*){nullptr};
+  void (*after_staging_copy)(void*){nullptr};
   void (*after_named_marker_close)(void*){nullptr};
 };
 

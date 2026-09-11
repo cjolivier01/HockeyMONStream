@@ -159,6 +159,9 @@ working snapshot, so editing or deleting the game calibration during the run
 cannot change the archived mask. No video frame is captured and no D2H transfer
 is added. A mask change within one recording fails telemetry publication rather
 than attaching an incorrect single mask.
+Final publication holds the working directory's shared snapshot lock while
+copying and validating sources. Concurrent startup reuse waits until that copy
+finishes, keeping hard-link metadata changes out of source validation.
 
 Steady-state CSV file I/O runs on a dedicated writer thread behind a bounded
 queue (2,048 complete frame samples by default). A sample is queued for every
