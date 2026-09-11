@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-fieldmask/dsfieldmask_lib.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
@@ -167,6 +168,16 @@ int main() {
     nvds_destroy_batch_meta(batch_meta);
     return 1;
   }
+
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+  const auto* mask_payload = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame_meta);
+  if (!mask_payload || cv::norm(mask_payload->mask(), *initial_mask, cv::NORM_INF) != 0) {
+    std::cerr << "Telemetry metadata must retain the exact loaded calibration mask" << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+#endif
 
   NvDsFrameMeta* rotated_frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
   rotated_frame_meta->base_meta.batch_meta = batch_meta;

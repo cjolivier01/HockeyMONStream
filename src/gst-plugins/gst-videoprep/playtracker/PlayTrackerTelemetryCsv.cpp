@@ -345,6 +345,7 @@ absl::Status PlayTrackerTelemetryCsv::OpenOutputs(
       {"play_tracker_source", ".yaml"},
       {"play_tracker_effective", ".yaml"},
       {"hstream_replay", ".jsonl"},
+      {"rink_mask_0", ".png"},
   };
   uint64_t first_generation = 0;
   fs::directory_iterator entry(output_directory_, error);
@@ -716,6 +717,10 @@ void PlayTrackerTelemetryCsv::WriterLoop() {
 
 void PlayTrackerTelemetryCsv::WriteSample(const QueuedSample& queued) {
   const TelemetrySample& sample = queued.sample;
+  if (!sample.rink_mask_png.empty() && !WriteRinkMask(sample.rink_mask_png)) {
+    std::cerr << "Could not snapshot telemetry rink mask, or the mask changed during the run\n";
+    writer_failed_ = true;
+  }
   if (sample.replay) {
     const TelemetryReplaySample& state = *sample.replay;
     replay_ << std::setprecision(std::numeric_limits<float>::max_digits10)
@@ -811,6 +816,28 @@ bool PlayTrackerTelemetryCsv::WriteConfigEvent(const QueuedConfigEvent& queued) 
     return false;
   }
   config_events_buffered_.fetch_add(1, std::memory_order_acq_rel);
+  return true;
+}
+
+bool PlayTrackerTelemetryCsv::WriteRinkMask(const std::string& png) {
+  if (!rink_mask_filename_.empty())
+    return png == rink_mask_contents_;
+  const std::string filename = suffixed_name("rink_mask_0", suffix_, ".png");
+  const int fd =
+      ::openat(output_directory_fd_, filename.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (fd < 0)
+    return false;
+  struct stat info{};
+  if (::fstat(fd, &info) != 0) {
+    ::close(fd);
+    return false;
+  }
+  owned_artifacts_.push_back(
+      {filename, {}, static_cast<uint64_t>(info.st_dev), static_cast<uint64_t>(info.st_ino), fd, false});
+  if (!write_all(fd, png) || !SyncFd(fd, "fsync:rink-mask"))
+    return false;
+  rink_mask_filename_ = filename;
+  rink_mask_contents_ = png;
   return true;
 }
 
@@ -1211,7 +1238,8 @@ std::string PlayTrackerTelemetryCsv::BuildManifestContents() const {
            << "  },\n"
            << "  \"sidecars\": {\"frame_index\": " << json_string(frame_index_filename_)
            << ", \"config_events\": " << json_string(config_events_filename_)
-           << ", \"replay\": " << json_string(replay_filename_) << "},\n"
+           << ", \"replay\": " << json_string(replay_filename_)
+           << (rink_mask_filename_.empty() ? "" : ", \"rink_mask\": " + json_string(rink_mask_filename_)) << "},\n"
            << "  \"config_provenance\": {\n"
            << "    \"source_path\": " << json_string(source_config_path_) << ",\n"
            << "    \"effective_path\": " << json_string(effective_config_path_) << ",\n"
@@ -1265,6 +1293,8 @@ void PlayTrackerTelemetryCsv::ResetOutputPaths() {
   frame_index_filename_.clear();
   config_events_filename_.clear();
   replay_filename_.clear();
+  rink_mask_filename_.clear();
+  rink_mask_contents_.clear();
   source_config_filename_.clear();
   effective_config_filename_.clear();
   owned_artifacts_.clear();

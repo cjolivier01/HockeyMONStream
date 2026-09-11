@@ -197,6 +197,7 @@ int main() {
   }
 
   hm::playtracker::TelemetrySample sample;
+  sample.rink_mask_png = std::string("PNG\0mask", 8);
   sample.source_id = 7;
   sample.source_frame = 991;
   sample.decoded_source_id = 2;
@@ -231,6 +232,11 @@ int main() {
   exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kIntentionalStop);
   exporter.Stop();
 
+  if (!expect(read_file(directory / "rink_mask_0-10.png") == std::string("PNG\0mask", 8),
+              "the exact run mask bytes must survive telemetry finalization") ||
+      !expect(read_file(directory / "hstream_telemetry-10.json").find("rink_mask_0-10.png") != std::string::npos,
+              "the manifest must bind the mask to this generation"))
+    return 1;
   const std::string tracking = read_file(directory / "tracking-10.csv");
   const std::vector<std::string> tracking_fields = split_csv_without_quotes(tracking.substr(0, tracking.find('\n')));
   const std::string detections = read_file(directory / "detections-10.csv");
@@ -755,6 +761,22 @@ int main() {
                  read_file(symlink_victim) == "preserve-concurrent-data\n",
              "pre-existing HM symlink and its target must never be followed or truncated");
 
+  const fs::path changed_mask_directory = directory / "changed-mask";
+  hm::playtracker::PlayTrackerTelemetryCsv changed_mask_exporter;
+  bool changed_mask_valid = changed_mask_exporter.Start(
+      changed_mask_directory.string(), source_config.string(), effective_config.string()).ok();
+  auto first_mask_sample = make_policy_sample(true);
+  first_mask_sample.rink_mask_png = "first mask";
+  auto second_mask_sample = make_policy_sample(true);
+  second_mask_sample.rink_mask_png = "different mask";
+  changed_mask_valid &= changed_mask_exporter.TryEnqueue(std::move(first_mask_sample));
+  changed_mask_valid &= changed_mask_exporter.TryEnqueue(std::move(second_mask_sample));
+  changed_mask_exporter.MarkRunOutcome(hm::playtracker::TelemetryRunOutcome::kEndOfStream);
+  changed_mask_exporter.Stop();
+  changed_mask_valid &= expect(!fs::exists(changed_mask_directory / "tracking.csv") &&
+      read_file(changed_mask_directory / "hstream_telemetry.json").find("\"completed\": false") != std::string::npos,
+      "a changed mask must not publish a generation with a mismatched single snapshot");
+
   const fs::path failed_directory = directory / "failed-start";
   hm::playtracker::PlayTrackerTelemetryCsv failed_exporter;
   const absl::Status failed_start = failed_exporter.Start(
@@ -771,7 +793,7 @@ int main() {
   return valid && saturation_valid && config_block_valid && event_io_failure_valid && aborted_valid && empty_valid &&
           publication_conflict_valid && failed_outcome_valid && final_sync_failure_valid &&
           camera_commit_failure_valid && tracking_commit_failure_valid && atomic_manifest_valid &&
-          descriptor_bound_valid && atomic_reservation_valid && startup_cleanup_valid
+          descriptor_bound_valid && atomic_reservation_valid && startup_cleanup_valid && changed_mask_valid
       ? 0
       : 1;
 }

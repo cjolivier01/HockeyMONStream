@@ -77,6 +77,8 @@ struct TelemetrySample {
   // follower/Program camera box. A one-box policy uses the same box for both.
   std::vector<TelemetryBox> policy_boxes;
   std::optional<TelemetryReplaySample> replay;
+  // Present on the first frame using a loaded mask; independent of video pixels.
+  std::string rink_mask_png;
 };
 
 struct TelemetryConfigEvent {
@@ -181,6 +183,7 @@ class PlayTrackerTelemetryCsv {
   void WriterLoop();
   void WriteSample(const QueuedSample& queued);
   bool WriteConfigEvent(const QueuedConfigEvent& queued);
+  bool WriteRinkMask(const std::string& png);
   std::string BuildManifestContents() const;
   bool WriteManifestAndSync(const std::string& phase);
   bool WriteExclusiveConfigArtifact(const std::string& stem, const std::string& contents, std::string* filename);
@@ -251,6 +254,8 @@ class PlayTrackerTelemetryCsv {
   std::string frame_index_filename_;
   std::string config_events_filename_;
   std::string replay_filename_;
+  std::string rink_mask_filename_;
+  std::string rink_mask_contents_;
   std::string source_config_filename_;
   std::string effective_config_filename_;
   std::string source_config_path_;

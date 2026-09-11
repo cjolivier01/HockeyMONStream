@@ -96,7 +96,7 @@ and synchronized. HStream creates no-replace hard links for `camera`,
 `tracking` last as HM's discovery marker. It removes the hidden working names
 after the non-hidden links are committed.
 
-When `hstream-ui` finishes the Program archive, it copies these six non-hidden
+When `hstream-ui` finishes the first video archive, it copies these six non-hidden
 CSV files into the game directory:
 
 - `detections[-N].csv`
@@ -106,7 +106,8 @@ CSV files into the game directory:
 - `hstream_frame_index[-N].csv`
 - `hstream_config_events[-N].csv`
 
-New recordings also publish the replay JSONL, telemetry manifest, startup
+New recordings also publish `rink_mask_0-N.png`, captured from the immutable
+CPU mask actually used by the filter, together with the replay JSONL, telemetry manifest, startup
 configuration YAMLs, and all configuration artifacts referenced by events.
 The copied manifest and event artifact references are rewritten to the game
 generation; original working files keep their original bytes and names.
@@ -116,9 +117,13 @@ six-file publication behavior.
 
 The game files are independent copies, not links back to working storage. Their
 suffix is taken from the finalized
-`<game-id>-tracking_output-with-audio[-N].mp4`, even when the working telemetry
-generation used a different suffix. Archive naming skips suffixes that already
-have any of these CSV names. After the video commit and identity-guard cleanup
+`<game-id>-tracking_output-with-audio-N.mp4` (or the stitched archive when
+only that archive is saved), even when the working telemetry generation used
+a different suffix. New game-directory archives start at `-1`. Their number is
+one greater than the highest existing tracking video, stitched video, CSV,
+manifest, or mask snapshot number; gaps are never reused. For example, videos
+numbered `-1`, `-3`, and `-4` advance to `-5`. Program and stitched archives from
+one run share the same suffix. Existing bare filenames remain unchanged. After the video commit and identity-guard cleanup
 finish, a background finalization worker copies and synchronizes each CSV to an
 unnamed inode in the game filesystem. It then atomically links the final
 companion names, synchronizes the directory, and atomically links `tracking`
@@ -127,7 +132,7 @@ still being copied. No hidden telemetry files are staged in the game directory,
 and an existing destination is never overwritten. If final copying fails, the
 complete non-hidden working generation is retained and the UI logs its path.
 
-Runs without a finalized Program archive remain available only in working
+Runs without a finalized video archive remain available only in working
 storage because there is no video suffix to assign. Failed or interrupted runs
 retain the manifest and audit sidecars but remove their owned hidden HM staging
 files. A process crash can leave `.partial` files in its configured working
@@ -140,6 +145,11 @@ The exporter copies only CPU-resident `NvDsObjectMeta`, frame timestamps, and
 the native playtracker's small result structures. It never maps or reads an
 `NvBufSurface`, performs a device-to-host pixel copy, or introduces a CPU image
 conversion.
+
+The run mask is encoded once from the filter's already-loaded CPU calibration
+image and queued with the first telemetry sample. It does not trigger a D2H
+transfer or snapshot a video frame. A mask change within one recording fails
+telemetry publication rather than attaching an incorrect single mask.
 
 Steady-state CSV file I/O runs on a dedicated writer thread behind a bounded
 queue (2,048 complete frame samples by default). A sample is queued for every
