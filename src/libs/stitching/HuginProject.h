@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -62,6 +63,9 @@ class HuginProject {
   struct Options {
     using ProgressCallback =
         std::function<void(const std::string& stage, const std::string& status, const std::string& message)>;
+    using LevelingSelectionCallback = std::function<absl::StatusOr<std::optional<std::array<double, 3>>>(
+        const std::filesystem::path& staging_directory,
+        const StitchProjectionFraming& published_framing)>;
 
     double horizontal_fov{127.2};
     double vertical_fov{95.0};
@@ -82,6 +86,11 @@ class HuginProject {
     // after this boundary are canvas, seam, validation, or publication errors
     // and must not be hidden by trying a different sampled frame.
     std::function<void()> alignment_complete;
+    // Optional interactive boundary used by the desktop configuration flow.
+    // It runs after alignment and an initial projection have succeeded, but
+    // before full-resolution Nona maps and the Enblend seam are generated.
+    // nullopt keeps the configured rotation; a value replaces it.
+    LevelingSelectionCallback select_leveling;
     std::function<bool()> is_cancelled;
   };
 
@@ -94,6 +103,22 @@ class HuginProject {
   static absl::StatusOr<int> ParseProjection(const std::string& pto);
   static absl::StatusOr<double> ParseHorizontalFov(const std::string& pto);
   static absl::StatusOr<CameraPose> ParseCameraPose(const std::string& pto, size_t image_index);
+
+  // Resolves the configured Hugin override, then /usr/bin, then PATH. Shared
+  // with the desktop preview so calibration and preview use the same tool.
+  static absl::StatusOr<std::string> ResolveExecutable(
+      const std::string& override_name,
+      const std::string& executable_name);
+
+  // Builds the exact pano_modify argument list used to apply projection and
+  // framing. The desktop leveling preview shares this with final calibration
+  // so automatic FOV/canvas/crop decisions cannot diverge.
+  static absl::StatusOr<std::vector<std::string>> ProjectionPanoModifyArguments(
+      StitchProjection projection,
+      const std::vector<double>& projection_parameters,
+      const StitchProjectionFraming& projection_framing,
+      const std::string& output_path,
+      const std::string& input_path);
 
   // Rewrites autooptimiser_out.pto to the selected Nona/Hugin projection in an
   // unpublished staging directory before mapping TIFF generation.

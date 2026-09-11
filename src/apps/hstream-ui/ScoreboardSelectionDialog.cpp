@@ -314,6 +314,10 @@ quint64 ScoreboardSelectionCanvas::viewportRenderCount() const {
   return viewport_render_count_;
 }
 
+bool ScoreboardSelectionCanvas::pointerInteractionActive() const {
+  return pointer_active_;
+}
+
 void ScoreboardSelectionCanvas::fitImage() {
   if (image_.isNull() || width() <= 0 || height() <= 0)
     return;

@@ -431,7 +431,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata{};
+  struct stat metadata {};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
@@ -1888,6 +1888,43 @@ absl::Status validate_stitching_backend_generation_file_locked(
     return absl::InvalidArgumentError(
         "Unable to load stitching backend generation for validation: " + std::string(exception.what()));
   }
+}
+
+absl::StatusOr<StitchingBackendChoices> apply_stitching_leveling_rotation(
+    const fs::path& game_dir,
+    const std::string& expected_invalidation_id,
+    const StitchingBackendChoices& expected_choices,
+    const std::array<double, 3>& rotation_degrees) {
+  auto backend = ParseMappingBackend(expected_choices.mapping_backend);
+  if (!backend.ok() || *backend != MappingBackend::kNona)
+    return absl::FailedPreconditionError("Interactive rink leveling requires the NONA mapping backend");
+  if (expected_invalidation_id.empty())
+    return absl::InvalidArgumentError("Interactive rink leveling requires a calibration generation ID");
+  for (double angle : rotation_degrees) {
+    if (!std::isfinite(angle) || angle < -180.0 || angle > 180.0)
+      return absl::InvalidArgumentError("Interactive rink leveling angles must be between -180 and 180 degrees");
+  }
+
+  StitchingBackendChoices updated = expected_choices;
+  updated.projection_framing.rotation_degrees = rotation_degrees;
+  updated.projection_framing.rotation_inherited = false;
+  auto transaction = GameConfigTransactionLock::Acquire(game_dir);
+  if (!transaction.ok())
+    return transaction.status();
+  const fs::path config_path = game_dir / "config.yaml";
+  try {
+    YAML::Node config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, expected_choices));
+    write_stitch_projection_framing(config, updated.projection_framing);
+    write_projection_framing_node(
+        config["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection_framing"],
+        updated.projection_framing);
+    HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, updated));
+    HM_RETURN_IF_ERROR(publish_game_config(game_dir, YAML::Dump(config) + "\n"));
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to apply interactive rink leveling: " + std::string(exception.what()));
+  }
+  return updated;
 }
 
 YAML::Node apply_game_config_diff(const YAML::Node& baseline, const YAML::Node& desired, const YAML::Node& latest) {

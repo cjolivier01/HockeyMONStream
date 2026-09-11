@@ -51,6 +51,7 @@ class QThread;
 class QTimer;
 class QToolButton;
 class PipelineInspectorWidget;
+class RinkLevelingDialog;
 class ScoreboardSelectionDialog;
 
 namespace hm::ui_internal {
@@ -269,6 +270,7 @@ class HStreamWindow : public QMainWindow {
   void failStitchingCalibration(const QString& message);
   void closeStitchingCalibrationDialog();
   void handleScoreboardSelectorOutput(const QString& line);
+  void handleRinkLevelingOutput(const QString& line);
   void switchPipelineRenderTarget(int tab_index);
   bool requestPipelinePreviewChannel(const QString& channel, PreviewRequestReason reason);
   QString selectedPipelinePreviewChannel() const;
@@ -605,6 +607,7 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_paused_{false};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
+  bool pipeline_final_output_draining_{false};
   bool pipeline_render_embedded_{false};
   QString playback_elapsed_;
   QString playback_total_;
@@ -742,6 +745,7 @@ class HStreamWindow : public QMainWindow {
   QString complete_log_;
   QString scoreboard_selector_url_;
   ScoreboardSelectionDialog* scoreboard_selection_dialog_{nullptr};
+  RinkLevelingDialog* rink_leveling_dialog_{nullptr};
   QDialog* calibration_dialog_{nullptr};
   QLabel* calibration_icon_{nullptr};
   QLabel* calibration_headline_{nullptr};

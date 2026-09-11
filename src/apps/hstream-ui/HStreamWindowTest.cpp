@@ -108,6 +108,46 @@ struct HStreamWindowTestAccess {
     return window->stitchingCalibrationFailureAnalysis(message);
   }
 
+  static void prepareRinkLevelingProtocol(
+      HStreamWindow* window,
+      const QString& game_id,
+      const std::array<double, 3>& rotation) {
+    window->active_run_game_id_ = game_id;
+    window->active_mapping_backend_ = "nona";
+    window->active_projection_ = "rectilinear";
+    window->active_projection_parameters_.clear();
+    window->calibration_pending_ = true;
+    window->active_calibration_invalidation_id_ = "rink-leveling-protocol-generation";
+    window->pipeline_run_generation_ = std::max<quint64>(1, window->pipeline_run_generation_);
+    window->active_projection_framing_.rotation_degrees = rotation;
+    window->active_projection_framing_.rotation_inherited = false;
+    window->loaded_projection_framing_ = window->active_projection_framing_;
+  }
+
+  static void handleRinkLevelingOutput(HStreamWindow* window, const QString& line) {
+    window->handleRinkLevelingOutput(line);
+  }
+
+  static void setPipelineFinalOutputDraining(HStreamWindow* window, bool draining) {
+    window->pipeline_final_output_draining_ = draining;
+  }
+
+  static void setPipelineStopRequested(HStreamWindow* window, bool requested) {
+    window->pipeline_stop_requested_ = requested;
+  }
+
+  static bool rinkLevelingRotationMatches(HStreamWindow* window, const std::array<double, 3>& rotation) {
+    return window->active_projection_framing_.rotation_degrees == rotation &&
+        window->loaded_projection_framing_.rotation_degrees == rotation &&
+        window->saved_projection_framing_.rotation_degrees == rotation &&
+        !window->active_projection_framing_.rotation_inherited &&
+        !window->loaded_projection_framing_.rotation_inherited && !window->saved_projection_framing_.rotation_inherited;
+  }
+
+  static QString pipelineEnvironmentValue(HStreamWindow* window, const QString& name) {
+    return window->pipeline_process_ ? window->pipeline_process_->processEnvironment().value(name) : QString();
+  }
+
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
     window->active_run_is_calibration_ = active;
     window->active_run_high_bit_depth_ = false;
@@ -716,9 +756,8 @@ bool test_matching_development_runtime_selection() {
                  QFileInfo(QString::fromStdString((output_apps.parent_path().parent_path()).string()))
                      .canonicalFilePath(),
              "A Bazel-built UI must retain its immutable output tree when the sibling CLI is missing") &&
-      expect(QFileInfo(
-                 hm::ui_internal::development_runtime_root_for_application(
-                     QString::fromStdString(application.string())))
+      expect(QFileInfo(hm::ui_internal::development_runtime_root_for_application(
+                           QString::fromStdString(application.string())))
                      .canonicalFilePath() ==
                  QFileInfo(QString::fromStdString(workspace_root.string())).canonicalFilePath(),
              "A Bazel-built UI must retain its source workspace when the sibling CLI is missing");
@@ -2257,22 +2296,160 @@ bool set_test_calibration_status(HStreamWindow* window, const std::string& statu
   return true;
 }
 
+bool test_rink_leveling_response_protocol(HStreamWindow* window) {
+  const fs::path game_dir(window->gameDirectoryText().toStdString());
+  const fs::path staging_dir = game_dir / "hstream-stitch-Ab12Z9";
+  std::error_code error;
+  fs::remove_all(staging_dir, error);
+  error.clear();
+  if (!fs::create_directory(staging_dir, error) || error)
+    return expect(false, "Could not create the in-progress rink-leveling protocol fixture");
+  QImage source(100, 100, QImage::Format_RGB32);
+  source.fill(Qt::gray);
+  const QByteArray pto =
+      "p f2 w400 h200 v180 n\"PNG\"\ni w100 h100 f0 v90 y-30 p0 r0 n\"left.png\"\n"
+      "i w100 h100 f0 v90 y30 p0 r0 n\"right.png\"\n";
+  QFile pto_file(QString::fromStdString((staging_dir / "autooptimiser_out.pto").string()));
+  QFile aligned_file(QString::fromStdString((staging_dir / ".autooptimiser_out.aligned.pto").string()));
+  QFile marker_file(QString::fromStdString((staging_dir / "journal_version").string()));
+  if (!source.save(QString::fromStdString((staging_dir / "left.png").string())) ||
+      !source.save(QString::fromStdString((staging_dir / "right.png").string())) ||
+      !pto_file.open(QIODevice::WriteOnly | QIODevice::Truncate) || pto_file.write(pto) != pto.size() ||
+      !aligned_file.open(QIODevice::WriteOnly | QIODevice::Truncate) || aligned_file.write(pto) != pto.size() ||
+      !marker_file.open(QIODevice::WriteOnly | QIODevice::Truncate) || marker_file.write("2\n") != 2) {
+    fs::remove_all(staging_dir, error);
+    return expect(false, "Could not populate the in-progress rink-leveling protocol fixture");
+  }
+  pto_file.close();
+  aligned_file.close();
+  marker_file.close();
+
+  const QString game_id = QString::fromStdString(game_dir.filename().string());
+  const QString ready =
+      QString("HSTREAM_RINK_LEVELING status=ready directory-hex=%1")
+          .arg(QString::fromLatin1(QFile::encodeName(QString::fromStdString(staging_dir.string())).toHex()));
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  const bool inactive_ignored = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(staging_dir / ".rink-leveling-response") &&
+      window->logText().contains("outside an active pending NONA calibration generation");
+  HStreamWindowTestAccess::prepareRinkLevelingProtocol(window, game_id, {11, -30, 2});
+  HStreamWindowTestAccess::setPipelineStopRequested(window, true);
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  HStreamWindowTestAccess::setPipelineStopRequested(window, false);
+  const bool stop_ignored = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(staging_dir / ".rink-leveling-response") &&
+      window->logText().contains("while pipeline shutdown is in progress");
+  HStreamWindowTestAccess::setPipelineFinalOutputDraining(window, true);
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  HStreamWindowTestAccess::setPipelineFinalOutputDraining(window, false);
+  const bool final_drain_ignored = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(staging_dir / ".rink-leveling-response") &&
+      window->logText().contains("draining output from a terminated pipeline");
+  const fs::path unowned_dir = game_dir / "hstream-stitch-Zz91Qp";
+  fs::create_directory(unowned_dir, error);
+  const QString unowned_ready =
+      QString("HSTREAM_RINK_LEVELING status=ready directory-hex=%1")
+          .arg(QString::fromLatin1(QFile::encodeName(QString::fromStdString(unowned_dir.string())).toHex()));
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, unowned_ready);
+  const bool unowned_rejected = !window->findChild<QDialog*>("rinkLevelingDialog") &&
+      !fs::exists(unowned_dir / ".rink-leveling-response") &&
+      window->logText().contains("rejected an invalid in-progress rink leveling directory");
+  bool saw_skip_dialog = false;
+  QTimer::singleShot(0, window, [window, &saw_skip_dialog]() {
+    auto* dialog = window->findChild<QDialog*>("rinkLevelingDialog");
+    auto* skip = dialog ? dialog->findChild<QPushButton*>("skipRinkLevelingButton") : nullptr;
+    saw_skip_dialog = skip && dialog->findChild<QPushButton*>("cancelRinkCalibrationButton") &&
+        !dialog->findChild<QPushButton*>("cancelRinkLevelingButton");
+    if (skip)
+      skip->click();
+  });
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  QFile response(QString::fromStdString((staging_dir / ".rink-leveling-response").string()));
+  const bool skip_ok = response.open(QIODevice::ReadOnly) && response.readAll() == "skip\n";
+  response.close();
+
+  bool saw_use_dialog = false;
+  QTimer::singleShot(0, window, [window, &saw_use_dialog]() {
+    auto* dialog = window->findChild<QDialog*>("rinkLevelingDialog");
+    auto* pitch = dialog ? dialog->findChild<QDoubleSpinBox*>("rinkLevelingPitch") : nullptr;
+    auto* roll = dialog ? dialog->findChild<QDoubleSpinBox*>("rinkLevelingRoll") : nullptr;
+    saw_use_dialog = pitch && roll;
+    if (pitch && roll) {
+      pitch->setValue(-22.5);
+      roll->setValue(3.25);
+      // The dialog's focused test exercises preview-before-Use. This protocol
+      // test closes the modal directly so it does not depend on host Hugin.
+      dialog->accept();
+    }
+  });
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  if (!response.open(QIODevice::ReadOnly)) {
+    fs::remove_all(staging_dir, error);
+    return expect(false, "Could not read the in-progress Use response");
+  }
+  const QByteArray use_response = response.readAll();
+  response.close();
+
+  fs::remove(staging_dir / ".rink-leveling-response", error);
+  bool selector_was_tracked = false;
+  QTimer::singleShot(0, window, [window, &selector_was_tracked]() {
+    auto* dialog = dynamic_cast<RinkLevelingDialog*>(window->findChild<QDialog*>("rinkLevelingDialog"));
+    selector_was_tracked = dialog != nullptr;
+    if (dialog)
+      dialog->closeAfterBackendCompletion();
+  });
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, ready);
+  const bool backend_close_ok = selector_was_tracked && !fs::exists(staging_dir / ".rink-leveling-response");
+
+  HStreamWindowTestAccess::stageTestLeveling(window, "pending-in-progress-selection");
+  HStreamWindowTestAccess::handleRinkLevelingOutput(
+      window, "HSTREAM_RINK_LEVELING status=selected yaw=11 pitch=-22.5 roll=3.25");
+  const bool selected_ok = HStreamWindowTestAccess::rinkLevelingRotationMatches(window, {11, -22.5, 3.25}) &&
+      HStreamWindowTestAccess::pendingLevelingRevision(window).isEmpty();
+  HStreamWindowTestAccess::handleRinkLevelingOutput(window, "HSTREAM_RINK_LEVELING status=skipped");
+  const bool skipped_event_ok = window->logText().contains("calibration continuing with the configured angles");
+  fs::remove_all(staging_dir, error);
+  return expect(inactive_ignored, "Ready events outside the active pending NONA generation must be ignored") &&
+      expect(stop_ignored, "A buffered ready event must not open a modal once pipeline shutdown starts") &&
+      expect(final_drain_ignored, "A buffered ready event must not open a modal while final output is being drained") &&
+      expect(saw_skip_dialog && skip_ok,
+             "A ready event must open the in-progress dialog and atomically return the Skip choice") &&
+      expect(unowned_rejected, "Ready events must require an exactly named, marked calibration staging directory") &&
+      expect(saw_use_dialog && use_response == "use 11 -22.5 3.25\n",
+             "A ready event must return the dialog's absolute yaw, pitch, and roll for Use angles") &&
+      expect(selected_ok, "The selected event must feed active and loaded framing used by calibration completion") &&
+      expect(skipped_event_ok, "Skip protocol events must be reported without changing angles") &&
+      expect(backend_close_ok,
+             "Backend completion must close the tracked selector without publishing a stale Skip response");
+}
+
 bool test_calibration_progress_dialog(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
-  if (!start || !stop || !mode || !control_points || !set_test_calibration_status(window, "pending"))
+  if (!start || !stop || !mode || !mapping_backend || !control_points ||
+      !set_test_calibration_status(window, "pending"))
     return false;
 
   mode->setCurrentIndex(mode->findData("stitch-calibration"));
   control_points->setValue(1500);
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qputenv("HSTREAM_RINK_LEVELING_FLOW", "inherited-stale-value");
   activate(start);
+  qunsetenv("HSTREAM_RINK_LEVELING_FLOW");
   for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
+  }
+  if (!expect(
+          mapping_backend->currentData() != "nona" &&
+              HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_RINK_LEVELING_FLOW").isEmpty(),
+          "OpenCV calibration must remove an inherited NONA rink-leveling flow request")) {
+    activate(stop);
+    return false;
   }
 
   auto* dialog = require_child<QDialog>(window, "stitchCalibrationDialog");
@@ -2329,8 +2506,17 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   if (!expect(!dialog->isVisible(), "User cancellation should close the calibration popup without a failure"))
     return false;
 
+  const int opencv_backend_index = mapping_backend->currentIndex();
+  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "failure");
   activate(start);
+  if (!expect(
+          HStreamWindowTestAccess::pipelineEnvironmentValue(window, "HSTREAM_RINK_LEVELING_FLOW") == "1",
+          "Pending NONA calibration must opt the backend into the in-progress rink-leveling flow")) {
+    activate(stop);
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    return false;
+  }
   for (int i = 0; i < 300 && !headline->text().contains("failed"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -2370,6 +2556,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  mapping_backend->setCurrentIndex(opencv_backend_index);
 
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "exit");
   activate(start);
@@ -3427,9 +3614,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           stitch_frame_time->displayedSections().testFlag(QDateTimeEdit::MSecSection) &&
               stitch_frame_time->time() == QTime(0, 0, 0, 1),
-          QString(
-              "The default stitch-frame editor should accept millisecond keyboard input (format=%1, time=%2, "
-              "section=%3, focus=%4, text=%5)")
+          QString("The default stitch-frame editor should accept millisecond keyboard input (format=%1, time=%2, "
+                  "section=%3, focus=%4, text=%5)")
               .arg(stitch_frame_time->displayFormat())
               .arg(stitch_frame_time->time().toString("HH:mm:ss.zzz"))
               .arg(static_cast<int>(stitch_frame_time->currentSection()))
@@ -4670,10 +4856,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   const bool accepted_resumed_progress = HStreamWindowTestAccess::handlePlaybackProgressOutput(
       window,
-      QString(
-          "HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
-          "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
-          "generation=%1")
+      QString("HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
+              "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
+              "generation=%1")
           .arg(progress_generation_before_resumed_seek));
   QApplication::processEvents();
   if (!expect(
@@ -6481,7 +6666,7 @@ bool test_output_controls(HStreamWindow* window) {
     const QStringList provisional_logs_running =
         provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString active_provisional_guard;
-    struct stat active_provisional_guard_stat{};
+    struct stat active_provisional_guard_stat {};
     bool active_provisional_guard_pinned = false;
     for (const QString& provisional_log : provisional_logs_running) {
       if (provisional_logs_before.contains(provisional_log))
@@ -6533,7 +6718,7 @@ bool test_output_controls(HStreamWindow* window) {
     QFile guard_file(resolved_guard);
     const bool guard_opened = guard_file.open(QIODevice::ReadOnly);
     const QByteArray guard_text = guard_opened ? guard_file.readAll() : QByteArray();
-    struct stat resolved_guard_stat{};
+    struct stat resolved_guard_stat {};
     const bool trusted_resolved_guard_retained = active_provisional_guard_pinned &&
         ::lstat(QFile::encodeName(resolved_guard).constData(), &resolved_guard_stat) == 0 &&
         resolved_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
@@ -6546,7 +6731,7 @@ bool test_output_controls(HStreamWindow* window) {
                                                      {"hstream-cleanup-v2-*", ".hstream-cleanup-v2-*"},
                                                      QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
                                                  .isEmpty();
-    struct stat retained_provisional_guard_stat{};
+    struct stat retained_provisional_guard_stat {};
     const bool trusted_source_retained = active_provisional_guard_pinned &&
         ::lstat(QFile::encodeName(active_provisional_guard).constData(), &retained_provisional_guard_stat) == 0 &&
         retained_provisional_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
@@ -6626,8 +6811,8 @@ bool test_output_controls(HStreamWindow* window) {
   bool cross_filesystem_log_persisted = true;
 #ifdef Q_OS_UNIX
   QTemporaryDir cross_filesystem_root("/dev/shm/hstream-ui-cross-filesystem-XXXXXX");
-  struct stat output_root_stat{};
-  struct stat cross_root_stat{};
+  struct stat output_root_stat {};
+  struct stat cross_root_stat {};
   const QByteArray encoded_output_root = QFile::encodeName(output_root.path());
   const QByteArray encoded_cross_root = QFile::encodeName(cross_filesystem_root.path());
   const bool distinct_cross_filesystem = cross_filesystem_root.isValid() &&
@@ -7013,7 +7198,7 @@ bool test_output_controls(HStreamWindow* window) {
         QDir(cleanup_path).filePath("owner"), QByteArray("hstream-cleanup-v2\n") + target_name.toBase64());
   };
   const auto write_cleanup_commit = [&](const QString& cleanup_path, const QString& identity_path) {
-    struct stat identity_stat{};
+    struct stat identity_stat {};
     if (::lstat(QFile::encodeName(identity_path).constData(), &identity_stat) != 0)
       return false;
     return write_cleanup_test_file(
@@ -7849,9 +8034,8 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
             failed_telemetry_detail->text().contains(telemetry_warning) &&
             failed_telemetry_detail->text().contains(telemetry_working) && telemetry_warning_index >= 0 &&
             (!with_stitched_archive || stitched_after_warning_index > telemetry_warning_index),
-        QString(
-            "A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
-            "without blocking saved video outputs")
+        QString("A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
+                "without blocking saved video outputs")
             .arg(with_stitched_archive ? "dual-archive" : "Program-only")
             .toStdString());
     QFile::remove(failed_telemetry_program_completed);
@@ -7906,9 +8090,8 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
             run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_stitched_source)) &&
             run_log_text.contains("archive finalization failed") &&
             run_log_text.contains("completed archive published"),
-        QString(
-            "A %1-route failure must retain its recovery pair while the other archive still finalizes and the "
-            "combined log records both outcomes")
+        QString("A %1-route failure must retain its recovery pair while the other archive still finalizes and the "
+                "combined log records both outcomes")
             .arg(fail_program ? "first" : "second")
             .toStdString());
     run_log.close();
@@ -11102,12 +11285,10 @@ bool test_camera_controls(HStreamWindow* window) {
           runtime_snapshot_count() <= 2,
           "A non-acknowledging backend should retain at most the last acknowledged and one in-flight snapshot") &&
       expect(
-          window->logText().contains(
-              "camera control Max_Speed_X_x10=470 apply=failed "
-              "reason=acknowledgement-timeout") &&
-              window->logText().contains(
-                  "camera control Max_Speed_X_x10=490 apply=failed "
-                  "reason=acknowledgement-timeout"),
+          window->logText().contains("camera control Max_Speed_X_x10=470 apply=failed "
+                                     "reason=acknowledgement-timeout") &&
+              window->logText().contains("camera control Max_Speed_X_x10=490 apply=failed "
+                                         "reason=acknowledgement-timeout"),
           "A stalled live-control backend should time out both the in-flight and coalesced latest values");
   const auto timeout_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
   if (!timeout_hugin_generation.ok()) {
@@ -12461,7 +12642,7 @@ bool test_cleanup_transaction_protocol() {
         QDir(root.path()).filePath(QString("unsupported-rename-flags-%1").arg(QString::fromLatin1(unsupported_errno)));
     QDir().mkpath(unsupported_rename_dir);
     const QString unsupported_rename_target = QDir(unsupported_rename_dir).filePath("completed.mp4");
-    struct stat unsupported_rename_stat{};
+    struct stat unsupported_rename_stat {};
     QString unsupported_rename_error;
     const bool unsupported_rename_setup = write_file(unsupported_rename_target, "trusted NFS cleanup") &&
         file_identity(unsupported_rename_target, &unsupported_rename_stat);
@@ -12487,7 +12668,7 @@ bool test_cleanup_transaction_protocol() {
   const QString unsupported_race_dir = QDir(root.path()).filePath("unsupported-rename-source-race");
   QDir().mkpath(unsupported_race_dir);
   const QString unsupported_race_target = QDir(unsupported_race_dir).filePath("completed.mp4");
-  struct stat unsupported_race_stat{};
+  struct stat unsupported_race_stat {};
   QString unsupported_race_error;
   const bool unsupported_race_setup = write_file(unsupported_race_target, "trusted cleanup race source") &&
       file_identity(unsupported_race_target, &unsupported_race_stat);
@@ -12514,7 +12695,7 @@ bool test_cleanup_transaction_protocol() {
   const QString preclose_sync_dir = QDir(root.path()).filePath("nfs-preclose-sync-failure");
   QDir().mkpath(preclose_sync_dir);
   const QString preclose_sync_target = QDir(preclose_sync_dir).filePath("completed.mp4");
-  struct stat preclose_sync_stat{};
+  struct stat preclose_sync_stat {};
   QString preclose_sync_error;
   const bool preclose_sync_setup = write_file(preclose_sync_target, "trusted NFS preclose recovery") &&
       file_identity(preclose_sync_target, &preclose_sync_stat);
@@ -12549,7 +12730,7 @@ bool test_cleanup_transaction_protocol() {
   const QString committed_dir = QDir(root.path()).filePath("committed-interruption");
   QDir().mkpath(committed_dir);
   const QString committed_target = QDir(committed_dir).filePath("committed.mp4");
-  struct stat committed_stat{};
+  struct stat committed_stat {};
   QString committed_error;
   const bool committed_setup =
       write_file(committed_target, "trusted committed UI cleanup") && file_identity(committed_target, &committed_stat);
@@ -12580,7 +12761,7 @@ bool test_cleanup_transaction_protocol() {
   const QString pending_commit_dir = QDir(root.path()).filePath("pending-commit-publication");
   QDir().mkpath(pending_commit_dir);
   const QString pending_commit_target = QDir(pending_commit_dir).filePath("pending-commit.mp4");
-  struct stat pending_commit_stat{};
+  struct stat pending_commit_stat {};
   QString pending_commit_error;
   const bool pending_commit_setup = write_file(pending_commit_target, "trusted pending-commit UI cleanup") &&
       file_identity(pending_commit_target, &pending_commit_stat);
@@ -12615,7 +12796,7 @@ bool test_cleanup_transaction_protocol() {
   const QString missing_fallback_dir = QDir(root.path()).filePath("missing-fallback-before-commit");
   QDir().mkpath(missing_fallback_dir);
   const QString missing_fallback_target = QDir(missing_fallback_dir).filePath("missing-fallback.mp4");
-  struct stat missing_fallback_stat{};
+  struct stat missing_fallback_stat {};
   QString missing_fallback_error;
   const bool missing_fallback_setup = write_file(missing_fallback_target, "trusted missing-fallback UI cleanup") &&
       file_identity(missing_fallback_target, &missing_fallback_stat);
@@ -12675,7 +12856,7 @@ bool test_cleanup_transaction_protocol() {
   const QString failed_unlink_dir = QDir(root.path()).filePath("failed-private-unlink");
   QDir().mkpath(failed_unlink_dir);
   const QString failed_unlink_target = QDir(failed_unlink_dir).filePath("failed-private-unlink.mp4");
-  struct stat failed_unlink_stat{};
+  struct stat failed_unlink_stat {};
   QString failed_unlink_error;
   const bool failed_unlink_setup = write_file(failed_unlink_target, "trusted failed-private-unlink UI cleanup") &&
       file_identity(failed_unlink_target, &failed_unlink_stat);
@@ -12771,7 +12952,7 @@ bool test_cleanup_transaction_protocol() {
   const QString concurrent_dir = QDir(root.path()).filePath("concurrent-removers");
   QDir().mkpath(concurrent_dir);
   const QString concurrent_target = QDir(concurrent_dir).filePath("concurrent.mp4");
-  struct stat concurrent_stat{};
+  struct stat concurrent_stat {};
   const bool concurrent_setup = write_file(concurrent_target, "trusted concurrent UI cleanup") &&
       file_identity(concurrent_target, &concurrent_stat);
   std::atomic<bool> concurrent_start{false};
@@ -12809,7 +12990,7 @@ bool test_cleanup_transaction_protocol() {
   const QString interrupted_concurrent_dir = QDir(root.path()).filePath("interrupted-concurrent-removers");
   QDir().mkpath(interrupted_concurrent_dir);
   const QString interrupted_concurrent_target = QDir(interrupted_concurrent_dir).filePath("interrupted-concurrent.mp4");
-  struct stat interrupted_concurrent_stat{};
+  struct stat interrupted_concurrent_stat {};
   const bool interrupted_concurrent_setup =
       write_file(interrupted_concurrent_target, "trusted interrupted concurrent UI cleanup") &&
       file_identity(interrupted_concurrent_target, &interrupted_concurrent_stat);
@@ -13045,12 +13226,22 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
-  if (!test_cleanup_transaction_protocol()) {
+  const bool rink_leveling_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RINK_LEVELING_FLOW_ONLY");
+  if (!rink_leveling_flow_only && !test_cleanup_transaction_protocol()) {
     std::cerr << "test_cleanup_transaction_protocol failed\n";
     return 1;
   }
   HStreamWindow window;
   window.show();
+
+  if (rink_leveling_flow_only) {
+    if (!test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
+        !test_calibration_progress_dialog(&window)) {
+      std::cerr << "focused rink-leveling flow tests failed\n";
+      return 1;
+    }
+    return 0;
+  }
 
   if (!test_wheel_routing_log_follow_and_calibration_analysis(&window)) {
     std::cerr << "test_wheel_routing_log_follow_and_calibration_analysis failed\n";
@@ -13068,6 +13259,10 @@ int main(int argc, char** argv) {
   }
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";
+    return 1;
+  }
+  if (!test_rink_leveling_response_protocol(&window)) {
+    std::cerr << "test_rink_leveling_response_protocol failed\n";
     return 1;
   }
   if (!test_calibration_progress_dialog(&window)) {

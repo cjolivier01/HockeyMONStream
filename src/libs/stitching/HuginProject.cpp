@@ -85,7 +85,7 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
       ::close(descriptor);
     }
   } close{descriptor};
-  struct stat metadata{};
+  struct stat metadata {};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     return absl::FailedPreconditionError("Invalid or oversized Hugin file: " + path.string());
@@ -100,7 +100,7 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
       return absl::InternalError("Failed reading Hugin file: " + path.string());
     offset += static_cast<size_t>(count);
   }
-  struct stat verified{};
+  struct stat verified {};
   if (::fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev || metadata.st_ino != verified.st_ino ||
       metadata.st_mode != verified.st_mode || metadata.st_size != verified.st_size ||
       metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec || metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
@@ -119,7 +119,7 @@ struct OpenedTiff {
   }
   int descriptor{-1};
   TIFF* tiff{nullptr};
-  struct stat metadata{};
+  struct stat metadata {};
 };
 
 absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
@@ -147,7 +147,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 }
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
-  struct stat verified{};
+  struct stat verified {};
   if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
@@ -694,7 +694,7 @@ absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, 
     }
   } cleanup{descriptor, temporary};
 
-  struct stat source_metadata{};
+  struct stat source_metadata {};
   if (::stat(path.c_str(), &source_metadata) != 0)
     return absl::InternalError("Unable to read normalized seam source mode: " + std::string(std::strerror(errno)));
   if (!S_ISREG(source_metadata.st_mode))
@@ -1337,7 +1337,7 @@ absl::Status publish_artifacts(
   if (!status.ok())
     return status;
   for (const std::string& name : names) {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat((game_dir / name).c_str(), &metadata) == 0) {
       if (!S_ISREG(metadata.st_mode)) {
         return absl::FailedPreconditionError("Previous stitch artifact is not a regular file: " + name);
@@ -1386,7 +1386,7 @@ absl::Status publish_artifacts(
     return status;
   size_t backup_count = 0;
   for (const std::string& name : names) {
-    struct stat metadata{};
+    struct stat metadata {};
     if (::lstat((game_dir / name).c_str(), &metadata) != 0) {
       if (errno != ENOENT) {
         return rollback_error(
@@ -1702,6 +1702,65 @@ absl::Status HuginProject::ApplyProjection(
   return ApplyProjection(staging_directory, selected_projection, projection_parameters, framing, is_cancelled);
 }
 
+absl::StatusOr<std::string> HuginProject::ResolveExecutable(
+    const std::string& override_name,
+    const std::string& executable_name) {
+  return executable(override_name.c_str(), executable_name.c_str());
+}
+
+absl::StatusOr<std::vector<std::string>> HuginProject::ProjectionPanoModifyArguments(
+    StitchProjection selected_projection,
+    const std::vector<double>& projection_parameters,
+    const StitchProjectionFraming& projection_framing,
+    const std::string& output_path,
+    const std::string& input_path) {
+  const auto& projection_info = StitchProjectionDetails(selected_projection);
+  const std::vector<double> effective_projection_parameters =
+      projection_parameters.empty() ? DefaultStitchProjectionParameters(selected_projection) : projection_parameters;
+  HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(selected_projection, effective_projection_parameters));
+  HM_RETURN_IF_ERROR(
+      ValidateStitchProjectionFraming(selected_projection, effective_projection_parameters, projection_framing));
+  if (output_path.empty() || input_path.empty())
+    return absl::InvalidArgumentError("pano_modify projection input and output paths must not be empty");
+
+  std::vector<std::string> arguments = {"--projection=" + std::to_string(projection_info.hugin_projection)};
+  if (!effective_projection_parameters.empty()) {
+    arguments.emplace_back(
+        "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
+  }
+  if (projection_framing.rotation_degrees != StitchProjectionFraming{}.rotation_degrees) {
+    std::ostringstream rotation;
+    rotation.imbue(std::locale::classic());
+    rotation << std::setprecision(std::numeric_limits<double>::max_digits10);
+    rotation << projection_framing.rotation_degrees[0] << ',' << projection_framing.rotation_degrees[1] << ','
+             << projection_framing.rotation_degrees[2];
+    arguments.emplace_back("--rotate=" + rotation.str());
+  }
+  if (projection_framing.auto_fov) {
+    arguments.emplace_back("--fov=AUTO");
+  } else {
+    std::ostringstream configured_fov;
+    configured_fov.imbue(std::locale::classic());
+    configured_fov << std::setprecision(std::numeric_limits<double>::max_digits10) << projection_framing.horizontal_fov;
+    arguments.emplace_back("--fov=" + configured_fov.str());
+  }
+  if (projection_framing.auto_canvas)
+    arguments.emplace_back("--canvas=AUTO");
+  if (projection_framing.auto_crop) {
+    arguments.emplace_back("--crop=AUTO");
+  } else {
+    std::ostringstream crop;
+    crop.imbue(std::locale::classic());
+    crop << std::setprecision(std::numeric_limits<double>::max_digits10);
+    for (size_t index = 0; index < projection_framing.crop.size(); ++index)
+      crop << (index == 0 ? "" : ",") << 100.0 * projection_framing.crop[index];
+    arguments.emplace_back("--crop=" + crop.str() + "%");
+  }
+  arguments.emplace_back("--output=" + output_path);
+  arguments.emplace_back(input_path);
+  return arguments;
+}
+
 absl::Status HuginProject::ApplyProjection(
     const fs::path& staging_directory,
     StitchProjection selected_projection,
@@ -1742,40 +1801,6 @@ absl::Status HuginProject::ApplyProjection(
   std::ostringstream configured_fov;
   configured_fov.imbue(std::locale::classic());
   configured_fov << std::setprecision(std::numeric_limits<double>::max_digits10) << projection_framing.horizontal_fov;
-  auto convert_project = [&](const std::optional<std::string>& canvas) -> absl::Status {
-    std::error_code remove_error;
-    fs::remove(temporary_path, remove_error);
-    std::vector<std::string> command = {
-        *pano_modify, "--projection=" + std::to_string(projection_info.hugin_projection)};
-    if (!effective_projection_parameters.empty()) {
-      command.emplace_back(
-          "--projection-parameter=" + FormatStitchProjectionParameters(effective_projection_parameters, ' '));
-    }
-    if (projection_framing.rotation_degrees != StitchProjectionFraming{}.rotation_degrees) {
-      std::ostringstream rotation;
-      rotation.imbue(std::locale::classic());
-      rotation << std::setprecision(std::numeric_limits<double>::max_digits10);
-      rotation << projection_framing.rotation_degrees[0] << ',' << projection_framing.rotation_degrees[1] << ','
-               << projection_framing.rotation_degrees[2];
-      command.emplace_back("--rotate=" + rotation.str());
-    }
-    command.emplace_back(projection_framing.auto_fov ? "--fov=AUTO" : "--fov=" + configured_fov.str());
-    if (canvas.has_value())
-      command.emplace_back("--canvas=" + *canvas);
-    if (projection_framing.auto_crop) {
-      command.emplace_back("--crop=AUTO");
-    } else {
-      std::ostringstream crop;
-      crop.imbue(std::locale::classic());
-      crop << std::setprecision(std::numeric_limits<double>::max_digits10);
-      for (size_t index = 0; index < projection_framing.crop.size(); ++index)
-        crop << (index == 0 ? "" : ",") << 100.0 * projection_framing.crop[index];
-      command.emplace_back("--crop=" + crop.str() + "%");
-    }
-    command.emplace_back("--output=" + temporary_path.filename().string());
-    command.emplace_back(project_path.filename().string());
-    return run_checked(command, staging_directory, nullptr, is_cancelled);
-  };
   auto validate_converted_project = [&]() -> absl::StatusOr<std::pair<size_t, size_t>> {
     HM_RETURN_IF_ERROR(validate_nonempty_file(temporary_path));
     auto converted_project = read_file(temporary_path);
@@ -1875,8 +1900,17 @@ absl::Status HuginProject::ApplyProjection(
     return effective_size;
   };
 
-  HM_RETURN_IF_ERROR(
-      convert_project(projection_framing.auto_canvas ? std::optional<std::string>("AUTO") : std::nullopt));
+  auto projection_arguments = ProjectionPanoModifyArguments(
+      selected_projection,
+      effective_projection_parameters,
+      projection_framing,
+      temporary_path.filename().string(),
+      project_path.filename().string());
+  if (!projection_arguments.ok())
+    return projection_arguments.status();
+  std::vector<std::string> command{*pano_modify};
+  command.insert(command.end(), projection_arguments->begin(), projection_arguments->end());
+  HM_RETURN_IF_ERROR(run_checked(command, staging_directory, nullptr, is_cancelled));
   auto validated_project = validate_converted_project();
   if (!validated_project.ok())
     return validated_project.status();
@@ -1979,6 +2013,8 @@ absl::Status HuginProject::Configure(
         "The NONA mapping backend requires stitching.run_autooptimizer=true; choose opencv-magsac or "
         "opencv-affine-ransac to calibrate without Hugin autooptimization");
   }
+  StitchProjectionFraming effective_projection_framing = options.projection_framing;
+  std::optional<StitchingBackendChoices> effective_expected_backend_choices = options.expected_backend_choices;
   for (const fs::path& image : {left_image, right_image}) {
     auto status = validate_nonempty_file(image);
     if (!status.ok())
@@ -2072,8 +2108,12 @@ absl::Status HuginProject::Configure(
               : "Panorama optimizer disabled; native OpenCV mapping does not require Hugin optimization");
     }
   }
-  if (options.progress)
-    options.progress("canvas", "started", "Building stitch maps and panorama preview");
+  const fs::path aligned_project_path = staging / ".autooptimiser_out.aligned.pto";
+  if (options.mapping_backend == MappingBackend::kNona && options.projection.has_value() && options.select_leveling) {
+    fs::copy_file(staging / "autooptimiser_out.pto", aligned_project_path, fs::copy_options::overwrite_existing, error);
+    if (error)
+      return absl::InternalError("Unable to preserve the aligned Hugin project for rink leveling: " + error.message());
+  }
   if (options.mapping_backend == MappingBackend::kNona && options.projection.has_value()) {
     if (options.progress) {
       options.progress(
@@ -2082,10 +2122,48 @@ absl::Status HuginProject::Configure(
           "Applying " + std::string(StitchProjectionDetails(*options.projection).display_name) + " projection");
     }
     HM_RETURN_IF_ERROR(ApplyProjection(
-        staging, *options.projection, options.projection_parameters, options.projection_framing, options.is_cancelled));
+        staging,
+        *options.projection,
+        options.projection_parameters,
+        effective_projection_framing,
+        options.is_cancelled));
     if (options.progress)
       options.progress("projection", "complete", "Projection-aware canvas and crop are ready");
   }
+  if (options.mapping_backend == MappingBackend::kNona && options.projection.has_value() && options.select_leveling) {
+    if (options.progress)
+      options.progress("leveling", "started", "Waiting for optional rink leveling");
+    auto selected = options.select_leveling(staging, effective_projection_framing);
+    if (!selected.ok())
+      return selected.status();
+    if (selected->has_value()) {
+      const bool rotation_changed = **selected != effective_projection_framing.rotation_degrees;
+      effective_projection_framing.rotation_degrees = **selected;
+      effective_projection_framing.rotation_inherited = false;
+      if (effective_expected_backend_choices.has_value())
+        effective_expected_backend_choices->projection_framing = effective_projection_framing;
+      if (rotation_changed) {
+        fs::copy_file(
+            aligned_project_path, staging / "autooptimiser_out.pto", fs::copy_options::overwrite_existing, error);
+        if (error) {
+          return absl::InternalError(
+              "Unable to restore the aligned Hugin project after rink leveling: " + error.message());
+        }
+        HM_RETURN_IF_ERROR(ApplyProjection(
+            staging,
+            *options.projection,
+            options.projection_parameters,
+            effective_projection_framing,
+            options.is_cancelled));
+      }
+    }
+    if (options.progress) {
+      options.progress(
+          "leveling", "complete", selected->has_value() ? "Rink leveling angles selected" : "Rink leveling skipped");
+    }
+  }
+  if (options.progress)
+    options.progress("canvas", "started", "Building stitch maps and panorama preview");
   std::optional<double> output_scale;
   std::pair<size_t, size_t> source_canvas{0, 0};
   bool max_output_width_applied = false;
@@ -2336,10 +2414,10 @@ absl::Status HuginProject::Configure(
                      ? std::string("none")
                      : FormatStitchProjectionParameters(generated_projection_parameters))
              << '\n'
-             << "projection-auto-fov=" << (options.projection_framing.auto_fov ? 1 : 0) << '\n'
-             << "projection-horizontal-fov=" << options.projection_framing.horizontal_fov << '\n'
-             << "projection-auto-canvas=" << (options.projection_framing.auto_canvas ? 1 : 0) << '\n'
-             << "projection-auto-crop=" << (options.projection_framing.auto_crop ? 1 : 0) << '\n'
+             << "projection-auto-fov=" << (effective_projection_framing.auto_fov ? 1 : 0) << '\n'
+             << "projection-horizontal-fov=" << effective_projection_framing.horizontal_fov << '\n'
+             << "projection-auto-canvas=" << (effective_projection_framing.auto_canvas ? 1 : 0) << '\n'
+             << "projection-auto-crop=" << (effective_projection_framing.auto_crop ? 1 : 0) << '\n'
              << "camera-configuration=" << options.camera_configuration << '\n'
              << "camera-horizontal-fov=" << options.horizontal_fov << '\n'
              << "camera-vertical-fov=" << options.vertical_fov << '\n'
@@ -2354,10 +2432,11 @@ absl::Status HuginProject::Configure(
   } else {
     return absl::InvalidArgumentError("Calibrated AKAZE requires source profile fingerprint provenance");
   }
-  for (size_t index = 0; index < options.projection_framing.rotation_degrees.size(); ++index)
-    provenance << "projection-rotation-" << index << '=' << options.projection_framing.rotation_degrees[index] << '\n';
-  for (size_t index = 0; index < options.projection_framing.crop.size(); ++index)
-    provenance << "projection-crop-" << index << '=' << options.projection_framing.crop[index] << '\n';
+  for (size_t index = 0; index < effective_projection_framing.rotation_degrees.size(); ++index)
+    provenance << "projection-rotation-" << index << '=' << effective_projection_framing.rotation_degrees[index]
+               << '\n';
+  for (size_t index = 0; index < effective_projection_framing.crop.size(); ++index)
+    provenance << "projection-crop-" << index << '=' << effective_projection_framing.crop[index] << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;
@@ -2378,9 +2457,9 @@ absl::Status HuginProject::Configure(
         validate_pending_stitching_invalidation_file_locked(game_dir / "config.yaml", options.expected_invalidation_id);
     if (!status.ok())
       return status;
-    if (options.expected_backend_choices.has_value()) {
+    if (effective_expected_backend_choices.has_value()) {
       status = validate_stitching_backend_generation_file_locked(
-          game_dir / "config.yaml", options.expected_invalidation_id, *options.expected_backend_choices);
+          game_dir / "config.yaml", options.expected_invalidation_id, *effective_expected_backend_choices);
       if (!status.ok())
         return status;
     }

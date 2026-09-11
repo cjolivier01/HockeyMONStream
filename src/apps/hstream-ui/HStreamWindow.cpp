@@ -19,6 +19,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QSaveFile>
 #include <QtCore/QSet>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QStandardPaths>
@@ -178,6 +179,7 @@ constexpr CalibrationStageSpec kCalibrationStages[] = {
     {"features", "Look for control points"},
     {"matching", "Match control points"},
     {"optimizer", "Run panorama optimizer (autooptimiser)"},
+    {"leveling", "Optionally level the rink from vertical posts"},
     {"canvas", "Build stitch maps and panorama"},
     {"rink-mask", "Find the ice surface"},
 };
@@ -1241,8 +1243,8 @@ QString available_final_archive_path(
     const QString filename = QString("%1-%2.mp4").arg(base).arg(suffix);
     const QString candidate = QDir(game_dir).filePath(filename);
 #ifdef Q_OS_UNIX
-    struct stat candidate_stat{};
-    struct stat guard_stat{};
+    struct stat candidate_stat {};
+    struct stat guard_stat {};
     const QByteArray encoded_candidate = QFile::encodeName(candidate);
     const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
     if (::lstat(encoded_candidate.constData(), &candidate_stat) != 0 && errno == ENOENT &&
@@ -1329,7 +1331,7 @@ bool same_file_identity(const struct stat& left, const struct stat& right) {
 }
 
 bool path_has_file_identity(const QString& path, const struct stat& expected_stat) {
-  struct stat current_stat{};
+  struct stat current_stat {};
   const QByteArray encoded_path = QFile::encodeName(path);
   return ::lstat(encoded_path.constData(), &current_stat) == 0 && same_file_identity(current_stat, expected_stat);
 }
@@ -1366,7 +1368,7 @@ bool durably_publish_cleanup_fallback(
     if (!published) {
       saved_errno = errno;
       if (saved_errno == EEXIST) {
-        struct stat existing_stat{};
+        struct stat existing_stat {};
         published = ::fstatat(parent_fd, candidate.constData(), &existing_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
             same_file_identity(existing_stat, expected_stat);
       }
@@ -1379,7 +1381,7 @@ bool durably_publish_cleanup_fallback(
             QString("could not make retained pathname durable: %1").arg(QString::fromLocal8Bit(std::strerror(errno)));
       return false;
     }
-    struct stat published_stat{};
+    struct stat published_stat {};
     if (::fstatat(parent_fd, candidate.constData(), &published_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
         !same_file_identity(published_stat, expected_stat)) {
       if (error)
@@ -1481,7 +1483,7 @@ bool retire_durable_ui_removal_fallback(
       *error = "cleanup interruption requested after fallback quarantine";
     return false;
   }
-  struct stat quarantined_stat{};
+  struct stat quarantined_stat {};
   if (::fstatat(cleanup_fd, "fallback", &quarantined_stat, AT_SYMLINK_NOFOLLOW) != 0) {
     const int inspect_errno = errno;
     int restore_errno = 0;
@@ -1562,7 +1564,7 @@ QString rescue_open_file_no_replace(
     const QString& preferred_path,
     QString* error,
     struct stat* rescued_stat = nullptr) {
-  struct stat pinned_source_stat{};
+  struct stat pinned_source_stat {};
   if (source_fd < 0 || ::fstat(source_fd, &pinned_source_stat) != 0 || !S_ISREG(pinned_source_stat.st_mode) ||
       !same_file_identity(pinned_source_stat, expected_stat)) {
     if (error)
@@ -1634,7 +1636,7 @@ bool copy_open_file_no_replace(
     return false;
   }
 
-  struct stat created_stat{};
+  struct stat created_stat {};
   if (::fstat(output_fd, &created_stat) != 0 || !S_ISREG(created_stat.st_mode)) {
     const int created_stat_errno = errno;
     if (rollback_error) {
@@ -1690,7 +1692,7 @@ bool copy_open_file_no_replace(
     offset += bytes_read;
   }
 
-  struct stat copied_stat{};
+  struct stat copied_stat {};
   if (!copied || ::fsync(output_fd) != 0 || ::fstat(output_fd, &copied_stat) != 0 || !S_ISREG(copied_stat.st_mode)) {
     const int copy_errno = errno;
     QString cleanup_error;
@@ -1741,7 +1743,7 @@ bool rename_entry_no_replace(
     return false;
   }
   if (fallback == UnsupportedRenameFallback::kAtomicRenameIntoPrivateDirectory) {
-    struct stat destination_stat{};
+    struct stat destination_stat {};
     if (::fstatat(destination_directory_fd, destination_name, &destination_stat, AT_SYMLINK_NOFOLLOW) == 0) {
       if (saved_errno)
         *saved_errno = EEXIST;
@@ -1805,7 +1807,7 @@ bool ui_cleanup_identity_matches(const UiCleanupCommittedIdentity& committed_ide
 }
 
 bool create_ui_cleanup_committed(int cleanup_fd, const struct stat& expected_stat, QString* error) {
-  struct stat guard_stat{};
+  struct stat guard_stat {};
   if (::fstatat(cleanup_fd, "guard", &guard_stat, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(guard_stat.st_mode) ||
       !same_file_identity(guard_stat, expected_stat)) {
     if (error)
@@ -1877,7 +1879,7 @@ bool create_ui_cleanup_committed(int cleanup_fd, const struct stat& expected_sta
 }
 
 bool discard_ui_cleanup_committed_staging(int cleanup_fd, QString* error) {
-  struct stat staging_stat{};
+  struct stat staging_stat {};
   if (::fstatat(cleanup_fd, kUiCleanupCommittedStagingName, &staging_stat, AT_SYMLINK_NOFOLLOW) != 0) {
     if (errno == ENOENT)
       return true;
@@ -1914,7 +1916,7 @@ bool read_ui_cleanup_committed(
       *error = QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
-  struct stat committed_stat{};
+  struct stat committed_stat {};
   QByteArray record;
   int saved_errno = 0;
   if (::fstat(committed_fd, &committed_stat) != 0) {
@@ -2000,7 +2002,7 @@ bool read_ui_cleanup_owner(int cleanup_fd, QByteArray* target_name, QString* err
       *error = QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
-  struct stat owner_stat{};
+  struct stat owner_stat {};
   QByteArray record;
   int saved_errno = 0;
   if (::fstat(owner_fd, &owner_stat) != 0) {
@@ -2049,7 +2051,7 @@ bool ui_cleanup_target_has_pending_transaction(
     const struct stat& expected_stat,
     QString* error) {
   const QByteArray fallback_name = target_name + ".hstream-cleanup-pin";
-  struct stat fallback_stat{};
+  struct stat fallback_stat {};
   if (::fstatat(parent_fd, fallback_name.constData(), &fallback_stat, AT_SYMLINK_NOFOLLOW) == 0) {
     if (same_file_identity(fallback_stat, expected_stat))
       return true;
@@ -2103,7 +2105,7 @@ bool ui_cleanup_target_has_pending_transaction(
     QString owner_error;
     pending = read_ui_cleanup_owner(cleanup_fd, &owned_target_name, &owner_error) && owned_target_name == target_name;
     for (const char* private_name : {"entry", "guard", "fallback"}) {
-      struct stat private_stat{};
+      struct stat private_stat {};
       if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) == 0) {
         pending |= same_file_identity(private_stat, expected_stat);
       } else if (errno != ENOENT) {
@@ -2126,8 +2128,8 @@ bool ui_cleanup_target_has_pending_transaction(
 }
 
 bool ui_cleanup_name_matches_fd(int cleanup_fd, int parent_fd, const QByteArray& cleanup_name) {
-  struct stat cleanup_stat{};
-  struct stat named_stat{};
+  struct stat cleanup_stat {};
+  struct stat named_stat {};
   return ::fstat(cleanup_fd, &cleanup_stat) == 0 && S_ISDIR(cleanup_stat.st_mode) &&
       ::fstatat(parent_fd, cleanup_name.constData(), &named_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
       S_ISDIR(named_stat.st_mode) && same_file_identity(cleanup_stat, named_stat);
@@ -2225,7 +2227,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
     QString public_path;
     QString guard_path;
     QString required_path;
-    struct stat identity{};
+    struct stat identity {};
   };
   const auto prepare_reconciled_entry = [error](ReconciledEntry* reconciled_entry) {
     ReconciledEntry& entry = *reconciled_entry;
@@ -2242,7 +2244,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
           required_path = guarded_path;
       }
       if (!retire_interrupted_guard) {
-        struct stat original_stat{};
+        struct stat original_stat {};
         const QByteArray encoded_original = QFile::encodeName(original_path);
         if (::lstat(encoded_original.constData(), &original_stat) != 0) {
           if (errno != ENOENT) {
@@ -2276,7 +2278,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         }
         required_path = original_path;
       }
-      struct stat fallback_stat{};
+      struct stat fallback_stat {};
       const QByteArray encoded_fallback = QFile::encodeName(entry.public_path);
       if (::lstat(encoded_fallback.constData(), &fallback_stat) == 0) {
         if (!same_file_identity(fallback_stat, entry.identity)) {
@@ -2445,11 +2447,11 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
     std::vector<ReconciledEntry> reconciled;
     struct PrivateEntry {
       const char* name;
-      struct stat identity{};
+      struct stat identity {};
     };
     std::vector<PrivateEntry> private_entries;
     for (const char* private_name : {"entry", "guard", "fallback"}) {
-      struct stat private_stat{};
+      struct stat private_stat {};
       if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) == 0) {
         private_entries.push_back({private_name, private_stat});
       } else if (errno != ENOENT) {
@@ -2490,7 +2492,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         }
       }
       for (const PrivateEntry& private_entry : private_entries) {
-        struct stat current_stat{};
+        struct stat current_stat {};
         if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
             !same_file_identity(current_stat, private_entry.identity) ||
             ::unlinkat(cleanup_fd, private_entry.name, 0) != 0) {
@@ -2531,7 +2533,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         if (guarded_public_path.isEmpty())
           continue;
         const QString candidate_path = QDir(directory_path).filePath(candidate_name);
-        struct stat candidate_stat{};
+        struct stat candidate_stat {};
         if (::lstat(QFile::encodeName(candidate_path).constData(), &candidate_stat) != 0) {
           if (errno == ENOENT)
             continue;
@@ -2551,10 +2553,10 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       }
       const QString original_path = QDir(directory_path).filePath(QFile::decodeName(owned_target_name));
       const QString fallback_path = original_path + ".hstream-cleanup-pin";
-      struct stat fallback_stat{};
+      struct stat fallback_stat {};
       const QByteArray encoded_fallback = QFile::encodeName(fallback_path);
       if (::lstat(encoded_fallback.constData(), &fallback_stat) == 0) {
-        struct stat original_stat{};
+        struct stat original_stat {};
         const QByteArray encoded_original = QFile::encodeName(original_path);
         if (::lstat(encoded_original.constData(), &original_stat) == 0) {
           if (!same_file_identity(original_stat, fallback_stat)) {
@@ -2566,7 +2568,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
           }
         } else if (errno == ENOENT) {
           const int fallback_fd = ::open(encoded_fallback.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-          struct stat pinned_fallback_stat{};
+          struct stat pinned_fallback_stat {};
           int publish_errno = 0;
           const bool fallback_pinned = fallback_fd >= 0 && ::fstat(fallback_fd, &pinned_fallback_stat) == 0 &&
               same_file_identity(pinned_fallback_stat, fallback_stat);
@@ -2670,7 +2672,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       }
       if (!guard_is_public) {
         const int guard_fd = ::openat(cleanup_fd, "guard", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        struct stat pinned_guard_stat{};
+        struct stat pinned_guard_stat {};
         const bool guard_pinned = guard_fd >= 0 && ::fstat(guard_fd, &pinned_guard_stat) == 0 &&
             same_file_identity(pinned_guard_stat, guard_entry->identity);
         const int publish_result =
@@ -2699,7 +2701,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       QString guard_path;
       if (!public_path.isEmpty()) {
         const int private_fd = ::openat(cleanup_fd, private_entry.name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        struct stat pinned_stat{};
+        struct stat pinned_stat {};
         if (private_fd < 0 || ::fstat(private_fd, &pinned_stat) != 0 ||
             !same_file_identity(pinned_stat, private_entry.identity)) {
           const int saved_errno = private_fd < 0 ? errno : ESTALE;
@@ -2730,7 +2732,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
                        .arg(QDir(directory_path).filePath(cleanup_name), private_entry.name);
         return false;
       }
-      struct stat current_stat{};
+      struct stat current_stat {};
       if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
           !same_file_identity(current_stat, private_entry.identity)) {
         const int saved_errno = errno;
@@ -2758,7 +2760,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       if (guarded_public_path.isEmpty())
         continue;
       const QString candidate_path = QDir(directory_path).filePath(candidate_name);
-      struct stat candidate_stat{};
+      struct stat candidate_stat {};
       const QByteArray encoded_candidate = QFile::encodeName(candidate_path);
       if (::lstat(encoded_candidate.constData(), &candidate_stat) != 0) {
         if (errno == ENOENT)
@@ -2791,7 +2793,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       }
     }
     for (const PrivateEntry& private_entry : private_entries) {
-      struct stat current_stat{};
+      struct stat current_stat {};
       if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
           !same_file_identity(current_stat, private_entry.identity) ||
           ::unlinkat(cleanup_fd, private_entry.name, 0) != 0) {
@@ -2882,7 +2884,7 @@ bool remove_path_if_same_identity(
   const QFileInfo path_info(path);
   const QByteArray encoded_parent = QFile::encodeName(path_info.absolutePath());
   const QByteArray encoded_filename = QFile::encodeName(path_info.fileName());
-  struct stat current_stat{};
+  struct stat current_stat {};
   if (::lstat(encoded_path.constData(), &current_stat) != 0) {
     if (errno == ENOENT) {
       const int parent_fd = ::open(encoded_parent.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -2895,7 +2897,7 @@ bool remove_path_if_same_identity(
         return false;
       }
       const bool pending = ui_cleanup_target_has_pending_transaction(parent_fd, encoded_filename, expected_stat, error);
-      struct stat rechecked_stat{};
+      struct stat rechecked_stat {};
       const bool reappeared =
           ::fstatat(parent_fd, encoded_filename.constData(), &rechecked_stat, AT_SYMLINK_NOFOLLOW) == 0;
       const int recheck_errno = reappeared ? 0 : errno;
@@ -2941,13 +2943,13 @@ bool remove_path_if_same_identity(
       *error = QString::fromLocal8Bit(std::strerror(saved_errno));
     return false;
   }
-  struct stat locked_path_stat{};
+  struct stat locked_path_stat {};
   if (::fstatat(parent_fd, encoded_filename.constData(), &locked_path_stat, AT_SYMLINK_NOFOLLOW) != 0) {
     const int saved_errno = errno;
     bool pending = false;
     if (saved_errno == ENOENT)
       pending = ui_cleanup_target_has_pending_transaction(parent_fd, encoded_filename, expected_stat, error);
-    struct stat rechecked_stat{};
+    struct stat rechecked_stat {};
     const bool reappeared = saved_errno == ENOENT &&
         ::fstatat(parent_fd, encoded_filename.constData(), &rechecked_stat, AT_SYMLINK_NOFOLLOW) == 0;
     const int recheck_errno = reappeared ? 0 : errno;
@@ -2969,7 +2971,7 @@ bool remove_path_if_same_identity(
     return false;
   }
   int pinned_fd = ::openat(parent_fd, encoded_filename.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  struct stat pinned_stat{};
+  struct stat pinned_stat {};
   if (pinned_fd < 0 || ::fstat(pinned_fd, &pinned_stat) != 0 || !S_ISREG(pinned_stat.st_mode) ||
       !same_file_identity(pinned_stat, locked_path_stat)) {
     const int saved_errno = pinned_fd < 0 ? errno : ESTALE;
@@ -3060,7 +3062,7 @@ bool remove_path_if_same_identity(
     return false;
   }
 
-  struct stat quarantined_stat{};
+  struct stat quarantined_stat {};
   const bool quarantined_was_inspected = ::fstatat(cleanup_fd, "entry", &quarantined_stat, AT_SYMLINK_NOFOLLOW) == 0;
   const bool quarantined_is_ours = quarantined_was_inspected && same_file_identity(quarantined_stat, expected_stat);
   bool required_identity_is_ours = true;
@@ -3297,9 +3299,8 @@ bool remove_path_if_same_identity(
   if (error && directory_sync_result == 0) {
     *error = !fallback_retired
         ? fallback_retirement_error
-        : QString::fromLocal8Bit(
-              std::strerror(
-                  unlink_result != 0 ? unlink_errno : (guard_unlink_result != 0 ? guard_unlink_errno : cleanup_errno)));
+        : QString::fromLocal8Bit(std::strerror(
+              unlink_result != 0 ? unlink_errno : (guard_unlink_result != 0 ? guard_unlink_errno : cleanup_errno)));
   } else if (error && directory_sync_result != 0) {
     *error = QString("deletion is durable, but cleanup transaction retirement could not be synced: %1")
                  .arg(QString::fromLocal8Bit(std::strerror(directory_sync_errno)));
@@ -4345,7 +4346,7 @@ bool hm::ui_internal::remove_owned_path_for_test(
     quint64 expected_inode,
     QString* error) {
 #ifdef Q_OS_UNIX
-  struct stat expected_stat{};
+  struct stat expected_stat {};
   expected_stat.st_dev = static_cast<dev_t>(expected_device);
   expected_stat.st_ino = static_cast<ino_t>(expected_inode);
   return remove_path_if_same_identity(path, expected_stat, error);
@@ -4562,9 +4563,8 @@ HStreamWindow::HStreamWindow(QWidget* parent) : QMainWindow(parent) {
       releaseArchiveFinalizeSource(false);
       showArchiveFinalizationFailure(
           archive_finalize_pending_failure_detail_ +
-          QString(
-              "\n\nThe recovery file was renamed, but the durability helper could not start: %1 Do not start "
-              "another archive run until this file has been copied to safety.")
+          QString("\n\nThe recovery file was renamed, but the durability helper could not start: %1 Do not start "
+                  "another archive run until this file has been copied to safety.")
               .arg(process_error));
     } else if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncCompleted) {
       failArchiveFinalization(QString("Could not start the archive durability helper: %1").arg(process_error));
@@ -7870,9 +7870,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
   } else if (clean_from_control_points) {
     const QString previous = saved_found ? QString::number(saved_control_points) : QString("unset");
-    appendLog(QString(
-                  "stitching calibration control points changed %1 -> %2; invalidating control points and "
-                  "downstream artifacts")
+    appendLog(QString("stitching calibration control points changed %1 -> %2; invalidating control points and "
+                      "downstream artifacts")
                   .arg(previous)
                   .arg(control_points));
     if (!runStitchingClean(
@@ -8043,9 +8042,8 @@ void HStreamWindow::showStitchingCalibrationDialog() {
       active_calibration_start_stage_.isEmpty() ? QString("input") : active_calibration_start_stage_;
   calibration_detail_->setText(
       start_stage == "features"
-          ? QString(
-                "Camera orientation and synchronization are current. Resuming at control-point detection with "
-                "a limit of %1.")
+          ? QString("Camera orientation and synchronization are current. Resuming at control-point detection with "
+                    "a limit of %1.")
                 .arg(active_calibration_control_points_)
           : QString("Waiting for synchronized frames from both cameras. Control-point limit: %1.")
                 .arg(active_calibration_control_points_));
@@ -8263,9 +8261,8 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
 
   if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && !calibration_dialog_failed_) {
     calibration_detail_->setText(
-        QString(
-            "An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
-            "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
+        QString("An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
+                "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
             .arg(calibration_rejected_hypotheses_)
             .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
             .arg(calibration_rejected_candidates_)
@@ -8383,6 +8380,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
 }
 
 void HStreamWindow::completeStitchingCalibration() {
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   if (!calibration_pending_ || active_run_game_id_.isEmpty())
     return;
   bool state_applied = false;
@@ -8467,6 +8466,8 @@ void HStreamWindow::completeStitchingCalibration() {
 }
 
 void HStreamWindow::failStitchingCalibration(const QString& message) {
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   if (calibration_dialog_failed_)
     return;
   calibration_waiting_for_playback_restart_ = false;
@@ -8616,11 +8617,8 @@ QStringList HStreamWindow::pipelineArguments() const {
          << QString("--options=rink.tracking.cam_ignore_oversized=%1")
                 .arg(cameraControlValue("Ignore_Oversized_Players") != 0 ? "true" : "false")
          << QString("--options=rink.tracking.cam_oversized_percent=%1")
-                .arg(
-                    QString::number(
-                        cameraControlValue("Oversized_Player_Percent"),
-                        'g',
-                        std::numeric_limits<double>::max_digits10));
+                .arg(QString::number(
+                    cameraControlValue("Oversized_Player_Percent"), 'g', std::numeric_limits<double>::max_digits10));
     args
         << QString("--options=rink.camera.zoom_in_aggressiveness=%1").arg(cameraControlValue("Zoom_In_Aggressiveness"));
     if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
@@ -9003,6 +9001,9 @@ void HStreamWindow::startPipeline() {
     appendLog("render output will open in a separate DeepStream window; embedded preview is disabled");
   else if (!render_video)
     appendLog("video rendering disabled; pipeline will run without a display sink");
+  // This private UI/backend handshake must never be enabled by a stale parent
+  // environment for OpenCV or non-calibration runs.
+  env.remove("HSTREAM_RINK_LEVELING_FLOW");
   if (calibration_pending_) {
     const int control_points = active_calibration_control_points_;
     const int frame_count =
@@ -9011,14 +9012,15 @@ void HStreamWindow::startPipeline() {
     env.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(frame_count));
     env.insert("HSTREAM_CALIBRATION_PENDING", "1");
     env.insert("HSTREAM_CALIBRATION_START_STAGE", active_calibration_start_stage_);
+    if (active_mapping_backend_ == "nona")
+      env.insert("HSTREAM_RINK_LEVELING_FLOW", "1");
     if (active_run_is_calibration_) {
       appendLog(QString("stitching calibration control points=%1 frames=%2; starting one-pass stitched playback")
                     .arg(control_points)
                     .arg(frame_count));
     } else {
-      appendLog(QString(
-                    "video inputs require stitching calibration; starting one-pass program playback with control "
-                    "points=%1 frames=%2")
+      appendLog(QString("video inputs require stitching calibration; starting one-pass program playback with control "
+                        "points=%1 frames=%2")
                     .arg(control_points)
                     .arg(frame_count));
     }
@@ -9075,6 +9077,7 @@ void HStreamWindow::startPipeline() {
 #endif
   pipeline_paused_ = false;
   pipeline_stop_requested_ = false;
+  pipeline_final_output_draining_ = false;
 
   setPlaybackStartupStage("process", "Starting the pipeline process");
   if (active_run_is_calibration_) {
@@ -9161,6 +9164,8 @@ void HStreamWindow::pauseOrResumePipeline() {
 }
 
 void HStreamWindow::stopPipeline() {
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     deferred_playback_seek_ns_.reset();
     pending_playback_seek_target_ns_.reset();
@@ -9281,8 +9286,10 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pending_playback_seek_target_ns_.reset();
   resume_progress_reset_waiting_for_seek_ = false;
   playback_seek_channel_available_ = false;
+  pipeline_final_output_draining_ = true;
   readPipelineOutput();
   flushPipelineOutputFragments();
+  pipeline_final_output_draining_ = false;
   if (pipeline_inspector_)
     pipeline_inspector_->setPipelineRunning(false);
   const bool stopped_by_user = pipeline_stop_requested_;
@@ -9346,6 +9353,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pipeline_render_embedded_ = false;
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   clearPreviewFrames();
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
@@ -9536,6 +9545,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     // QProcess emits errorOccurred(Crashed) before finished(). Keep the
     // calibration state intact until finished() drains and processes the last
     // stdout/stderr bytes, so the failure dialog can report the real cause.
+    pipeline_final_output_draining_ = true;
     readPipelineOutput();
     appendLog(error_message + "; collecting final calibration diagnostics");
     return;
@@ -9555,6 +9565,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   clearPreviewFrames();
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  if (rink_leveling_dialog_)
+    rink_leveling_dialog_->closeAfterBackendCompletion();
   rollbackActiveLiveRotationAuthorization("pipeline error");
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
@@ -9659,6 +9671,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   appendLog(trimmed, stderr_output);
   handleRuntimeControlResponse(trimmed);
   handleScoreboardSelectorOutput(trimmed);
+  handleRinkLevelingOutput(trimmed);
   handleStitchingCalibrationOutput(trimmed);
 }
 
@@ -10273,9 +10286,8 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
     state_label = "ERROR";
   }
   playback_progress_->setToolTip(
-      QString(
-          "Pipeline: %1\nStage: %2\nActive pipelines: %3\nElapsed: %4\nTotal: %5\nRemaining: %6\nETA: %7\n"
-          "Output FPS: %8 (average %9)\nProcessing speed: %10%11")
+      QString("Pipeline: %1\nStage: %2\nActive pipelines: %3\nElapsed: %4\nTotal: %5\nRemaining: %6\nETA: %7\n"
+              "Output FPS: %8 (average %9)\nProcessing speed: %10%11")
           .arg(state_label, playback_stage_, playback_instances_, playback_elapsed_, playback_total_)
           .arg(playback_remaining_, eta, fps, playback_fps_average_)
           .arg(
@@ -10391,7 +10403,7 @@ void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, co
     return;
   }
 #ifdef Q_OS_UNIX
-  struct stat initial_log_stat{};
+  struct stat initial_log_stat {};
   if (::fstat(archive_job_log_.handle(), &initial_log_stat) != 0 || !S_ISREG(initial_log_stat.st_mode)) {
     const QString identity_error = QString::fromLocal8Bit(std::strerror(errno));
     archive_job_log_.close();
@@ -10439,7 +10451,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   quint64 expected_log_device = 0;
   quint64 expected_log_inode = 0;
   int pinned_log_fd = -1;
-  struct stat open_log_stat{};
+  struct stat open_log_stat {};
   QString durability_error;
 #ifdef Q_OS_UNIX
   if (archive_job_log_.isOpen()) {
@@ -10449,7 +10461,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
       if (!archive_job_log_guard_path_.isEmpty()) {
         const QByteArray encoded_guard = QFile::encodeName(archive_job_log_guard_path_);
         pinned_log_fd = ::open(encoded_guard.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        struct stat pinned_log_stat{};
+        struct stat pinned_log_stat {};
         if (pinned_log_fd < 0 || ::fstat(pinned_log_fd, &pinned_log_stat) != 0 ||
             !same_file_identity(pinned_log_stat, open_log_stat)) {
           if (pinned_log_fd >= 0)
@@ -10595,7 +10607,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
     }
   }
   int copied_log_fd = -1;
-  struct stat copied_log_stat{};
+  struct stat copied_log_stat {};
   QString copied_log_guard_path;
   const auto rollback_cross_filesystem_copy = [&]() {
     QString rollback_error;
@@ -10870,7 +10882,7 @@ bool HStreamWindow::reopenArchiveJobLog(
       *error = QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
-  struct stat log_stat{};
+  struct stat log_stat {};
   const int stat_result = ::fstat(fd, &log_stat);
   const bool identity_matches = expected_inode == 0 ||
       (static_cast<quint64>(log_stat.st_dev) == expected_device &&
@@ -10908,7 +10920,7 @@ bool HStreamWindow::reopenArchiveJobLog(
 
 void HStreamWindow::finishArchiveJobLog(bool retire_identity_guard) {
   QString durability_error;
-  struct stat open_log_stat{};
+  struct stat open_log_stat {};
   bool have_open_log_identity = false;
   if (archive_job_log_.isOpen()) {
 #ifdef Q_OS_UNIX
@@ -10982,9 +10994,8 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
     archive_output_path_label_->setText(
         active_archive_recovery_path_.isEmpty()
             ? QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_)
-            : QString(
-                  "Current archive: %1\nPrevious archive retained for recovery: "
-                  "%2\nRoute change applies to the next run")
+            : QString("Current archive: %1\nPrevious archive retained for recovery: "
+                      "%2\nRoute change applies to the next run")
                   .arg(active_archive_output_path_, active_archive_recovery_path_));
   } else if (archive_output_path_label_ && archive_enabled) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -11003,9 +11014,8 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
         active_stitched_archive_recovery_path_.isEmpty()
             ? QString("Current stitched archive: %1\nRoute change applies to the next run")
                   .arg(active_stitched_archive_output_path_)
-            : QString(
-                  "Current stitched archive: %1\nPrevious archive retained for recovery: %2\nRoute change applies "
-                  "to the next run")
+            : QString("Current stitched archive: %1\nPrevious archive retained for recovery: %2\nRoute change applies "
+                      "to the next run")
                   .arg(active_stitched_archive_output_path_, active_stitched_archive_recovery_path_));
   } else if (stitched_archive_output_path_label_ && stitched_archive_enabled && !isCalibrationRun()) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -11059,7 +11069,7 @@ bool HStreamWindow::acquireArchiveFinalizerOwnership(const QString& source_path,
 void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
 #ifdef Q_OS_UNIX
   if (archive_finalize_owner_lock_fd_ >= 0) {
-    struct stat lock_stat{};
+    struct stat lock_stat {};
     const bool have_lock_identity =
         ::fstat(archive_finalize_owner_lock_fd_, &lock_stat) == 0 && S_ISREG(lock_stat.st_mode);
     if (remove_lock_file && have_lock_identity && !archive_finalize_owner_lock_path_.isEmpty()) {
@@ -11092,12 +11102,12 @@ void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
 bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require_target_identity) {
   bool released = true;
 #ifdef Q_OS_UNIX
-  struct stat source_stat{};
+  struct stat source_stat {};
   if (remove_guard && archive_finalize_source_fd_ >= 0 && !archive_finalize_source_guard_path_.isEmpty() &&
       ::fstat(archive_finalize_source_fd_, &source_stat) == 0 && S_ISREG(source_stat.st_mode)) {
     QString cleanup_error;
     const bool source_path_is_primary = path_has_file_identity(archive_finalize_source_path_, source_stat);
-    struct stat target_stat{};
+    struct stat target_stat {};
     const bool target_identity_available = require_target_identity && archive_finalize_target_fd_ >= 0 &&
         ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
         static_cast<quint64>(target_stat.st_dev) == archive_finalize_target_device_ &&
@@ -11136,7 +11146,7 @@ bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require
 bool HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
   bool released = true;
 #ifdef Q_OS_UNIX
-  struct stat target_stat{};
+  struct stat target_stat {};
   if (remove_guard && archive_finalize_target_fd_ >= 0 && !archive_finalize_target_guard_path_.isEmpty() &&
       ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode)) {
     QString cleanup_error;
@@ -11261,9 +11271,8 @@ void HStreamWindow::startArchiveFinalization(
     if (!reconcile_scoped_ui_cleanup_directory(cleanup_directory, &cleanup_error)) {
       archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
       showArchiveFinalizationFailure(
-          QString(
-              "Could not reconcile an interrupted archive cleanup in %1: %2\n\nDo not start another archive "
-              "run until the retained files have been copied to safety.")
+          QString("Could not reconcile an interrupted archive cleanup in %1: %2\n\nDo not start another archive "
+                  "run until the retained files have been copied to safety.")
               .arg(cleanup_directory, cleanup_error));
       return;
     }
@@ -11320,8 +11329,8 @@ void HStreamWindow::startArchiveFinalization(
 #ifdef Q_OS_UNIX
   const QByteArray encoded_source = QFile::encodeName(archive_finalize_source_path_);
   const int source_fd = ::open(encoded_source.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  struct stat source_stat{};
-  struct stat named_source_stat{};
+  struct stat source_stat {};
+  struct stat named_source_stat {};
   if (source_fd < 0 || ::fstat(source_fd, &source_stat) != 0 || !S_ISREG(source_stat.st_mode) ||
       ::lstat(encoded_source.constData(), &named_source_stat) != 0 ||
       !same_file_identity(source_stat, named_source_stat)) {
@@ -11330,9 +11339,8 @@ void HStreamWindow::startArchiveFinalization(
       ::close(source_fd);
     archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
     showArchiveFinalizationFailure(
-        QString(
-            "Could not pin the completed archive for finalization: %1\n\nDo not start another archive run until "
-            "this file has been copied to safety.")
+        QString("Could not pin the completed archive for finalization: %1\n\nDo not start another archive run until "
+                "this file has been copied to safety.")
             .arg(QString::fromLocal8Bit(std::strerror(saved_errno))));
     return;
   }
@@ -11348,9 +11356,8 @@ void HStreamWindow::startArchiveFinalization(
     releaseArchiveFinalizeSource(false);
     archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
     showArchiveFinalizationFailure(
-        QString(
-            "Could not protect the completed archive during finalization: %1\n\nDo not start another archive "
-            "run until this file has been copied to safety.")
+        QString("Could not protect the completed archive during finalization: %1\n\nDo not start another archive "
+                "run until this file has been copied to safety.")
             .arg(source_guard_error));
     return;
   }
@@ -11540,7 +11547,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     bool recovery_artifact_retained = true;
     bool recovery_log_retained = true;
 #ifdef Q_OS_UNIX
-    struct stat recovery_stat{};
+    struct stat recovery_stat {};
     if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC")) {
       const QByteArray encoded_recovery = QFile::encodeName(archive_finalize_source_path_);
       ::unlink(encoded_recovery.constData());
@@ -11572,7 +11579,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     recovery_identity_valid = recovery_fd_valid && path_has_file_identity(archive_finalize_source_path_, recovery_stat);
     const bool recovery_guard_valid = recovery_fd_valid && !archive_finalize_source_guard_path_.isEmpty() &&
         path_has_file_identity(archive_finalize_source_guard_path_, recovery_stat);
-    struct stat recovery_log_stat{};
+    struct stat recovery_log_stat {};
     if (archive_finalize_recovery_log_fd_ >= 0) {
       if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC")) {
         const QByteArray encoded_log = QFile::encodeName(archive_job_log_path_);
@@ -11616,7 +11623,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
           archive_job_log_guard_path_.clear();
         } else if (recovery_log_fd_valid) {
           QString rescue_error;
-          struct stat rescued_log_stat{};
+          struct stat rescued_log_stat {};
           archive_job_log_path_ = rescue_open_file_no_replace(
               archive_finalize_recovery_log_fd_,
               recovery_log_stat,
@@ -11659,7 +11666,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         archive_finalize_source_guard_path_.clear();
       } else if (recovery_fd_valid) {
         QString rescue_error;
-        struct stat rescued_video_stat{};
+        struct stat rescued_video_stat {};
         archive_finalize_source_path_ = rescue_open_file_no_replace(
             archive_finalize_source_fd_,
             recovery_stat,
@@ -11733,7 +11740,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
       return;
     }
 #ifdef Q_OS_UNIX
-    struct stat target_stat{};
+    struct stat target_stat {};
     const bool target_fd_is_valid = archive_finalize_target_fd_ >= 0 &&
         ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
         static_cast<quint64>(target_stat.st_dev) == archive_finalize_target_device_ &&
@@ -11782,7 +11789,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         if (!create_open_file_guard(archive_finalize_target_fd_, candidate, &new_guard_path, &guard_error)) {
           QString cleanup_error;
           remove_path_if_same_identity(candidate, target_stat, &cleanup_error);
-          struct stat occupied_guard_stat{};
+          struct stat occupied_guard_stat {};
           const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
           if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
             continue;
@@ -11827,11 +11834,11 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   }
 
   int pinned_partial_fd = -1;
-  struct stat partial_stat{};
+  struct stat partial_stat {};
 #ifdef Q_OS_UNIX
   const QByteArray encoded_partial = QFile::encodeName(archive_finalize_partial_path_);
   pinned_partial_fd = ::open(encoded_partial.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  struct stat named_partial_stat{};
+  struct stat named_partial_stat {};
   if (pinned_partial_fd < 0 || ::fstat(pinned_partial_fd, &partial_stat) != 0 || !S_ISREG(partial_stat.st_mode) ||
       partial_stat.st_size <= 0 || ::lstat(encoded_partial.constData(), &named_partial_stat) != 0 ||
       !same_file_identity(partial_stat, named_partial_stat)) {
@@ -11874,7 +11881,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
               pinned_partial_fd, candidate, &archive_finalize_target_guard_path_, &target_guard_error)) {
         QString cleanup_error;
         remove_path_if_same_identity(candidate, partial_stat, &cleanup_error);
-        struct stat occupied_guard_stat{};
+        struct stat occupied_guard_stat {};
         const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
         if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
           continue;
@@ -12033,7 +12040,7 @@ void HStreamWindow::completeArchiveFinalization() {
   bool source_removed = false;
   bool source_was_replaced = false;
 #ifdef Q_OS_UNIX
-  struct stat target_stat{};
+  struct stat target_stat {};
   const bool target_is_pinned = archive_finalize_target_fd_ >= 0 &&
       ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
       static_cast<quint64>(target_stat.st_dev) == archive_finalize_target_device_ &&
@@ -12046,7 +12053,7 @@ void HStreamWindow::completeArchiveFinalization() {
     final_size = target_stat.st_size;
 #endif
 #ifdef Q_OS_UNIX
-  struct stat source_stat{};
+  struct stat source_stat {};
   if (archive_finalize_source_fd_ >= 0 && ::fstat(archive_finalize_source_fd_, &source_stat) == 0 &&
       S_ISREG(source_stat.st_mode) && static_cast<quint64>(source_stat.st_dev) == archive_finalize_source_device_ &&
       static_cast<quint64>(source_stat.st_ino) == archive_finalize_source_inode_) {
@@ -12101,7 +12108,7 @@ void HStreamWindow::completeArchiveFinalization() {
   if (!releaseArchiveFinalizeTarget(true)) {
     QString retained_target;
 #ifdef Q_OS_UNIX
-    struct stat retained_target_stat{};
+    struct stat retained_target_stat {};
     const bool have_target_identity = archive_finalize_target_fd_ >= 0 &&
         ::fstat(archive_finalize_target_fd_, &retained_target_stat) == 0 && S_ISREG(retained_target_stat.st_mode);
     if (have_target_identity && path_has_file_identity(archive_finalize_target_path_, retained_target_stat)) {
@@ -12319,7 +12326,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   QString failure_detail = message;
 #ifdef Q_OS_UNIX
   if (archive_finalize_target_fd_ >= 0) {
-    struct stat failed_target_stat{};
+    struct stat failed_target_stat {};
     if (::fstat(archive_finalize_target_fd_, &failed_target_stat) == 0 && S_ISREG(failed_target_stat.st_mode)) {
       QString cleanup_error;
       if (path_has_file_identity(archive_finalize_target_path_, failed_target_stat))
@@ -12329,7 +12336,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     }
     releaseArchiveFinalizeTarget(false);
   }
-  struct stat original_archive_stat{};
+  struct stat original_archive_stat {};
   const bool has_pinned_archive = archive_finalize_source_fd_ >= 0 &&
       ::fstat(archive_finalize_source_fd_, &original_archive_stat) == 0 && S_ISREG(original_archive_stat.st_mode) &&
       static_cast<quint64>(original_archive_stat.st_dev) == archive_finalize_source_device_ &&
@@ -12350,7 +12357,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
       }
     }
     bool has_job_log = false;
-    struct stat original_log_stat{};
+    struct stat original_log_stat {};
     int pinned_log_fd = -1;
     if (archive_job_log_.isOpen() && ::fstat(archive_job_log_.handle(), &original_log_stat) == 0 &&
         S_ISREG(original_log_stat.st_mode)) {
@@ -12407,7 +12414,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     for (int suffix = 0; suffix < 1000; ++suffix) {
       const QString candidate = failed_archive_candidate(original_archive_path, suffix);
       const QString candidate_log = candidate + ".log";
-      struct stat reservation_stat{};
+      struct stat reservation_stat {};
       bool candidate_log_reserved = false;
       bool candidate_log_is_marker = false;
       int marker_fd = -1;
@@ -12521,7 +12528,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error);
         if (marker_fd >= 0)
           ::close(marker_fd);
-        struct stat occupied_guard_stat{};
+        struct stat occupied_guard_stat {};
         const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
         if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
           continue;
@@ -12540,7 +12547,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           remove_path_if_same_identity(candidate_log, original_log_stat, &cleanup_error);
           if (marker_fd >= 0)
             ::close(marker_fd);
-          struct stat occupied_guard_stat{};
+          struct stat occupied_guard_stat {};
           const QByteArray encoded_guard = QFile::encodeName(candidate_log + ".hstream-pin");
           if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
             continue;
@@ -12886,6 +12893,152 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
     if (scoreboard_selection_dialog_)
       scoreboard_selection_dialog_->closeAfterBackendCompletion();
   }
+}
+
+void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
+  static const QRegularExpression ready_pattern(
+      R"(^HSTREAM_RINK_LEVELING\s+status=ready\s+directory-hex=([0-9a-f]+)$)");
+  static const QRegularExpression selected_pattern(
+      R"(^HSTREAM_RINK_LEVELING\s+status=selected\s+yaw=([-+0-9.eE]+)\s+pitch=([-+0-9.eE]+)\s+roll=([-+0-9.eE]+)$)");
+  const bool recognized = ready_pattern.match(line).hasMatch() || selected_pattern.match(line).hasMatch() ||
+      line == "HSTREAM_RINK_LEVELING status=skipped";
+  const bool active_generation = calibration_pending_ && active_mapping_backend_ == "nona" &&
+      !active_run_game_id_.isEmpty() && !active_calibration_invalidation_id_.isEmpty() && pipeline_run_generation_ != 0;
+  if (recognized && !active_generation) {
+    appendLog("ignored stale rink leveling event outside an active pending NONA calibration generation");
+    return;
+  }
+  const auto selected = selected_pattern.match(line);
+  if (selected.hasMatch()) {
+    bool yaw_ok = false, pitch_ok = false, roll_ok = false;
+    const double yaw = selected.captured(1).toDouble(&yaw_ok);
+    const double pitch = selected.captured(2).toDouble(&pitch_ok);
+    const double roll = selected.captured(3).toDouble(&roll_ok);
+    if (!yaw_ok || !pitch_ok || !roll_ok || !std::isfinite(yaw) || !std::isfinite(pitch) || !std::isfinite(roll) ||
+        std::abs(yaw) > 180.0 || std::abs(pitch) > 180.0 || std::abs(roll) > 180.0) {
+      appendLog("ignored invalid rink leveling result from calibration");
+      return;
+    }
+    active_projection_framing_.rotation_degrees = {yaw, pitch, roll};
+    active_projection_framing_.rotation_inherited = false;
+    loaded_projection_framing_.rotation_degrees = active_projection_framing_.rotation_degrees;
+    loaded_projection_framing_.rotation_inherited = false;
+    saved_projection_framing_ = active_projection_framing_;
+    pending_leveling_revision_.clear();
+    updateRinkLevelingControls();
+    updatePresetDirtyState();
+    appendLog(QString("calibration accepted rink leveling pitch=%1° roll=%2°").arg(pitch).arg(roll));
+    return;
+  }
+  if (line == "HSTREAM_RINK_LEVELING status=skipped") {
+    appendLog("optional rink leveling skipped; calibration continuing with the configured angles");
+    return;
+  }
+
+  const auto ready = ready_pattern.match(line);
+  if (!ready.hasMatch())
+    return;
+  if (pipeline_stop_requested_ || pipeline_final_output_draining_) {
+    appendLog(
+        pipeline_stop_requested_
+            ? "ignored rink leveling ready event while pipeline shutdown is in progress"
+            : "ignored rink leveling ready event while draining output from a terminated pipeline");
+    return;
+  }
+  if (rink_leveling_dialog_) {
+    rink_leveling_dialog_->show();
+    rink_leveling_dialog_->raise();
+    rink_leveling_dialog_->activateWindow();
+    appendLog("ignored duplicate rink leveling ready event while the selector is already open");
+    return;
+  }
+  const QByteArray encoded = ready.captured(1).toLatin1();
+  if (encoded.size() % 2 != 0) {
+    appendLog("invalid in-progress rink leveling path from calibration; stopping safely");
+    stopPipeline();
+    return;
+  }
+  const QByteArray decoded = QByteArray::fromHex(encoded);
+  const QString requested_directory = QString::fromUtf8(decoded);
+  const QString canonical_directory = QDir(requested_directory).canonicalPath();
+  const QString canonical_game = QDir(gameDirectory(active_run_game_id_)).canonicalPath();
+  const QFileInfo staging_info(canonical_directory);
+  static const QRegularExpression staging_name_pattern(R"(^hstream-stitch-[A-Za-z0-9]{6}$)");
+  const QString marker_path = QDir(canonical_directory).filePath("journal_version");
+  const QFileInfo marker_info(marker_path);
+  QFile marker(marker_path);
+  const bool marker_valid = !marker_info.isSymLink() && marker_info.isFile() && marker_info.size() == 2 &&
+      marker.open(QIODevice::ReadOnly) && marker.readAll() == "2\n";
+  if (canonical_directory.isEmpty() || canonical_game.isEmpty() || !staging_info.isDir() ||
+      staging_info.dir().canonicalPath() != canonical_game ||
+      !staging_name_pattern.match(staging_info.fileName()).hasMatch() || !marker_valid) {
+    appendLog("rejected an invalid in-progress rink leveling directory; stopping safely");
+    stopPipeline();
+    return;
+  }
+  const auto parsed_projection = hm::stitching::ParseStitchProjection(active_projection_.toStdString());
+  if (!parsed_projection.ok()) {
+    appendLog("could not preview the active projection during rink leveling; stopping safely");
+    stopPipeline();
+    return;
+  }
+  if (preview_status_)
+    preview_status_->setText("Waiting for optional rink leveling");
+  QWidget* dialog_parent = calibration_dialog_ ? static_cast<QWidget*>(calibration_dialog_) : this;
+  auto* dialog = new RinkLevelingDialog(
+      canonical_directory,
+      active_projection_framing_.rotation_degrees,
+      dialog_parent,
+      std::nullopt,
+      /*in_progress_calibration=*/true,
+      *parsed_projection,
+      active_projection_parameters_,
+      active_projection_framing_);
+  rink_leveling_dialog_ = dialog;
+  connect(dialog, &QObject::destroyed, this, [this, dialog]() {
+    if (rink_leveling_dialog_ == dialog)
+      rink_leveling_dialog_ = nullptr;
+  });
+  const quint64 selection_generation = pipeline_run_generation_;
+  const QString selection_invalidation_id = active_calibration_invalidation_id_;
+  appendLog("optional rink leveling selector opened after panorama alignment");
+  const int result = dialog->exec();
+  const bool cancel_calibration = dialog->calibrationCancellationRequested();
+  const bool backend_completed = dialog->closedAfterBackendCompletion();
+  if (rink_leveling_dialog_ == dialog)
+    rink_leveling_dialog_ = nullptr;
+  std::optional<std::array<double, 3>> selected_rotation;
+  if (result == QDialog::Accepted)
+    selected_rotation = dialog->rotationDegrees();
+  dialog->deleteLater();
+  if (backend_completed || selection_generation != pipeline_run_generation_ ||
+      selection_invalidation_id != active_calibration_invalidation_id_ || !calibration_pending_) {
+    appendLog("rink leveling selector closed after its calibration generation ended; no response written");
+    return;
+  }
+  if (cancel_calibration) {
+    appendLog("rink leveling selector requested cancellation of the stitching calibration");
+    stopPipeline();
+    return;
+  }
+  QByteArray response("skip\n");
+  if (selected_rotation.has_value()) {
+    const auto& rotation = *selected_rotation;
+    response = QString("use %1 %2 %3\n")
+                   .arg(rotation[0], 0, 'g', 17)
+                   .arg(rotation[1], 0, 'g', 17)
+                   .arg(rotation[2], 0, 'g', 17)
+                   .toUtf8();
+  }
+  QSaveFile response_file(QDir(canonical_directory).filePath(".rink-leveling-response"));
+  if (!response_file.open(QIODevice::WriteOnly) || response_file.write(response) != response.size() ||
+      !response_file.commit()) {
+    appendLog("could not return the rink leveling choice to calibration; stopping safely");
+    stopPipeline();
+    return;
+  }
+  if (preview_status_)
+    preview_status_->setText("Stitching calibration continuing");
 }
 
 QWidget* HStreamWindow::previewSurfaceForChannel(const QString& channel) const {
@@ -15649,11 +15802,10 @@ bool HStreamWindow::applySavedControlConfig(
       saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
   const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
   const auto canvas_constraint = max_output_width_changed
-      ? max_width_decision.value_or(
-            hm::ui_internal::decide_stitching_canvas_constraint_change(
-                /*width_changed=*/true,
-                /*artifacts_compatible=*/std::nullopt,
-                /*requires_regeneration=*/std::nullopt))
+      ? max_width_decision.value_or(hm::ui_internal::decide_stitching_canvas_constraint_change(
+            /*width_changed=*/true,
+            /*artifacts_compatible=*/std::nullopt,
+            /*requires_regeneration=*/std::nullopt))
       : hm::ui_internal::StitchingCanvasConstraintDecision{};
   const QString selected_control_point_matcher = controlPointMatcher();
   const QString selected_mapping_backend = mappingBackend();

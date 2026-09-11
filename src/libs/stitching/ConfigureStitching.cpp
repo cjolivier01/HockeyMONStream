@@ -122,7 +122,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat before{};
+  struct stat before {};
   if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
       static_cast<uint64_t>(before.st_size) > kMaximumAkazeCalibrationBytes) {
     return absl::FailedPreconditionError(
@@ -142,7 +142,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
       return absl::AbortedError("AKAZE lens calibration changed while being read: " + path.string());
     offset += static_cast<size_t>(count);
   }
-  struct stat after{};
+  struct stat after {};
   if (::fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
       before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
       before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
@@ -287,6 +287,154 @@ void report_calibration_progress(const std::string& stage, const std::string& st
   if (!message.empty())
     std::cout << " message=" << message;
   std::cout << std::endl;
+}
+
+bool interactive_rink_leveling_requested() {
+  const char* value = std::getenv("HSTREAM_RINK_LEVELING_FLOW");
+  return value != nullptr && std::string(value) == "1";
+}
+
+std::string hex_encode(const std::string& value) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (unsigned char byte : value) {
+    encoded.push_back(digits[byte >> 4]);
+    encoded.push_back(digits[byte & 0x0f]);
+  }
+  return encoded;
+}
+
+std::chrono::milliseconds rink_leveling_selection_timeout() {
+  constexpr auto fallback = std::chrono::minutes(30);
+  const char* configured = std::getenv("HM_RINK_LEVELING_SELECTION_TIMEOUT_MS");
+  if (configured == nullptr || *configured == '\0')
+    return fallback;
+  try {
+    const long long milliseconds = std::stoll(configured);
+    if (milliseconds >= 100 &&
+        milliseconds <= std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::hours(2)).count()) {
+      return std::chrono::milliseconds(milliseconds);
+    }
+  } catch (const std::exception&) {
+  }
+  std::cerr << "Warning: ignoring invalid HM_RINK_LEVELING_SELECTION_TIMEOUT_MS=" << configured << std::endl;
+  return fallback;
+}
+
+absl::StatusOr<std::optional<std::array<double, 3>>> parse_rink_leveling_response(const std::string& contents) {
+  std::istringstream input(contents);
+  input.imbue(std::locale::classic());
+  std::string action;
+  if (!(input >> action))
+    return absl::InvalidArgumentError("Rink leveling response is empty");
+  if (action == "skip") {
+    input >> std::ws;
+    if (!input.eof())
+      return absl::InvalidArgumentError("Rink leveling skip response has unexpected data");
+    return std::optional<std::array<double, 3>>{};
+  }
+  std::array<double, 3> rotation{};
+  if (action != "use" || !(input >> rotation[0] >> rotation[1] >> rotation[2]))
+    return absl::InvalidArgumentError("Rink leveling response must be 'skip' or 'use <yaw> <pitch> <roll>'");
+  input >> std::ws;
+  if (!input.eof())
+    return absl::InvalidArgumentError("Rink leveling response has unexpected trailing data");
+  if (std::any_of(rotation.begin(), rotation.end(), [](double angle) {
+        return !std::isfinite(angle) || std::abs(angle) > 180.0;
+      })) {
+    return absl::InvalidArgumentError("Rink leveling response angles must be finite and within [-180, 180]");
+  }
+  return std::optional<std::array<double, 3>>(rotation);
+}
+
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file_impl(const fs::path& path);
+
+absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_selection(
+    const fs::path& game_dir,
+    const fs::path& staging,
+    const StitchingBackendChoices& expected_choices,
+    const std::string& invalidation_id,
+    const std::function<bool()>& is_cancelled) {
+  const fs::path response_path = staging / ".rink-leveling-response";
+  std::error_code error;
+  fs::remove(response_path, error);
+  error.clear();
+  std::cout << "HSTREAM_RINK_LEVELING status=ready directory-hex=" << hex_encode(staging.string()) << std::endl;
+  const auto deadline = std::chrono::steady_clock::now() + rink_leveling_selection_timeout();
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (is_cancelled && is_cancelled())
+      return absl::CancelledError("Rink leveling selection cancelled with stitching calibration");
+    auto selected = read_rink_leveling_response_file_impl(response_path);
+    if (absl::IsNotFound(selected.status())) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+      continue;
+    }
+    if (!selected.ok())
+      return selected.status();
+    if (!selected->has_value()) {
+      std::cout << "HSTREAM_RINK_LEVELING status=skipped" << std::endl;
+      return std::optional<std::array<double, 3>>{};
+    }
+    const std::array<double, 3>& rotation = **selected;
+    auto updated = apply_stitching_leveling_rotation(game_dir, invalidation_id, expected_choices, rotation);
+    if (!updated.ok())
+      return updated.status();
+    std::cout.imbue(std::locale::classic());
+    std::cout << std::setprecision(std::numeric_limits<double>::max_digits10)
+              << "HSTREAM_RINK_LEVELING status=selected yaw=" << rotation[0] << " pitch=" << rotation[1]
+              << " roll=" << rotation[2] << std::endl;
+    return std::optional<std::array<double, 3>>(rotation);
+  }
+  return absl::DeadlineExceededError("Timed out waiting for optional rink leveling; choose Skip leveling to continue");
+}
+
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file_impl(const fs::path& path) {
+  constexpr size_t kMaximumResponseBytes = 256;
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (errno == ENOENT)
+      return absl::NotFoundError("Rink leveling response is not present");
+    return absl::FailedPreconditionError(
+        "Unable to open the rink leveling response safely: " + std::string(std::strerror(errno)));
+  }
+  struct CloseDescriptor {
+    int descriptor;
+    ~CloseDescriptor() {
+      if (descriptor >= 0)
+        ::close(descriptor);
+    }
+  } close_descriptor{descriptor};
+  struct stat metadata {};
+  if (::fstat(descriptor, &metadata) != 0)
+    return absl::InternalError("Unable to inspect the rink leveling response: " + std::string(std::strerror(errno)));
+  if (!S_ISREG(metadata.st_mode))
+    return absl::FailedPreconditionError("Rink leveling response must be a regular file");
+  if (metadata.st_size <= 0)
+    return absl::InvalidArgumentError("Rink leveling response is empty");
+  if (static_cast<uintmax_t>(metadata.st_size) > kMaximumResponseBytes)
+    return absl::ResourceExhaustedError("Rink leveling response exceeds the 256-byte limit");
+
+  std::string contents;
+  contents.reserve(static_cast<size_t>(metadata.st_size));
+  std::array<char, kMaximumResponseBytes + 1> buffer{};
+  for (;;) {
+    const ssize_t count = ::read(descriptor, buffer.data(), buffer.size());
+    if (count > 0) {
+      contents.append(buffer.data(), static_cast<size_t>(count));
+      if (contents.size() > kMaximumResponseBytes)
+        return absl::ResourceExhaustedError("Rink leveling response exceeds the 256-byte limit");
+      continue;
+    }
+    if (count == 0)
+      break;
+    if (errno == EINTR)
+      continue;
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      return absl::UnavailableError("Rink leveling response is not ready for a bounded read");
+    return absl::InternalError("Unable to read the rink leveling response: " + std::string(std::strerror(errno)));
+  }
+  return parse_rink_leveling_response(contents);
 }
 
 absl::Status recover_rink_transactions_locked(const fs::path& root);
@@ -531,7 +679,7 @@ struct OpenedTiff {
   }
   int descriptor{-1};
   TIFF* tiff{nullptr};
-  struct stat metadata{};
+  struct stat metadata {};
 };
 
 absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& path, uint64_t maximum_bytes) {
@@ -560,7 +708,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 }
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
-  struct stat verified{};
+  struct stat verified {};
   if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
@@ -606,7 +754,7 @@ struct PinnedLoadArtifact {
 
   std::string name;
   int descriptor{-1};
-  struct stat metadata{};
+  struct stat metadata {};
 };
 
 absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& path) {
@@ -660,7 +808,7 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
       return absl::NotFoundError("Stitch snapshot artifact is missing: " + path.string());
     return absl::FailedPreconditionError("Unable to pin stitch snapshot artifact: " + path.string());
   }
-  struct stat metadata{};
+  struct stat metadata {};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     ::close(descriptor);
@@ -749,7 +897,7 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
       offset += static_cast<uint64_t>(count);
     }
   }
-  struct stat verified{};
+  struct stat verified {};
   if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
     return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
   }
@@ -785,8 +933,8 @@ absl::Status verify_pinned_load_artifacts(
   if (!opened_root.ok())
     return opened_root.status();
   for (const PinnedLoadArtifact& artifact : artifacts) {
-    struct stat descriptor_metadata{};
-    struct stat path_metadata{};
+    struct stat descriptor_metadata {};
+    struct stat path_metadata {};
     if (::fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
         !same_load_artifact_snapshot(artifact.metadata, descriptor_metadata)) {
       return absl::AbortedError("Control-mask artifact changed while being loaded: " + artifact.name);
@@ -1567,6 +1715,10 @@ absl::Status preflight_stitched_snapshot_generation(
 }
 
 } // namespace
+
+absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response_file(const fs::path& path) {
+  return read_rink_leveling_response_file_impl(path);
+}
 
 absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const fs::path& game_dir) {
   return load_akaze_matching_calibration_impl(game_dir);
@@ -2935,6 +3087,18 @@ absl::Status create_control_points(
         options.progress(stage, status, message);
     };
     candidate_options.alignment_complete = [&] { alignment_complete = true; };
+    if (mapping_backend == MappingBackend::kNona && interactive_rink_leveling_requested()) {
+      if (!candidate_options.expected_backend_choices.has_value() || expected_invalidation_id.empty()) {
+        return absl::FailedPreconditionError(
+            "Interactive rink leveling requires a reserved stitching calibration generation");
+      }
+      const StitchingBackendChoices expected_choices = *candidate_options.expected_backend_choices;
+      candidate_options.select_leveling = [game_dir, expected_choices, expected_invalidation_id, is_cancelled](
+                                              const fs::path& staging, const StitchProjectionFraming&) {
+        return wait_for_rink_leveling_selection(
+            game_dir, staging, expected_choices, expected_invalidation_id, is_cancelled);
+      };
+    }
     absl::Status configure_status = HuginProject::Configure(
         game_dir, input_files[candidate.index].first, input_files[candidate.index].second, selected, candidate_options);
     if (configure_status.ok()) {
@@ -3017,7 +3181,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata{};
+  struct stat metadata {};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
@@ -3585,7 +3749,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
       ::close(descriptor);
     }
   } cleanup{descriptor};
-  struct stat metadata{};
+  struct stat metadata {};
   if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
     return absl::FailedPreconditionError("Invalid field-mask PNG: " + path);
 
@@ -3656,7 +3820,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
       return absl::FailedPreconditionError("Unable to read field-mask PNG: " + path);
     offset += static_cast<size_t>(count);
   }
-  struct stat verified_metadata{};
+  struct stat verified_metadata {};
   if (::fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
       metadata.st_ino != verified_metadata.st_ino || metadata.st_mode != verified_metadata.st_mode ||
       metadata.st_size != verified_metadata.st_size || metadata.st_mtim.tv_sec != verified_metadata.st_mtim.tv_sec ||

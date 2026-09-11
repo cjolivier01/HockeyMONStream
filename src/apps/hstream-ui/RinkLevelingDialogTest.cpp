@@ -1,6 +1,6 @@
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
-#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
@@ -53,6 +53,23 @@ void markPosts(RinkLevelingDialog& dialog) {
   static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"))
       ->setPoints({{10, 10}, {12, 70}, {70, 12}, {70, 75}});
 }
+bool estimateComplete(RinkLevelingDialog& dialog, int timeout = 10000) {
+  auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
+  return status && waitUntil([status]() { return status->text().startsWith("Used "); }, timeout);
+}
+hm::stitching::StitchProjectionFraming previewFraming(const std::array<double, 3>& rotation) {
+  hm::stitching::StitchProjectionFraming framing;
+  framing.auto_fov = true;
+  framing.auto_canvas = true;
+  framing.auto_crop = true;
+  framing.rotation_degrees = rotation;
+  return framing;
+}
+bool writeInProgressSnapshot(const QTemporaryDir& staging, const QImage& source, const QByteArray& pto) {
+  return source.save(staging.filePath("left.png")) && source.save(staging.filePath("right.png")) &&
+      write(staging.filePath("autooptimiser_out.pto"), pto) &&
+      write(staging.filePath(".autooptimiser_out.aligned.pto"), pto);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -70,9 +87,7 @@ int main(int argc, char** argv) {
     static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"))
         ->setPoints(
             {{589, 32}, {560, 294}, {1218, 109}, {1176, 346}, {1757, 222}, {1714, 422}, {2166, 338}, {2118, 485}});
-    auto* estimate = dialog.findChild<QPushButton*>("estimateRinkLevelingButton");
-    estimate->click();
-    if (!waitUntil([&]() { return estimate->isEnabled(); }, 65000))
+    if (!estimateComplete(dialog, 65000))
       return 1;
     const auto rotation = dialog.rotationDegrees();
     std::cout << "Real image estimate: " << rotation[0] << ',' << rotation[1] << ',' << rotation[2] << '\n';
@@ -119,12 +134,27 @@ int main(int argc, char** argv) {
     }
   }
   ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
-  ok &= script(bin.filePath("pano_modify"), "cp autooptimiser_out.pto preview.pto\n");
+  ok &= script(
+      bin.filePath("pano_modify"),
+      "if [ -n \"$RINK_PREVIEW_ARGS\" ]; then printf 'BEGIN\\nLC_ALL=%s\\n' \"$LC_ALL\" >>\"$RINK_PREVIEW_ARGS\"; printf '%s\\n' \"$@\" >>\"$RINK_PREVIEW_ARGS\"; fi\n"
+      "output=\ninput=\nexpect_output=0\n"
+      "for argument do\n"
+      "  if [ \"$expect_output\" = 1 ]; then output=$argument; expect_output=0; continue; fi\n"
+      "  case \"$argument\" in --output=*) output=${argument#--output=} ;; -o) expect_output=1 ;; -*) ;; *) input=$argument ;; esac\n"
+      "done\n"
+      "cp \"$input\" \"$output\"\n");
   ok &= script(bin.filePath("nona"), "cp left.png preview.png\n");
   if (!ok)
     return 1;
   const QByteArray old_path = qgetenv("PATH");
+  const QByteArray old_pano_trafo = qgetenv("HM_PANO_TRAFO");
+  const QByteArray old_pano_modify = qgetenv("HM_PANO_MODIFY");
+  const QByteArray old_nona = qgetenv("HM_NONA");
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
+  qputenv("HM_PANO_TRAFO", bin.filePath("pano_trafo").toUtf8());
+  qputenv("HM_PANO_MODIFY", bin.filePath("pano_modify").toUtf8());
+  qputenv("HM_NONA", bin.filePath("nona").toUtf8());
+  qputenv("RINK_PREVIEW_ARGS", bin.filePath("rink-preview-arguments").toUtf8());
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
     const auto producer_lock = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
@@ -132,8 +162,7 @@ int main(int argc, char** argv) {
       return 1;
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     ok &= expect(
-        !dialog.loadError().isEmpty() &&
-            !dialog.findChild<QPushButton*>("previewRinkLevelingButton")->isEnabled(),
+        !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("previewRinkLevelingButton")->isEnabled(),
         "opening must reject artifact-lock contention even before any source files change");
   }
   {
@@ -141,19 +170,48 @@ int main(int argc, char** argv) {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
     markPosts(dialog);
-    auto* estimate = dialog.findChild<QPushButton*>("estimateRinkLevelingButton");
     auto* clear = dialog.findChild<QPushButton*>("rinkLevelingCamera0Clear");
     auto* undo = dialog.findChild<QPushButton*>("rinkLevelingCamera0Undopoint");
-    estimate->click();
+    ok &= expect(waitUntil([&]() { return !clear->isEnabled(); }), "automatic estimate starts after its debounce");
     ok &= expect(
         clear && undo && !clear->isEnabled() && !undo->isEnabled(), "point actions are disabled while estimating");
     clear->click();
     undo->click();
-    ok &= expect(waitUntil([&]() { return estimate->isEnabled(); }), "delayed estimate completes");
+    ok &= expect(estimateComplete(dialog), "delayed automatic estimate completes");
     auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
     ok &= expect(
         canvas->points().size() == 4 && clear->isEnabled(),
         "disabled mutation buttons preserve the estimated selection");
+  }
+  {
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    markPosts(dialog);
+    QApplication::processEvents();
+    auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
+    canvas->fitImage();
+    const double scale = canvas->viewScale();
+    const QPointF offset(
+        (canvas->width() - canvas->imageSize().width() * scale) / 2.0,
+        (canvas->height() - canvas->imageSize().height() * scale) / 2.0);
+    const QPoint press = ((QPointF(10.5, 10.5) * scale) + offset).toPoint();
+    const QPoint moved = press + QPoint(20, 0);
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, press);
+    QTest::mouseMove(canvas, moved, 10);
+    QTest::qWait(250);
+    ok &= expect(
+        canvas->isEnabled() && canvas->pointerInteractionActive(),
+        "automatic estimate waits for a paused point drag to finish");
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, moved);
+    const QVector<QPoint> released_points = canvas->points();
+    ok &= expect(
+        waitUntil([canvas]() { return !canvas->isEnabled(); }),
+        "automatic estimate starts after the dragged point is released");
+    ok &= expect(estimateComplete(dialog), "post-drag automatic estimate completes");
+    QTest::mouseMove(canvas, moved + QPoint(20, 0), 10);
+    ok &= expect(
+        !canvas->pointerInteractionActive() && canvas->points() == released_points,
+        "hover after automatic estimation does not continue the completed drag");
   }
   {
     ScoreboardSelectionCanvas canvas;
@@ -181,10 +239,7 @@ int main(int argc, char** argv) {
     ok &= expect(dialog.loadError().isEmpty(), "snapshot loads");
     dialog.show();
     markPosts(dialog);
-    dialog.findChild<QPushButton*>("estimateRinkLevelingButton")->click();
-    ok &= expect(
-        waitUntil([&]() { return dialog.findChild<QPushButton*>("estimateRinkLevelingButton")->isEnabled(); }),
-        "estimate completes");
+    ok &= expect(estimateComplete(dialog), "automatic estimate completes");
     ok &= expect(
         std::abs(dialog.rotationDegrees()[1]) < 0.001 && std::abs(dialog.rotationDegrees()[2]) < 0.001,
         "selected poles set absolute level");
@@ -273,6 +328,135 @@ int main(int argc, char** argv) {
     write(game.filePath("stitching_canvas_provenance"), provenance);
   }
   {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{7, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    auto* skip = dialog.findChild<QPushButton*>("skipRinkLevelingButton");
+    auto* cancel_calibration = dialog.findChild<QPushButton*>("cancelRinkCalibrationButton");
+    auto* preview = dialog.findChild<QPushButton*>("previewRinkLevelingButton");
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    ok &= expect(
+        dialog.loadError().isEmpty() && skip && cancel_calibration && preview && accept &&
+            !dialog.findChild<QPushButton*>("cancelRinkLevelingButton") &&
+            !dialog.findChild<QPushButton*>("estimateRinkLevelingButton"),
+        "in-progress selection loads the aligned snapshot and offers Skip and whole-calibration cancellation");
+    dialog.show();
+    markPosts(dialog);
+    ok &= expect(estimateComplete(dialog), "in-progress post edits automatically update the estimated angles");
+    ok &= expect(!accept->isEnabled(), "in-progress angles cannot be used before an explicit preview");
+    preview->click();
+    ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "in-progress preview enables Use angles");
+    const QByteArray preview_arguments = read(bin.filePath("rink-preview-arguments"));
+    ok &= expect(
+        preview_arguments.contains("--projection=0\n") && preview_arguments.contains("--fov=AUTO\n") &&
+            preview_arguments.contains("--canvas=AUTO\n") && preview_arguments.contains("--crop=AUTO\n") &&
+            preview_arguments.contains(".autooptimiser_out.aligned.pto\n") && preview_arguments.contains("LC_ALL=C\n"),
+        "in-progress preview shares final projection framing, executable overrides, and C locale before downscaling");
+    accept->click();
+    ok &= expect(
+        dialog.result() == QDialog::Accepted && dialog.rotationDegrees()[0] == 7,
+        "in-progress Use angles returns absolute pitch and roll while preserving yaw");
+  }
+  {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto) &&
+        script(bin.filePath("pano_trafo"), "cat >/dev/null\nsleep 30\n");
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.show();
+    markPosts(dialog);
+    auto* skip = dialog.findChild<QPushButton*>("skipRinkLevelingButton");
+    ok &= expect(
+        waitUntil([&]() {
+          return skip && skip->isEnabled() && !dialog.findChild<QWidget*>("rinkLevelingCamera0")->isEnabled();
+        }),
+        "Skip leveling stays available while an automatic estimate is running");
+    QElapsedTimer elapsed;
+    elapsed.start();
+    skip->click();
+    ok &= expect(
+        elapsed.elapsed() < 4000 && dialog.result() == QDialog::Rejected,
+        "Skip leveling promptly cancels an active estimator");
+    ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
+  }
+  {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.show();
+    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "in-progress manual-angle preview completes");
+    write(staging.filePath("autooptimiser_out.pto"), pto + "# changed pending generation\n");
+    accept->click();
+    ok &= expect(
+        dialog.result() != QDialog::Accepted && !accept->isEnabled(),
+        "Use angles rejects an in-progress calibration generation that changed after preview");
+  }
+  {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.findChild<QPushButton*>("cancelRinkCalibrationButton")->click();
+    ok &= expect(
+        dialog.result() == QDialog::Rejected && dialog.calibrationCancellationRequested(),
+        "Cancel calibration is distinct from Skip leveling");
+  }
+  {
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    const std::array<double, 3> rotation{0, -33, 2};
+    RinkLevelingDialog dialog(
+        staging.path(),
+        rotation,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(rotation));
+    dialog.closeAfterBackendCompletion();
+    ok &= expect(
+        dialog.result() == QDialog::Rejected && dialog.closedAfterBackendCompletion() &&
+            !dialog.calibrationCancellationRequested(),
+        "backend completion closes an open selector without turning it into Skip or user cancellation");
+  }
+  {
     QImage mismatch(20, 20, QImage::Format_RGB32);
     mismatch.fill(Qt::black);
     mismatch.save(game.filePath("right.png"));
@@ -281,6 +465,19 @@ int main(int argc, char** argv) {
         !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("previewRinkLevelingButton")->isEnabled(),
         "mismatched camera dimensions fail closed");
   }
+  qunsetenv("RINK_PREVIEW_ARGS");
+  if (old_pano_trafo.isNull())
+    qunsetenv("HM_PANO_TRAFO");
+  else
+    qputenv("HM_PANO_TRAFO", old_pano_trafo);
+  if (old_pano_modify.isNull())
+    qunsetenv("HM_PANO_MODIFY");
+  else
+    qputenv("HM_PANO_MODIFY", old_pano_modify);
+  if (old_nona.isNull())
+    qunsetenv("HM_NONA");
+  else
+    qputenv("HM_NONA", old_nona);
   qputenv("PATH", old_path);
   return ok ? 0 : 1;
 }
