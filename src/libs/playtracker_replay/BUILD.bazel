@@ -5,6 +5,7 @@ cc_library(
     include_prefix = "hstream/src/libs/playtracker_replay",
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/recording",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "@com_google_absl//absl/status:statusor",
@@ -18,6 +19,8 @@ cc_test(
     srcs = ["ReplaySessionTest.cpp"],
     deps = [
         ":playtracker_replay",
+        "//src/libs/recording",
+        "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_db",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_csv",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "@yaml-cpp",

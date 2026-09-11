@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include <cuda_runtime.h>
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
@@ -156,11 +157,11 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
         telemetry_csv_dir_,
         TelemetryConfigArtifact{play_tracker_config_source_file_, play_tracker_config_source_contents_},
         TelemetryConfigArtifact{init_params_.play_tracker_config_file, play_tracker_effective_config_contents_},
-        runtime_tuning_provenance_history_);
+        runtime_tuning_provenance_history_, 2048, telemetry_game_id_);
     if (!telemetry_status.ok()) {
       return telemetry_status;
     }
-    std::cout << "Playtracker telemetry CSV export: " << telemetry_csv_.output_manifest() << std::endl;
+    std::cout << "Playtracker telemetry database: " << telemetry_csv_.output_manifest() << std::endl;
     std::cout << "HSTREAM_TELEMETRY manifest=" << telemetry_csv_.output_manifest() << std::endl;
   }
   return absl::OkStatus();
@@ -270,7 +271,10 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     preview_overlay_flags_ = static_cast<unsigned>(parsed);
     DsPlayTrackerCtxSetPreviewOverlayFlags(pt_context_, preview_overlay_flags_);
     return true;
-  } else if (key == "telemetry-csv-dir") {
+  } else if (key == "telemetry-game-id") {
+    if (telemetry_csv_.active()) return false;
+    telemetry_game_id_ = prop.value;
+  } else if (key == "telemetry-csv-dir" || key == "telemetry-db-dir") {
     if (telemetry_csv_.active() && prop.value != telemetry_csv_dir_) {
       std::cerr << "telemetry-csv-dir can only be changed before the pipeline starts" << std::endl;
       return false;
@@ -557,7 +561,26 @@ absl::Status PlayTrackerPriv::GenerateOutput(
                 static_cast<float>(box.height()),
             });
       }
-      if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample)))
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+      const auto* rink = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame.frame_meta);
+      const auto mask = rink ? rink->mask() : std::shared_ptr<const cv::Mat>();
+      if (mask != telemetry_mask_) {
+        telemetry_mask_ = mask;
+        telemetry_geometry_.reset();
+        if (mask) {
+          auto geometry = std::make_shared<TelemetryGeometry>();
+          geometry->width = mask->cols; geometry->height = mask->rows;
+          geometry->revision = rink->revision();
+          geometry->encode_mask = [mask] {
+            std::vector<unsigned char> bytes;
+            if (!cv::imencode(".png", *mask, bytes)) throw std::runtime_error("Cannot encode telemetry rink mask");
+            return std::string(bytes.begin(), bytes.end());
+          };
+          telemetry_geometry_ = std::move(geometry);
+        }
+      }
+#endif
+      if (!telemetry_csv_.TryEnqueue(std::move(telemetry_sample), telemetry_geometry_))
         return absl::DataLossError("lossless telemetry exporter stopped before accepting a frame sample");
     }
     if (show_) {

@@ -34,6 +34,7 @@ struct DsFieldMaskCtx {
   size_t total_frame_count{0};
   cv::Mat detection_bit_mask;
   cv::Mat detection_u8_mask;
+  std::shared_ptr<const cv::Mat> telemetry_mask;
   cv::Point2f detection_mask_centroid;
   cv::Rect2i field_box;
   bool logged_mask_size_mismatch{false};
@@ -356,6 +357,9 @@ absl::Status DsFieldMaskProcessFrame(
       loaded_mask = load_current_mask();
     }
     HM_ASSIGN_OR_RETURN(ctx->detection_u8_mask, std::move(loaded_mask));
+    // The loaded mask is immutable. Share its existing CPU allocation with telemetry;
+    // PNG encoding is deferred to the recording writer, never the streaming thread.
+    ctx->telemetry_mask = std::make_shared<const cv::Mat>(ctx->detection_u8_mask);
     ctx->detection_mask_centroid = compute_centroid(ctx->detection_u8_mask, ctx->field_box);
     ctx->detection_bit_mask = convert_to_bit_mask(ctx->detection_u8_mask);
     ctx->loaded_output_generation = output_generation;
@@ -364,7 +368,8 @@ absl::Status DsFieldMaskProcessFrame(
   prune_detection_boxes(frame_meta, ctx, draw);
 #ifdef HAS_NVDS_CUSTOMUSERMETA
   if (frame_meta && frame_meta->base_meta.batch_meta) {
-    FieldMaskPayload::create_and_add<FieldMaskPayload>(frame_meta, ctx->detection_mask_centroid, ctx->field_box);
+    FieldMaskPayload::create_and_add<FieldMaskPayload>(frame_meta, ctx->detection_mask_centroid, ctx->field_box,
+        ctx->telemetry_mask, ctx->loaded_output_generation + ":" + ctx->loaded_output_authorization_id);
   }
 #endif
   ++ctx->total_frame_count;

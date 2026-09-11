@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
+#include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -1089,7 +1090,7 @@ bool telemetry_csv_destination_paths_available(const QString& game_directory, co
   if (!read_directory_entries(game_directory_fd.get(), &entries, &error))
     return false;
   for (const QByteArray& entry : entries) {
-    if (allowed_staging_artifact(entry, destination_suffix))
+    if (entry == ("hstream_telemetry" + destination_suffix + ".db").toUtf8() || allowed_staging_artifact(entry, destination_suffix))
       return false;
   }
   return true;
@@ -1100,6 +1101,8 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     const QString& game_directory,
     const QString& destination_suffix,
     const TelemetryCsvPublicationTestHooks* test_hooks) {
+  if (manifest_path.endsWith(".db") || manifest_path.endsWith(".sqlite"))
+    return publish_telemetry_database(manifest_path, game_directory, destination_suffix);
   TelemetryCsvPublicationResult result;
   if (!QRegularExpression(R"(^(-\d+)?$)").match(destination_suffix).hasMatch()) {
     result.error = QString("invalid telemetry destination suffix: %1").arg(destination_suffix);

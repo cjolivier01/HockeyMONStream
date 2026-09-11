@@ -1905,40 +1905,6 @@ gboolean create_second_streammux(AppCtx* appCtx) {
   return TRUE;
 }
 
-static void release_uri_playlist_generation_state(NvDsSrcParentBin* source_bin) {
-  if (!source_bin) {
-    return;
-  }
-  for (guint i = 0; i < MAX_SOURCE_BINS; ++i) {
-    NvDsSrcBin* source = &source_bin->sub_bins[i];
-    if (source->uri_list) {
-      for (guint uri_index = 0; uri_index < source->num_uri_list; ++uri_index) {
-        g_free(source->uri_list[uri_index]);
-      }
-      g_free(source->uri_list);
-      source->uri_list = nullptr;
-      source->num_uri_list = 0;
-    }
-    if (source->uri_playlist_mutex_initialized) {
-      g_mutex_clear(&source->uri_playlist_mutex);
-      source->uri_playlist_mutex_initialized = FALSE;
-    }
-    if (source->uri_decode_pad_selection_mutex_initialized) {
-      g_mutex_clear(&source->uri_decode_pad_selection_mutex);
-      source->uri_decode_pad_selection_mutex_initialized = FALSE;
-    }
-    if (source->bin_lock_initialized) {
-      g_mutex_clear(&source->bin_lock);
-      source->bin_lock_initialized = FALSE;
-    }
-  }
-  if (source_bin->uri_playlist_barrier_initialized) {
-    g_cond_clear(&source_bin->uri_playlist_barrier_cond);
-    g_mutex_clear(&source_bin->uri_playlist_barrier_mutex);
-    source_bin->uri_playlist_barrier_initialized = FALSE;
-  }
-}
-
 static void reset_pipeline_generation_state(AppCtx* appCtx) {
   release_uri_playlist_generation_state(&appCtx->pipeline.multi_src_bin);
   appCtx->pipeline = {};
@@ -2368,7 +2334,7 @@ gboolean create_pipeline(
   if (config->dsplaytracker_config.enable) {
     std::string telemetry_csv_dir;
     for (const hm::gst::PluginProperty& property : config->dsplaytracker_config.private_properties) {
-      if (property.name == "telemetry-csv-dir" || property.name == "telemetry_csv_dir")
+      if (property.name == "telemetry-csv-dir" || property.name == "telemetry_csv_dir" || property.name == "telemetry-db-dir" || property.name == "telemetry_db_dir")
         telemetry_csv_dir = property.value;
     }
     appCtx->capture_playtracker_detections = !telemetry_csv_dir.empty();

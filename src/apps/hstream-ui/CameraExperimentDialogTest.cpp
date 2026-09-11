@@ -74,6 +74,12 @@ bool e2e(const QStringList& args) {
   dialog.show();
   widget<QLineEdit>(dialog, "experimentManifest")->setText(args[2]);
   widget<QLineEdit>(dialog, "experimentMedia")->setText(args[3]);
+  if (QFileInfo(args[3]).isDir()) {
+    widget<QComboBox>(dialog, "experimentSourceMode")->setCurrentIndex(0);
+    widget<QLineEdit>(dialog, "experimentGameDirectory")->setText(args[3]);
+  } else {
+    widget<QComboBox>(dialog, "experimentSourceMode")->setCurrentIndex(1);
+  }
   widget<QDoubleSpinBox>(dialog, "experimentIn")->setValue(args[5].toDouble());
   widget<QDoubleSpinBox>(dialog, "experimentDuration")->setValue(args[6].toDouble());
   widget<QDoubleSpinBox>(dialog, "experimentVideoOrigin")->setValue(args[7].toDouble());

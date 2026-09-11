@@ -5441,7 +5441,7 @@ bool PipelineApplication::seek_runtime_impl(
   for (const hm::gst::PluginProperty& property : app_context->config.dsplaytracker_config.private_properties) {
     std::string normalized_name = property.name;
     std::replace(normalized_name.begin(), normalized_name.end(), '_', '-');
-    if (normalized_name == "telemetry-csv-dir") {
+    if (normalized_name == "telemetry-csv-dir" || normalized_name == "telemetry-db-dir") {
       configured_telemetry_csv_dir = property.value;
     }
   }

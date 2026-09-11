@@ -93,6 +93,25 @@ bool expect_oversized_seam_repair_artifact_rejected(const fs::path& tmpdir) {
   return true;
 }
 
+bool expect_missing_experiment_revision_rejected(const std::string& config_dir) {
+  hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
+  stitcher.SetProperty({"expected-artifact-revision", "previously-prepared-generation"});
+  // Even if calibration was enabled elsewhere, an experiment must never
+  // silently replace its missing historical maps with newly generated ones.
+  stitcher.SetProperty({"one-pass-mode", "1"});
+  stitcher.SetProperty({"calibration-run-generation", "1"});
+  hm::DSCustom_CreateParams params{};
+  params.config_file = const_cast<char*>(config_dir.c_str());
+  params.m_inCaps = gst_caps_from_string("video/x-raw,format=RGBA,width=1280,height=720");
+  const auto status = stitcher.PreCapsInit(&params);
+  gst_caps_unref(params.m_inCaps);
+  if (!absl::IsFailedPrecondition(status) || status.message().find("Stitching maps changed") == std::string::npos) {
+    std::cerr << "Expected missing experiment maps to prevent recalibration: " << status << '\n';
+    return false;
+  }
+  return true;
+}
+
 bool expect_output_batch_size(guint input_batch_size, guint configured_batch_size, guint expected_batch_size) {
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
   const guint actual_batch_size = stitcher.GetOutputBatchSize(input_batch_size, configured_batch_size);
@@ -537,6 +556,8 @@ int main() {
   fs::create_directories(tmpdir);
 
   const std::string config_dir = tmpdir.string();
+  if (!expect_missing_experiment_revision_rejected(config_dir))
+    return 37;
   if (!run_precaps(
           config_dir,
           /*one_pass_mode=*/false,
