@@ -309,6 +309,7 @@ class HStreamWindow : public QMainWindow {
   void resetCameraControls();
   void cleanStitchingCalibration();
   void updateStitchFrameTimeAvailability();
+  void updateWindowTitle();
   void captureSavedControlState();
   void updatePresetDirtyState();
   void updateCameraControlDependencies();

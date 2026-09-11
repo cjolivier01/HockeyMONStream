@@ -108,6 +108,10 @@ struct HStreamWindowTestAccess {
     return window->stitchingCalibrationFailureAnalysis(message);
   }
 
+  static void clearCalibrationDiagnostics(HStreamWindow* window) {
+    window->calibration_diagnostic_lines_.clear();
+  }
+
   static void prepareRinkLevelingProtocol(
       HStreamWindow* window,
       const QString& game_id,
@@ -1030,7 +1034,7 @@ bool write_fake_runner(const QString& path) {
   file.write("stitching_only = '--stitching-calibration-only' in sys.argv[1:]\n");
   file.write("if not calibration_result and os.environ.get('HSTREAM_UI_TEST_COMPLETE_CALIBRATION') == '1':\n");
   file.write("    calibration_result = 'success'\n");
-  file.write("if calibration_result in ('success', 'failure', 'exit', 'diagnostic-exit'):\n");
+  file.write("if calibration_result in ('success', 'failure', 'exit', 'diagnostic-exit', 'cuda-oom'):\n");
   file.write("    time.sleep(float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS', '0')) / 1000.0)\n");
   file.write("    delay = float(os.environ.get('HSTREAM_UI_TEST_CALIBRATION_STEP_DELAY_MS', '0')) / 1000.0\n");
   file.write("    if os.environ.get('HSTREAM_UI_TEST_PRECALIBRATION_STDERR'):\n");
@@ -1062,6 +1066,17 @@ bool write_fake_runner(const QString& path) {
       "unsafe canvas extent')\n");
   file.write("        sys.stderr.flush()\n");
   file.write("        sys.exit(12)\n");
+  file.write("    if calibration_result == 'cuda-oom':\n");
+  file.write(
+      "        print(\"gst_nvds_buffer_pool_alloc_buffer: assertion 'mem' failed\", file=sys.stderr, flush=True)\n");
+  file.write("        print('Cuda failure: status=2', file=sys.stderr, flush=True)\n");
+  file.write("        print('Error(-1) in buffer allocation', file=sys.stderr, flush=True)\n");
+  file.write(
+      "        print('HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration', flush=True)\n");
+  file.write(
+      "        print('ERROR from hmstitcher_conv0: failed to activate bufferpool', file=sys.stderr, flush=True)\n");
+  file.write("        print('INTERNAL: App run failed', file=sys.stderr, flush=True)\n");
+  file.write("        sys.exit(13)\n");
   file.write("    events = []\n");
   file.write("    if os.environ.get('HSTREAM_CALIBRATION_START_STAGE') != 'features':\n");
   file.write(
@@ -1453,6 +1468,77 @@ bool write_fake_sync(const QString& path) {
       path,
       QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup |
           QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::ExeOther);
+}
+
+bool test_window_title_tracks_selected_game(HStreamWindow* window) {
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  if (!game_id) {
+    return false;
+  }
+
+  if (!expect(
+          window->windowTitle() == "HStream UI", "Window title should omit the game suffix when none is selected")) {
+    return false;
+  }
+  game_id->setText("title-test-game-a");
+  if (!expect(
+          window->windowTitle() == QStringLiteral("HStream UI — title-test-game-a"),
+          "Window title should include the selected game ID")) {
+    return false;
+  }
+  game_id->setText("title-test-game-b");
+  if (!expect(
+          window->windowTitle() == QStringLiteral("HStream UI — title-test-game-b"),
+          "Window title should follow selected game changes")) {
+    return false;
+  }
+  game_id->clear();
+  return expect(window->windowTitle() == "HStream UI", "Window title should remove the game suffix when cleared");
+}
+
+bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
+  const auto analyze = [window](const QStringList& diagnostics) {
+    HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+    for (const QString& diagnostic : diagnostics)
+      HStreamWindowTestAccess::recordCalibrationDiagnostic(window, diagnostic);
+    return HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Pipeline failed during stitching calibration");
+  };
+  const auto expect_clear_oom = [](const QString& analysis, const QString& ordering) {
+    return expect(
+        analysis.contains("CUDA out of memory (cudaErrorMemoryAllocation, status 2)") &&
+            analysis.contains("pre-stitch input-conversion buffer pool") &&
+            analysis.contains("before frame matching, NONA, or optional rink leveling began") &&
+            analysis.contains("Close other GPU-intensive applications") &&
+            analysis.contains("10-bit / FP16 mode to Force off") &&
+            analysis.contains("Max stitched width does not reduce this pre-stitch native-resolution allocation"),
+        QString("Calibration failure analysis should explain the CUDA OOM and useful recovery actions when the %1")
+            .arg(ordering)
+            .toStdString());
+  };
+
+  const QStringList delayed_cuda_diagnostic = {
+      "HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration",
+      "gst_nvds_buffer_pool_alloc_buffer: assertion 'mem' failed",
+      "Cuda failure: status=2",
+      "Error(-1) in buffer allocation",
+      "ERROR from hmstitcher_conv0: failed to activate bufferpool",
+      "INTERNAL: App run failed",
+  };
+  if (!expect_clear_oom(analyze(delayed_cuda_diagnostic), "CUDA diagnostic follows the calibration failure"))
+    return false;
+
+  const QStringList early_cuda_diagnostic = {
+      "Cuda failure: status=2",
+      "Error(-1) in buffer allocation",
+      "HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration",
+      "gst_nvds_buffer_pool_alloc_buffer: assertion 'mem' failed",
+      "ERROR from hmstitcher_conv0: failed to activate bufferpool",
+      "INTERNAL: App run failed",
+  };
+  const bool valid =
+      expect_clear_oom(analyze(early_cuda_diagnostic), "CUDA diagnostic precedes the calibration failure");
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  return valid;
 }
 
 bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
@@ -2429,7 +2515,8 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
-  if (!start || !stop || !mode || !mapping_backend || !control_points ||
+  auto* playback_progress = require_child<QProgressBar>(window, "playbackProgress");
+  if (!start || !stop || !mode || !mapping_backend || !control_points || !playback_progress ||
       !set_test_calibration_status(window, "pending"))
     return false;
 
@@ -2586,6 +2673,25 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
               detail->text().contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent") &&
               detail->text().contains("1 frame-set candidate"),
           "The failure popup must analyze a final stderr diagnostic that has no trailing newline")) {
+    qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+    return false;
+  }
+  activate(ok);
+
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "cuda-oom");
+  activate(start);
+  for (int i = 0; i < 300 && (window->pipelineStateText() != "STOPPED" || !headline->text().contains("failed")); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  if (!expect(dialog->isVisible(), "A CUDA OOM should leave the calibration failure popup open") ||
+      !expect(
+          detail->text().contains("CUDA out of memory (cudaErrorMemoryAllocation, status 2)") &&
+              detail->text().contains("before frame matching, NONA, or optional rink leveling began"),
+          "The calibration popup should identify CUDA OOM instead of reporting only the generic pipeline error") ||
+      !expect(
+          playback_progress->format().contains("GPU out of memory in the pre-stitch input-conversion buffer pool"),
+          "The visible pipeline error bar should identify the GPU OOM")) {
     qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
     return false;
   }
@@ -13235,7 +13341,8 @@ int main(int argc, char** argv) {
   window.show();
 
   if (rink_leveling_flow_only) {
-    if (!test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
+    if (!test_window_title_tracks_selected_game(&window) || !test_cuda_oom_calibration_failure_analysis(&window) ||
+        !test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
         !test_calibration_progress_dialog(&window)) {
       std::cerr << "focused rink-leveling flow tests failed\n";
       return 1;
@@ -13245,6 +13352,16 @@ int main(int argc, char** argv) {
 
   if (!test_wheel_routing_log_follow_and_calibration_analysis(&window)) {
     std::cerr << "test_wheel_routing_log_follow_and_calibration_analysis failed\n";
+    return 1;
+  }
+
+  if (!test_window_title_tracks_selected_game(&window)) {
+    std::cerr << "test_window_title_tracks_selected_game failed\n";
+    return 1;
+  }
+
+  if (!test_cuda_oom_calibration_failure_analysis(&window)) {
+    std::cerr << "test_cuda_oom_calibration_failure_analysis failed\n";
     return 1;
   }
 

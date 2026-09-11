@@ -157,6 +157,13 @@ constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.frame-num-reset-on-eos=0,pipeline.hmstitcher.show=0";
 constexpr char kExternalStitchedPreviewRenderScale[] = "0.3012048193";
 
+bool is_cuda_out_of_memory_diagnostic(const QString& diagnostic) {
+  static const QRegularExpression cuda_status_2(R"(cuda failure:\s*status=2(?:[^0-9]|$))");
+  const QString normalized = diagnostic.toLower();
+  return cuda_status_2.match(normalized).hasMatch() || normalized.contains("cudaerrormemoryallocation") ||
+      normalized.contains("cuda_error_out_of_memory");
+}
+
 template <typename Receiver, typename Slot>
 QMetaObject::Connection connect_check_state_changed(QCheckBox* checkbox, Receiver* receiver, Slot&& slot) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
@@ -5637,6 +5644,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   game_id_edit_->setObjectName("gameIdEdit");
   game_id_edit_->setPlaceholderText("game-id");
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
+    updateWindowTitle();
     updateArchiveOutputPathLabel();
     updatePresetDirtyState();
     updateRunControls();
@@ -5733,6 +5741,11 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
 
   layout->addWidget(video_group, 3, 0, 1, 3);
   root->addWidget(group);
+}
+
+void HStreamWindow::updateWindowTitle() {
+  const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
+  setWindowTitle(game_id.isEmpty() ? QStringLiteral("HStream UI") : QStringLiteral("HStream UI — %1").arg(game_id));
 }
 
 void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
@@ -8235,14 +8248,19 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   const QString diagnostic = line.trimmed();
   if (diagnostic.isEmpty())
     return;
+  const QString normalized = diagnostic.toLower();
+  const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(diagnostic);
+  const bool gpu_buffer_allocation_failure = normalized.contains("gst_nvds_buffer_pool_alloc_buffer") ||
+      normalized.contains("failed to activate bufferpool") || normalized.contains("error(-1) in buffer allocation");
   const bool rejected_hypothesis = diagnostic.startsWith("Rejected calibrated MAGSAC hypothesis");
   const bool rejected_candidate = diagnostic.startsWith("Skipping pooled stitching calibration") ||
       diagnostic.startsWith("Skipping stitching calibration frame pair");
-  const bool useful = rejected_hypothesis || rejected_candidate || diagnostic.startsWith("Trying ") ||
-      diagnostic.startsWith("OpenCV mapping backend ") || diagnostic.contains("FAILED_PRECONDITION:") ||
-      diagnostic.contains("INVALID_ARGUMENT:") || diagnostic.contains("RESOURCE_EXHAUSTED:") ||
-      diagnostic.contains("INTERNAL:") || diagnostic.contains("HSTREAM_CALIBRATION") ||
-      diagnostic.contains("enblend", Qt::CaseInsensitive) || diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
+  const bool useful = cuda_out_of_memory || gpu_buffer_allocation_failure || rejected_hypothesis ||
+      rejected_candidate || diagnostic.startsWith("Trying ") || diagnostic.startsWith("OpenCV mapping backend ") ||
+      diagnostic.contains("FAILED_PRECONDITION:") || diagnostic.contains("INVALID_ARGUMENT:") ||
+      diagnostic.contains("RESOURCE_EXHAUSTED:") || diagnostic.contains("INTERNAL:") ||
+      diagnostic.contains("HSTREAM_CALIBRATION") || diagnostic.contains("enblend", Qt::CaseInsensitive) ||
+      diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
   if (!useful)
     return;
   if (rejected_hypothesis)
@@ -8272,13 +8290,30 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
 
 QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& message) const {
   QString root_cause = message.trimmed();
-  for (auto diagnostic = calibration_diagnostic_lines_.crbegin(); diagnostic != calibration_diagnostic_lines_.crend();
-       ++diagnostic) {
-    if (!diagnostic->startsWith("HSTREAM_CALIBRATION") &&
-        (diagnostic->contains("FAILED_PRECONDITION:") || diagnostic->contains("INVALID_ARGUMENT:") ||
-         diagnostic->contains("RESOURCE_EXHAUSTED:") || diagnostic->contains("INTERNAL:"))) {
-      root_cause = *diagnostic;
-      break;
+  const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(root_cause) ||
+      std::any_of(
+          calibration_diagnostic_lines_.cbegin(),
+          calibration_diagnostic_lines_.cend(),
+          is_cuda_out_of_memory_diagnostic);
+  const bool hmstitcher_input_pool_failure = std::any_of(
+      calibration_diagnostic_lines_.cbegin(), calibration_diagnostic_lines_.cend(), [](const QString& diagnostic) {
+        const QString normalized = diagnostic.toLower();
+        return normalized.contains("hmstitcher_conv0") && normalized.contains("failed to activate bufferpool");
+      });
+  if (cuda_out_of_memory) {
+    root_cause = hmstitcher_input_pool_failure
+        ? "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while activating hmstitcher's pre-stitch "
+          "input-conversion buffer pool."
+        : "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while allocating a calibration GPU buffer.";
+  } else {
+    for (auto diagnostic = calibration_diagnostic_lines_.crbegin(); diagnostic != calibration_diagnostic_lines_.crend();
+         ++diagnostic) {
+      if (!diagnostic->startsWith("HSTREAM_CALIBRATION") &&
+          (diagnostic->contains("FAILED_PRECONDITION:") || diagnostic->contains("INVALID_ARGUMENT:") ||
+           diagnostic->contains("RESOURCE_EXHAUSTED:") || diagnostic->contains("INTERNAL:"))) {
+        root_cause = *diagnostic;
+        break;
+      }
     }
   }
   if (root_cause.isEmpty())
@@ -8287,7 +8322,17 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
   const QString evidence = root_cause.toLower();
   QString explanation;
   QString action;
-  if (evidence.contains("enblend") || evidence.contains("seam_file") || evidence.contains("seam file") ||
+  if (cuda_out_of_memory) {
+    explanation = hmstitcher_input_pool_failure
+        ? "The GPU ran out of VRAM while preparing the native-resolution camera frames for stitching. This happened "
+          "before frame matching, NONA, or optional rink leveling began."
+        : "The GPU ran out of VRAM while calibration was allocating a required GPU buffer.";
+    action =
+        "Close other GPU-intensive applications and press Play to retry. If VRAM is still insufficient, set 10-bit / "
+        "FP16 mode to Force off or use lower-resolution source video. Max stitched width does not reduce this "
+        "pre-stitch native-resolution allocation.";
+  } else if (
+      evidence.contains("enblend") || evidence.contains("seam_file") || evidence.contains("seam file") ||
       evidence.contains("artifact publication") || evidence.contains("publish stitch artifact")) {
     explanation = "Alignment completed, but the seam/panorama generation or artifact publication step failed.";
     action = "Check the reported diagnostic, available disk space, and write access to the game directory.";
@@ -9396,11 +9441,14 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   } else if (stopped_by_user) {
     setPlaybackProgressState(PlaybackProgressState::kStopped);
   } else {
-    setPlaybackProgressState(
-        PlaybackProgressState::kError,
-        QString("Pipeline exited with code %1 (%2)")
-            .arg(exit_code)
-            .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed"));
+    const QString calibration_analysis =
+        calibration_ended_incomplete ? stitchingCalibrationFailureAnalysis(calibration_failure_message_) : QString();
+    const QString terminal_detail = calibration_analysis.contains("CUDA out of memory")
+        ? "GPU out of memory in the pre-stitch input-conversion buffer pool"
+        : QString("Pipeline exited with code %1 (%2)")
+              .arg(exit_code)
+              .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed");
+    setPlaybackProgressState(PlaybackProgressState::kError, terminal_detail);
   }
   preview_status_->setText("Pipeline stopped");
   if (stitched_status_)
@@ -10266,9 +10314,11 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
       playback_progress_->setRange(0, 1000);
       playback_progress_->setValue(1000);
       playback_progress_->setFormat(
-          playback_elapsed_ == "Waiting for first frame"
-              ? "ERROR  •  Pipeline did not start"
-              : QString("ERROR  •  %1 elapsed  •  %2").arg(playback_elapsed_, fps_label(playback_fps_)));
+          playback_terminal_detail_.startsWith("GPU out of memory")
+              ? QString("ERROR  •  %1").arg(playback_terminal_detail_)
+              : (playback_elapsed_ == "Waiting for first frame"
+                     ? QString("ERROR  •  Pipeline did not start")
+                     : QString("ERROR  •  %1 elapsed  •  %2").arg(playback_elapsed_, fps_label(playback_fps_))));
       break;
     case PlaybackProgressState::kStopped:
       playback_progress_->setFormat("STOPPED");
