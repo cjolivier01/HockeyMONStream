@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -77,8 +79,6 @@ struct TelemetrySample {
   // follower/Program camera box. A one-box policy uses the same box for both.
   std::vector<TelemetryBox> policy_boxes;
   std::optional<TelemetryReplaySample> replay;
-  // Present on the first frame using a loaded mask; independent of video pixels.
-  std::string rink_mask_png;
 };
 
 struct TelemetryConfigEvent {
@@ -132,6 +132,9 @@ class PlayTrackerTelemetryCsv {
   void Stop();
 
   bool active() const;
+  // Persist the loaded calibration mask and its manifest before processing
+  // frames. Unchanged working snapshots share storage; game files never do.
+  bool StageRinkMask(std::string png);
   bool TryEnqueue(TelemetrySample sample);
   bool TryRecordConfigEvent(TelemetryConfigEvent event);
   bool TryRecordDiscontinuity(TelemetryConfigEvent event);
@@ -161,6 +164,10 @@ class PlayTrackerTelemetryCsv {
     uint64_t sample_boundary{0};
     TelemetryConfigEvent event;
   };
+  struct QueuedRinkMask {
+    std::string png;
+    std::shared_ptr<std::promise<bool>> completed;
+  };
   struct OwnedArtifact {
     std::string filename;
     // Training inputs are written to filename while the run is active, then
@@ -173,7 +180,7 @@ class PlayTrackerTelemetryCsv {
     int reservation_fd{-1};
     bool training_input{false};
   };
-  using WorkItem = std::variant<QueuedSample, QueuedConfigEvent>;
+  using WorkItem = std::variant<QueuedSample, QueuedConfigEvent, QueuedRinkMask>;
 
   absl::Status OpenOutputs(
       const std::string& output_directory,

@@ -457,7 +457,8 @@ absl::Status PlayTrackerPriv::GenerateOutput(
         std::vector<uchar> png;
         if (!cv::imencode(".png", telemetry_rink_mask_, png))
           return absl::InternalError("could not encode the run's telemetry rink mask");
-        telemetry_sample.rink_mask_png.assign(reinterpret_cast<const char*>(png.data()), png.size());
+        if (!telemetry_csv_.StageRinkMask(std::string(reinterpret_cast<const char*>(png.data()), png.size())))
+          return absl::InternalError("could not preserve the run's rink mask in telemetry working storage");
       }
       const auto* detection_snapshot = hm::detection_snapshot::find_meta(batch_meta, frame.frame_meta);
       if (!detection_snapshot) {
