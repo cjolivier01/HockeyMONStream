@@ -1,5 +1,31 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
+cc_library(
+    name = "encoder_dimensions",
+    srcs = ["EncoderDimensions.cpp"],
+    hdrs = ["EncoderDimensions.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-ldl"],
+    deps = [
+        "//toolchains/jetson:cuda_runtime",
+        "@gstreamer",
+        "@nv_codec_headers//:nv_encode_api",
+    ],
+)
+
+cc_test(
+    name = "encoder_dimensions_test",
+    srcs = ["EncoderDimensionsTest.cpp"],
+    deps = [":encoder_dimensions"],
+)
+
+cc_binary(
+    name = "encoder_dimensions_gpu_test",
+    srcs = ["EncoderDimensionsGpuTest.cpp"],
+    tags = ["manual"],
+    deps = [":encoder_dimensions"],
+)
+
 exports_files([
     "HStreamBatchDemux.cpp",
     "HStreamLosslessMux.cpp",
@@ -236,6 +262,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":encoder_dimensions",
         ":hm_gpu_preview",
         ":gst_plugin_properties",
         ":hstream_batch_demux",

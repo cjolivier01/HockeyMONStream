@@ -34,6 +34,24 @@ register_detected_cuda_toolchains()
 
 register_toolchains("//toolchains/jetson:jetson_toolchain")
 
+# NVENC capability queries only; the driver library is loaded at runtime.
+# API 11.1 keeps compatibility with the drivers supported by DeepStream.
+http_archive(
+    name = "nv_codec_headers",
+    build_file_content = """
+cc_library(
+    name = "nv_encode_api",
+    hdrs = ["include/ffnvcodec/nvEncodeAPI.h"],
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "7e7fe9ecd3cb517698a7dde7885935f8616d13c6382dfd722bf3652a985d7fe1",
+    strip_prefix = "nv-codec-headers-n11.1.5.3",
+    type = "tar.gz",
+    urls = ["https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n11.1.5.3"],
+)
+
 conditional_local_repository(
     name = "deepstream",
     build_file = "@//buildfiles:third_party/deepstream.BUILD",
