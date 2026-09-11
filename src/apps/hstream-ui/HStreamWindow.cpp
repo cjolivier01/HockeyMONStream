@@ -144,6 +144,7 @@ double nonnegative_percentage(const YAML::Node& node) {
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr int kDefaultStitchCalibrationFrameCount = 4;
+constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
@@ -162,6 +163,42 @@ bool is_cuda_out_of_memory_diagnostic(const QString& diagnostic) {
   const QString normalized = diagnostic.toLower();
   return cuda_status_2.match(normalized).hasMatch() || normalized.contains("cudaerrormemoryallocation") ||
       normalized.contains("cuda_error_out_of_memory");
+}
+
+QString stitching_oom_width_guidance(int current_max_output_width) {
+  if (current_max_output_width <= 0) {
+    return QString(
+               "Max stitched width was Auto, so HStream does not have a numeric stitched-width limit to halve. "
+               "Set Max stitched width to %1 pixels and press Play to retry; %1 is the lowest reasonable value.")
+        .arg(kMinimumReasonableStitchMaxOutputWidth);
+  }
+  if (current_max_output_width <= kMinimumReasonableStitchMaxOutputWidth) {
+    const QString position =
+        current_max_output_width == kMinimumReasonableStitchMaxOutputWidth ? "already at" : "already below";
+    return QString(
+               "This run used Max stitched width %1 pixels, which is %2 the %3-pixel lowest reasonable value; do "
+               "not reduce it further.")
+        .arg(current_max_output_width)
+        .arg(position)
+        .arg(kMinimumReasonableStitchMaxOutputWidth);
+  }
+
+  const int half_width = current_max_output_width / 2;
+  const int suggested_width = std::max(kMinimumReasonableStitchMaxOutputWidth, half_width);
+  const QString suggestion = suggested_width == half_width
+      ? QString("%1 pixels (half%2)")
+            .arg(suggested_width)
+            .arg(current_max_output_width % 2 == 0 ? "" : ", rounded down")
+      : QString("%1 pixels (the lowest reasonable value)").arg(suggested_width);
+  const QString retry_guidance = suggested_width == kMinimumReasonableStitchMaxOutputWidth
+      ? QString("%1 is the lowest reasonable value; do not reduce it further.")
+            .arg(kMinimumReasonableStitchMaxOutputWidth)
+      : QString("If another stitching OOM occurs, halve it again, stopping at %1 pixels.")
+            .arg(kMinimumReasonableStitchMaxOutputWidth);
+  return QString("This run used Max stitched width %1 pixels. Set it below %1 and press Play to retry; try %2. %3")
+      .arg(current_max_output_width)
+      .arg(suggestion)
+      .arg(retry_guidance);
 }
 
 template <typename Receiver, typename Slot>
@@ -8326,13 +8363,18 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
         ? "The GPU ran out of VRAM while preparing the native-resolution camera frames for stitching. This happened "
           "before frame matching, NONA, or optional rink leveling began."
         : "The GPU ran out of VRAM while calibration was allocating a required GPU buffer.";
+    const QString width_guidance = stitching_oom_width_guidance(active_stitch_max_output_width_);
     action = hmstitcher_input_pool_failure
-        ? "Close other GPU-intensive applications and press Play to retry. If VRAM is still insufficient, set 10-bit "
-          "/ FP16 mode to Force off or use lower-resolution source video. Max stitched width does not reduce this "
-          "pre-stitch native-resolution allocation."
-        : "Close other GPU-intensive applications and press Play to retry. Lower Max stitched width if output-canvas "
-          "generation exhausted VRAM; if the failure occurred before canvas generation, set 10-bit / FP16 mode to "
-          "Force off or use lower-resolution source video.";
+        ? QString(
+              "Close other GPU-intensive applications and press Play to retry. If VRAM is still insufficient, set "
+              "10-bit / FP16 mode to Force off or use lower-resolution source video. %1 This setting reduces later "
+              "stitched-canvas memory; it does not reduce the pre-stitch native-resolution allocation that failed "
+              "here.")
+              .arg(width_guidance)
+        : QString(
+              "Close other GPU-intensive applications and press Play to retry. %1 If the failure occurred before "
+              "canvas generation, also set 10-bit / FP16 mode to Force off or use lower-resolution source video.")
+              .arg(width_guidance);
   } else if (
       evidence.contains("enblend") || evidence.contains("seam_file") || evidence.contains("seam file") ||
       evidence.contains("artifact publication") || evidence.contains("publish stitch artifact")) {

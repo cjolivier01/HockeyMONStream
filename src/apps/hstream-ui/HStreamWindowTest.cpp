@@ -108,6 +108,10 @@ struct HStreamWindowTestAccess {
     return window->stitchingCalibrationFailureAnalysis(message);
   }
 
+  static void setActiveStitchMaxOutputWidth(HStreamWindow* window, int width) {
+    window->active_stitch_max_output_width_ = width;
+  }
+
   static void clearCalibrationDiagnostics(HStreamWindow* window) {
     window->calibration_diagnostic_lines_.clear();
     window->calibration_cuda_out_of_memory_ = false;
@@ -1499,8 +1503,9 @@ bool test_window_title_tracks_selected_game(HStreamWindow* window) {
 }
 
 bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
-  const auto analyze = [window](const QStringList& diagnostics) {
+  const auto analyze = [window](const QStringList& diagnostics, int max_output_width = 0) {
     HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+    HStreamWindowTestAccess::setActiveStitchMaxOutputWidth(window, max_output_width);
     for (const QString& diagnostic : diagnostics)
       HStreamWindowTestAccess::recordCalibrationDiagnostic(window, diagnostic);
     return HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Pipeline failed during stitching calibration");
@@ -1511,8 +1516,9 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
             analysis.contains("pre-stitch input-conversion buffer pool") &&
             analysis.contains("before frame matching, NONA, or optional rink leveling began") &&
             analysis.contains("Close other GPU-intensive applications") &&
-            analysis.contains("10-bit / FP16 mode to Force off") &&
-            analysis.contains("Max stitched width does not reduce this pre-stitch native-resolution allocation"),
+            analysis.contains("10-bit / FP16 mode to Force off") && analysis.contains("Max stitched width was Auto") &&
+            analysis.contains("Set Max stitched width to 4096") &&
+            analysis.contains("does not reduce the pre-stitch native-resolution allocation that failed here"),
         QString("Calibration failure analysis should explain the CUDA OOM and useful recovery actions when the %1")
             .arg(ordering)
             .toStdString());
@@ -1556,12 +1562,60 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
   });
   const bool generic_valid = expect(
       generic_oom_analysis.contains("allocating a calibration GPU buffer") &&
-          generic_oom_analysis.contains("Lower Max stitched width if output-canvas generation exhausted VRAM") &&
+          generic_oom_analysis.contains("Max stitched width was Auto") &&
+          generic_oom_analysis.contains("Set Max stitched width to 4096 pixels") &&
+          generic_oom_analysis.contains("4096 is the lowest reasonable value") &&
           !generic_oom_analysis.contains("pre-stitch input-conversion buffer pool") &&
-          !generic_oom_analysis.contains("Max stitched width does not reduce"),
+          !generic_oom_analysis.contains("2048"),
       "A generic CUDA OOM should not be presented as an hmstitcher input-pool failure");
+
+  const QStringList generic_oom_diagnostics = {
+      "Cuda failure: status=2",
+      "Error(-1) in buffer allocation",
+      "INTERNAL: App run failed",
+  };
+  const QString width_16384_analysis = analyze(generic_oom_diagnostics, 16384);
+  const bool width_16384_valid = expect(
+      width_16384_analysis.contains("This run used Max stitched width 16384 pixels") &&
+          width_16384_analysis.contains("Set it below 16384") &&
+          width_16384_analysis.contains("try 8192 pixels (half)") &&
+          width_16384_analysis.contains("halve it again, stopping at 4096 pixels") &&
+          !width_16384_analysis.contains("try 4096 pixels"),
+      "A 16384-pixel OOM should recommend halving Max stitched width to 8192");
+  const QString width_8192_analysis = analyze(generic_oom_diagnostics, 8192);
+  const bool width_8192_valid = expect(
+      width_8192_analysis.contains("This run used Max stitched width 8192 pixels") &&
+          width_8192_analysis.contains("try 4096 pixels (half)") &&
+          width_8192_analysis.contains("4096 is the lowest reasonable value") && !width_8192_analysis.contains("2048"),
+      "An 8192-pixel OOM should recommend 4096 and stop at the reasonable floor");
+  const QString width_6000_analysis = analyze(generic_oom_diagnostics, 6000);
+  const bool width_6000_valid = expect(
+      width_6000_analysis.contains("This run used Max stitched width 6000 pixels") &&
+          width_6000_analysis.contains("try 4096 pixels (the lowest reasonable value)") &&
+          !width_6000_analysis.contains("3000") && !width_6000_analysis.contains("2048"),
+      "An OOM whose half-width is below 4096 should clamp the recommendation to the reasonable floor");
+  const QString width_4096_analysis = analyze(generic_oom_diagnostics, 4096);
+  const bool width_4096_valid = expect(
+      width_4096_analysis.contains("This run used Max stitched width 4096 pixels") &&
+          width_4096_analysis.contains("already at the 4096-pixel lowest reasonable value") &&
+          width_4096_analysis.contains("do not reduce it further") && !width_4096_analysis.contains("2048") &&
+          !width_4096_analysis.contains("try 4096"),
+      "A 4096-pixel OOM should not recommend a lower width or another 4096 retry");
+  const QString width_2048_analysis = analyze(generic_oom_diagnostics, 2048);
+  const bool width_2048_valid = expect(
+      width_2048_analysis.contains("This run used Max stitched width 2048 pixels") &&
+          width_2048_analysis.contains("already below the 4096-pixel lowest reasonable value") &&
+          width_2048_analysis.contains("do not reduce it further") && !width_2048_analysis.contains("try 1024"),
+      "A pre-existing below-floor Max stitched width should never produce a still-lower recommendation");
+  const QString odd_width_analysis = analyze(generic_oom_diagnostics, 16385);
+  const bool odd_width_valid = expect(
+      odd_width_analysis.contains("This run used Max stitched width 16385 pixels") &&
+          odd_width_analysis.contains("try 8192 pixels (half, rounded down)") && !odd_width_analysis.contains("8193"),
+      "Odd Max stitched widths should halve with integer rounding toward the safer lower width");
   HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
-  return generic_valid;
+  HStreamWindowTestAccess::setActiveStitchMaxOutputWidth(window, 0);
+  return generic_valid && width_16384_valid && width_8192_valid && width_6000_valid && width_4096_valid &&
+      width_2048_valid && odd_width_valid;
 }
 
 bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
