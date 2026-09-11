@@ -14,6 +14,7 @@
 #include <sstream>
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
@@ -152,6 +153,7 @@ absl::Status PlayTrackerPriv::PostCapsInit(DSCustom_CreateParams* params) {
     return status;
   }
   if (!telemetry_csv_dir_.empty()) {
+    telemetry_rink_mask_.release();
     const absl::Status telemetry_status = telemetry_csv_.Start(
         telemetry_csv_dir_,
         TelemetryConfigArtifact{play_tracker_config_source_file_, play_tracker_config_source_contents_},
@@ -446,6 +448,17 @@ absl::Status PlayTrackerPriv::GenerateOutput(
          pt_context_->play_trackers.count(frame.frame_meta->source_id) == 0);
     frame.replay_input.reset();
     if (export_telemetry) {
+      const auto* field_mask = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(
+          frame.frame_meta);
+      if (field_mask && !field_mask->mask().empty() && field_mask->mask().data != telemetry_rink_mask_.data) {
+        // Encode the already-loaded calibration mask once per mask identity.
+        // No video pixels are mapped or transferred from the GPU.
+        telemetry_rink_mask_ = field_mask->mask();
+        std::vector<uchar> png;
+        if (!cv::imencode(".png", telemetry_rink_mask_, png))
+          return absl::InternalError("could not encode the run's telemetry rink mask");
+        telemetry_sample.rink_mask_png.assign(reinterpret_cast<const char*>(png.data()), png.size());
+      }
       const auto* detection_snapshot = hm::detection_snapshot::find_meta(batch_meta, frame.frame_meta);
       if (!detection_snapshot) {
         return absl::DataLossError("primary detection snapshot missing from a frame during lossless telemetry export");

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <opencv2/opencv.hpp>
+
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerCtx.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryCsv.h"
@@ -49,6 +51,7 @@ class PlayTrackerPriv : public CustomAlgorithmBase {
   std::mutex context_mu_;
   DsPlayTrackerCtx* pt_context_{nullptr};
   PlayTrackerTelemetryCsv telemetry_csv_;
+  cv::Mat telemetry_rink_mask_;
   std::atomic<bool> telemetry_shutdown_ready_{false};
   uint64_t telemetry_seek_epoch_{0};
   uint64_t replay_reset_epoch_{0};

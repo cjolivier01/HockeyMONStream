@@ -24,10 +24,14 @@ struct TelemetryCsvPublicationTestHooks {
   void (*after_named_marker_close)(void*){nullptr};
 };
 
-// Returns the suffix shared by a finalized Program video and its CSVs: an
-// empty string for the first generation, or "-N" for later generations.
+// Returns the suffix shared by a finalized video and its CSVs: an
+// empty string for legacy archives, or "-N" for numbered generations.
 // An invalid or unrelated archive path returns a null QString.
 QString finalized_archive_csv_suffix(const QString& archive_path, const QString& game_id);
+
+// Start at one and advance beyond every existing video/telemetry generation.
+// Returns -1 if the directory cannot be read or a suffix overflows.
+qint64 next_archive_generation(const QString& game_directory);
 
 // Returns true only when no CSV or replay/configuration artifact for this
 // suffix already exists in the game directory.

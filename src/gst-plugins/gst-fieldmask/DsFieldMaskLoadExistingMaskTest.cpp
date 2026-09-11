@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-fieldmask/dsfieldmask_lib.h"
+#include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -128,10 +130,29 @@ int main() {
     return 3;
   }
 
+#ifdef __aarch64__
+  // The supersession case below reaches Jetson's EGL mapper before checking
+  // publication authority, so it needs a real surface even without inference.
+  NvBufSurfaceCreateParams surface_create{};
+  surface_create.width = 64;
+  surface_create.height = 64;
+  surface_create.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+  surface_create.layout = NVBUF_LAYOUT_PITCH;
+  surface_create.memType = NVBUF_MEM_SURFACE_ARRAY;
+  NvBufSurface* allocated_surface = nullptr;
+  if (NvBufSurfaceCreate(&allocated_surface, 1, &surface_create) != 0) {
+    std::cerr << "Could not allocate Jetson test surface" << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+    return 16;
+  }
+  std::unique_ptr<NvBufSurface, decltype(&NvBufSurfaceDestroy)> surface_owner(allocated_surface, NvBufSurfaceDestroy);
+  NvBufSurface& surface = *allocated_surface;
+#else
   NvBufSurface surface{};
-  surface.numFilled = 1;
   NvBufSurfaceParams surface_params{};
   surface.surfaceList = &surface_params;
+#endif
+  surface.numFilled = 1;
 
   NvDsBatchMeta* batch_meta = nvds_create_batch_meta(2);
   if (!batch_meta) {
@@ -167,6 +188,16 @@ int main() {
     nvds_destroy_batch_meta(batch_meta);
     return 1;
   }
+
+#ifdef HAS_NVDS_CUSTOMUSERMETA
+  const auto* mask_payload = hm::fieldmask::FieldMaskPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame_meta);
+  if (!mask_payload || cv::norm(mask_payload->mask(), *initial_mask, cv::NORM_INF) != 0) {
+    std::cerr << "Telemetry metadata must retain the exact loaded calibration mask" << std::endl;
+    DsFieldMaskCtxDeinit(ctx);
+    nvds_destroy_batch_meta(batch_meta);
+    return 1;
+  }
+#endif
 
   NvDsFrameMeta* rotated_frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
   rotated_frame_meta->base_meta.batch_meta = batch_meta;

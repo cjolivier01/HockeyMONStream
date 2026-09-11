@@ -74,6 +74,34 @@ void note_after_publication_lock(void* context) {
   race->changed.notify_all();
 }
 
+bool archive_generation_test(const QString& root) {
+  const QString game = QDir(root).filePath("generation-game");
+  if (!QDir().mkpath(game))
+    return false;
+  using hm::ui_internal::next_archive_generation;
+  bool ok = expect(next_archive_generation(game) == 1, "first archive must start at one");
+  for (const auto& name : {"game-tracking_output-with-audio.mp4", "rink_mask_0.png"})
+    ok &= write_file(QDir(game).filePath(name), "legacy");
+  ok &= expect(next_archive_generation(game) == 1, "legacy bare outputs must allow generation one");
+  for (const auto& name :
+       {"game-tracking_output-with-audio-1.mp4",
+        "game-tracking_output-with-audio-3.mp4",
+        "game-stitched_output-with-audio-3.mp4",
+        "game-stitched_output-with-audio-4.mp4"})
+    ok &= write_file(QDir(game).filePath(name), "old video");
+  ok &= expect(next_archive_generation(game) == 5, "tracking and stitched archives must share a high watermark");
+  ok &= write_file(QDir(game).filePath("camera-12.csv"), "old CSV");
+  ok &= expect(next_archive_generation(game) == 13, "orphan companion must reserve its generation");
+  ok &= QFile::link(QDir(game).filePath("missing"), QDir(game).filePath("rink_mask_0-17.png"));
+  ok &= expect(next_archive_generation(game) == 18, "dangling mask must reserve its generation");
+  ok &= expect(
+      !hm::ui_internal::telemetry_csv_destination_paths_available(game, "-17"),
+      "mask collisions must prevent publication");
+  ok &= write_file(QDir(game).filePath("game-stitched_output-with-audio-1001.mp4"), "old video");
+  ok &= expect(next_archive_generation(game) == 1002, "generation count must not stop at 999");
+  return ok;
+}
+
 bool replay_publication_test(const QString& root) {
   const QString working = QDir(root).filePath("replay-working");
   const QString game = QDir(root).filePath("replay-game");
@@ -100,6 +128,8 @@ bool replay_publication_test(const QString& root) {
       !write_file(QDir(working).filePath("hstream_frame_index-3.csv"), "index\n") ||
       !write_file(QDir(working).filePath("hstream_replay-3.jsonl"), "{\"schema\":1}\n"))
     return false;
+  if (!write_file(QDir(working).filePath("rink_mask_0-3.png"), "run mask"))
+    return false;
   QJsonObject manifest{
       {"completed", true},
       {"publication_state", "committed"},
@@ -108,7 +138,8 @@ bool replay_publication_test(const QString& root) {
        QJsonObject{
            {"frame_index", "hstream_frame_index-3.csv"},
            {"config_events", "hstream_config_events-3.csv"},
-           {"replay", "hstream_replay-3.jsonl"}}},
+           {"replay", "hstream_replay-3.jsonl"},
+           {"rink_mask", "rink_mask_0-3.png"}}},
       {"config_provenance", QJsonObject{{"source_artifact", configs[0]}, {"effective_artifact", configs[1]}}}};
   const QString path = QDir(working).filePath("hstream_telemetry-3.json");
   if (!write_file(path, QJsonDocument(manifest).toJson()))
@@ -117,10 +148,15 @@ bool replay_publication_test(const QString& root) {
   hooks.force_named_temporary_files = true;
   const auto result = hm::ui_internal::publish_telemetry_csvs(path, game, "-8", &hooks);
   bool ok = expect(result.ok, result.error.toStdString().c_str()) &&
-      expect(result.published_paths.size() == 11, "replay publication must include manifest and every config artifact");
+      expect(result.published_paths.size() == 12, "replay publication must include manifest and every config artifact");
   QFile copied_manifest(QDir(game).filePath("hstream_telemetry-8.json"));
   ok &= expect(copied_manifest.open(QIODevice::ReadOnly), "copied replay manifest must be readable");
   const auto published = QJsonDocument::fromJson(copied_manifest.readAll()).object();
+  QFile mask(QDir(game).filePath("rink_mask_0-8.png"));
+  ok &= expect(
+      mask.open(QIODevice::ReadOnly) && mask.readAll() == "run mask" &&
+          published.value("sidecars").toObject().value("rink_mask").toString() == "rink_mask_0-8.png",
+      "published rink mask and manifest must match the video suffix");
   ok &= expect(
       published.value("sidecars").toObject().value("replay").toString() == "hstream_replay-8.jsonl",
       "copied manifest must point to published replay generation");
@@ -174,6 +210,8 @@ int main(int argc, char** argv) {
   }
   QTemporaryDir root;
   if (!expect(root.isValid(), "temporary directory must be available"))
+    return 1;
+  if (!archive_generation_test(root.path()))
     return 1;
   const QString working = QDir(root.path()).filePath("working/game");
   const QString game = QDir(root.path()).filePath("game");

@@ -19,6 +19,7 @@
 #include <array>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -362,6 +363,8 @@ bool allowed_staging_artifact(const QByteArray& filename, const QString& suffix)
   if (std::find(csv_files.begin(), csv_files.end(), filename) != csv_files.end())
     return true;
   const QString name = QFile::decodeName(filename);
+  if (name == "rink_mask_0" + suffix + ".png")
+    return true;
   if (name == "hstream_telemetry" + suffix + ".json" || name == "hstream_replay" + suffix + ".jsonl")
     return true;
   return QRegularExpression(
@@ -1068,12 +1071,42 @@ QString finalized_archive_csv_suffix(const QString& archive_path, const QString&
     return {};
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
-  const QString base = safe_game_id + "-tracking_output-with-audio";
-  const QRegularExpression pattern(QString("^%1(?:-(\\d+))?$").arg(QRegularExpression::escape(base)));
+  const QRegularExpression pattern(QString("^%1-(?:tracking|stitched)_output-with-audio(?:-(\\d+))?$")
+                                       .arg(QRegularExpression::escape(safe_game_id)));
   const QRegularExpressionMatch match = pattern.match(archive.completeBaseName());
   if (!match.hasMatch())
     return {};
   return match.captured(1).isEmpty() ? QString("") : "-" + match.captured(1);
+}
+
+qint64 next_archive_generation(const QString& game_directory) {
+  UniqueFd directory_fd(::open(QFile::encodeName(game_directory).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+  std::vector<QByteArray> entries;
+  QString error;
+  if (directory_fd.get() < 0 || !read_directory_entries(directory_fd.get(), &entries, &error))
+    return -1;
+  const std::array<QRegularExpression, 3> patterns = {{
+      QRegularExpression(
+          R"(^(?:.*-)?(?:tracking|stitched)_output(?:-with-audio)?(?:-(\d+))?\.(?:mp4|mkv|mov|m4v|avi)(?:\.hstream-pin)?$)",
+          QRegularExpression::CaseInsensitiveOption),
+      QRegularExpression(
+          R"(^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)(?:-(\d+))?\.csv$)"),
+      QRegularExpression(R"(^(?:rink_mask_\d+|hstream_telemetry|hstream_replay)(?:-(\d+))?\.(?:png|json|jsonl)$)"),
+  }};
+  qint64 next = 1;
+  for (const auto& entry : entries) {
+    for (const auto& pattern : patterns) {
+      const auto match = pattern.match(QFile::decodeName(entry));
+      if (!match.hasMatch() || match.captured(1).isEmpty())
+        continue;
+      bool ok = false;
+      const qint64 existing = match.captured(1).toLongLong(&ok);
+      if (!ok || existing == std::numeric_limits<qint64>::max())
+        return -1;
+      next = std::max(next, existing + 1);
+    }
+  }
+  return next;
 }
 
 bool telemetry_csv_destination_paths_available(const QString& game_directory, const QString& destination_suffix) {
@@ -1171,6 +1204,14 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     }
     artifacts.push_back({stem, filename, stem + destination_suffix + ".csv", {}});
   }
+  if (sidecars.contains("rink_mask")) {
+    const QString mask = sidecars.value("rink_mask").toString();
+    if (mask != "rink_mask_0" + source_suffix + ".png") {
+      result.error = "telemetry manifest has an unsafe or inconsistent rink mask filename";
+      return result;
+    }
+    artifacts.push_back({"rink_mask_0", mask, "rink_mask_0" + destination_suffix + ".png", {}});
+  }
 
   // Replay checkpoints carry the resolved native configuration, and the
   // original YAML/event artifacts are retained too. Rewrite only generation
@@ -1244,7 +1285,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     }
     published["hm_compatibility"] = compatibility;
     QJsonObject published_sidecars = sidecars;
-    for (const auto& key : {"frame_index", "config_events", "replay"}) {
+    for (const auto& key : {"frame_index", "config_events", "replay", "rink_mask"}) {
       for (const auto& artifact : artifacts) {
         if (artifact.source == sidecars.value(key).toString())
           published_sidecars[key] = artifact.destination;
