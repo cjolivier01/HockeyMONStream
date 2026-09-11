@@ -1900,11 +1900,11 @@ play-tracker:
   ok &= expect(
       backend_omitted_configured.ok() && backend_omitted_persisted.ok() && backend_omitted_private.ok() &&
           backend_omitted_private->has_value() &&
-          (**backend_omitted_private)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
-          (**backend_omitted_private)["stitching"]["projection"].as<std::string>() == "rectilinear" &&
-          !(**backend_omitted_private)["stitching"]["run_autooptimizer"].as<bool>(),
-      "Missing algorithm keys in an older baseline must materialize valid rectilinear "
-      "MAGSAC-without-autooptimizer defaults");
+          (**backend_omitted_private)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**backend_omitted_private)["stitching"]["projection"].as<std::string>() == "general-panini" &&
+          (**backend_omitted_private)["stitching"]["run_autooptimizer"].as<bool>(),
+      "Missing algorithm keys in an older baseline must materialize NONA and General Panini "
+      "with automatic alignment enabled");
   backend_choices_baseline["stitching"]["mapping_backend"] = "affine-ransac";
   backend_choices_baseline["stitching"]["run_autooptimizer"] = false;
   std::ofstream(backend_choices_baseline_root / "baseline.yaml") << YAML::Dump(backend_choices_baseline) << '\n';
@@ -2218,8 +2218,8 @@ play-tracker:
                .has_value() &&
           malformed_backend_reconfigured.ok() && malformed_backend_restored.ok() && malformed_backend_final.ok() &&
           malformed_backend_final->has_value() &&
-          (**malformed_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
-          !(**malformed_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
+          (**malformed_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**malformed_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
           !hm::get_node(
                **malformed_backend_final, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
                .has_value(),
@@ -2229,10 +2229,10 @@ play-tracker:
   fs::create_directories(legacy_backend_dir);
   YAML::Node legacy_backend_private(YAML::NodeType::Map);
   legacy_backend_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
-  legacy_backend_private["stitching"]["mapping_backend"] = "nona";
+  legacy_backend_private["stitching"]["mapping_backend"] = "opencv-magsac";
   legacy_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
       "superpoint-lightglue";
-  legacy_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "nona";
+  legacy_backend_private["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "opencv-magsac";
   ok &= expect(
       hm::stitching::publish_game_config(legacy_backend_dir, YAML::Dump(legacy_backend_private) + "\n").ok(),
       "legacy generated-backend fixture must publish");
@@ -2260,12 +2260,12 @@ play-tracker:
                .has_value() &&
           legacy_backend_reconfigured.ok() && legacy_backend_restored.ok() && legacy_backend_final.ok() &&
           legacy_backend_final->has_value() &&
-          (**legacy_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
-          !(**legacy_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
+          (**legacy_backend_final)["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+          (**legacy_backend_final)["stitching"]["run_autooptimizer"].as<bool>() &&
           !hm::get_node(
                **legacy_backend_final, "hstream_ui.generated_stitching_backend_choices.previous_mapping_backend")
                .has_value(),
-      "Legacy two-field generated backend provenance must migrate across two launches without restoring NONA as "
+      "Legacy two-field generated backend provenance must migrate across two launches without restoring MAGSAC as "
       "user intent");
 
   const fs::path backend_generation_dir = games / "backend-generation";

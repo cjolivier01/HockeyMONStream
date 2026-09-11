@@ -325,8 +325,8 @@ int main() {
       hm::stitching::ParseMappingBackend("opencv_magsac").ok(), "mapping backend parser should accept underscores");
   auto default_backend = hm::stitching::ParseMappingBackend("");
   ok &= expect(
-      default_backend.ok() && *default_backend == hm::stitching::MappingBackend::kOpenCvMagsac,
-      "an omitted mapping backend should default to MAGSAC");
+      default_backend.ok() && *default_backend == hm::stitching::MappingBackend::kNona,
+      "an omitted mapping backend should default to NONA");
   ok &= expect(hm::stitching::ParseMappingBackend("MAGSAC++").ok(), "mapping backend parser should accept UI label");
   ok &= expect(hm::stitching::ParseMappingBackend("RANSAC").ok(), "mapping backend parser should accept UI label");
   ok &= expect(

@@ -73,8 +73,8 @@ class HuginProject {
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
     ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
-    MappingBackend mapping_backend{MappingBackend::kOpenCvMagsac};
-    bool run_autooptimizer{false};
+    MappingBackend mapping_backend{MappingBackend::kNona};
+    bool run_autooptimizer{true};
     std::optional<StitchProjection> projection;
     std::vector<double> projection_parameters;
     StitchProjectionFraming projection_framing;

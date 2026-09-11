@@ -2433,6 +2433,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
       !set_test_calibration_status(window, "pending"))
     return false;
 
+  mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
   mode->setCurrentIndex(mode->findData("stitch-calibration"));
   control_points->setValue(1500);
   qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
@@ -3361,7 +3362,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QApplication::processEvents();
   if (!expect(
           mapping_backend->currentData().toString() == "opencv-magsac",
-          "Turning the autooptimizer off while NONA is selected must return to the default MAGSAC++ backend")) {
+          "Turning the autooptimizer off while NONA is selected must return to the MAGSAC++ backend")) {
     return false;
   }
   auto* reference_frame_label = require_child<QLabel>(window, "stitchFrameTimeLabel");
@@ -8914,9 +8915,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
   projection->setCurrentIndex(projection->findData("rectilinear"));
   QApplication::processEvents();
+  activate(save);
   const bool opencv_framing_starts_clean = expect(
       horizontal_fov->value() == 180.0 && !save->isEnabled(),
-      "A fresh OpenCV preset must keep the inherited 180-degree framing as clean state");
+      "A saved OpenCV preset must keep the inherited 180-degree framing as clean state");
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
   QApplication::processEvents();
   const bool nona_rectilinear_clamps_fov = expect(
@@ -9012,6 +9014,7 @@ bool test_rink_leveling_save_retry(HStreamWindow* window) {
   game_id->setText("ui-leveling-durability-retry-game");
   activate(create);
   mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
+  pitch->setValue(-30);
   activate(save);
   const fs::path game_dir(window->gameDirectoryText().toStdString());
   const fs::path config_path = game_dir / "config.yaml";
@@ -10352,6 +10355,7 @@ bool test_camera_controls(HStreamWindow* window) {
   YAML::Node generated_backend_marker_config = YAML::LoadFile(config.string());
   generated_backend_marker_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   generated_backend_marker_config["stitching"]["mapping_backend"] = "nona";
+  generated_backend_marker_config["stitching"]["run_autooptimizer"] = false;
   generated_backend_marker_config["stitching"].remove("projection");
   generated_backend_marker_config["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] =
       "superpoint-lightglue";
@@ -11913,9 +11917,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* mapping_backend = require_child<QComboBox>(&legacy_baseline_window, "mappingBackendCombo");
     auto* run_autooptimizer = require_child<QCheckBox>(&legacy_baseline_window, "runAutooptimizerCheck");
     ok &= expect(
-        mapping_backend && run_autooptimizer && mapping_backend->currentData().toString() == "opencv-magsac" &&
-            !run_autooptimizer->isChecked(),
-        "A baseline predating stitching backend keys must start with MAGSAC and the autooptimizer disabled");
+        mapping_backend && run_autooptimizer && mapping_backend->currentData().toString() == "nona" &&
+            run_autooptimizer->isChecked(),
+        "A baseline predating stitching backend keys must start with NONA and the autooptimizer enabled");
   } catch (const std::exception& error) {
     std::cerr << "FAIL: Older baseline UI startup threw: " << error.what() << '\n';
     ok = false;

@@ -5908,7 +5908,7 @@ absl::Status Configurator::map_common_config_keys() {
   HM_ASSIGN_OR_RETURN(
       crop_rotation_backend,
       stitching::ParseMappingBackend(
-          get_node_value(config_, "stitching.mapping_backend", std::string("opencv-magsac"))));
+          get_node_value(config_, "stitching.mapping_backend", std::string("nona"))));
   bool suppress_crop_rotation = false;
   if (crop_rotation_backend == stitching::MappingBackend::kNona) {
     stitching::StitchProjectionFraming framing;
@@ -7689,7 +7689,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const auto canonical_backend = [](const YAML::Node& root) -> absl::StatusOr<std::string> {
     const auto node = get_node(root, "stitching.mapping_backend");
     if (!node.has_value()) {
-      return std::string(stitching::MappingBackendName(stitching::MappingBackend::kOpenCvMagsac));
+      return std::string(stitching::MappingBackendName(stitching::MappingBackend::kNona));
     }
     if (node.has_value() && !node->IsScalar()) {
       return absl::InvalidArgumentError("stitching.mapping_backend must be a scalar value");
@@ -7701,7 +7701,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const auto canonical_autooptimizer = [](const YAML::Node& root) -> absl::StatusOr<bool> {
     const auto node = get_node(root, "stitching.run_autooptimizer");
     if (!node.has_value())
-      return false;
+      return true;
     if (!node->IsScalar())
       return absl::InvalidArgumentError("stitching.run_autooptimizer must be a boolean scalar");
     try {
@@ -7726,7 +7726,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(config_));
   std::string backend_name;
   HM_ASSIGN_OR_RETURN(backend_name, canonical_backend(config_));
-  bool run_autooptimizer = false;
+  bool run_autooptimizer = true;
   HM_ASSIGN_OR_RETURN(run_autooptimizer, canonical_autooptimizer(config_));
   std::string projection_name;
   HM_ASSIGN_OR_RETURN(projection_name, canonical_projection(config_));
@@ -8031,8 +8031,20 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       *private_projection_value == *generated_projection_value &&
       *private_autooptimizer_value == *generated_autooptimizer_value && generated_parameters_match_private &&
       generated_framing_matches_private && generated_parameter_metadata_valid;
-  const bool effective_values_are_generated_private = generated_private_values && *private_matcher_value == matcher &&
-      *private_backend_value == backend && private_projection_value.has_value() &&
+  // A failed publication can leave generated values in memory. Repeating the
+  // save must retain explicit CLI choices instead of reverting them to baseline.
+  const bool inherit_backend_choices = explicit_value_rank("stitching.control_point_matcher") < 3 &&
+      explicit_value_rank("stitching.mapping_backend") < 3 && explicit_value_rank("stitching.projection") < 3 &&
+      explicit_value_rank("stitching.run_autooptimizer") < 3 &&
+      explicit_value_rank("stitching.projection_parameters." + projection_name) < 3 &&
+      explicit_value_rank("stitching.projection_framing.auto_fov") < 3 &&
+      explicit_value_rank("stitching.projection_framing.horizontal_fov") < 3 &&
+      explicit_value_rank("stitching.projection_framing.auto_canvas") < 3 &&
+      explicit_value_rank("stitching.projection_framing.auto_crop") < 3 &&
+      explicit_value_rank("stitching.projection_framing.rotation_degrees") < 3 &&
+      explicit_value_rank("stitching.projection_framing.crop") < 3;
+  const bool effective_values_are_generated_private = inherit_backend_choices && generated_private_values &&
+      *private_matcher_value == matcher && *private_backend_value == backend && private_projection_value.has_value() &&
       projection == *private_projection_value && run_autooptimizer == *private_autooptimizer_value;
   if (effective_values_are_generated_private) {
     HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(lower_layer_config_));
@@ -8146,17 +8158,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   stitching::write_stitch_projection_parameters(private_config_, projection, projection_parameters);
   stitching::write_stitch_projection_framing(private_config_, projection_framing);
   stitching::write_stitch_camera_selection(private_config_, camera);
-  if (private_values_present && !generated_private_values &&
-      explicit_value_rank("stitching.control_point_matcher") < 3 &&
-      explicit_value_rank("stitching.mapping_backend") < 3 && explicit_value_rank("stitching.projection") < 3 &&
-      explicit_value_rank("stitching.run_autooptimizer") < 3 &&
-      explicit_value_rank("stitching.projection_parameters." + projection_name) < 3 &&
-      explicit_value_rank("stitching.projection_framing.auto_fov") < 3 &&
-      explicit_value_rank("stitching.projection_framing.horizontal_fov") < 3 &&
-      explicit_value_rank("stitching.projection_framing.auto_canvas") < 3 &&
-      explicit_value_rank("stitching.projection_framing.auto_crop") < 3 &&
-      explicit_value_rank("stitching.projection_framing.rotation_degrees") < 3 &&
-      explicit_value_rank("stitching.projection_framing.crop") < 3) {
+  if (private_values_present && !generated_private_values && inherit_backend_choices) {
     remove_yaml_key_path(private_config_, {"hstream_ui", "generated_stitching_backend_choices"});
   } else {
     private_config_["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] = matcher_name;
@@ -8713,9 +8715,9 @@ absl::Status Configurator::complete_configuration(
     try {
       const YAML::Node current = YAML::LoadFile(private_config_file.string());
       if (!clean_requested && has_active_hmstitcher) {
-        bool expected_run_autooptimizer = false;
+        bool expected_run_autooptimizer = true;
         HM_ASSIGN_OR_RETURN(
-            expected_run_autooptimizer, get_yaml_bool_value(config_, "stitching.run_autooptimizer", false));
+            expected_run_autooptimizer, get_yaml_bool_value(config_, "stitching.run_autooptimizer", true));
         stitching::StitchProjection expected_projection;
         HM_ASSIGN_OR_RETURN(
             expected_projection,

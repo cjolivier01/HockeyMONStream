@@ -136,7 +136,7 @@ const char* MappingBackendName(MappingBackend backend) {
 }
 
 absl::StatusOr<MappingBackend> ParseMappingBackend(const std::string& value) {
-  const std::string normalized = normalize_choice(value.empty() ? "opencv-magsac" : value);
+  const std::string normalized = normalize_choice(value.empty() ? "nona" : value);
   if (normalized == "nona")
     return MappingBackend::kNona;
   if (normalized == "opencv-magsac" || normalized == "magsac" || normalized == "magsac++")

@@ -776,12 +776,12 @@ class HStreamWindow : public QMainWindow {
   QString baseline_config_root_;
   QString default_stitch_frame_time_{"00:00:00"};
   int default_stitch_max_output_width_{0};
-  bool default_run_autooptimizer_{false};
+  bool default_run_autooptimizer_{true};
   QString default_control_point_matcher_{"superpoint-lightglue"};
-  QString default_mapping_backend_{"opencv-magsac"};
+  QString default_mapping_backend_{"nona"};
   std::vector<hm::stitching::StitchCameraConfiguration> camera_configurations_;
   hm::stitching::StitchCameraSelection default_camera_selection_;
-  QString default_projection_{"rectilinear"};
+  QString default_projection_{"general-panini"};
   std::map<QString, std::vector<double>> default_projection_parameters_;
   hm::stitching::StitchProjectionFraming default_projection_framing_;
   hm::stitching::StitchProjectionFraming loaded_projection_framing_;
