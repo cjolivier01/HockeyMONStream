@@ -314,7 +314,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     telemetry_csv_.Stop();
-    return true;
+    return !telemetry_csv_.failed();
   } else if (key == "fixed-edge-rotation-angle") {
     float angle = 0.0f;
     if (!parse_finite_float(prop.value, &angle)) {

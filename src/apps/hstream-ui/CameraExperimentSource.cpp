@@ -88,10 +88,33 @@ absl::Status ResolveExperimentStitchingSettings(
         return absl::InvalidArgumentError(std::string(path) + " must be auto, true, false, 1, or 0");
       break;
     }
-    const auto exposure = hm::get_node(config, "pipeline.hmstitcher.properties.exposure");
-    const auto shadow_lift = hm::get_node(config, "pipeline.hmstitcher.properties.shadow-lift");
-    media->exposure = exposure && !exposure->IsNull() ? exposure->as<double>() : 0;
-    media->shadow_lift = shadow_lift && !shadow_lift->IsNull() ? shadow_lift->as<double>() : 0;
+    auto tone = [&](const char* ui_name, const char* native_name, bool hundredths = false, bool boolean = false) {
+      const std::string active = media->high_bit_depth ? "hmstitcher" : "hmplaycropper";
+      const std::string other = media->high_bit_depth ? "hmplaycropper" : "hmstitcher";
+      const std::vector<std::string> paths = {
+          std::string("hstream_ui.camera_controls.") + ui_name,
+          "pipeline." + active + ".properties." + native_name,
+          "pipeline." + other + ".properties." + native_name};
+      for (size_t i = 0; i < paths.size(); ++i) {
+        const auto value = hm::get_node(config, paths[i]);
+        if (!value || value->IsNull())
+          continue;
+        if (boolean) {
+          std::string raw = value->as<std::string>();
+          std::transform(raw.begin(), raw.end(), raw.begin(), [](unsigned char c) { return std::tolower(c); });
+          if (raw == "true" || raw == "1")
+            return 1.0;
+          if (raw == "false" || raw == "0")
+            return 0.0;
+          throw std::invalid_argument(paths[i] + " must be true, false, 1, or 0");
+        }
+        return value->as<double>() / (i == 0 && hundredths ? 100.0 : 1.0);
+      }
+      return 0.0;
+    };
+    media->exposure = tone("Exposure_x100", "exposure", true);
+    media->shadow_lift = tone("Bring_Up_Shadows", "shadow-lift");
+    media->shadow_lift_black_point = tone("Lift_Shadow_Black_Point", "shadow-lift-black-point", false, true) != 0;
     if (!std::isfinite(media->rotation) || !std::isfinite(media->exposure) || media->exposure < 0 ||
         media->exposure > 1.3 || !std::isfinite(media->shadow_lift) || media->shadow_lift < 0 ||
         media->shadow_lift > 100)
@@ -298,7 +321,9 @@ bool CameraExperimentSource::Build(
              << media.artifact_revision << ";left-frame-offset-ns=" << media.cameras[0].offset_ns
              << ";right-frame-offset-ns=" << media.cameras[1].offset_ns
              << ";post-stitch-rotate-degrees=" << media.rotation << ";high-bit-depth=" << media.high_bit_depth
-             << ";exposure=" << media.exposure << ";shadow-lift=" << media.shadow_lift;
+             << ";exposure=" << (media.high_bit_depth ? media.exposure : 0.0)
+             << ";shadow-lift=" << (media.high_bit_depth ? media.shadow_lift : 0.0)
+             << ";shadow-lift-black-point=" << (media.high_bit_depth && media.shadow_lift_black_point);
   g_object_set(
       stitcher,
       "plugin-type",

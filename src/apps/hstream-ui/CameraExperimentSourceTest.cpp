@@ -45,6 +45,21 @@ int main() {
     resolve("hstream_ui: {camera_controls: {Use_10_Bit_Grading: 1}}");
     if (!media.high_bit_depth)
       return 8;
+    resolve(
+        "pipeline: {hmstitcher: {properties: {high-bit-depth: false, exposure: 0.1}}, "
+        "hmplaycropper: {properties: {exposure: 0.8, shadow-lift: 50, shadow-lift-black-point: 1}}}");
+    if (media.exposure != 0.8 || media.shadow_lift != 50 || !media.shadow_lift_black_point)
+      return 11;
+    resolve(
+        "pipeline: {hmstitcher: {properties: {high-bit-depth: true, exposure: 0.6}}, "
+        "hmplaycropper: {properties: {exposure: 0.8, shadow-lift: 50, shadow-lift-black-point: true}}}");
+    if (media.exposure != 0.6 || media.shadow_lift != 50 || !media.shadow_lift_black_point)
+      return 12;
+    resolve(
+        "hstream_ui: {camera_controls: {Exposure_x100: 34, Bring_Up_Shadows: 60, Lift_Shadow_Black_Point: false}}\n"
+        "pipeline: {hmstitcher: {properties: {exposure: 0.9, shadow-lift-black-point: 1}}}");
+    if (media.exposure != 0.34 || media.shadow_lift != 60 || media.shadow_lift_black_point)
+      return 13;
     if (ResolveExperimentStitchingSettings(
             YAML::Load("pipeline: {hmstitcher: {properties: {high-bit-depth: invalid}}}"), false, &media)
             .ok())

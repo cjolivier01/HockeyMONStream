@@ -443,6 +443,18 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
       "fixed-edge-rotation-angle-right",
       right_rotation,
       nullptr);
+  if (media.stitching && !media.stitching->high_bit_depth) {
+    // Match production: grade 8-bit sources once, after the camera crop.
+    g_object_set(
+        s.cropper,
+        "exposure",
+        media.stitching->exposure,
+        "shadow-lift",
+        media.stitching->shadow_lift,
+        "shadow-lift-black-point",
+        media.stitching->shadow_lift_black_point ? TRUE : FALSE,
+        nullptr);
+  }
   g_object_set(
       s.sink,
       "window-id",

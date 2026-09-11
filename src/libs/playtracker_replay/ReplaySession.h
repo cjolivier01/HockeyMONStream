@@ -54,6 +54,7 @@ struct StitchingMedia {
   bool high_bit_depth{false};
   double exposure{0};
   double shadow_lift{0};
+  bool shadow_lift_black_point{false};
 };
 
 struct MediaBinding {

@@ -40,6 +40,17 @@ class TestPlayTrackerPriv : public hm::playtracker::PlayTrackerPriv {
   size_t retainedRuntimeProvenanceCount() const {
     return runtime_tuning_provenance_history_.size();
   }
+
+  bool enqueueFailingFinalSample() {
+    hm::playtracker::TelemetrySample sample;
+    sample.width = 3840;
+    sample.height = 1080;
+    auto geometry = std::make_shared<hm::playtracker::TelemetryGeometry>();
+    geometry->width = sample.width;
+    geometry->height = sample.height;
+    geometry->encode_mask = []() -> std::string { throw std::runtime_error("injected final queued writer failure"); };
+    return telemetry_csv_.TryEnqueue(std::move(sample), geometry);
+  }
 };
 
 std::string read_file(const fs::path& path) {
@@ -664,6 +675,19 @@ int main() {
       fs::exists(late_failure_dir / "detections.csv")) {
     std::cerr << "late pipeline stop failure published a successful telemetry generation\n";
     return 40;
+  }
+
+  TestPlayTrackerPriv final_failure_priv(/*gpu_id=*/0, /*batch_size=*/1);
+  if (!final_failure_priv.SetProperty(
+          hm::Property("telemetry-db-dir", (tmpdir / "telemetry-final-failure").string())) ||
+      !final_failure_priv.PreCapsInit(&params).ok() || !final_failure_priv.PostCapsInit(&params).ok() ||
+      !generate_export_sample(final_failure_priv, 1) || !final_failure_priv.enqueueFailingFinalSample())
+    return 47;
+  // No subsequent frame can observe failed(); finalization must propagate it.
+  final_failure_priv.Shutdown();
+  if (final_failure_priv.SetProperty(hm::Property("finalize-telemetry", "1"))) {
+    std::cerr << "Final writer failure was reported as successful pipeline shutdown\n";
+    return 48;
   }
 
   // Each new geometry must be usable immediately, before the next periodic
