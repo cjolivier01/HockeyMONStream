@@ -150,12 +150,9 @@ def show_camera(device_id: int, focuser: Focuser):
     focusing(focuser=focuser, val=focal_distance)
     skip_frame = 6
     if cap.isOpened():
-        window_handle = cv2.namedWindow("CSI Camera", cv2.WINDOW_AUTOSIZE)
-        # Window
-        while cv2.getWindowProperty("CSI Camera", 0) >= 0:
+        while not focus_finished:
             ret_val, img = cap.read()
             assert ret_val
-            cv2.imshow(f"CSI Camera {device_id}", img)
 
             if skip_frame == 0:
                 skip_frame = 6
@@ -186,22 +183,7 @@ def show_camera(device_id: int, focuser: Focuser):
                     focus_finished = True
             else:
                 skip_frame = skip_frame - 1
-            # This also acts as
-            keyCode = cv2.waitKey(16) & 0xFF
-            # Stop the program on the ESC key
-            if keyCode == 27:
-                break
-            elif keyCode == 10 or keyCode == 32:
-                max_index = 10
-                max_value = 0.0
-                last_value = 0.0
-                dec_count = 0
-                focal_distance = 10
-                focus_finished = False
-            elif keyCode and keyCode != 255:
-                print(f"{keyCode=}")
         cap.release()
-        cv2.destroyAllWindows()
     else:
         print("Unable to open camera")
 

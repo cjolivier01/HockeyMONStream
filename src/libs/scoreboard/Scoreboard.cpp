@@ -8,7 +8,6 @@
 #include "jetson-utils/cuda/cudaResizeRoi.h"
 #include "jetson-utils/cuda/cudaWarp.h"
 
-#include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include "absl/synchronization/mutex.h"
 
