@@ -158,7 +158,8 @@ class JetsonPreview:
         if not self.is_open():
             return False
 
-        cuda_img = self._cuda_from_numpy(py.ascontiguousarray(img), isBGR=True)
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        cuda_img = self._cuda_from_numpy(py.ascontiguousarray(rgb_img))
         self._display.BeginRender()
         try:
             self._display.Render(cuda_img)
