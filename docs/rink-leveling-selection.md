@@ -5,7 +5,7 @@ Changing the rink while a game override is active keeps the override. No rink se
 
 When NONA applies a nonzero rink pitch or roll, **Program → Crop Rotation** shows zero for both sides and disables
 the controls. The tracker uses the same zero angles so its crop geometry stays aligned with the Program view.
-This applies to angles selected from posts, manually entered angles, and inherited rink defaults. The saved crop
+This applies to angles selected from posts or corners, manually entered angles, and inherited rink defaults. The saved crop
 angles are retained and restored when pitch and roll are both zero or the mapping backend changes to OpenCV.
 Yaw alone does not disable crop rotation. Final stitched-output rotation remains a separate setting.
 
@@ -21,9 +21,20 @@ To measure the angle during calibration:
 2. The estimate updates automatically shortly after every selection or dragged-point adjustment. The dialog rejects
    poorly conditioned selections and reports how many posts agreed and their angular residual. Scroll to zoom and
    drag the background to pan.
-3. Click **Preview angles**. Inspect both rink ends and the walls. Adjust pitch or roll and preview again if desired.
+3. Use **Next** and **Prev** to cycle through **Left camera → Right camera → Preview** (wrapping at either end).
+   Entering Preview finishes any pending estimate and renders the current angles. Inspect both rink ends and the
+   walls. After adjusting pitch or roll, leave and return to Preview to render again. An unchanged preview is reused.
 4. Click **Use angles** to continue calibration with the displayed rotation, **Skip leveling** to continue with the
    previously configured rotation, or **Cancel calibration** to stop the whole calibration run.
+
+Posts are the default method every time the dialog opens. To level from four ice-plane points instead, check
+**Select rink corners**. Select two corners at one end of a rectangle in **Left camera**, then the two corners at
+the other end in **Right camera**. Click the same side board first in both images. The intersections of the two
+blue lines with straight boards at ice level are suitable references. Arbitrary points along the rounded rink
+corners do not define a rectangle and cannot provide a reliable level estimate. All four points are required;
+the dialog rejects nearly aligned rays, inconsistent corner order, and excessive deviation from a rectangle.
+Switching methods preserves each method's marks for the current dialog session and resets the displayed angles
+before estimating from the restored marks. Both methods estimate pitch and roll while preserving yaw.
 
 There is no second feature-match or panorama-optimizer pass. The explicit preview starts from a private copy of the
 preserved aligned PTO, applies the same projection, parameters, rotation, FOV, canvas, and crop rules as final
@@ -54,7 +65,10 @@ The measurement uses exact Hugin lens calibration: `pano_trafo` maps source-imag
 using a private equirectangular project. Each upright post defines a plane through the camera center. A robust fit
 finds the shared vertical direction from those planes, estimates pitch and roll, and preserves yaw. It removes the
 published project's previous rotation using matrices before fitting; it never subtracts Euler angles or rotates
-the two registered cameras independently. Unsupported translated-camera projects and mismatched image sizes fail
+the two registered cameras independently. The corner method intersects the planes of opposite rectangle edges
+to find two horizontal vanishing directions, then uses their cross product as the ice-plane normal. It assumes
+the camera is above level ice and uses the same calibrated rays and rotation handling as posts.
+Unsupported translated-camera projects and mismatched image sizes fail
 with an explanation. Older NONA provenance (versions 2–7) predates this common rotation and implies zero.
 The desktop selector requires camera metadata (version 7 or newer) to verify the selected model; older games
 need one calibration with current camera settings first. The offline geometry helper can still read older projects.
@@ -85,7 +99,9 @@ bazelisk test --config=opt --cpu=k8 \
 ```
 
 Geometry tests include synthetic known rotations, noisy and outlier marks, insufficient spread, repeated fits,
-and installed Hugin round trips. Dialog tests cover preview/accept/cancel, cancellation during rendering, stale
+rectangle corners with invalid order or geometry, and installed Hugin round trips. Dialog tests cover wrapping
+Next/Prev navigation, pending-estimate rendering, preview reuse/invalidation, method switching and mark restoration,
+preview/accept/cancel, cancellation during rendering, stale
 source rejection, and invalid dimensions. Main-window tests cover rink changes, explicit overrides equal to defaults,
 and returning to inheritance. A real-image integration and screenshot check can be run without changing the game:
 

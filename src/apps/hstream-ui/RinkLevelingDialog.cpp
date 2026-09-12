@@ -8,6 +8,7 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTimer>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QHBoxLayout>
@@ -74,19 +75,23 @@ RinkLevelingDialog::RinkLevelingDialog(
       preview_projection_parameters_(std::move(preview_projection_parameters)),
       preview_projection_framing_(preview_projection_framing) {
   setObjectName("rinkLevelingDialog");
-  setWindowTitle("Level the rink from vertical posts");
+  setWindowTitle("Level the rink");
   resize(1120, 820);
   estimate_timer_.setSingleShot(true);
   estimate_timer_.setInterval(150);
   connect(&estimate_timer_, &QTimer::timeout, this, [this]() { estimate(); });
   auto* layout = new QVBoxLayout(this);
-  auto* instructions = new QLabel(
+  corner_method_check_ = new QCheckBox("Select rink corners");
+  corner_method_check_->setObjectName("selectRinkCornersCheck");
+  layout->addWidget(corner_method_check_);
+  instructions_ = new QLabel(
       "Mark the top and bottom of at least three tall, upright wall or glass posts, spread across both cameras. "
       "Each pair of clicks marks one post. Avoid rink corners, sloping beams and short marks. "
       "Scroll to zoom, drag the image to pan, and drag a numbered point to adjust it.");
-  instructions->setWordWrap(true);
-  layout->addWidget(instructions);
+  instructions_->setWordWrap(true);
+  layout->addWidget(instructions_);
   tabs_ = new QTabWidget();
+  tabs_->setObjectName("rinkLevelingTabs");
   for (size_t camera = 0; camera < canvases_.size(); ++camera) {
     auto* page = new QWidget();
     auto* page_layout = new QVBoxLayout(page);
@@ -115,11 +120,19 @@ RinkLevelingDialog::RinkLevelingDialog(
   preview_canvas_ = new ScoreboardSelectionCanvas();
   preview_canvas_->setObjectName("rinkLevelingPreview");
   preview_canvas_->setLineSelectionMode(2);
-  tabs_->addTab(preview_canvas_, "Preview");
-  tabs_->setTabEnabled(2, false);
+  auto* preview_page = new QWidget();
+  auto* preview_layout = new QVBoxLayout(preview_page);
+  preview_hint_ = new QLabel("Return to Preview with Next or Prev to render the current angles.");
+  preview_hint_->setWordWrap(true);
+  preview_layout->addWidget(preview_hint_);
+  preview_layout->addWidget(preview_canvas_, 1);
+  preview_canvas_->hide();
+  tabs_->addTab(preview_page, "Preview");
   connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
-    if (index < 2)
+    if (index >= 0 && index < 2)
       QTimer::singleShot(0, this, [this, index]() { canvases_[index]->fitImage(); });
+    else if (index == 2 && !previewed_)
+      requestPreview();
   });
   layout->addWidget(tabs_, 1);
   auto* angles = new QHBoxLayout();
@@ -134,24 +147,33 @@ RinkLevelingDialog::RinkLevelingDialog(
     spin->setValue(initial_rotation_[index + 1]);
     angle_spins_[index] = spin;
     connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this]() {
-      previewed_ = false;
-      accept_button_->setEnabled(false);
-      tabs_->setTabEnabled(2, false);
+      estimate_timer_.stop();
+      manual_angles_ = true;
+      preview_requested_ = false;
+      invalidatePreview();
     });
     angles->addWidget(spin);
   }
-  preview_button_ = new QPushButton("Preview angles");
-  preview_button_->setObjectName("previewRinkLevelingButton");
-  connect(preview_button_, &QPushButton::clicked, this, [this]() { preview(); });
-  angles->addWidget(preview_button_);
+  angles->addStretch();
+  previous_button_ = new QPushButton("Prev");
+  previous_button_->setObjectName("previousRinkLevelingButton");
+  next_button_ = new QPushButton("Next");
+  next_button_->setObjectName("nextRinkLevelingButton");
+  for (auto* button : {previous_button_, next_button_})
+    button->setAutoDefault(false);
+  connect(previous_button_, &QPushButton::clicked, this, [this]() { navigate(-1); });
+  connect(next_button_, &QPushButton::clicked, this, [this]() { navigate(1); });
+  angles->addWidget(previous_button_);
+  angles->addWidget(next_button_);
   layout->addLayout(angles);
-  status_ = new QLabel("The current angles are shown. Mark posts to estimate automatically, then preview the result.");
+  status_ = new QLabel("Level from posts is selected. Mark posts, then use Next to reach Preview.");
   status_->setObjectName("rinkLevelingStatus");
   status_->setWordWrap(true);
   layout->addWidget(status_);
   auto* note = new QLabel(
-      QString("Preview uses the saved projection and crop. The estimate levels the scene; you can fine-tune pitch "
-              "and roll. ") +
+      QString(
+          "Preview uses the saved projection and crop. The estimate levels the scene; you can fine-tune pitch "
+          "and roll. ") +
       (in_progress_calibration_
            ? "Use angles continues calibration with the result. Skip leveling keeps the configured angles."
            : "Use angles returns the result to the controls. Save Preset applies it to this game. Cancel keeps "
@@ -175,6 +197,7 @@ RinkLevelingDialog::RinkLevelingDialog(
   connect(reject_button, &QPushButton::clicked, this, &RinkLevelingDialog::reject);
   connect(accept_button_, &QPushButton::clicked, this, [this]() { acceptAngles(); });
   layout->addWidget(buttons);
+  connect(corner_method_check_, &QCheckBox::toggled, this, [this](bool checked) { switchMethod(checked); });
   loadSnapshot();
   QTimer::singleShot(0, this, [this]() { canvases_[0]->fitImage(); });
   if (!load_error_.isEmpty())
@@ -342,34 +365,120 @@ void RinkLevelingDialog::setBusy(bool busy) {
     canvas->setEnabled(enabled);
   for (auto* spin : angle_spins_)
     spin->setEnabled(enabled);
-  preview_button_->setEnabled(enabled);
+  corner_method_check_->setEnabled(enabled);
+  previous_button_->setEnabled(enabled);
+  next_button_->setEnabled(enabled);
   accept_button_->setEnabled(enabled && previewed_);
 }
 
 void RinkLevelingDialog::fail(const QString& message) {
+  preview_requested_ = false;
   setBusy(false);
   status_->setText(message);
 }
 
-void RinkLevelingDialog::selectionChanged() {
-  estimated_ = false;
+void RinkLevelingDialog::invalidatePreview() {
   previewed_ = false;
+  if (accept_button_)
+    accept_button_->setEnabled(false);
+  preview_canvas_->hide();
+  preview_hint_->show();
+}
+
+void RinkLevelingDialog::switchMethod(bool corners) {
+  estimate_timer_.stop();
+  preview_requested_ = false;
+  restoring_marks_ = true;
+  auto& saved = corner_method_ ? corner_marks_ : post_marks_;
+  for (size_t camera = 0; camera < canvases_.size(); ++camera)
+    saved[camera] = canvases_[camera]->points();
+  corner_method_ = corners;
+  const auto& restored = corner_method_ ? corner_marks_ : post_marks_;
+  for (size_t camera = 0; camera < canvases_.size(); ++camera) {
+    canvases_[camera]->setLineSelectionMode(corner_method_ ? 2 : 8);
+    canvases_[camera]->setPoints(restored[camera]);
+  }
+  for (size_t index = 0; index < angle_spins_.size(); ++index) {
+    const QSignalBlocker blocked(angle_spins_[index]);
+    angle_spins_[index]->setValue(initial_rotation_[index + 1]);
+  }
+  instructions_->setText(
+      corner_method_
+          ? "Select four corners of a rectangle on the ice: two at one end in Left camera, then two at the other "
+            "end in Right camera. Click the same side board first in both images. Blue-line intersections with "
+            "straight boards at ice level work well; avoid points on the rounded rink corners. "
+            "Scroll to zoom, drag to pan, and drag numbered points to adjust them."
+          : "Mark the top and bottom of at least three tall, upright wall or glass posts, spread across both cameras. "
+            "Each pair of clicks marks one post. Avoid rink corners, sloping beams and short marks. "
+            "Scroll to zoom, drag the image to pan, and drag a numbered point to adjust it.");
+  tabs_->setCurrentIndex(0);
+  restoring_marks_ = false;
+  selectionChanged();
+}
+
+void RinkLevelingDialog::navigate(int direction) {
+  if (busy_ || !load_error_.isEmpty())
+    return;
+  const int target = (tabs_->currentIndex() + direction + tabs_->count()) % tabs_->count();
+  if (target == 2)
+    requestPreview();
+  else
+    tabs_->setCurrentIndex(target);
+}
+
+void RinkLevelingDialog::requestPreview() {
+  if (busy_ || !load_error_.isEmpty())
+    return;
+  if (corner_method_ && (canvases_[0]->points().size() != 2 || canvases_[1]->points().size() != 2)) {
+    fail("Select two rectangle corners in each camera image before continuing to Preview.");
+    return;
+  }
+  preview_requested_ = true;
+  const bool has_marks = !canvases_[0]->points().isEmpty() || !canvases_[1]->points().isEmpty();
+  if (has_marks && !estimated_ && !manual_angles_) {
+    estimate_timer_.stop();
+    estimate();
+    return;
+  }
+  preview_requested_ = false;
+  if (previewed_)
+    tabs_->setCurrentIndex(2);
+  else
+    preview();
+}
+
+void RinkLevelingDialog::selectionChanged() {
+  if (restoring_marks_)
+    return;
+  estimated_ = false;
+  manual_angles_ = false;
+  preview_requested_ = false;
   if (!accept_button_)
     return;
-  accept_button_->setEnabled(false);
-  tabs_->setTabEnabled(2, false);
+  invalidatePreview();
+  if (corner_method_) {
+    const auto left = canvases_[0]->points().size();
+    const auto right = canvases_[1]->points().size();
+    if (left != 2 || right != 2) {
+      estimate_timer_.stop();
+      status_->setText(
+          QString("Rectangle corners: Left %1/2, Right %2/2. Select the same side board first.").arg(left).arg(right));
+      return;
+    }
+    status_->setText("Updating pitch and roll from the four rectangle corners…");
+    estimate_timer_.start();
+    return;
+  }
   const auto count = canvases_[0]->points().size() / 2 + canvases_[1]->points().size() / 2;
   const bool complete_pairs = std::all_of(canvases_.begin(), canvases_.end(), [](const auto* canvas) {
     return canvas->points().size() >= 2 && canvas->points().size() % 2 == 0;
   });
   if (count < 3 || !complete_pairs) {
     estimate_timer_.stop();
-    preview_button_->setEnabled(!busy_ && load_error_.isEmpty());
     status_->setText(QString("%1 complete posts selected. Use at least three, spread across both cameras.").arg(count));
     return;
   }
   status_->setText("Updating pitch and roll from the selected posts…");
-  preview_button_->setEnabled(false);
   estimate_timer_.start();
 }
 
@@ -451,8 +560,10 @@ void RinkLevelingDialog::estimate() {
   std::vector<hm::stitching::RinkLevelingLine> lines;
   for (size_t camera = 0; camera < canvases_.size(); ++camera) {
     const auto& points = canvases_[camera]->points();
-    if (points.size() < 2 || points.size() % 2) {
-      fail("Mark complete top/bottom pairs in both camera images.");
+    if (corner_method_ ? points.size() != 2 : (points.size() < 2 || points.size() % 2)) {
+      fail(
+          corner_method_ ? "Select two rectangle corners in each camera image."
+                         : "Mark complete top/bottom pairs in both camera images.");
       return;
     }
     for (qsizetype index = 0; index < points.size(); index += 2)
@@ -461,7 +572,9 @@ void RinkLevelingDialog::estimate() {
            {double(points[index].x()), double(points[index].y())},
            {double(points[index + 1].x()), double(points[index + 1].y())}});
   }
-  const auto input = hm::stitching::FormatRinkLevelingPoints(lines, project_.image_sizes);
+  const auto method =
+      corner_method_ ? hm::stitching::RinkLevelingMethod::kRinkCorners : hm::stitching::RinkLevelingMethod::kPosts;
+  const auto input = hm::stitching::FormatRinkLevelingPoints(lines, project_.image_sizes, method);
   if (!input.ok()) {
     fail(QString::fromStdString(input.status().ToString()));
     return;
@@ -471,33 +584,52 @@ void RinkLevelingDialog::estimate() {
       "pano_trafo",
       {"sphere.pto"},
       QByteArray::fromStdString(*input),
-      [this, count = lines.size()](const QByteArray& output) {
-        const auto rays = hm::stitching::ParseRinkLevelingRays(output.toStdString(), count);
+      [this, count = lines.size(), method](const QByteArray& output) {
+        const auto rays = hm::stitching::ParseRinkLevelingRays(output.toStdString(), count, method);
         if (!rays.ok()) {
           fail(QString::fromStdString(rays.status().ToString()));
           return;
         }
-        const auto result = hm::stitching::EstimateRinkLeveling(*rays, published_rotation_, initial_rotation_[0]);
-        if (!result.ok()) {
-          fail(QString::fromStdString(result.status().ToString()));
-          return;
+        std::array<double, 3> rotation;
+        QString message;
+        if (corner_method_) {
+          const auto result =
+              hm::stitching::EstimateRinkLevelingFromCorners(*rays, published_rotation_, initial_rotation_[0]);
+          if (!result.ok()) {
+            fail(QString::fromStdString(result.status().ToString()));
+            return;
+          }
+          rotation = result->rotation_degrees;
+          message = QString("Used four corners; rectangle angle mismatch %1°. Use Next to inspect Preview.")
+                        .arg(result->orthogonality_error_degrees, 0, 'f', 2);
+        } else {
+          const auto result = hm::stitching::EstimateRinkLeveling(*rays, published_rotation_, initial_rotation_[0]);
+          if (!result.ok()) {
+            fail(QString::fromStdString(result.status().ToString()));
+            return;
+          }
+          rotation = result->rotation_degrees;
+          message = QString("Used %1 of %2 posts; RMS angular residual %3°. Use Next to inspect Preview.")
+                        .arg(result->inlier_indices.size())
+                        .arg(count)
+                        .arg(result->rms_residual_degrees, 0, 'f', 2);
         }
-        for (size_t index = 0; index < angle_spins_.size(); ++index)
-          angle_spins_[index]->setValue(result->rotation_degrees[index + 1]);
+        for (size_t index = 0; index < angle_spins_.size(); ++index) {
+          const QSignalBlocker blocked(angle_spins_[index]);
+          angle_spins_[index]->setValue(rotation[index + 1]);
+        }
         estimated_ = true;
-        status_->setText(
-            QString("Used %1 of %2 posts; RMS angular residual %3°. Preview the result, then fine-tune if needed.")
-                .arg(result->inlier_indices.size())
-                .arg(count)
-                .arg(result->rms_residual_degrees, 0, 'f', 2));
+        status_->setText(message);
+        if (preview_requested_)
+          requestPreview();
       });
 }
 
 void RinkLevelingDialog::preview() {
   if (busy_ || !load_error_.isEmpty())
     return;
-  previewed_ = false;
-  accept_button_->setEnabled(false);
+  estimate_timer_.stop();
+  invalidatePreview();
   status_->setText("Rendering a temporary still preview…");
   auto render_preview = [this](const QString& framed_project) {
     const auto canvas =
@@ -528,12 +660,13 @@ void RinkLevelingDialog::preview() {
                 }
                 preview_canvas_->fitImage();
                 previewed_ = true;
-                tabs_->setTabEnabled(2, true);
+                preview_hint_->hide();
+                preview_canvas_->show();
                 tabs_->setCurrentIndex(2);
+                preview_canvas_->fitImage();
                 accept_button_->setEnabled(true);
                 status_->setText(
-                    estimated_ ? "Inspect the walls and both ends of the rink. Use angles when satisfied."
-                               : "Preview of the displayed angles. Add or adjust posts to estimate automatically.");
+                    "Inspect the walls and both rink ends. Use angles when satisfied, or Prev to adjust the marks.");
               });
         });
   };
@@ -602,6 +735,8 @@ void RinkLevelingDialog::acceptAngles() {
 }
 
 void RinkLevelingDialog::reject() {
+  estimate_timer_.stop();
+  preview_requested_ = false;
   if (process_) {
     process_->disconnect(this);
     process_->kill();
