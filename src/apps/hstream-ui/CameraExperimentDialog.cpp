@@ -381,6 +381,8 @@ struct CameraExperimentDialog::Impl {
   void run_trial() {
     if (!session || work.valid())
       return;
+    if (!confirm_preview_source())
+      return;
     auto values = tuning();
     if (!values.ok()) {
       show_status(QString::fromStdString(values.status().ToString()), true);
@@ -405,14 +407,21 @@ struct CameraExperimentDialog::Impl {
     });
   }
 
-  bool open_preview() {
-    if (!session || !selected || selected->empty())
-      return false;
+  bool confirm_preview_source() {
     if (!uncropped->isChecked()) {
       show_status(
-          "Confirm that these are the corresponding camera sources and stitching geometry, or the uncropped panorama.");
+          QString("Playback needs source confirmation. Check “%1” under Video source confirmation, then try again.")
+              .arg(uncropped->text()),
+          true);
+      uncropped->setFocus(Qt::OtherFocusReason);
       return false;
     }
+    return true;
+  }
+
+  bool open_preview() {
+    if (!session || !selected || selected->empty() || !confirm_preview_source())
+      return false;
     if (QGuiApplication::platformName() != "xcb") {
       show_status("Video preview requires an X11 display. Camera trajectories remain available here.", true);
       return false;
@@ -700,10 +709,10 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.duration->setMinimum(0.1);
   s.video_origin = time_control("experimentVideoOrigin", "First selected frame in video", 0, 86400);
   range->addStretch();
+  source_layout->addRow(range);
   s.uncropped = new QCheckBox();
   s.uncropped->setObjectName("experimentUncropped");
-  range->addWidget(s.uncropped);
-  source_layout->addRow(range);
+  source_layout->addRow("Video source confirmation", s.uncropped);
   root->addWidget(s.settings);
 
   auto* splitter = new QSplitter(Qt::Horizontal);

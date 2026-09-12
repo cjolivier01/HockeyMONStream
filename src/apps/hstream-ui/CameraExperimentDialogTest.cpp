@@ -62,6 +62,55 @@ bool smoke() {
   return true;
 }
 
+bool require_confirmation(CameraExperimentDialog& dialog) {
+  auto* confirmed = widget<QCheckBox>(dialog, "experimentUncropped");
+  auto* apply = widget<QPushButton>(dialog, "experimentApply");
+  auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
+  auto* comparison = widget<QComboBox>(dialog, "experimentComparison");
+  auto* name = widget<QLineEdit>(dialog, "experimentTrialName");
+  auto* status = widget<QLabel>(dialog, "experimentStatus");
+  const int count = comparison->count();
+  const QString trial_name = name->text();
+  confirmed->setChecked(false);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    apply->click();
+    if (!prepare->isEnabled() || !apply->isEnabled() || comparison->count() != count || name->text() != trial_name ||
+        !status->text().contains(confirmed->text()) || !status->styleSheet().contains("#b42318")) {
+      std::cerr << "Unconfirmed replay started a trial or failed to explain the required checkbox\n";
+      return false;
+    }
+  }
+  const QString message = status->text();
+  // Let several worker/preview polls run: the actionable message must persist.
+  if (wait_until([&]() { return status->text() != message || comparison->count() != count; }, 150)) {
+    std::cerr << "Source confirmation message was overwritten or a blocked trial was added\n";
+    return false;
+  }
+  confirmed->setChecked(true);
+  return true;
+}
+
+bool confirmation(const QString& manifest) {
+  CameraExperimentDialog dialog;
+  dialog.show();
+  widget<QLineEdit>(dialog, "experimentManifest")->setText(manifest);
+  widget<QDoubleSpinBox>(dialog, "experimentDuration")->setValue(1);
+  auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
+  auto* apply = widget<QPushButton>(dialog, "experimentApply");
+  prepare->click();
+  if (!wait_until([&]() { return prepare->isEnabled(); }) || !apply->isEnabled() || !require_confirmation(dialog))
+    return false;
+  apply->click();
+  if (!wait_until([&]() { return prepare->isEnabled(); }) ||
+      widget<QComboBox>(dialog, "experimentComparison")->count() != 3 ||
+      widget<QLineEdit>(dialog, "experimentTrialName")->text() != "Trial 2") {
+    std::cerr << "Confirming the source did not allow the trial to be calculated\n";
+    return false;
+  }
+  std::cout << "PASS: unconfirmed replay creates no trial, message persists, confirmation allows a trial\n";
+  return true;
+}
+
 bool e2e(const QStringList& args) {
   if (args.size() < 8) {
     std::cerr << "Usage: --e2e MANIFEST PANORAMA ARTIFACT_DIR IN DURATION VIDEO_FIRST [ARENA] [CONFIG]\n";
@@ -96,6 +145,8 @@ bool e2e(const QStringList& args) {
     std::cerr << "Prepare failed: " << status->text().toStdString() << '\n';
     return false;
   }
+  if (!require_confirmation(dialog))
+    return false;
   widget<QCheckBox>(dialog, "experimentOverride_Max_Speed_X_x10")->setChecked(true);
   widget<QDoubleSpinBox>(dialog, "experimentValue_Max_Speed_X_x10")->setValue(1.5);
   widget<QCheckBox>(dialog, "experimentOverride_Max_Accel_X_x10")->setChecked(true);
@@ -227,6 +278,8 @@ int main(int argc, char** argv) {
   try {
     if (app.arguments().contains("--e2e"))
       return e2e(app.arguments()) ? 0 : 1;
+    if (app.arguments().size() == 3 && app.arguments()[1] == "--confirmation")
+      return confirmation(app.arguments()[2]) ? 0 : 1;
     return smoke() ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

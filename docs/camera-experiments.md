@@ -46,7 +46,8 @@ the old camera view and cannot reveal pixels outside that crop.
    recorded camera trajectory before making the session available.
 6. Select the fast and/or Program/follower box, enable the parameters to override,
    give the trial a name, and click **Apply & replay**. Unchecked parameters retain
-   their historical values.
+   their historical values. If **Video source confirmation** is unchecked, replay
+   points to that checkbox before calculating a trial or advancing its number.
 7. Use **View** to compare the recorded original, recomputed baseline, and named
    trials. **Repeat range**, the timeline, and the frame buttons revisit the same
    passage. A frame step completes when the GPU renderer presents its matching
@@ -107,6 +108,14 @@ bazelisk test --config=opt --cpu=k8 \
   //src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_csv_test \
   //src/apps/hstream-ui:telemetry_csv_publisher_test \
   //src/apps/hstream-ui:camera_experiment_dialog_test
+```
+
+The source-confirmation regression check accepts a completed recording and runs
+without video playback or an X11 display:
+
+```sh
+QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/camera_experiment_dialog_test \
+  --confirmation /path/hstream_telemetry.db
 ```
 
 The dialog test also has an opt-in real GPU exercise. Supply a completed recording,
