@@ -181,33 +181,41 @@ absl::StatusOr<RinkLevelingProject> PrepareRinkLevelingProject(const std::string
 
 absl::StatusOr<std::string> FormatRinkLevelingPoints(
     const std::vector<RinkLevelingLine>& lines,
-    const std::vector<std::array<size_t, 2>>& image_sizes) {
-  if (lines.size() < 3 || lines.size() > kMaximumLines)
-    return absl::InvalidArgumentError("Select between 3 and 64 vertical posts");
+    const std::vector<std::array<size_t, 2>>& image_sizes,
+    RinkLevelingMethod method) {
+  const bool corners = method == RinkLevelingMethod::kRinkCorners;
+  if (corners ? lines.size() != 2 : (lines.size() < 3 || lines.size() > kMaximumLines))
+    return absl::InvalidArgumentError(
+        corners ? "Select two corners in each camera image" : "Select between 3 and 64 vertical posts");
   std::ostringstream output;
   output.imbue(std::locale::classic());
   output << std::setprecision(std::numeric_limits<double>::max_digits10);
   for (const auto& line : lines) {
     if (line.image_index >= image_sizes.size())
-      return absl::InvalidArgumentError("A selected post refers to a missing camera image");
+      return absl::InvalidArgumentError("A selected mark refers to a missing camera image");
     const auto& size = image_sizes[line.image_index];
     for (const auto& point : {line.first, line.second}) {
       if (!size[0] || !size[1] || !std::isfinite(point[0]) || !std::isfinite(point[1]) || point[0] < 0 ||
           point[1] < 0 || point[0] > size[0] - 1 || point[1] > size[1] - 1) {
-        return absl::InvalidArgumentError("A selected post extends outside its camera image");
+        return absl::InvalidArgumentError("A selected mark extends outside its camera image");
       }
       output << line.image_index << ' ' << point[0] << ' ' << point[1] << '\n';
     }
     if (std::hypot(line.first[0] - line.second[0], line.first[1] - line.second[1]) < 4.0)
-      return absl::InvalidArgumentError("Mark a taller section of each post");
+      return absl::InvalidArgumentError(
+          corners ? "Select corners farther apart" : "Mark a taller section of each post");
   }
   return output.str();
 }
 
 absl::StatusOr<std::vector<RinkLevelingRayLine>> ParseRinkLevelingRays(
     const std::string& output,
-    size_t expected_line_count) {
-  if (expected_line_count < 3 || expected_line_count > kMaximumLines || output.size() > 32768)
+    size_t expected_line_count,
+    RinkLevelingMethod method) {
+  const bool valid_count = method == RinkLevelingMethod::kRinkCorners
+      ? expected_line_count == 2
+      : expected_line_count >= 3 && expected_line_count <= kMaximumLines;
+  if (!valid_count || output.size() > 32768)
     return absl::InvalidArgumentError("Unexpected number of transformed rink marks");
   std::istringstream input(output);
   input.imbue(std::locale::classic());
@@ -313,6 +321,71 @@ absl::StatusOr<RinkLevelingEstimate> EstimateRinkLeveling(
     result.rms_residual_degrees += std::pow(result.residual_degrees[index], 2);
   result.rms_residual_degrees = std::sqrt(result.rms_residual_degrees / selected.size());
   return result;
+}
+
+absl::StatusOr<RinkCornerLevelingEstimate> EstimateRinkLevelingFromCorners(
+    const std::vector<RinkLevelingRayLine>& edges,
+    const std::array<double, 3>& published_rotation_degrees,
+    double preserved_yaw_degrees) {
+  if (edges.size() != 2)
+    return absl::InvalidArgumentError("Select exactly four rectangle corners, two in each camera image");
+  if (!valid_rotation(published_rotation_degrees) || !valid_rotation({preserved_yaw_degrees, 0, 0}))
+    return absl::InvalidArgumentError("The saved rink rotation contains an invalid angle");
+  const Matrix undo = rotation_matrix(published_rotation_degrees).t();
+  std::array<Vector, 4> rays;
+  for (size_t edge = 0; edge < edges.size(); ++edge) {
+    const auto first = normalized(edges[edge].first);
+    const auto second = normalized(edges[edge].second);
+    if (!first.ok())
+      return first.status();
+    if (!second.ok())
+      return second.status();
+    rays[2 * edge] = undo * *first;
+    rays[2 * edge + 1] = undo * *second;
+  }
+  const auto direction =
+      [](const Vector& a, const Vector& b, const Vector& c, const Vector& d) -> absl::StatusOr<Vector> {
+    Vector first = a.cross(b);
+    Vector second = c.cross(d);
+    const double first_length = cv::norm(first);
+    const double second_length = cv::norm(second);
+    if (first_length < std::sin(0.5 * kRadians) || second_length < std::sin(0.5 * kRadians))
+      return absl::InvalidArgumentError("Select distinct corners farther apart on the ice");
+    const Vector intersection = (first / first_length).cross(second / second_length);
+    const double length = cv::norm(intersection);
+    if (length < 0.01)
+      return absl::InvalidArgumentError("These corners are too nearly aligned to determine the ice plane");
+    return intersection / length;
+  };
+  const auto across = direction(rays[0], rays[1], rays[2], rays[3]);
+  const auto along = direction(rays[0], rays[2], rays[1], rays[3]);
+  if (!across.ok())
+    return across.status();
+  if (!along.ok())
+    return along.status();
+  const double orthogonality_error = std::asin(std::clamp(std::abs(across->dot(*along)), 0.0, 1.0));
+  if (orthogonality_error > 10 * kRadians)
+    return absl::InvalidArgumentError(
+        "The corners do not form a rectangle. Use straight-line intersections and the same side-board order in both images");
+  Vector up = across->cross(*along);
+  up /= cv::norm(up);
+  // All four intersections with the ice must be in front of the camera.
+  // Choosing the normal away from the selected rays makes the camera above it.
+  Vector center(0, 0, 0);
+  for (const auto& ray : rays)
+    center += ray;
+  if (up.dot(center) > 0)
+    up = -up;
+  for (const auto& ray : rays) {
+    if (up.dot(ray) > -std::sin(0.25 * kRadians))
+      return absl::InvalidArgumentError(
+          "The corner order crosses the rectangle or lies too close to the horizon. Select the same side board first in both images");
+  }
+  return RinkCornerLevelingEstimate{
+      {preserved_yaw_degrees,
+       std::atan2(up[0], std::hypot(up[1], up[2])) / kRadians,
+       std::atan2(up[1], up[2]) / kRadians},
+      orthogonality_error / kRadians};
 }
 
 absl::StatusOr<std::array<double, 3>> RinkLevelingRotationDelta(

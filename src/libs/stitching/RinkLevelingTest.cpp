@@ -156,6 +156,91 @@ bool test_degeneracy() {
   return ok;
 }
 
+std::vector<leveling::RinkLevelingRayLine> corners(const Vec& desired, const Vec& published) {
+  const auto ray = [&](Vec point) { return rotate(rotate(unit(point), desired, true), published); };
+  return {{ray({8, -12, -5}), ray({8, 12, -5})}, {ray({28, -12, -5}), ray({28, 12, -5})}};
+}
+
+bool test_corner_geometry() {
+  bool ok = true;
+  const Vec desired{12, -35, 3};
+  const Vec published{-17, -22, -8};
+  const auto edges = corners(desired, published);
+  const auto fit = leveling::EstimateRinkLevelingFromCorners(edges, published, desired[0]);
+  ok &= expect(
+      fit.ok() && near(fit->rotation_degrees, desired) && fit->orthogonality_error_degrees < 1e-7,
+      "Rectangle corners must recover absolute pitch/roll after removing a nonzero published rotation");
+  const auto reopened = leveling::EstimateRinkLevelingFromCorners(corners(desired, desired), desired, 57);
+  ok &= expect(
+      reopened.ok() && near(reopened->rotation_degrees, {57, -35, 3}),
+      "Corner leveling must preserve requested yaw and must not accumulate earlier leveling");
+  auto reversed = edges;
+  for (auto& edge : reversed)
+    std::swap(edge.first, edge.second);
+  const auto reversed_fit = leveling::EstimateRinkLevelingFromCorners(reversed, published, desired[0]);
+  ok &= expect(
+      reversed_fit.ok() && near(reversed_fit->rotation_degrees, desired),
+      "Either side-board order works when both camera selections agree");
+  auto noisy = edges;
+  noisy[0].first[0] += 0.0002;
+  noisy[1].second[1] -= 0.0002;
+  const auto noise = leveling::EstimateRinkLevelingFromCorners(noisy, published, desired[0]);
+  ok &= expect(
+      noise.ok() && near(noise->rotation_degrees, desired, 0.15),
+      "Small corner picking errors must give a bounded leveling estimate");
+  auto crossed = edges;
+  std::swap(crossed[1].first, crossed[1].second);
+  ok &= expect(
+      !leveling::EstimateRinkLevelingFromCorners(crossed, published, 0).ok(),
+      "Crossed corner correspondence must fail instead of producing plausible stale angles");
+  auto repeated = edges;
+  repeated[1] = repeated[0];
+  ok &= expect(
+      !leveling::EstimateRinkLevelingFromCorners(repeated, published, 0).ok(),
+      "Selecting the same edge twice cannot determine the ice plane");
+  auto coincident = edges;
+  coincident[0].second = coincident[0].first;
+  ok &= expect(
+      !leveling::EstimateRinkLevelingFromCorners(coincident, published, 0).ok(), "Coincident corners must be rejected");
+  auto skewed = corners({0, 0, 0}, {0, 0, 0});
+  skewed[1].second = unit({14, 28, -5});
+  ok &= expect(
+      !leveling::EstimateRinkLevelingFromCorners(skewed, {0, 0, 0}, 0).ok(),
+      "Marks that do not describe a rectangle must be rejected");
+  auto invalid = edges;
+  invalid[0].first[0] = std::numeric_limits<double>::quiet_NaN();
+  ok &= expect(
+      !leveling::EstimateRinkLevelingFromCorners(invalid, published, 0).ok() &&
+          !leveling::EstimateRinkLevelingFromCorners({}, published, 0).ok() &&
+          !leveling::EstimateRinkLevelingFromCorners(edges, {0, 999, 0}, 0).ok(),
+      "Invalid corner counts, rays, and stored rotations must fail");
+  const auto horizon = std::vector<leveling::RinkLevelingRayLine>{
+      {unit({8, -12, 0}), unit({8, 12, 0})}, {unit({28, -12, 0}), unit({28, 12, 0})}};
+  ok &= expect(
+      !leveling::EstimateRinkLevelingFromCorners(horizon, {0, 0, 0}, 0).ok(),
+      "Points on the horizon cannot determine the ice plane");
+  return ok;
+}
+
+bool test_corner_transport() {
+  const auto method = leveling::RinkLevelingMethod::kRinkCorners;
+  const std::vector<leveling::RinkLevelingLine> marks{{0, {10, 20}, {80, 60}}, {1, {12, 22}, {82, 62}}};
+  const std::vector<std::array<size_t, 2>> sizes{{100, 100}, {100, 100}};
+  const auto formatted = leveling::FormatRinkLevelingPoints(marks, sizes, method);
+  bool ok = expect(
+      formatted.ok() && *formatted == "0 10 20\n0 80 60\n1 12 22\n1 82 62\n" &&
+          !leveling::FormatRinkLevelingPoints(marks, sizes).ok(),
+      "Corner transport must preserve all four source coordinates without relaxing the post minimum");
+  const std::string output = "1799.5 899.5\n899.5 899.5\n2699.5 899.5\n1799.5 1799.5\n";
+  const auto rays = leveling::ParseRinkLevelingRays(output, 2, method);
+  ok &= expect(
+      rays.ok() && near((*rays)[0].first, {1, 0, 0}) && near((*rays)[1].second, {0, 0, -1}) &&
+          !leveling::ParseRinkLevelingRays(output, 2).ok() &&
+          !leveling::ParseRinkLevelingRays(output + "0 0\n", 2, method).ok(),
+      "Four transformed corners must use the calibrated half-pixel convention and reject extra output");
+  return ok;
+}
+
 const std::string kPto =
     "# hugin project file\n"
     "p f19 w4254 h1992 v180 S10,4200,30,1900 P\"100 0 0\" n\"TIFF_m c:LZW r:CROP\"\n"
@@ -339,6 +424,8 @@ bool test_real_hugin() {
 int main() {
   bool ok = test_absolute_geometry();
   ok &= test_degeneracy();
+  ok &= test_corner_geometry();
+  ok &= test_corner_transport();
   ok &= test_project_and_transport();
   ok &= test_delta();
   ok &= test_real_hugin();

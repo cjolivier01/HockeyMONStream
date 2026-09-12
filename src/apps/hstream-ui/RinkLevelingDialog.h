@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QtCore/QByteArray>
+#include <QtCore/QPoint>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
+#include <QtCore/QVector>
 #include <QtWidgets/QDialog>
 
 #include <array>
@@ -17,6 +19,7 @@
 class QLabel;
 class QPushButton;
 class QDoubleSpinBox;
+class QCheckBox;
 class QTabWidget;
 class ScoreboardSelectionCanvas;
 
@@ -60,6 +63,10 @@ class RinkLevelingDialog : public QDialog {
   void estimate();
   void preview();
   void selectionChanged();
+  void switchMethod(bool corners);
+  void navigate(int direction);
+  void requestPreview();
+  void invalidatePreview();
   void startTool(
       const QString& program,
       const QStringList& arguments,
@@ -83,17 +90,27 @@ class RinkLevelingDialog : public QDialog {
   std::vector<double> preview_projection_parameters_;
   hm::stitching::StitchProjectionFraming preview_projection_framing_;
   std::array<ScoreboardSelectionCanvas*, 2> canvases_{};
+  std::array<QVector<QPoint>, 2> post_marks_;
+  std::array<QVector<QPoint>, 2> corner_marks_;
   std::array<QDoubleSpinBox*, 2> angle_spins_{};
+  QCheckBox* corner_method_check_{nullptr};
+  QLabel* instructions_{nullptr};
   QLabel* status_{nullptr};
   QTabWidget* tabs_{nullptr};
   ScoreboardSelectionCanvas* preview_canvas_{nullptr};
-  QPushButton* preview_button_{nullptr};
+  QLabel* preview_hint_{nullptr};
+  QPushButton* next_button_{nullptr};
+  QPushButton* previous_button_{nullptr};
   QPushButton* accept_button_{nullptr};
   QTimer estimate_timer_;
   QProcess* process_{nullptr};
   bool busy_{false};
   bool estimated_{false};
   bool previewed_{false};
+  bool corner_method_{false};
+  bool restoring_marks_{false};
+  bool manual_angles_{false};
+  bool preview_requested_{false};
   bool calibration_cancellation_requested_{false};
   bool closed_after_backend_completion_{false};
 };

@@ -11,10 +11,12 @@
 #include <QtGui/QImage>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QTabWidget>
 
 #include <cmath>
 #include <functional>
@@ -52,6 +54,15 @@ void markPosts(RinkLevelingDialog& dialog) {
       ->setPoints({{10, 10}, {12, 70}, {70, 12}, {70, 75}});
   static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"))
       ->setPoints({{10, 10}, {12, 70}, {70, 12}, {70, 75}});
+}
+void advanceToPreview(RinkLevelingDialog& dialog) {
+  auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
+  auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
+  if (tabs->currentIndex() == 2)
+    dialog.findChild<QPushButton*>("previousRinkLevelingButton")->click();
+  if (tabs->currentIndex() == 0)
+    next->click();
+  next->click();
 }
 bool estimateComplete(RinkLevelingDialog& dialog, int timeout = 10000) {
   auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
@@ -93,8 +104,8 @@ int main(int argc, char** argv) {
     std::cout << "Real image estimate: " << rotation[0] << ',' << rotation[1] << ',' << rotation[2] << '\n';
     std::cout << dialog.findChild<QLabel*>("rinkLevelingStatus")->text().toStdString() << '\n';
     dialog.grab().save(QString::fromLocal8Bit(argv[2]) + "-selection.png");
-    auto* preview = dialog.findChild<QPushButton*>("previewRinkLevelingButton");
-    preview->click();
+    auto* preview = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
+    advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     if (!waitUntil([&]() { return preview->isEnabled(); }, 65000) || !accept->isEnabled()) {
       std::cerr << dialog.findChild<QLabel*>("rinkLevelingStatus")->text().toStdString() << '\n';
@@ -157,12 +168,112 @@ int main(int argc, char** argv) {
   qputenv("RINK_PREVIEW_ARGS", bin.filePath("rink-preview-arguments").toUtf8());
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
+    auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
+    auto* previous = dialog.findChild<QPushButton*>("previousRinkLevelingButton");
+    auto* method = dialog.findChild<QCheckBox*>("selectRinkCornersCheck");
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    ok &= expect(
+        method && !method->isChecked() && next->text() == "Next" && previous->text() == "Prev" &&
+            !dialog.findChild<QPushButton*>("previewRinkLevelingButton") && tabs->currentIndex() == 0,
+        "Posts remain the default, with Next and Prev replacing the preview button");
+    previous->click();
+    ok &= expect(
+        waitUntil([&]() { return accept->isEnabled(); }) && tabs->currentIndex() == 2,
+        "Prev wraps from Left to Preview and renders the current angles");
+    const auto rendered_arguments = read(bin.filePath("rink-preview-arguments"));
+    next->click();
+    ok &= expect(tabs->currentIndex() == 0, "Next wraps from Preview to Left");
+    next->click();
+    ok &= expect(tabs->currentIndex() == 1, "Next advances from Left to Right");
+    next->click();
+    ok &= expect(
+        tabs->currentIndex() == 2 && read(bin.filePath("rink-preview-arguments")) == rendered_arguments,
+        "Navigation reuses an unchanged preview");
+    dialog.findChild<QDoubleSpinBox*>("rinkLevelingPitch")->setValue(-30);
+    ok &= expect(!accept->isEnabled(), "Edited angles invalidate preview acceptance");
+    previous->click();
+    next->click();
+    ok &= expect(
+        waitUntil([&]() { return accept->isEnabled(); }) &&
+            read(bin.filePath("rink-preview-arguments")) != rendered_arguments,
+        "Returning to Preview renders changed angles");
+  }
+  {
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    markPosts(dialog);
+    ok &= expect(estimateComplete(dialog), "Post selections are ready before switching methods");
+    auto* left = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
+    auto* right = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"));
+    const auto saved_posts = left->points();
+    auto* method = dialog.findChild<QCheckBox*>("selectRinkCornersCheck");
+    auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
+    auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
+    auto* previous = dialog.findChild<QPushButton*>("previousRinkLevelingButton");
+    auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
+    method->setChecked(true);
+    next->click();
+    next->click();
+    ok &= expect(
+        left->points().isEmpty() && right->points().isEmpty() && tabs->currentIndex() == 1 && !accept->isEnabled(),
+        "Corner mode has separate marks and cannot preview an incomplete rectangle");
+    QByteArray corner_rays;
+    for (const auto& point :
+         std::vector<std::array<double, 3>>{{8, -12, -5}, {8, 12, -5}, {28, -12, -5}, {28, 12, -5}}) {
+      const double radius = std::hypot(std::hypot(point[0], point[1]), point[2]);
+      corner_rays += QByteArray::number(1799.5 - std::atan2(point[1], point[0]) * 1800 / pi, 'g', 16) + " " +
+          QByteArray::number(899.5 - std::asin(point[2] / radius) * 1800 / pi, 'g', 16) + "\n";
+    }
+    const auto corner_tool = "cat >/dev/null\nsleep 0.1\ncat <<'RAYS'\n" + corner_rays + "RAYS\n";
+    ok &= script(bin.filePath("pano_trafo"), corner_tool);
+    left->setPoints({{10, 20}, {70, 80}, {50, 50}});
+    right->setPoints({{20, 30}, {80, 70}});
+    // Click before the debounce expires: navigation must estimate before rendering.
+    next->click();
+    ok &= expect(
+        left->points().size() == 2 && !next->isEnabled() && !previous->isEnabled() && !method->isEnabled(),
+        "Corner mode bounds selections to four points and locks navigation during estimation");
+    ok &= expect(
+        waitUntil([&]() { return accept->isEnabled(); }) && tabs->currentIndex() == 2 &&
+            std::abs(dialog.rotationDegrees()[1]) < 0.001 && std::abs(dialog.rotationDegrees()[2]) < 0.001,
+        "Next finishes the pending corner estimate and renders its angles, not the previous post result");
+    previous->click();
+    ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\nprintf 'invalid rays\\n'\n");
+    right->setPoints({{21, 30}, {80, 70}});
+    next->click();
+    auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
+    ok &= expect(
+        waitUntil([&]() { return next->isEnabled() && status->text().contains("could not be transformed"); }) &&
+            !accept->isEnabled() && tabs->currentIndex() == 1,
+        "Failed corner estimation must leave stale preview angles unavailable for acceptance");
+    ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
+    method->setChecked(false);
+    ok &= expect(
+        left->points() == saved_posts && estimateComplete(dialog),
+        "Switching back restores post marks and estimates with the post method");
+    ok &= script(bin.filePath("pano_trafo"), corner_tool);
+    method->setChecked(true);
+    ok &= expect(
+        left->points().size() == 2 && right->points().front() == QPoint(21, 30) && estimateComplete(dialog),
+        "Switching again restores the independent corner marks");
+    advanceToPreview(dialog);
+    ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "Restored corners can render again");
+    dialog.findChild<QPushButton*>("cancelRinkLevelingButton")->click();
+    ok &= expect(
+        dialog.result() == QDialog::Rejected && RinkLevelingDialog::sourceRevision(game.path()) == revision,
+        "Cancel discards corner leveling and preserves the game snapshot");
+    ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
+  }
+  {
     const auto producer_lock = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
     if (!expect(producer_lock.ok() && *producer_lock, "producer holds the artifact lock before opening"))
       return 1;
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     ok &= expect(
-        !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("previewRinkLevelingButton")->isEnabled(),
+        !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("nextRinkLevelingButton")->isEnabled(),
         "opening must reject artifact-lock contention even before any source files change");
   }
   {
@@ -244,7 +355,7 @@ int main(int argc, char** argv) {
         std::abs(dialog.rotationDegrees()[1]) < 0.001 && std::abs(dialog.rotationDegrees()[2]) < 0.001,
         "selected poles set absolute level");
     dialog.findChild<QDoubleSpinBox*>("rinkLevelingPitch")->setValue(-31.5);
-    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "preview required before acceptance");
     dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
@@ -256,7 +367,7 @@ int main(int argc, char** argv) {
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
-    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "manual preview completes");
     write(game.filePath("autooptimiser_out.pto"), pto + "# changed generation\n");
@@ -266,7 +377,7 @@ int main(int argc, char** argv) {
   }
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
-    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "repeat preview completes");
     {
@@ -289,7 +400,7 @@ int main(int argc, char** argv) {
     ok &= script(bin.filePath("nona"), "exec sleep 30\n");
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
-    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    advanceToPreview(dialog);
     QTest::qWait(100);
     QElapsedTimer elapsed;
     elapsed.start();
@@ -302,7 +413,7 @@ int main(int argc, char** argv) {
   }
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
-    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "preview before config change completes");
     write(game.filePath("config.yaml"), config + "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
@@ -342,7 +453,7 @@ int main(int argc, char** argv) {
         previewFraming(rotation));
     auto* skip = dialog.findChild<QPushButton*>("skipRinkLevelingButton");
     auto* cancel_calibration = dialog.findChild<QPushButton*>("cancelRinkCalibrationButton");
-    auto* preview = dialog.findChild<QPushButton*>("previewRinkLevelingButton");
+    auto* preview = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(
         dialog.loadError().isEmpty() && skip && cancel_calibration && preview && accept &&
@@ -353,7 +464,7 @@ int main(int argc, char** argv) {
     markPosts(dialog);
     ok &= expect(estimateComplete(dialog), "in-progress post edits automatically update the estimated angles");
     ok &= expect(!accept->isEnabled(), "in-progress angles cannot be used before an explicit preview");
-    preview->click();
+    advanceToPreview(dialog);
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "in-progress preview enables Use angles");
     const QByteArray preview_arguments = read(bin.filePath("rink-preview-arguments"));
     ok &= expect(
@@ -410,7 +521,7 @@ int main(int argc, char** argv) {
         {},
         previewFraming(rotation));
     dialog.show();
-    dialog.findChild<QPushButton*>("previewRinkLevelingButton")->click();
+    advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "in-progress manual-angle preview completes");
     write(staging.filePath("autooptimiser_out.pto"), pto + "# changed pending generation\n");
@@ -462,7 +573,7 @@ int main(int argc, char** argv) {
     mismatch.save(game.filePath("right.png"));
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     ok &= expect(
-        !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("previewRinkLevelingButton")->isEnabled(),
+        !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("nextRinkLevelingButton")->isEnabled(),
         "mismatched camera dimensions fail closed");
   }
   qunsetenv("RINK_PREVIEW_ARGS");
