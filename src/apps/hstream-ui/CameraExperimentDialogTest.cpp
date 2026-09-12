@@ -74,12 +74,14 @@ bool smoke() {
       nullptr,
       {{"Ignore_Largest_Count", 1},
        {"Max_Speed_X_x10", 35},
+       {"Stop_Delay_Cooldown_Frames", 90},
        {"Oversized_Player_Percent", 1234.567890123},
        {"Apply_To_Fast_Box", 1},
        {"Apply_To_Follower_Box", 0}});
   if (widget<QDoubleSpinBox>(seeded, "experimentValue_Ignore_Largest_Count")->value() != 1 ||
       !widget<QCheckBox>(seeded, "experimentOverride_Ignore_Largest_Count")->isChecked() ||
       widget<QDoubleSpinBox>(seeded, "experimentValue_Max_Speed_X_x10")->value() != 3.5 ||
+      widget<QDoubleSpinBox>(seeded, "experimentValue_Stop_Delay_Cooldown_Frames")->value() != 90 ||
       widget<QDoubleSpinBox>(seeded, "experimentValue_Oversized_Player_Percent")->value() != 1234.567890123 ||
       !widget<QCheckBox>(seeded, "experimentFastBox")->isChecked() ||
       widget<QCheckBox>(seeded, "experimentFollowerBox")->isChecked())
@@ -101,6 +103,9 @@ bool smoke() {
 
 bool responsive_worker() {
   CameraExperimentPreviewWorker worker;
+  worker.Close();
+  if (worker.Poll().busy)
+    return false;
   std::promise<void> entered, release;
   auto started = entered.get_future();
   const auto released = release.get_future().share();
@@ -349,6 +354,10 @@ bool e2e(const QStringList& args) {
   }
   auto* in = widget<QDoubleSpinBox>(dialog, "experimentIn");
   in->setValue(in->value() + 1);
+  if (!in->isEnabled()) {
+    std::cerr << "Stopping preview interrupted editing the recording range\n";
+    return false;
+  }
   if (save->isEnabled()) {
     std::cerr << "Changing the range left an old candidate saveable with a different media binding\n";
     return false;

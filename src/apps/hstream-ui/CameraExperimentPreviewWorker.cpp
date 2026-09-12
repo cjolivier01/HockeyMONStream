@@ -115,6 +115,10 @@ CameraExperimentPreviewWorker::Status CameraExperimentPreviewWorker::Poll() cons
 void CameraExperimentPreviewWorker::Close() {
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (!impl_->status.open && !impl_->status.busy && !impl_->status.seeking) {
+      impl_->status = {};
+      return;
+    }
     ++impl_->generation;
     impl_->commands.clear();
     impl_->commands.push_back({{}, true});

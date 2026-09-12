@@ -275,7 +275,9 @@ struct CameraExperimentDialog::Impl {
     prepare->setEnabled(editable);
     apply->setEnabled(editable && prepared);
     cancel->setEnabled(active && !closing_result);
-    settings->setEnabled(editable);
+    // A stopped preview owns a snapshot of its inputs. Source edits remain safe
+    // while that graph is being released, without stealing focus on each key.
+    settings->setEnabled(!calculating && !closing_result && !playing && (!loading || !preview_open));
     parameter_tabs->setEnabled(editable);
     fast->setEnabled(editable);
     follower->setEnabled(editable);
@@ -351,7 +353,10 @@ struct CameraExperimentDialog::Impl {
     QObject::connect(enabled, &QCheckBox::toggled, value, &QWidget::setEnabled);
     const auto initial = initial_controls.find(QString::fromLatin1(spec.id));
     if (initial != initial_controls.end()) {
-      value->setValue(initial->second / spec.divisor);
+      const double copied = initial->second / spec.divisor;
+      // Loaded main-window controls can extend beyond the presentation ranges.
+      value->setRange(std::min(value->minimum(), copied), std::max(value->maximum(), copied));
+      value->setValue(copied);
       enabled->setChecked(true);
     }
     layout->addRow(enabled, value);
