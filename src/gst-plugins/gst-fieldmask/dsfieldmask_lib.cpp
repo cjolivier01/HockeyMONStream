@@ -9,15 +9,15 @@
 
 #include "absl/status/status.h"
 
-#include <opencv2/core.hpp>
+#include <opencv2/opencv.hpp>
 
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 
+#include <opencv2/core/types.hpp>
 #include <stdio.h>
 #include <stdlib.h>
 

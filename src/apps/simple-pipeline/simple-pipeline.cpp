@@ -1,6 +1,6 @@
 #include <gst/gst.h>
 #include <gst/rtsp-server/rtsp-server.h>
-#include <opencv2/videoio.hpp>
+#include <opencv2/opencv.hpp>
 #include <cstring>
 #include <iostream>
 #include <string>

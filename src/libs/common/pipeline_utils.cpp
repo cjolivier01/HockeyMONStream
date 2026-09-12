@@ -11,7 +11,7 @@
 // #include <vector>
 
 #include <gst/pbutils/pbutils.h>
-#include <opencv2/videoio.hpp>
+#include <opencv2/opencv.hpp>
 
 #include "absl/strings/str_split.h"
 // #include "absl/cleanup/cleanup.h"

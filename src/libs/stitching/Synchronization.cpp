@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#include <opencv2/videoio.hpp>
+#include <opencv2/opencv.hpp>
 
 // FFmpeg headers
 extern "C" {

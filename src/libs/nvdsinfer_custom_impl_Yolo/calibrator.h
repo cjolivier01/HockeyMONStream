@@ -10,19 +10,16 @@
 #include <vector>
 
 #include "NvInfer.h"
-#include "opencv2/core/mat.hpp"
+#include "opencv2/opencv.hpp"
 
-#include <cstdlib>
-#include <iostream>
-#include <string>
-
-#define CUDA_CHECK(status)                                                                                  \
-  {                                                                                                         \
-    if (status != 0) {                                                                                      \
-      std::cout << "CUDA failure: " << cudaGetErrorString(status) << " in file " << __FILE__ << " at line " \
-                << __LINE__ << std::endl;                                                                   \
-      abort();                                                                                              \
-    }                                                                                                       \
+#define CUDA_CHECK(status)                                            \
+  {                                                                   \
+    if (status != 0) {                                                \
+      std::cout << "CUDA failure: " << cudaGetErrorString(status)     \
+                << " in file " << __FILE__ << " at line " << __LINE__ \
+                << std::endl;                                         \
+      abort();                                                        \
+    }                                                                 \
   }
 
 #if NV_TENSORRT_MAJOR < 11
@@ -44,11 +41,13 @@ class Int8EntropyCalibrator2 : public nvinfer1::IInt8EntropyCalibrator2 {
 
   int getBatchSize() const noexcept override;
 
-  bool getBatch(void* bindings[], const char* names[], int nbBindings) noexcept override;
+  bool getBatch(void* bindings[], const char* names[], int nbBindings) noexcept
+      override;
 
   const void* readCalibrationCache(std::size_t& length) noexcept override;
 
-  void writeCalibrationCache(const void* cache, size_t length) noexcept override;
+  void writeCalibrationCache(const void* cache, size_t length) noexcept
+      override;
 
  private:
   int batchSize;

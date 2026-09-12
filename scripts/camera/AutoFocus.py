@@ -150,14 +150,16 @@ def show_camera(device_id: int, focuser: Focuser):
     focusing(focuser=focuser, val=focal_distance)
     skip_frame = 6
     if cap.isOpened():
-        print("Autofocus display and keyboard controls are unavailable; running headless.")
-        while not focus_finished:
+        window_handle = cv2.namedWindow("CSI Camera", cv2.WINDOW_AUTOSIZE)
+        # Window
+        while cv2.getWindowProperty("CSI Camera", 0) >= 0:
             ret_val, img = cap.read()
             assert ret_val
+            cv2.imshow(f"CSI Camera {device_id}", img)
 
             if skip_frame == 0:
                 skip_frame = 6
-                if dec_count < 6 and focal_distance < Focuser.opts[Focuser.OPT_FOCUS]["MAX_VALUE"]:
+                if dec_count < 6 and focal_distance < 1000:
                     # Adjust focus
                     focusing(focuser=focuser, val=focal_distance)
                     # Take image and calculate image clarity
@@ -182,10 +184,24 @@ def show_camera(device_id: int, focuser: Focuser):
                     # Adjust focus to the best
                     focusing(focuser=focuser, val=max_index)
                     focus_finished = True
-                    print("Done.")
             else:
                 skip_frame = skip_frame - 1
+            # This also acts as
+            keyCode = cv2.waitKey(16) & 0xFF
+            # Stop the program on the ESC key
+            if keyCode == 27:
+                break
+            elif keyCode == 10 or keyCode == 32:
+                max_index = 10
+                max_value = 0.0
+                last_value = 0.0
+                dec_count = 0
+                focal_distance = 10
+                focus_finished = False
+            elif keyCode and keyCode != 255:
+                print(f"{keyCode=}")
         cap.release()
+        cv2.destroyAllWindows()
     else:
         print("Unable to open camera")
 

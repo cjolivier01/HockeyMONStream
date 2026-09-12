@@ -36,6 +36,7 @@ cc_library(
         "@com_google_absl//absl/cleanup",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
+        "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@hm//hockeymon/csrc/play_tracker",
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display",

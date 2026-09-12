@@ -1,10 +1,8 @@
+#include <cuda_runtime_api.h>
 #include <NvInfer.h>
 #include <NvInferVersion.h>
 #include <NvOnnxParser.h>
-#include <cuda_runtime_api.h>
-#include <opencv2/core.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
+#include <opencv2/opencv.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -70,19 +68,20 @@ Args parse_args(int argc, char** argv) {
     };
 
     if (arg == "--help" || arg == "-h") {
-      std::cout << "Usage: int8-calib-builder --precision int8|bf16 --onnx FILE --engine FILE [options]\n"
-                << "Options:\n"
-                << "  --precision P        Engine precision to build: int8 or bf16. Default: int8\n"
-                << "                       INT8 calibration requires TensorRT's legacy calibrator API.\n"
-                << "  --image-list FILE    Required for int8 calibration\n"
-                << "  --calib-table FILE   Required for int8 calibration\n"
-                << "  --batch-size N       Calibration/build batch size. Default: 2\n"
-                << "  --min-batch-size N   Minimum runtime batch size in the TensorRT profile. Default: 1\n"
-                << "  --input-name NAME    Override ONNX input tensor name\n"
-                << "  --workspace-mb N     TensorRT workspace size in MiB. Default: 2048\n"
-                << "  --scale F            Input scale factor. Default: 1/255\n"
-                << "  --bgr                Keep OpenCV BGR channel order instead of RGB\n"
-                << "  --no-fp16            Do not allow FP16 tactics while building INT8 engine\n";
+      std::cout
+          << "Usage: int8-calib-builder --precision int8|bf16 --onnx FILE --engine FILE [options]\n"
+          << "Options:\n"
+          << "  --precision P        Engine precision to build: int8 or bf16. Default: int8\n"
+          << "                       INT8 calibration requires TensorRT's legacy calibrator API.\n"
+          << "  --image-list FILE    Required for int8 calibration\n"
+          << "  --calib-table FILE   Required for int8 calibration\n"
+          << "  --batch-size N       Calibration/build batch size. Default: 2\n"
+          << "  --min-batch-size N   Minimum runtime batch size in the TensorRT profile. Default: 1\n"
+          << "  --input-name NAME    Override ONNX input tensor name\n"
+          << "  --workspace-mb N     TensorRT workspace size in MiB. Default: 2048\n"
+          << "  --scale F            Input scale factor. Default: 1/255\n"
+          << "  --bgr                Keep OpenCV BGR channel order instead of RGB\n"
+          << "  --no-fp16            Do not allow FP16 tactics while building INT8 engine\n";
       std::exit(0);
     } else if (arg == "--onnx" || arg.rfind("--onnx=", 0) == 0) {
       args.onnx = value_after_equals();
@@ -255,9 +254,8 @@ class ImageEntropyCalibrator : public nvinfer1::IInt8EntropyCalibrator2 {
         std::cout << "Calibrating image " << image_index_ << "/" << image_paths_.size() << ": " << image_path << "\n";
       }
 
-      check_cuda(
-          cudaMemcpy(device_input_, host_batch_.data(), input_count_ * sizeof(float), cudaMemcpyHostToDevice),
-          "cudaMemcpy calibration input");
+      check_cuda(cudaMemcpy(device_input_, host_batch_.data(), input_count_ * sizeof(float), cudaMemcpyHostToDevice),
+                 "cudaMemcpy calibration input");
 
       for (int i = 0; i < nb_bindings; ++i) {
         if (names[i] && input_name_ == names[i]) {
@@ -382,8 +380,7 @@ int main(int argc, char** argv) {
     if (!config) {
       throw std::runtime_error("failed to create TensorRT builder config");
     }
-    config->setMemoryPoolLimit(
-        nvinfer1::MemoryPoolType::kWORKSPACE, static_cast<size_t>(args.workspace_mb) * 1024 * 1024);
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, static_cast<size_t>(args.workspace_mb) * 1024 * 1024);
     if (args.precision == "int8") {
       config->setFlag(nvinfer1::BuilderFlag::kINT8);
     } else {
@@ -414,22 +411,14 @@ int main(int argc, char** argv) {
     std::unique_ptr<ImageEntropyCalibrator> calibrator;
     if (args.precision == "int8") {
       calibrator = std::make_unique<ImageEntropyCalibrator>(
-          args.batch_size,
-          channels,
-          height,
-          width,
-          input_name,
-          std::move(image_paths),
-          args.calib_table,
-          args.rgb,
-          args.scale);
+          args.batch_size, channels, height, width, input_name, std::move(image_paths), args.calib_table, args.rgb, args.scale);
       config->setInt8Calibrator(calibrator.get());
     }
 #endif
 
     std::cout << "Building " << args.precision << " engine from " << args.onnx << "\n"
-              << "  input: " << input_name << " batch=" << args.batch_size << " chw=" << channels << "x" << height
-              << "x" << width << "\n";
+              << "  input: " << input_name << " batch=" << args.batch_size << " chw=" << channels << "x" << height << "x"
+              << width << "\n";
     if (args.precision == "int8") {
       std::cout << "  calibration cache: " << args.calib_table << "\n";
     }

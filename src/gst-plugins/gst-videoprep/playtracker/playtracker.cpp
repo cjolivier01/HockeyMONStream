@@ -4,7 +4,6 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <npp.h>
-#include <opencv2/imgcodecs.hpp>
 #include <algorithm>
 #include <cctype>
 #include <cerrno>

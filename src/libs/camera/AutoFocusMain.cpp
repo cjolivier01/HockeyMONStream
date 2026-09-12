@@ -26,12 +26,10 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) {
         device_id = std::stoi(argv[++i]);
       }
-    } else if (arg == "--interative" || arg == "--interactive") {
-      std::cerr << arg << " is no longer supported; autofocus runs headless without OpenCV GUI controls." << std::endl;
-      interactive = false;
+    } else if (arg == "--interative") {
+      interactive = true;
     } else if (arg == "--show") {
-      std::cerr << "--show is no longer supported; autofocus runs headless without OpenCV GUI preview." << std::endl;
-      show = false;
+      show = true;
     } else if (arg == "-v" || arg == "--verbose") {
       verbose = true;
     } else if (arg == "-w" || arg == "--width") {

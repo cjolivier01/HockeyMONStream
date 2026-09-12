@@ -1060,12 +1060,6 @@ QString manifest_file(const QJsonObject& root, const QString& section, const QSt
   return root.value(section).toObject().value(key).toObject().value("file").toString();
 }
 
-QString resolved_existing_directory_path(const QString& directory) {
-  const QFileInfo info(directory);
-  const QString canonical = info.canonicalFilePath();
-  return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
-}
-
 } // namespace
 
 QString finalized_archive_csv_suffix(const QString& archive_path, const QString& game_id) {
@@ -1116,8 +1110,7 @@ qint64 next_archive_generation(const QString& game_directory) {
 bool telemetry_csv_destination_paths_available(const QString& game_directory, const QString& destination_suffix) {
   if (!QRegularExpression(R"(^(-\d+)?$)").match(destination_suffix).hasMatch())
     return false;
-  const QString publication_directory = resolved_existing_directory_path(game_directory);
-  const QByteArray encoded_game_directory = QFile::encodeName(publication_directory);
+  const QByteArray encoded_game_directory = QFile::encodeName(QFileInfo(game_directory).absoluteFilePath());
   UniqueFd game_directory_fd(
       ::open(encoded_game_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
   if (game_directory_fd.get() < 0)
@@ -1315,7 +1308,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     published_provenance["source_artifact"] = renamed.value(source_config);
     published_provenance["effective_artifact"] = renamed.value(effective_config);
     published["config_provenance"] = published_provenance;
-    published["output_directory"] = resolved_existing_directory_path(game_directory);
+    published["output_directory"] = QFileInfo(game_directory).absoluteFilePath();
     artifacts.push_back(
         {"hstream_telemetry",
          manifest_info.fileName(),
@@ -1323,8 +1316,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
          QJsonDocument(published).toJson(QJsonDocument::Indented)});
   }
 
-  const QString publication_directory = resolved_existing_directory_path(game_directory);
-  const QByteArray encoded_game_directory = QFile::encodeName(publication_directory);
+  const QByteArray encoded_game_directory = QFile::encodeName(QFileInfo(game_directory).absoluteFilePath());
   UniqueFd game_directory_fd(
       ::open(encoded_game_directory.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
   if (game_directory_fd.get() < 0) {
@@ -1522,7 +1514,7 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
     return result;
   }
   for (const CopiedArtifact& artifact : copied)
-    result.published_paths.push_back(QDir(publication_directory).filePath(artifact.destination_filename));
+    result.published_paths.push_back(QDir(game_directory).filePath(artifact.destination_filename));
   result.ok = true;
   return result;
 }
