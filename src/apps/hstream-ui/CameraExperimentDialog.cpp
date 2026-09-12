@@ -335,11 +335,14 @@ struct CameraExperimentDialog::Impl {
     auto* value = new QDoubleSpinBox();
     value->setObjectName("experimentValue_" + QString::fromLatin1(spec.id));
     value->setRange(spec.minimum / static_cast<double>(spec.divisor), spec.maximum / static_cast<double>(spec.divisor));
-    value->setDecimals(
-        std::string(spec.id) == "Oversized_Player_Percent" ? 2
-            : spec.divisor == 1                            ? 0
-            : spec.divisor == 10                           ? 1
-                                                           : 2);
+    value->setDecimals(spec.divisor == 1 ? 0 : spec.divisor == 10 ? 1 : 2);
+    if (std::string(spec.id) == "Oversized_Player_Percent") {
+      // Match the main UI's native percentage domain without rounding or
+      // clamping a copied value before it becomes an enabled trial override.
+      value->setDecimals(std::numeric_limits<double>::max_digits10);
+      value->setRange(0, std::numeric_limits<double>::max());
+      value->setMaximumWidth(180);
+    }
     value->setSingleStep(1.0 / spec.divisor);
     value->setValue(spec.default_value / static_cast<double>(spec.divisor));
     value->setEnabled(false);

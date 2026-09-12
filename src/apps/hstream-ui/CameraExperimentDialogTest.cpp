@@ -74,15 +74,18 @@ bool smoke() {
       nullptr,
       {{"Ignore_Largest_Count", 1},
        {"Max_Speed_X_x10", 35},
-       {"Oversized_Player_Percent", 12.5},
+       {"Oversized_Player_Percent", 1234.567890123},
        {"Apply_To_Fast_Box", 1},
        {"Apply_To_Follower_Box", 0}});
   if (widget<QDoubleSpinBox>(seeded, "experimentValue_Ignore_Largest_Count")->value() != 1 ||
       !widget<QCheckBox>(seeded, "experimentOverride_Ignore_Largest_Count")->isChecked() ||
       widget<QDoubleSpinBox>(seeded, "experimentValue_Max_Speed_X_x10")->value() != 3.5 ||
-      widget<QDoubleSpinBox>(seeded, "experimentValue_Oversized_Player_Percent")->value() != 12.5 ||
+      widget<QDoubleSpinBox>(seeded, "experimentValue_Oversized_Player_Percent")->value() != 1234.567890123 ||
       !widget<QCheckBox>(seeded, "experimentFastBox")->isChecked() ||
       widget<QCheckBox>(seeded, "experimentFollowerBox")->isChecked())
+    return false;
+  CameraExperimentDialog small_percentage({}, nullptr, {{"Oversized_Player_Percent", 0.004}});
+  if (widget<QDoubleSpinBox>(small_percentage, "experimentValue_Oversized_Player_Percent")->value() != 0.004)
     return false;
   widget<QDoubleSpinBox>(seeded, "experimentValue_Ignore_Largest_Count")->setValue(3);
   if (widget<QDoubleSpinBox>(second, "experimentValue_Ignore_Largest_Count")->value() != 0)
