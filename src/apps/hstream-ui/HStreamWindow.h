@@ -782,6 +782,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, double> camera_defaults_;
   YAML::Node baseline_config_;
   QString baseline_config_root_;
+  bool default_drivegpt_database_enabled_;
   QString default_stitch_frame_time_{"00:00:00"};
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{true};
