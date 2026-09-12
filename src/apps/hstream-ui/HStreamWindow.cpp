@@ -4681,6 +4681,8 @@ void HStreamWindow::loadBaselineDefaults() {
   };
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
+  default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
+
   const YAML::Node stitch_frame_time = require("stitching.stitch_frame_time");
   if (!stitch_frame_time.IsScalar())
     throw std::runtime_error("Effective baseline stitching.stitch_frame_time must be a scalar");
@@ -5560,7 +5562,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   drivegpt_csv_toggle_ = new QCheckBox("DriveGPT database");
   drivegpt_csv_toggle_->setObjectName("drivegptCsvCheck");
-  drivegpt_csv_toggle_->setChecked(false);
+  drivegpt_csv_toggle_->setChecked(default_drivegpt_database_enabled_);
   drivegpt_csv_toggle_->setToolTip(
       "Save detections, tracks, cameras, replay state, settings and rink masks in one database. "
       "Copy the completed database to the game directory, using the saved video's suffix when available. "
