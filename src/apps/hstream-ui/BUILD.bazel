@@ -29,6 +29,8 @@ filegroup(
         "CameraExperimentDialog.h",
         "CameraExperimentPreview.cpp",
         "CameraExperimentPreview.h",
+        "CameraExperimentPreviewWorker.cpp",
+        "CameraExperimentPreviewWorker.h",
         "CameraExperimentSource.cpp",
         "CameraExperimentSource.h",
         "RinkLevelingDialog.cpp",
@@ -144,8 +146,8 @@ cc_test(
 
 cc_library(
     name = "camera_experiment_preview",
-    srcs = ["CameraExperimentPreview.cpp"],
-    hdrs = ["CameraExperimentPreview.h"],
+    srcs = ["CameraExperimentPreview.cpp", "CameraExperimentPreviewWorker.cpp"],
+    hdrs = ["CameraExperimentPreview.h", "CameraExperimentPreviewWorker.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
@@ -242,7 +244,7 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
-    deps = [":camera_experiment_dialog", "@qt//:qt_widgets"],
+    deps = [":camera_experiment_dialog", ":camera_experiment_preview", "@qt//:qt_widgets"],
 )
 
 cc_test(

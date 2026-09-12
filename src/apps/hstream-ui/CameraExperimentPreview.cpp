@@ -491,7 +491,9 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
 bool CameraExperimentPreview::SetTrajectory(
     std::shared_ptr<const std::vector<Frame>> frames,
     std::uint64_t end_pts_ns,
-    std::string* error) {
+    std::string* error,
+    bool play,
+    std::size_t index) {
   if ((!impl_->media.stitching && !impl_->graph) || !frames || frames->empty() || frames->back().pts_ns >= end_pts_ns)
     return fail(error, "No prepared trajectory is available for preview.");
   Pause();
@@ -503,7 +505,7 @@ bool CameraExperimentPreview::SetTrajectory(
     if (!impl_->video_pts(impl_->frames->front().pts_ns) || !impl_->video_pts(end_pts_ns))
       return fail(error, "The media PTS binding maps the selected range outside video time.");
   }
-  return Seek(0, false, error);
+  return Seek(index, play, error);
 }
 
 bool CameraExperimentPreview::Seek(std::size_t index, bool play, std::string* error) {

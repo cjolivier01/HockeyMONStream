@@ -13476,6 +13476,28 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
              "A late seam/publication failure must retain its cause instead of being presented as non-overlap");
 }
 
+bool test_camera_experiment_initial_controls(HStreamWindow* window) {
+  auto* count = require_child<QSpinBox>(window, "cameraSpin_Ignore_Largest_Count");
+  auto* launch = require_child<QPushButton>(window, "cameraExperimentsButton");
+  if (!count || !launch)
+    return false;
+  const int saved = count->value();
+  count->setValue(1);
+  launch->click();
+  auto* dialog = window->findChild<QDialog*>("cameraExperimentDialog");
+  auto* value = require_child<QDoubleSpinBox>(window, "experimentValue_Ignore_Largest_Count");
+  auto* enabled = require_child<QCheckBox>(window, "experimentOverride_Ignore_Largest_Count");
+  const bool copied = dialog && value && enabled && value->value() == 1 && enabled->isChecked();
+  if (value)
+    value->setValue(3);
+  const bool independent = count->value() == 1;
+  if (dialog)
+    dialog->reject();
+  count->setValue(saved);
+  return expect(copied && independent,
+                "Camera experiments must start with the current main controls and keep their edits independent");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -13608,6 +13630,8 @@ int main(int argc, char** argv) {
     std::cerr << "test_camera_controls failed\n";
     return 1;
   }
+  if (!test_camera_experiment_initial_controls(&window))
+    return 1;
   if (!test_window_close_stops_pipeline(&window)) {
     std::cerr << "test_window_close_stops_pipeline failed\n";
     return 1;

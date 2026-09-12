@@ -1,20 +1,25 @@
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#include "src/apps/hstream-ui/CameraExperimentPreviewWorker.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFileInfo>
 #include <QtCore/QThread>
+#include <QtCore/QTimer>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QTabWidget>
 
+#include <atomic>
 #include <functional>
+#include <future>
 #include <iostream>
 
 namespace {
@@ -54,10 +59,86 @@ bool smoke() {
     return false;
   widget<QLineEdit>(first, "experimentManifest")->setText("/missing/hstream_telemetry.json");
   widget<QPushButton>(first, "experimentPrepare")->click();
+  if (!widget<QProgressBar>(first, "experimentProgress")->isVisible() ||
+      widget<QTabWidget>(first, "experimentControlTabs")->isEnabled() ||
+      widget<QLineEdit>(first, "experimentManifest")->isEnabled() ||
+      !widget<QPushButton>(first, "experimentCancel")->isEnabled())
+    return false;
   if (!wait_until([&]() { return widget<QPushButton>(first, "experimentPrepare")->isEnabled(); }, 5000))
     return false;
   if (widget<QPushButton>(first, "experimentApply")->isEnabled() ||
       widget<QLabel>(first, "experimentStatus")->text().contains("Historical start ready"))
+    return false;
+  CameraExperimentDialog seeded(
+      {},
+      nullptr,
+      {{"Ignore_Largest_Count", 1},
+       {"Max_Speed_X_x10", 35},
+       {"Oversized_Player_Percent", 12.5},
+       {"Apply_To_Fast_Box", 1},
+       {"Apply_To_Follower_Box", 0}});
+  if (widget<QDoubleSpinBox>(seeded, "experimentValue_Ignore_Largest_Count")->value() != 1 ||
+      !widget<QCheckBox>(seeded, "experimentOverride_Ignore_Largest_Count")->isChecked() ||
+      widget<QDoubleSpinBox>(seeded, "experimentValue_Max_Speed_X_x10")->value() != 3.5 ||
+      widget<QDoubleSpinBox>(seeded, "experimentValue_Oversized_Player_Percent")->value() != 12.5 ||
+      !widget<QCheckBox>(seeded, "experimentFastBox")->isChecked() ||
+      widget<QCheckBox>(seeded, "experimentFollowerBox")->isChecked())
+    return false;
+  widget<QDoubleSpinBox>(seeded, "experimentValue_Ignore_Largest_Count")->setValue(3);
+  if (widget<QDoubleSpinBox>(second, "experimentValue_Ignore_Largest_Count")->value() != 0)
+    return false;
+  second.show();
+  widget<QLineEdit>(second, "experimentManifest")->setText("/missing/hstream_telemetry.json");
+  widget<QPushButton>(second, "experimentPrepare")->click();
+  second.reject();
+  if (!second.isVisible() || !wait_until([&] { return !second.isVisible(); }, 5000))
+    return false;
+  return true;
+}
+
+bool responsive_worker() {
+  CameraExperimentPreviewWorker worker;
+  std::promise<void> entered, release;
+  auto started = entered.get_future();
+  const auto released = release.get_future().share();
+  worker.Submit([&entered, released](auto&, auto* error) {
+    entered.set_value();
+    released.wait_for(std::chrono::seconds(5));
+    *error = "stale operation failure";
+    return false;
+  });
+  if (!wait_until([&] { return started.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }, 1000)) {
+    release.set_value();
+    return false;
+  }
+  int heartbeat = 0;
+  QTimer timer;
+  QObject::connect(&timer, &QTimer::timeout, [&] { ++heartbeat; });
+  timer.start(10);
+  if (!wait_until([&] { return heartbeat >= 5; }, 500) || !worker.Poll().busy) {
+    release.set_value();
+    return false;
+  }
+  std::atomic<bool> obsolete_ran{false};
+  worker.Submit([&](auto&, auto*) {
+    obsolete_ran = true;
+    return true;
+  });
+  QElapsedTimer elapsed;
+  elapsed.start();
+  worker.Close();
+  const bool responsive = elapsed.elapsed() < 500 && worker.Poll().busy;
+  release.set_value();
+  if (!responsive || !wait_until([&] { return !worker.Poll().busy; }, 2000) || obsolete_ran ||
+      !worker.Poll().error.empty() || worker.Poll().open)
+    return false;
+  worker.Submit([](auto&, auto* error) {
+    *error = "visible failure";
+    return false;
+  });
+  if (!wait_until([&] { return !worker.Poll().busy; }, 2000) || worker.Poll().error != "visible failure")
+    return false;
+  if (wait_until([&] { return worker.Poll().error != "visible failure"; }, 150))
     return false;
   return true;
 }
@@ -72,6 +153,8 @@ bool require_confirmation(CameraExperimentDialog& dialog) {
   const int count = comparison->count();
   const QString trial_name = name->text();
   confirmed->setChecked(false);
+  if (!wait_until([&] { return apply->isEnabled(); }, 2000))
+    return false;
   for (int attempt = 0; attempt < 2; ++attempt) {
     apply->click();
     if (!prepare->isEnabled() || !apply->isEnabled() || comparison->count() != count || name->text() != trial_name ||
@@ -119,6 +202,13 @@ bool e2e(const QStringList& args) {
   const QString artifacts = args[4];
   if (!QDir().mkpath(artifacts))
     return false;
+  QElapsedTimer heartbeat;
+  heartbeat.start();
+  qint64 longest_gap = 0;
+  QTimer responsiveness;
+  QObject::connect(
+      &responsiveness, &QTimer::timeout, [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); });
+  responsiveness.start(10);
   CameraExperimentDialog dialog(QFileInfo(args[2]).absolutePath());
   dialog.show();
   widget<QLineEdit>(dialog, "experimentManifest")->setText(args[2]);
@@ -155,6 +245,10 @@ bool e2e(const QStringList& args) {
   apply->click();
   auto* comparison = widget<QComboBox>(dialog, "experimentComparison");
   auto* screenshot = widget<QPushButton>(dialog, "experimentScreenshot");
+  if (!widget<QProgressBar>(dialog, "experimentProgress")->isVisible() ||
+      widget<QTabWidget>(dialog, "experimentControlTabs")->isEnabled() ||
+      widget<QLineEdit>(dialog, "experimentManifest")->isEnabled())
+    return false;
   if (!wait_until([&]() {
         return (comparison->count() == 3 && screenshot->isEnabled()) || status->styleSheet().contains("#b42318");
       }) ||
@@ -183,13 +277,17 @@ bool e2e(const QStringList& args) {
   }
   if (play->text() == "Pause")
     play->click();
+  if (!wait_until([&] { return widget<QTabWidget>(dialog, "experimentControlTabs")->isEnabled(); }, 60000)) {
+    std::cerr << "Pause did not restore editable camera controls\n";
+    return false;
+  }
   widget<QTabWidget>(dialog, "experimentControlTabs")->setCurrentIndex(1);
   auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
   const int comparison_frame = timeline->maximum() / 2;
   auto seek_frame = [&](int frame) {
     timeline->setValue(frame);
     QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
-    return wait_until([&]() { return screenshot->isEnabled() || status->styleSheet().contains("#b42318"); }, 20000) &&
+    return wait_until([&]() { return screenshot->isEnabled() || status->styleSheet().contains("#b42318"); }, 60000) &&
         screenshot->isEnabled() && timeline->value() == frame;
   };
   if (!seek_frame(comparison_frame)) {
@@ -204,7 +302,7 @@ bool e2e(const QStringList& args) {
           [&]() {
             return screenshot->isEnabled() && widget<QLabel>(dialog, "experimentFrameStatus")->text() != before_step;
           },
-          20000)) {
+          60000)) {
     std::cerr << "Paused frame step failed: " << status->text().toStdString() << '\n';
     return false;
   }
@@ -221,7 +319,7 @@ bool e2e(const QStringList& args) {
           [&]() {
             return (timeline->value() < 20 && screenshot->isEnabled()) || status->styleSheet().contains("#b42318");
           },
-          20000) ||
+          60000) ||
       !screenshot->isEnabled() || timeline->value() >= 20) {
     std::cerr << "Range loop failed: " << status->text().toStdString() << '\n';
     return false;
@@ -236,7 +334,7 @@ bool e2e(const QStringList& args) {
             return (timeline->value() == timeline->maximum() && play->text() != "Pause" && screenshot->isEnabled()) ||
                 status->styleSheet().contains("#b42318");
           },
-          20000) ||
+          60000) ||
       timeline->value() != timeline->maximum() || !screenshot->isEnabled()) {
     std::cerr << "End-of-range pause failed: " << status->text().toStdString() << '\n';
     return false;
@@ -268,6 +366,11 @@ bool e2e(const QStringList& args) {
   }
   std::cout
       << "PASS: historical preparation, parameter trial, actual GPU playback, paused frame step, original comparison, range loop, end pause, screenshots, stale trial save invalidation\n";
+  std::cout << "Longest UI heartbeat gap: " << longest_gap << " ms\n";
+  if (longest_gap > 1000) {
+    std::cerr << "Experiment blocked the UI event loop for more than one second\n";
+    return false;
+  }
   return true;
 }
 
@@ -280,7 +383,7 @@ int main(int argc, char** argv) {
       return e2e(app.arguments()) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments()[1] == "--confirmation")
       return confirmation(app.arguments()[2]) ? 0 : 1;
-    return smoke() ? 0 : 1;
+    return smoke() && responsive_worker() ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

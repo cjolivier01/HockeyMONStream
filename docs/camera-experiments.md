@@ -44,9 +44,11 @@ the old camera view and cannot reveal pixels outside that crop.
 5. Click **Prepare historical start**. Preparation queries the nearest preceding checkpoint and
    advances through the original inputs to the selected boundary. It verifies the
    recorded camera trajectory before making the session available.
-6. Select the fast and/or Program/follower box, enable the parameters to override,
-   give the trial a name, and click **Apply & replay**. Unchecked parameters retain
-   their historical values. If **Video source confirmation** is unchecked, replay
+6. The experiment starts with a snapshot of the main window's current camera
+   settings, including player filtering and the selected fast/Program boxes.
+   These parameters are enabled for the trial; uncheck any parameter to retain
+   its historical value instead. Edit the settings, give the trial a name, and
+   click **Apply & replay**. If **Video source confirmation** is unchecked, replay
    points to that checkbox before calculating a trial or advancing its number.
 7. Use **View** to compare the recorded original, recomputed baseline, and named
    trials. **Repeat range**, the timeline, and the frame buttons revisit the same
@@ -64,7 +66,15 @@ historical starting configuration held constant across this passage. A candidate
 holds that configuration plus its overrides. Recorded control changes after the
 selected start therefore remain visible in Original, but do not overwrite a trial.
 Experiments use their own controls and tracker instances, independent of live
-Program controls and presets.
+Program controls and presets. Changes in an open experiment do not change the
+main window, and later main-window changes do not overwrite the experiment.
+
+Preparation and preview startup, seeks, loops, and teardown run in the background.
+An animated progress bar identifies pending work. Source and camera settings are
+disabled during preparation and playback; pause the preview to edit them. Cancel
+stops pending work, and closing the dialog keeps the window responsive while the
+renderer finishes using its native video window. Cancellation can take time while
+a decoder operation finishes.
 
 Changing recording, range, or media invalidates the prepared session. A range must
 stay within one source, seek/reset epoch, and canvas/arena geometry. Preparation
