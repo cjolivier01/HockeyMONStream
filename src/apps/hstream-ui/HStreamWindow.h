@@ -307,7 +307,8 @@ class HStreamWindow : public QMainWindow {
   void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
   void maybeStartDeferredRestart();
-  void savePreset();
+  bool savePreset();
+  void saveJobScript();
   void resetCameraControls();
   void cleanStitchingCalibration();
   void updateStitchFrameTimeAvailability();
@@ -372,7 +373,7 @@ class HStreamWindow : public QMainWindow {
   QString pipelineRunnerPath() const;
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
-  QStringList pipelineArguments() const;
+  QStringList pipelineArguments(bool standalone = false) const;
   QString highBitDepthMode() const;
   void setHighBitDepthMode(const QString& mode);
   bool setupPretrainedAssets(const QStringList& pipeline_args);

@@ -59,7 +59,11 @@
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMenu>
+#include <QtWidgets/QMenuBar>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
@@ -5146,6 +5150,37 @@ void HStreamWindow::buildUi() {
   main_log_splitter_->setSizes({680, 170});
   root->addWidget(main_log_splitter_, 1);
 
+  auto* file_menu = menuBar()->addMenu("&File");
+  auto* save_job = file_menu->addAction("Save job script…");
+  save_job->setObjectName("saveJobScriptAction");
+  connect(save_job, &QAction::triggered, this, [this]() { saveJobScript(); });
+  const auto button_action = [this](QMenu* menu, const QString& name) {
+    auto* button = findChild<QPushButton*>(name);
+    if (!button)
+      return;
+    auto* action = menu->addAction(button->icon(), button->text());
+    action->setObjectName("menuAction_" + name);
+    connect(action, &QAction::triggered, button, &QPushButton::click);
+    connect(menu, &QMenu::aboutToShow, action, [action, button]() {
+      action->setEnabled(button->isEnabled());
+      action->setText(button->text());
+      action->setIcon(button->icon());
+    });
+  };
+  button_action(file_menu, "savePresetButton");
+  button_action(file_menu, "createGameButton");
+  button_action(file_menu, "browseVideoButton");
+  button_action(file_menu, "addVideoButton");
+  file_menu->addSeparator();
+  auto* quit = file_menu->addAction("&Quit");
+  connect(quit, &QAction::triggered, this, [this]() { close(); });
+  auto* run_menu = menuBar()->addMenu("&Run");
+  for (const char* name : {"startPipelineButton", "pausePipelineButton", "stopPipelineButton", "restartStageButton"})
+    button_action(run_menu, name);
+  auto* tools_menu = menuBar()->addMenu("&Tools");
+  for (const char* name :
+       {"cameraExperimentsButton", "resetCameraButton", "selectRinkLevelingButton", "projectionCropButton"})
+    button_action(tools_menu, name);
   setCentralWidget(central);
   configureControlHelp();
   updateStitchFrameTimeAvailability();
@@ -8683,21 +8718,21 @@ void HStreamWindow::closeStitchingCalibrationDialog() {
   active_calibration_stage_.clear();
 }
 
-QStringList HStreamWindow::pipelineArguments() const {
-  const QString game_id = !active_run_game_id_.isEmpty()
+QStringList HStreamWindow::pipelineArguments(bool standalone) const {
+  const QString game_id = !standalone && !active_run_game_id_.isEmpty()
       ? active_run_game_id_
       : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
   const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
   const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
       qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
-  const bool embed_render_window =
-      hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
-      test_embedded_preview;
+  const bool embed_render_window = !standalone &&
+      (hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
+       test_embedded_preview);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";
-  if (active_force_reconfigure_)
+  if (!standalone && active_force_reconfigure_)
     args << "--force-reconfigure";
-  if (!active_calibration_invalidation_id_.isEmpty())
+  if (!standalone && !active_calibration_invalidation_id_.isEmpty())
     args << QString("--clean-expected-invalidation-id=%1").arg(active_calibration_invalidation_id_);
   if (isCalibrationRun()) {
     args << "--stitching-calibration-only";
@@ -8735,15 +8770,16 @@ QStringList HStreamWindow::pipelineArguments() const {
       args << "--show";
     }
   }
-  if (isCalibrationRun() || calibration_pending_) {
+  if (isCalibrationRun() || (!standalone && calibration_pending_)) {
     args << QString("--options=%1").arg(kStitchedPreviewPipelineOptions);
     args << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1")
                 .arg(
-                    active_calibration_frame_count_ > 0 ? active_calibration_frame_count_
-                                                        : stitchingCalibrationFrameCount());
+                    !standalone && active_calibration_frame_count_ > 0 ? active_calibration_frame_count_
+                                                                       : stitchingCalibrationFrameCount());
   }
-  if (!active_stitch_frame_time_.isEmpty() && active_stitch_frame_time_ != default_stitch_frame_time_) {
-    args << QString("--stitch-frame-time=%1").arg(active_stitch_frame_time_);
+  const QString frame_time = standalone ? stitchFrameTime() : active_stitch_frame_time_;
+  if (!frame_time.isEmpty() && frame_time != default_stitch_frame_time_) {
+    args << QString("--stitch-frame-time=%1").arg(frame_time);
   }
   if (embed_render_window) {
     QStringList preview_windows;
@@ -14566,9 +14602,98 @@ void HStreamWindow::maybeStartDeferredRestart() {
   startPipeline();
 }
 
-void HStreamWindow::savePreset() {
-  if (!ensureGameDirectory()) {
+void HStreamWindow::saveJobScript() {
+  if ((pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) ||
+      live_rotation_authorization_pending_) {
+    QMessageBox::information(this, "Save job script", "Stop playback before saving a job script.");
     return;
+  }
+  if (!ensureGameDirectory())
+    return;
+  const QString path = QFileDialog::getSaveFileName(
+      this,
+      "Save job script",
+      QDir(gameDirectory(game_id_edit_->text().trimmed())).filePath("hstream-job.sh"),
+      "Shell scripts (*.sh)");
+  if (path.isEmpty())
+    return;
+  const QString output_work_dir =
+      archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory());
+  bool accepted = false;
+  const QString directives = QInputDialog::getMultiLineText(
+      this,
+      "Save job options",
+      QString(
+          "This script runs hstream-cli directly. Archive MKVs and DriveGPT databases remain in working "
+          "storage; Play\'s MP4 remux and copying into the game directory are not performed.\n"
+          "Working output root: %1 (custom per-output paths still apply).\n\n"
+          "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
+          "The script already requests one node, one task and one GPU. Blank is fine for direct execution.")
+          .arg(output_work_dir),
+      QString(),
+      &accepted);
+  if (!accepted)
+    return;
+  QStringList args = {
+      "--game-dir",
+      QFileInfo(gameDirectory(game_id_edit_->text().trimmed())).absoluteFilePath(),
+      "--output",
+      path,
+      "--force",
+      "--runner",
+      pipelineRunnerPath(),
+      "--config",
+      QFileInfo(pipelineConfigPath("ds_hockey_app_config.yaml")).absoluteFilePath(),
+      "--working-directory",
+      pipelineWorkingDirectory()};
+  for (const QString& line : directives.split('\n')) {
+    const QString directive = line.trimmed();
+    if (directive.isEmpty())
+      continue;
+    if (!directive.startsWith("--")) {
+      QMessageBox::warning(this, "Save job script", "Each SBATCH directive must begin with --.");
+      return;
+    }
+    args << "--sbatch" << directive;
+  }
+  if (!savePreset()) {
+    QMessageBox::warning(this, "Save job script", "Could not save the current settings. See the runtime log.");
+    return;
+  }
+  const QString tool = !development_bazel_bin_.isEmpty()
+      ? QDir(development_bazel_bin_).filePath("src/apps/hstream-job/hstream-job")
+      : QDir(QCoreApplication::applicationDirPath()).filePath("hstream-job");
+  auto* process = new QProcess(this);
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  if (!baseline_config_root_.isEmpty())
+    env.insert("HM_CONFIG_ROOT", baseline_config_root_);
+  env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
+  process->setProcessEnvironment(env);
+  connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
+    if (error == QProcess::FailedToStart) {
+      QMessageBox::warning(this, "Save job script", "Could not launch hstream-job: " + process->errorString());
+      process->deleteLater();
+    }
+  });
+  connect(
+      process,
+      qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+      this,
+      [this, process, path](int code, QProcess::ExitStatus status) {
+        if (code == 0 && status == QProcess::NormalExit) {
+          appendLog("job script saved: " + path);
+          QMessageBox::information(this, "Save job script", "Saved executable script:\n" + path);
+        } else {
+          QMessageBox::warning(this, "Save job script", QString::fromUtf8(process->readAllStandardError()));
+        }
+        process->deleteLater();
+      });
+  process->start(tool, args);
+}
+
+bool HStreamWindow::savePreset() {
+  if (!ensureGameDirectory()) {
+    return false;
   }
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
@@ -14579,16 +14704,16 @@ void HStreamWindow::savePreset() {
     if (!rinkLevelingInputsUnchanged()) {
       appendLog(
           "Could not save the calibration view: camera or reference-frame settings changed. Restore them or recalibrate and reopen the view selector.");
-      return;
+      return false;
     }
     width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
     if (!width_constraint_check.has_value())
-      return;
+      return false;
   }
   auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
-    return;
+    return false;
   }
   YAML::Node config;
   const auto load_locked_config = [&]() {
@@ -14616,7 +14741,7 @@ void HStreamWindow::savePreset() {
     return previous;
   };
   if (!load_locked_config())
-    return;
+    return false;
   bool max_output_width_changed = saved_max_output_width() != selected_max_output_width;
   if (max_output_width_changed) {
     // Respect artifact -> config lock ordering only for an actual width
@@ -14625,14 +14750,14 @@ void HStreamWindow::savePreset() {
     if (!width_constraint_check.has_value())
       width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
     if (!width_constraint_check.has_value())
-      return;
+      return false;
     config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
     if (!config_lock.ok()) {
       appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
-      return;
+      return false;
     }
     if (!load_locked_config())
-      return;
+      return false;
     max_output_width_changed = saved_max_output_width() != selected_max_output_width;
     if (max_output_width_changed) {
       if (!evaluateStitchingCanvasConstraint(
@@ -14640,7 +14765,7 @@ void HStreamWindow::savePreset() {
               selected_max_output_width,
               /*width_changed=*/true,
               &*width_constraint_check)) {
-        return;
+        return false;
       }
     } else if (!pending_view) {
       width_constraint_check.reset();
@@ -14655,7 +14780,7 @@ void HStreamWindow::savePreset() {
         (pending_crop && revision != crop_selection_revision_)) {
       appendLog(
           "Could not save the calibration view: calibration or game settings changed. Reopen the leveling or crop selector.");
-      return;
+      return false;
     }
   }
   const QString previous_active_sidecar =
@@ -14676,7 +14801,7 @@ void HStreamWindow::savePreset() {
     if (!published_playtracker_sidecar.isEmpty()) {
       QFile::remove(published_playtracker_sidecar);
     }
-    return;
+    return false;
   }
   const QString intended_active_sidecar =
       resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
@@ -14692,7 +14817,7 @@ void HStreamWindow::savePreset() {
       }
       appendLog(QString("could not durably retire playtracker config %1: %2")
                     .arg(previous_active_sidecar, retirement_publish.ToString().c_str()));
-      return;
+      return false;
     }
   }
   absl::Status publish;
@@ -14776,7 +14901,7 @@ void HStreamWindow::savePreset() {
     }
     appendLog(QString("failed to write preset %1: %2")
                   .arg(QString::fromStdString(config_path.string()), publish.ToString().c_str()));
-    return;
+    return false;
   }
   pending_leveling_revision_.clear();
   crop_selection_revision_.clear();
@@ -14828,6 +14953,7 @@ void HStreamWindow::savePreset() {
     preset_save_retry_game_ids_.erase(game_id_edit_->text().trimmed());
   }
   captureSavedControlState();
+  return true;
 }
 
 void HStreamWindow::resetCameraControls() {
@@ -16132,6 +16258,19 @@ bool HStreamWindow::applySavedControlConfig(
     ++changed;
   }
   config["hstream_ui"]["camera_controls"] = controls;
+  YAML::Node job_arguments(YAML::NodeType::Sequence);
+  const QStringList standalone_arguments = pipelineArguments(true);
+  for (int index = 0; index < standalone_arguments.size(); ++index) {
+    const QString& argument = standalone_arguments[index];
+    if (argument == "-g" || argument == "-c") {
+      ++index;
+      continue;
+    }
+    if (argument == "--enable-sources=URI-MULTIPLE")
+      continue;
+    job_arguments.push_back(argument.toStdString());
+  }
+  config["hstream_ui"]["job"]["arguments"] = job_arguments;
 
   const QString stitch_frame_time = stitchFrameTime();
   const int selected_control_points = stitchingCalibrationControlPoints();

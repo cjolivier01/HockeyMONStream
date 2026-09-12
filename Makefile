@@ -35,7 +35,7 @@ WINDOWS_SIGNING_TIMESTAMP_URL ?= http://timestamp.digicert.com
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	hstream-cli run-hstream-cli hstream-ui run-hstream-ui pipeline-app run-pipeline-app \
+	hstream-job hstream-cli run-hstream-cli hstream-ui run-hstream-ui pipeline-app run-pipeline-app \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson wsl-deb windows-installer publish publish-dry-run delete-release
 
@@ -80,6 +80,9 @@ pipeline-app:
 
 hstream-cli:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hstream-cli
+
+hstream-job:
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-job:hstream-job
 
 hstream-assets:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-assets:hstream-assets
@@ -182,6 +185,7 @@ print_targets:
 		'' \
 		'Apps' \
 		'----' \
+		'hstream-job   Build the standalone job script exporter.' \
 		'hstream-cli   Build //src/apps/pipeline-app:hstream-cli.' \
 		'run-hstream-cli  Run hstream-cli with the canonical hockey config (RENDER sink).' \
 		'hstream-ui    Build //src/apps/hstream-ui:hstream-ui.' \

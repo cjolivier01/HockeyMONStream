@@ -179,6 +179,7 @@ bazelisk --batch --output_base="${output_base}" build \
   --config=opt --config=deb_jetson \
   //src/apps/pipeline-app:hstream-cli \
   //src/apps/hstream-assets:hstream-assets \
+  //src/apps/hstream-job:hstream-job \
   //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo \
   //src/gst-plugins/gst-dsxvideoconvert:libgstdsxvideoconvert.so \
   //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so \

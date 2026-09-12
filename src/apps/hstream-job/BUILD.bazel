@@ -1,0 +1,15 @@
+cc_binary(
+    name = "hstream-job",
+    srcs = ["main.cpp"],
+    copts = ["-std=c++17"],
+    data = ["//configs:ds_hockey_app_config.yaml"],
+    visibility = ["//visibility:public"],
+    deps = ["@yaml-cpp"],
+)
+
+sh_test(
+    name = "job_script_test",
+    srcs = ["JobScriptTest.py"],
+    args = ["$(location :hstream-job)"],
+    data = [":hstream-job"],
+)
