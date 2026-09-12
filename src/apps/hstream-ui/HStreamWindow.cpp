@@ -12510,7 +12510,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   if (archive_finalize_failed_)
     return;
   archive_finalize_failed_ = true;
-  QFile::remove(archive_finalize_partial_path_);
+  if (!archive_finalize_partial_path_.isEmpty())
+    QFile::remove(archive_finalize_partial_path_);
   archive_finalize_partial_path_.clear();
   if (!archive_finalize_temporary_dir_.isEmpty()) {
     QDir().rmdir(archive_finalize_temporary_dir_);

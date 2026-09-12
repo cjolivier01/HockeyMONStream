@@ -12,8 +12,6 @@
 #include <unistd.h>
 #include <yaml-cpp/node/parse.h>
 
-#include <opencv2/opencv.hpp>
-#include <opencv2/videoio.hpp>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -5907,8 +5905,7 @@ absl::Status Configurator::map_common_config_keys() {
   stitching::MappingBackend crop_rotation_backend;
   HM_ASSIGN_OR_RETURN(
       crop_rotation_backend,
-      stitching::ParseMappingBackend(
-          get_node_value(config_, "stitching.mapping_backend", std::string("nona"))));
+      stitching::ParseMappingBackend(get_node_value(config_, "stitching.mapping_backend", std::string("nona"))));
   bool suppress_crop_rotation = false;
   if (crop_rotation_backend == stitching::MappingBackend::kNona) {
     stitching::StitchProjectionFraming framing;

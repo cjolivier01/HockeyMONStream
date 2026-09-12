@@ -1,6 +1,5 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 
-#include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <cstdlib>
 #include <iostream>
@@ -9,7 +8,7 @@
  * @brief Main function for testing the Scoreboard perspective transform.
  *
  * Expects a game ID as a command-line argument to construct an image path.
- * Loads the image, applies the perspective transform using Scoreboard, and displays the result.
+ * Loads the image and applies the perspective transform using Scoreboard.
  *
  * @param argc Number of command-line arguments.
  * @param argv Command-line arguments.
@@ -49,10 +48,6 @@ int main(int argc, char** argv) {
   // cv::Mat warpedImage = scoreboard.forward_cv(image);
   cv::Mat warpedImage = scoreboard.forward_cuda(image);
   // cv::Mat warpedImage = scoreboard.forward(image);
-
-  // Display the warped image.
-  //cv::imshow("Warped Image", warpedImage);
-  //cv::waitKey(0);
 
   return 0;
 }

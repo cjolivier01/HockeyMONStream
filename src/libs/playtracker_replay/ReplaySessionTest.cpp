@@ -1,6 +1,7 @@
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <unistd.h>
 #include <cmath>
 #include <filesystem>

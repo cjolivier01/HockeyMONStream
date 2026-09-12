@@ -3,11 +3,20 @@
 #include <unistd.h>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryFile>
 #include <cerrno>
 #include <stdexcept>
 #include "hstream/src/libs/recording/Database.h"
+
+namespace {
+QString resolved_existing_directory_path(const QString& directory) {
+  const QFileInfo info(directory);
+  const QString canonical = info.canonicalFilePath();
+  return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+} // namespace
 
 namespace hm::ui_internal {
 TelemetryCsvPublicationResult publish_telemetry_database(
@@ -18,7 +27,8 @@ TelemetryCsvPublicationResult publish_telemetry_database(
   try {
     if (suffix && !QRegularExpression(R"(^(-\d+)?$)").match(*suffix).hasMatch())
       throw std::runtime_error("Invalid database generation suffix");
-    if (!QDir(directory).exists())
+    const QString publication_directory = resolved_existing_directory_path(directory);
+    if (!QDir(publication_directory).exists())
       throw std::runtime_error("Game directory does not exist");
     hm::recording::Database input(source.toStdString());
     input.Validate();
@@ -26,7 +36,7 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     hm::recording::Statement runs(input.get(), "SELECT count(*),sum(completed),sum(sample_count) FROM runs");
     if (!runs.Next() || !runs.Int(0) || runs.Int(0) != runs.Int(1) || runs.Int(2) <= 0)
       throw std::runtime_error("Only completed recordings can be published");
-    QTemporaryFile stage(QDir(directory).filePath(".hstream-database-XXXXXX"));
+    QTemporaryFile stage(QDir(publication_directory).filePath(".hstream-database-XXXXXX"));
     if (!stage.open())
       throw std::runtime_error(stage.errorString().toStdString());
     const QString staged_path = stage.fileName();
@@ -55,18 +65,19 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     close(file);
     if (synced)
       throw std::runtime_error("Cannot synchronize database copy");
-    const int dir = open(QFile::encodeName(directory).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    const int dir =
+        open(QFile::encodeName(publication_directory).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (dir < 0)
       throw std::runtime_error("Cannot open database publication directory");
     QString destination;
-    const qint64 first = suffix ? 0 : next_archive_generation(directory);
+    const qint64 first = suffix ? 0 : next_archive_generation(publication_directory);
     if (first < 0) {
       close(dir);
       throw std::runtime_error("Cannot determine next database generation");
     }
     for (uint64_t generation = first;; ++generation) {
       const QString part = suffix ? *suffix : (generation ? "-" + QString::number(generation) : QString());
-      destination = QDir(directory).filePath("hstream_telemetry" + part + ".db");
+      destination = QDir(publication_directory).filePath("hstream_telemetry" + part + ".db");
       if (link(QFile::encodeName(staged_path).constData(), QFile::encodeName(destination).constData()) == 0)
         break;
       if (errno != EEXIST || suffix) {

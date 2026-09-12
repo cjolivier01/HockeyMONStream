@@ -2,13 +2,11 @@
 #include "hstream/src/libs/common/Status.h"
 
 #include "cupano/pano/cudaMat.h"
-#include "cupano/utils/showImage.h"
 
 #include "jetson-utils/cuda/cudaOverlay.h"
 #include "jetson-utils/cuda/cudaResizeRoi.h"
 #include "jetson-utils/cuda/cudaWarp.h"
 
-#include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include "absl/synchronization/mutex.h"
 
@@ -338,8 +336,6 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
       /*y=*/0,
       stream);
   (void)cuErr;
-
-  SHOW_IMAGE(&full_image);
 
   cudaStreamDestroy(stream);
   return full_image.download();

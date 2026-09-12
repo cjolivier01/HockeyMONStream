@@ -2,21 +2,31 @@
 #include "hstream/src/libs/camera/MediaCtl.h"
 #include "hstream/src/libs/common/utils.h"
 
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
-#include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -156,7 +166,7 @@ std::string gstreamer_pipeline(
   return std::string(pipeline);
 }
 
-// Opens the camera stream, displays the image, and auto-adjusts the focus.
+// Opens the camera stream and auto-adjusts focus without a CPU GUI preview.
 absl::Status show_camera(
     int device_id,
     Focuser& focuser,
@@ -167,6 +177,9 @@ absl::Status show_camera(
     bool show,
     bool interactive,
     bool verbose) {
+  if (show || interactive) {
+    std::cerr << "Autofocus display and keyboard controls are unavailable; running headless." << std::endl;
+  }
   int max_index = 10;
   double max_value = 0.0;
   double last_value = 0.0;
@@ -181,8 +194,6 @@ absl::Status show_camera(
   }
 
   cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
-
-  const std::string window_name = std::string("CSI /dev/video") + std::to_string(device_id);
 
   if (focuser.bus == -1) {
     int bus_check = find_working_bus(0, 16, {});
@@ -200,32 +211,19 @@ absl::Status show_camera(
   int skip_frame = 6;
 
   if (cap.isOpened()) {
-    auto cleanup_cv2 = absl::Cleanup([&cap, show]() {
-      cap.release();
-      if (show) {
-        cv::destroyAllWindows();
-      }
-    });
-
     constexpr int kFocalDistanceIncrement = 4;
 
-    if (show) {
-      cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
-    }
     std::cout << "Focusing camera sensor device " << device_id << std::flush;
-    while (!show || cv::getWindowProperty("CSI Camera", cv::WND_PROP_AUTOSIZE) >= 0) {
+    while (!focus_finished) {
       cv::Mat img;
       if (!cap.read(img)) {
         std::cerr << "Failed to capture frame." << std::endl;
         break;
       }
-      if (show) {
-        cv::imshow("CSI Camera", img);
-      }
 
       if (skip_frame == 0) {
         skip_frame = 6;
-        if (dec_count < 6 && focal_distance < 1000) {
+        if (dec_count < 6 && focal_distance < Focuser::MAX_VALUE) {
           std::cout << '.' << std::flush;
           if (!focusing(focuser, focal_distance, verbose)) {
             return absl::InternalError("Could not focus camera");
@@ -251,32 +249,18 @@ absl::Status show_camera(
             focus_finished = true;
             std::cout << "Done." << std::endl;
           }
+        } else if (!focus_finished) {
+          if (!focusing(focuser, max_index, verbose)) {
+            return absl::InternalError("Could not focus camera");
+          }
+          focus_finished = true;
+          std::cout << "Done." << std::endl;
         }
       } else {
         skip_frame--;
       }
-      // Wait for a key, or just delay
-      const int keyCode = cv::waitKey(16) & 0xFF;
-      if (interactive) {
-        if (keyCode == 27) { // ESC key to exit
-          break;
-        } else if (keyCode == 10 || keyCode == 32) { // ENTER or SPACE resets focusing
-          max_index = 10;
-          max_value = 0.0;
-          last_value = 0.0;
-          dec_count = 0;
-          focal_distance = 10;
-          focus_finished = false;
-        } else if (keyCode && keyCode != 255) {
-          if (verbose) {
-            std::cout << "keyCode = " << keyCode << std::endl;
-          }
-        }
-      }
-      if (!interactive && focus_finished) {
-        break;
-      }
     }
+    cap.release();
   } else {
     return absl::InternalError("Unable to open camera");
   }
@@ -327,9 +311,6 @@ absl::Status auto_focus_cameras(
     bool interactive,
     bool verbose,
     bool force) {
-  show = true;
-  verbose = true;
-
   std::vector<std::unique_ptr<std::thread>> threads(cameras.size());
   std::vector<absl::Status> statuses(cameras.size(), absl::OkStatus());
   for (size_t i = 0; i < cameras.size(); ++i) {
