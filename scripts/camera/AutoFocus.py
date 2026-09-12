@@ -8,6 +8,10 @@
 import cv2
 import numpy as py
 import os
+import select
+import sys
+import termios
+import tty
 
 # from Focuser import Focuser
 
@@ -134,9 +138,59 @@ def gstreamer_pipeline(
     )
 
 
+class JetsonPreview:
+    def __init__(self, title: str, width: int, height: int):
+        try:
+            from jetson_utils import cudaFromNumpy, glDisplay
+        except ImportError as exc:
+            raise RuntimeError(
+                "AutoFocus.py preview requires the jetson_utils Python bindings; pass --headless to run without display."
+            ) from exc
+
+        self._cuda_from_numpy = cudaFromNumpy
+        self._display = glDisplay(title, width, height)
+        self._title = title
+
+    def is_open(self):
+        return self._display is not None and self._display.IsOpen()
+
+    def render(self, img):
+        if not self.is_open():
+            return False
+
+        cuda_img = self._cuda_from_numpy(py.ascontiguousarray(img), isBGR=True)
+        self._display.BeginRender()
+        try:
+            self._display.Render(cuda_img)
+        finally:
+            self._display.EndRender()
+        self._display.SetTitle("{} | {:.0f} FPS".format(self._title, self._display.GetFPS()))
+        return self.is_open()
+
+
+def read_terminal_key():
+    if not sys.stdin.isatty():
+        return None
+
+    fd = sys.stdin.fileno()
+    try:
+        old = termios.tcgetattr(fd)
+    except termios.error:
+        return None
+
+    try:
+        tty.setcbreak(fd)
+        readable, _, _ = select.select([sys.stdin], [], [], 0)
+        if not readable:
+            return None
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 # Bad focus: i2cset -y 2 0x0C 50 255
 
-def show_camera(device_id: int, focuser: Focuser):
+def show_camera(device_id: int, focuser: Focuser, show: bool = True):
     max_index = 10
     max_value = 0.0
     last_value = 0.0
@@ -150,40 +204,62 @@ def show_camera(device_id: int, focuser: Focuser):
     focusing(focuser=focuser, val=focal_distance)
     skip_frame = 6
     if cap.isOpened():
-        while not focus_finished:
-            ret_val, img = cap.read()
-            assert ret_val
+        preview = None
+        try:
+            while show or not focus_finished:
+                ret_val, img = cap.read()
+                assert ret_val
+                if show:
+                    if preview is None:
+                        preview = JetsonPreview(f"CSI Camera {device_id}", img.shape[1], img.shape[0])
+                    if not preview.render(img):
+                        break
 
-            if skip_frame == 0:
-                skip_frame = 6
-                if dec_count < 6 and focal_distance < 1000:
-                    # Adjust focus
-                    focusing(focuser=focuser, val=focal_distance)
-                    # Take image and calculate image clarity
-                    val = laplacian(img)
-                    # Find the maximum image clarity
-                    if val > max_value:
-                        max_index = focal_distance
-                        max_value = val
+                if skip_frame == 0:
+                    skip_frame = 6
+                    if dec_count < 6 and focal_distance < 1000:
+                        # Adjust focus
+                        focusing(focuser=focuser, val=focal_distance)
+                        # Take image and calculate image clarity
+                        val = laplacian(img)
+                        # Find the maximum image clarity
+                        if val > max_value:
+                            max_index = focal_distance
+                            max_value = val
 
-                    # If the image clarity starts to decrease
-                    if val < last_value:
-                        dec_count += 1
-                    else:
-                        dec_count = 0
-                    # Image clarity is reduced by six consecutive frames
-                    if dec_count < 6:
-                        last_value = val
-                        # Increase the focal distance
-                        focal_distance += 10
+                        # If the image clarity starts to decrease
+                        if val < last_value:
+                            dec_count += 1
+                        else:
+                            dec_count = 0
+                        # Image clarity is reduced by six consecutive frames
+                        if dec_count < 6:
+                            last_value = val
+                            # Increase the focal distance
+                            focal_distance += 10
 
-                elif not focus_finished:
-                    # Adjust focus to the best
-                    focusing(focuser=focuser, val=max_index)
-                    focus_finished = True
-            else:
-                skip_frame = skip_frame - 1
-        cap.release()
+                    elif not focus_finished:
+                        # Adjust focus to the best
+                        focusing(focuser=focuser, val=max_index)
+                        focus_finished = True
+                        print("Done.")
+                else:
+                    skip_frame = skip_frame - 1
+
+                key = read_terminal_key()
+                if key == "\x1b":
+                    break
+                elif key in ("\n", "\r", " "):
+                    max_index = 10
+                    max_value = 0.0
+                    last_value = 0.0
+                    dec_count = 0
+                    focal_distance = 10
+                    focus_finished = False
+                elif key:
+                    print(f"keyCode={ord(key)}")
+        finally:
+            cap.release()
     else:
         print("Unable to open camera")
 
@@ -208,10 +284,15 @@ def parse_cmdline():
         default=0,
         help="Set device sensor id",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without the jetson_utils preview window.",
+    )
 
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_cmdline()
-    show_camera(device_id=args.device_id, focuser=Focuser(args.i2c_bus))
+    show_camera(device_id=args.device_id, focuser=Focuser(args.i2c_bus), show=not args.headless)
