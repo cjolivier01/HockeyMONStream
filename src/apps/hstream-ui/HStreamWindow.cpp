@@ -5614,7 +5614,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       existing->activateWindow();
       return;
     }
-    auto* dialog = new CameraExperimentDialog(gameDirectoryText(), this);
+    std::map<QString, double> current_controls;
+    for (const auto& [id, value] : camera_defaults_)
+      current_controls[id] = cameraControlValue(id);
+    auto* dialog = new CameraExperimentDialog(gameDirectoryText(), this, current_controls);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
   });

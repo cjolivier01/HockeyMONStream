@@ -491,7 +491,9 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
 bool CameraExperimentPreview::SetTrajectory(
     std::shared_ptr<const std::vector<Frame>> frames,
     std::uint64_t end_pts_ns,
-    std::string* error) {
+    std::string* error,
+    bool play,
+    std::size_t index) {
   if ((!impl_->media.stitching && !impl_->graph) || !frames || frames->empty() || frames->back().pts_ns >= end_pts_ns)
     return fail(error, "No prepared trajectory is available for preview.");
   Pause();
@@ -503,7 +505,7 @@ bool CameraExperimentPreview::SetTrajectory(
     if (!impl_->video_pts(impl_->frames->front().pts_ns) || !impl_->video_pts(end_pts_ns))
       return fail(error, "The media PTS binding maps the selected range outside video time.");
   }
-  return Seek(0, false, error);
+  return Seek(index, play, error);
 }
 
 bool CameraExperimentPreview::Seek(std::size_t index, bool play, std::string* error) {
@@ -582,6 +584,7 @@ bool CameraExperimentPreview::Seek(std::size_t index, bool play, std::string* er
       s.initial_seek_pending = true;
   }
   gst_element_set_state(s.graph, GST_STATE_PAUSED);
+  s.seek_started = std::chrono::steady_clock::now();
   // Decodebin's dynamic source pads must exist before a seek can propagate.
   // Poll completes this initial seek after preroll, without blocking Qt.
   if (s.initial_seek_pending)
@@ -607,6 +610,7 @@ bool CameraExperimentPreview::Seek(std::size_t index, bool play, std::string* er
   }
   if (play)
     gst_element_set_state(s.graph, GST_STATE_PLAYING);
+  s.seek_started = std::chrono::steady_clock::now();
   return true;
 }
 
@@ -657,7 +661,6 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
       std::lock_guard<std::mutex> lock(s.mutex);
       s.primed = true;
       s.initial_seek_pending = true;
-      s.seek_started = std::chrono::steady_clock::now();
     }
     // Source recovery after a keyframe seek needs running NVIDIA decoders.
     // A paused renderer prerolls exactly one frame and applies backpressure
@@ -670,11 +673,15 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
       s.error = "Could not start the original-camera preview";
       s.seeking = s.playing = false;
     }
+    // Plugin/decoder startup can itself take seconds. Start the presentation
+    // deadline after that blocking operation, which runs on the preview worker.
+    s.seek_started = std::chrono::steady_clock::now();
   }
   if (s.raw && s.initial_seek_pending && s.raw->Position()) {
     s.initial_seek_pending = false;
     if (s.playing)
       gst_element_set_state(s.graph, GST_STATE_PLAYING);
+    s.seek_started = std::chrono::steady_clock::now();
   }
   bool ended = false;
   if (s.bus) {

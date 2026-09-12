@@ -33,7 +33,12 @@ class CameraExperimentPreview {
       double left_rotation,
       double right_rotation,
       std::string* error);
-  bool SetTrajectory(std::shared_ptr<const std::vector<Frame>> frames, std::uint64_t end_pts_ns, std::string* error);
+  bool SetTrajectory(
+      std::shared_ptr<const std::vector<Frame>> frames,
+      std::uint64_t end_pts_ns,
+      std::string* error,
+      bool play = false,
+      std::size_t index = 0);
   bool Seek(std::size_t index, bool play, std::string* error);
   void Pause();
   void SetLoop(bool loop);

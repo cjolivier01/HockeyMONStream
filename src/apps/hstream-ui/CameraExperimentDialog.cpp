@@ -2,7 +2,7 @@
 #include "hstream/src/libs/recording/Database.h"
 
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
-#include "src/apps/hstream-ui/CameraExperimentPreview.h"
+#include "src/apps/hstream-ui/CameraExperimentPreviewWorker.h"
 #include "src/apps/hstream-ui/CameraExperimentSource.h"
 
 #include <QtCore/QDebug>
@@ -15,6 +15,7 @@
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
+#include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
@@ -27,6 +28,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSlider>
@@ -40,6 +42,7 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <limits>
 #include <map>
 #include <optional>
 #include <utility>
@@ -209,13 +212,23 @@ struct CameraExperimentDialog::Impl {
   QLabel* frame_label{nullptr};
   QSlider* timeline{nullptr};
   QWidget* settings{nullptr};
+  QWidget* parameter_tabs{nullptr};
+  QPushButton* previous{nullptr};
+  QPushButton* next{nullptr};
+  QProgressBar* progress{nullptr};
+  QLabel* activity{nullptr};
+  bool calculating{false};
+  bool frame_ready{false};
+  bool preview_loading{false};
+  std::optional<int> closing_result;
   ExperimentVideoTarget* video{nullptr};
   CameraPathPlot* plot{nullptr};
   std::vector<Control> controls;
+  std::map<QString, double> initial_controls;
   std::shared_ptr<replay::ReplaySession> session;
   std::vector<replay::TrialResult> trials;
   std::shared_ptr<const std::vector<replay::Frame>> selected;
-  CameraExperimentPreview preview;
+  CameraExperimentPreviewWorker preview;
   std::future<WorkResult> work;
   std::shared_ptr<std::atomic<bool>> cancellation;
   bool preview_open{false};
@@ -253,14 +266,53 @@ struct CameraExperimentDialog::Impl {
       qWarning().noquote() << "Camera experiment:" << text;
   }
 
+  void update_controls() {
+    const auto state = preview.Poll();
+    const bool loading = state.busy || state.seeking;
+    const bool active = calculating || loading || closing_result.has_value();
+    const bool editable = !active && !playing;
+    const bool prepared = session && !source_dirty;
+    prepare->setEnabled(editable);
+    apply->setEnabled(editable && prepared);
+    cancel->setEnabled(active && !closing_result);
+    // A stopped preview owns a snapshot of its inputs. Source edits remain safe
+    // while that graph is being released, without stealing focus on each key.
+    settings->setEnabled(!calculating && !closing_result && !playing && (!loading || !preview_open));
+    parameter_tabs->setEnabled(editable);
+    fast->setEnabled(editable);
+    follower->setEnabled(editable);
+    trial_name->setEnabled(editable);
+    comparison->setEnabled(!active && prepared);
+    timeline->setEnabled(!active && prepared && !playing);
+    previous->setEnabled(!active && prepared && !playing);
+    next->setEnabled(!active && prepared && !playing);
+    play->setEnabled(!calculating && !closing_result && prepared && (!loading || playing));
+    play->setText(playing ? "Pause" : "Play preview");
+    save->setEnabled(editable && prepared && comparison->currentIndex() >= 2);
+    capture->setEnabled(!active && prepared && frame_ready);
+    loop->setEnabled(!calculating && !closing_result);
+    progress->setVisible(active);
+    activity->setVisible(active || playing);
+    activity->setText(
+        closing_result    ? "Finishing background work before closing…"
+            : calculating ? "Preparing experiment…"
+            : loading     ? "Loading or stopping preview…"
+            : playing     ? "Playing preview · Pause to edit camera settings"
+                          : "");
+  }
+
   void busy(bool active) {
-    prepare->setEnabled(!active);
-    apply->setEnabled(!active && session != nullptr && !source_dirty);
-    cancel->setEnabled(active);
-    settings->setEnabled(!active);
-    legacy_arena->setEnabled(!active);
-    legacy_config->setEnabled(!active);
-    save->setEnabled(!active && !source_dirty && comparison->currentIndex() >= 2);
+    calculating = active;
+    update_controls();
+  }
+
+  void close_preview() {
+    preview.Close();
+    preview_open = false;
+    playing = false;
+    frame_ready = false;
+    preview_loading = false;
+    update_controls();
   }
 
   void invalidate_source() {
@@ -271,9 +323,7 @@ struct CameraExperimentDialog::Impl {
     play->setEnabled(false);
     capture->setEnabled(false);
     save->setEnabled(false);
-    preview.Close();
-    preview_open = false;
-    playing = false;
+    close_preview();
     show_status("Recording or range changed. Prepare its historical start before applying a trial.");
   }
 
@@ -288,12 +338,27 @@ struct CameraExperimentDialog::Impl {
     value->setObjectName("experimentValue_" + QString::fromLatin1(spec.id));
     value->setRange(spec.minimum / static_cast<double>(spec.divisor), spec.maximum / static_cast<double>(spec.divisor));
     value->setDecimals(spec.divisor == 1 ? 0 : spec.divisor == 10 ? 1 : 2);
+    if (std::string(spec.id) == "Oversized_Player_Percent") {
+      // Match the main UI's native percentage domain without rounding or
+      // clamping a copied value before it becomes an enabled trial override.
+      value->setDecimals(std::numeric_limits<double>::max_digits10);
+      value->setRange(0, std::numeric_limits<double>::max());
+      value->setMaximumWidth(180);
+    }
     value->setSingleStep(1.0 / spec.divisor);
     value->setValue(spec.default_value / static_cast<double>(spec.divisor));
     value->setEnabled(false);
     value->setToolTip(
         "Enable this override to change it at the selected start frame. Unchecked controls retain recorded values.");
     QObject::connect(enabled, &QCheckBox::toggled, value, &QWidget::setEnabled);
+    const auto initial = initial_controls.find(QString::fromLatin1(spec.id));
+    if (initial != initial_controls.end()) {
+      const double copied = initial->second / spec.divisor;
+      // Loaded main-window controls can extend beyond the presentation ranges.
+      value->setRange(std::min(value->minimum(), copied), std::max(value->maximum(), copied));
+      value->setValue(copied);
+      enabled->setChecked(true);
+    }
     layout->addRow(enabled, value);
     controls.push_back({spec, enabled, value});
   }
@@ -352,6 +417,7 @@ struct CameraExperimentDialog::Impl {
     const bool raw = original_cameras();
     cancellation = std::make_shared<std::atomic<bool>>(false);
     auto token = cancellation;
+    close_preview();
     busy(true);
     show_status("Preparing historical state and verifying the original camera trajectory…");
     work = std::async(std::launch::async, [options, token, media, raw]() {
@@ -381,6 +447,8 @@ struct CameraExperimentDialog::Impl {
   void run_trial() {
     if (!session || work.valid())
       return;
+    if (!confirm_preview_source())
+      return;
     auto values = tuning();
     if (!values.ok()) {
       show_status(QString::fromStdString(values.status().ToString()), true);
@@ -392,6 +460,7 @@ struct CameraExperimentDialog::Impl {
                                                                     : trial_name->text().trimmed().toStdString();
     cancellation = std::make_shared<std::atomic<bool>>(false);
     auto token = cancellation;
+    close_preview();
     busy(true);
     show_status("Restoring the same starting state and calculating this trial…");
     work = std::async(std::launch::async, [prepared, parameters, token, name]() {
@@ -405,14 +474,21 @@ struct CameraExperimentDialog::Impl {
     });
   }
 
-  bool open_preview() {
-    if (!session || !selected || selected->empty())
-      return false;
+  bool confirm_preview_source() {
     if (!uncropped->isChecked()) {
       show_status(
-          "Confirm that these are the corresponding camera sources and stitching geometry, or the uncropped panorama.");
+          QString("Playback needs source confirmation. Check “%1” under Video source confirmation, then try again.")
+              .arg(uncropped->text()),
+          true);
+      uncropped->setFocus(Qt::OtherFocusReason);
       return false;
     }
+    return true;
+  }
+
+  bool open_preview(bool play_video = false, std::size_t index = 0) {
+    if (!session || !selected || selected->empty() || !confirm_preview_source())
+      return false;
     if (QGuiApplication::platformName() != "xcb") {
       show_status("Video preview requires an X11 display. Camera trajectories remain available here.", true);
       return false;
@@ -434,27 +510,36 @@ struct CameraExperimentDialog::Impl {
       return false;
     }
     binding = media_binding();
-    std::string error;
-    if (!preview_open) {
-      const auto& first = selected->front();
-      preview_open = preview.Open(
-          binding,
-          session->width(),
-          session->height(),
-          video->winId(),
-          first.edge_rotation_left,
-          first.edge_rotation_right,
-          &error);
-    }
-    if (preview_open && preview.SetTrajectory(selected, session->end_pts_ns(), &error)) {
-      preview.SetLoop(loop->isChecked());
-      show_status("Preview ready. Video binding is manually selected; every pass uses the prepared historical state.");
-      return true;
-    }
-    preview.Close();
-    preview_open = false;
-    show_status(QString::fromStdString(error), true);
-    return false;
+    const auto media = binding;
+    const auto frames = selected;
+    const auto width = session->width();
+    const auto height = session->height();
+    const auto end = session->end_pts_ns();
+    const auto window = video->winId(); // QWidget access stays on Qt's thread.
+    const bool reopen = !preview_open;
+    const bool repeat = loop->isChecked();
+    preview.Submit(
+        [media, frames, width, height, end, window, reopen, repeat, play_video, index](auto& engine, auto* error) {
+          if (reopen &&
+              !engine.Open(
+                  media,
+                  width,
+                  height,
+                  window,
+                  frames->front().edge_rotation_left,
+                  frames->front().edge_rotation_right,
+                  error))
+            return false;
+          engine.SetLoop(repeat);
+          return engine.SetTrajectory(frames, end, error, play_video, index);
+        });
+    preview_open = true;
+    playing = play_video;
+    frame_ready = false;
+    preview_loading = true;
+    show_status("Loading preview… Every pass uses the prepared historical state.");
+    update_controls();
+    return true;
   }
 
   void select_comparison(bool replay_now = false) {
@@ -479,11 +564,7 @@ struct CameraExperimentDialog::Impl {
     save->setEnabled(index >= 2 && !source_dirty && !work.valid());
     update_frame();
     if (!source_dirty && (preview_open || replay_now)) {
-      if (open_preview() && replay_now) {
-        std::string error;
-        if (!preview.Seek(0, true, &error))
-          show_status(QString::fromStdString(error), true);
-      }
+      open_preview(replay_now);
     }
   }
 
@@ -516,9 +597,10 @@ struct CameraExperimentDialog::Impl {
     update_frame();
     if (preview_open) {
       capture->setEnabled(false);
-      std::string error;
-      if (!preview.Seek(index, play_video, &error))
-        show_status(QString::fromStdString(error), true);
+      frame_ready = false;
+      preview.Submit([index, play_video](auto& engine, auto* error) { return engine.Seek(index, play_video, error); });
+      playing = play_video;
+      update_controls();
     }
   }
 
@@ -538,9 +620,7 @@ struct CameraExperimentDialog::Impl {
       } else if (!result.error.empty()) {
         show_status(QString::fromStdString(result.error), true);
       } else if (result.session) {
-        preview.Close();
-        preview_open = false;
-        playing = false;
+        close_preview();
         session = std::move(result.session);
         source_dirty = false;
         trials.clear();
@@ -573,28 +653,38 @@ struct CameraExperimentDialog::Impl {
       }
       busy(false);
     }
+    const auto state = preview.Poll();
     if (preview_open) {
-      const auto state = preview.Poll();
-      playing = state.playing;
-      play->setText(playing ? "Pause" : "Play preview");
-      capture->setEnabled(state.frame.has_value() && !state.seeking);
+      if (!state.busy)
+        playing = state.playing;
+      frame_ready = state.frame.has_value() && !state.seeking && !state.busy;
       if (!state.error.empty()) {
         show_status(QString::fromStdString(state.error), true);
-        capture->setEnabled(false);
-        preview.Close();
-        preview_open = false;
-        playing = false;
+        close_preview();
       } else if (state.frame) {
+        if (frame_ready && preview_loading) {
+          preview_loading = false;
+          show_status("Preview ready. Every pass uses the prepared historical state.");
+        }
         current = *state.frame;
         update_frame();
       }
     }
+    update_controls();
+    if (closing_result && !work.valid() && !state.busy && !state.open) {
+      const int result = *closing_result;
+      QTimer::singleShot(0, dialog, [owner = dialog, result] { owner->done(result); });
+    }
   }
 };
 
-CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QWidget* parent)
+CameraExperimentDialog::CameraExperimentDialog(
+    const QString& game_directory,
+    QWidget* parent,
+    const std::map<QString, double>& camera_controls)
     : QDialog(parent), impl_(std::make_unique<Impl>(this)) {
   auto& s = *impl_;
+  s.initial_controls = camera_controls;
   setWindowTitle("HStream · Camera experiments");
   setObjectName("cameraExperimentDialog");
   resize(1440, 980);
@@ -700,10 +790,10 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.duration->setMinimum(0.1);
   s.video_origin = time_control("experimentVideoOrigin", "First selected frame in video", 0, 86400);
   range->addStretch();
+  source_layout->addRow(range);
   s.uncropped = new QCheckBox();
   s.uncropped->setObjectName("experimentUncropped");
-  range->addWidget(s.uncropped);
-  source_layout->addRow(range);
+  source_layout->addRow("Video source confirmation", s.uncropped);
   root->addWidget(s.settings);
 
   auto* splitter = new QSplitter(Qt::Horizontal);
@@ -725,9 +815,9 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.frame_label->setWordWrap(true);
   left_layout->addWidget(s.frame_label);
   auto* transport = new QHBoxLayout();
-  auto* previous = new QPushButton("◀ Frame");
+  auto* previous = s.previous = new QPushButton("◀ Frame");
   previous->setObjectName("experimentPrevious");
-  auto* next = new QPushButton("Frame ▶");
+  auto* next = s.next = new QPushButton("Frame ▶");
   next->setObjectName("experimentNext");
   s.play = new QPushButton("Play preview");
   s.play->setObjectName("experimentPlay");
@@ -756,7 +846,9 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   auto* right_layout = new QVBoxLayout(right);
   right_layout->setContentsMargins(4, 0, 0, 0);
   auto* help = new QLabel(
-      "Enable only the parameters to change. Unchecked controls preserve their values at the recorded start.");
+      camera_controls.empty()
+          ? "Enable only the parameters to change. Unchecked controls preserve their recorded values."
+          : "Trials start with the main window’s current camera controls. Uncheck a parameter to use its recorded value.");
   help->setWordWrap(true);
   right_layout->addWidget(help);
   auto* targets = new QHBoxLayout();
@@ -765,10 +857,15 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.follower = new QCheckBox("Program / follower box");
   s.follower->setObjectName("experimentFollowerBox");
   s.follower->setChecked(true);
+  if (const auto value = camera_controls.find("Apply_To_Fast_Box"); value != camera_controls.end())
+    s.fast->setChecked(value->second != 0);
+  if (const auto value = camera_controls.find("Apply_To_Follower_Box"); value != camera_controls.end())
+    s.follower->setChecked(value->second != 0);
   targets->addWidget(s.fast);
   targets->addWidget(s.follower);
   right_layout->addLayout(targets);
   auto* tabs = new QTabWidget();
+  s.parameter_tabs = tabs;
   tabs->setObjectName("experimentControlTabs");
   const auto defaults = [](const QString& id) { return id == "Zoom_In_Aggressiveness" ? 25 : 0; };
   auto control_tab = [&](const QString& label, const std::vector<CameraSliderSpec>& specs) {
@@ -787,7 +884,12 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   control_tab("Motion", motion_control_specs(defaults));
   control_tab(
       "Players",
-      {{"Ignore_Largest_Count", "Ignore largest players", 0, 20, 0, "ignore-largest-bbox-count"},
+      {{"Ignore_Largest_Count",
+        "Ignore largest players",
+        0,
+        std::numeric_limits<int>::max(),
+        0,
+        "ignore-largest-bbox-count"},
        {"Ignore_Oversized_Players", "Ignore oversized players (0 / 1)", 0, 1, 0, "ignore-oversized-bboxes"},
        {"Oversized_Player_Percent", "Larger than average (%)", 0, 1000, 50, "oversized-bbox-percent"}});
   auto* legacy = new QWidget();
@@ -834,6 +936,17 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   s.provenance->setObjectName("experimentProvenance");
   s.provenance->setWordWrap(true);
   root->addWidget(s.provenance);
+  s.progress = new QProgressBar();
+  s.progress->setObjectName("experimentProgress");
+  s.progress->setRange(0, 0);
+  s.progress->setTextVisible(false);
+  s.progress->setFixedHeight(8);
+  s.progress->hide();
+  root->addWidget(s.progress);
+  s.activity = new QLabel();
+  s.activity->setObjectName("experimentActivity");
+  s.activity->hide();
+  root->addWidget(s.activity);
   s.status = new QLabel("Select a completed DriveGPT recording and a short range, then prepare its historical start.");
   s.status->setObjectName("experimentStatus");
   s.status->setWordWrap(true);
@@ -857,7 +970,8 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   connect(s.cancel, &QPushButton::clicked, this, [this]() {
     if (impl_->cancellation)
       impl_->cancellation->store(true);
-    impl_->show_status("Cancelling preparation…");
+    impl_->close_preview();
+    impl_->show_status("Cancelling background work…");
   });
   auto update_source_mode = [&s]() {
     s.game_path->parentWidget()->setEnabled(s.original_cameras());
@@ -881,18 +995,10 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   connect(s.run_id, &QComboBox::currentIndexChanged, this, [this]() { impl_->invalidate_source(); });
   for (QDoubleSpinBox* source : {s.in, s.duration})
     connect(source, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->invalidate_source(); });
-  connect(s.video_origin, &QDoubleSpinBox::valueChanged, this, [this]() {
-    impl_->preview.Close();
-    impl_->preview_open = false;
-    impl_->capture->setEnabled(false);
-    impl_->playing = false;
-  });
+  connect(s.video_origin, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->close_preview(); });
   connect(s.uncropped, &QCheckBox::toggled, this, [this](bool checked) {
     if (!checked) {
-      impl_->preview.Close();
-      impl_->preview_open = false;
-      impl_->capture->setEnabled(false);
-      impl_->playing = false;
+      impl_->close_preview();
     }
   });
   connect(s.comparison, &QComboBox::currentIndexChanged, this, [this](int) { impl_->select_comparison(); });
@@ -902,17 +1008,31 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
       impl_->seek(impl_->current - 1);
   });
   connect(next, &QPushButton::clicked, this, [this]() { impl_->seek(impl_->current + 1); });
-  connect(s.loop, &QCheckBox::toggled, this, [this](bool checked) { impl_->preview.SetLoop(checked); });
+  connect(s.loop, &QCheckBox::toggled, this, [this](bool checked) {
+    if (impl_->preview_open)
+      impl_->preview.Submit([checked](auto& engine, auto*) {
+        engine.SetLoop(checked);
+        return true;
+      });
+  });
   connect(s.play, &QPushButton::clicked, this, [this]() {
     auto& state = *impl_;
     if (state.playing) {
-      state.preview.Pause();
+      state.preview.Submit([](auto& engine, auto*) {
+        engine.Pause();
+        return true;
+      });
+      state.playing = false;
+      state.update_controls();
       return;
     }
-    if (state.preview_open || state.open_preview()) {
-      std::string error;
-      if (!state.preview.Seek(state.current, true, &error))
-        state.show_status(QString::fromStdString(error), true);
+    if (state.preview_open) {
+      const auto index = state.current;
+      state.preview.Submit([index](auto& engine, auto* error) { return engine.Seek(index, true, error); });
+      state.playing = true;
+      state.update_controls();
+    } else {
+      state.open_preview(true, state.current);
     }
   });
   connect(s.save, &QPushButton::clicked, this, [this]() {
@@ -945,6 +1065,7 @@ CameraExperimentDialog::CameraExperimentDialog(const QString& game_directory, QW
   auto* poll = new QTimer(this);
   connect(poll, &QTimer::timeout, this, [this]() { impl_->poll(); });
   poll->start(30);
+  s.update_controls();
 }
 
 CameraExperimentDialog::~CameraExperimentDialog() {
@@ -954,6 +1075,30 @@ CameraExperimentDialog::~CameraExperimentDialog() {
     impl_->work.wait();
   // Fence the renderer while its Qt native child is still alive.
   impl_->preview.Close();
+}
+
+void CameraExperimentDialog::done(int result) {
+  const auto state = impl_->preview.Poll();
+  if (!impl_->work.valid() && !state.busy && !state.open) {
+    QDialog::done(result);
+    return;
+  }
+  if (!impl_->closing_result) {
+    impl_->closing_result = result;
+    if (impl_->cancellation)
+      impl_->cancellation->store(true);
+    impl_->close_preview();
+  }
+}
+
+void CameraExperimentDialog::closeEvent(QCloseEvent* event) {
+  const auto state = impl_->preview.Poll();
+  if (impl_->work.valid() || state.busy || state.open) {
+    event->ignore();
+    done(QDialog::Rejected);
+  } else {
+    QDialog::closeEvent(event);
+  }
 }
 
 bool CameraExperimentDialog::captureScreenshot(const QString& path, QString* error) {
