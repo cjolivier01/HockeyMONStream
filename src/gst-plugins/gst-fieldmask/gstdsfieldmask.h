@@ -4,15 +4,9 @@
 #include <gst/base/gstbasetransform.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
-
-/* Open CV headers */
-#pragma GCC diagnostic push
-#if __GNUC__ >= 8
-#pragma GCC diagnostic ignored "-Wclass-memaccess"
-#endif
-#include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
-#pragma GCC diagnostic pop
+#include <limits.h>
+#include <unistd.h>
 
 #include <cuda.h>
 #include <cuda_runtime.h>

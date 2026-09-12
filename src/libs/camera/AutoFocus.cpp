@@ -2,21 +2,31 @@
 #include "hstream/src/libs/camera/MediaCtl.h"
 #include "hstream/src/libs/common/utils.h"
 
+#include "cupano/utils/showImage.h"
+
+#include <fcntl.h>
+#include <termios.h>
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -114,6 +124,29 @@ bool focusing(Focuser& focuser, int val, bool verbose) {
   return focuser.set(Focuser::OPT_FOCUS, val, verbose);
 }
 
+std::optional<int> read_terminal_key() {
+  struct termios oldt, newt;
+  if (tcgetattr(STDIN_FILENO, &oldt) != 0) {
+    return std::nullopt;
+  }
+  newt = oldt;
+  newt.c_lflag &= ~(ICANON | ECHO);
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &newt) != 0) {
+    return std::nullopt;
+  }
+
+  const int oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
+  fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
+  const int ch = getchar();
+  tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+  fcntl(STDIN_FILENO, F_SETFL, oldf);
+
+  if (ch == EOF) {
+    return std::nullopt;
+  }
+  return ch;
+}
+
 // Compute the focus measure using the Laplacian operator.
 double laplacian(const cv::Mat& img) {
   cv::Mat gray;
@@ -182,7 +215,7 @@ absl::Status show_camera(
 
   cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
 
-  const std::string window_name = std::string("CSI /dev/video") + std::to_string(device_id);
+  const std::string window_name = std::string("CSI Camera ") + std::to_string(device_id);
 
   if (focuser.bus == -1) {
     int bus_check = find_working_bus(0, 16, {});
@@ -203,24 +236,21 @@ absl::Status show_camera(
     auto cleanup_cv2 = absl::Cleanup([&cap, show]() {
       cap.release();
       if (show) {
-        cv::destroyAllWindows();
+        hm::utils::destroy_surface_window();
       }
     });
 
     constexpr int kFocalDistanceIncrement = 4;
 
-    if (show) {
-      cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
-    }
     std::cout << "Focusing camera sensor device " << device_id << std::flush;
-    while (!show || cv::getWindowProperty("CSI Camera", cv::WND_PROP_AUTOSIZE) >= 0) {
+    while (true) {
       cv::Mat img;
       if (!cap.read(img)) {
         std::cerr << "Failed to capture frame." << std::endl;
         break;
       }
-      if (show) {
-        cv::imshow("CSI Camera", img);
+      if (show && !hm::utils::show_image(window_name, img, /*wait=*/false)) {
+        break;
       }
 
       if (skip_frame == 0) {
@@ -255,21 +285,23 @@ absl::Status show_camera(
       } else {
         skip_frame--;
       }
-      // Wait for a key, or just delay
-      const int keyCode = cv::waitKey(16) & 0xFF;
       if (interactive) {
-        if (keyCode == 27) { // ESC key to exit
+        const std::optional<int> keyCode = read_terminal_key();
+        if (!keyCode.has_value()) {
+          continue;
+        }
+        if (*keyCode == 27) { // ESC key to exit
           break;
-        } else if (keyCode == 10 || keyCode == 32) { // ENTER or SPACE resets focusing
+        } else if (*keyCode == 10 || *keyCode == 32) { // ENTER or SPACE resets focusing
           max_index = 10;
           max_value = 0.0;
           last_value = 0.0;
           dec_count = 0;
           focal_distance = 10;
           focus_finished = false;
-        } else if (keyCode && keyCode != 255) {
+        } else if (*keyCode != 255) {
           if (verbose) {
-            std::cout << "keyCode = " << keyCode << std::endl;
+            std::cout << "keyCode = " << *keyCode << std::endl;
           }
         }
       }
