@@ -1,2 +1,9 @@
 src/apps/pstudio
 external/deepstream
+
+# Keep recursive target patterns (//...) out of Bazel's generated symlinks.
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-hstream
+bazel-kstream
