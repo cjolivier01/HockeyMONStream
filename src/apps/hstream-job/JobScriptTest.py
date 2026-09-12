@@ -53,7 +53,9 @@ class JobScriptTest(unittest.TestCase):
         self.assertIn("#SBATCH --partition=gpu\n", text)
         self.assertNotIn("srun", text)
         subprocess.run(["bash", "-n", str(script)], check=True)
-        run = subprocess.run([str(script)], cwd="/", env=self.env)
+        run = subprocess.run([str(script)], cwd="/", env=self.env, text=True, capture_output=True)
+        self.assertIn("Play-only MP4 remux and copying into the game directory are not performed", run.stdout)
+        self.assertIn(self.env["HM_OUTPUT_WORK_DIR"], run.stdout)
         self.assertEqual(run.returncode, 7)
         actual = json.loads(self.output.read_text())
         self.assertEqual(actual["argv"], ["-g", self.game.name, "-c", str(self.config),

@@ -30,6 +30,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QProgressBar>
@@ -5760,7 +5761,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(window->pipelineStateText() == "PAUSED", "Pause button should pause the process")) {
     return false;
   }
+  auto* pause_action = require_child<QAction>(window, "menuAction_pausePipelineButton");
+  auto* run_menu = pause_action ? qobject_cast<QMenu*>(pause_action->parent()) : nullptr;
+  if (!expect(run_menu != nullptr, "Run menu should expose the transport actions"))
+    return false;
+  QMetaObject::invokeMethod(run_menu, "aboutToShow", Qt::DirectConnection);
+  if (!expect(pause_action->text() == "Resume" && pause_action->isEnabled(), "Paused Run menu must advertise Resume"))
+    return false;
   activate(pause);
+  QMetaObject::invokeMethod(run_menu, "aboutToShow", Qt::DirectConnection);
+  if (!expect(pause_action->text() == "Pause", "Running Run menu must advertise Pause"))
+    return false;
   if (!expect(window->pipelineStateText() == "PLAYING", "Pause button should resume the process")) {
     return false;
   }

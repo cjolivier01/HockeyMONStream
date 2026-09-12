@@ -5159,8 +5159,13 @@ void HStreamWindow::buildUi() {
     if (!button)
       return;
     auto* action = menu->addAction(button->icon(), button->text());
+    action->setObjectName("menuAction_" + name);
     connect(action, &QAction::triggered, button, &QPushButton::click);
-    connect(menu, &QMenu::aboutToShow, action, [action, button]() { action->setEnabled(button->isEnabled()); });
+    connect(menu, &QMenu::aboutToShow, action, [action, button]() {
+      action->setEnabled(button->isEnabled());
+      action->setText(button->text());
+      action->setIcon(button->icon());
+    });
   };
   button_action(file_menu, "savePresetButton");
   button_action(file_menu, "createGameButton");
@@ -14609,12 +14614,19 @@ void HStreamWindow::saveJobScript() {
       "Shell scripts (*.sh)");
   if (path.isEmpty())
     return;
+  const QString output_work_dir =
+      archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory());
   bool accepted = false;
   const QString directives = QInputDialog::getMultiLineText(
       this,
-      "Slurm options",
-      "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
-      "The script already requests one node, one task and one GPU. Blank is fine for direct execution.",
+      "Save job options",
+      QString(
+          "This script runs hstream-cli directly. Archive MKVs and DriveGPT databases remain in working "
+          "storage; Play\'s MP4 remux and copying into the game directory are not performed.\n"
+          "Working output root: %1 (custom per-output paths still apply).\n\n"
+          "Optional SBATCH directives, one per line (for example --partition=gpu).\n"
+          "The script already requests one node, one task and one GPU. Blank is fine for direct execution.")
+          .arg(output_work_dir),
       QString(),
       &accepted);
   if (!accepted)
@@ -14652,6 +14664,7 @@ void HStreamWindow::saveJobScript() {
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   if (!baseline_config_root_.isEmpty())
     env.insert("HM_CONFIG_ROOT", baseline_config_root_);
+  env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
   process->setProcessEnvironment(env);
   connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {

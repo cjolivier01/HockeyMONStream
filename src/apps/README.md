@@ -49,3 +49,11 @@ installed paths. Disable **Render video** before exporting a headless batch job;
 rendering in a script opens a standalone display instead of reusing UI window IDs.
 UI-only preview overlays and interactive UI calibration dialogs are not attached
 to standalone runs. Windows scripts run in the installed HStream WSL distribution.
+
+Output publication differs from Play: the direct CLI leaves archive MKVs and
+DriveGPT databases in working storage, normally `~/hstream_output/<game-id>`.
+Play's subsequent MP4 remux and copying of completed videos/databases into the
+game directory are not performed by an exported script. The export dialog and
+script runtime notice call this out; the CLI logs identify resolved output paths.
+UI exports pin the resolved output root with `HM_OUTPUT_WORK_DIR`, including an
+output root configured in the user's settings. Custom per-output paths still apply.

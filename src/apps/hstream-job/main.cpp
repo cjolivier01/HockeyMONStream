@@ -74,7 +74,8 @@ int main(int argc, char** argv) {
                      "Save an executable job (default: DIR/hstream-job.sh). Never launches the job.\n"
                      "SBATCH defaults: one node, one task, one GPU. Additional directives override defaults.\n"
                      "Reads config.yaml and hstream_ui.job.arguments saved by the UI. Without a saved\n"
-                     "job, uses the configured pipeline sinks. Scripts reference existing configs and assets.\n";
+                     "job, uses the configured pipeline sinks. Scripts reference existing configs and assets.\n"
+                     "Archives/databases remain in CLI working storage; no UI MP4 remux or game-directory copy.\n";
         return 0;
       }
       if (arg == "--force") {
@@ -167,6 +168,8 @@ int main(int argc, char** argv) {
         "\n# Run directly, or submit this file with sbatch.\n"
         "# Configs, videos and assets must be accessible on the execution host.\n"
         "# Rendering requires a display; disable Render video for a headless job.\n"
+        "# Archive MKVs and DriveGPT databases stay in CLI working storage.\n"
+        "# Play-only MP4 remux and game-directory publication are not performed.\n"
         "set -euo pipefail\n";
     script += "cd -- " + quote(working.string()) + "\n";
     script +=
@@ -179,6 +182,15 @@ int main(int argc, char** argv) {
       if (!value.empty())
         script += "export " + std::string(key) + "=" + quote(value) + "\n";
     }
+    const std::string configured_output = environment("HM_OUTPUT_WORK_DIR");
+    const std::string output_location =
+        configured_output.empty() ? "the configured output root (normally ~/hstream_output)" : configured_output;
+    script += "printf '%s\\n' " +
+        quote("hstream-job: Archive MKVs and DriveGPT databases remain in CLI working storage under " +
+              output_location +
+              "; custom output paths still apply. See CLI logs for resolved files. "
+              "Play-only MP4 remux and copying into the game directory are not performed.") +
+        "\n";
     script += "exec " + quote(runner.string());
     for (const auto& arg : args)
       script += " \\\n  " + quote(arg);
