@@ -30,6 +30,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QListWidget>
+#include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
@@ -76,6 +77,9 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static QStringList standaloneArguments(HStreamWindow* window) {
+    return window->pipelineArguments(true);
+  }
   static void setTestLevelingRotation(HStreamWindow* window, double pitch) {
     window->loaded_projection_framing_.rotation_degrees = {0.0, pitch, 0.0};
     window->loaded_projection_framing_.rotation_inherited = false;
@@ -9634,6 +9638,35 @@ bool test_camera_controls(HStreamWindow* window) {
           "Feature changes should update whole dependent rows without discarding their values"))
     return false;
   activate(save);
+  const YAML::Node job_config = YAML::LoadFile(QDir(window->gameDirectoryText()).filePath("config.yaml").toStdString());
+  const YAML::Node job_arguments = job_config["hstream_ui"]["job"]["arguments"];
+  if (!expect(job_arguments && job_arguments.IsSequence(), "Save Preset must persist the standalone job recipe"))
+    return false;
+  bool saved_player_filter = false;
+  for (const auto& value : job_arguments) {
+    const std::string arg = value.as<std::string>();
+    if (!expect(arg.find("--ui-preview") != 0, "Saved jobs must not reference UI preview windows"))
+      return false;
+    saved_player_filter |= arg == "--options=rink.tracking.cam_oversized_percent=175.5";
+  }
+  if (!expect(saved_player_filter, "The saved job must include the current unsaved player-filter value"))
+    return false;
+  auto* render = require_child<QCheckBox>(window, "renderVideoCheck");
+  const bool was_rendering = render->isChecked();
+  render->setChecked(false);
+  const QStringList headless_arguments = HStreamWindowTestAccess::standaloneArguments(window);
+  render->setChecked(was_rendering);
+  for (const QString& arg : headless_arguments) {
+    if (!expect(
+            !arg.startsWith("--ui-preview") && arg != "--show" &&
+                !(arg.startsWith("--enable-sinks=") && arg.contains("RENDER")),
+            "Headless exported jobs must not enable a render sink or UI preview"))
+      return false;
+  }
+  if (!expect(
+          window->menuBar()->actions().size() == 3 && window->findChild<QAction*>("saveJobScriptAction"),
+          "File, Run and Tools menus must expose script export"))
+    return false;
   ignore_oversized->click();
   cancel_stop->click();
   activate(create);

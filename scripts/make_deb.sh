@@ -137,6 +137,7 @@ fi
 
 # ---------- verify artifacts ----------
 HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
+HSTREAM_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-job/hstream-job"
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
 HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
@@ -148,6 +149,10 @@ HSTREAM_GST_PLUGINS=(
 )
 if [[ ! -f "${HSTREAM_CLI}" ]]; then
   echo "ERROR: ${HSTREAM_CLI} not found. Run 'make hstream-cli' first, or pass --build." >&2
+  exit 1
+fi
+if [[ ! -f "${HSTREAM_JOB}" ]]; then
+  echo "ERROR: ${HSTREAM_JOB} not found. Run make hstream-job first." >&2
   exit 1
 fi
 if [[ ! -f "${HSTREAM_ASSETS}" ]]; then
@@ -342,6 +347,9 @@ echo "[make_deb] Staging hstream binaries..."
 cp "${HSTREAM_CLI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-cli"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-cli")
+cp "${HSTREAM_JOB}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-job"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-job"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-job")
 cp "${HSTREAM_ASSETS}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-assets"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-assets")
@@ -1003,6 +1011,7 @@ chmod 0755 "${STAGING}/DEBIAN/postinst"
 
 # ---------- package-owned command wrappers ----------
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
+ln -s "${INSTALL_PREFIX}/bin/hstream-job" "${STAGING}/usr/bin/hstream-job"
 ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/pipeline-app"

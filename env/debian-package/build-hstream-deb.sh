@@ -69,7 +69,7 @@ rsync -a \
 
 cd "${BUILD_DIR}"
 make HOST_CUDA_FLAGS="--config=${BAZEL_DEB_CONFIG}" \
-  hstream-cli hstream-assets hstream-ui yolo-custom-lib hstream-gst-plugins
+  hstream-job hstream-cli hstream-assets hstream-ui yolo-custom-lib hstream-gst-plugins
 
 VIDEOPREP_PLUGIN="${BUILD_DIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
 CUDA_NEEDED="$(patchelf --print-needed "${VIDEOPREP_PLUGIN}" | grep -E '^lib(cudart|npp[^.]*)[.]so[.]' || true)"
