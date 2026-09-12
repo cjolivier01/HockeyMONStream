@@ -1155,6 +1155,51 @@ stitching:
                   .status()),
       "interactive leveling must be idempotent and reject stale generations, other backends, and invalid angles");
 
+  const std::string crop_pto =
+      "p f19 w800 h400 v180 P\"100 0 0\" S80,720,0,400\n"
+      "i w100 h100 f0 v90 y-30 p0 r0\n"
+      "i w100 h100 f0 v90 y30 p0 r0\n";
+  const auto crop_geometry = hm::stitching::projection_crop_geometry(crop_pto, leveling_choices.projection_framing);
+  auto cropped_framing = leveling_choices.projection_framing;
+  cropped_framing.auto_crop = false;
+  cropped_framing.crop = {0, 1, 0.2, 0.9};
+  auto rotated_framing = cropped_framing;
+  rotated_framing.rotation_degrees[1] += 1;
+  const std::string scaled_pto =
+      "p f19 w400 h200 v180 P\"100 0 0\" S0,400,40,180\n"
+      "i w100 h100 f0 v90 y-30 p0 r0\n"
+      "i w100 h100 f0 v90 y30 p0 r0\n";
+  auto different_parameters = crop_pto;
+  different_parameters.replace(different_parameters.find("100 0 0"), 7, "100 5 0");
+  auto different_alignment = crop_pto;
+  different_alignment.replace(different_alignment.find("y30"), 3, "y31");
+  ok &= expect(
+      !crop_geometry.empty() && hm::stitching::projection_crop_geometry(scaled_pto, cropped_framing) == crop_geometry &&
+          hm::stitching::projection_crop_geometry(crop_pto, rotated_framing) != crop_geometry &&
+          hm::stitching::projection_crop_geometry(different_parameters, cropped_framing) != crop_geometry &&
+          hm::stitching::projection_crop_geometry(different_alignment, cropped_framing) != crop_geometry,
+      "Crop reviews must survive crop/resolution edits and expire on rotation, projection parameters or alignment changes");
+  if (applied_leveling.ok()) {
+    const auto selected_crop = hm::stitching::apply_stitching_crop_selection(
+        leveling_root, "leveling-generation", *applied_leveling, cropped_framing, crop_geometry);
+    const auto crop_config = YAML::LoadFile((leveling_root / "config.yaml").string());
+    ok &= expect(
+        selected_crop.ok() && hm::stitching::projection_crop_reviewed(crop_config, crop_geometry) &&
+            !hm::stitching::projection_crop_reviewed(crop_config, "different-geometry") &&
+            crop_config["unrelated"]["keep"].as<bool>() &&
+            hm::stitching::validate_stitching_backend_generation(crop_config, "leveling-generation", *selected_crop)
+                .ok() &&
+            selected_crop->projection_framing.rotation_degrees == selected_leveling &&
+            selected_crop->projection_framing.crop == cropped_framing.crop,
+        "Crop choice and review must persist atomically without changing leveling or unrelated settings");
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::apply_stitching_crop_selection(
+                leveling_root, "stale-owner", *applied_leveling, cropped_framing, crop_geometry)
+                .status()),
+        "A stale calibration cannot save its crop selection");
+  }
+
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);
   fs::create_directories(writer_bounds_root);

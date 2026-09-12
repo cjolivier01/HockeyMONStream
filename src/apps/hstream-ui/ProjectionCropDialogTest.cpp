@@ -185,6 +185,24 @@ int main(int argc, char** argv) {
     dialog.close();
     ok &= write(game.filePath("config.yaml"), "{}\n");
   }
+  {
+    QTemporaryDir staging;
+    for (const QString name : {"autooptimiser_out.pto", "left.png", "right.png"})
+      ok &= QFile::copy(game.filePath(name), staging.filePath(name));
+    ok &= write(staging.filePath(".autooptimiser_out.aligned.pto"), pto);
+    hm::stitching::StitchProjectionFraming full;
+    ProjectionCropDialog dialog(staging.path(), full, "general-panini", {100, 0, 0}, camera, {}, nullptr, true);
+    dialog.show();
+    ok &= expect(
+        waitUntil([&]() { return !dialog.sourceRevision().isEmpty(); }) &&
+            dialog.findChild<QComboBox*>("projectionCropMode")->currentData() == "full" &&
+            !dialog.framing().auto_crop && !dialog.geometry().empty(),
+        "In-progress crop preview must use staged images without published config and default to no cropping");
+    dialog.closeAfterBackendCompletion();
+    ok &= expect(
+        dialog.closedAfterBackendCompletion() && dialog.result() == QDialog::Rejected,
+        "Backend completion must dismiss an in-progress crop selector");
+  }
   for (bool edit_before_preview : {false, true}) {
     auto automatic = framing;
     automatic.auto_crop = true;

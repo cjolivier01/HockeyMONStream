@@ -60,9 +60,18 @@ class ProjectionCropDialog : public QDialog {
       const std::vector<double>& projection_parameters,
       const hm::stitching::StitchCameraSelection& camera,
       const QString& preview_unavailable_reason = {},
-      QWidget* parent = nullptr);
+      QWidget* parent = nullptr,
+      bool in_progress_calibration = false,
+      bool apply_on_accept = false);
   ~ProjectionCropDialog() override;
   hm::stitching::StitchProjectionFraming framing() const;
+  void closeAfterBackendCompletion();
+  bool closedAfterBackendCompletion() const {
+    return backend_completed_;
+  }
+  std::string geometry() const {
+    return geometry_;
+  }
   QByteArray sourceRevision() const {
     return preview_ready_ ? source_revision_ : QByteArray();
   }
@@ -79,6 +88,9 @@ class ProjectionCropDialog : public QDialog {
   void acceptCrop();
   void stopTool();
   QString game_directory_;
+  bool in_progress_calibration_{false};
+  bool backend_completed_{false};
+  std::string geometry_;
   hm::stitching::StitchProjectionFraming initial_;
   QString projection_;
   std::vector<double> projection_parameters_;

@@ -91,6 +91,9 @@ class HuginProject {
     // before full-resolution Nona maps and the Enblend seam are generated.
     // nullopt keeps the configured rotation; a value replaces it.
     LevelingSelectionCallback select_leveling;
+    // Runs after leveling, before maps, against the final projected geometry.
+    std::function<absl::StatusOr<StitchProjectionFraming>(const std::filesystem::path&, const StitchProjectionFraming&)>
+        select_crop;
     std::function<bool()> is_cancelled;
   };
 

@@ -312,6 +312,7 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
         ":hstream_window",
+        ":projection_crop_dialog",
         ":rink_leveling_dialog",
         ":scoreboard_selection_dialog",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",

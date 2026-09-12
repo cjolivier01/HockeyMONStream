@@ -6994,6 +6994,7 @@ void HStreamWindow::loadRinkLevelingControls(const YAML::Node& config) {
   set_combo_to_data(rink_configuration_combo_, QString::fromStdString(*selection));
   pending_leveling_revision_.clear();
   crop_selection_revision_.clear();
+  pending_crop_geometry_.clear();
   updateRinkLevelingControls();
 }
 
@@ -7068,6 +7069,8 @@ void HStreamWindow::updateCropRotationControls() {
 }
 
 bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
+  if (hasPendingCropSelection())
+    hm::stitching::write_projection_crop_review(config, pending_crop_geometry_);
   if (!rink_configuration_combo_)
     return true;
   hm::stitching::restore_generated_stitch_rink_context(config);
@@ -7144,8 +7147,16 @@ void HStreamWindow::selectProjectionCrop() {
     return;
   const auto chosen = dialog.framing();
   // Reopening a staged crop can refresh its source revision after calibration
-  // changes. Accepting an unchanged saved preset needs no new guard.
-  if (chosen == selected_framing && !hasPendingCropSelection())
+  // changes. A first confirmation of an unchanged crop still needs to be saved.
+  pending_crop_geometry_ = dialog.sourceRevision().isEmpty() ? std::string() : dialog.geometry();
+  try {
+    const auto config =
+        YAML::LoadFile(QDir(gameDirectory(game_id_edit_->text().trimmed())).filePath("config.yaml").toStdString());
+    if (hm::stitching::projection_crop_reviewed(config, pending_crop_geometry_))
+      pending_crop_geometry_.clear();
+  } catch (const std::exception&) {
+  }
+  if (chosen == selected_framing && pending_crop_geometry_.empty() && !hasPendingCropSelection())
     return;
   loaded_projection_framing_.crop = chosen.crop;
   projection_auto_crop_check_->setChecked(chosen.auto_crop);
@@ -7154,11 +7165,74 @@ void HStreamWindow::selectProjectionCrop() {
   appendLog("Crop selected. Save Preset applies it to this game and regenerates stitching.");
 }
 
+bool HStreamWindow::ensureProjectionCropReviewed() {
+  const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
+  const bool parameters_changed = saved_parameters == saved_projection_parameters_.end()
+      ? !stitchProjectionParameters().empty()
+      : saved_parameters->second != stitchProjectionParameters();
+  if (mappingBackend() != "nona" || calibration_restart_requested_ || !rinkLevelingInputsUnchanged() ||
+      saved_projection_ != stitchProjection() || saved_projection_framing_ != stitchProjectionFraming() ||
+      parameters_changed || hasPendingCropSelection())
+    return true; // Changed inputs will be reviewed against the new calibration.
+  const QString game_id = game_id_edit_->text().trimmed();
+  const QString directory = gameDirectory(game_id);
+  std::string geometry;
+  QByteArray revision;
+  {
+    const auto artifacts = hm::stitching::try_lock_canvas_constraint_artifacts(directory.toStdString());
+    if (!artifacts.ok() || !*artifacts)
+      return true;
+    const auto config_lock = hm::stitching::GameConfigTransactionLock::TryAcquire(directory.toStdString());
+    if (!config_lock.ok())
+      return true;
+    try {
+      const auto config = YAML::LoadFile(QDir(directory).filePath("config.yaml").toStdString());
+      YAML::Node status;
+      if (!lookup_yaml_path(config, "hstream_ui.stitching_calibration.status", &status) || !status.IsScalar() ||
+          status.as<std::string>() != "complete")
+        return true;
+      QFile project(QDir(directory).filePath("autooptimiser_out.pto"));
+      if (!project.open(QIODevice::ReadOnly) || project.size() > 1024 * 1024)
+        return true;
+      geometry = hm::stitching::projection_crop_geometry(project.readAll().toStdString(), stitchProjectionFraming());
+      revision = RinkLevelingDialog::sourceRevision(directory);
+      if (geometry.empty() || revision.isEmpty() || hm::stitching::projection_crop_reviewed(config, geometry))
+        return true;
+    } catch (const std::exception&) {
+      return true; // Normal startup reports invalid or missing calibration/config.
+    }
+  }
+  auto initial = stitchProjectionFraming();
+  initial.auto_crop = false;
+  initial.crop = hm::stitching::StitchProjectionFraming{}.crop;
+  ProjectionCropDialog dialog(
+      directory,
+      initial,
+      stitchProjection(),
+      stitchProjectionParameters(),
+      stitchCameraSelection(),
+      {},
+      this,
+      false,
+      /*apply_on_accept=*/true);
+  if (dialog.exec() != QDialog::Accepted || game_id_edit_->text().trimmed() != game_id)
+    return false;
+  loaded_projection_framing_.crop = dialog.framing().crop;
+  projection_auto_crop_check_->setChecked(dialog.framing().auto_crop);
+  pending_crop_geometry_ = geometry;
+  crop_selection_revision_ = revision;
+  savePreset();
+  // Saving validates the snapshot under the artifact/config locks. Do not
+  // launch if publication failed or a newer calibration superseded this view.
+  return pending_crop_geometry_.empty() && preset_save_retry_game_ids_.count(game_id) == 0;
+}
+
 bool HStreamWindow::hasPendingCropSelection() const {
   if (crop_selection_revision_.isEmpty())
     return false;
   const auto selected = stitchProjectionFraming();
-  return selected.auto_crop != saved_projection_framing_.auto_crop || selected.crop != saved_projection_framing_.crop;
+  return !pending_crop_geometry_.empty() || selected.auto_crop != saved_projection_framing_.auto_crop ||
+      selected.crop != saved_projection_framing_.crop;
 }
 
 hm::stitching::StitchProjectionFraming HStreamWindow::stitchProjectionFraming() const {
@@ -8471,6 +8545,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
 void HStreamWindow::completeStitchingCalibration() {
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
+  if (projection_crop_dialog_)
+    projection_crop_dialog_->closeAfterBackendCompletion();
   if (!calibration_pending_ || active_run_game_id_.isEmpty())
     return;
   bool state_applied = false;
@@ -8557,6 +8633,8 @@ void HStreamWindow::completeStitchingCalibration() {
 void HStreamWindow::failStitchingCalibration(const QString& message) {
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
+  if (projection_crop_dialog_)
+    projection_crop_dialog_->closeAfterBackendCompletion();
   if (calibration_dialog_failed_)
     return;
   calibration_waiting_for_playback_restart_ = false;
@@ -8800,6 +8878,11 @@ void HStreamWindow::startPipeline() {
   clearPreviewFrames();
   if (!ensureGameDirectory()) {
     show_startup_error("The selected game directory could not be prepared");
+    updateRunControls();
+    return;
+  }
+  if (!ensureProjectionCropReviewed()) {
+    show_startup_error("Crop selection was cancelled or could not be saved");
     updateRunControls();
     return;
   }
@@ -9095,6 +9178,11 @@ void HStreamWindow::startPipeline() {
   // This private UI/backend handshake must never be enabled by a stale parent
   // environment for OpenCV or non-calibration runs.
   env.remove("HSTREAM_RINK_LEVELING_FLOW");
+  env.remove("HSTREAM_PROJECTION_CROP_FLOW");
+  // Program can discover missing maps after launch. The backend only asks
+  // during actual calibration; unchanged playback never emits a crop request.
+  if (active_mapping_backend_ == "nona")
+    env.insert("HSTREAM_PROJECTION_CROP_FLOW", "1");
   if (calibration_pending_) {
     const int control_points = active_calibration_control_points_;
     const int frame_count =
@@ -9257,6 +9345,8 @@ void HStreamWindow::pauseOrResumePipeline() {
 void HStreamWindow::stopPipeline() {
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
+  if (projection_crop_dialog_)
+    projection_crop_dialog_->closeAfterBackendCompletion();
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     deferred_playback_seek_ns_.reset();
     pending_playback_seek_target_ns_.reset();
@@ -9446,6 +9536,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
+  if (projection_crop_dialog_)
+    projection_crop_dialog_->closeAfterBackendCompletion();
   clearPreviewFrames();
   pipeline_stop_requested_ = false;
   if (calibration_pending_ && !stopped_by_user) {
@@ -9663,6 +9755,8 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
+  if (projection_crop_dialog_)
+    projection_crop_dialog_->closeAfterBackendCompletion();
   rollbackActiveLiveRotationAuthorization("pipeline error");
   failPendingRuntimeControls("pipeline-error");
   calibration_pending_ = false;
@@ -9768,6 +9862,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   handleRuntimeControlResponse(trimmed);
   handleScoreboardSelectorOutput(trimmed);
   handleRinkLevelingOutput(trimmed);
+  handleProjectionCropOutput(trimmed);
   handleStitchingCalibrationOutput(trimmed);
 }
 
@@ -13139,6 +13234,147 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
     preview_status_->setText("Stitching calibration continuing");
 }
 
+void HStreamWindow::handleProjectionCropOutput(const QString& line) {
+  static const QRegularExpression ready_pattern(
+      R"(^HSTREAM_PROJECTION_CROP\s+status=ready\s+directory-hex=([0-9a-f]+)$)");
+  static const QRegularExpression selected_pattern(
+      R"(^HSTREAM_PROJECTION_CROP status=selected auto=([01]) ([-+0-9.eE]+) ([-+0-9.eE]+) ([-+0-9.eE]+) ([-+0-9.eE]+)$)");
+  const bool recognized = ready_pattern.match(line).hasMatch() || selected_pattern.match(line).hasMatch();
+  const bool active_generation = calibration_pending_ && active_mapping_backend_ == "nona" &&
+      !active_run_game_id_.isEmpty() && !active_calibration_invalidation_id_.isEmpty() && pipeline_run_generation_ != 0;
+  if (recognized && !active_generation) {
+    appendLog("ignored stale crop selection event outside an active pending NONA calibration generation");
+    return;
+  }
+  const auto selected = selected_pattern.match(line);
+  if (selected.hasMatch()) {
+    auto framing = active_projection_framing_;
+    framing.auto_crop = selected.captured(1) == "1";
+    for (int index = 0; index < 4; ++index) {
+      bool ok = false;
+      framing.crop[index] = selected.captured(index + 2).toDouble(&ok);
+      if (!ok || !std::isfinite(framing.crop[index]) || framing.crop[index] < 0 || framing.crop[index] > 1)
+        return;
+    }
+    if (framing.crop[0] >= framing.crop[1] || framing.crop[2] >= framing.crop[3] ||
+        (framing.auto_crop && framing.crop != hm::stitching::StitchProjectionFraming{}.crop))
+      return;
+    active_projection_framing_ = framing;
+    loaded_projection_framing_ = framing;
+    saved_projection_framing_ = framing;
+    projection_auto_crop_check_->setChecked(framing.auto_crop);
+    crop_selection_revision_.clear();
+    pending_crop_geometry_.clear();
+    updatePresetDirtyState();
+    appendLog("Calibration accepted the crop choice");
+    return;
+  }
+
+  const auto ready = ready_pattern.match(line);
+  if (!ready.hasMatch())
+    return;
+  if (pipeline_stop_requested_ || pipeline_final_output_draining_) {
+    appendLog(
+        pipeline_stop_requested_
+            ? "ignored crop selection ready event while pipeline shutdown is in progress"
+            : "ignored crop selection ready event while draining output from a terminated pipeline");
+    return;
+  }
+  if (projection_crop_dialog_) {
+    projection_crop_dialog_->show();
+    projection_crop_dialog_->raise();
+    projection_crop_dialog_->activateWindow();
+    appendLog("ignored duplicate crop selection ready event while the selector is already open");
+    return;
+  }
+  const QByteArray encoded = ready.captured(1).toLatin1();
+  if (encoded.size() % 2 != 0) {
+    appendLog("invalid in-progress crop selection path from calibration; stopping safely");
+    stopPipeline();
+    return;
+  }
+  const QByteArray decoded = QByteArray::fromHex(encoded);
+  const QString requested_directory = QString::fromUtf8(decoded);
+  const QString canonical_directory = QDir(requested_directory).canonicalPath();
+  const QString canonical_game = QDir(gameDirectory(active_run_game_id_)).canonicalPath();
+  const QFileInfo staging_info(canonical_directory);
+  static const QRegularExpression staging_name_pattern(R"(^hstream-stitch-[A-Za-z0-9]{6}$)");
+  const QString marker_path = QDir(canonical_directory).filePath("journal_version");
+  const QFileInfo marker_info(marker_path);
+  QFile marker(marker_path);
+  const bool marker_valid = !marker_info.isSymLink() && marker_info.isFile() && marker_info.size() == 2 &&
+      marker.open(QIODevice::ReadOnly) && marker.readAll() == "2\n";
+  if (canonical_directory.isEmpty() || canonical_game.isEmpty() || !staging_info.isDir() ||
+      staging_info.dir().canonicalPath() != canonical_game ||
+      !staging_name_pattern.match(staging_info.fileName()).hasMatch() || !marker_valid) {
+    appendLog("rejected an invalid in-progress crop selection directory; stopping safely");
+    stopPipeline();
+    return;
+  }
+  const auto parsed_projection = hm::stitching::ParseStitchProjection(active_projection_.toStdString());
+  if (!parsed_projection.ok()) {
+    appendLog("could not preview the active projection during crop selection; stopping safely");
+    stopPipeline();
+    return;
+  }
+  if (preview_status_)
+    preview_status_->setText("Waiting for optional crop selection");
+  QWidget* dialog_parent = calibration_dialog_ ? static_cast<QWidget*>(calibration_dialog_) : this;
+  auto initial = active_projection_framing_;
+  initial.auto_crop = false;
+  initial.crop = hm::stitching::StitchProjectionFraming{}.crop;
+  auto* dialog = new ProjectionCropDialog(
+      canonical_directory,
+      initial,
+      active_projection_,
+      active_projection_parameters_,
+      active_camera_selection_,
+      {},
+      dialog_parent,
+      /*in_progress_calibration=*/true);
+  projection_crop_dialog_ = dialog;
+  connect(dialog, &QObject::destroyed, this, [this, dialog]() {
+    if (projection_crop_dialog_ == dialog)
+      projection_crop_dialog_ = nullptr;
+  });
+  const quint64 selection_generation = pipeline_run_generation_;
+  const QString selection_invalidation_id = active_calibration_invalidation_id_;
+  appendLog("optional crop selection selector opened after panorama alignment");
+  const int result = dialog->exec();
+  const bool cancel_calibration = result != QDialog::Accepted;
+  const bool backend_completed = dialog->closedAfterBackendCompletion();
+  if (projection_crop_dialog_ == dialog)
+    projection_crop_dialog_ = nullptr;
+  const auto chosen = dialog->framing();
+  dialog->deleteLater();
+  if (backend_completed || selection_generation != pipeline_run_generation_ ||
+      selection_invalidation_id != active_calibration_invalidation_id_ || !calibration_pending_) {
+    appendLog("crop selection selector closed after its calibration generation ended; no response written");
+    return;
+  }
+  if (cancel_calibration) {
+    appendLog("crop selection selector requested cancellation of the stitching calibration");
+    stopPipeline();
+    return;
+  }
+  const QByteArray response = QString("use %1 %2 %3 %4 %5\n")
+                                  .arg(chosen.auto_crop ? 1 : 0)
+                                  .arg(chosen.crop[0], 0, 'g', 17)
+                                  .arg(chosen.crop[1], 0, 'g', 17)
+                                  .arg(chosen.crop[2], 0, 'g', 17)
+                                  .arg(chosen.crop[3], 0, 'g', 17)
+                                  .toUtf8();
+  QSaveFile response_file(QDir(canonical_directory).filePath(".projection-crop-response"));
+  if (!response_file.open(QIODevice::WriteOnly) || response_file.write(response) != response.size() ||
+      !response_file.commit()) {
+    appendLog("could not return the crop selection choice to calibration; stopping safely");
+    stopPipeline();
+    return;
+  }
+  if (preview_status_)
+    preview_status_->setText("Stitching calibration continuing");
+}
+
 QWidget* HStreamWindow::previewSurfaceForChannel(const QString& channel) const {
   if (channel == "program")
     return preview_surface_;
@@ -14529,6 +14765,7 @@ void HStreamWindow::savePreset() {
       // its old snapshots so retry does not reject our own config write.
       pending_leveling_revision_.clear();
       crop_selection_revision_.clear();
+      pending_crop_geometry_.clear();
       captureSavedControlState();
     }
     appendLog(QString("failed to write preset %1: %2")
@@ -14537,6 +14774,7 @@ void HStreamWindow::savePreset() {
   }
   pending_leveling_revision_.clear();
   crop_selection_revision_.clear();
+  pending_crop_geometry_.clear();
   width_constraint_check.reset();
   const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
   std::error_code cleanup_error;
@@ -14831,7 +15069,7 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = retry_required ||
+  bool dirty = retry_required || !pending_crop_geometry_.empty() ||
       (rink_configuration_combo_ && saved_rink_configuration_ != rink_configuration_combo_->currentData().toString()) ||
       saved_projection_framing_.rotation_inherited != loaded_projection_framing_.rotation_inherited ||
       saved_camera_controls_.size() != camera_defaults_.size() || saved_high_bit_depth_mode_ != highBitDepthMode() ||
