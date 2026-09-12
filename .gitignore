@@ -2,10 +2,7 @@
 /*.dot
 *.o
 *.so
-bazel-src
-bazel-bin
-bazel-out
-bazel-testlogs
+/bazel-*
 *.pyc
 /bazel-hstream
 compile_commands.json
