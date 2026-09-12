@@ -327,6 +327,22 @@ int main(int argc, char** argv) {
   }
   valid &= expect_no_staging_files(fallback_game);
 
+  const QString symlink_target_game = QDir(root.path()).filePath("symlink-target-game");
+  const QString symlink_game = QDir(root.path()).filePath("symlink-game");
+  valid &= expect(QDir().mkpath(symlink_target_game), "symlink target game directory must be created");
+  valid &= expect(
+      ::symlink(QFile::encodeName(symlink_target_game).constData(), QFile::encodeName(symlink_game).constData()) == 0,
+      "symlink game directory must be created");
+  valid &= expect(
+      hm::ui_internal::telemetry_csv_destination_paths_available(symlink_game, "-4"),
+      "an unused telemetry suffix must be available through a symlinked game directory");
+  const auto symlink_published = hm::ui_internal::publish_telemetry_csvs(manifest_path, symlink_game, "-4");
+  valid &= expect(symlink_published.ok, symlink_published.error.toStdString().c_str()) &&
+      expect(QFileInfo::exists(QDir(symlink_target_game).filePath("tracking-4.csv")), "symlink target CSV must exist");
+  valid &= expect(
+      !hm::ui_internal::telemetry_csv_destination_paths_available(symlink_game, "-4"),
+      "a published telemetry suffix must be unavailable through a symlinked game directory");
+
   const QString unowned_game = QDir(root.path()).filePath("unowned-game");
   const QString unowned_stage =
       QDir(unowned_game).filePath("hstream-telemetry-stage-v1-00000000000000000000000000000000");
