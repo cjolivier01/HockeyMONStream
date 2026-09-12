@@ -584,6 +584,7 @@ bool CameraExperimentPreview::Seek(std::size_t index, bool play, std::string* er
       s.initial_seek_pending = true;
   }
   gst_element_set_state(s.graph, GST_STATE_PAUSED);
+  s.seek_started = std::chrono::steady_clock::now();
   // Decodebin's dynamic source pads must exist before a seek can propagate.
   // Poll completes this initial seek after preroll, without blocking Qt.
   if (s.initial_seek_pending)
@@ -609,6 +610,7 @@ bool CameraExperimentPreview::Seek(std::size_t index, bool play, std::string* er
   }
   if (play)
     gst_element_set_state(s.graph, GST_STATE_PLAYING);
+  s.seek_started = std::chrono::steady_clock::now();
   return true;
 }
 
@@ -659,7 +661,6 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
       std::lock_guard<std::mutex> lock(s.mutex);
       s.primed = true;
       s.initial_seek_pending = true;
-      s.seek_started = std::chrono::steady_clock::now();
     }
     // Source recovery after a keyframe seek needs running NVIDIA decoders.
     // A paused renderer prerolls exactly one frame and applies backpressure
@@ -672,11 +673,15 @@ CameraExperimentPreview::Status CameraExperimentPreview::Poll() {
       s.error = "Could not start the original-camera preview";
       s.seeking = s.playing = false;
     }
+    // Plugin/decoder startup can itself take seconds. Start the presentation
+    // deadline after that blocking operation, which runs on the preview worker.
+    s.seek_started = std::chrono::steady_clock::now();
   }
   if (s.raw && s.initial_seek_pending && s.raw->Position()) {
     s.initial_seek_pending = false;
     if (s.playing)
       gst_element_set_state(s.graph, GST_STATE_PLAYING);
+    s.seek_started = std::chrono::steady_clock::now();
   }
   bool ended = false;
   if (s.bus) {

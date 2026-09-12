@@ -219,6 +219,7 @@ struct CameraExperimentDialog::Impl {
   QLabel* activity{nullptr};
   bool calculating{false};
   bool frame_ready{false};
+  bool preview_loading{false};
   std::optional<int> closing_result;
   ExperimentVideoTarget* video{nullptr};
   CameraPathPlot* plot{nullptr};
@@ -308,6 +309,7 @@ struct CameraExperimentDialog::Impl {
     preview_open = false;
     playing = false;
     frame_ready = false;
+    preview_loading = false;
     update_controls();
   }
 
@@ -526,6 +528,7 @@ struct CameraExperimentDialog::Impl {
     preview_open = true;
     playing = play_video;
     frame_ready = false;
+    preview_loading = true;
     show_status("Loading preview… Every pass uses the prepared historical state.");
     update_controls();
     return true;
@@ -651,6 +654,10 @@ struct CameraExperimentDialog::Impl {
         show_status(QString::fromStdString(state.error), true);
         close_preview();
       } else if (state.frame) {
+        if (frame_ready && preview_loading) {
+          preview_loading = false;
+          show_status("Preview ready. Every pass uses the prepared historical state.");
+        }
         current = *state.frame;
         update_frame();
       }
