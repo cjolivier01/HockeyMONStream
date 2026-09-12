@@ -4,11 +4,12 @@
 
 #include "cupano/utils/showImage.h"
 
+#include <fcntl.h>
+#include <termios.h>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -16,7 +17,6 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <termios.h>
 #include <thread>
 #include <unordered_map>
 
@@ -249,8 +249,8 @@ absl::Status show_camera(
         std::cerr << "Failed to capture frame." << std::endl;
         break;
       }
-      if (show) {
-        hm::utils::show_image(window_name, img, /*wait=*/false);
+      if (show && !hm::utils::show_image(window_name, img, /*wait=*/false)) {
+        break;
       }
 
       if (skip_frame == 0) {
