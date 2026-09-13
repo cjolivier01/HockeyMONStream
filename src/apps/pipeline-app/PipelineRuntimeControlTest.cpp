@@ -958,8 +958,9 @@ int main(int argc, char** argv) {
               recreate_mark),
           "pipeline recreation must seek directly back to the configured playback start");
     }
+    const size_t recreated_progress_mark = initial_seek_process.Mark();
     ok &= expect(
-        initial_seek_process.WaitForProgressAtOrBeyond(1, recreate_mark),
+        initial_seek_process.WaitForProgressAtOrBeyond(1, recreated_progress_mark),
         "recreated playback must deliver synchronized frames after the initial seek");
     ok &= expect(initial_seek_process.Interrupt(), "delayed playback must accept SIGINT");
     exit_code = -1;
