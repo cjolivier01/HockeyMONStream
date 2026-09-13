@@ -113,6 +113,7 @@ cc_library(
   implementation_deps = [":orientation_internal"],
   deps = [
     ":calibration_frame_exif",
+    ":imu_synchronization",
     ":canvas_constraint_check",
     ":game_config",
     ":correlation",
@@ -547,6 +548,33 @@ cc_test(
     ":stitching",
     "@opencv_linux//:opencv",
   ],
+)
+
+cc_library(
+  name = "imu_synchronization",
+  srcs = ["ImuSynchronization.cpp"],
+  hdrs = ["ImuSynchronization.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  # Match stitching's FFmpeg selection when /usr/local provides camera codec support.
+  linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec", "-lavutil"],
+  deps = [
+    ":calibration_frame_exif",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "imu_synchronization_test",
+  srcs = ["ImuSynchronizationTest.cpp"],
+  deps = [":imu_synchronization"],
+)
+
+cc_test(
+  name = "stitching_synchronization_test",
+  srcs = ["StitchingSynchronizationTest.cpp"],
+  deps = [":stitching", "//src/libs/common:process"],
 )
 
 cc_library(

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -212,6 +213,8 @@ std::optional<frame_exif::Insta360Clock> insta_clock(const std::vector<unsigned 
   };
   std::optional<uint64_t> first;
   bool raw = false;
+  bool has_gyro_offset = false;
+  double gyro_offset = 0;
   while (position < data.size()) {
     uint64_t key, value = 0;
     if (!varint(key) || key < 8)
@@ -224,6 +227,8 @@ std::optional<frame_exif::Insta360Clock> insta_clock(const std::vector<unsigned 
           first = value;
         if (key >> 3 == 62)
           raw = value != 0;
+        if (key >> 3 == 29)
+          has_gyro_offset = value != 0;
         continue;
       case 1:
         value = 8;
@@ -240,22 +245,30 @@ std::optional<frame_exif::Insta360Clock> insta_clock(const std::vector<unsigned 
     }
     if (value > data.size() - position)
       return std::nullopt;
+    if (key == ((28 << 3) | 1)) {
+      const uint64_t bits = little_endian(data.data() + position, 8);
+      std::memcpy(&gyro_offset, &bits, sizeof(bits));
+      if (!std::isfinite(gyro_offset))
+        return std::nullopt;
+    }
     position += value;
   }
   if (!first || *first > uint64_t(std::numeric_limits<int64_t>::max()))
     return std::nullopt;
-  return frame_exif::Insta360Clock{static_cast<double>(*first) / 1000.0, raw ? 0.001 : 1.0};
+  return frame_exif::Insta360Clock{
+      static_cast<double>(*first) / 1000.0, raw ? 0.001 : 1.0, has_gyro_offset ? gyro_offset / 1000.0 : 0.0};
 }
 } // namespace
 
 namespace frame_exif {
-absl::StatusOr<std::optional<Insta360Clock>> ReadInsta360Clock(const std::filesystem::path& video) {
+absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
+    const std::filesystem::path& video, unsigned type, size_t max_bytes) {
   std::ifstream input(video, std::ios::binary | std::ios::ate);
   if (!input)
     return absl::NotFoundError("Cannot open camera metadata source: " + video.string());
   const auto file_size = input.tellg();
   if (file_size < 78)
-    return std::optional<Insta360Clock>{};
+    return std::optional<Insta360Record>{};
   // Most recordings end in the trailer; MP4 also permits boxes after 'inst'.
   std::streamoff trailer_end = file_size;
   unsigned char footer[78];
@@ -299,7 +312,7 @@ absl::StatusOr<std::optional<Insta360Clock>> ReadInsta360Clock(const std::filesy
       position += static_cast<std::streamoff>(length);
     }
     if (!found)
-      return std::optional<Insta360Clock>{};
+      return std::optional<Insta360Record>{};
   }
   const uint64_t trailer_size = little_endian(footer + 38, 4);
   if (trailer_size < 78 || trailer_size > static_cast<uint64_t>(trailer_end))
@@ -323,7 +336,7 @@ absl::StatusOr<std::optional<Insta360Clock>> ReadInsta360Clock(const std::filesy
       if (!input.read(reinterpret_cast<char*>(directory.data()), length))
         return absl::DataLossError("Truncated Insta360 directory");
       for (size_t offset = 0; offset < directory.size(); offset += 10) {
-        if (directory[offset] != 1)
+        if (directory[offset] != type)
           continue;
         const uint64_t size = little_endian(directory.data() + offset + 2, 4);
         const uint64_t location = little_endian(directory.data() + offset + 6, 4);
@@ -334,17 +347,26 @@ absl::StatusOr<std::optional<Insta360Clock>> ReadInsta360Clock(const std::filesy
       }
       continue;
     }
-    if ((little_endian(header, 2) >> 8) != 1)
+    if ((little_endian(header, 2) >> 8) != type)
       continue;
-    if (length > 4 * 1024 * 1024)
-      return absl::ResourceExhaustedError("Insta360 clock metadata is too large");
-    std::vector<unsigned char> data(length);
+    std::vector<unsigned char> data(std::min<uint64_t>(length, max_bytes));
     input.seekg(end);
     if (!input.read(reinterpret_cast<char*>(data.data()), data.size()))
-      return absl::DataLossError("Truncated Insta360 clock metadata");
-    return insta_clock(data);
+      return absl::DataLossError("Truncated Insta360 metadata");
+    return std::optional<Insta360Record>(Insta360Record{std::move(data), static_cast<size_t>(length)});
   }
-  return std::optional<Insta360Clock>{};
+  return std::optional<Insta360Record>{};
+}
+
+absl::StatusOr<std::optional<Insta360Clock>> ReadInsta360Clock(const std::filesystem::path& video) {
+  const auto record = ReadInsta360Record(video, 1, 4 * 1024 * 1024);
+  if (!record.ok())
+    return record.status();
+  if (!record->has_value())
+    return std::optional<Insta360Clock>{};
+  if (record->value().data.size() != record->value().full_size)
+    return absl::ResourceExhaustedError("Insta360 clock metadata is too large");
+  return insta_clock(record->value().data);
 }
 
 absl::StatusOr<Metadata> Parse(const std::string& json, const std::optional<Insta360Clock>& clock) {
