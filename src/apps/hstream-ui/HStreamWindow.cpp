@@ -219,17 +219,18 @@ QMetaObject::Connection connect_check_state_changed(QCheckBox* checkbox, Receive
 struct CalibrationStageSpec {
   const char* id;
   const char* label;
+  const char* activity;
 };
 
 constexpr CalibrationStageSpec kCalibrationStages[] = {
-    {"input", "Wait for synchronized camera frames"},
-    {"orientation", "Find the ice rink and orient cameras"},
-    {"features", "Look for control points"},
-    {"matching", "Match control points"},
-    {"optimizer", "Run panorama optimizer (autooptimiser)"},
-    {"leveling", "Optionally level the rink from vertical posts"},
-    {"canvas", "Build stitch maps and panorama"},
-    {"rink-mask", "Find the ice surface"},
+    {"input", "Wait for synchronized camera frames", "Synchronized camera frame capture"},
+    {"orientation", "Find the ice rink and orient cameras", "Camera orientation"},
+    {"features", "Look for control points", "Control-point detection"},
+    {"matching", "Match control points", "Control-point matching"},
+    {"optimizer", "Run panorama optimizer (autooptimiser)", "Panorama optimization"},
+    {"leveling", "Optionally level the rink", "Rink leveling"},
+    {"canvas", "Build stitch maps and panorama", "Stitch map and panorama generation"},
+    {"rink-mask", "Find the ice surface", "Ice-surface detection"},
 };
 
 std::optional<QTime> parse_stitch_frame_time(const QString& value) {
@@ -342,6 +343,24 @@ std::optional<size_t> calibration_stage_index(const QString& stage) {
       return index;
   }
   return std::nullopt;
+}
+
+QString calibration_stage_caption(const QString& stage, const QString& status) {
+  const auto index = calibration_stage_index(stage);
+  QString activity = index.has_value() ? QString::fromLatin1(kCalibrationStages[*index].activity)
+      : stage == "projection"          ? QString("Projection and crop preparation")
+                                       : stage;
+  if (!index.has_value())
+    activity.replace('-', ' ');
+  if (!activity.isEmpty())
+    activity[0] = activity[0].toUpper();
+  if (status == "complete")
+    return activity + " complete. Waiting for the next stage…";
+  if (status == "failed")
+    return activity + " failed.";
+  if (status == "skipped")
+    return activity + " skipped.";
+  return activity + "…";
 }
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
@@ -4284,6 +4303,42 @@ bool read_stitch_frame_time(
   }
 }
 
+hm::ui_internal::StitchingIterationSettings read_stitching_iteration_settings(
+    const YAML::Node& config,
+    hm::ui_internal::StitchingIterationSettings settings = {}) {
+  YAML::Node node;
+  if (lookup_yaml_path(config, "stitching.sync_method", &node)) {
+    settings.sync_method = QString::fromStdString(node.as<std::string>()).trimmed().toLower();
+    if (settings.sync_method != "audio" && settings.sync_method != "imu" && settings.sync_method != "auto")
+      throw std::invalid_argument("stitching.sync_method must be audio, imu, or auto");
+  }
+  if (lookup_yaml_path(config, "hstream_ui.show_crop_dialog", &node))
+    settings.show_crop_dialog = node.as<bool>();
+  if (lookup_yaml_path(config, "hstream_ui.show_leveling_dialog", &node))
+    settings.show_leveling_dialog = node.as<bool>();
+  if (lookup_yaml_path(config, "hstream_ui.playback_start_time", &node)) {
+    const auto parsed = parse_stitch_frame_time(QString::fromStdString(node.as<std::string>()));
+    if (!parsed.has_value())
+      throw std::invalid_argument("hstream_ui.playback_start_time must be HH:MM:SS or HH:MM:SS.mmm");
+    settings.playback_start_time = format_stitch_frame_time(*parsed);
+  }
+  return settings;
+}
+
+void write_stitching_iteration_settings(
+    YAML::Node& config,
+    const hm::ui_internal::StitchingIterationSettings& settings) {
+  // Remove dotted aliases as well, so an older overlay cannot mask the UI selection.
+  remove_yaml_path(config, {"stitching", "sync_method"});
+  remove_yaml_path(config, {"hstream_ui", "show_crop_dialog"});
+  remove_yaml_path(config, {"hstream_ui", "show_leveling_dialog"});
+  remove_yaml_path(config, {"hstream_ui", "playback_start_time"});
+  config["stitching"]["sync_method"] = settings.sync_method.toStdString();
+  config["hstream_ui"]["show_crop_dialog"] = settings.show_crop_dialog;
+  config["hstream_ui"]["show_leveling_dialog"] = settings.show_leveling_dialog;
+  config["hstream_ui"]["playback_start_time"] = settings.playback_start_time.toStdString();
+}
+
 QStringList pipeline_config_files_from_args(const QStringList& pipeline_args) {
   QStringList config_files;
   for (int i = 0; i < pipeline_args.size(); ++i) {
@@ -4700,6 +4755,7 @@ void HStreamWindow::loadBaselineDefaults() {
   };
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
+  default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
 
   const YAML::Node stitch_frame_time = require("stitching.stitch_frame_time");
@@ -4937,14 +4993,14 @@ bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
       return true;
     }
   }
-  if (watched == stitch_frame_time_edit_ && event) {
+  if ((watched == stitch_frame_time_edit_ || watched == playback_start_time_edit_) && event) {
+    auto* time_edit = static_cast<QTimeEdit*>(watched);
     if (event->type() == QEvent::FocusIn) {
-      stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFractionalFormat);
+      time_edit->setDisplayFormat(kStitchFrameTimeFractionalFormat);
     } else if (event->type() == QEvent::FocusOut) {
-      QTimer::singleShot(0, this, [this] {
-        if (stitch_frame_time_edit_ && !stitch_frame_time_edit_->hasFocus() &&
-            stitch_frame_time_edit_->time().msec() == 0) {
-          stitch_frame_time_edit_->setDisplayFormat(kStitchFrameTimeFormat);
+      QTimer::singleShot(0, this, [time_edit] {
+        if (time_edit && !time_edit->hasFocus() && time_edit->time().msec() == 0) {
+          time_edit->setDisplayFormat(kStitchFrameTimeFormat);
         }
       });
     }
@@ -5544,7 +5600,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       updatePresetDirtyState();
     });
   }
-  rink_leveling_button_ = new QPushButton("Level from posts…");
+  rink_leveling_button_ = new QPushButton("Level rink…");
   rink_leveling_button_->setObjectName("selectRinkLevelingButton");
   rink_default_button_ = new QPushButton("Use rink default");
   rink_default_button_->setObjectName("resetRinkLevelingButton");
@@ -5564,6 +5620,41 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   updateProjectionParameterControls();
   updateProjectionFramingControls();
 
+  gyro_sync_check_ = new QCheckBox("Gyroscope synchronization");
+  gyro_sync_check_->setObjectName("gyroSyncCheck");
+  set_control_help(
+      gyro_sync_check_,
+      "Synchronize using camera motion, with audio fallback (YAML imu requires a gyro match). "
+      "Saved/manual offsets take precedence; use Clean Stitching to calculate new offsets.");
+  show_crop_dialog_check_ = new QCheckBox("Open crop dialog automatically");
+  show_crop_dialog_check_->setObjectName("showCropDialogCheck");
+  set_control_help(
+      show_crop_dialog_check_,
+      "Review crop framing automatically during stitching setup. Adjust crop remains available when unchecked.");
+  show_leveling_dialog_check_ = new QCheckBox("Open leveling dialog automatically");
+  show_leveling_dialog_check_->setObjectName("showLevelingDialogCheck");
+  set_control_help(
+      show_leveling_dialog_check_,
+      "Open rink leveling during stitching setup. Select goal-line corners by default, or mark vertical posts. Level rink remains available when unchecked.");
+  for (QCheckBox* check : {gyro_sync_check_, show_crop_dialog_check_, show_leveling_dialog_check_})
+    connect(check, &QCheckBox::toggled, this, [this] { updatePresetDirtyState(); });
+  playback_start_time_edit_ = new QTimeEdit();
+  playback_start_time_edit_->setObjectName("playbackStartTimeEdit");
+  playback_start_time_edit_->setMinimumWidth(96);
+  playback_start_time_edit_->setWrapping(false);
+  playback_start_time_edit_->installEventFilter(this);
+  set_control_help(
+      playback_start_time_edit_,
+      "Start synchronized playback at this timestamp, after calibration if needed. Applies to both run modes "
+      "and all outputs. The calibration reference frame is selected separately.");
+  connect(playback_start_time_edit_, &QTimeEdit::timeChanged, this, [this](const QTime& value) {
+    playback_start_time_edit_->setDisplayFormat(
+        value.msec() == 0 && !playback_start_time_edit_->hasFocus() ? kStitchFrameTimeFormat
+                                                                    : kStitchFrameTimeFractionalFormat);
+    updatePresetDirtyState();
+  });
+  setStitchingIterationSettings(default_iteration_settings_);
+
   stitch_frame_time_edit_ = new QTimeEdit();
   stitch_frame_time_edit_->setObjectName("stitchFrameTimeEdit");
   stitch_frame_time_edit_->setMinimumWidth(96);
@@ -5572,7 +5663,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_->setWrapping(false);
   stitch_frame_time_edit_->installEventFilter(this);
   stitch_frame_time_edit_->setToolTip(
-      "Frame timestamp used to calibrate stitching. Playback returns to the beginning after one-pass calibration.");
+      "Frame timestamp used to calibrate stitching. Playback resumes at Playback start after calibration.");
   connect(stitch_frame_time_edit_, &QTimeEdit::timeChanged, this, [this](const QTime& value) {
     stitch_frame_time_edit_->setDisplayFormat(
         value.msec() == 0 && !stitch_frame_time_edit_->hasFocus() ? kStitchFrameTimeFormat
@@ -5673,6 +5764,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   });
   action_bar->addWidget(experiments);
   action_bar->addStretch(1);
+  auto* playback_start_label = new QLabel("Playback start");
+  playback_start_label->setObjectName("playbackStartTimeLabel");
+  playback_start_label->setBuddy(playback_start_time_edit_);
+  action_bar->addWidget(playback_start_label);
+  action_bar->addWidget(playback_start_time_edit_);
   action_bar->addWidget(start_button_);
   action_bar->addWidget(pause_button_);
   action_bar->addWidget(restart);
@@ -6168,10 +6264,11 @@ void HStreamWindow::configureControlHelp() {
   help(
       "playbackSeekSlider",
       "Seek relative to the configured run start for rapid play-tracking tests. Seeking is enabled only while a "
-      "Program run has local rendering as its sole output; archive, RTMP/YouTube, RTSP, and other outputs disable "
+      "Program or Stitching run has local rendering as its sole output; archive, RTMP/YouTube, RTSP, and other outputs disable "
       "it.");
-  help("playbackSeekBack10Button", "Seek ten seconds earlier during local-render-only Program playback.");
-  help("playbackSeekForward10Button", "Seek ten seconds later during local-render-only Program playback.");
+  help("playbackSeekBack10Button", "Seek ten seconds earlier during local rendering in Program or Stitching playback.");
+  help(
+      "playbackSeekForward10Button", "Seek ten seconds later during local rendering in Program or Stitching playback.");
   help(
       "restartStageButton",
       "Stop the current pipeline and start the selected mode again, preserving the current game, controls, and output-route selections.");
@@ -6609,38 +6706,41 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     clean_stitching_button_->setObjectName("cleanStitchingButton");
     clean_stitching_button_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(clean_stitching_button_, &QPushButton::clicked, this, [this]() { cleanStitchingCalibration(); });
-    algorithms_layout->addWidget(control_points_label, 0, 0);
-    algorithms_layout->addWidget(control_points_spin_, 0, 1);
-    algorithms_layout->addWidget(frame_count_label, 1, 0);
-    algorithms_layout->addWidget(calibration_frame_count_spin_, 1, 1);
-    algorithms_layout->addWidget(stitch_frame_time_label, 2, 0);
-    algorithms_layout->addWidget(stitch_frame_time_edit_, 2, 1);
-    algorithms_layout->addWidget(matcher_label, 3, 0);
-    algorithms_layout->addWidget(control_point_matcher_combo_, 3, 1);
-    algorithms_layout->addWidget(mapping_label, 4, 0);
-    algorithms_layout->addWidget(mapping_backend_combo_, 4, 1);
-    algorithms_layout->addWidget(camera_configuration_label, 5, 0);
-    algorithms_layout->addWidget(camera_configuration_combo_, 5, 1);
-    algorithms_layout->addWidget(camera_horizontal_fov_label, 6, 0);
-    algorithms_layout->addWidget(camera_horizontal_fov_spin_, 6, 1);
-    algorithms_layout->addWidget(camera_vertical_fov_label, 7, 0);
-    algorithms_layout->addWidget(camera_vertical_fov_spin_, 7, 1);
-    algorithms_layout->addWidget(projection_label, 8, 0);
-    algorithms_layout->addWidget(projection_combo_, 8, 1);
+    algorithms_layout->addWidget(gyro_sync_check_, 0, 0, 1, 2);
+    algorithms_layout->addWidget(show_crop_dialog_check_, 1, 0, 1, 2);
+    algorithms_layout->addWidget(show_leveling_dialog_check_, 2, 0, 1, 2);
+    algorithms_layout->addWidget(control_points_label, 3, 0);
+    algorithms_layout->addWidget(control_points_spin_, 3, 1);
+    algorithms_layout->addWidget(frame_count_label, 4, 0);
+    algorithms_layout->addWidget(calibration_frame_count_spin_, 4, 1);
+    algorithms_layout->addWidget(stitch_frame_time_label, 5, 0);
+    algorithms_layout->addWidget(stitch_frame_time_edit_, 5, 1);
+    algorithms_layout->addWidget(matcher_label, 6, 0);
+    algorithms_layout->addWidget(control_point_matcher_combo_, 6, 1);
+    algorithms_layout->addWidget(mapping_label, 7, 0);
+    algorithms_layout->addWidget(mapping_backend_combo_, 7, 1);
+    algorithms_layout->addWidget(camera_configuration_label, 8, 0);
+    algorithms_layout->addWidget(camera_configuration_combo_, 8, 1);
+    algorithms_layout->addWidget(camera_horizontal_fov_label, 9, 0);
+    algorithms_layout->addWidget(camera_horizontal_fov_spin_, 9, 1);
+    algorithms_layout->addWidget(camera_vertical_fov_label, 10, 0);
+    algorithms_layout->addWidget(camera_vertical_fov_spin_, 10, 1);
+    algorithms_layout->addWidget(projection_label, 11, 0);
+    algorithms_layout->addWidget(projection_combo_, 11, 1);
     for (size_t index = 0; index < projection_parameter_spins_.size(); ++index) {
-      algorithms_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 9, 0);
-      algorithms_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 9, 1);
-      algorithms_layout->addWidget(projection_parameter_checks_[index], static_cast<int>(index) + 9, 0, 1, 2);
+      algorithms_layout->addWidget(projection_parameter_labels_[index], static_cast<int>(index) + 12, 0);
+      algorithms_layout->addWidget(projection_parameter_spins_[index], static_cast<int>(index) + 12, 1);
+      algorithms_layout->addWidget(projection_parameter_checks_[index], static_cast<int>(index) + 12, 0, 1, 2);
     }
-    algorithms_layout->addWidget(projection_fov_label, 12, 0);
-    algorithms_layout->addWidget(projection_fov_controls, 12, 1);
-    algorithms_layout->addWidget(projection_auto_canvas_check_, 13, 0, 1, 2);
-    algorithms_layout->addWidget(projection_auto_crop_check_, 14, 0);
-    algorithms_layout->addWidget(projection_crop_button_, 14, 1);
-    algorithms_layout->addWidget(max_width_label, 15, 0);
-    algorithms_layout->addWidget(stitch_max_output_width_spin_, 15, 1);
-    algorithms_layout->addWidget(run_autooptimizer_check_, 16, 0, 1, 2);
-    algorithms_layout->addWidget(clean_stitching_button_, 17, 0, 1, 2);
+    algorithms_layout->addWidget(projection_fov_label, 15, 0);
+    algorithms_layout->addWidget(projection_fov_controls, 15, 1);
+    algorithms_layout->addWidget(projection_auto_canvas_check_, 16, 0, 1, 2);
+    algorithms_layout->addWidget(projection_auto_crop_check_, 17, 0);
+    algorithms_layout->addWidget(projection_crop_button_, 17, 1);
+    algorithms_layout->addWidget(max_width_label, 18, 0);
+    algorithms_layout->addWidget(stitch_max_output_width_spin_, 18, 1);
+    algorithms_layout->addWidget(run_autooptimizer_check_, 19, 0, 1, 2);
+    algorithms_layout->addWidget(clean_stitching_button_, 20, 0, 1, 2);
     auto* rink_label = new QLabel("Rink");
     rink_label->setObjectName("rinkConfigurationLabel");
     rink_label->setBuddy(rink_configuration_combo_);
@@ -6650,16 +6750,16 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* roll_label = new QLabel("Rink roll");
     roll_label->setObjectName("rinkRollLabel");
     roll_label->setBuddy(rink_angle_spins_[1]);
-    algorithms_layout->addWidget(rink_label, 18, 0);
-    algorithms_layout->addWidget(rink_configuration_combo_, 18, 1);
-    algorithms_layout->addWidget(pitch_label, 19, 0);
-    algorithms_layout->addWidget(rink_angle_spins_[0], 19, 1);
-    algorithms_layout->addWidget(roll_label, 20, 0);
-    algorithms_layout->addWidget(rink_angle_spins_[1], 20, 1);
-    algorithms_layout->addWidget(rink_rotation_source_, 21, 0, 1, 2);
-    algorithms_layout->addWidget(rink_default_button_, 22, 0);
-    algorithms_layout->addWidget(rink_leveling_button_, 22, 1);
-    algorithms_layout->setRowStretch(23, 1);
+    algorithms_layout->addWidget(rink_label, 21, 0);
+    algorithms_layout->addWidget(rink_configuration_combo_, 21, 1);
+    algorithms_layout->addWidget(pitch_label, 22, 0);
+    algorithms_layout->addWidget(rink_angle_spins_[0], 22, 1);
+    algorithms_layout->addWidget(roll_label, 23, 0);
+    algorithms_layout->addWidget(rink_angle_spins_[1], 23, 1);
+    algorithms_layout->addWidget(rink_rotation_source_, 24, 0, 1, 2);
+    algorithms_layout->addWidget(rink_default_button_, 25, 0);
+    algorithms_layout->addWidget(rink_leveling_button_, 25, 1);
+    algorithms_layout->setRowStretch(26, 1);
     algorithms_scroll->setWidget(algorithms_page);
     control_tabs->addTab(algorithms_scroll, "Algorithms");
     updateProjectionParameterControls();
@@ -7221,6 +7321,8 @@ void HStreamWindow::selectProjectionCrop() {
 }
 
 bool HStreamWindow::ensureProjectionCropReviewed() {
+  if (!stitchingIterationSettings().show_crop_dialog)
+    return true;
   const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
   const bool parameters_changed = saved_parameters == saved_projection_parameters_.end()
       ? !stitchProjectionParameters().empty()
@@ -7918,6 +8020,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (active_stitch_frame_time_ != default_stitch_frame_time_) {
       config["stitching"]["stitch_frame_time"] = active_stitch_frame_time_.toStdString();
     }
+    write_stitching_iteration_settings(config, active_iteration_settings_);
     config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
     config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
     hm::stitching::write_stitch_camera_selection(config, active_camera_selection_);
@@ -8219,13 +8322,7 @@ void HStreamWindow::showStitchingCalibrationDialog() {
   apply_state(calibration_headline_, "active");
   const QString start_stage =
       active_calibration_start_stage_.isEmpty() ? QString("input") : active_calibration_start_stage_;
-  calibration_detail_->setText(
-      start_stage == "features"
-          ? QString("Camera orientation and synchronization are current. Resuming at control-point detection with "
-                    "a limit of %1.")
-                .arg(active_calibration_control_points_)
-          : QString("Waiting for synchronized frames from both cameras. Control-point limit: %1.")
-                .arg(active_calibration_control_points_));
+  calibration_detail_->clear();
   calibration_progress_->setVisible(true);
   calibration_ok_button_->setVisible(false);
   calibration_cancel_button_->setVisible(true);
@@ -8237,7 +8334,7 @@ void HStreamWindow::showStitchingCalibrationDialog() {
       break;
     setStitchingCalibrationStage(stage, "complete", {});
   }
-  setStitchingCalibrationStage(start_stage, "started", calibration_detail_->text());
+  setStitchingCalibrationStage(start_stage, "started", {});
   if (active_run_is_calibration_)
     setStitchingCalibrationStage("rink-mask", "skipped", {});
   calibration_dialog_->show();
@@ -8313,11 +8410,11 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
 void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QString& status, const QString& message) {
   auto icon_it = calibration_stage_icons_.find(stage);
   auto label_it = calibration_stage_labels_.find(stage);
-  if (icon_it == calibration_stage_icons_.end() || label_it == calibration_stage_labels_.end()) {
-    if (!message.isEmpty() && calibration_detail_)
-      calibration_detail_->setText(message);
-    return;
-  }
+  QLabel* icon = icon_it == calibration_stage_icons_.end() ? nullptr : icon_it->second;
+  QLabel* label = label_it == calibration_stage_labels_.end() ? nullptr : label_it->second;
+  // Completions from an earlier stage may arrive after a newer stage has started.
+  // Track substeps without rows (such as projection) as active stages as well.
+  const bool update_detail = status == "started" || status == "failed" || active_calibration_stage_ == stage;
   auto apply_state = [](QLabel* label, const QString& state) {
     if (!label)
       return;
@@ -8339,27 +8436,33 @@ void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QSt
     if (!active_calibration_stage_.isEmpty() && active_calibration_stage_ != stage)
       mark_complete(active_calibration_stage_);
     active_calibration_stage_ = stage;
-    icon_it->second->setText(QString::fromUtf8("\u25cf"));
-    apply_state(icon_it->second, "active");
-    apply_state(label_it->second, "active");
+    if (icon)
+      icon->setText(QString::fromUtf8("\u25cf"));
+    apply_state(icon, "active");
+    apply_state(label, "active");
   } else if (status == "complete") {
     mark_complete(stage);
     if (active_calibration_stage_ == stage)
       active_calibration_stage_.clear();
   } else if (status == "failed") {
     active_calibration_stage_ = stage;
-    icon_it->second->setText(QString::fromUtf8("\u2715"));
-    apply_state(icon_it->second, "failed");
-    apply_state(label_it->second, "failed");
+    if (icon)
+      icon->setText(QString::fromUtf8("\u2715"));
+    apply_state(icon, "failed");
+    apply_state(label, "failed");
   } else if (status == "skipped") {
-    icon_it->second->setText(QString::fromUtf8("\u2014"));
-    label_it->second->setText("Find the ice surface (Program only)");
-    label_it->second->setToolTip("Rink-mask generation is omitted from stitching-only calibration.");
-    apply_state(icon_it->second, "skipped");
-    apply_state(label_it->second, "skipped");
+    if (icon)
+      icon->setText(QString::fromUtf8("\u2014"));
+    if (label) {
+      label->setText("Find the ice surface (Program only)");
+      label->setToolTip("Rink-mask generation is omitted from stitching-only calibration.");
+    }
+    apply_state(icon, "skipped");
+    apply_state(label, "skipped");
   }
-  if (!message.isEmpty() && calibration_detail_)
-    calibration_detail_->setText(message);
+  if (update_detail && calibration_detail_ && !calibration_dialog_failed_ && !pipeline_stop_requested_ &&
+      !calibration_waiting_for_playback_restart_)
+    calibration_detail_->setText(message.isEmpty() ? calibration_stage_caption(stage, status) : message);
 }
 
 void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
@@ -8402,7 +8505,8 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
       if (calibration_headline_)
         calibration_headline_->setText("Restarting playback…");
       if (calibration_detail_)
-        calibration_detail_->setText("Stitching is ready. Restarting continuous playback from the beginning.");
+        calibration_detail_->setText(QString("Stitching is ready. Starting playback at %1.")
+                                         .arg(active_iteration_settings_.playback_start_time));
       if (preview_status_)
         preview_status_->setText("Restarting playback after stitching calibration");
       appendLog("one-pass stitching calibration complete; waiting for continuous playback to restart");
@@ -8454,7 +8558,8 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
     calibration_detail_->setText(stitchingCalibrationFailureAnalysis(calibration_failure_message_));
   }
 
-  if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && !calibration_dialog_failed_) {
+  if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && calibration_pending_ &&
+      !calibration_dialog_failed_ && !pipeline_stop_requested_ && !calibration_waiting_for_playback_restart_) {
     calibration_detail_->setText(
         QString("An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
                 "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
@@ -8798,6 +8903,9 @@ QStringList HStreamWindow::pipelineArguments(bool standalone) const {
                     !standalone && active_calibration_frame_count_ > 0 ? active_calibration_frame_count_
                                                                        : stitchingCalibrationFrameCount());
   }
+  const auto iteration = standalone ? stitchingIterationSettings() : active_iteration_settings_;
+  args << QString("--start-time=%1").arg(iteration.playback_start_time);
+  args << QString("--options=stitching.sync_method=%1").arg(iteration.sync_method);
   const QString frame_time = standalone ? stitchFrameTime() : active_stitch_frame_time_;
   if (!frame_time.isEmpty() && frame_time != default_stitch_frame_time_) {
     args << QString("--stitch-frame-time=%1").arg(frame_time);
@@ -8964,9 +9072,13 @@ void HStreamWindow::startPipeline() {
   active_run_minimum_source_bit_depth_ = 0;
   updateStitchedColorPrecisionControls();
   const QStringList active_sinks = enabledSinkNames();
-  active_run_local_render_only_ = !active_run_is_calibration_ &&
-      (!render_video_toggle_ || render_video_toggle_->isChecked()) && active_sinks.size() == 1 &&
-      active_sinks.front() == "RENDER";
+  const auto seek_archive_toggle = output_toggles_.find("archive-file");
+  const bool seek_archive_enabled = seek_archive_toggle != output_toggles_.end() && seek_archive_toggle->second &&
+      seek_archive_toggle->second->isChecked();
+  // Stitching-only mode ignores Program routes and only supports the stitched archive output.
+  active_run_local_render_only_ = (!render_video_toggle_ || render_video_toggle_->isChecked()) &&
+      (active_run_is_calibration_ ? !seek_archive_enabled
+                                  : active_sinks.size() == 1 && active_sinks.front() == "RENDER");
   updatePlaybackSeekControls();
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
@@ -8975,6 +9087,7 @@ void HStreamWindow::startPipeline() {
   active_stitch_max_output_width_ = stitchingMaxOutputWidth();
   active_run_autooptimizer_ = runAutooptimizer();
   active_stitch_frame_time_ = stitchFrameTime();
+  active_iteration_settings_ = stitchingIterationSettings();
   active_control_point_matcher_ = controlPointMatcher();
   active_mapping_backend_ = mappingBackend();
   active_camera_selection_ = stitchCameraSelection();
@@ -9142,6 +9255,7 @@ void HStreamWindow::startPipeline() {
     return;
   }
   saved_stitch_frame_time_ = active_stitch_frame_time_;
+  saved_iteration_settings_ = active_iteration_settings_;
   saved_stitching_control_points_ = active_calibration_control_points_;
   saved_stitching_calibration_frame_count_ = active_calibration_frame_count_;
   saved_stitch_max_output_width_ = active_stitch_max_output_width_;
@@ -9243,7 +9357,7 @@ void HStreamWindow::startPipeline() {
   env.remove("HSTREAM_PROJECTION_CROP_FLOW");
   // Program can discover missing maps after launch. The backend only asks
   // during actual calibration; unchanged playback never emits a crop request.
-  if (active_mapping_backend_ == "nona")
+  if (active_mapping_backend_ == "nona" && active_iteration_settings_.show_crop_dialog)
     env.insert("HSTREAM_PROJECTION_CROP_FLOW", "1");
   if (calibration_pending_) {
     const int control_points = active_calibration_control_points_;
@@ -9253,7 +9367,7 @@ void HStreamWindow::startPipeline() {
     env.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(frame_count));
     env.insert("HSTREAM_CALIBRATION_PENDING", "1");
     env.insert("HSTREAM_CALIBRATION_START_STAGE", active_calibration_start_stage_);
-    if (active_mapping_backend_ == "nona")
+    if (active_mapping_backend_ == "nona" && active_iteration_settings_.show_leveling_dialog)
       env.insert("HSTREAM_RINK_LEVELING_FLOW", "1");
     if (active_run_is_calibration_) {
       appendLog(QString("stitching calibration control points=%1 frames=%2; starting one-pass stitched playback")
@@ -10282,9 +10396,9 @@ void HStreamWindow::updatePlaybackSeekControls() {
     transport->setVisible(running || (playback_progress_ && !playback_progress_->isHidden()));
   }
   const bool rendering = !render_video_toggle_ || render_video_toggle_->isChecked();
-  const bool allowed = running && active_run_local_render_only_ && !active_run_is_calibration_ &&
-      !active_run_telemetry_requested_ && !calibration_pending_ && rendering && playback_seek_channel_available_ &&
-      playback_duration_ns_ > 0 && pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
+  const bool allowed = running && active_run_local_render_only_ && !active_run_telemetry_requested_ &&
+      !calibration_pending_ && rendering && playback_seek_channel_available_ && playback_duration_ns_ > 0 &&
+      pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
   playback_seek_slider_->setEnabled(allowed);
   if (playback_seek_back_button_)
     playback_seek_back_button_->setEnabled(allowed);
@@ -10304,13 +10418,13 @@ void HStreamWindow::updatePlaybackSeekControls() {
   updatePlaybackSeekPositionPresentation();
   QString reason;
   if (!running) {
-    reason = "Start a Program run with only Render video enabled to seek.";
+    reason = "Start playback with only Render video enabled to seek.";
   } else if (!playback_seek_channel_available_) {
     reason = "Seeking is unavailable because the pipeline command channel failed.";
   } else if (active_run_telemetry_requested_) {
     reason = "Seeking is disabled because lossless DriveGPT database capture is active for this run.";
-  } else if (!active_run_local_render_only_ || active_run_is_calibration_) {
-    reason = "Seeking is disabled because this run includes a nonlocal output or is not Program playback.";
+  } else if (!active_run_local_render_only_) {
+    reason = "Seeking is disabled because this run includes a nonlocal output.";
   } else if (!rendering) {
     reason = "Enable Render video to seek.";
   } else if (calibration_pending_) {
@@ -15010,6 +15124,8 @@ void HStreamWindow::resetCameraControls() {
     }
   }
   synchronizeStitchedColorControls();
+  if (!pipeline_running)
+    setStitchingIterationSettings(default_iteration_settings_);
   if (!pipeline_running && stitch_frame_time_edit_) {
     const auto parsed = parse_stitch_frame_time(default_stitch_frame_time_);
     if (parsed.has_value())
@@ -15126,12 +15242,16 @@ void HStreamWindow::cleanStitchingCalibration() {
   const int selected_control_points = stitchingCalibrationControlPoints();
   const int selected_frame_count = stitchingCalibrationFrameCount();
   const QTime selected_reference_time = stitch_frame_time_edit_->time();
-  auto reload_controls = [this, selected_control_points, selected_frame_count, selected_reference_time]() {
-    loadSavedControlConfig();
-    control_points_spin_->setValue(selected_control_points);
-    calibration_frame_count_spin_->setValue(selected_frame_count);
-    stitch_frame_time_edit_->setTime(selected_reference_time);
-  };
+  const auto selected_iteration_settings = stitchingIterationSettings();
+  auto reload_controls =
+      [this, selected_control_points, selected_frame_count, selected_reference_time, selected_iteration_settings]() {
+        loadSavedControlConfig();
+        control_points_spin_->setValue(selected_control_points);
+        calibration_frame_count_spin_->setValue(selected_frame_count);
+        stitch_frame_time_edit_->setTime(selected_reference_time);
+        setStitchingIterationSettings(selected_iteration_settings);
+        updatePresetDirtyState();
+      };
 
   const fs::path config_path = game_dir / "config.yaml";
   if (!fs::exists(config_path)) {
@@ -15170,11 +15290,55 @@ void HStreamWindow::cleanStitchingCalibration() {
   reload_controls();
 }
 
+hm::ui_internal::StitchingIterationSettings HStreamWindow::stitchingIterationSettings() const {
+  auto settings = default_iteration_settings_;
+  if (gyro_sync_check_)
+    settings.sync_method = gyro_sync_check_->isChecked() ? enabled_gyro_sync_method_ : "audio";
+  if (show_crop_dialog_check_)
+    settings.show_crop_dialog = show_crop_dialog_check_->isChecked();
+  if (show_leveling_dialog_check_)
+    settings.show_leveling_dialog = show_leveling_dialog_check_->isChecked();
+  if (playback_start_time_edit_)
+    settings.playback_start_time = format_stitch_frame_time(playback_start_time_edit_->time());
+  return settings;
+}
+
+void HStreamWindow::setStitchingIterationSettings(const hm::ui_internal::StitchingIterationSettings& settings) {
+  // Preserve strict IMU selected in YAML when saving unrelated UI controls.
+  enabled_gyro_sync_method_ = settings.sync_method == "imu" ? "imu" : "auto";
+  const auto set_check = [](QCheckBox* check, bool value) {
+    if (check) {
+      const QSignalBlocker blocker(check);
+      check->setChecked(value);
+    }
+  };
+  set_check(gyro_sync_check_, settings.sync_method != "audio");
+  set_check(show_crop_dialog_check_, settings.show_crop_dialog);
+  set_check(show_leveling_dialog_check_, settings.show_leveling_dialog);
+  if (playback_start_time_edit_) {
+    const QSignalBlocker blocker(playback_start_time_edit_);
+    const QTime time = *parse_stitch_frame_time(settings.playback_start_time);
+    playback_start_time_edit_->setTime(time);
+    playback_start_time_edit_->setDisplayFormat(
+        time.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
+  }
+}
+
 void HStreamWindow::updateStitchFrameTimeAvailability() {
   if (!stitch_frame_time_edit_)
     return;
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   const bool finalizing = isArchiveFinalizing();
+  for (QWidget* control :
+       {static_cast<QWidget*>(playback_start_time_edit_),
+        static_cast<QWidget*>(gyro_sync_check_),
+        static_cast<QWidget*>(show_crop_dialog_check_),
+        static_cast<QWidget*>(show_leveling_dialog_check_)}) {
+    if (control)
+      control->setEnabled(!running && !finalizing);
+  }
+  if (auto* label = findChild<QLabel*>("playbackStartTimeLabel"))
+    label->setEnabled(!running && !finalizing);
   const bool single_frame = calibration_frame_count_spin_ && calibration_frame_count_spin_->value() == 1;
   const bool enabled = !running && !finalizing && single_frame;
   stitch_frame_time_edit_->setEnabled(enabled);
@@ -15197,6 +15361,7 @@ void HStreamWindow::captureSavedControlState() {
   }
   saved_high_bit_depth_mode_ = highBitDepthMode();
   saved_stitch_frame_time_ = stitchFrameTime();
+  saved_iteration_settings_ = stitchingIterationSettings();
   saved_stitching_control_points_ = stitchingCalibrationControlPoints();
   saved_stitching_calibration_frame_count_ = stitchingCalibrationFrameCount();
   saved_stitch_max_output_width_ = stitchingMaxOutputWidth();
@@ -15235,7 +15400,8 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = retry_required || !pending_crop_geometry_.empty() ||
+  bool dirty = retry_required || saved_iteration_settings_ != stitchingIterationSettings() ||
+      !pending_crop_geometry_.empty() ||
       (rink_configuration_combo_ && saved_rink_configuration_ != rink_configuration_combo_->currentData().toString()) ||
       saved_projection_framing_.rotation_inherited != loaded_projection_framing_.rotation_inherited ||
       saved_camera_controls_.size() != camera_defaults_.size() || saved_high_bit_depth_mode_ != highBitDepthMode() ||
@@ -15371,6 +15537,7 @@ std::map<QString, double> HStreamWindow::readPlayerSizeControls(const YAML::Node
 }
 
 void HStreamWindow::loadSavedControlConfig() {
+  setStitchingIterationSettings(default_iteration_settings_);
   inherited_player_size_controls_.clear();
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     captureSavedControlState();
@@ -15632,6 +15799,7 @@ void HStreamWindow::loadSavedControlConfig() {
     int staged_frame_count =
         calibration_frame_count_spin_ ? calibration_frame_count_spin_->value() : kDefaultStitchCalibrationFrameCount;
     int staged_max_output_width = default_stitch_max_output_width_;
+    const auto staged_iteration_settings = read_stitching_iteration_settings(config, default_iteration_settings_);
     bool staged_run_autooptimizer = default_run_autooptimizer_;
     QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     QString staged_control_point_matcher = default_control_point_matcher_;
@@ -15962,6 +16130,7 @@ void HStreamWindow::loadSavedControlConfig() {
         }
       }
     }
+    setStitchingIterationSettings(staged_iteration_settings);
     if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
       staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
     }
@@ -16189,6 +16358,7 @@ bool HStreamWindow::applySavedControlConfig(
   remove_yaml_path(config, {"hstream_ui", "generated_runtime_values"});
   remove_yaml_path(config, {"hstream_ui", "playtracker_config_base"});
   remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
+  write_stitching_iteration_settings(config, stitchingIterationSettings());
   YAML::Node current_playtracker_config;
   if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar() &&
       (!lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config) ||

@@ -2896,7 +2896,16 @@ bool should_retry_stitching_calibration_candidate(const absl::Status& status, bo
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
-    const std::string& video2) {
+    const std::string& video2,
+    SynchronizationMethod method) {
+  if (method != SynchronizationMethod::kAudio) {
+    const auto imu_offsets = synchronize_by_imu(video1, video2);
+    if (imu_offsets.ok())
+      return Synchronization{imu_offsets->first, imu_offsets->second};
+    if (method == SynchronizationMethod::kImu)
+      return imu_offsets.status();
+    std::cerr << "IMU synchronization unavailable: " << imu_offsets.status() << "; falling back to audio" << std::endl;
+  }
   auto frame_offsets = synchronize_by_audio(video1, video2);
   return Synchronization{
       .video1_frame_offset = frame_offsets.first,

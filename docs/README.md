@@ -1,5 +1,7 @@
 # Documentation
 
+- [IMU synchronization for GoPro and Insta360 recordings](imu-synchronization.md)
+
 This repository can generate API documentation from the source code using Doxygen.
 
 - Build: `bazelisk build //docs:site`
@@ -9,4 +11,3 @@ Notes
 - Requires `doxygen` on your PATH. Install via your package manager.
 - The docs include source browsing and cross-references (who-references / referenced-by).
 - CUDA sources (`.cu/.cuh`) are mapped to C++ for parsing.
-

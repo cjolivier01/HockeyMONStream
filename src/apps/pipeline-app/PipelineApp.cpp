@@ -6567,7 +6567,8 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
         context && stitch_frame_rewind_pending_contexts_.count(context.get()) != 0,
     });
   }
-  for (const size_t index : hm::pipeline_internal::stitch_frame_rewind_candidates(stitch_frame_time_ns_, states)) {
+  for (const size_t index :
+       hm::pipeline_internal::stitch_frame_rewind_candidates(start_time_ns_, stitch_frame_time_ns_, states)) {
     AppCtx* context = active_stage->second[index].get();
     stitch_frame_rewind_pending_contexts_.insert(context);
   }
@@ -6600,7 +6601,7 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
   } else if (
       stitch_frame_rewind_pending_contexts_.empty() &&
       stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
-    // A zero stitch-frame time needs no pipeline recreation, but calibration
+    // When both start and reference times are zero, a single context needs no recreation, but calibration
     // work still must not consume normal playback progress or time limits.
     // Publish a fresh baseline before enabling those callbacks.
     reset_playback_timing_state(current_stage_);

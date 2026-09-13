@@ -4,6 +4,7 @@
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/ImuSynchronization.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 
 /* clang-format off */
@@ -94,7 +95,8 @@ struct StitchingCalibrationFramePair {
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
-    const std::string& video2);
+    const std::string& video2,
+    SynchronizationMethod method = SynchronizationMethod::kAudio);
 
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
