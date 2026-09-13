@@ -109,6 +109,14 @@ struct HStreamWindowTestAccess {
     window->recordStitchingCalibrationDiagnostic(line);
   }
 
+  static void showCalibrationProgress(HStreamWindow* window, const QString& stage) {
+    window->calibration_pending_ = true;
+    window->calibration_waiting_for_playback_restart_ = false;
+    window->active_run_is_calibration_ = false;
+    window->active_calibration_start_stage_ = stage;
+    window->showStitchingCalibrationDialog();
+  }
+
   static void calibrationOutput(HStreamWindow* window, const QString& line) {
     window->handleStitchingCalibrationOutput(line);
   }
@@ -2642,7 +2650,77 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
              "Backend completion must close the tracked selector without publishing a stale Skip response");
 }
 
+bool test_calibration_progress_caption() {
+  HStreamWindow window;
+  const std::vector<std::pair<QString, QString>> stages = {
+      {"input", "Synchronized camera frame capture"},
+      {"orientation", "Camera orientation"},
+      {"features", "Control-point detection"},
+      {"matching", "Control-point matching"},
+      {"optimizer", "Panorama optimization"},
+      {"leveling", "Rink leveling"},
+      {"canvas", "Stitch map and panorama generation"},
+      {"rink-mask", "Ice-surface detection"},
+  };
+  for (const auto& [stage, caption] : stages) {
+    HStreamWindowTestAccess::showCalibrationProgress(&window, stage);
+    auto* detail = require_child<QLabel>(&window, "stitchCalibrationDetail");
+    if (!detail ||
+        !expect(
+            detail->text() == caption + "…",
+            "Resumed calibration must describe its actual starting stage: " + stage.toStdString()))
+      return false;
+  }
+  HStreamWindowTestAccess::showCalibrationProgress(&window, "features");
+  auto* detail = require_child<QLabel>(&window, "stitchCalibrationDetail");
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=matching status=started");
+  if (!expect(
+          detail->text() == "Control-point matching…",
+          "An event without a message must replace the previous stage caption"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=features status=complete message=Old control points are ready");
+  if (!expect(detail->text() == "Control-point matching…", "Late completion must preserve the active stage caption"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=matching status=complete");
+  if (!expect(
+          detail->text().startsWith("Control-point matching complete."),
+          "A message-less completion must stop describing completed work as active"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=optimizer status=started message=Preparing a native OpenCV project");
+  if (!expect(detail->text() == "Preparing a native OpenCV project", "Backend details must take precedence"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=projection status=started");
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=optimizer status=complete message=Old optimizer completion");
+  if (!expect(
+          detail->text() == "Projection and crop preparation…",
+          "Substeps without stage rows must also have current captions"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=canvas status=started");
+  if (!expect(detail->text() == "Stitch map and panorama generation…", "Canvas generation must replace projection"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=calibration status=complete");
+  const QString restarting = detail->text();
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=canvas status=complete message=Late canvas completion");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(&window, "Skipping pooled stitching calibration: late log");
+  if (!expect(
+          detail->text() == restarting && restarting.contains("Starting playback"),
+          "Late stage or diagnostic output must not overwrite the playback-restart caption"))
+    return false;
+  HStreamWindowTestAccess::showCalibrationProgress(&window, "features");
+  HStreamWindowTestAccess::setPipelineStopRequested(&window, true);
+  detail->setText("Stopping calibration…");
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=matching status=started");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(&window, "Skipping pooled stitching calibration: late log");
+  return expect(detail->text() == "Stopping calibration…", "Late progress must preserve the stopping caption");
+}
+
 bool test_calibration_progress_dialog(HStreamWindow* window) {
+  if (!test_calibration_progress_caption())
+    return false;
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");

@@ -219,17 +219,18 @@ QMetaObject::Connection connect_check_state_changed(QCheckBox* checkbox, Receive
 struct CalibrationStageSpec {
   const char* id;
   const char* label;
+  const char* activity;
 };
 
 constexpr CalibrationStageSpec kCalibrationStages[] = {
-    {"input", "Wait for synchronized camera frames"},
-    {"orientation", "Find the ice rink and orient cameras"},
-    {"features", "Look for control points"},
-    {"matching", "Match control points"},
-    {"optimizer", "Run panorama optimizer (autooptimiser)"},
-    {"leveling", "Optionally level the rink"},
-    {"canvas", "Build stitch maps and panorama"},
-    {"rink-mask", "Find the ice surface"},
+    {"input", "Wait for synchronized camera frames", "Synchronized camera frame capture"},
+    {"orientation", "Find the ice rink and orient cameras", "Camera orientation"},
+    {"features", "Look for control points", "Control-point detection"},
+    {"matching", "Match control points", "Control-point matching"},
+    {"optimizer", "Run panorama optimizer (autooptimiser)", "Panorama optimization"},
+    {"leveling", "Optionally level the rink", "Rink leveling"},
+    {"canvas", "Build stitch maps and panorama", "Stitch map and panorama generation"},
+    {"rink-mask", "Find the ice surface", "Ice-surface detection"},
 };
 
 std::optional<QTime> parse_stitch_frame_time(const QString& value) {
@@ -342,6 +343,24 @@ std::optional<size_t> calibration_stage_index(const QString& stage) {
       return index;
   }
   return std::nullopt;
+}
+
+QString calibration_stage_caption(const QString& stage, const QString& status) {
+  const auto index = calibration_stage_index(stage);
+  QString activity = index.has_value() ? QString::fromLatin1(kCalibrationStages[*index].activity)
+      : stage == "projection"          ? QString("Projection and crop preparation")
+                                       : stage;
+  if (!index.has_value())
+    activity.replace('-', ' ');
+  if (!activity.isEmpty())
+    activity[0] = activity[0].toUpper();
+  if (status == "complete")
+    return activity + " complete. Waiting for the next stage…";
+  if (status == "failed")
+    return activity + " failed.";
+  if (status == "skipped")
+    return activity + " skipped.";
+  return activity + "…";
 }
 
 absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& config) {
@@ -8303,13 +8322,7 @@ void HStreamWindow::showStitchingCalibrationDialog() {
   apply_state(calibration_headline_, "active");
   const QString start_stage =
       active_calibration_start_stage_.isEmpty() ? QString("input") : active_calibration_start_stage_;
-  calibration_detail_->setText(
-      start_stage == "features"
-          ? QString("Camera orientation and synchronization are current. Resuming at control-point detection with "
-                    "a limit of %1.")
-                .arg(active_calibration_control_points_)
-          : QString("Waiting for synchronized frames from both cameras. Control-point limit: %1.")
-                .arg(active_calibration_control_points_));
+  calibration_detail_->clear();
   calibration_progress_->setVisible(true);
   calibration_ok_button_->setVisible(false);
   calibration_cancel_button_->setVisible(true);
@@ -8321,7 +8334,7 @@ void HStreamWindow::showStitchingCalibrationDialog() {
       break;
     setStitchingCalibrationStage(stage, "complete", {});
   }
-  setStitchingCalibrationStage(start_stage, "started", calibration_detail_->text());
+  setStitchingCalibrationStage(start_stage, "started", {});
   if (active_run_is_calibration_)
     setStitchingCalibrationStage("rink-mask", "skipped", {});
   calibration_dialog_->show();
@@ -8397,11 +8410,11 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
 void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QString& status, const QString& message) {
   auto icon_it = calibration_stage_icons_.find(stage);
   auto label_it = calibration_stage_labels_.find(stage);
-  if (icon_it == calibration_stage_icons_.end() || label_it == calibration_stage_labels_.end()) {
-    if (!message.isEmpty() && calibration_detail_)
-      calibration_detail_->setText(message);
-    return;
-  }
+  QLabel* icon = icon_it == calibration_stage_icons_.end() ? nullptr : icon_it->second;
+  QLabel* label = label_it == calibration_stage_labels_.end() ? nullptr : label_it->second;
+  // Completions from an earlier stage may arrive after a newer stage has started.
+  // Track substeps without rows (such as projection) as active stages as well.
+  const bool update_detail = status == "started" || status == "failed" || active_calibration_stage_ == stage;
   auto apply_state = [](QLabel* label, const QString& state) {
     if (!label)
       return;
@@ -8423,27 +8436,33 @@ void HStreamWindow::setStitchingCalibrationStage(const QString& stage, const QSt
     if (!active_calibration_stage_.isEmpty() && active_calibration_stage_ != stage)
       mark_complete(active_calibration_stage_);
     active_calibration_stage_ = stage;
-    icon_it->second->setText(QString::fromUtf8("\u25cf"));
-    apply_state(icon_it->second, "active");
-    apply_state(label_it->second, "active");
+    if (icon)
+      icon->setText(QString::fromUtf8("\u25cf"));
+    apply_state(icon, "active");
+    apply_state(label, "active");
   } else if (status == "complete") {
     mark_complete(stage);
     if (active_calibration_stage_ == stage)
       active_calibration_stage_.clear();
   } else if (status == "failed") {
     active_calibration_stage_ = stage;
-    icon_it->second->setText(QString::fromUtf8("\u2715"));
-    apply_state(icon_it->second, "failed");
-    apply_state(label_it->second, "failed");
+    if (icon)
+      icon->setText(QString::fromUtf8("\u2715"));
+    apply_state(icon, "failed");
+    apply_state(label, "failed");
   } else if (status == "skipped") {
-    icon_it->second->setText(QString::fromUtf8("\u2014"));
-    label_it->second->setText("Find the ice surface (Program only)");
-    label_it->second->setToolTip("Rink-mask generation is omitted from stitching-only calibration.");
-    apply_state(icon_it->second, "skipped");
-    apply_state(label_it->second, "skipped");
+    if (icon)
+      icon->setText(QString::fromUtf8("\u2014"));
+    if (label) {
+      label->setText("Find the ice surface (Program only)");
+      label->setToolTip("Rink-mask generation is omitted from stitching-only calibration.");
+    }
+    apply_state(icon, "skipped");
+    apply_state(label, "skipped");
   }
-  if (!message.isEmpty() && calibration_detail_)
-    calibration_detail_->setText(message);
+  if (update_detail && calibration_detail_ && !calibration_dialog_failed_ && !pipeline_stop_requested_ &&
+      !calibration_waiting_for_playback_restart_)
+    calibration_detail_->setText(message.isEmpty() ? calibration_stage_caption(stage, status) : message);
 }
 
 void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
@@ -8539,7 +8558,8 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
     calibration_detail_->setText(stitchingCalibrationFailureAnalysis(calibration_failure_message_));
   }
 
-  if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && !calibration_dialog_failed_) {
+  if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && calibration_pending_ &&
+      !calibration_dialog_failed_ && !pipeline_stop_requested_ && !calibration_waiting_for_playback_restart_) {
     calibration_detail_->setText(
         QString("An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
                 "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
