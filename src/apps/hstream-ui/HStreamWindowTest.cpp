@@ -12062,7 +12062,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     crop->setChecked((selection & 1) != 0);
     posts->setChecked((selection & 2) != 0);
     // A changed reference also ensures enabled crop review waits for fresh calibration.
-    reference->setTime(QTime(0, 0, 8 + selection));
+    reference->setTime(QTime(0, 0, selection == 0 ? 0 : 8 + selection));
     archive->setChecked(selection == 3);
     if (!set_test_calibration_status(&window, "pending")) {
       ok = false;

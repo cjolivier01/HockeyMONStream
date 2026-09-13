@@ -19,10 +19,11 @@ inline uint64_t stitch_frame_initial_position(
     uint64_t stitch_frame_time_ns,
     bool calibration_required,
     bool rewind_complete) {
-  return stitch_frame_time_ns > 0 && calibration_required && !rewind_complete ? stitch_frame_time_ns : start_time_ns;
+  return calibration_required && !rewind_complete ? stitch_frame_time_ns : start_time_ns;
 }
 
 inline std::vector<size_t> stitch_frame_rewind_candidates(
+    uint64_t start_time_ns,
     uint64_t stitch_frame_time_ns,
     const std::vector<StitchFrameRewindState>& states) {
   std::vector<size_t> candidates;
@@ -30,7 +31,7 @@ inline std::vector<size_t> stitch_frame_rewind_candidates(
       static_cast<size_t>(std::count_if(states.begin(), states.end(), [](const StitchFrameRewindState& state) {
         return state.calibration_required && !state.rewind_complete;
       }));
-  if (stitch_frame_time_ns == 0 && unfinished_calibration_contexts < 2) {
+  if (start_time_ns == 0 && stitch_frame_time_ns == 0 && unfinished_calibration_contexts < 2) {
     return candidates;
   }
   for (size_t index = 0; index < states.size(); ++index) {
