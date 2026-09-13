@@ -109,6 +109,14 @@ struct HStreamWindowTestAccess {
     window->recordStitchingCalibrationDiagnostic(line);
   }
 
+  static void showCalibrationProgress(HStreamWindow* window, const QString& stage) {
+    window->calibration_pending_ = true;
+    window->calibration_waiting_for_playback_restart_ = false;
+    window->active_run_is_calibration_ = false;
+    window->active_calibration_start_stage_ = stage;
+    window->showStitchingCalibrationDialog();
+  }
+
   static void calibrationOutput(HStreamWindow* window, const QString& line) {
     window->handleStitchingCalibrationOutput(line);
   }
@@ -2642,7 +2650,77 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
              "Backend completion must close the tracked selector without publishing a stale Skip response");
 }
 
+bool test_calibration_progress_caption() {
+  HStreamWindow window;
+  const std::vector<std::pair<QString, QString>> stages = {
+      {"input", "Synchronized camera frame capture"},
+      {"orientation", "Camera orientation"},
+      {"features", "Control-point detection"},
+      {"matching", "Control-point matching"},
+      {"optimizer", "Panorama optimization"},
+      {"leveling", "Rink leveling"},
+      {"canvas", "Stitch map and panorama generation"},
+      {"rink-mask", "Ice-surface detection"},
+  };
+  for (const auto& [stage, caption] : stages) {
+    HStreamWindowTestAccess::showCalibrationProgress(&window, stage);
+    auto* detail = require_child<QLabel>(&window, "stitchCalibrationDetail");
+    if (!detail ||
+        !expect(
+            detail->text() == caption + "…",
+            "Resumed calibration must describe its actual starting stage: " + stage.toStdString()))
+      return false;
+  }
+  HStreamWindowTestAccess::showCalibrationProgress(&window, "features");
+  auto* detail = require_child<QLabel>(&window, "stitchCalibrationDetail");
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=matching status=started");
+  if (!expect(
+          detail->text() == "Control-point matching…",
+          "An event without a message must replace the previous stage caption"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=features status=complete message=Old control points are ready");
+  if (!expect(detail->text() == "Control-point matching…", "Late completion must preserve the active stage caption"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=matching status=complete");
+  if (!expect(
+          detail->text().startsWith("Control-point matching complete."),
+          "A message-less completion must stop describing completed work as active"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=optimizer status=started message=Preparing a native OpenCV project");
+  if (!expect(detail->text() == "Preparing a native OpenCV project", "Backend details must take precedence"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=projection status=started");
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=optimizer status=complete message=Old optimizer completion");
+  if (!expect(
+          detail->text() == "Projection and crop preparation…",
+          "Substeps without stage rows must also have current captions"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=canvas status=started");
+  if (!expect(detail->text() == "Stitch map and panorama generation…", "Canvas generation must replace projection"))
+    return false;
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=calibration status=complete");
+  const QString restarting = detail->text();
+  HStreamWindowTestAccess::calibrationOutput(
+      &window, "HSTREAM_CALIBRATION stage=canvas status=complete message=Late canvas completion");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(&window, "Skipping pooled stitching calibration: late log");
+  if (!expect(
+          detail->text() == restarting && restarting.contains("Starting playback"),
+          "Late stage or diagnostic output must not overwrite the playback-restart caption"))
+    return false;
+  HStreamWindowTestAccess::showCalibrationProgress(&window, "features");
+  HStreamWindowTestAccess::setPipelineStopRequested(&window, true);
+  detail->setText("Stopping calibration…");
+  HStreamWindowTestAccess::calibrationOutput(&window, "HSTREAM_CALIBRATION stage=matching status=started");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(&window, "Skipping pooled stitching calibration: late log");
+  return expect(detail->text() == "Stopping calibration…", "Late progress must preserve the stopping caption");
+}
+
 bool test_calibration_progress_dialog(HStreamWindow* window) {
+  if (!test_calibration_progress_caption())
+    return false;
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
@@ -8901,6 +8979,28 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const double inactive_compression = compression->value();
   compression->setValue(inactive_compression + 1);
   projection->setCurrentIndex(projection->findData("cylindrical"));
+  auto* automatic_crop_dialog = require_child<QCheckBox>(window, "showCropDialogCheck");
+  if (!automatic_crop_dialog)
+    return false;
+  automatic_crop_dialog->setChecked(false);
+  bool suppressed_dialog_opened = false;
+  QTimer suppress_guard;
+  QObject::connect(&suppress_guard, &QTimer::timeout, [&] {
+    if (auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget())) {
+      suppressed_dialog_opened = true;
+      dialog->close();
+    }
+  });
+  suppress_guard.start(10);
+  const bool suppressed_review = HStreamWindowTestAccess::ensureProjectionCropReviewed(window);
+  suppress_guard.stop();
+  automatic_crop_dialog->setChecked(true);
+  if (!expect(
+          suppressed_review && !suppressed_dialog_opened,
+          "Disabling automatic crop must bypass pre-play review of existing unreviewed calibration")) {
+    qputenv("PATH", crop_original_path);
+    return false;
+  }
   bool startup_crop_opened = false;
   QTimer::singleShot(0, [&]() {
     auto* dialog = dynamic_cast<ProjectionCropDialog*>(QApplication::activeModalWidget());
@@ -11927,6 +12027,198 @@ bool test_camera_controls(HStreamWindow* window) {
              "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
 }
 
+bool test_stitching_iteration_controls(const QString& source_game_directory) {
+  const fs::path source(source_game_directory.toStdString());
+  const fs::path fixture = source.parent_path() / "ui-stitching-iterations";
+  std::error_code error;
+  fs::copy(source, fixture, fs::copy_options::recursive, error);
+  if (error)
+    return expect(false, "Could not copy the iteration fixture: " + error.message());
+  const fs::path config_path = fixture / "config.yaml";
+  YAML::Node config =
+      fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node(YAML::NodeType::Map);
+  config["stitching"]["sync_method"] = "imu";
+  config["stitching"]["mapping_backend"] = "nona";
+  config["stitching"]["run_autooptimizer"] = true;
+  config["stitching"]["stitch_frame_time"] = "00:00:07";
+  config["hstream_ui"]["show_crop_dialog"] = false;
+  config["hstream_ui"]["show_leveling_dialog"] = true;
+  config["hstream_ui"]["playback_start_time"] = "00:12:30.125";
+  std::ofstream(config_path) << YAML::Dump(config) << '\n';
+
+  HStreamWindow window;
+  window.show();
+  auto* game_id = require_child<QLineEdit>(&window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(&window, "createGameButton");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  auto* reset = require_child<QPushButton>(&window, "resetCameraButton");
+  auto* start = require_child<QPushButton>(&window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(&window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(&window, "runModeCombo");
+  auto* gyro = require_child<QCheckBox>(&window, "gyroSyncCheck");
+  auto* crop = require_child<QCheckBox>(&window, "showCropDialogCheck");
+  auto* posts = require_child<QCheckBox>(&window, "showLevelingDialogCheck");
+  auto* playback = require_child<QTimeEdit>(&window, "playbackStartTimeEdit");
+  auto* reference = require_child<QTimeEdit>(&window, "stitchFrameTimeEdit");
+  auto* frames = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
+  auto* seek = require_child<QSlider>(&window, "playbackSeekSlider");
+  auto* forward = require_child<QPushButton>(&window, "playbackSeekForward10Button");
+  auto* clean = require_child<QPushButton>(&window, "cleanStitchingButton");
+  auto* archive = require_child<QCheckBox>(&window, "outputToggle_archive-file");
+  if (!game_id || !create || !save || !reset || !start || !stop || !mode || !gyro || !crop || !posts || !playback ||
+      !reference || !frames || !seek || !forward || !archive || !clean)
+    return false;
+  game_id->setText("ui-stitching-iterations");
+  activate(create);
+  if (!expect(
+          gyro->isChecked() && !crop->isChecked() && posts->isChecked() && playback->time() == QTime(0, 12, 30, 125) &&
+              reference->time() == QTime(0, 0, 7),
+          "Game YAML must independently initialize sync, automatic dialogs, playback and reference times"))
+    return false;
+  frames->setValue(3);
+  if (!expect(
+          playback->isEnabled() && !reference->isEnabled(),
+          "Multi-frame calibration must leave playback start editable"))
+    return false;
+  frames->setValue(1);
+  posts->setChecked(false);
+  activate(save);
+  config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          config["stitching"]["sync_method"].as<std::string>() == "imu" &&
+              !config["hstream_ui"]["show_crop_dialog"].as<bool>() &&
+              !config["hstream_ui"]["show_leveling_dialog"].as<bool>() &&
+              config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:12:30.125" && !save->isEnabled(),
+          "Saving workflow preferences must preserve strict YAML IMU and fractional playback time"))
+    return false;
+  // Workflow preferences must not invalidate completed geometry or saved synchronization.
+  config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  config["game"]["stitching"]["frame_offsets"]["left"] = "3";
+  std::ofstream(config_path) << YAML::Dump(config) << '\n';
+  activate(create);
+  playback->setTime(QTime(0, 15, 0));
+  gyro->setChecked(false);
+  activate(save);
+  config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
+              config["game"]["stitching"]["frame_offsets"]["left"].as<std::string>() == "3" &&
+              config["stitching"]["sync_method"].as<std::string>() == "audio",
+          "Iteration-only edits must retain complete calibration and saved/manual offsets"))
+    return false;
+  activate(create);
+  gyro->setChecked(true);
+  activate(clean);
+  if (!expect(
+          gyro->isChecked() && !crop->isChecked() && !posts->isChecked() && playback->time() == QTime(0, 15) &&
+              save->isEnabled(),
+          "Clean Stitching must retain unsaved workflow selections for the next Play"))
+    return false;
+  for (const QString& run_mode : {QString("program"), QString("stitch-calibration")}) {
+    mode->setCurrentIndex(mode->findData(run_mode));
+    const auto args = HStreamWindowTestAccess::standaloneArguments(&window);
+    if (!expect(
+            args.contains("--start-time=00:15:00") && args.contains("--stitch-frame-time=00:00:07") &&
+                args.contains("--options=stitching.sync_method=auto"),
+            "Standalone jobs must carry independent playback/reference times and UI gyro fallback selection"))
+      return false;
+  }
+
+  // Exercise the real launch path for all four independent dialog choices. A stale
+  // parent environment must never re-enable a suppressed handshake.
+  QTemporaryDir output_root;
+  if (!output_root.isValid())
+    return false;
+  const QByteArray original_output_root = qgetenv("HM_OUTPUT_WORK_DIR");
+  qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
+  qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "500");
+  qputenv("HSTREAM_RINK_LEVELING_FLOW", "stale");
+  qputenv("HSTREAM_PROJECTION_CROP_FLOW", "stale");
+  bool ok = true;
+  for (int selection = 0; selection < 4 && ok; ++selection) {
+    crop->setChecked((selection & 1) != 0);
+    posts->setChecked((selection & 2) != 0);
+    // A changed reference also ensures enabled crop review waits for fresh calibration.
+    reference->setTime(QTime(0, 0, selection == 0 ? 0 : 8 + selection));
+    archive->setChecked(selection == 3);
+    if (!set_test_calibration_status(&window, "pending")) {
+      ok = false;
+      break;
+    }
+    activate(start);
+    const auto args = HStreamWindowTestAccess::pipelineArguments(&window);
+    ok &= expect(
+        args.contains("--start-time=00:15:00") && args.contains("--options=stitching.sync_method=auto") &&
+            HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_PROJECTION_CROP_FLOW") ==
+                (crop->isChecked() ? "1" : "") &&
+            HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_RINK_LEVELING_FLOW") ==
+                (posts->isChecked() ? "1" : "") &&
+            !seek->isEnabled() && !playback->isEnabled() && !gyro->isEnabled(),
+        "Play must capture preferences, gate each handshake, and disable seek during calibration");
+    for (int i = 0; i < 300; ++i) {
+      const auto* headline = window.findChild<QLabel*>("stitchCalibrationHeadline");
+      if (headline && headline->text() == "Stitching calibration complete")
+        break;
+      QTest::qWait(10);
+    }
+    // A progress sample after the restart also supplies the seek horizon.
+    HStreamWindowTestAccess::handlePlaybackProgressOutput(
+        &window,
+        "HSTREAM_PROGRESS processed_ns=42000000000 total_ns=600000000000 "
+        "remaining_ns=558000000000 percent=7.0 rate=1.0 eta_seconds=558 generation=0");
+    ok &= expect(
+        seek->isEnabled() == (selection != 3) && forward->isEnabled() == (selection != 3),
+        "Completed stitching preview must allow seeking, while a stitched archive must forbid it");
+    if (ok && selection == 0) {
+      activate(forward);
+      for (int i = 0; i < 200 && !window.logText().contains("stdin:@seek-relative 10000000000"); ++i)
+        QTest::qWait(10);
+      ok &= expect(
+          window.logText().contains("stdin:@seek-relative 10000000000"),
+          "The stitching preview seek button must send a seek to the backend");
+    }
+    activate(stop);
+    for (int i = 0; i < 200 && window.pipelineStateText() != "STOPPED"; ++i)
+      QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
+  qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
+  qunsetenv("HSTREAM_RINK_LEVELING_FLOW");
+  qunsetenv("HSTREAM_PROJECTION_CROP_FLOW");
+  if (original_output_root.isNull())
+    qunsetenv("HM_OUTPUT_WORK_DIR");
+  else
+    qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
+  if (!ok)
+    return false;
+  activate(reset);
+  if (!expect(
+          !gyro->isChecked() && crop->isChecked() && posts->isChecked() && playback->time() == QTime(0, 0),
+          "Reset must restore iteration defaults"))
+    return false;
+  config = YAML::LoadFile(config_path.string());
+  for (const auto& invalid :
+       {YAML::Load("{stitching: {sync_method: invalid}}"),
+        YAML::Load("{hstream_ui: {show_crop_dialog: maybe}}"),
+        YAML::Load("{hstream_ui: {show_leveling_dialog: []}}"),
+        YAML::Load("{hstream_ui: {playback_start_time: '00:99:00'}}")}) {
+    YAML::Node bad = YAML::Clone(config);
+    for (const auto& group : invalid)
+      for (const auto& value : group.second)
+        bad[group.first.as<std::string>()][value.first.as<std::string>()] = value.second;
+    const int failures = window.logText().count("could not load saved camera controls");
+    std::ofstream(config_path) << YAML::Dump(bad) << '\n';
+    activate(create);
+    if (!expect(
+            window.logText().count("could not load saved camera controls") == failures + 1 &&
+                playback->time() == QTime(0, 0) && !gyro->isChecked() && crop->isChecked(),
+            "Invalid iteration YAML must fail the staged load without partially applying controls"))
+      return false;
+  }
+  return true;
+}
+
 bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory) {
   const QByteArray original_home = qgetenv("HOME");
   const QByteArray original_config_root = qgetenv("HM_CONFIG_ROOT");
@@ -11951,6 +12243,10 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     return false;
   YAML::Node user_config(YAML::NodeType::Map);
   user_config["stitching"]["stitch_frame_time"] = "00:00:08";
+  user_config["stitching"]["sync_method"] = "auto";
+  user_config["hstream_ui"]["show_crop_dialog"] = false;
+  user_config["hstream_ui"]["show_leveling_dialog"] = false;
+  user_config["hstream_ui"]["playback_start_time"] = "00:11:22.333";
   user_config["stitching"]["max_output_width"] = YAML::Node(YAML::NodeType::Null);
   user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
   user_config["stitching"]["control_point_matcher"] = "dedode-lightglue";
@@ -12037,6 +12333,12 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
         control_point_matcher && mapping_backend && projection && run_autooptimizer && stitch_rotation &&
         fixed_edge_left && fixed_edge_right;
     if (ok) {
+      ok &= expect(
+          user_default_window.findChild<QCheckBox*>("gyroSyncCheck")->isChecked() &&
+              !user_default_window.findChild<QCheckBox*>("showCropDialogCheck")->isChecked() &&
+              !user_default_window.findChild<QCheckBox*>("showLevelingDialogCheck")->isChecked() &&
+              user_default_window.findChild<QTimeEdit*>("playbackStartTimeEdit")->time() == QTime(0, 11, 22, 333),
+          "Global user YAML must supply iteration defaults");
       game_id->setText("ui-user-stitch-default");
       activate(create);
       ok &= expect(
@@ -13782,13 +14084,19 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   const bool rink_leveling_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RINK_LEVELING_FLOW_ONLY");
+  const bool iteration_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ITERATION_ONLY");
   const bool crop_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_CROP_FLOW_ONLY");
-  if (!rink_leveling_flow_only && !crop_flow_only && !test_cleanup_transaction_protocol()) {
+  if (!iteration_only && !rink_leveling_flow_only && !crop_flow_only && !test_cleanup_transaction_protocol()) {
     std::cerr << "test_cleanup_transaction_protocol failed\n";
     return 1;
   }
   HStreamWindow window;
   window.show();
+
+  if (iteration_only)
+    return test_game_setup(&window, source_root.path()) && test_stitching_iteration_controls(window.gameDirectoryText())
+        ? 0
+        : 1;
 
   if (crop_flow_only) {
     if (!test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
@@ -13833,6 +14141,8 @@ int main(int argc, char** argv) {
     std::cerr << "test_game_setup failed\n";
     return 1;
   }
+  if (!test_stitching_iteration_controls(window.gameDirectoryText()))
+    return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";
     return 1;

@@ -54,3 +54,54 @@ packets or seeks directly into the Insta360 trailer, retaining at most 200,000
 gyro samples per camera. GoPro demuxing has a 30-second wall-time limit. It opens
 no video decoder, maps no video frames, and introduces no device-to-host copies
 in the streaming pipeline. Frame skips use each camera's own frame rate.
+
+## Quick stitching iterations in the UI
+
+Under **Stitched → Algorithms**, check **Gyroscope synchronization** to try IMU
+with audio fallback (`auto`); uncheck it for audio. A game or user YAML setting
+of `imu` appears checked and remains strict when saving other controls. Existing
+offsets still take precedence: use **Clean Stitching**, then **Play**, to test a
+new synchronization method.
+
+Uncheck **Open crop dialog automatically** and/or **Open leveling dialog
+automatically** to skip those setup prompts independently. Saved framing and
+leveling remain in use; normal automatic framing still applies if no manual
+selection exists. **Adjust crop…** and **Level rink…** remain available
+for manual edits. Leveling defaults to selecting four corners where the red
+goal lines meet the boards at ice level, two in each camera image. Select the
+same side board first in both images. Check **Mark vertical posts** inside the
+leveling dialog to use posts instead; switching methods preserves their separate
+marks. The crop-dialog preference also skips pre-play review of
+previously calibrated, unreviewed geometry. It is separate from **Auto crop
+valid pixels**, which controls the crop itself.
+
+Set **Playback start** beside Play to a timestamp such as `00:12:30`. Playback
+starts there in both Program and Stitching mode, after calibration when needed.
+This applies to every selected output, including recordings, and to exported
+jobs. **Reference frame** independently selects the single frame used for
+calibration; changing Playback start does not invalidate stitching.
+
+The settings can also be placed in `~/.hstream/hstream.yaml` for defaults or in
+the game's `config.yaml` for overrides:
+
+```yaml
+stitching:
+  sync_method: auto
+hstream_ui:
+  show_crop_dialog: false
+  show_leveling_dialog: false
+  playback_start_time: "00:12:30"
+```
+
+Playback time accepts `HH:MM:SS` or `HH:MM:SS.mmm` (less than 24 hours).
+Both automatic dialogs default to enabled, and playback defaults to `00:00:00`.
+**Save Preset** and **Play** save the current iteration settings to the game;
+**Reset Controls** restores the configured defaults. The `hstream_ui` options
+control UI launches; direct CLI runs use `--start-time=00:12:30`.
+
+The seek slider and ±10-second buttons work in local render-only Program and
+Stitching playback after calibration finishes. Positions are relative to
+Playback start. Seeking stays disabled during calibration, while recording or
+streaming, or during DriveGPT database capture. A seek selected while paused
+is applied on resume. Seeking rebuilds the decoder pipeline, so a short pause
+while it restarts is expected.

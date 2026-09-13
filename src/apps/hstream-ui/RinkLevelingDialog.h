@@ -93,7 +93,7 @@ class RinkLevelingDialog : public QDialog {
   std::array<QVector<QPoint>, 2> post_marks_;
   std::array<QVector<QPoint>, 2> corner_marks_;
   std::array<QDoubleSpinBox*, 2> angle_spins_{};
-  QCheckBox* corner_method_check_{nullptr};
+  QCheckBox* post_method_check_{nullptr};
   QLabel* instructions_{nullptr};
   QLabel* status_{nullptr};
   QTabWidget* tabs_{nullptr};
@@ -107,7 +107,7 @@ class RinkLevelingDialog : public QDialog {
   bool busy_{false};
   bool estimated_{false};
   bool previewed_{false};
-  bool corner_method_{false};
+  bool corner_method_{true};
   bool restoring_marks_{false};
   bool manual_angles_{false};
   bool preview_requested_{false};

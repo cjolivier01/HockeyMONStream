@@ -33,6 +33,19 @@ int main() {
               kStartTimeNs,
       "Only an unfinished one-pass calibration should start at stitch-frame time");
 
+  constexpr uint64_t kLaterPlaybackNs = 750'000'000'000ULL;
+  ok &= expect(
+      hm::pipeline_internal::stitch_frame_initial_position(kLaterPlaybackNs, 0, true, false) == 0 &&
+          hm::pipeline_internal::stitch_frame_initial_position(kLaterPlaybackNs, 0, true, true) == kLaterPlaybackNs &&
+          hm::pipeline_internal::stitch_frame_initial_position(kLaterPlaybackNs, 0, false, false) == kLaterPlaybackNs,
+      "A zero calibration reference must remain independent of later playback, including after restart");
+  ok &= expect(
+      hm::pipeline_internal::stitch_frame_rewind_candidates(kLaterPlaybackNs, 0, {{true, false, false}}) ==
+              std::vector<size_t>({0}) &&
+          hm::pipeline_internal::stitch_frame_rewind_candidates(kLaterPlaybackNs, 0, {{true, true, false}}).empty() &&
+          hm::pipeline_internal::stitch_frame_rewind_candidates(kLaterPlaybackNs, 0, {{true, false, true}}).empty(),
+      "Calibration at zero must restart once at the nonzero playback start");
+
   const std::vector<hm::pipeline_internal::StitchFrameRewindState> states = {
       {true, false, false},
       {true, false, false},
@@ -41,17 +54,17 @@ int main() {
       {true, false, true},
   };
   const std::vector<size_t> candidates =
-      hm::pipeline_internal::stitch_frame_rewind_candidates(kStitchFrameTimeNs, states);
+      hm::pipeline_internal::stitch_frame_rewind_candidates(kStartTimeNs, kStitchFrameTimeNs, states);
   ok &= expect(
       candidates == std::vector<size_t>({0, 1}),
       "One completion message must rewind every active context that started at stitch-frame time");
   ok &= expect(
-      hm::pipeline_internal::stitch_frame_rewind_candidates(/*stitch_frame_time_ns=*/0, states) ==
+      hm::pipeline_internal::stitch_frame_rewind_candidates(/*start_time_ns=*/0, /*stitch_frame_time_ns=*/0, states) ==
           std::vector<size_t>({0, 1}),
       "Same-stage calibration peers must be recreated after shared completion even at the default time");
   ok &= expect(
       hm::pipeline_internal::stitch_frame_rewind_candidates(
-          /*stitch_frame_time_ns=*/0, {{true, false, false}})
+          /*start_time_ns=*/0, /*stitch_frame_time_ns=*/0, {{true, false, false}})
           .empty(),
       "A single default-time calibration context does not need a playback restart");
   ok &= expect(

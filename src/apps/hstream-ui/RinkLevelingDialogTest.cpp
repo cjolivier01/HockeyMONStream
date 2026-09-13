@@ -50,12 +50,18 @@ QByteArray read(const QString& path) {
   return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
 }
 void markPosts(RinkLevelingDialog& dialog) {
+  dialog.findChild<QCheckBox*>("markRinkPostsCheck")->setChecked(true);
   static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"))
       ->setPoints({{10, 10}, {12, 70}, {70, 12}, {70, 75}});
   static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"))
       ->setPoints({{10, 10}, {12, 70}, {70, 12}, {70, 75}});
 }
 void advanceToPreview(RinkLevelingDialog& dialog) {
+  // The legacy manual-angle fixtures use post mode, which permits no marks.
+  auto* left = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
+  auto* right = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"));
+  if (left->points().isEmpty() && right->points().isEmpty())
+    dialog.findChild<QCheckBox*>("markRinkPostsCheck")->setChecked(true);
   auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
   auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
   if (tabs->currentIndex() == 2)
@@ -92,6 +98,7 @@ int main(int argc, char** argv) {
     if (!expect(dialog.loadError().isEmpty(), qPrintable(dialog.loadError())))
       return 1;
     dialog.show();
+    dialog.findChild<QCheckBox*>("markRinkPostsCheck")->setChecked(true);
     static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"))
         ->setPoints(
             {{728, 914}, {808, 1099}, {1693, 549}, {1746, 704}, {2576, 248}, {2638, 475}, {3189, 107}, {3242, 355}});
@@ -173,12 +180,17 @@ int main(int argc, char** argv) {
     auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
     auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
     auto* previous = dialog.findChild<QPushButton*>("previousRinkLevelingButton");
-    auto* method = dialog.findChild<QCheckBox*>("selectRinkCornersCheck");
+    auto* method = dialog.findChild<QCheckBox*>("markRinkPostsCheck");
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(
         method && !method->isChecked() && next->text() == "Next" && previous->text() == "Prev" &&
             !dialog.findChild<QPushButton*>("previewRinkLevelingButton") && tabs->currentIndex() == 0,
-        "Posts remain the default, with Next and Prev replacing the preview button");
+        "Corners are the default, with an unchecked Mark vertical posts option");
+    previous->click();
+    ok &= expect(
+        tabs->currentIndex() == 0 && !accept->isEnabled(),
+        "Default corner leveling requires a complete rectangle before preview");
+    method->setChecked(true);
     previous->click();
     ok &= expect(
         waitUntil([&]() { return accept->isEnabled(); }) && tabs->currentIndex() == 2,
@@ -209,12 +221,12 @@ int main(int argc, char** argv) {
     auto* left = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
     auto* right = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"));
     const auto saved_posts = left->points();
-    auto* method = dialog.findChild<QCheckBox*>("selectRinkCornersCheck");
+    auto* method = dialog.findChild<QCheckBox*>("markRinkPostsCheck");
     auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
     auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
     auto* previous = dialog.findChild<QPushButton*>("previousRinkLevelingButton");
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
-    method->setChecked(true);
+    method->setChecked(false);
     next->click();
     next->click();
     ok &= expect(
@@ -250,12 +262,12 @@ int main(int argc, char** argv) {
             !accept->isEnabled() && tabs->currentIndex() == 1,
         "Failed corner estimation must leave stale preview angles unavailable for acceptance");
     ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
-    method->setChecked(false);
+    method->setChecked(true);
     ok &= expect(
         left->points() == saved_posts && estimateComplete(dialog),
         "Switching back restores post marks and estimates with the post method");
     ok &= script(bin.filePath("pano_trafo"), corner_tool);
-    method->setChecked(true);
+    method->setChecked(false);
     ok &= expect(
         left->points().size() == 2 && right->points().front() == QPoint(21, 30) && estimateComplete(dialog),
         "Switching again restores the independent corner marks");
