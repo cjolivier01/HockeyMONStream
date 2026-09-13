@@ -73,6 +73,12 @@ pipeline:
       hm::OnePassCalibrationRequiredForMode(true, true, false, true, false),
       "Program mode must still calibrate a missing rink mask");
   ok &= expect(
+      hm::OnePassCalibrationRequiredForMode(true, true, true, true, true),
+      "Program resuming a pending UI calibration must publish completion even when all artifacts exist");
+  ok &= expect(
+      !hm::OnePassCalibrationRequiredForMode(true, true, true, true, false),
+      "ordinary Program playback with complete artifacts must not restart for calibration");
+  ok &= expect(
       hm::StitcherMatcherModelRequired(false, true, false, false),
       "one-pass stitching must provision its matcher when stitching artifacts are missing");
   ok &= expect(

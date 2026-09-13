@@ -6525,14 +6525,22 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
       ? hm::stitching::calibration_completion_scope(
             output_generation, active_invalidation_id, std::to_string(main_loop_generation_))
       : std::string();
-  const bool generation_current = output_generation && *output_generation && !stitcher_config_path.empty() &&
-      (stitching_calibration_only_
-           ? hm::stitching::validate_stitched_output_generation(
-                 stitcher_config_path, output_generation, active_invalidation_id)
-                 .ok()
-           : hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation, active_invalidation_id));
-  if (!generation_current || !calibration_scope || expected_scope != calibration_scope) {
-    g_printerr("Ignoring stale stitching completion message for a non-current output generation\n");
+  absl::Status generation_status = absl::InvalidArgumentError("Missing stitched output generation or config path");
+  if (output_generation && *output_generation && !stitcher_config_path.empty()) {
+    generation_status = hm::stitching::validate_stitched_output_generation(
+        stitcher_config_path, output_generation, active_invalidation_id);
+    if (generation_status.ok() && !stitching_calibration_only_ &&
+        !hm::stitching::is_field_mask_configured(stitcher_config_path, output_generation, active_invalidation_id)) {
+      generation_status = absl::FailedPreconditionError("Rink mask does not match the current stitched output");
+    }
+  }
+  const bool scope_matches = calibration_scope && expected_scope == calibration_scope;
+  if (!generation_status.ok() || !scope_matches) {
+    g_printerr(
+        "Ignoring stale stitching completion message for a non-current output generation: %s; "
+        "calibration scope %s\n",
+        generation_status.ToString().c_str(),
+        scope_matches ? "matches" : "does not match the active run");
     return TRUE;
   }
   cancel_stitch_frame_completion_timeout();

@@ -3806,10 +3806,25 @@ bool remove_yaml_path(YAML::Node root, const QString& dotted_path) {
 
 int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
   int removed = 0;
+  // These are results of the previous calibration, including its crop-review
+  // acknowledgement. Leave the selected projection, camera, sampling and rink
+  // profile intact, but require new leveling/crop decisions after a manual clean.
+  removed += remove_yaml_path(config, {"hstream_ui", "projection_crop_geometry"}) ? 1 : 0;
+  for (const char* key : {"crop", "auto_crop", "rotation_degrees"}) {
+    removed += remove_yaml_path(config, {"stitching", "projection_framing", key}) ? 1 : 0;
+    // A generated backend override can restore its previous private framing
+    // during reload; neither copy may bring the cleaned calibration back.
+    if (remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices", "projection_framing", key}))
+      ++removed;
+    if (remove_yaml_path(
+            config, {"hstream_ui", "generated_stitching_backend_choices", "previous_projection_framing", key}))
+      ++removed;
+  }
   removed += remove_yaml_path(config, {"stitching", "frame_offsets"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"game", "stitching", "frame_offsets"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"stitching", "control_points"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"game", "stitching", "control_points"}) ? 1 : 0;
+  removed += remove_yaml_path(config, {"stitching", "generated_field_mask_post_stitch_rotate_degrees"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
   removed += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
@@ -6166,8 +6181,8 @@ void HStreamWindow::configureControlHelp() {
       "defaults should persist for this game.");
   help(
       "cleanStitchingButton",
-      "Remove stitching calibration artifacts and calibration-derived config.yaml state for this game while preserving "
-      "user-authored stitching settings such as rotation and backend choices.");
+      "Remove stitching artifacts, synchronization, leveling and crop results so the next Play calibrates afresh. "
+      "Keep recording assignments, calibration options and unrelated game settings.");
   help(
       "stopPipelineButton",
       "Request a graceful stop of the running pipeline. Partial archive work is retained rather than presented as a completed video.");
@@ -8366,8 +8381,14 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
     }
     return;
   }
-  if (!calibration_pending_ && !beginObservedStitchingCalibration(stage))
-    return;
+  if (!calibration_pending_) {
+    // Recreated stitchers can repeat terminal milestones after playback has
+    // restarted. Completion is not evidence of a new calibration: reclaiming
+    // the saved state here would leave the dialog waiting for another restart
+    // that the backend correctly rejects as stale.
+    if (status == "complete" || !beginObservedStitchingCalibration(stage))
+      return;
+  }
   if (status == "started" && calibration_dialog_)
     calibration_dialog_->show();
   if (stage == "calibration") {
@@ -15099,10 +15120,23 @@ void HStreamWindow::cleanStitchingCalibration() {
     return;
   }
 
+  // Refresh the removed calibration state without replacing the operator's
+  // sampling choices with older saved values. Play persists these selections
+  // when it starts the next calibration.
+  const int selected_control_points = stitchingCalibrationControlPoints();
+  const int selected_frame_count = stitchingCalibrationFrameCount();
+  const QTime selected_reference_time = stitch_frame_time_edit_->time();
+  auto reload_controls = [this, selected_control_points, selected_frame_count, selected_reference_time]() {
+    loadSavedControlConfig();
+    control_points_spin_->setValue(selected_control_points);
+    calibration_frame_count_spin_->setValue(selected_frame_count);
+    stitch_frame_time_edit_->setTime(selected_reference_time);
+  };
+
   const fs::path config_path = game_dir / "config.yaml";
   if (!fs::exists(config_path)) {
     appendLog("stitching calibration clean complete; no game config to prune");
-    loadSavedControlConfig();
+    reload_controls();
     return;
   }
   int removed_config_keys = 0;
@@ -15133,7 +15167,7 @@ void HStreamWindow::cleanStitchingCalibration() {
   }
   appendLog(
       QString("stitching calibration clean complete; removed %1 calibration state key(s)").arg(removed_config_keys));
-  loadSavedControlConfig();
+  reload_controls();
 }
 
 void HStreamWindow::updateStitchFrameTimeAvailability() {

@@ -965,6 +965,29 @@ int main(int argc, char** argv) {
     }();
   }
 
+  PipelineProcess cached_pending;
+  if (ok) {
+    ok = [&] {
+      if (!expect(
+              cached_pending.Start(
+                  argv[1], pipeline_config, game_root, plugin_directory, "initial", 128, false, "00:00:59.900"),
+              "Program must resume pending calibration with cached stitching and rink artifacts") ||
+          !expect(
+              cached_pending.WaitFor(
+                  "HSTREAM_CALIBRATION stage=playback-restart status=complete", 0, kCalibrationTimeout),
+              "cached pending Program calibration must acknowledge playback restart") ||
+          !expect(
+              cached_pending.WaitForProgressAtOrBeyond(1, cached_pending.Mark()),
+              "cached pending Program calibration must continue playing") ||
+          !expect(
+              cached_pending.output().find("Ignoring stale stitching completion") == std::string::npos,
+              "cached pending Program must not emit unowned completion after playback reconstruction")) {
+        return false;
+      }
+      return stop_successfully(&cached_pending, "cached pending Program playback must stop cleanly");
+    }();
+  }
+
   PipelineProcess configure_only_invalid_seam;
   if (ok) {
     ok = [&] {

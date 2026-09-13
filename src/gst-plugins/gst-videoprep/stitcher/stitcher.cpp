@@ -80,11 +80,6 @@ absl::Status report_calibration_failure(const absl::Status& status) {
   return status;
 }
 
-bool calibration_progress_requested() {
-  const char* value = g_getenv("HSTREAM_CALIBRATION_PENDING");
-  return value && value[0] != '\0' && g_strcmp0(value, "0") != 0;
-}
-
 bool calibration_starts_from_control_points() {
   return g_strcmp0(g_getenv("HSTREAM_CALIBRATION_START_STAGE"), "features") == 0;
 }
@@ -172,8 +167,11 @@ OnePassCalibrationProgressPlan one_pass_calibration_progress_plan(
     bool report_latched,
     bool process_completion_latched) {
   const bool create_mask = !mask_configured;
-  const bool report = report_latched ||
-      (!process_completion_latched && (configured_during_run || calibration_progress_requested() || create_mask));
+  // The app grants calibration-run-generation only to the initial calibration
+  // instance. HSTREAM_CALIBRATION_PENDING survives playback reconstruction,
+  // so consulting it here would announce another completion with an empty
+  // run generation, which the app must reject as stale.
+  const bool report = report_latched || (!process_completion_latched && (configured_during_run || create_mask));
   return {
       .report = report,
       .create_mask = create_mask,
