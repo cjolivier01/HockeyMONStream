@@ -924,6 +924,50 @@ int main(int argc, char** argv) {
         "relaunched pipeline-app must report successful completion");
   }
 
+  PipelineProcess initial_seek_process;
+  if (ok) {
+    ok &= expect(
+        initial_seek_process.Start(
+            argv[1],
+            playlist_seek_config,
+            "URI-MULTIPLE",
+            "RENDER",
+            true,
+            {},
+            {"--start-time=00:06:30", "--options=pipeline.tests.pipeline-recreate-sec=5"}),
+        "delayed playback must start with exact-paired camera sources");
+    for (int source_id = 0; source_id < 2 && ok; ++source_id) {
+      ok &= expect(
+          initial_seek_process.WaitFor(
+              "URI-playlist source " + std::to_string(source_id) +
+              " selected chapter 0 at local position 0:06:30.000000000"),
+          "initial playback must seek within the chapter before decoding the requested passage");
+    }
+    ok &= expect(
+        initial_seek_process.WaitForProgressAtOrBeyond(1, 0),
+        "delayed playback must deliver synchronized frames after the initial seek");
+    const size_t recreate_mark = initial_seek_process.Mark();
+    ok &= expect(
+        initial_seek_process.WaitFor("Recreate pipeline", recreate_mark),
+        "delayed playback must recreate the pipeline without a runtime seek command");
+    for (int source_id = 0; source_id < 2 && ok; ++source_id) {
+      ok &= expect(
+          initial_seek_process.WaitFor(
+              "URI-playlist source " + std::to_string(source_id) +
+                  " selected chapter 0 at local position 0:06:30.000000000",
+              recreate_mark),
+          "pipeline recreation must seek directly back to the configured playback start");
+    }
+    const size_t recreated_progress_mark = initial_seek_process.Mark();
+    ok &= expect(
+        initial_seek_process.WaitForProgressAtOrBeyond(1, recreated_progress_mark),
+        "recreated playback must deliver synchronized frames after the initial seek");
+    ok &= expect(initial_seek_process.Interrupt(), "delayed playback must accept SIGINT");
+    exit_code = -1;
+    ok &= expect(initial_seek_process.WaitForExit(&exit_code), "delayed playback must stop promptly");
+    ok &= expect(exit_code == 0, "delayed playback must stop successfully");
+  }
+
   PipelineProcess seek_process;
   if (ok) {
     ok &= expect(
@@ -1674,6 +1718,9 @@ int main(int argc, char** argv) {
     process.DumpOutput();
     if (!relaunched_process.output().empty()) {
       relaunched_process.DumpOutput();
+    }
+    if (!initial_seek_process.output().empty()) {
+      initial_seek_process.DumpOutput();
     }
     if (!seek_process.output().empty()) {
       seek_process.DumpOutput();
