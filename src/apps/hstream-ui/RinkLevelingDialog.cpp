@@ -81,13 +81,10 @@ RinkLevelingDialog::RinkLevelingDialog(
   estimate_timer_.setInterval(150);
   connect(&estimate_timer_, &QTimer::timeout, this, [this]() { estimate(); });
   auto* layout = new QVBoxLayout(this);
-  corner_method_check_ = new QCheckBox("Select rink corners");
-  corner_method_check_->setObjectName("selectRinkCornersCheck");
-  layout->addWidget(corner_method_check_);
-  instructions_ = new QLabel(
-      "Mark the top and bottom of at least three tall, upright wall or glass posts, spread across both cameras. "
-      "Each pair of clicks marks one post. Avoid rink corners, sloping beams and short marks. "
-      "Scroll to zoom, drag the image to pan, and drag a numbered point to adjust it.");
+  post_method_check_ = new QCheckBox("Mark vertical posts");
+  post_method_check_->setObjectName("markRinkPostsCheck");
+  layout->addWidget(post_method_check_);
+  instructions_ = new QLabel();
   instructions_->setWordWrap(true);
   layout->addWidget(instructions_);
   tabs_ = new QTabWidget();
@@ -97,7 +94,7 @@ RinkLevelingDialog::RinkLevelingDialog(
     auto* page_layout = new QVBoxLayout(page);
     canvases_[camera] = new ScoreboardSelectionCanvas();
     canvases_[camera]->setObjectName(QString("rinkLevelingCamera%1").arg(camera));
-    canvases_[camera]->setLineSelectionMode();
+    canvases_[camera]->setLineSelectionMode(2);
     canvases_[camera]->selectionChanged = [this]() { selectionChanged(); };
     page_layout->addWidget(canvases_[camera], 1);
     auto* actions = new QHBoxLayout();
@@ -166,7 +163,7 @@ RinkLevelingDialog::RinkLevelingDialog(
   angles->addWidget(previous_button_);
   angles->addWidget(next_button_);
   layout->addLayout(angles);
-  status_ = new QLabel("Level from posts is selected. Mark posts, then use Next to reach Preview.");
+  status_ = new QLabel();
   status_->setObjectName("rinkLevelingStatus");
   status_->setWordWrap(true);
   layout->addWidget(status_);
@@ -197,8 +194,9 @@ RinkLevelingDialog::RinkLevelingDialog(
   connect(reject_button, &QPushButton::clicked, this, &RinkLevelingDialog::reject);
   connect(accept_button_, &QPushButton::clicked, this, [this]() { acceptAngles(); });
   layout->addWidget(buttons);
-  connect(corner_method_check_, &QCheckBox::toggled, this, [this](bool checked) { switchMethod(checked); });
+  connect(post_method_check_, &QCheckBox::toggled, this, [this](bool checked) { switchMethod(!checked); });
   loadSnapshot();
+  switchMethod(true);
   QTimer::singleShot(0, this, [this]() { canvases_[0]->fitImage(); });
   if (!load_error_.isEmpty())
     fail(load_error_);
@@ -313,7 +311,7 @@ void RinkLevelingDialog::loadSnapshot() {
     }
     if (expected_camera_ && version < 7) {
       load_error_ =
-          "This older calibration has no camera-model metadata. Recalibrate once with the current camera settings before selecting posts.";
+          "This older calibration has no camera-model metadata. Recalibrate once with the current camera settings before leveling the rink.";
       return;
     }
     if (expected_camera_) {
@@ -323,7 +321,8 @@ void RinkLevelingDialog::loadSnapshot() {
       if (!horizontal_ok || !vertical_ok ||
           fields.value("camera-configuration").toStdString() != expected_camera_->configuration ||
           horizontal != expected_camera_->horizontal_fov || vertical != expected_camera_->vertical_fov) {
-        load_error_ = "The camera model or FOV differs from the saved calibration. Recalibrate before selecting posts.";
+        load_error_ =
+            "The camera model or FOV differs from the saved calibration. Recalibrate before leveling the rink.";
         return;
       }
     }
@@ -365,7 +364,7 @@ void RinkLevelingDialog::setBusy(bool busy) {
     canvas->setEnabled(enabled);
   for (auto* spin : angle_spins_)
     spin->setEnabled(enabled);
-  corner_method_check_->setEnabled(enabled);
+  post_method_check_->setEnabled(enabled);
   previous_button_->setEnabled(enabled);
   next_button_->setEnabled(enabled);
   accept_button_->setEnabled(enabled && previewed_);
@@ -405,8 +404,8 @@ void RinkLevelingDialog::switchMethod(bool corners) {
   instructions_->setText(
       corner_method_
           ? "Select four corners of a rectangle on the ice: two at one end in Left camera, then two at the other "
-            "end in Right camera. Click the same side board first in both images. Blue-line intersections with "
-            "straight boards at ice level work well; avoid points on the rounded rink corners. "
+            "end in Right camera. Use where the red goal line meets the boards at ice level. "
+            "Click the same side board first in both images. "
             "Scroll to zoom, drag to pan, and drag numbered points to adjust them."
           : "Mark the top and bottom of at least three tall, upright wall or glass posts, spread across both cameras. "
             "Each pair of clicks marks one post. Avoid rink corners, sloping beams and short marks. "

@@ -57,6 +57,18 @@ class ProjectionCropDialog;
 
 namespace hm::ui_internal {
 
+struct StitchingIterationSettings {
+  QString sync_method{"audio"};
+  bool show_crop_dialog{true};
+  bool show_leveling_dialog{true};
+  QString playback_start_time{"00:00:00"};
+
+  bool operator!=(const StitchingIterationSettings& other) const {
+    return sync_method != other.sync_method || show_crop_dialog != other.show_crop_dialog ||
+        show_leveling_dialog != other.show_leveling_dialog || playback_start_time != other.playback_start_time;
+  }
+};
+
 struct StitchingCanvasConstraintDecision {
   bool calibration_required{false};
   bool cleanup_required{false};
@@ -216,6 +228,8 @@ class HStreamWindow : public QMainWindow {
   void setPlaybackProgressState(PlaybackProgressState state, const QString& detail = {});
   void updatePlaybackProgressPresentation();
   void updatePlaybackSeekControls();
+  hm::ui_internal::StitchingIterationSettings stitchingIterationSettings() const;
+  void setStitchingIterationSettings(const hm::ui_internal::StitchingIterationSettings& settings);
   qint64 playbackSeekPositionForSliderValue(int value) const;
   void updatePlaybackSeekPositionPresentation();
   void requestPlaybackSeek(qint64 target_ns);
@@ -551,6 +565,14 @@ class HStreamWindow : public QMainWindow {
   // only while the effective crop differs from the saved preset.
   QByteArray crop_selection_revision_;
   QTimeEdit* stitch_frame_time_edit_{nullptr};
+  QTimeEdit* playback_start_time_edit_{nullptr};
+  QCheckBox* gyro_sync_check_{nullptr};
+  QCheckBox* show_crop_dialog_check_{nullptr};
+  QCheckBox* show_leveling_dialog_check_{nullptr};
+  QString enabled_gyro_sync_method_{"auto"};
+  hm::ui_internal::StitchingIterationSettings default_iteration_settings_;
+  hm::ui_internal::StitchingIterationSettings saved_iteration_settings_;
+  hm::ui_internal::StitchingIterationSettings active_iteration_settings_;
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
   QListWidget* video_set_list_{nullptr};
