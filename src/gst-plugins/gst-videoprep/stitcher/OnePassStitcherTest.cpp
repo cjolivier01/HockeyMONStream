@@ -320,10 +320,12 @@ bool expect_resumed_calibration_progress_contract() {
 
   g_setenv("HSTREAM_CALIBRATION_PENDING", "1", TRUE);
   const auto resumed_existing = hm::stitcher::one_pass_calibration_progress_plan(
-      /*configured_during_run=*/false, /*mask_configured=*/true);
+      /*configured_during_run=*/false, /*mask_configured=*/true, /*report_latched=*/true);
   const auto resumed_missing = hm::stitcher::one_pass_calibration_progress_plan(
       /*configured_during_run=*/false, /*mask_configured=*/false);
   const auto resumed_after_creation = hm::stitcher::one_pass_calibration_progress_plan(
+      /*configured_during_run=*/false, /*mask_configured=*/true, /*report_latched=*/resumed_missing.report);
+  const auto recreated_without_run_generation = hm::stitcher::one_pass_calibration_progress_plan(
       /*configured_during_run=*/false, /*mask_configured=*/true);
   const auto recreated_after_completion = hm::stitcher::one_pass_calibration_progress_plan(
       /*configured_during_run=*/false,
@@ -334,7 +336,8 @@ bool expect_resumed_calibration_progress_contract() {
   if (!resumed_existing.report || resumed_existing.create_mask || !resumed_existing.complete ||
       !resumed_missing.report || !resumed_missing.create_mask || resumed_missing.complete ||
       !resumed_after_creation.complete || recreated_after_completion.report || recreated_after_completion.create_mask ||
-      recreated_after_completion.complete) {
+      recreated_after_completion.complete || recreated_without_run_generation.report ||
+      recreated_without_run_generation.complete) {
     std::cerr << "Resumed calibration should complete with an existing mask or create and then complete a missing mask"
               << std::endl;
     return false;

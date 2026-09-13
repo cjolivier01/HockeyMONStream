@@ -109,6 +109,10 @@ struct HStreamWindowTestAccess {
     window->recordStitchingCalibrationDiagnostic(line);
   }
 
+  static void calibrationOutput(HStreamWindow* window, const QString& line) {
+    window->handleStitchingCalibrationOutput(line);
+  }
+
   static QString calibrationFailureAnalysis(HStreamWindow* window, const QString& message) {
     return window->stitchingCalibrationFailureAnalysis(message);
   }
@@ -2920,6 +2924,14 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
                  detail->text().contains("Program will validate or build its rink mask") &&
                  !detail->text().contains("ice-surface calibration are ready"),
              "Stitching-only completion should present the downstream rink-mask stage as omitted");
+  HStreamWindowTestAccess::calibrationOutput(window, "HSTREAM_CALIBRATION stage=rink-mask status=complete");
+  HStreamWindowTestAccess::calibrationOutput(window, "HSTREAM_CALIBRATION stage=calibration status=complete");
+  const YAML::Node after_duplicate_completion =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  const bool duplicate_completion_ok = expect(
+      !dialog->isVisible() &&
+          after_duplicate_completion["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete",
+      "Late completion events from recreated stitchers must not reopen calibration or invalidate crop editing");
   activate(stop);
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
@@ -2927,7 +2939,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
   qunsetenv("HSTREAM_UI_TEST_PLAYBACK_RESTART_DELAY_MS");
-  if (!success_ok || !set_test_calibration_status(window, "complete"))
+  if (!success_ok || !duplicate_completion_ok || !set_test_calibration_status(window, "complete"))
     return false;
 
   mode->setCurrentIndex(mode->findData("program"));
@@ -9358,6 +9370,172 @@ bool test_rink_leveling_save_retry(HStreamWindow* window) {
   return true;
 }
 
+bool test_clean_stitching_calibration(HStreamWindow* window) {
+  auto* clean_stitching = require_child<QPushButton>(window, "cleanStitchingButton");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+  auto* clean_frame_count = require_child<QSpinBox>(window, "calibrationFrameCountSpin");
+  auto* clean_control_points = require_child<QSpinBox>(window, "controlPointsSpin");
+  if (!clean_stitching || !create || !game_id || !stitch_frame_time || !clean_frame_count || !clean_control_points)
+    return false;
+  const QString original_game_id = game_id->text();
+  game_id->setText("ui-clean-stitching-game");
+  activate(create);
+  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path game_dir = config.parent_path();
+  {
+    YAML::Node clean_fixture(YAML::NodeType::Map);
+    clean_fixture["stitching"]["post_stitch_rotate_degrees"] = 18.0;
+    clean_fixture["stitching"]["mapping_backend"] = "nona";
+    clean_fixture["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+    clean_fixture["stitching"]["max_output_width"] = 4096;
+    clean_fixture["stitching"]["frame_offsets"]["left"] = "12";
+    clean_fixture["stitching"]["control_points"][0][0] = 1.0;
+    clean_fixture["game"]["stitching"]["frame_offsets"]["right"] = "34";
+    clean_fixture["game"]["stitching"]["control_points"][0][0] = 2.0;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["control_points"] = 1700;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["frame_count"] = 3;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
+    clean_fixture["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "clean-fixture-generation";
+    clean_fixture["hstream_ui"]["stitching_calibration"]["backend_generation"] = "clean-fixture-generation";
+    clean_fixture["stitching"]["projection"] = "rectilinear";
+    clean_fixture["stitching"]["run_autooptimizer"] = true;
+    YAML::Node framing = clean_fixture["stitching"]["projection_framing"];
+    framing["auto_fov"] = false;
+    framing["horizontal_fov"] = 90.0;
+    framing["auto_canvas"] = true;
+    framing["auto_crop"] = false;
+    framing["crop"] = std::vector<double>{0.1, 0.9, 0.2, 0.8};
+    framing["rotation_degrees"] = std::vector<double>{0, -15, 2};
+    clean_fixture["stitching"]["generated_field_mask_post_stitch_rotate_degrees"] = 18.0;
+    YAML::Node generated = clean_fixture["hstream_ui"]["generated_stitching_backend_choices"];
+    generated["mapping_backend"] = "nona";
+    generated["control_point_matcher"] = "superpoint-lightglue";
+    generated["projection"] = "rectilinear";
+    generated["run_autooptimizer"] = true;
+    generated["projection_framing"] = YAML::Clone(framing);
+    generated["previous_projection_framing"] = YAML::Clone(framing);
+    generated["previous_projection_framing"]["rotation_degrees"] = std::vector<double>{0, -20, 3};
+    clean_fixture["hstream_ui"]["projection_crop_geometry"] = "previous-crop-review";
+    clean_fixture["game"]["name"] = "Keep this game";
+    clean_fixture["game"]["videos"]["left"].push_back("cam1/source.MP4");
+    clean_fixture["game"]["videos"]["right"].push_back("cam2/source.MP4");
+    clean_fixture["rink"]["tracking"]["cam_ignore_largest_count"] = 2;
+    clean_fixture["rink"]["scoreboard"]["enable"] = true;
+    clean_fixture["rink"]["scoreboard"]["perspective_polygon"].push_back(1);
+    clean_fixture["rink"]["ice_contours_mask_count"] = 1;
+    clean_fixture["rink"]["camera"]["fixed_edge_rotation_angle"] = 7.5;
+    clean_fixture["pipeline"]["hmstitcher"]["properties"]["shadow-lift"] = 35;
+    std::ofstream out(config);
+    out << clean_fixture << "\n";
+  }
+  for (const char* name :
+       {"hm_project.pto",
+        "autooptimiser_out.pto",
+        "mapping_0000.tif",
+        "panorama.tif",
+        "seam_file.png",
+        "left.png",
+        "right.png",
+        "rink_mask_0.png"}) {
+    std::ofstream artifact(game_dir / name);
+    artifact << "manual clean fixture\n";
+  }
+  fs::create_directories(game_dir / "cam1");
+  fs::create_directories(game_dir / "cam2");
+  for (const char* name : {"cam1/source.MP4", "cam2/source.MP4", "game-notes.txt", "team-logo.png"})
+    std::ofstream(game_dir / name) << "unrelated content\n";
+  activate(create);
+  qputenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS", "1");
+  clean_frame_count->setValue(1);
+  clean_control_points->setValue(500);
+  stitch_frame_time->setTime(QTime(0, 1, 24));
+  activate(clean_stitching);
+  qunsetenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS");
+  const YAML::Node cleaned_stitching = YAML::LoadFile(config.string());
+  if (!expect(
+          clean_frame_count->value() == 1 && clean_control_points->value() == 500 &&
+              stitch_frame_time->time() == QTime(0, 1, 24) && stitch_frame_time->isEnabled(),
+          "Clean Stitching must retain unsaved sampling choices for the next Play"))
+    return false;
+  if (!expect(
+          !fs::exists(game_dir / "hm_project.pto") && !fs::exists(game_dir / "panorama.tif") &&
+              !fs::exists(game_dir / "seam_file.png") && !fs::exists(game_dir / "left.png") &&
+              !fs::exists(game_dir / "right.png") && !fs::exists(game_dir / "rink_mask_0.png"),
+          "Clean Stitching should remove full stitching calibration artifacts") ||
+      !expect(
+          !lookup_yaml_path(cleaned_stitching, {"stitching", "frame_offsets"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"game", "stitching", "frame_offsets"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"stitching", "control_points"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"game", "stitching", "control_points"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "stitching_calibration", "status"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "rink_mask_status"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "stitching_calibration", "stale_from"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "invalidation_id"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "backend_generation"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"rink", "scoreboard", "perspective_polygon"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"rink", "ice_contours_mask_count"}, nullptr) &&
+              !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "projection_crop_geometry"}, nullptr) &&
+              !lookup_yaml_path(
+                  cleaned_stitching, {"stitching", "generated_field_mask_post_stitch_rotate_degrees"}, nullptr),
+          "Clean Stitching should remove calibration-derived config.yaml state") ||
+      !expect(
+          cleaned_stitching["stitching"]["post_stitch_rotate_degrees"].as<double>() == 18.0 &&
+              cleaned_stitching["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
+              cleaned_stitching["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
+              cleaned_stitching["stitching"]["max_output_width"].as<int>() == 4096 &&
+              cleaned_stitching["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1700 &&
+              cleaned_stitching["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 3 &&
+              cleaned_stitching["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"]
+                      .as<std::string>() == "nona" &&
+              cleaned_stitching["rink"]["camera"]["fixed_edge_rotation_angle"].as<double>() == 7.5 &&
+              cleaned_stitching["pipeline"]["hmstitcher"]["properties"]["shadow-lift"].as<int>() == 35 &&
+              cleaned_stitching["game"]["name"].as<std::string>() == "Keep this game" &&
+              cleaned_stitching["game"]["videos"]["left"][0].as<std::string>() == "cam1/source.MP4" &&
+              cleaned_stitching["game"]["videos"]["right"][0].as<std::string>() == "cam2/source.MP4" &&
+              cleaned_stitching["rink"]["tracking"]["cam_ignore_largest_count"].as<int>() == 2 &&
+              cleaned_stitching["rink"]["scoreboard"]["enable"].as<bool>(),
+          "Clean Stitching should preserve user-authored stitching and non-calibration config")) {
+    return false;
+  }
+  for (const YAML::Node framing : {
+           cleaned_stitching["stitching"]["projection_framing"],
+           cleaned_stitching["hstream_ui"]["generated_stitching_backend_choices"]["projection_framing"],
+           cleaned_stitching["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection_framing"],
+       }) {
+    if (!expect(
+            !framing["crop"].IsDefined() && !framing["rotation_degrees"].IsDefined() &&
+                !framing["auto_crop"].IsDefined() && !framing["auto_fov"].as<bool>() &&
+                framing["horizontal_fov"].as<double>() == 90.0 && framing["auto_canvas"].as<bool>(),
+            "Clean Stitching must reset saved crop and leveling without restoring them from generated choices"))
+      return false;
+  }
+  const auto loaded_framing = HStreamWindowTestAccess::cropFraming(window);
+  if (!expect(
+          loaded_framing.crop == std::array<double, 4>{0, 1, 0, 1} &&
+              loaded_framing.rotation_degrees == std::array<double, 3>{0, 0, 0},
+          "Reloading after Clean Stitching must show a fresh crop and leveling state"))
+    return false;
+  for (const char* name : {"cam1/source.MP4", "cam2/source.MP4", "game-notes.txt", "team-logo.png"}) {
+    std::ifstream input(game_dir / name);
+    const std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (!expect(content == "unrelated content\n", "Clean Stitching must preserve recordings and unrelated files"))
+      return false;
+  }
+  game_id->setText(original_game_id);
+  activate(create);
+  return true;
+}
+
 bool test_camera_controls(HStreamWindow* window) {
   if (!expect(window->cameraTabCount() == 7, "Native-effective controls should be grouped by associated stage")) {
     return false;
@@ -9747,86 +9925,6 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
-  const fs::path game_dir = config.parent_path();
-  {
-    YAML::Node clean_fixture(YAML::NodeType::Map);
-    clean_fixture["stitching"]["post_stitch_rotate_degrees"] = 18.0;
-    clean_fixture["stitching"]["mapping_backend"] = "opencv-magsac";
-    clean_fixture["stitching"]["control_point_matcher"] = "superpoint-lightglue";
-    clean_fixture["stitching"]["max_output_width"] = 4096;
-    clean_fixture["stitching"]["frame_offsets"]["left"] = "12";
-    clean_fixture["stitching"]["control_points"][0][0] = 1.0;
-    clean_fixture["game"]["stitching"]["frame_offsets"]["right"] = "34";
-    clean_fixture["game"]["stitching"]["control_points"][0][0] = 2.0;
-    clean_fixture["hstream_ui"]["stitching_calibration"]["control_points"] = 1700;
-    clean_fixture["hstream_ui"]["stitching_calibration"]["frame_count"] = 3;
-    clean_fixture["hstream_ui"]["stitching_calibration"]["status"] = "complete";
-    clean_fixture["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
-    clean_fixture["hstream_ui"]["stitching_calibration"]["stale_from"] = "canvas";
-    clean_fixture["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
-    clean_fixture["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "clean-fixture-generation";
-    clean_fixture["hstream_ui"]["stitching_calibration"]["backend_generation"] = "clean-fixture-generation";
-    clean_fixture["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"] = "opencv-magsac";
-    clean_fixture["rink"]["scoreboard"]["perspective_polygon"].push_back(1);
-    clean_fixture["rink"]["ice_contours_mask_count"] = 1;
-    clean_fixture["rink"]["camera"]["fixed_edge_rotation_angle"] = 7.5;
-    clean_fixture["pipeline"]["hmstitcher"]["properties"]["shadow-lift"] = 35;
-    std::ofstream out(config);
-    out << clean_fixture << "\n";
-  }
-  for (const char* name :
-       {"hm_project.pto",
-        "autooptimiser_out.pto",
-        "mapping_0000.tif",
-        "panorama.tif",
-        "seam_file.png",
-        "left.png",
-        "right.png",
-        "rink_mask_0.png"}) {
-    std::ofstream artifact(game_dir / name);
-    artifact << "manual clean fixture\n";
-  }
-  qputenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS", "1");
-  activate(clean_stitching);
-  qunsetenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS");
-  const YAML::Node cleaned_stitching = YAML::LoadFile(config.string());
-  if (!expect(
-          !fs::exists(game_dir / "hm_project.pto") && !fs::exists(game_dir / "panorama.tif") &&
-              !fs::exists(game_dir / "seam_file.png") && !fs::exists(game_dir / "left.png") &&
-              !fs::exists(game_dir / "right.png") && !fs::exists(game_dir / "rink_mask_0.png"),
-          "Clean Stitching should remove full stitching calibration artifacts") ||
-      !expect(
-          !lookup_yaml_path(cleaned_stitching, {"stitching", "frame_offsets"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"game", "stitching", "frame_offsets"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"stitching", "control_points"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"game", "stitching", "control_points"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "stitching_calibration", "status"}, nullptr) &&
-              !lookup_yaml_path(
-                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "rink_mask_status"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"hstream_ui", "stitching_calibration", "stale_from"}, nullptr) &&
-              !lookup_yaml_path(
-                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}, nullptr) &&
-              !lookup_yaml_path(
-                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "invalidation_id"}, nullptr) &&
-              !lookup_yaml_path(
-                  cleaned_stitching, {"hstream_ui", "stitching_calibration", "backend_generation"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"rink", "scoreboard", "perspective_polygon"}, nullptr) &&
-              !lookup_yaml_path(cleaned_stitching, {"rink", "ice_contours_mask_count"}, nullptr),
-          "Clean Stitching should remove calibration-derived config.yaml state") ||
-      !expect(
-          cleaned_stitching["stitching"]["post_stitch_rotate_degrees"].as<double>() == 18.0 &&
-              cleaned_stitching["stitching"]["mapping_backend"].as<std::string>() == "opencv-magsac" &&
-              cleaned_stitching["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
-              cleaned_stitching["stitching"]["max_output_width"].as<int>() == 4096 &&
-              cleaned_stitching["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1700 &&
-              cleaned_stitching["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 3 &&
-              cleaned_stitching["hstream_ui"]["generated_stitching_backend_choices"]["mapping_backend"]
-                      .as<std::string>() == "opencv-magsac" &&
-              cleaned_stitching["rink"]["camera"]["fixed_edge_rotation_angle"].as<double>() == 7.5 &&
-              cleaned_stitching["pipeline"]["hmstitcher"]["properties"]["shadow-lift"].as<int>() == 35,
-          "Clean Stitching should preserve user-authored stitching and non-calibration config")) {
-    return false;
-  }
   {
     YAML::Node capped(YAML::NodeType::Map);
     capped["stitching"]["max_output_width"] = 4096;
@@ -12588,6 +12686,105 @@ QString native_preview_report_line(const QString& name, const NativePreviewCaptu
       .arg(capture.luminance_range);
 }
 
+bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& game_id) {
+  auto* game = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* render = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
+  if (!game || !create || !start || !stop || !mode || !render || !archive)
+    return false;
+  game->setText(game_id);
+  activate(create);
+  const YAML::Node initial_config =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  const bool clean_calibration = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CLEAN_CALIBRATION");
+  if (!expect(
+          clean_calibration ||
+              initial_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "pending",
+          "The cached-calibration E2E fixture must already have pending calibration and valid artifacts"))
+    return false;
+  const QString run_mode = qEnvironmentVariable("HSTREAM_UI_E2E_RUN_MODE", "program");
+  const int mode_index = mode->findData(run_mode);
+  if (!expect(
+          mode_index >= 0 && (run_mode == "program" || run_mode == "stitch-calibration"),
+          "Calibration completion E2E requires Program or Stitching Calibration mode"))
+    return false;
+  mode->setCurrentIndex(mode_index);
+  const bool stitching_only = run_mode == "stitch-calibration";
+  const QString completion_message = stitching_only
+      ? "one-pass stitching calibration complete; continuous stitched preview running"
+      : "one-pass stitching calibration complete; continuous program playback running";
+  render->setChecked(true);
+  archive->setChecked(false);
+  QTimer selection_timer;
+  bool observed_crop_dialog = false;
+  if (clean_calibration) {
+    auto* count = require_child<QSpinBox>(window, "calibrationFrameCountSpin");
+    auto* reference = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+    auto* clean = require_child<QPushButton>(window, "cleanStitchingButton");
+    if (!count || !reference || !clean)
+      return false;
+    count->setValue(1);
+    reference->setTime(QTime(0, 1, 24));
+    activate(clean);
+    if (!expect(
+            count->value() == 1 && reference->time() == QTime(0, 1, 24),
+            "Clean Stitching must retain the selected one-frame reference settings"))
+      return false;
+    const auto framing = initial_config["stitching"]["projection_framing"]["crop"].as<std::array<double, 4>>();
+    QObject::connect(&selection_timer, &QTimer::timeout, window, [window, framing, &observed_crop_dialog]() {
+      if (auto* skip = window->findChild<QPushButton*>("skipRinkLevelingButton"); skip && skip->isVisible())
+        skip->click();
+      auto* crop = window->findChild<QDialog*>("projectionCropDialog");
+      if (!crop || !crop->isVisible())
+        return;
+      observed_crop_dialog = true;
+      crop->findChild<QComboBox*>("projectionCropMode")->setCurrentIndex(2);
+      crop->findChild<QCheckBox*>("projectionCropKeepWidth")->setChecked(false);
+      const std::array<QString, 4> edges{"Left", "Right", "Top", "Bottom"};
+      for (size_t i = 0; i < edges.size(); ++i)
+        crop->findChild<QDoubleSpinBox*>("projectionCrop" + edges[i])
+            ->setValue((i == 1 || i == 3 ? 1.0 - framing[i] : framing[i]) * 100.0);
+      crop->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+    });
+    selection_timer.start(200);
+  }
+  activate(start);
+  QElapsedTimer timer;
+  timer.start();
+  qint64 completed_at = -1;
+  bool passed = false;
+  while (timer.elapsed() < (clean_calibration ? 300000 : 180000) && window->pipelineStateText() != "STOPPED") {
+    QTest::qWait(50);
+    auto* dialog = window->findChild<QDialog*>("stitchCalibrationDialog");
+    const QString log = window->completeLogText();
+    if (log.contains("Ignoring stale stitching completion") || log.contains("stitching calibration failed:"))
+      break;
+    if (log.contains(completion_message) && dialog && !dialog->isVisible()) {
+      if (completed_at < 0)
+        completed_at = timer.elapsed();
+      if (timer.elapsed() - completed_at > 10000) {
+        const YAML::Node config =
+            YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+        const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+        passed = (!clean_calibration || observed_crop_dialog) &&
+            calibration["status"].as<std::string>() == "complete" &&
+            calibration["rink_mask_status"].as<std::string>() == (stitching_only ? "omitted" : "complete");
+        break;
+      }
+    }
+  }
+  std::cout << "Real cached calibration UI completion (" << run_mode.toStdString()
+            << "): " << (passed ? "PASS" : "FAIL") << '\n';
+  activate(stop);
+  for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i)
+    QTest::qWait(100);
+  return passed;
+}
+
 bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -13558,6 +13755,8 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     HStreamWindow window;
     window.show();
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_COMPLETION_ONLY"))
+      return run_real_calibration_completion_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
     if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {
       std::cerr << "run_real_pipeline_e2e failed\n";
       return 1;
@@ -13603,7 +13802,7 @@ int main(int argc, char** argv) {
   if (rink_leveling_flow_only) {
     if (!test_window_title_tracks_selected_game(&window) || !test_cuda_oom_calibration_failure_analysis(&window) ||
         !test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
-        !test_calibration_progress_dialog(&window)) {
+        !test_calibration_progress_dialog(&window) || !test_clean_stitching_calibration(&window)) {
       std::cerr << "focused rink-leveling flow tests failed\n";
       return 1;
     }
@@ -13644,6 +13843,10 @@ int main(int argc, char** argv) {
   }
   if (!test_calibration_progress_dialog(&window)) {
     std::cerr << "test_calibration_progress_dialog failed\n";
+    return 1;
+  }
+  if (!test_clean_stitching_calibration(&window)) {
+    std::cerr << "test_clean_stitching_calibration failed\n";
     return 1;
   }
   if (!test_pipeline_buttons(&window)) {

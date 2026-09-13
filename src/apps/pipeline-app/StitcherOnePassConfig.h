@@ -60,8 +60,7 @@ inline bool OnePassCalibrationRequiredForMode(
     bool calibrate_field_mask,
     bool calibration_completion_requested) {
   return one_pass_mode &&
-      (!stitching_configured || (calibrate_field_mask && !field_mask_configured) ||
-       (!calibrate_field_mask && calibration_completion_requested));
+      (!stitching_configured || (calibrate_field_mask && !field_mask_configured) || calibration_completion_requested);
 }
 
 inline bool StitcherMatcherModelRequired(
