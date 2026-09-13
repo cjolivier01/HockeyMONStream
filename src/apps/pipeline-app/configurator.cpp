@@ -6435,6 +6435,14 @@ absl::Status Configurator::gather_stitching_videos(
     std::vector<std::string>& left_files,
     std::vector<std::string>& right_files,
     YAML::Node& offsets) {
+  stitching::SynchronizationMethod sync_method;
+  try {
+    HM_ASSIGN_OR_RETURN(
+        sync_method,
+        stitching::parse_synchronization_method(get_node_value<std::string>(config_, "stitching.sync_method", "audio")));
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid stitching.sync_method: " + std::string(error.what()));
+  }
   const configurator_internal::ExplicitStitchingVideoSelection explicit_selection =
       configurator_internal::select_explicit_stitching_videos(config_, force);
   if (!explicit_selection.error.empty())
@@ -6550,7 +6558,8 @@ absl::Status Configurator::gather_stitching_videos(
         !has_node(config_, "game.stitching.frame_offsets.right", /*non_null=*/true) || force) {
       stitching::Synchronization sync;
       HM_ASSIGN_OR_RETURN(
-          sync, stitching::calculate_stitching_synchronization(game_dir / left_files[0], game_dir / right_files[0]));
+          sync, stitching::calculate_stitching_synchronization(
+                    game_dir / left_files[0], game_dir / right_files[0], sync_method));
       offsets["left"] = std::to_string(sync.video1_frame_offset);
       offsets["right"] = std::to_string(sync.video2_frame_offset);
       private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);

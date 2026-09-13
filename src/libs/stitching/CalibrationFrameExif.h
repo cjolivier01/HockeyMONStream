@@ -31,7 +31,15 @@ struct Metadata {
 struct Insta360Clock {
   double origin{0}; // In ExifTool TimeCode units (raw timestamp / 1000).
   double scale{1}; // Converts TimeCode differences to seconds.
+  double gyro_offset{0}; // Gyro-only timestamp correction, in seconds.
 };
+struct Insta360Record {
+  std::vector<unsigned char> data;
+  size_t full_size{0};
+};
+// Read a bounded prefix without loading the full gyro/preview trailer.
+absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
+    const std::filesystem::path& video, unsigned type, size_t max_bytes);
 absl::StatusOr<std::optional<Insta360Clock>> ReadInsta360Clock(const std::filesystem::path& video);
 absl::StatusOr<Metadata> Parse(const std::string& json, const std::optional<Insta360Clock>& clock);
 Tags ForFrame(const Metadata& metadata, double seconds);
