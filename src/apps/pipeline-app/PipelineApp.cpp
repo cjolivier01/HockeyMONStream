@@ -581,6 +581,12 @@ absl::Status pause_pipeline_for_model_initialization(
     if (result == GST_STATE_CHANGE_FAILURE) {
       return absl::InternalError("Pipeline failed while initializing models");
     }
+    // Initial seek blockers can hold preroll until both decoded camera pads
+    // exist. The bus watch is not dispatched until playPipelines() starts the
+    // main loop, so service readiness here as well as from the bus handler.
+    if (!interrupted && app_ctx->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured) {
+      (void)seek_uri_playlist_initial_positions(&app_ctx->pipeline.multi_src_bin);
+    }
     if (result != GST_STATE_CHANGE_ASYNC) {
       return absl::OkStatus();
     }
@@ -1525,6 +1531,10 @@ absl::Status PipelineApplication::createPipelines(
     HM_RETURN_IF_ERROR(
         app_contexts[i]->configurator().prepare_initial_pipeline_position(
             app_contexts[i]->pipeline, app_contexts[i]->config, initial_position_ns));
+    if (app_contexts[i]->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
+        !arm_uri_playlist_initial_seeks(&app_contexts[i]->pipeline.multi_src_bin)) {
+      return absl::InternalError("Failed to arm initial URI-playlist chapter seeks before preroll");
+    }
     if (dump_pipeline_dot_) {
       std::string s = "pipeline";
       if (i) {
@@ -7537,7 +7547,7 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to restore initial pipeline position: %s", position_status.ToString().c_str());
     return FALSE;
   }
-  if (runtime_seek_restart && app_ctx_ptr->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
+  if (app_ctx_ptr->pipeline.multi_src_bin.uri_playlist_initial_offsets_configured &&
       !arm_uri_playlist_initial_seeks(&app_ctx_ptr->pipeline.multi_src_bin)) {
     NVGSTDS_ERR_MSG_V("Failed to arm replacement URI-playlist chapter seeks before preroll");
     return FALSE;
