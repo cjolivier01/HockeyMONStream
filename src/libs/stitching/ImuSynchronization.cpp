@@ -11,7 +11,9 @@
 #include <memory>
 
 extern "C" {
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
 }
 
 #include "hstream/src/libs/stitching/CalibrationFrameExif.h"
@@ -177,6 +179,11 @@ absl::StatusOr<std::vector<Sample>> ParseGpmf(const unsigned char* data, size_t 
 }
 
 absl::StatusOr<Recording> Read(const std::string& video) {
+  // Mixed system and /usr/local FFmpeg installations can link successfully but
+  // use incompatible public struct layouts. Check before dereferencing any.
+  if ((avformat_version() >> 16) != LIBAVFORMAT_VERSION_MAJOR ||
+      (avcodec_version() >> 16) != LIBAVCODEC_VERSION_MAJOR || (avutil_version() >> 16) != LIBAVUTIL_VERSION_MAJOR)
+    return absl::FailedPreconditionError("IMU synchronization requires matching FFmpeg headers and runtime libraries");
   // avformat demuxes metadata packets only; no codec is opened and no image is decoded.
   AVFormatContext* context = avformat_alloc_context();
   if (!context)

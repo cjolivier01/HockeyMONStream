@@ -556,7 +556,8 @@ cc_library(
   hdrs = ["ImuSynchronization.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
-  linkopts = ["-lavformat", "-lavcodec", "-lavutil"],
+  # Match stitching's FFmpeg selection when /usr/local provides camera codec support.
+  linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec", "-lavutil"],
   deps = [
     ":calibration_frame_exif",
     "@com_google_absl//absl/status:status",
