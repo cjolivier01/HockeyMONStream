@@ -360,7 +360,10 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
         i + 1 == config.living_boxes.size() ? std::optional<FloatValue>(16.0 / 9.0) : std::nullopt;
     apply_all_living_box_config(arena_box, config.living_boxes[i], live_box_yamls[i], fixed_aspect_ratio);
   }
-  SET_LOCATOR(locator, config, no_wide_start);
+  // The upstream config stores this flag as int. Use a bool locator to accept
+  // YAML true/false as well as legacy 0/1 without changing integer parsing.
+  bool no_wide_start = config.no_wide_start;
+  locator.locators["no_wide_start"] = &no_wide_start;
   SET_LOCATOR(locator, config, max_lost_track_age);
   SET_LOCATOR(locator, config, ignore_largest_bbox);
   SET_LOCATOR(locator, config, ignore_largest_bbox_count);
@@ -368,6 +371,7 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   if (yaml["oversized-bbox-percent"])
     config.oversized_bbox_percent = yaml["oversized-bbox-percent"].as<double>();
   set_config_from_yaml(yaml, locator);
+  config.no_wide_start = no_wide_start;
   if (config.ignore_largest_bbox_count < 0 || !std::isfinite(config.oversized_bbox_percent) ||
       config.oversized_bbox_percent < 0)
     throw std::invalid_argument("Player size count and percentage must be finite and nonnegative");

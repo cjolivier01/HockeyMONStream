@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
+#include <utility>
 
 #include <unistd.h>
 
@@ -78,6 +80,20 @@ live-boxes:
   const auto& follower = config.living_boxes[1];
   bool ok = true;
   ok &= expect(!config.no_wide_start && !config.ignore_largest_bbox, "Global baseline booleans should be honored");
+  for (const char* key : {"no-wide-start", "no_wide_start"}) {
+    for (const auto& [value, expected] : {std::pair{"true", true}, {"false", false}, {"1", true}, {"0", false}}) {
+      YAML::Node bool_yaml = YAML::Clone(yaml);
+      bool_yaml.remove("no-wide-start");
+      bool_yaml[key] = YAML::Load(value);
+      std::ostringstream diagnostics;
+      auto* saved_stderr = std::cerr.rdbuf(diagnostics.rdbuf());
+      const auto bool_config = gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), bool_yaml);
+      std::cerr.rdbuf(saved_stderr);
+      ok &= expect(bool_config.no_wide_start == expected, "no-wide-start must honor YAML booleans and legacy 0/1");
+      // A rejected false value would otherwise pass by retaining the default.
+      ok &= expect(diagnostics.str().empty(), "Valid no-wide-start values must parse without diagnostics");
+    }
+  }
   ok &= expect(
       config.ignore_largest_bbox_count == 1 && !config.ignore_oversized_bboxes &&
           config.oversized_bbox_percent == 100.0,
