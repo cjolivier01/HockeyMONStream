@@ -163,7 +163,7 @@ GstPadProbeReturn inspect_audio_timeline_probe(GstPad* /*pad*/, GstPadProbeInfo*
   }
   // The logical playlist starts at zero even after a startup seek. Its segment
   // must agree with its rebased buffers at every physical chapter boundary.
-  if (stats->have_segment && gst_segment_to_running_time(&stats->segment, GST_FORMAT_TIME, pts) != pts) {
+  if (!stats->have_segment || gst_segment_to_running_time(&stats->segment, GST_FORMAT_TIME, pts) != pts) {
     ++stats->segment_mismatches;
   }
   if (GST_CLOCK_TIME_IS_VALID(dts) && dts < pts) {
