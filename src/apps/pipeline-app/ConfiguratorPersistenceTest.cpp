@@ -2019,7 +2019,7 @@ play-tracker:
           !hm::get_node(**backend_cli_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "CLI materialization must preserve and restore an existing explicit game-private stitching backend choice");
 
-  for (const std::string override_value : {"null", "[0, 0, 0]", "[0, -35, 0]"}) {
+  for (const std::string override_value : {"null", "[0, 0, 0]", "[0, -23.8, 4.3]"}) {
     const std::string game =
         override_value == "null" ? "rink-inherited" : (override_value == "[0, 0, 0]" ? "rink-zero" : "rink-equal");
     const fs::path rink_dir = games / game;
@@ -2045,7 +2045,7 @@ play-tracker:
       const bool inherited = override_value == "null";
       ok &= expect(
           framing.ok() && framing->rotation_inherited == inherited &&
-              framing->rotation_degrees[1] == (game == "rink-zero" ? 0 : -35),
+              framing->rotation_degrees[1] == (game == "rink-zero" ? 0 : -23.8),
           "backend persistence must retain rotation inheritance and explicit overrides, including zero");
     }
   }
