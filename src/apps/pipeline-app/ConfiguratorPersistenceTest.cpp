@@ -408,6 +408,9 @@ play-tracker:
   mapping_structure["ds-playtracker"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["ds-fieldmask"] = YAML::Node(YAML::NodeType::Map);
   mapping_structure["sink0"]["type"] = 3; // NV_DS_SINK_ENCODE_FILE
+  mapping_structure["sink6"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_PROGRAM_4K_FILE);
+  mapping_structure["sink6"]["output-file"] = "program_4k_output.mkv";
+  mapping_structure["sink6"]["bitrate"] = 45000000;
   std::ofstream(mapping_structure_path) << YAML::Dump(mapping_structure) << '\n';
 
   fs::create_directories(games / "mapping-defaults");
@@ -924,6 +927,12 @@ play-tracker:
       ? mapping_canonical.apply_supported_baseline_mappings()
       : absl::InternalError("mapping canonical fixture did not load");
   const YAML::Node mapped_canonical = mapping_canonical.config()["pipeline"];
+  ok &= expect(
+      mapping_canonical_status.ok() &&
+          mapped_canonical["sink6"]["output-file"].as<std::string>() == "program_4k_output.mkv" &&
+          mapped_canonical["sink6"]["bitrate"].as<int>() == 45000000 &&
+          !mapped_canonical["sink6"]["width"].IsDefined() && !mapped_canonical["sink6"]["height"].IsDefined(),
+      "Canonical Program path, bitrate, and dimensions must not override the independent 4K upload sink");
   ok &= expect(
       mapping_canonical_status.ok() && mapped_canonical["hmstitcher"]["enable"].as<int>() == 0 &&
           mapped_canonical["application"]["video-converter"].as<std::string>() == "nvvideoconvert" &&

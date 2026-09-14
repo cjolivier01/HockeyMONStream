@@ -52,7 +52,7 @@ GstPadProbeReturn update_dimensions(GstPad*, GstPadProbeInfo* info, gpointer dat
         state->caps_filter,
         STREAM,
         FORMAT,
-        ("Stitched canvas cannot fit the encoder's supported dimensions"),
+        ("Video frame cannot fit the encoder's supported dimensions"),
         ("Input %dx%d; encoder range %ux%u to %ux%u",
          width,
          height,
@@ -78,7 +78,7 @@ GstPadProbeReturn update_dimensions(GstPad*, GstPadProbeInfo* info, gpointer dat
   gst_caps_unref(caps);
   if (fitted->first != static_cast<guint>(width) || fitted->second != static_cast<guint>(height)) {
     g_message(
-        "Stitched archive encoder: scaling %dx%d to %ux%u (encoder maximum %ux%u)",
+        "Archive encoder: scaling %dx%d to %ux%u (encoder maximum %ux%u)",
         width,
         height,
         fitted->first,

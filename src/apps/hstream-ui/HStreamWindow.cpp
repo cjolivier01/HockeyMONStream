@@ -1285,9 +1285,15 @@ QString archive_output_work_dir(const QProcessEnvironment& env, const QString& w
   return QDir::cleanPath(root);
 }
 
-QString archive_output_path(const QString& output_work_dir, const QString& game_id, bool stitching_calibration) {
+QString archive_output_path(
+    const QString& output_work_dir,
+    const QString& game_id,
+    bool stitching_calibration,
+    bool program_4k = false) {
   return QDir(QDir(output_work_dir).filePath(game_id))
-      .filePath(stitching_calibration ? "stitched_output-with-audio.mkv" : "tracking_output-with-audio.mkv");
+      .filePath(
+          program_4k ? "program_4k_output-with-audio.mkv"
+                     : (stitching_calibration ? "stitched_output-with-audio.mkv" : "tracking_output-with-audio.mkv"));
 }
 
 QString available_final_archive_path(
@@ -1295,10 +1301,12 @@ QString available_final_archive_path(
     const QString& game_id,
     bool stitched_archive,
     bool require_telemetry_paths = false,
-    const QString& shared_run_suffix = {}) {
+    const QString& shared_run_suffix = {},
+    bool program_4k = false) {
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
-  const QString base = QString("%1-%2_output-with-audio").arg(safe_game_id, stitched_archive ? "stitched" : "tracking");
+  const QString base = QString("%1-%2_output-with-audio")
+                           .arg(safe_game_id, program_4k ? "program_4k" : (stitched_archive ? "stitched" : "tracking"));
   const qint64 first = shared_run_suffix.isNull() ? hm::ui_internal::next_archive_generation(game_dir)
                                                   : shared_run_suffix.mid(1).toLongLong();
   if (first < 1)
@@ -6182,6 +6190,7 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
       {"youtube-primary", "YouTube Primary"},
       {"rtsp-local", "RTSP Local"},
       {"archive-file", "Archive File"},
+      {"archive-program-4k", "Encode 4K Program"},
       {"archive-stitched", "Archive Stitched"},
       {"spare-rtmp", "Spare RTMP"},
   };
@@ -6205,6 +6214,13 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
       archive_output_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
       archive_output_path_label_->setStyleSheet("color: #98a2b3; font-size: 11px; padding-left: 20px;");
       layout->addWidget(archive_output_path_label_);
+    } else if (id == "archive-program-4k") {
+      program_4k_output_path_label_ = new QLabel("4K Program path will be shown when enabled", group);
+      program_4k_output_path_label_->setObjectName("program4kOutputPath");
+      program_4k_output_path_label_->setWordWrap(true);
+      program_4k_output_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      program_4k_output_path_label_->setStyleSheet("color: #98a2b3; font-size: 11px; padding-left: 20px;");
+      layout->addWidget(program_4k_output_path_label_);
     } else if (id == "archive-stitched") {
       stitched_archive_output_path_label_ = new QLabel("Stitched archive path will be shown when enabled", group);
       stitched_archive_output_path_label_->setObjectName("stitchedArchiveOutputPath");
@@ -6934,6 +6950,8 @@ QStringList HStreamWindow::enabledSinkNames() const {
       sinks.push_back("RTSP");
     } else if (id == "archive-stitched") {
       sinks.push_back("ENCODE_STITCHED_FILE");
+    } else if (id == "archive-program-4k" && !isCalibrationRun()) {
+      sinks.push_back("ENCODE_PROGRAM_4K_FILE");
     } else if (id == "archive-file") {
       sinks.push_back("ENCODE_FILE");
     }
@@ -9147,10 +9165,15 @@ void HStreamWindow::startPipeline() {
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
   active_archive_video_is_hevc_ = false;
+  active_program_4k_output_path_.clear();
   active_stitched_archive_output_path_.clear();
+  active_program_4k_recovery_path_.clear();
   active_stitched_archive_recovery_path_.clear();
+  active_program_4k_initial_size_ = -1;
   active_stitched_archive_initial_size_ = -1;
+  active_program_4k_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
+  active_program_4k_video_is_hevc_ = false;
   active_stitched_archive_video_is_hevc_ = false;
   pending_archive_finalizations_.clear();
   archive_finalize_failure_summaries_.clear();
@@ -9161,6 +9184,8 @@ void HStreamWindow::startPipeline() {
   const bool stitched_archive_enabled = !active_run_is_calibration_ &&
       stitched_archive_toggle != output_toggles_.end() && stitched_archive_toggle->second &&
       stitched_archive_toggle->second->isChecked();
+  const bool program_4k_enabled =
+      !active_run_is_calibration_ && archive_enabled && output_toggles_.at("archive-program-4k")->isChecked();
   if (archive_enabled || stitched_archive_enabled) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
@@ -9175,6 +9200,9 @@ void HStreamWindow::startPipeline() {
     if (stitched_archive_enabled) {
       active_stitched_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, true);
     }
+    if (program_4k_enabled) {
+      active_program_4k_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, false, true);
+    }
     const QString primary_archive_path =
         !active_archive_output_path_.isEmpty() ? active_archive_output_path_ : active_stitched_archive_output_path_;
     const QString archive_dir = QFileInfo(primary_archive_path).absolutePath();
@@ -9183,8 +9211,11 @@ void HStreamWindow::startPipeline() {
         output_states_["archive-file"]->setText("ERROR");
       if (stitched_archive_enabled)
         output_states_["archive-stitched"]->setText("ERROR");
+      if (program_4k_enabled)
+        output_states_["archive-program-4k"]->setText("ERROR");
       appendLog(QString("archive output directory could not be created: %1").arg(archive_dir));
       active_archive_output_path_.clear();
+      active_program_4k_output_path_.clear();
       active_stitched_archive_output_path_.clear();
       active_run_game_id_.clear();
       active_run_is_calibration_ = false;
@@ -9203,6 +9234,14 @@ void HStreamWindow::startPipeline() {
       appendLog(QString("archive output: %1 (the playable file is finalized when playback stops)")
                     .arg(active_archive_output_path_));
     }
+    if (program_4k_enabled) {
+      output_states_["archive-program-4k"]->setText("WRITING");
+      if (program_4k_output_path_label_) {
+        program_4k_output_path_label_->setText(QString("4K Program: %1").arg(active_program_4k_output_path_));
+      }
+      appendLog(QString("4K Program output: %1 (the playable file is finalized when playback stops)")
+                    .arg(active_program_4k_output_path_));
+    }
     if (stitched_archive_enabled) {
       output_states_["archive-stitched"]->setText("WRITING");
       if (stitched_archive_output_path_label_) {
@@ -9220,6 +9259,12 @@ void HStreamWindow::startPipeline() {
           QString("archive output was not started (%1); expected path: %2").arg(reason, active_archive_output_path_));
       active_archive_output_path_.clear();
     }
+    if (!active_program_4k_output_path_.isEmpty()) {
+      output_states_["archive-program-4k"]->setText("NO FILE");
+      appendLog(QString("4K Program output was not started (%1); expected path: %2")
+                    .arg(reason, active_program_4k_output_path_));
+      active_program_4k_output_path_.clear();
+    }
     if (!active_stitched_archive_output_path_.isEmpty()) {
       output_states_["archive-stitched"]->setText("NO FILE");
       appendLog(QString("stitched archive output was not started (%1); expected path: %2")
@@ -9228,7 +9273,9 @@ void HStreamWindow::startPipeline() {
     }
     active_archive_initial_size_ = -1;
     active_archive_initial_mtime_ms_ = -1;
+    active_program_4k_initial_size_ = -1;
     active_stitched_archive_initial_size_ = -1;
+    active_program_4k_initial_mtime_ms_ = -1;
     active_stitched_archive_initial_mtime_ms_ = -1;
   };
   active_calibration_control_points_ = stitchingCalibrationControlPoints();
@@ -9705,6 +9752,13 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
       active_stitched_archive_video_is_hevc_,
       true,
       "archive-stitched");
+  inspect_archive(
+      active_program_4k_output_path_,
+      active_program_4k_initial_size_,
+      active_program_4k_initial_mtime_ms_,
+      active_program_4k_video_is_hevc_,
+      false,
+      "archive-program-4k");
   pipeline_paused_ = false;
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
@@ -9777,8 +9831,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_archive_output_path_.clear();
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
+  active_program_4k_output_path_.clear();
   active_stitched_archive_output_path_.clear();
+  active_program_4k_initial_size_ = -1;
   active_stitched_archive_initial_size_ = -1;
+  active_program_4k_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
   if (!pending_archive_finalizations_.empty()) {
     startNextArchiveFinalization();
@@ -9962,6 +10019,19 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
       active_stitched_archive_output_path_.clear();
       active_stitched_archive_initial_size_ = -1;
       active_stitched_archive_initial_mtime_ms_ = -1;
+    }
+  }
+  if (!active_program_4k_output_path_.isEmpty()) {
+    if (error == QProcess::Crashed) {
+      output_states_["archive-program-4k"]->setText("CHECKING");
+      appendLog(
+          QString("pipeline crashed; checking 4K Program for partial output: %1").arg(active_program_4k_output_path_));
+    } else {
+      output_states_["archive-program-4k"]->setText("FAILED");
+      appendLog(QString("4K Program output was not created; expected: %1").arg(active_program_4k_output_path_));
+      active_program_4k_output_path_.clear();
+      active_program_4k_initial_size_ = -1;
+      active_program_4k_initial_mtime_ms_ = -1;
     }
   }
   active_run_game_id_.clear();
@@ -10668,7 +10738,7 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
 
 void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
   static const QRegularExpression recovery_status(
-      R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+)(?: kind=(program|stitched))? path=(.+)$)");
+      R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+)(?: kind=(program|stitched|program-4k))? path=(.+)$)");
   const QRegularExpressionMatch recovery_match = recovery_status.match(line);
   if (recovery_match.hasMatch()) {
     const QString reported_kind = recovery_match.captured(2);
@@ -10676,12 +10746,15 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
         (reported_kind.isEmpty() &&
          (active_run_is_calibration_ ||
           (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
-    QString& output_path =
-        stitched && !active_run_is_calibration_ ? active_stitched_archive_output_path_ : active_archive_output_path_;
-    QString& recovery_path = stitched && !active_run_is_calibration_ ? active_stitched_archive_recovery_path_
-                                                                     : active_archive_recovery_path_;
-    QLabel* path_label =
-        stitched && !active_run_is_calibration_ ? stitched_archive_output_path_label_ : archive_output_path_label_;
+    QString& output_path = reported_kind == "program-4k" ? active_program_4k_output_path_
+        : stitched && !active_run_is_calibration_        ? active_stitched_archive_output_path_
+                                                         : active_archive_output_path_;
+    QString& recovery_path = reported_kind == "program-4k" ? active_program_4k_recovery_path_
+        : stitched && !active_run_is_calibration_          ? active_stitched_archive_recovery_path_
+                                                           : active_archive_recovery_path_;
+    QLabel* path_label = reported_kind == "program-4k" ? program_4k_output_path_label_
+        : stitched && !active_run_is_calibration_      ? stitched_archive_output_path_label_
+                                                       : archive_output_path_label_;
     if (output_path.isEmpty())
       return;
     recovery_path = QFileInfo(recovery_match.captured(3)).absoluteFilePath();
@@ -10693,7 +10766,7 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
     return;
   }
   static const QRegularExpression output_status(
-      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+)(?: kind=(program|stitched))? existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
+      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+)(?: kind=(program|stitched|program-4k))? existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
   const QRegularExpressionMatch match = output_status.match(line);
   if (!match.hasMatch()) {
     return;
@@ -10703,25 +10776,31 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
       (reported_kind.isEmpty() &&
        (active_run_is_calibration_ ||
         (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
-  QString& output_path =
-      stitched && !active_run_is_calibration_ ? active_stitched_archive_output_path_ : active_archive_output_path_;
-  QString& recovery_path =
-      stitched && !active_run_is_calibration_ ? active_stitched_archive_recovery_path_ : active_archive_recovery_path_;
-  qint64& initial_size =
-      stitched && !active_run_is_calibration_ ? active_stitched_archive_initial_size_ : active_archive_initial_size_;
-  qint64& initial_mtime = stitched && !active_run_is_calibration_ ? active_stitched_archive_initial_mtime_ms_
-                                                                  : active_archive_initial_mtime_ms_;
-  bool& video_is_hevc =
-      stitched && !active_run_is_calibration_ ? active_stitched_archive_video_is_hevc_ : active_archive_video_is_hevc_;
-  QLabel* path_label =
-      stitched && !active_run_is_calibration_ ? stitched_archive_output_path_label_ : archive_output_path_label_;
+  QString& output_path = reported_kind == "program-4k" ? active_program_4k_output_path_
+      : stitched && !active_run_is_calibration_        ? active_stitched_archive_output_path_
+                                                       : active_archive_output_path_;
+  QString& recovery_path = reported_kind == "program-4k" ? active_program_4k_recovery_path_
+      : stitched && !active_run_is_calibration_          ? active_stitched_archive_recovery_path_
+                                                         : active_archive_recovery_path_;
+  qint64& initial_size = reported_kind == "program-4k" ? active_program_4k_initial_size_
+      : stitched && !active_run_is_calibration_        ? active_stitched_archive_initial_size_
+                                                       : active_archive_initial_size_;
+  qint64& initial_mtime = reported_kind == "program-4k" ? active_program_4k_initial_mtime_ms_
+      : stitched && !active_run_is_calibration_         ? active_stitched_archive_initial_mtime_ms_
+                                                        : active_archive_initial_mtime_ms_;
+  bool& video_is_hevc = reported_kind == "program-4k" ? active_program_4k_video_is_hevc_
+      : stitched && !active_run_is_calibration_       ? active_stitched_archive_video_is_hevc_
+                                                      : active_archive_video_is_hevc_;
+  QLabel* path_label = reported_kind == "program-4k" ? program_4k_output_path_label_
+      : stitched && !active_run_is_calibration_      ? stitched_archive_output_path_label_
+                                                     : archive_output_path_label_;
   if (output_path.isEmpty())
     return;
   const QString resolved_path = QFileInfo(match.captured(7)).absoluteFilePath();
   if (resolved_path.isEmpty()) {
     return;
   }
-  if (archive_job_log_is_stitched_ == stitched)
+  if (reported_kind != "program-4k" && archive_job_log_is_stitched_ == stitched)
     resolveArchiveJobLogPath(resolved_path);
   const bool path_changed = resolved_path != output_path;
   output_path = resolved_path;
@@ -11398,6 +11477,21 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
         isCalibrationRun() ? "Archive File records the stitched canvas in this mode"
                            : "Stitched archive path will be shown when enabled");
   }
+  if (program_4k_output_path_label_) {
+    if (pipeline_running && !active_program_4k_output_path_.isEmpty()) {
+      program_4k_output_path_label_->setText(QString("Current 4K Program: %1").arg(active_program_4k_output_path_));
+    } else if (!isCalibrationRun() && output_toggles_.at("archive-program-4k")->isChecked()) {
+      program_4k_output_path_label_->setText(
+          QString("4K Program: %1")
+              .arg(archive_output_path(
+                  archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory()),
+                  game_id_edit_ ? game_id_edit_->text().trimmed() : QString(),
+                  false,
+                  true)));
+    } else {
+      program_4k_output_path_label_->setText("4K Program path will be shown when enabled");
+    }
+  }
 }
 
 bool HStreamWindow::acquireArchiveFinalizerOwnership(const QString& source_path, QString* error) {
@@ -11651,8 +11745,9 @@ void HStreamWindow::startArchiveFinalization(
       archive_game_directory,
       game_id,
       archive_finalize_is_stitched_,
-      active_run_telemetry_requested_,
-      active_run_completed_archive_suffix_);
+      active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+      active_run_completed_archive_suffix_,
+      archive_finalize_output_id_ == "archive-program-4k");
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
   archive_finalize_pending_failure_detail_.clear();
@@ -12140,8 +12235,9 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
             gameDirectory(archive_finalize_game_id_),
             archive_finalize_game_id_,
             archive_finalize_is_stitched_,
-            active_run_telemetry_requested_,
-            active_run_completed_archive_suffix_);
+            active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+            active_run_completed_archive_suffix_,
+            archive_finalize_output_id_ == "archive-program-4k");
         if (candidate.isEmpty()) {
           republish_error = "No safe filename remained for the pinned completed MP4.";
           break;
@@ -12235,8 +12331,9 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         gameDirectory(archive_finalize_game_id_),
         archive_finalize_game_id_,
         archive_finalize_is_stitched_,
-        active_run_telemetry_requested_,
-        active_run_completed_archive_suffix_);
+        active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+        active_run_completed_archive_suffix_,
+        archive_finalize_output_id_ == "archive-program-4k");
     if (candidate.isEmpty()) {
       publication_error = "Could not find an available final filename in the game directory.";
       break;
@@ -12495,8 +12592,9 @@ void HStreamWindow::completeArchiveFinalization() {
             gameDirectory(archive_finalize_game_id_),
             archive_finalize_game_id_,
             archive_finalize_is_stitched_,
-            active_run_telemetry_requested_,
-            active_run_completed_archive_suffix_);
+            active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+            active_run_completed_archive_suffix_,
+            archive_finalize_output_id_ == "archive-program-4k");
         if (candidate.isEmpty())
           break;
         int rescue_errno = 0;
@@ -12529,9 +12627,10 @@ void HStreamWindow::completeArchiveFinalization() {
     return;
   }
   releaseArchiveFinalizerOwnership(true);
-  active_run_completed_archive_suffix_ =
-      hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
-  if (active_run_telemetry_requested_) {
+  if (archive_finalize_output_id_ != "archive-program-4k")
+    active_run_completed_archive_suffix_ =
+        hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
+  if (active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k") {
     const QString manifest_path = active_telemetry_manifest_path_;
     const QString csv_suffix =
         hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
@@ -12564,8 +12663,9 @@ void HStreamWindow::finishCompletedArchivePresentation(
     bool source_removed,
     bool source_was_replaced) {
   output_states_[archive_finalize_output_id_]->setText("SAVED");
-  QLabel* completed_path_label = archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
-                                                                                   : archive_output_path_label_;
+  QLabel* completed_path_label = archive_finalize_output_id_ == "archive-program-4k" ? program_4k_output_path_label_
+      : archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
+                                                          : archive_output_path_label_;
   if (completed_path_label)
     completed_path_label->setText(QString("Completed archive: %1").arg(archive_finalize_target_path_));
   archive_finalize_progress_->setRange(0, 1000);
@@ -12640,13 +12740,16 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   archive_finalize_progress_->setValue(1000);
   archive_finalize_progress_->setFormat("ERROR");
   archive_finalize_headline_->setText("Video finalization failed");
-  const QString route_name = archive_finalize_is_stitched_ ? "Stitched" : "Program";
+  const QString route_name = archive_finalize_output_id_ == "archive-program-4k"
+      ? "4K Program"
+      : (archive_finalize_is_stitched_ ? "Stitched" : "Program");
   const QString failure_summary = QString("%1 archive finalization failed: %2\nRecovery archive: %3")
                                       .arg(route_name, failure_detail, archive_finalize_source_path_);
   archive_finalize_failure_summaries_.append(failure_summary);
   archive_finalize_detail_->setText(archive_finalize_failure_summaries_.join("\n\n"));
-  QLabel* recovery_path_label = archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
-                                                                                  : archive_output_path_label_;
+  QLabel* recovery_path_label = archive_finalize_output_id_ == "archive-program-4k" ? program_4k_output_path_label_
+      : archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
+                                                          : archive_output_path_label_;
   if (recovery_path_label)
     recovery_path_label->setText(QString("Recovery archive: %1").arg(archive_finalize_source_path_));
   archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
@@ -14644,6 +14747,14 @@ void HStreamWindow::updateRunControls() {
   }
   if (run_mode_selector_) {
     run_mode_selector_->setEnabled(!running && !finalizing);
+  }
+  if (const auto copy = output_toggles_.find("archive-program-4k"); copy != output_toggles_.end() && copy->second) {
+    copy->second->setEnabled(!running && !finalizing && !isCalibrationRun());
+    set_control_help(
+        copy->second,
+        "Save an additional HEVC Program MP4 with audio for YouTube upload, scaled to fit 3840x2160 while "
+        "preserving aspect ratio. Also enables Archive File. Telemetry refers only to the main Program video. "
+        "Available in Program mode.");
   }
   if (const auto stitched_archive = output_toggles_.find("archive-stitched");
       stitched_archive != output_toggles_.end() && stitched_archive->second) {
@@ -18014,7 +18125,11 @@ void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   output_states_[id]->setText(pipeline_running ? "NEXT RUN" : (enabled ? "ENABLED" : "STOPPED"));
   appendLog(QString("output route %1 %2").arg(id, enabled ? "enabled" : "disabled"));
-  if (id == "archive-file" || id == "archive-stitched") {
+  if (id == "archive-program-4k" && enabled)
+    output_toggles_.at("archive-file")->setChecked(true);
+  if (id == "archive-file" && !enabled)
+    output_toggles_.at("archive-program-4k")->setChecked(false);
+  if (id == "archive-file" || id == "archive-stitched" || id == "archive-program-4k") {
     updateArchiveOutputPathLabel();
   }
   if (pipeline_running) {

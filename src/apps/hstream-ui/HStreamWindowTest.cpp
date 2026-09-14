@@ -978,6 +978,18 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "    print('HSTREAM_OUTPUT type=archive sink=5 kind=stitched ' + stitched_archive_before + "
       "' codec=hevc path=' + stitched_archive_path, flush=True)\n");
+  file.write("if os.environ.get('HSTREAM_UI_TEST_PROGRAM_4K_RESOLVED_PATH'):\n");
+  file.write("    program_4k_path = os.environ['HSTREAM_UI_TEST_PROGRAM_4K_RESOLVED_PATH']\n");
+  file.write("    try:\n");
+  file.write("        program_4k_stat = os.stat(program_4k_path)\n");
+  file.write(
+      "        program_4k_before = 'existed=1 size=%d mtime-ms=%d' % "
+      "(program_4k_stat.st_size, program_4k_stat.st_mtime_ns // 1000000)\n");
+  file.write("    except FileNotFoundError:\n");
+  file.write("        program_4k_before = 'existed=0 size=-1 mtime-ms=-1'\n");
+  file.write(
+      "    print('HSTREAM_OUTPUT type=archive sink=6 kind=program-4k ' + program_4k_before + "
+      "' codec=hevc path=' + program_4k_path, flush=True)\n");
   file.write("if os.environ.get('HSTREAM_UI_TEST_TELEMETRY_MANIFEST'):\n");
   file.write(
       "    print('HSTREAM_TELEMETRY manifest=' + os.environ['HSTREAM_UI_TEST_TELEMETRY_MANIFEST'], flush=True)\n");
@@ -1046,6 +1058,11 @@ bool write_fake_runner(const QString& path) {
       "os.environ.get('HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH'):\n");
   file.write("        with open(os.environ['HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH'], 'wb') as archive:\n");
   file.write("            archive.write(b'completed stitched archive')\n");
+  file.write(
+      "    if os.environ.get('HSTREAM_UI_TEST_ARCHIVE_WRITE') and "
+      "os.environ.get('HSTREAM_UI_TEST_PROGRAM_4K_RESOLVED_PATH'):\n");
+  file.write("        with open(os.environ['HSTREAM_UI_TEST_PROGRAM_4K_RESOLVED_PATH'], 'wb') as archive:\n");
+  file.write("            archive.write(b'completed 4k archive')\n");
   file.write("    sys.exit(int(os.environ['HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS']))\n");
   file.write(
       "if os.environ.get('HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW') == '1' or any(argument.startswith("
@@ -6773,6 +6790,8 @@ bool test_output_controls(HStreamWindow* window) {
   auto* spare = require_child<QCheckBox>(window, "outputToggle_spare-rtmp");
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
   auto* stitched_archive = require_child<QCheckBox>(window, "outputToggle_archive-stitched");
+  auto* program_4k = require_child<QCheckBox>(window, "outputToggle_archive-program-4k");
+  auto* program_4k_path = require_child<QLabel>(window, "program4kOutputPath");
   auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
   auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
   auto* stitched_archive_path = require_child<QLabel>(window, "stitchedArchiveOutputPath");
@@ -6784,10 +6803,33 @@ bool test_output_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
-  if (!spare || !archive || !stitched_archive || !drivegpt_csv || !archive_path || !stitched_archive_path ||
-      !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop || !mode || !seek_slider || !seek_forward) {
+  if (!program_4k || !program_4k_path || !spare || !archive || !stitched_archive || !drivegpt_csv || !archive_path ||
+      !stitched_archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop || !mode ||
+      !seek_slider || !seek_forward) {
     return false;
   }
+
+  if (!expect(!program_4k->isChecked(), "4K Program copy must be opt-in"))
+    return false;
+  archive->setChecked(false);
+  program_4k->setChecked(true);
+  if (!expect(
+          archive->isChecked() &&
+              HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains(
+                  "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE") &&
+              program_4k_path->text().contains("program_4k_output"),
+          "4K checkbox must enable both Program outputs with a distinct planned copy path"))
+    return false;
+  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  if (!expect(
+          !program_4k->isEnabled() &&
+              !HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_PROGRAM_4K_FILE"),
+          "Calibration must not encode the 4K Program copy"))
+    return false;
+  mode->setCurrentIndex(mode->findData("program"));
+  archive->setChecked(false);
+  if (!expect(!program_4k->isChecked(), "Disabling the main archive must disable its optional 4K copy"))
+    return false;
 
   activate(spare);
   if (!expect(window->outputStateText("spare-rtmp") == "ENABLED", "Spare RTMP toggle should enable the output")) {
@@ -8212,12 +8254,18 @@ bool test_output_controls(HStreamWindow* window) {
       ui_cleanup_owner_scoped;
 }
 
-bool test_dual_archive_finalization(HStreamWindow* window) {
+bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false) {
+  const char* secondary_toggle = with_4k ? "outputToggle_archive-program-4k" : "outputToggle_archive-stitched";
+  const char* secondary_label = with_4k ? "program4kOutputPath" : "stitchedArchiveOutputPath";
+  const char* secondary_env =
+      with_4k ? "HSTREAM_UI_TEST_PROGRAM_4K_RESOLVED_PATH" : "HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH";
+  const QString secondary_id = with_4k ? "archive-program-4k" : "archive-stitched";
+  const QString secondary_stem = with_4k ? "program_4k" : "stitched";
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
-  auto* stitched_archive = require_child<QCheckBox>(window, "outputToggle_archive-stitched");
+  auto* stitched_archive = require_child<QCheckBox>(window, secondary_toggle);
   auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
   auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
-  auto* stitched_archive_path = require_child<QLabel>(window, "stitchedArchiveOutputPath");
+  auto* stitched_archive_path = require_child<QLabel>(window, secondary_label);
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   if (!archive || !stitched_archive || !drivegpt_csv || !archive_path || !stitched_archive_path || !start || !mode)
@@ -8261,7 +8309,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     return false;
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", program_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", stitched_source.toLocal8Bit());
+  qputenv(secondary_env, stitched_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
   qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
   qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
@@ -8272,7 +8320,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   drivegpt_csv->setChecked(true);
   activate(start);
   for (int i = 0; i < 600 &&
-       (window->outputStateText("archive-file") != "SAVED" || window->outputStateText("archive-stitched") != "SAVED");
+       (window->outputStateText("archive-file") != "SAVED" || window->outputStateText(secondary_id) != "SAVED");
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -8298,18 +8346,18 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
       completed_base.startsWith(unsuffixed_base) ? completed_base.mid(unsuffixed_base.size()) : QString("invalid");
   bool dual_telemetry_deployed = QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch() &&
       QFileInfo(stitched_completed).completeBaseName() ==
-          QString("%1-stitched_output-with-audio%2").arg(window->gameIdText(), telemetry_suffix);
+          QString("%1-%2_output-with-audio%3").arg(window->gameIdText(), secondary_stem, telemetry_suffix);
   for (const QString& stem : telemetry_stems) {
     QFile published(QDir(window->gameDirectoryText()).filePath(stem + telemetry_suffix + ".csv"));
     dual_telemetry_deployed &=
         published.open(QIODevice::ReadOnly) && published.readAll() == (stem + " dual archive contents\n").toUtf8();
   }
   const bool ok = expect(
-      window->outputStateText("archive-file") == "SAVED" && window->outputStateText("archive-stitched") == "SAVED" &&
+      window->outputStateText("archive-file") == "SAVED" && window->outputStateText(secondary_id) == "SAVED" &&
           program_opened && stitched_opened && program_file.readAll() == "completed lossless archive" &&
-          stitched_file.readAll() == "completed stitched archive" &&
+          stitched_file.readAll() == (with_4k ? "completed 4k archive" : "completed stitched archive") &&
           QFileInfo(program_completed).completeBaseName().contains("-tracking_output-with-audio") &&
-          QFileInfo(stitched_completed).completeBaseName().contains("-stitched_output-with-audio") &&
+          QFileInfo(stitched_completed).completeBaseName().contains("-" + secondary_stem + "_output-with-audio") &&
           !QFileInfo::exists(program_source) && !QFileInfo::exists(stitched_source) && program_finalize_index >= 0 &&
           telemetry_finalize_index > program_finalize_index && stitched_finalize_index > telemetry_finalize_index &&
           dual_telemetry_deployed && combined_log_opened && combined_log_text.contains(program_finalize_log) &&
@@ -8343,9 +8391,9 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     const QString failed_telemetry_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_telemetry_program_source.toLocal8Bit());
     if (with_stitched_archive) {
-      qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", failed_telemetry_stitched_source.toLocal8Bit());
+      qputenv(secondary_env, failed_telemetry_stitched_source.toLocal8Bit());
     } else {
-      qunsetenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH");
+      qunsetenv(secondary_env);
     }
     qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
     qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "100");
@@ -8354,7 +8402,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     activate(start);
     for (int i = 0; i < 600 &&
          (window->outputStateText("archive-file") != "SAVED" ||
-          (with_stitched_archive && window->outputStateText("archive-stitched") != "SAVED"));
+          (with_stitched_archive && window->outputStateText(secondary_id) != "SAVED"));
          ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
@@ -8374,14 +8422,15 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
         QString("finalizing archive without re-encoding: %1").arg(failed_telemetry_stitched_source));
     const bool result = expect(
         window->outputStateText("archive-file") == "SAVED" &&
-            (!with_stitched_archive || window->outputStateText("archive-stitched") == "SAVED") &&
-            failed_telemetry_dialog && failed_telemetry_dialog->isVisible() && failed_telemetry_ok_button &&
+            (!with_stitched_archive || window->outputStateText(secondary_id) == "SAVED") && failed_telemetry_dialog &&
+            failed_telemetry_dialog->isVisible() && failed_telemetry_ok_button &&
             failed_telemetry_ok_button->isVisible() && failed_telemetry_detail &&
             failed_telemetry_detail->text().contains(telemetry_warning) &&
             failed_telemetry_detail->text().contains(telemetry_working) && telemetry_warning_index >= 0 &&
             (!with_stitched_archive || stitched_after_warning_index > telemetry_warning_index),
-        QString("A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
-                "without blocking saved video outputs")
+        QString(
+            "A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
+            "without blocking saved video outputs")
             .arg(with_stitched_archive ? "dual-archive" : "Program-only")
             .toStdString());
     QFile::remove(failed_telemetry_program_completed);
@@ -8399,11 +8448,19 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     const QString failed_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
     const QString failed_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_program_source.toLocal8Bit());
-    qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", failed_stitched_source.toLocal8Bit());
+    qputenv(secondary_env, failed_stitched_source.toLocal8Bit());
     qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE", fail_route);
+    if (with_4k && fail_program) {
+      QFile restored(QDir(telemetry_working).filePath("camera_fast-11.csv"));
+      if (!restored.open(QIODevice::WriteOnly) || restored.write("valid telemetry\n") <= 0)
+        return false;
+      restored.close();
+      qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
+      drivegpt_csv->setChecked(true);
+    }
     activate(start);
-    const QString failed_output = fail_program ? QString("archive-file") : QString("archive-stitched");
-    const QString saved_output = fail_program ? QString("archive-stitched") : QString("archive-file");
+    const QString failed_output = fail_program ? QString("archive-file") : QString(secondary_id);
+    const QString saved_output = fail_program ? QString(secondary_id) : QString("archive-file");
     for (int i = 0; i < 600 &&
          (window->outputStateText(failed_output) != "ERROR" || window->outputStateText(saved_output) != "SAVED");
          ++i) {
@@ -8425,10 +8482,15 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
     QFile run_log(failed_log);
     const bool run_log_opened = run_log.open(QIODevice::ReadOnly | QIODevice::Text);
     const QString run_log_text = run_log_opened ? QString::fromUtf8(run_log.readAll()) : QString();
+    const bool telemetry_ignored_copy = !with_4k || !fail_program ||
+        (run_log_text.contains("no finalized Program archive exists to provide a matching game-directory suffix") &&
+         !run_log_text.contains("DriveGPT database copied to the game directory"));
+    qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
+    drivegpt_csv->setChecked(false);
     const bool route_result = expect(
-        window->outputStateText(failed_output) == "ERROR" && window->outputStateText(saved_output) == "SAVED" &&
-            QFileInfo::exists(failed_recovery) && !QFileInfo::exists(failed_source) &&
-            !QFileInfo::exists(saved_source) && run_log_opened &&
+        telemetry_ignored_copy && window->outputStateText(failed_output) == "ERROR" &&
+            window->outputStateText(saved_output) == "SAVED" && QFileInfo::exists(failed_recovery) &&
+            !QFileInfo::exists(failed_source) && !QFileInfo::exists(saved_source) && run_log_opened &&
             failed_path_label->text() == QString("Recovery archive: %1").arg(failed_recovery) && finalize_dialog &&
             finalize_dialog->isVisible() && ok_button && ok_button->isVisible() && finalize_detail &&
             finalize_detail->text().contains(failed_recovery) &&
@@ -8436,8 +8498,9 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
             run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_stitched_source)) &&
             run_log_text.contains("archive finalization failed") &&
             run_log_text.contains("completed archive published"),
-        QString("A %1-route failure must retain its recovery pair while the other archive still finalizes and the "
-                "combined log records both outcomes")
+        QString(
+            "A %1-route failure must retain its recovery pair while the other archive still finalizes and the "
+            "combined log records both outcomes")
             .arg(fail_program ? "first" : "second")
             .toStdString());
     run_log.close();
@@ -8451,16 +8514,17 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   };
 
   const bool first_failure_safe = run_route_failure("dual-first-failure", "tracking_output", true);
-  const bool second_failure_safe = run_route_failure("dual-second-failure", "stitched_output", false);
+  const bool second_failure_safe =
+      run_route_failure("dual-second-failure", (with_4k ? "program_4k_output" : "stitched_output"), false);
 
   const QString both_failed_program_source = QDir(output_root.path()).filePath("dual-both-fail-program.mkv");
   const QString both_failed_stitched_source = QDir(output_root.path()).filePath("dual-both-fail-stitched.mkv");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", both_failed_program_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", both_failed_stitched_source.toLocal8Bit());
+  qputenv(secondary_env, both_failed_stitched_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
   activate(start);
   for (int i = 0; i < 600 &&
-       (window->outputStateText("archive-file") != "ERROR" || window->outputStateText("archive-stitched") != "ERROR");
+       (window->outputStateText("archive-file") != "ERROR" || window->outputStateText(secondary_id) != "ERROR");
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -8482,7 +8546,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   auto* both_failed_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
   auto* both_failed_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
   const bool both_failures_safe = expect(
-      window->outputStateText("archive-file") == "ERROR" && window->outputStateText("archive-stitched") == "ERROR" &&
+      window->outputStateText("archive-file") == "ERROR" && window->outputStateText(secondary_id) == "ERROR" &&
           QFileInfo::exists(both_failed_program_recovery) && QFileInfo::exists(both_failed_stitched_recovery) &&
           both_failed_program_log_opened && both_failed_stitched_log_opened &&
           archive_path->text() == QString("Recovery archive: %1").arg(both_failed_program_recovery) &&
@@ -8517,7 +8581,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QString resumed_stitched_source = QDir(output_root.path()).filePath("dual-blocked-stitched.mkv");
   QDir().mkpath(blocked_directory);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", blocked_program_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH", resumed_stitched_source.toLocal8Bit());
+  qputenv(secondary_env, resumed_stitched_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE", "tracking_output");
   qputenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY", "1");
   activate(start);
@@ -8539,7 +8603,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   const QString stitched_finalize_after_block =
       QString("finalizing archive without re-encoding: %1").arg(resumed_stitched_source);
   const bool queue_stayed_blocked = window->outputStateText("archive-file") == "ERROR" &&
-      window->outputStateText("archive-stitched") == "FINALIZING" && QFileInfo::exists(blocked_program_source) &&
+      window->outputStateText(secondary_id) == "FINALIZING" && QFileInfo::exists(blocked_program_source) &&
       !window->logText().contains(stitched_finalize_after_block) && blocked_owner_lock_held;
   window->close();
   QApplication::processEvents();
@@ -8550,15 +8614,14 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE");
   qunsetenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY");
   HStreamWindowTestAccess::refreshRunControls(window);
-  for (int i = 0; i < 600 && window->outputStateText("archive-stitched") != "SAVED"; ++i) {
+  for (int i = 0; i < 600 && window->outputStateText(secondary_id) != "SAVED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   const QString resumed_stitched_completed = stitched_archive_path->text().section("Completed archive: ", 1).trimmed();
   const bool blocked_recovery_resumed = expect(
       queue_stayed_blocked && blocked_close_deferred && blocked_source_moved &&
-          window->outputStateText("archive-file") == "ERROR" &&
-          window->outputStateText("archive-stitched") == "SAVED" &&
+          window->outputStateText("archive-file") == "ERROR" && window->outputStateText(secondary_id) == "SAVED" &&
           window->logText().contains(stitched_finalize_after_block) && QFileInfo::exists(blocked_program_manual) &&
           !QFileInfo::exists(resumed_stitched_source),
       QString(
@@ -8568,7 +8631,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
           .arg(queue_stayed_blocked)
           .arg(blocked_close_deferred)
           .arg(blocked_source_moved)
-          .arg(window->outputStateText("archive-file"), window->outputStateText("archive-stitched"))
+          .arg(window->outputStateText("archive-file"), window->outputStateText(secondary_id))
           .arg(QFileInfo::exists(blocked_program_manual))
           .arg(QFileInfo::exists(resumed_stitched_source))
           .arg(window->logText().contains(stitched_finalize_after_block))
@@ -8585,7 +8648,7 @@ bool test_dual_archive_finalization(HStreamWindow* window) {
   archive->setChecked(false);
   stitched_archive->setChecked(false);
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH");
-  qunsetenv("HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH");
+  qunsetenv(secondary_env);
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
   qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
   if (original_output_root.isEmpty())
@@ -14179,10 +14242,16 @@ int main(int argc, char** argv) {
     std::cerr << "test_output_controls failed\n";
     return 1;
   }
+  if (!test_dual_archive_finalization(&window, true)) {
+    std::cerr << "test_program_4k_archive_finalization failed\n";
+    return 1;
+  }
   if (!test_dual_archive_finalization(&window)) {
     std::cerr << "test_dual_archive_finalization failed\n";
     return 1;
   }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_FLOW_ONLY"))
+    return 0;
   if (!test_camera_controls(&window)) {
     std::cerr << "test_camera_controls failed\n";
     return 1;

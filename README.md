@@ -160,8 +160,18 @@ Add `paths.game-root` there to replace the default `$HOME/Videos` game root.
 explicit environment overrides for automation.
 
 Successful UI archive runs are losslessly remuxed (not re-encoded) into the
-game directory as `<game-id>-tracking_output-with-audio.mp4`. The final MP4 is
+game directory as `<game-id>-tracking_output-with-audio-<generation>.mp4`. The final MP4 is
 published only after ffmpeg completes its fast-start compatibility pass.
+
+In Program mode, **Encode 4K Program** also enables Archive File and records an
+additional HEVC copy with audio for YouTube upload. It scales on the GPU to fit
+within 3840×2160, preserves aspect ratio, and leaves smaller frames at their
+original size. The copy is finalized as
+`<game-id>-program_4k_output-with-audio-<generation>.mp4`, alongside the main
+Program MP4 with the same generation. DriveGPT telemetry continues to refer to
+the main Program video; the upload copy has no telemetry sidecars. This adds a
+second hardware encoder session. The equivalent CLI sink selection is
+`--enable-sinks=ENCODE_FILE,ENCODE_PROGRAM_4K_FILE`.
 
 The bundled baseline is an exact copy of HockeyMON's `hmlib/config/baseline.yaml`
 at the revision pinned in `scripts/hmlib-runtime-revision` (currently

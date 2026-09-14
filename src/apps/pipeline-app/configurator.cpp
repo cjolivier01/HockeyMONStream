@@ -7205,6 +7205,7 @@ absl::Status Configurator::configure_encode_file_outputs(
     fs::path configured_path;
     bool bitrate_is_explicit;
     bool stitched;
+    bool program_4k;
   };
 
   std::optional<fs::path> output_work_dir;
@@ -7221,7 +7222,8 @@ absl::Status Configurator::configure_encode_file_outputs(
       continue;
     }
     const NvDsSinkType sink_type = static_cast<NvDsSinkType>(get_node_value<int>(sink_node, "type", 0));
-    if (sink_type != NV_DS_SINK_ENCODE_FILE && sink_type != NV_DS_SINK_ENCODE_STITCHED_FILE) {
+    if (sink_type != NV_DS_SINK_ENCODE_FILE && sink_type != NV_DS_SINK_ENCODE_STITCHED_FILE &&
+        sink_type != NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) {
       continue;
     }
 
@@ -7264,8 +7266,9 @@ absl::Status Configurator::configure_encode_file_outputs(
          sink_id,
          codec,
          std::move(output_path),
-         (sink_type != NV_DS_SINK_ENCODE_STITCHED_FILE && canonical_bitrate_is_fixed) || native_bitrate_is_fixed,
-         sink_type == NV_DS_SINK_ENCODE_STITCHED_FILE});
+         (sink_type == NV_DS_SINK_ENCODE_FILE && canonical_bitrate_is_fixed) || native_bitrate_is_fixed,
+         sink_type == NV_DS_SINK_ENCODE_STITCHED_FILE,
+         sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE});
   }
 
   const bool has_auto_program_bitrate =
@@ -7346,7 +7349,7 @@ absl::Status Configurator::configure_encode_file_outputs(
       g_print(
           "HSTREAM_OUTPUT_RECOVERY type=archive sink=%d kind=%s path=%s\n",
           sink_id,
-          archive_output.stitched ? "stitched" : "program",
+          archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
           recovery_path.string().c_str());
     }
     if (!stale_recoveries->empty())
@@ -7359,7 +7362,7 @@ absl::Status Configurator::configure_encode_file_outputs(
       g_print(
           "HSTREAM_OUTPUT_RECOVERY type=archive sink=%d kind=%s path=%s\n",
           sink_id,
-          archive_output.stitched ? "stitched" : "program",
+          archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
           recovered_output->value().string().c_str());
       std::fflush(stdout);
     }
@@ -7400,7 +7403,7 @@ absl::Status Configurator::configure_encode_file_outputs(
         "HSTREAM_OUTPUT type=archive sink=%d kind=%s existed=%d size=%" G_GINT64_FORMAT " mtime-ms=%" G_GINT64_FORMAT
         " codec=%s path=%s\n",
         sink_id,
-        archive_output.stitched ? "stitched" : "program",
+        archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
         output_existed,
         previous_size,
         previous_mtime_ms,
