@@ -92,6 +92,10 @@ class JobScriptTest(unittest.TestCase):
     def test_source_and_installed_wrappers_forward_one_config_to_exact_runner(self):
         for installed in (True, False):
             layout = self.root / ("installed" if installed else "workspace")
+            game = self.root / ("installed-games" if installed else "source-games") / "help"
+            game.mkdir(parents=True)
+            (game / "config.yaml").write_text(
+                json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
             bin_dir = (layout / "bin" if installed else
                        layout / "bazel-out/k8-fastbuild/bin/src/apps/hstream-job")
             bin_dir.mkdir(parents=True)
@@ -134,17 +138,18 @@ class JobScriptTest(unittest.TestCase):
             env.pop("BUILD_WORKSPACE_DIRECTORY", None)
             env["HOME"] = str(self.root / "home")
             Path(env["HOME"]).mkdir(exist_ok=True)
-            result = subprocess.run([str(tool), "--game-dir", str(self.game), "--force"],
+            result = subprocess.run([str(tool), "--game-dir", str(game), "--force"],
                                     cwd="/", env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            script_text = (self.game / "hstream-job.sh").read_text()
+            script_text = (game / "hstream-job.sh").read_text()
             self.assertIn(str(wrapper), script_text)
             self.assertIn("--runtime-passthrough", script_text)
             self.assertIn(str(runner), script_text)
-            run = subprocess.run([str(self.game / "hstream-job.sh")], cwd="/", env=env)
+            run = subprocess.run([str(game / "hstream-job.sh")], cwd="/", env=env)
             self.assertEqual(run.returncode, 7)
             actual = json.loads(self.output.read_text())
             self.assertEqual(actual["cwd"], str(layout))
+            self.assertEqual(actual["argv"][:2], ["-g", "help"])
             self.assertEqual(actual["argv"].count("-c"), 1)
             self.assertEqual(actual["argv"][actual["argv"].index("-c") + 1], str(config))
             if not installed:

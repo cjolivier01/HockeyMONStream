@@ -65,15 +65,6 @@ Notes:
 EOF
 }
 
-for arg in "$@"; do
-  case "${arg}" in
-    -h|--help|help)
-      show_help
-      exit 0
-      ;;
-  esac
-done
-
 RUNTIME_PASSTHROUGH_RUNNER=""
 if [ "${1:-}" = "--runtime-passthrough" ]; then
   if [ "$#" -lt 2 ]; then
@@ -90,6 +81,17 @@ if [ "${1:-}" = "--runtime-passthrough" ]; then
     exit 2
   fi
   RUNTIME_PASSTHROUGH_RUNNER="$(readlink -f "${RUNTIME_PASSTHROUGH_RUNNER}")"
+fi
+
+if [ -z "${RUNTIME_PASSTHROUGH_RUNNER}" ]; then
+  for arg in "$@"; do
+    case "${arg}" in
+      -h|--help|help)
+        show_help
+        exit 0
+        ;;
+    esac
+  done
 fi
 
 # Runtime environment:
