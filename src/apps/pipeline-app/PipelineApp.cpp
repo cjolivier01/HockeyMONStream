@@ -2974,7 +2974,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        0,
        G_OPTION_ARG_FILENAME_ARRAY,
        &enable_sinks_,
-       "Enable sinks: FAKE=discard, RENDER=display, ENCODE_FILE=write Program video, "
+       "Enable sinks: FAKE=discard, RENDER=display, ENCODE_FILE=write Program video, ENCODE_PROGRAM_4K_FILE=write 4K upload copy, "
        "ENCODE_STITCHED_FILE=write the pre-Program stitched canvas, RTSP/UDPSINK/RTMP=server sink "
        "(RTSP unless output-file starts with rtmp://; aliases enable the same sink type), WEBRTC=browser preview, "
        "RENDER_DRM=DRM display, MSG_CONV_BROKER=message broker",

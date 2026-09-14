@@ -475,7 +475,10 @@ void configure_file_hmaudio(NvDsHmAudioConfig& audio_cfg, const fs::path& audio_
   std::strncpy(audio_cfg.audio_location, fs::absolute(audio_path).c_str(), sizeof(audio_cfg.audio_location) - 1);
 }
 
-int run_file_audio_fanout_to_two_file_sinks(const fs::path& tmpdir, const fs::path& audio_path) {
+int run_file_audio_fanout_to_two_file_sinks(
+    const fs::path& tmpdir,
+    const fs::path& audio_path,
+    bool program_4k = false) {
   GstElement* pipeline = gst_pipeline_new("hmaudio-file-fanout-test");
   GstElement* mux0 = nullptr;
   GstElement* mux1 = nullptr;
@@ -494,7 +497,7 @@ int run_file_audio_fanout_to_two_file_sinks(const fs::path& tmpdir, const fs::pa
   sink_configs[0].type = NV_DS_SINK_ENCODE_FILE;
   sink_configs[1].enable = TRUE;
   sink_configs[1].sink_id = 1;
-  sink_configs[1].type = NV_DS_SINK_ENCODE_FILE;
+  sink_configs[1].type = program_4k ? NV_DS_SINK_ENCODE_PROGRAM_4K_FILE : NV_DS_SINK_ENCODE_FILE;
 
   NvDsSinkBin sink_bin{};
   sink_bin.sub_bins[0].mux = mux0;
@@ -1429,6 +1432,9 @@ int main(int argc, char** argv) {
     return rc;
   }
 
+  rc = run_file_audio_fanout_to_two_file_sinks(tmpdir, audio, true);
+  if (rc != 0)
+    return rc;
   rc = run_file_audio_fanout_to_two_file_sinks(tmpdir, audio);
   if (rc != 0) {
     fs::remove_all(tmpdir);

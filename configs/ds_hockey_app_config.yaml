@@ -273,6 +273,21 @@ sink5:
   profile: 0
   source-id: 0
 
+sink6:
+  enable: 0
+  sink-id: 6
+  # Independent Program copy for uploads, fitted within 3840x2160 on the GPU.
+  type: 9
+  container: 2
+  output-file: program_4k_output.mkv
+  codec: 2
+  enc-type: 0
+  sync: 0
+  profile: 0
+  source-id: 0
+  # Fallback when source bitrate metadata is unavailable.
+  bitrate: 45000000
+
 # sink2:
 #   enable: 1
 #   #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming

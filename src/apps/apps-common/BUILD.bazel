@@ -303,6 +303,14 @@ cc_test(
 )
 
 cc_test(
+    name = "program_4k_archive_gpu_test",
+    srcs = ["Program4kArchiveGpuTest.cpp"],
+    size = "medium",
+    tags = ["manual", "requires-deepstream-hw"],
+    deps = [":deepstream_apps_common", "@gstreamer"],
+)
+
+cc_test(
     name = "uri_multiple_pipeline_test",
     srcs = ["UriMultiplePipelineTest.cpp"],
     size = "medium",

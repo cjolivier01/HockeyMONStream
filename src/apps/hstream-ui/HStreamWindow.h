@@ -531,6 +531,7 @@ class HStreamWindow : public QMainWindow {
   QLabel* video_sets_path_label_{nullptr};
   QLabel* archive_output_path_label_{nullptr};
   QLabel* stitched_archive_output_path_label_{nullptr};
+  QLabel* program_4k_output_path_label_{nullptr};
   QWidget* game_controls_{nullptr};
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
@@ -691,6 +692,11 @@ class HStreamWindow : public QMainWindow {
   QString active_run_game_id_;
   QString active_archive_output_path_;
   QString active_archive_recovery_path_;
+  QString active_program_4k_output_path_;
+  QString active_program_4k_recovery_path_;
+  qint64 active_program_4k_initial_size_{-1};
+  qint64 active_program_4k_initial_mtime_ms_{-1};
+  bool active_program_4k_video_is_hevc_{false};
   QString active_stitched_archive_output_path_;
   QString active_stitched_archive_recovery_path_;
   QFile archive_job_log_;
