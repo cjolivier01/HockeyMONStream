@@ -2,6 +2,7 @@
 """Execute exported jobs against a recording CLI, without a GPU or Slurm."""
 import json
 import os
+import shlex
 import shutil
 from pathlib import Path
 import subprocess
@@ -10,6 +11,8 @@ import tempfile
 import unittest
 
 TOOL = str(Path(sys.argv.pop(1)).resolve())
+SOURCE_WRAPPER = Path(sys.argv.pop(1)).resolve()
+PACKAGE_SCRIPT = Path(sys.argv.pop(1)).resolve()
 
 
 class JobScriptTest(unittest.TestCase):
@@ -86,10 +89,11 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotEqual(self.generate("--force", "--sbatch", "--partition=gpu\ntouch INJECTED").returncode, 0)
         self.assertEqual(script.read_bytes(), original)
 
-    def test_installed_and_bazel_path_discovery(self):
+    def test_source_and_installed_wrappers_forward_one_config_to_exact_runner(self):
         for installed in (True, False):
             layout = self.root / ("installed" if installed else "workspace")
-            bin_dir = layout / "bin" if installed else layout / "bin/src/apps/hstream-job"
+            bin_dir = (layout / "bin" if installed else
+                       layout / "bazel-out/k8-fastbuild/bin/src/apps/hstream-job")
             bin_dir.mkdir(parents=True)
             tool = bin_dir / "hstream-job"
             shutil.copy2(TOOL, tool)
@@ -97,7 +101,28 @@ class JobScriptTest(unittest.TestCase):
             runner.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.runner, runner)
             wrapper = layout / "run.sh"
-            shutil.copy2(self.runner, wrapper)
+            if installed:
+                package = PACKAGE_SCRIPT.read_text()
+                marker = 'cat > "${STAGING}${INSTALL_PREFIX}/run.sh" <<\'RUNSH\'\n'
+                start = package.index(marker) + len(marker)
+                installed_wrapper = package[start:package.index("\nRUNSH\n", start)]
+                installed_wrapper = installed_wrapper.replace(
+                    "INSTALL_DIR=/opt/hstream\n", f"INSTALL_DIR={shlex.quote(str(layout))}\n", 1)
+                wrapper.write_text(installed_wrapper)
+                wrapper.chmod(0o700)
+            else:
+                shutil.copy2(SOURCE_WRAPPER, wrapper)
+                # A mutable workspace symlink pointing elsewhere must not
+                # redirect the job away from its exact sibling output tree.
+                unrelated = layout / "bazel-out/k8-opt/bin"
+                unrelated.mkdir(parents=True)
+                (layout / "bazel-bin").symlink_to(unrelated, target_is_directory=True)
+                selected_plugins = (layout / "bazel-out/k8-fastbuild/bin/src/gst-plugins/fake")
+                selected_plugins.mkdir(parents=True)
+                (selected_plugins / "libgstselected.so").write_bytes(b"selected")
+                unrelated_plugins = unrelated / "src/gst-plugins/fake"
+                unrelated_plugins.mkdir(parents=True)
+                (unrelated_plugins / "libgstunrelated.so").write_bytes(b"unrelated")
             config = layout / "configs/ds_hockey_app_config.yaml"
             config.parent.mkdir(parents=True)
             config.write_text("pipeline: {}\n")
@@ -107,14 +132,24 @@ class JobScriptTest(unittest.TestCase):
                 runfile.symlink_to(config)
             env = dict(self.env)
             env.pop("BUILD_WORKSPACE_DIRECTORY", None)
+            env["HOME"] = str(self.root / "home")
+            Path(env["HOME"]).mkdir(exist_ok=True)
             result = subprocess.run([str(tool), "--game-dir", str(self.game), "--force"],
                                     cwd="/", env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(str(wrapper), (self.game / "hstream-job.sh").read_text())
-            subprocess.run([str(self.game / "hstream-job.sh")], cwd="/", env=env)
+            script_text = (self.game / "hstream-job.sh").read_text()
+            self.assertIn(str(wrapper), script_text)
+            self.assertIn("--runtime-passthrough", script_text)
+            self.assertIn(str(runner), script_text)
+            run = subprocess.run([str(self.game / "hstream-job.sh")], cwd="/", env=env)
+            self.assertEqual(run.returncode, 7)
             actual = json.loads(self.output.read_text())
             self.assertEqual(actual["cwd"], str(layout))
-            self.assertIn(str(config), actual["argv"])
+            self.assertEqual(actual["argv"].count("-c"), 1)
+            self.assertEqual(actual["argv"][actual["argv"].index("-c") + 1], str(config))
+            if not installed:
+                self.assertIn(str(selected_plugins), actual["env"].get("LD_LIBRARY_PATH", ""))
+                self.assertNotIn(str(unrelated), actual["env"].get("LD_LIBRARY_PATH", ""))
 
     def test_plain_config_and_custom_output(self):
         (self.game / "config.yaml").write_text("pipeline: {}\n")

@@ -115,6 +115,8 @@ int main(int argc, char** argv) {
       throw std::runtime_error("game config.yaml must be a mapping");
     const fs::path bin = executable().parent_path();
     const bool installed = fs::exists(bin / "hstream-cli");
+    if (runner.empty())
+      runner = installed ? bin / "hstream-cli" : bin.parent_path() / "pipeline-app/hstream-cli";
     if (working.empty()) {
       if (installed)
         working = bin.parent_path();
@@ -134,15 +136,10 @@ int main(int argc, char** argv) {
       }
     }
     working = fs::absolute(working);
-    if (runner.empty()) {
-      // Standalone jobs need the same plugin/library environment as an
-      // interactive launch. Prefer the repository or installed runtime wrapper;
-      // retain the raw binary fallback for intentionally minimal layouts.
-      const fs::path wrapper = installed ? bin.parent_path() / "run.sh" : working / "run.sh";
-      runner = fs::is_regular_file(wrapper)
-          ? wrapper
-          : installed ? bin / "hstream-cli" : bin.parent_path() / "pipeline-app/hstream-cli";
-    }
+    // Standalone jobs need the wrapper's plugin/library environment, but the
+    // wrapper must not synthesize another config or select the mutable
+    // workspace bazel-bin. Passthrough mode executes this exact backend.
+    const fs::path wrapper = installed ? bin.parent_path() / "run.sh" : working / "run.sh";
     if (config.empty())
       config = working / "configs/ds_hockey_app_config.yaml";
     config = fs::absolute(config);
@@ -198,7 +195,11 @@ int main(int argc, char** argv) {
               "; custom output paths still apply. See CLI logs for resolved files. "
               "Play-only MP4 remux and copying into the game directory are not performed.") +
         "\n";
-    script += "exec " + quote(runner.string());
+    script += "exec ";
+    if (fs::is_regular_file(wrapper))
+      script += quote(fs::absolute(wrapper).string()) + " --runtime-passthrough " + quote(runner.string());
+    else
+      script += quote(runner.string());
     for (const auto& arg : args)
       script += " \\\n  " + quote(arg);
     script += "\n";
