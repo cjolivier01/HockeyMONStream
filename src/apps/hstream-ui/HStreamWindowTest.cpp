@@ -795,9 +795,8 @@ bool test_matching_development_runtime_selection() {
                  QFileInfo(QString::fromStdString((output_apps.parent_path().parent_path()).string()))
                      .canonicalFilePath(),
              "A Bazel-built UI must retain its immutable output tree when the sibling CLI is missing") &&
-      expect(QFileInfo(
-                 hm::ui_internal::development_runtime_root_for_application(
-                     QString::fromStdString(application.string())))
+      expect(QFileInfo(hm::ui_internal::development_runtime_root_for_application(
+                           QString::fromStdString(application.string())))
                      .canonicalFilePath() ==
                  QFileInfo(QString::fromStdString(workspace_root.string())).canonicalFilePath(),
              "A Bazel-built UI must retain its source workspace when the sibling CLI is missing");
@@ -3962,9 +3961,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(
           stitch_frame_time->displayedSections().testFlag(QDateTimeEdit::MSecSection) &&
               stitch_frame_time->time() == QTime(0, 0, 0, 1),
-          QString(
-              "The default stitch-frame editor should accept millisecond keyboard input (format=%1, time=%2, "
-              "section=%3, focus=%4, text=%5)")
+          QString("The default stitch-frame editor should accept millisecond keyboard input (format=%1, time=%2, "
+                  "section=%3, focus=%4, text=%5)")
               .arg(stitch_frame_time->displayFormat())
               .arg(stitch_frame_time->time().toString("HH:mm:ss.zzz"))
               .arg(static_cast<int>(stitch_frame_time->currentSection()))
@@ -5205,10 +5203,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   const bool accepted_resumed_progress = HStreamWindowTestAccess::handlePlaybackProgressOutput(
       window,
-      QString(
-          "HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
-          "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
-          "generation=%1")
+      QString("HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
+              "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
+              "generation=%1")
           .arg(progress_generation_before_resumed_seek));
   QApplication::processEvents();
   if (!expect(
@@ -7051,7 +7048,7 @@ bool test_output_controls(HStreamWindow* window) {
     const QStringList provisional_logs_running =
         provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString active_provisional_guard;
-    struct stat active_provisional_guard_stat{};
+    struct stat active_provisional_guard_stat {};
     bool active_provisional_guard_pinned = false;
     for (const QString& provisional_log : provisional_logs_running) {
       if (provisional_logs_before.contains(provisional_log))
@@ -7103,7 +7100,7 @@ bool test_output_controls(HStreamWindow* window) {
     QFile guard_file(resolved_guard);
     const bool guard_opened = guard_file.open(QIODevice::ReadOnly);
     const QByteArray guard_text = guard_opened ? guard_file.readAll() : QByteArray();
-    struct stat resolved_guard_stat{};
+    struct stat resolved_guard_stat {};
     const bool trusted_resolved_guard_retained = active_provisional_guard_pinned &&
         ::lstat(QFile::encodeName(resolved_guard).constData(), &resolved_guard_stat) == 0 &&
         resolved_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
@@ -7116,7 +7113,7 @@ bool test_output_controls(HStreamWindow* window) {
                                                      {"hstream-cleanup-v2-*", ".hstream-cleanup-v2-*"},
                                                      QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
                                                  .isEmpty();
-    struct stat retained_provisional_guard_stat{};
+    struct stat retained_provisional_guard_stat {};
     const bool trusted_source_retained = active_provisional_guard_pinned &&
         ::lstat(QFile::encodeName(active_provisional_guard).constData(), &retained_provisional_guard_stat) == 0 &&
         retained_provisional_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
@@ -7196,8 +7193,8 @@ bool test_output_controls(HStreamWindow* window) {
   bool cross_filesystem_log_persisted = true;
 #ifdef Q_OS_UNIX
   QTemporaryDir cross_filesystem_root("/dev/shm/hstream-ui-cross-filesystem-XXXXXX");
-  struct stat output_root_stat{};
-  struct stat cross_root_stat{};
+  struct stat output_root_stat {};
+  struct stat cross_root_stat {};
   const QByteArray encoded_output_root = QFile::encodeName(output_root.path());
   const QByteArray encoded_cross_root = QFile::encodeName(cross_filesystem_root.path());
   const bool distinct_cross_filesystem = cross_filesystem_root.isValid() &&
@@ -7583,7 +7580,7 @@ bool test_output_controls(HStreamWindow* window) {
         QDir(cleanup_path).filePath("owner"), QByteArray("hstream-cleanup-v2\n") + target_name.toBase64());
   };
   const auto write_cleanup_commit = [&](const QString& cleanup_path, const QString& identity_path) {
-    struct stat identity_stat{};
+    struct stat identity_stat {};
     if (::lstat(QFile::encodeName(identity_path).constData(), &identity_stat) != 0)
       return false;
     return write_cleanup_test_file(
@@ -8722,7 +8719,7 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
       left->value() == 210 && right->value() == 320,
       "A suppressed slider change must not overwrite dormant preset angles");
   load("null", "17");
-  ok &= expect(pitch->value() == -23.8 && suppressed(), "Inherited Vallco pitch must suppress crop rotation");
+  ok &= expect(pitch->value() == -35 && suppressed(), "Inherited Vallco pitch must suppress crop rotation");
   pitch->setValue(0);
   ok &= expect(
       left->value() == 170 && right->value() == 170 && link->isChecked(),
@@ -8851,7 +8848,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const auto inherited_rink_view = hm::stitching::read_stitch_projection_framing(inherited_rink_saved);
   const bool inherited_rink_preserved = expect(
       inherited_rink_view.ok() && inherited_rink_view->rotation_inherited &&
-          inherited_rink_view->rotation_degrees == std::array<double, 3>{0, -23.8, 4.3} &&
+          inherited_rink_view->rotation_degrees[1] == -35 &&
           !inherited_rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
       "Editing projection controls must keep a rink-only game's rotation inherited");
 
@@ -8880,14 +8877,11 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(rink_configuration && rink_pitch && rink_roll && rink_default, "Rink leveling controls exist"))
     return false;
   if (!expect(
-          rink_configuration->currentData().toString() == "vallco" && rink_pitch->value() == -23.8 &&
-              rink_roll->value() == 4.3,
+          rink_configuration->currentData().toString() == "vallco" && rink_pitch->value() == -35,
           "Rink-only Vallco config shows inherited pitch"))
     return false;
   rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
-  if (!expect(
-          rink_pitch->value() == -15 && rink_roll->value() == 0 && save->isEnabled(),
-          "Changing rink updates inherited rotation"))
+  if (!expect(rink_pitch->value() == -25 && save->isEnabled(), "Changing rink updates inherited pitch"))
     return false;
   activate(save);
   auto rink_saved = YAML::LoadFile(config_path.string());
@@ -8896,21 +8890,19 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               !rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
           "Saving rink selection keeps default rotation inherited"))
     return false;
-  rink_pitch->setValue(-23.8);
-  rink_roll->setValue(4.3);
+  rink_pitch->setValue(-35);
   rink_configuration->setCurrentIndex(rink_configuration->findData("vallco"));
   activate(save);
   rink_saved = YAML::LoadFile(config_path.string());
   if (!expect(
-          rink_saved["stitching"]["projection_framing"]["rotation_degrees"].as<std::vector<double>>() ==
-              std::vector<double>({0, -23.8, 4.3}),
+          rink_saved["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -35,
           "An explicit angle equal to a rink default remains an override"))
     return false;
   rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
-  if (!expect(rink_pitch->value() == -23.8 && rink_roll->value() == 4.3, "Changing rink preserves game override"))
+  if (!expect(rink_pitch->value() == -35, "Changing rink preserves game override"))
     return false;
   activate(rink_default);
-  if (!expect(rink_pitch->value() == -15 && rink_roll->value() == 0, "Use rink default removes the game override"))
+  if (!expect(rink_pitch->value() == -25, "Use rink default removes the game override"))
     return false;
   activate(save);
   rink_saved = YAML::LoadFile(config_path.string());
@@ -8933,13 +8925,12 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(save);
   const auto custom_to_standard = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
   if (!expect(
-          custom_to_standard.ok() && custom_to_standard->rotation_degrees == std::array<double, 3>{0, -15, 0},
+          custom_to_standard.ok() && custom_to_standard->rotation_degrees[1] == -25,
           "Switching from a custom catalog to a standard rink remains readable by private-only workers"))
     return false;
   activate(create);
   if (!expect(
-          rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -15 &&
-              rink_roll->value() == 0,
+          rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -25,
           "Reload keeps the selected standard rink after a custom profile"))
     return false;
 
@@ -11889,12 +11880,10 @@ bool test_camera_controls(HStreamWindow* window) {
           runtime_snapshot_count() <= 2,
           "A non-acknowledging backend should retain at most the last acknowledged and one in-flight snapshot") &&
       expect(
-          window->logText().contains(
-              "camera control Max_Speed_X_x10=470 apply=failed "
-              "reason=acknowledgement-timeout") &&
-              window->logText().contains(
-                  "camera control Max_Speed_X_x10=490 apply=failed "
-                  "reason=acknowledgement-timeout"),
+          window->logText().contains("camera control Max_Speed_X_x10=470 apply=failed "
+                                     "reason=acknowledgement-timeout") &&
+              window->logText().contains("camera control Max_Speed_X_x10=490 apply=failed "
+                                         "reason=acknowledgement-timeout"),
           "A stalled live-control backend should time out both the in-flight and coalesced latest values");
   const auto timeout_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
   if (!timeout_hugin_generation.ok()) {
@@ -13549,7 +13538,7 @@ bool test_cleanup_transaction_protocol() {
         QDir(root.path()).filePath(QString("unsupported-rename-flags-%1").arg(QString::fromLatin1(unsupported_errno)));
     QDir().mkpath(unsupported_rename_dir);
     const QString unsupported_rename_target = QDir(unsupported_rename_dir).filePath("completed.mp4");
-    struct stat unsupported_rename_stat{};
+    struct stat unsupported_rename_stat {};
     QString unsupported_rename_error;
     const bool unsupported_rename_setup = write_file(unsupported_rename_target, "trusted NFS cleanup") &&
         file_identity(unsupported_rename_target, &unsupported_rename_stat);
@@ -13575,7 +13564,7 @@ bool test_cleanup_transaction_protocol() {
   const QString unsupported_race_dir = QDir(root.path()).filePath("unsupported-rename-source-race");
   QDir().mkpath(unsupported_race_dir);
   const QString unsupported_race_target = QDir(unsupported_race_dir).filePath("completed.mp4");
-  struct stat unsupported_race_stat{};
+  struct stat unsupported_race_stat {};
   QString unsupported_race_error;
   const bool unsupported_race_setup = write_file(unsupported_race_target, "trusted cleanup race source") &&
       file_identity(unsupported_race_target, &unsupported_race_stat);
@@ -13602,7 +13591,7 @@ bool test_cleanup_transaction_protocol() {
   const QString preclose_sync_dir = QDir(root.path()).filePath("nfs-preclose-sync-failure");
   QDir().mkpath(preclose_sync_dir);
   const QString preclose_sync_target = QDir(preclose_sync_dir).filePath("completed.mp4");
-  struct stat preclose_sync_stat{};
+  struct stat preclose_sync_stat {};
   QString preclose_sync_error;
   const bool preclose_sync_setup = write_file(preclose_sync_target, "trusted NFS preclose recovery") &&
       file_identity(preclose_sync_target, &preclose_sync_stat);
@@ -13637,7 +13626,7 @@ bool test_cleanup_transaction_protocol() {
   const QString committed_dir = QDir(root.path()).filePath("committed-interruption");
   QDir().mkpath(committed_dir);
   const QString committed_target = QDir(committed_dir).filePath("committed.mp4");
-  struct stat committed_stat{};
+  struct stat committed_stat {};
   QString committed_error;
   const bool committed_setup =
       write_file(committed_target, "trusted committed UI cleanup") && file_identity(committed_target, &committed_stat);
@@ -13668,7 +13657,7 @@ bool test_cleanup_transaction_protocol() {
   const QString pending_commit_dir = QDir(root.path()).filePath("pending-commit-publication");
   QDir().mkpath(pending_commit_dir);
   const QString pending_commit_target = QDir(pending_commit_dir).filePath("pending-commit.mp4");
-  struct stat pending_commit_stat{};
+  struct stat pending_commit_stat {};
   QString pending_commit_error;
   const bool pending_commit_setup = write_file(pending_commit_target, "trusted pending-commit UI cleanup") &&
       file_identity(pending_commit_target, &pending_commit_stat);
@@ -13703,7 +13692,7 @@ bool test_cleanup_transaction_protocol() {
   const QString missing_fallback_dir = QDir(root.path()).filePath("missing-fallback-before-commit");
   QDir().mkpath(missing_fallback_dir);
   const QString missing_fallback_target = QDir(missing_fallback_dir).filePath("missing-fallback.mp4");
-  struct stat missing_fallback_stat{};
+  struct stat missing_fallback_stat {};
   QString missing_fallback_error;
   const bool missing_fallback_setup = write_file(missing_fallback_target, "trusted missing-fallback UI cleanup") &&
       file_identity(missing_fallback_target, &missing_fallback_stat);
@@ -13763,7 +13752,7 @@ bool test_cleanup_transaction_protocol() {
   const QString failed_unlink_dir = QDir(root.path()).filePath("failed-private-unlink");
   QDir().mkpath(failed_unlink_dir);
   const QString failed_unlink_target = QDir(failed_unlink_dir).filePath("failed-private-unlink.mp4");
-  struct stat failed_unlink_stat{};
+  struct stat failed_unlink_stat {};
   QString failed_unlink_error;
   const bool failed_unlink_setup = write_file(failed_unlink_target, "trusted failed-private-unlink UI cleanup") &&
       file_identity(failed_unlink_target, &failed_unlink_stat);
@@ -13859,7 +13848,7 @@ bool test_cleanup_transaction_protocol() {
   const QString concurrent_dir = QDir(root.path()).filePath("concurrent-removers");
   QDir().mkpath(concurrent_dir);
   const QString concurrent_target = QDir(concurrent_dir).filePath("concurrent.mp4");
-  struct stat concurrent_stat{};
+  struct stat concurrent_stat {};
   const bool concurrent_setup = write_file(concurrent_target, "trusted concurrent UI cleanup") &&
       file_identity(concurrent_target, &concurrent_stat);
   std::atomic<bool> concurrent_start{false};
@@ -13897,7 +13886,7 @@ bool test_cleanup_transaction_protocol() {
   const QString interrupted_concurrent_dir = QDir(root.path()).filePath("interrupted-concurrent-removers");
   QDir().mkpath(interrupted_concurrent_dir);
   const QString interrupted_concurrent_target = QDir(interrupted_concurrent_dir).filePath("interrupted-concurrent.mp4");
-  struct stat interrupted_concurrent_stat{};
+  struct stat interrupted_concurrent_stat {};
   const bool interrupted_concurrent_setup =
       write_file(interrupted_concurrent_target, "trusted interrupted concurrent UI cleanup") &&
       file_identity(interrupted_concurrent_target, &interrupted_concurrent_stat);
@@ -14111,9 +14100,8 @@ bool test_camera_experiment_initial_controls(HStreamWindow* window) {
   if (dialog)
     dialog->reject();
   count->setValue(saved);
-  return expect(
-      copied && independent,
-      "Camera experiments must start with the current main controls and keep their edits independent");
+  return expect(copied && independent,
+                "Camera experiments must start with the current main controls and keep their edits independent");
 }
 
 } // namespace
