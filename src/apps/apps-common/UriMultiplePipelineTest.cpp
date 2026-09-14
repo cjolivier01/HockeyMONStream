@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -48,6 +49,11 @@ gboolean timeout_call(gpointer data) {
 gboolean bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
   BusState* state = static_cast<BusState*>(data);
   switch (GST_MESSAGE_TYPE(msg)) {
+    case GST_MESSAGE_APPLICATION:
+      if (state->source_parent && gst_message_has_name(msg, "hstream-uri-playlist-initial-seek-ready")) {
+        (void)seek_uri_playlist_initial_positions(state->source_parent);
+      }
+      break;
     case GST_MESSAGE_EOS:
       g_main_loop_quit(state->loop);
       break;
@@ -90,6 +96,9 @@ struct AudioTimelineStats {
   guint64 invalid_timestamps{0};
   guint64 dts_before_pts{0};
   guint64 discontinuities{0};
+  GstSegment segment{};
+  bool have_segment{false};
+  guint64 segment_mismatches{0};
   GstClockTime first_pts{GST_CLOCK_TIME_NONE};
   GstClockTime previous_end{GST_CLOCK_TIME_NONE};
   GstClockTime final_end{GST_CLOCK_TIME_NONE};
@@ -128,6 +137,14 @@ GstPadProbeReturn count_buffers_probe(GstPad* /*pad*/, GstPadProbeInfo* info, gp
 GstPadProbeReturn inspect_audio_timeline_probe(GstPad* /*pad*/, GstPadProbeInfo* info, gpointer user_data) {
   auto* stats = static_cast<AudioTimelineStats*>(user_data);
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0 &&
+      GST_EVENT_TYPE(GST_EVENT(info->data)) == GST_EVENT_SEGMENT) {
+    const GstSegment* segment = nullptr;
+    gst_event_parse_segment(GST_EVENT(info->data), &segment);
+    gst_segment_copy_into(segment, &stats->segment);
+    stats->have_segment = true;
+    return GST_PAD_PROBE_OK;
+  }
+  if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0 &&
       GST_EVENT_TYPE(GST_EVENT(info->data)) == GST_EVENT_EOS) {
     ++stats->eos_events;
     return GST_PAD_PROBE_OK;
@@ -143,6 +160,11 @@ GstPadProbeReturn inspect_audio_timeline_probe(GstPad* /*pad*/, GstPadProbeInfo*
   if (!GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(duration)) {
     ++stats->invalid_timestamps;
     return GST_PAD_PROBE_OK;
+  }
+  // The logical playlist starts at zero even after a startup seek. Its segment
+  // must agree with its rebased buffers at every physical chapter boundary.
+  if (!stats->have_segment || gst_segment_to_running_time(&stats->segment, GST_FORMAT_TIME, pts) != pts) {
+    ++stats->segment_mismatches;
   }
   if (GST_CLOCK_TIME_IS_VALID(dts) && dts < pts) {
     ++stats->dts_before_pts;
@@ -795,7 +817,9 @@ int run_render_audio_initial_mute(const fs::path& audio_path, bool initially_mut
 int run_decode_compose_encode(
     const fs::path& tmpdir,
     const std::vector<std::string>& left_uris,
-    const std::vector<std::string>& right_uris) {
+    const std::vector<std::string>& right_uris,
+    GstClockTime start_time = 0,
+    guint64 expected_frames = 45) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1);
@@ -803,6 +827,14 @@ int run_decode_compose_encode(
   NvDsSrcParentBin src_parent{};
   if (!create_multi_source_bin(2, configs, &src_parent)) {
     std::cerr << "Failed to create multi-source URI-MULTIPLE bin\n";
+    return 2;
+  }
+  if (start_time && !configure_uri_playlist_initial_offsets(&src_parent, 0, 0, 0, start_time)) {
+    std::cerr << "Failed to configure initial position for encoded playlist\n";
+    return 2;
+  }
+  if (start_time && !arm_uri_playlist_initial_seeks(&src_parent)) {
+    std::cerr << "Failed to arm initial chapter seek for encoded playlist\n";
     return 2;
   }
   g_object_set(
@@ -867,6 +899,9 @@ int run_decode_compose_encode(
 
   int rc = run_pipeline(pipeline, 30, &src_parent);
   if (rc != 0) {
+    std::cerr << "Encode transition stalled: composed_frames=" << counter.buffers
+              << " switches=" << src_parent.sub_bins[0].uri_switch_count << ','
+              << src_parent.sub_bins[1].uri_switch_count << '\n';
     return rc;
   }
   const guint expected_switches = static_cast<guint>(left_uris.size() - 1);
@@ -876,11 +911,39 @@ int run_decode_compose_encode(
               << src_parent.sub_bins[0].uri_switch_count << " and " << src_parent.sub_bins[1].uri_switch_count << "\n";
     return 7;
   }
-  if (counter.buffers == 0) {
-    std::cerr << "Expected composed URI-MULTIPLE buffers\n";
+  if (counter.buffers != expected_frames) {
+    std::cerr << "Expected " << expected_frames << " composed URI-MULTIPLE frames, got " << counter.buffers << '\n';
     return 7;
   }
-  return expect_encoded_file(out, /*expect_audio=*/true, /*min_audio_pts_seconds=*/1.5);
+  const double minimum_end = static_cast<double>(expected_frames) / 15.0 - 0.1;
+  rc = expect_encoded_file(out, /*expect_audio=*/true, minimum_end, minimum_end);
+  if (rc != 0 || !start_time) {
+    return rc;
+  }
+  // A final audio timestamp alone can conceal a hole at the chapter switch.
+  // Decode the output and require all expected 48 kHz samples, allowing a
+  // small bounded difference for AAC encoder priming and frame rounding.
+  const std::string command =
+      "ffprobe -v error -select_streams a:0 -show_frames -show_entries frame=nb_samples -of csv=p=0 " +
+      shell_quote(out);
+  FILE* audio_frames = popen(command.c_str(), "r");
+  if (!audio_frames) {
+    return 8;
+  }
+  guint64 samples = 0;
+  unsigned packet_samples = 0;
+  while (fscanf(audio_frames, "%u", &packet_samples) == 1) {
+    samples += packet_samples;
+  }
+  const int probe_status = pclose(audio_frames);
+  const guint64 expected_samples = expected_frames * 48000 / 15;
+  constexpr guint64 kAacSampleTolerance = 4096;
+  if (probe_status != 0 || samples + kAacSampleTolerance < expected_samples ||
+      samples > expected_samples + kAacSampleTolerance) {
+    std::cerr << "Encoded chapter audio contains " << samples << " samples; expected " << expected_samples << '\n';
+    return 8;
+  }
+  return 0;
 }
 
 int run_single_uri_multiple_source(const std::string& uri) {
@@ -1184,14 +1247,16 @@ int run_lossless_two_camera_mux(
   if (!GST_CLOCK_TIME_IS_VALID(paired_video_end) || paired_video_end + GST_SECOND / 50 < expected_audio_duration ||
       paired_video_end > expected_audio_duration + GST_SECOND / 50 || audio_stats.buffers == 0 ||
       audio_stats.eos_events != 1 || audio_stats.invalid_timestamps != 0 || audio_stats.dts_before_pts != 0 ||
-      audio_stats.discontinuities != 0 || audio_stats.first_pts > GST_SECOND / 10 ||
-      audio_stats.final_end < minimum_audio_duration || audio_stats.final_end > maximum_audio_duration ||
-      audio_stats.final_end + GST_SECOND / 50 < paired_video_end) {
+      audio_stats.discontinuities != 0 ||
+      ((left_initial_offset || right_initial_offset || start_time) && audio_stats.segment_mismatches != 0) ||
+      audio_stats.first_pts > GST_SECOND / 10 || audio_stats.final_end < minimum_audio_duration ||
+      audio_stats.final_end > maximum_audio_duration || audio_stats.final_end + GST_SECOND / 50 < paired_video_end) {
     std::cerr << "Source audio was not continuous through the coordinated camera playlist: buffers="
               << audio_stats.buffers << ", eos_events=" << audio_stats.eos_events
               << ", invalid_timestamps=" << audio_stats.invalid_timestamps
               << ", dts_before_pts=" << audio_stats.dts_before_pts
               << ", discontinuities=" << audio_stats.discontinuities
+              << ", segment_mismatches=" << audio_stats.segment_mismatches
               << ", first_pts=" << GST_TIME_AS_SECONDS(audio_stats.first_pts)
               << "s, final_end=" << GST_TIME_AS_SECONDS(audio_stats.final_end)
               << "s, paired_video_end=" << GST_TIME_AS_SECONDS(paired_video_end)
@@ -1216,6 +1281,7 @@ int main(int argc, char** argv) {
   const fs::path a1 = tmpdir / "left_1.mp4";
   const fs::path a2 = tmpdir / "left_2.mp4";
   const fs::path a_long = tmpdir / "left_two_seconds.mp4";
+  const fs::path seek_chapter = tmpdir / "seek_six_seconds.mp4";
   const fs::path b0 = tmpdir / "right_0.mp4";
   const fs::path b1 = tmpdir / "right_1.mp4";
   const fs::path b2 = tmpdir / "right_2.mp4";
@@ -1228,7 +1294,7 @@ int main(int argc, char** argv) {
       !make_synthetic_mp4(b0, 1, 90, 587) || !make_synthetic_mp4(b1, 1, 120, 659) ||
       !make_synthetic_mp4(b2, 1, 150, 698) || !make_synthetic_mp4(shifted_b0, 0.8, 180, 740) ||
       !make_synthetic_mp4(shifted_b1, 1.2, 210, 784) || !make_synthetic_mp4(shifted_b2, 1.0, 240, 831) ||
-      !make_synthetic_audio(audio, 3)) {
+      !make_synthetic_audio(audio, 3) || !make_synthetic_mp4(seek_chapter, 6, 45, 440)) {
     std::cerr << "Failed to generate synthetic mp4 chapters with ffmpeg\n";
     fs::remove_all(tmpdir);
     return 2;
@@ -1239,7 +1305,24 @@ int main(int argc, char** argv) {
   const std::vector<std::string> shifted_right_uris{
       to_file_uri(shifted_b0), to_file_uri(shifted_b1), to_file_uri(shifted_b2)};
 
-  int rc = run_decode_compose_encode(tmpdir, left_uris, right_uris);
+  // The startup seek leaves three seconds in chapter one. The next chapter
+  // must not introduce a three-second audio hole that blocks the archive mux.
+  const std::vector<std::string> seek_uris{to_file_uri(seek_chapter), to_file_uri(seek_chapter)};
+  int rc = run_decode_compose_encode(tmpdir, seek_uris, seek_uris, 3 * GST_SECOND, 135);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+  rc = run_decode_compose_encode(tmpdir, left_uris, right_uris);
+  if (rc != 0) {
+    fs::remove_all(tmpdir);
+    return rc;
+  }
+
+  // Exercise the real raw-audio conversion/encoding branch after trimming the
+  // first chapter. Counting buffers before a fakesink alone misses segment
+  // clipping that can discard all subsequent chapter audio downstream.
+  rc = run_decode_compose_encode(tmpdir, left_uris, right_uris, 400 * GST_MSECOND, 39);
   if (rc != 0) {
     fs::remove_all(tmpdir);
     return rc;

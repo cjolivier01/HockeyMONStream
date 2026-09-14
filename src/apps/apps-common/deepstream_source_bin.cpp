@@ -1846,6 +1846,14 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // current camera pair on this event even when its timeout is effectively infinite.
       return GST_PAD_PROBE_DROP;
     }
+    if (!probe_data->is_video && uri_playlist_initial_positioning_enabled(bin) &&
+        probe_data->uri_index > bin->uri_playlist_initial_uri_index && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+      // Startup positioning already published an open, zero-based logical
+      // segment. Audio buffers in every chapter are rebased to that same epoch.
+      // A new physical segment uses the untrimmed chapter base and would make
+      // downstream audio elements clip or wait on otherwise continuous audio.
+      return GST_PAD_PROBE_DROP;
+    }
     if (probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
         (GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_START || GST_EVENT_TYPE(event) == GST_EVENT_FLUSH_STOP)) {
       return GST_PAD_PROBE_DROP;
