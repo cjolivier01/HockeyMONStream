@@ -14886,8 +14886,6 @@ void HStreamWindow::saveJobScript() {
       "--output",
       path,
       "--force",
-      "--runner",
-      pipelineRunnerPath(),
       "--config",
       QFileInfo(pipelineConfigPath("ds_hockey_app_config.yaml")).absoluteFilePath(),
       "--working-directory",

@@ -96,6 +96,8 @@ class JobScriptTest(unittest.TestCase):
             runner = bin_dir / "hstream-cli" if installed else bin_dir.parent / "pipeline-app/hstream-cli"
             runner.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.runner, runner)
+            wrapper = layout / "run.sh"
+            shutil.copy2(self.runner, wrapper)
             config = layout / "configs/ds_hockey_app_config.yaml"
             config.parent.mkdir(parents=True)
             config.write_text("pipeline: {}\n")
@@ -108,6 +110,7 @@ class JobScriptTest(unittest.TestCase):
             result = subprocess.run([str(tool), "--game-dir", str(self.game), "--force"],
                                     cwd="/", env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(str(wrapper), (self.game / "hstream-job.sh").read_text())
             subprocess.run([str(self.game / "hstream-job.sh")], cwd="/", env=env)
             actual = json.loads(self.output.read_text())
             self.assertEqual(actual["cwd"], str(layout))
