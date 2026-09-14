@@ -8483,7 +8483,7 @@ bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false)
     const bool run_log_opened = run_log.open(QIODevice::ReadOnly | QIODevice::Text);
     const QString run_log_text = run_log_opened ? QString::fromUtf8(run_log.readAll()) : QString();
     const bool telemetry_ignored_copy = !with_4k || !fail_program ||
-        (run_log_text.contains("because no Program archive was finalized successfully") &&
+        (run_log_text.contains("no finalized Program archive exists to provide a matching game-directory suffix") &&
          !run_log_text.contains("DriveGPT database copied to the game directory"));
     qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
     drivegpt_csv->setChecked(false);
@@ -14160,12 +14160,6 @@ int main(int argc, char** argv) {
     return test_game_setup(&window, source_root.path()) && test_stitching_iteration_controls(window.gameDirectoryText())
         ? 0
         : 1;
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_FLOW_ONLY")) {
-    return test_game_setup(&window, source_root.path()) && test_output_controls(&window) &&
-            test_dual_archive_finalization(&window, true) && test_dual_archive_finalization(&window)
-        ? 0
-        : 1;
-  }
 
   if (crop_flow_only) {
     if (!test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
@@ -14256,6 +14250,8 @@ int main(int argc, char** argv) {
     std::cerr << "test_dual_archive_finalization failed\n";
     return 1;
   }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_FLOW_ONLY"))
+    return 0;
   if (!test_camera_controls(&window)) {
     std::cerr << "test_camera_controls failed\n";
     return 1;
