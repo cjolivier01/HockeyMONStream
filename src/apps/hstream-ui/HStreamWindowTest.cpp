@@ -8719,7 +8719,7 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
       left->value() == 210 && right->value() == 320,
       "A suppressed slider change must not overwrite dormant preset angles");
   load("null", "17");
-  ok &= expect(pitch->value() == -35 && suppressed(), "Inherited Vallco pitch must suppress crop rotation");
+  ok &= expect(pitch->value() == -23.8 && suppressed(), "Inherited Vallco pitch must suppress crop rotation");
   pitch->setValue(0);
   ok &= expect(
       left->value() == 170 && right->value() == 170 && link->isChecked(),
@@ -8848,7 +8848,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const auto inherited_rink_view = hm::stitching::read_stitch_projection_framing(inherited_rink_saved);
   const bool inherited_rink_preserved = expect(
       inherited_rink_view.ok() && inherited_rink_view->rotation_inherited &&
-          inherited_rink_view->rotation_degrees[1] == -35 &&
+          inherited_rink_view->rotation_degrees == std::array<double, 3>{0, -23.8, 4.3} &&
           !inherited_rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
       "Editing projection controls must keep a rink-only game's rotation inherited");
 
@@ -8877,11 +8877,14 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(rink_configuration && rink_pitch && rink_roll && rink_default, "Rink leveling controls exist"))
     return false;
   if (!expect(
-          rink_configuration->currentData().toString() == "vallco" && rink_pitch->value() == -35,
+          rink_configuration->currentData().toString() == "vallco" && rink_pitch->value() == -23.8 &&
+              rink_roll->value() == 4.3,
           "Rink-only Vallco config shows inherited pitch"))
     return false;
   rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
-  if (!expect(rink_pitch->value() == -25 && save->isEnabled(), "Changing rink updates inherited pitch"))
+  if (!expect(
+          rink_pitch->value() == -15 && rink_roll->value() == 0 && save->isEnabled(),
+          "Changing rink updates inherited rotation"))
     return false;
   activate(save);
   auto rink_saved = YAML::LoadFile(config_path.string());
@@ -8890,19 +8893,21 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               !rink_saved["stitching"]["projection_framing"]["rotation_degrees"],
           "Saving rink selection keeps default rotation inherited"))
     return false;
-  rink_pitch->setValue(-35);
+  rink_pitch->setValue(-23.8);
+  rink_roll->setValue(4.3);
   rink_configuration->setCurrentIndex(rink_configuration->findData("vallco"));
   activate(save);
   rink_saved = YAML::LoadFile(config_path.string());
   if (!expect(
-          rink_saved["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -35,
+          rink_saved["stitching"]["projection_framing"]["rotation_degrees"].as<std::vector<double>>() ==
+              std::vector<double>({0, -23.8, 4.3}),
           "An explicit angle equal to a rink default remains an override"))
     return false;
   rink_configuration->setCurrentIndex(rink_configuration->findData("sharks-ice"));
-  if (!expect(rink_pitch->value() == -35, "Changing rink preserves game override"))
+  if (!expect(rink_pitch->value() == -23.8 && rink_roll->value() == 4.3, "Changing rink preserves game override"))
     return false;
   activate(rink_default);
-  if (!expect(rink_pitch->value() == -25, "Use rink default removes the game override"))
+  if (!expect(rink_pitch->value() == -15 && rink_roll->value() == 0, "Use rink default removes the game override"))
     return false;
   activate(save);
   rink_saved = YAML::LoadFile(config_path.string());
@@ -8925,12 +8930,13 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(save);
   const auto custom_to_standard = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(config_path.string()));
   if (!expect(
-          custom_to_standard.ok() && custom_to_standard->rotation_degrees[1] == -25,
+          custom_to_standard.ok() && custom_to_standard->rotation_degrees == std::array<double, 3>{0, -15, 0},
           "Switching from a custom catalog to a standard rink remains readable by private-only workers"))
     return false;
   activate(create);
   if (!expect(
-          rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -25,
+          rink_configuration->currentData().toString() == "sharks-ice" && rink_pitch->value() == -15 &&
+              rink_roll->value() == 0,
           "Reload keeps the selected standard rink after a custom profile"))
     return false;
 
