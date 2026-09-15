@@ -10,14 +10,6 @@ cc_binary(
 sh_test(
     name = "job_script_test",
     srcs = ["JobScriptTest.py"],
-    args = [
-        "$(location :hstream-job)",
-        "$(location //:run.sh)",
-        "$(location //scripts:make_deb.sh)",
-    ],
-    data = [
-        ":hstream-job",
-        "//:run.sh",
-        "//scripts:make_deb.sh",
-    ],
+    args = ["$(location :hstream-job)"],
+    data = [":hstream-job"],
 )

@@ -26,7 +26,6 @@ Common:
   --show                               Render when display is available; RTSP preview when headless
   -c, --config FILE                    Additional pipeline-app config file
   --options key=value                  Override pipeline config; repeatable
-  --runtime-passthrough RUNNER         Set up this runtime, then execute RUNNER with all remaining arguments unchanged
 
 Pipeline staging:
   --one-pass-only, --stage0-only       Default: configure stitching in-process during stage 0
@@ -65,34 +64,14 @@ Notes:
 EOF
 }
 
-RUNTIME_PASSTHROUGH_RUNNER=""
-if [ "${1:-}" = "--runtime-passthrough" ]; then
-  if [ "$#" -lt 2 ]; then
-    echo "--runtime-passthrough requires a runner path" >&2
-    exit 2
-  fi
-  RUNTIME_PASSTHROUGH_RUNNER="$2"
-  shift 2
-  if [[ "${RUNTIME_PASSTHROUGH_RUNNER}" != /* ]]; then
-    RUNTIME_PASSTHROUGH_RUNNER="$(pwd)/${RUNTIME_PASSTHROUGH_RUNNER}"
-  fi
-  if [ ! -x "${RUNTIME_PASSTHROUGH_RUNNER}" ]; then
-    echo "runtime passthrough runner is not executable: ${RUNTIME_PASSTHROUGH_RUNNER}" >&2
-    exit 2
-  fi
-  RUNTIME_PASSTHROUGH_RUNNER="$(readlink -f "${RUNTIME_PASSTHROUGH_RUNNER}")"
-fi
-
-if [ -z "${RUNTIME_PASSTHROUGH_RUNNER}" ]; then
-  for arg in "$@"; do
-    case "${arg}" in
-      -h|--help|help)
-        show_help
-        exit 0
-        ;;
-    esac
-  done
-fi
+for arg in "$@"; do
+  case "${arg}" in
+    -h|--help|help)
+      show_help
+      exit 0
+      ;;
+  esac
+done
 
 # Runtime environment:
 # - Our GStreamer plugins are loaded by gst-plugin-scanner (not via Bazel runfiles), so we must
@@ -135,13 +114,7 @@ append_path() {
 # Keep Bazel runtime caches tied to the exact output configuration selected by
 # bazel-bin. Debug and optimized plugins are ABI-compatible in principle, but
 # sharing registries and staged parser links lets one launch redirect another.
-SELECTED_BAZEL_BIN="${SCRIPT_DIR}/bazel-bin"
-case "${RUNTIME_PASSTHROUGH_RUNNER}" in
-  */src/apps/pipeline-app/hstream-cli)
-    SELECTED_BAZEL_BIN="${RUNTIME_PASSTHROUGH_RUNNER%/src/apps/pipeline-app/hstream-cli}"
-    ;;
-esac
-BAZEL_BIN_REAL="$(readlink -f "${SELECTED_BAZEL_BIN}" 2>/dev/null || true)"
+BAZEL_BIN_REAL="$(readlink -f "${SCRIPT_DIR}/bazel-bin" 2>/dev/null || true)"
 BAZEL_OUTPUT_CONFIGURATION="installed"
 if [ -n "${BAZEL_BIN_REAL}" ] && [ -d "${BAZEL_BIN_REAL}" ]; then
   BAZEL_OUTPUT_CONFIGURATION="$(basename "$(dirname "${BAZEL_BIN_REAL}")")"
@@ -171,7 +144,7 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 # directories directly to GST_PLUGIN_PATH: GStreamer scans recursively and will try to dlopen test/support .so files as
 # plugins. Stage only plugin entrypoint libraries into a clean runtime plugin directory, while keeping their original
 # directories on LD_LIBRARY_PATH so dependent support libraries remain visible.
-BAZEL_GST_PLUGIN_ROOT="${SELECTED_BAZEL_BIN}/src/gst-plugins"
+BAZEL_GST_PLUGIN_ROOT="${SCRIPT_DIR}/bazel-bin/src/gst-plugins"
 if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
   BAZEL_GST_RUNTIME_PLUGIN_DIR="${SCRIPT_DIR}/.cache/gst-plugin-path/$(uname -m)/${BAZEL_OUTPUT_CONFIGURATION}/${RUNTIME_LAUNCH_KEY}"
   mkdir -p "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
@@ -241,7 +214,7 @@ if [ -d "${BAZEL_GST_PLUGIN_ROOT}" ]; then
   prepend_path GST_PLUGIN_PATH "${BAZEL_GST_RUNTIME_PLUGIN_DIR}"
 fi
 
-PIPELINE_APP_BIN="${RUNTIME_PASSTHROUGH_RUNNER:-${SELECTED_BAZEL_BIN}/src/apps/pipeline-app/hstream-cli}"
+PIPELINE_APP_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
 if [ -x "${PIPELINE_APP_BIN}" ]; then
   PIPELINE_APP_BIN="$(readlink -f "${PIPELINE_APP_BIN}")"
 fi
@@ -256,10 +229,6 @@ if [ -n "${CONDA_PREFIX:-}" ]; then
   else
     echo "CONDA_PREFIX is set but skipping ${CONDA_PREFIX}/lib in LD_LIBRARY_PATH to avoid native-library conflicts (set HM_USE_CONDA_LD_LIBRARY_PATH=1 to force)"
   fi
-fi
-
-if [ -n "${RUNTIME_PASSTHROUGH_RUNNER}" ]; then
-  exec "${PIPELINE_APP_BIN}" "$@"
 fi
 
 one_pass_only=1

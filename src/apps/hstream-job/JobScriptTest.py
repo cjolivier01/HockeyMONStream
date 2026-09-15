@@ -2,7 +2,6 @@
 """Execute exported jobs against a recording CLI, without a GPU or Slurm."""
 import json
 import os
-import shlex
 import shutil
 from pathlib import Path
 import subprocess
@@ -11,8 +10,6 @@ import tempfile
 import unittest
 
 TOOL = str(Path(sys.argv.pop(1)).resolve())
-SOURCE_WRAPPER = Path(sys.argv.pop(1)).resolve()
-PACKAGE_SCRIPT = Path(sys.argv.pop(1)).resolve()
 
 
 class JobScriptTest(unittest.TestCase):
@@ -89,7 +86,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotEqual(self.generate("--force", "--sbatch", "--partition=gpu\ntouch INJECTED").returncode, 0)
         self.assertEqual(script.read_bytes(), original)
 
-    def test_source_and_installed_wrappers_forward_one_config_to_exact_runner(self):
+    def test_source_and_installed_layouts_export_direct_exact_runner(self):
         for installed in (True, False):
             layout = self.root / ("installed" if installed else "workspace")
             game = self.root / ("installed-games" if installed else "source-games") / "help"
@@ -104,18 +101,13 @@ class JobScriptTest(unittest.TestCase):
             runner = bin_dir / "hstream-cli" if installed else bin_dir.parent / "pipeline-app/hstream-cli"
             runner.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.runner, runner)
+            wrapper_called = layout / "wrapper-called"
             wrapper = layout / "run.sh"
+            wrapper.write_text(f"#!/bin/sh\ntouch {wrapper_called}\nexit 99\n")
+            wrapper.chmod(0o700)
             if installed:
-                package = PACKAGE_SCRIPT.read_text()
-                marker = 'cat > "${STAGING}${INSTALL_PREFIX}/run.sh" <<\'RUNSH\'\n'
-                start = package.index(marker) + len(marker)
-                installed_wrapper = package[start:package.index("\nRUNSH\n", start)]
-                installed_wrapper = installed_wrapper.replace(
-                    "INSTALL_DIR=/opt/hstream\n", f"INSTALL_DIR={shlex.quote(str(layout))}\n", 1)
-                wrapper.write_text(installed_wrapper)
-                wrapper.chmod(0o700)
+                (layout / "lib/gst-plugins").mkdir(parents=True)
             else:
-                shutil.copy2(SOURCE_WRAPPER, wrapper)
                 # A mutable workspace symlink pointing elsewhere must not
                 # redirect the job away from its exact sibling output tree.
                 unrelated = layout / "bazel-out/k8-opt/bin"
@@ -142,17 +134,23 @@ class JobScriptTest(unittest.TestCase):
                                     cwd="/", env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             script_text = (game / "hstream-job.sh").read_text()
-            self.assertIn(str(wrapper), script_text)
-            self.assertIn("--runtime-passthrough", script_text)
-            self.assertIn(str(runner), script_text)
+            self.assertNotIn("run.sh", script_text)
+            self.assertIn(str(runner.resolve()), script_text)
             run = subprocess.run([str(game / "hstream-job.sh")], cwd="/", env=env)
             self.assertEqual(run.returncode, 7)
+            self.assertFalse(wrapper_called.exists())
             actual = json.loads(self.output.read_text())
             self.assertEqual(actual["cwd"], str(layout))
             self.assertEqual(actual["argv"][:2], ["-g", "help"])
             self.assertEqual(actual["argv"].count("-c"), 1)
             self.assertEqual(actual["argv"][actual["argv"].index("-c") + 1], str(config))
-            if not installed:
+            self.assertEqual(actual["env"]["USE_NEW_NVSTREAMMUX"], "yes")
+            self.assertIn("gstreamer-1.0/registry.hstream", actual["env"]["GST_REGISTRY"])
+            self.assertNotIn("HSTREAM_JOB_RUNTIME_ROOT", actual["env"])
+            self.assertNotIn("HSTREAM_JOB_BAZEL_BIN", actual["env"])
+            if installed:
+                self.assertIn(str(layout / "lib/gst-plugins"), actual["env"].get("GST_PLUGIN_PATH", ""))
+            else:
                 self.assertIn(str(selected_plugins), actual["env"].get("LD_LIBRARY_PATH", ""))
                 self.assertNotIn(str(unrelated), actual["env"].get("LD_LIBRARY_PATH", ""))
 

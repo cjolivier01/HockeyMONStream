@@ -586,24 +586,6 @@ INSTALL_DIR=/opt/hstream
 # an explicit caller override for diagnostics and older DeepStream releases.
 export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
 
-RUNTIME_PASSTHROUGH_RUNNER=""
-if [ "${1:-}" = "--runtime-passthrough" ]; then
-  if [ "$#" -lt 2 ]; then
-    echo "--runtime-passthrough requires a runner path" >&2
-    exit 2
-  fi
-  RUNTIME_PASSTHROUGH_RUNNER="$2"
-  shift 2
-  if [[ "${RUNTIME_PASSTHROUGH_RUNNER}" != /* ]]; then
-    RUNTIME_PASSTHROUGH_RUNNER="$(pwd)/${RUNTIME_PASSTHROUGH_RUNNER}"
-  fi
-  if [ ! -x "${RUNTIME_PASSTHROUGH_RUNNER}" ]; then
-    echo "runtime passthrough runner is not executable: ${RUNTIME_PASSTHROUGH_RUNNER}" >&2
-    exit 2
-  fi
-  RUNTIME_PASSTHROUGH_RUNNER="$(readlink -f "${RUNTIME_PASSTHROUGH_RUNNER}")"
-fi
-
 prepend_path() {
   local var_name="$1"
   local dir="$2"
@@ -648,9 +630,6 @@ prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
 prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
-if [ -n "${RUNTIME_PASSTHROUGH_RUNNER}" ]; then
-  exec "${RUNTIME_PASSTHROUGH_RUNNER}" "$@"
-fi
 one_pass_only=1
 have_sink_arg=0
 show_arg=0
