@@ -15,6 +15,8 @@
 #include <thread>
 #include <vector>
 
+#include "hstream/src/libs/recording/Database.h"
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -55,11 +57,6 @@ bool run_command(const std::vector<std::string>& arguments) {
   }
   int status = 0;
   return child > 0 && ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-}
-
-std::string read_file(const fs::path& path) {
-  std::ifstream input(path, std::ios::binary);
-  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 class PipelineProcess {
@@ -333,13 +330,25 @@ bool verify_telemetry_seek_rejection(
     return false;
   }
 
-  const std::string telemetry_manifest = read_file(telemetry_csv_dir / "hstream_telemetry.json");
-  return check(
-      !telemetry_manifest.empty() && telemetry_manifest.find("\"writer_drained\": true") != std::string::npos &&
-          fs::exists(telemetry_csv_dir / "detections.csv") &&
-          !fs::exists(telemetry_csv_dir / "hstream_telemetry-1.json"),
-      "a rejected seek must finalize one uninterrupted telemetry session with detections, never only a replacement "
-      "segment");
+  try {
+    const fs::path telemetry_database = telemetry_csv_dir / "hstream_telemetry.db";
+    if (!check(
+            fs::is_regular_file(telemetry_database) && !fs::exists(telemetry_csv_dir / "hstream_telemetry-1.db"),
+            "a rejected seek must finalize exactly one telemetry database")) {
+      return false;
+    }
+    hm::recording::Database database(telemetry_database.string());
+    database.Validate();
+    hm::recording::Statement run(database.get(), "SELECT count(*),sum(completed),sum(sample_count) FROM runs");
+    hm::recording::Statement frames(database.get(), "SELECT count(*),min(sample_id),max(sample_id) FROM frames");
+    return check(
+        run.Next() && run.Int(0) == 1 && run.Int(1) == 1 && run.Int(2) > 0 && frames.Next() &&
+            frames.Int(0) == run.Int(2) && frames.Int(1) == 1 && frames.Int(2) == frames.Int(0),
+        "a rejected seek must finalize one uninterrupted, nonempty telemetry run");
+  } catch (const std::exception& error) {
+    std::cerr << "FAIL: " << case_name << ": cannot validate telemetry database: " << error.what() << '\n';
+    return false;
+  }
 }
 
 bool verify_telemetry_seek_allowed_when_disabled(
@@ -378,7 +387,7 @@ bool verify_telemetry_seek_allowed_when_disabled(
               std::string::npos,
           "an earlier nonempty telemetry alias must not override the final empty value") ||
       !expect(
-          !fs::exists(telemetry_csv_dir / "hstream_telemetry.json"),
+          !fs::exists(telemetry_csv_dir / "hstream_telemetry.db"),
           "a final empty telemetry property must leave the exporter disabled") ||
       !expect(process.Interrupt(), "last-empty telemetry capture process SIGINT must be delivered")) {
     process.DumpOutput();

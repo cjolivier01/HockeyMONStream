@@ -137,6 +137,7 @@ cc_test(
     srcs = ["PipelineRuntimeControlTest.cpp"],
     args = ["$(location :hstream-cli)"],
     data = [":hstream-cli"],
+    deps = ["//src/libs/recording"],
     size = "medium",
     tags = [
         "local",
