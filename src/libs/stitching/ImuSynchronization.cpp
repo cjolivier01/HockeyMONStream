@@ -223,6 +223,14 @@ absl::StatusOr<Recording> Read(const std::string& video) {
   } else {
     if (gyro_stream < 0)
       return absl::NotFoundError("No supported native gyro telemetry (GoPro GPMF or Insta360 trailer): " + video);
+    // The MOV demuxer can seek directly between sparse GPMF packets when the
+    // interleaved video/audio streams are discarded. Otherwise av_read_frame
+    // reads tens of seconds of high-bitrate video which this metadata-only
+    // operation immediately throws away.
+    for (unsigned i = 0; i < context->nb_streams; ++i) {
+      if (static_cast<int>(i) != gyro_stream)
+        context->streams[i]->discard = AVDISCARD_ALL;
+    }
     const auto free_packet = [](AVPacket* p) { av_packet_free(&p); };
     std::unique_ptr<AVPacket, decltype(free_packet)> packet(av_packet_alloc(), free_packet);
     if (!packet)

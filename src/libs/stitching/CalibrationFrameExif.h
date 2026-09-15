@@ -5,6 +5,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -51,6 +52,11 @@ class CalibrationFrameExifWriter {
  public:
   explicit CalibrationFrameExifWriter(std::function<bool()> is_cancelled = {});
   absl::Status Write(const std::filesystem::path& png, const CalibrationFrameSource& source);
+  // Reads independent camera sources and annotates independent PNGs two at a
+  // time. The bound avoids multiplying ExifTool's memory use for calibrations
+  // which happen to span several chapter files.
+  std::vector<absl::Status> WriteAll(
+      const std::vector<std::pair<std::filesystem::path, CalibrationFrameSource>>& frames);
 
  private:
   std::function<bool()> is_cancelled_;

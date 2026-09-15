@@ -21,6 +21,24 @@
 namespace fs = std::filesystem;
 
 namespace hm {
+namespace {
+// After fork() in a multi-threaded process, only async-signal-safe operations
+// may run before execve(). Keep child-side diagnostics allocation-free too.
+[[noreturn]] void child_error(const char* message, size_t size) {
+  while (size) {
+    const ssize_t written = ::write(STDERR_FILENO, message, size);
+    if (written > 0) {
+      message += written;
+      size -= written;
+    } else if (written < 0 && errno == EINTR) {
+      continue;
+    } else {
+      break;
+    }
+  }
+  _exit(127);
+}
+} // namespace
 
 /**
  * @brief Launches a command in a specified working directory with a custom environment.
@@ -51,15 +69,43 @@ int run_command(
     return -1;
   }
 
+  // Build everything that can allocate before fork(). Concurrent callers may
+  // fork while another thread holds a libc/C++ allocator lock, so the child
+  // must not construct strings or vectors before execve().
+  std::vector<std::string> env_strings;
+  env_strings.reserve(env.size());
+  for (const auto& [name, value] : env)
+    env_strings.push_back(name + "=" + value);
+  std::vector<char*> envp;
+  envp.reserve(env_strings.size() + 1);
+  for (auto& value : env_strings)
+    envp.push_back(value.data());
+  envp.push_back(nullptr);
+
+  std::vector<char*> argv;
+  argv.reserve(cmd.size() + 1);
+  for (const auto& argument : cmd)
+    argv.push_back(const_cast<char*>(argument.c_str()));
+  argv.push_back(nullptr);
+
+  const bool cancellable = static_cast<bool>(is_cancelled);
+  const char* const executable = cmd.front().c_str();
+  const char* const directory = working_dir.empty() ? nullptr : working_dir.c_str();
+  char* const* const arguments = argv.data();
+  char* const* const environment = envp.data();
+
   // Create two pipes: one for stdout and one for stderr.
   int pipe_stdout[2];
   int pipe_stderr[2];
-  if (pipe(pipe_stdout) == -1) {
-    perror("pipe (stdout)");
+  // O_CLOEXEC is atomic with descriptor creation. Plain pipe()+fcntl() leaves
+  // a race where another concurrent child can inherit these write ends and
+  // delay EOF until that unrelated command exits.
+  if (pipe2(pipe_stdout, O_CLOEXEC) == -1) {
+    perror("pipe2 (stdout)");
     return -1;
   }
-  if (pipe(pipe_stderr) == -1) {
-    perror("pipe (stderr)");
+  if (pipe2(pipe_stderr, O_CLOEXEC) == -1) {
+    perror("pipe2 (stderr)");
     close(pipe_stdout[0]);
     close(pipe_stdout[1]);
     return -1;
@@ -80,56 +126,28 @@ int run_command(
 
     // Cancellable commands get their own process group so cancellation also
     // reaches helper processes spawned by tools such as Hugin and enblend.
-    if (is_cancelled && ::setpgid(0, 0) != 0) {
-      perror("setpgid");
-      _exit(1);
-    }
+    if (cancellable && ::setpgid(0, 0) != 0)
+      child_error("setpgid failed\n", sizeof("setpgid failed\n") - 1);
 
     // Change working directory if provided.
-    if (!working_dir.empty() && chdir(working_dir.c_str()) != 0) {
-      perror("chdir");
-      _exit(1);
-    }
-
-    // Build environment array.
-    std::vector<std::string> env_strings;
-    std::vector<char*> envp;
-    for (const auto& kv : env) {
-      env_strings.push_back(kv.first + "=" + kv.second);
-    }
-    for (auto& s : env_strings) {
-      envp.push_back(const_cast<char*>(s.c_str()));
-    }
-    envp.push_back(nullptr);
+    if (directory && chdir(directory) != 0)
+      child_error("chdir failed\n", sizeof("chdir failed\n") - 1);
 
     // Redirect stdout and stderr.
     // Close the read ends; the child only writes.
     close(pipe_stdout[0]);
     close(pipe_stderr[0]);
-    if (dup2(pipe_stdout[1], STDOUT_FILENO) == -1) {
-      perror("dup2 stdout");
-      _exit(1);
-    }
-    if (dup2(pipe_stderr[1], STDERR_FILENO) == -1) {
-      perror("dup2 stderr");
-      _exit(1);
-    }
+    if (dup2(pipe_stdout[1], STDOUT_FILENO) == -1)
+      child_error("dup2 stdout failed\n", sizeof("dup2 stdout failed\n") - 1);
+    if (dup2(pipe_stderr[1], STDERR_FILENO) == -1)
+      child_error("dup2 stderr failed\n", sizeof("dup2 stderr failed\n") - 1);
     // Close the original write ends.
     close(pipe_stdout[1]);
     close(pipe_stderr[1]);
 
-    // Build the argument list for execve.
-    std::vector<char*> argv;
-    for (const auto& arg : cmd) {
-      argv.push_back(const_cast<char*>(arg.c_str()));
-    }
-    argv.push_back(nullptr);
-
     // Execute the command with the given environment.
-    if (execve(argv[0], argv.data(), envp.data()) == -1) {
-      perror("execve");
-      _exit(1);
-    }
+    execve(executable, arguments, environment);
+    child_error("execve failed\n", sizeof("execve failed\n") - 1);
   }
   // Parent process
 
