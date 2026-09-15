@@ -29,6 +29,156 @@ fs::path executable() {
   return fs::read_symlink("/proc/self/exe");
 }
 
+fs::path bazel_bin_for_runner(const fs::path& runner) {
+  if (runner.filename() != "hstream-cli")
+    return {};
+  const fs::path pipeline_app = runner.parent_path();
+  const fs::path apps = pipeline_app.parent_path();
+  const fs::path src = apps.parent_path();
+  if (pipeline_app.filename() != "pipeline-app" || apps.filename() != "apps" || src.filename() != "src")
+    return {};
+  const fs::path bazel_bin = src.parent_path();
+  return bazel_bin.filename() == "bin" ? bazel_bin : fs::path();
+}
+
+std::string runtime_environment_script(const fs::path& runtime_root, const fs::path& bazel_bin, bool installed) {
+  std::string script = "HSTREAM_JOB_RUNTIME_ROOT=" + quote(runtime_root.string()) + "\n";
+  script += "HSTREAM_JOB_BAZEL_BIN=" + quote(bazel_bin.string()) + "\n";
+  script += R"JOB(
+prepend_runtime_path() {
+  local name="$1"
+  local directory="$2"
+  local current="${!name-}"
+  if [ -z "${directory}" ] || [ ! -d "${directory}" ]; then
+    return
+  fi
+  if [ -z "${current}" ]; then
+    export "${name}=${directory}"
+    return
+  fi
+  case ":${current}:" in
+    *":${directory}:"*) ;;
+    *) export "${name}=${directory}:${current}" ;;
+  esac
+}
+
+runtime_cache=""
+for candidate in \
+  "${HSTREAM_RUNTIME_CACHE_DIR:-}" \
+  "${HSTREAM_JOB_RUNTIME_ROOT}/.cache" \
+  "${TEST_TMPDIR:+${TEST_TMPDIR}/hstream-runtime-cache}" \
+  "${XDG_CACHE_HOME:+${XDG_CACHE_HOME}/hstream}" \
+  "${HOME:+${HOME}/.cache/hstream}"; do
+  if [ -n "${candidate}" ] && mkdir -p "${candidate}" 2>/dev/null && [ -w "${candidate}" ]; then
+    runtime_cache="$(cd "${candidate}" && pwd -P)"
+    break
+  fi
+done
+if [ -z "${runtime_cache}" ]; then
+  runtime_cache="$(mktemp -d "${TMPDIR:-/tmp}/hstream-runtime.XXXXXX")"
+fi
+export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
+export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
+
+runtime_arch="$(uname -m)"
+output_configuration="installed"
+if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
+  canonical_bazel_bin="$(readlink -f "${HSTREAM_JOB_BAZEL_BIN}")"
+  output_configuration="$(basename "$(dirname "${canonical_bazel_bin}")")"
+  output_configuration="$(printf '%s' "${output_configuration}" | tr -c 'A-Za-z0-9_.-' '_')"
+fi
+registry_dir="${runtime_cache}/gstreamer-1.0"
+mkdir -p "${registry_dir}"
+export GST_REGISTRY="${registry_dir}/registry.hstream.native-onnx-v1.${runtime_arch}.${output_configuration}.bin"
+
+prepend_runtime_path GST_PLUGIN_PATH "${HSTREAM_JOB_RUNTIME_ROOT}/lib/gst-plugins"
+prepend_runtime_path GST_PLUGIN_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+prepend_runtime_path LD_LIBRARY_PATH "${HSTREAM_JOB_RUNTIME_ROOT}/lib"
+prepend_runtime_path LD_LIBRARY_PATH "${HSTREAM_JOB_RUNTIME_ROOT}/lib/gst-plugins"
+prepend_runtime_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib"
+prepend_runtime_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
+)JOB";
+  if (installed) {
+    script += R"JOB(prepend_runtime_path PATH "${HSTREAM_JOB_RUNTIME_ROOT}/bin"
+prepend_runtime_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
+prepend_runtime_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
+prepend_runtime_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
+prepend_runtime_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
+)JOB";
+  }
+  script += R"JOB(
+if [ -n "${HSTREAM_JOB_BAZEL_BIN}" ]; then
+  launch_key="launch-${BASHPID:-$$}"
+  bazel_gst_root="${HSTREAM_JOB_BAZEL_BIN}/src/gst-plugins"
+  if [ -d "${bazel_gst_root}" ]; then
+    runtime_plugin_dir="${runtime_cache}/gst-plugin-path/${runtime_arch}/${output_configuration}/${launch_key}"
+    mkdir -p "${runtime_plugin_dir}"
+    while IFS= read -r plugin_so; do
+      plugin_so="$(readlink -f "${plugin_so}")"
+      ln -sfn "${plugin_so}" "${runtime_plugin_dir}/$(basename "${plugin_so}")"
+      prepend_runtime_path LD_LIBRARY_PATH "$(dirname "${plugin_so}")"
+    done < <(
+      find "${bazel_gst_root}" \
+        -mindepth 2 \
+        -maxdepth 3 \
+        -type f \
+        \( -name 'libnvdsgst_*.so' -o -name 'libgst*.so' \) \
+        ! -path '*/testutils/*' \
+        ! -path '*.runfiles/*' \
+        -print | sort
+    )
+    while IFS= read -r library_dir; do
+      prepend_runtime_path LD_LIBRARY_PATH "$(readlink -f "${library_dir}")"
+    done < <(
+      find "${bazel_gst_root}" \
+        -mindepth 2 \
+        -maxdepth 4 \
+        -type f \
+        -name '*.so' \
+        ! -path '*.runfiles/*' \
+        -printf '%h\n' | sort -u
+    )
+    prepend_runtime_path GST_PLUGIN_PATH "${runtime_plugin_dir}"
+  fi
+
+  case "${runtime_arch}" in
+    x86_64 | amd64) solib_name="_solib_k8" ;;
+    aarch64 | arm64) solib_name="_solib_aarch64" ;;
+    *) solib_name="_solib_unknown" ;;
+  esac
+  solib_root="${HSTREAM_JOB_BAZEL_BIN}/${solib_name}"
+  if [ -d "${solib_root}" ]; then
+    while IFS= read -r solib_dir; do
+      prepend_runtime_path LD_LIBRARY_PATH "$(readlink -f "${solib_dir}")"
+    done < <(
+      find "${solib_root}" \
+        -maxdepth 1 \
+        -type d \
+        ! -path '*Sstubs*' \
+        -print | sort
+    )
+
+    runtime_lib_dir="${runtime_cache}/runtime-lib-path/${runtime_arch}/${output_configuration}/${launch_key}"
+    mkdir -p "${runtime_lib_dir}"
+    onnxruntime_so="$({
+      find -L "${solib_root}" -maxdepth 3 -type f -name 'libonnxruntime.so.1' -print -quit
+    } 2>/dev/null || true)"
+    if [ -n "${onnxruntime_so}" ]; then
+      ln -sfn "$(readlink -f "${onnxruntime_so}")" "${runtime_lib_dir}/libonnxruntime.so.1"
+    fi
+    yolo_so="${HSTREAM_JOB_BAZEL_BIN}/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"
+    if [ -e "${yolo_so}" ]; then
+      ln -sfn "$(readlink -f "${yolo_so}")" "${runtime_lib_dir}/libnvdsinfer_custom_impl_Yolo.so"
+    fi
+    prepend_runtime_path LD_LIBRARY_PATH "${runtime_lib_dir}"
+  fi
+fi
+
+unset HSTREAM_JOB_RUNTIME_ROOT HSTREAM_JOB_BAZEL_BIN
+)JOB";
+  return script;
+}
+
 void write_script(const fs::path& output, const std::string& contents, bool overwrite) {
   if (!overwrite && fs::exists(output))
     throw std::runtime_error("output already exists; use --force to replace it: " + output.string());
@@ -143,7 +293,9 @@ int main(int argc, char** argv) {
       throw std::runtime_error("pipeline config not found; specify --config: " + config.string());
     if (!fs::is_regular_file(runner))
       throw std::runtime_error("hstream-cli not found; build it or specify --runner: " + runner.string());
-    runner = fs::absolute(runner);
+    runner = fs::canonical(runner);
+    const fs::path runtime_root = installed ? bin.parent_path() : working;
+    const fs::path bazel_bin = bazel_bin_for_runner(runner);
     std::vector<std::string> args = {
         "-g", game.filename().string(), "-c", config.string(), "--enable-sources=URI-MULTIPLE"};
     const YAML::Node ui = saved["hstream_ui"];
@@ -182,6 +334,7 @@ int main(int argc, char** argv) {
       if (!value.empty())
         script += "export " + std::string(key) + "=" + quote(value) + "\n";
     }
+    script += runtime_environment_script(runtime_root, bazel_bin, installed);
     const std::string configured_output = environment("HM_OUTPUT_WORK_DIR");
     const std::string output_location =
         configured_output.empty() ? "the configured output root (normally ~/hstream_output)" : configured_output;

@@ -14870,7 +14870,9 @@ void HStreamWindow::saveJobScript() {
       this,
       "Save job options",
       QString(
-          "This script runs hstream-cli directly. Archive MKVs and DriveGPT databases remain in working "
+          "This script runs the selected hstream-cli directly with its matching runtime environment. "
+          "Archive MKVs and DriveGPT "
+          "databases remain in working "
           "storage; Play\'s MP4 remux and copying into the game directory are not performed.\n"
           "Working output root: %1 (custom per-output paths still apply).\n\n"
           "Optional SBATCH directives, one per line (for example --partition=gpu).\n"

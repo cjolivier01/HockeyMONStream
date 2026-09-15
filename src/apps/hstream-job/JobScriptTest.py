@@ -86,16 +86,39 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotEqual(self.generate("--force", "--sbatch", "--partition=gpu\ntouch INJECTED").returncode, 0)
         self.assertEqual(script.read_bytes(), original)
 
-    def test_installed_and_bazel_path_discovery(self):
+    def test_source_and_installed_layouts_export_direct_exact_runner(self):
         for installed in (True, False):
             layout = self.root / ("installed" if installed else "workspace")
-            bin_dir = layout / "bin" if installed else layout / "bin/src/apps/hstream-job"
+            game = self.root / ("installed-games" if installed else "source-games") / "help"
+            game.mkdir(parents=True)
+            (game / "config.yaml").write_text(
+                json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+            bin_dir = (layout / "bin" if installed else
+                       layout / "bazel-out/k8-fastbuild/bin/src/apps/hstream-job")
             bin_dir.mkdir(parents=True)
             tool = bin_dir / "hstream-job"
             shutil.copy2(TOOL, tool)
             runner = bin_dir / "hstream-cli" if installed else bin_dir.parent / "pipeline-app/hstream-cli"
             runner.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.runner, runner)
+            wrapper_called = layout / "wrapper-called"
+            wrapper = layout / "run.sh"
+            wrapper.write_text(f"#!/bin/sh\ntouch {wrapper_called}\nexit 99\n")
+            wrapper.chmod(0o700)
+            if installed:
+                (layout / "lib/gst-plugins").mkdir(parents=True)
+            else:
+                # A mutable workspace symlink pointing elsewhere must not
+                # redirect the job away from its exact sibling output tree.
+                unrelated = layout / "bazel-out/k8-opt/bin"
+                unrelated.mkdir(parents=True)
+                (layout / "bazel-bin").symlink_to(unrelated, target_is_directory=True)
+                selected_plugins = (layout / "bazel-out/k8-fastbuild/bin/src/gst-plugins/fake")
+                selected_plugins.mkdir(parents=True)
+                (selected_plugins / "libgstselected.so").write_bytes(b"selected")
+                unrelated_plugins = unrelated / "src/gst-plugins/fake"
+                unrelated_plugins.mkdir(parents=True)
+                (unrelated_plugins / "libgstunrelated.so").write_bytes(b"unrelated")
             config = layout / "configs/ds_hockey_app_config.yaml"
             config.parent.mkdir(parents=True)
             config.write_text("pipeline: {}\n")
@@ -105,13 +128,31 @@ class JobScriptTest(unittest.TestCase):
                 runfile.symlink_to(config)
             env = dict(self.env)
             env.pop("BUILD_WORKSPACE_DIRECTORY", None)
-            result = subprocess.run([str(tool), "--game-dir", str(self.game), "--force"],
+            env["HOME"] = str(self.root / "home")
+            Path(env["HOME"]).mkdir(exist_ok=True)
+            result = subprocess.run([str(tool), "--game-dir", str(game), "--force"],
                                     cwd="/", env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            subprocess.run([str(self.game / "hstream-job.sh")], cwd="/", env=env)
+            script_text = (game / "hstream-job.sh").read_text()
+            self.assertNotIn("run.sh", script_text)
+            self.assertIn(str(runner.resolve()), script_text)
+            run = subprocess.run([str(game / "hstream-job.sh")], cwd="/", env=env)
+            self.assertEqual(run.returncode, 7)
+            self.assertFalse(wrapper_called.exists())
             actual = json.loads(self.output.read_text())
             self.assertEqual(actual["cwd"], str(layout))
-            self.assertIn(str(config), actual["argv"])
+            self.assertEqual(actual["argv"][:2], ["-g", "help"])
+            self.assertEqual(actual["argv"].count("-c"), 1)
+            self.assertEqual(actual["argv"][actual["argv"].index("-c") + 1], str(config))
+            self.assertEqual(actual["env"]["USE_NEW_NVSTREAMMUX"], "yes")
+            self.assertIn("gstreamer-1.0/registry.hstream", actual["env"]["GST_REGISTRY"])
+            self.assertNotIn("HSTREAM_JOB_RUNTIME_ROOT", actual["env"])
+            self.assertNotIn("HSTREAM_JOB_BAZEL_BIN", actual["env"])
+            if installed:
+                self.assertIn(str(layout / "lib/gst-plugins"), actual["env"].get("GST_PLUGIN_PATH", ""))
+            else:
+                self.assertIn(str(selected_plugins), actual["env"].get("LD_LIBRARY_PATH", ""))
+                self.assertNotIn(str(unrelated), actual["env"].get("LD_LIBRARY_PATH", ""))
 
     def test_plain_config_and_custom_output(self):
         (self.game / "config.yaml").write_text("pipeline: {}\n")
