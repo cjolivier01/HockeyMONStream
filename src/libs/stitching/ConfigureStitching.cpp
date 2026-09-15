@@ -2944,7 +2944,8 @@ absl::Status create_control_points(
 
   std::vector<std::pair<fs::path, fs::path>> input_files;
   input_files.reserve(frame_pairs.size());
-  CalibrationFrameExifWriter exif_writer(is_cancelled);
+  std::vector<std::pair<fs::path, CalibrationFrameSource>> metadata_frames;
+  metadata_frames.reserve(frame_pairs.size() * 2);
   for (size_t index = 0; index < frame_pairs.size(); ++index) {
     const fs::path left_file = input_dir /
         (index == 0 ? "left.png" : TO_STRING("left_" << std::setw(4) << std::setfill('0') << index << ".png"));
@@ -2952,16 +2953,18 @@ absl::Status create_control_points(
         (index == 0 ? "right.png" : TO_STRING("right_" << std::setw(4) << std::setfill('0') << index << ".png"));
     HM_RETURN_IF_ERROR(save_image(frame_pairs[index].left, left_file));
     HM_RETURN_IF_ERROR(save_image(frame_pairs[index].right, right_file));
-    for (const auto& [png, source] :
-         {std::pair{left_file, frame_pairs[index].left_source},
-          std::pair{right_file, frame_pairs[index].right_source}}) {
-      const auto metadata_status = exif_writer.Write(png, source);
-      if (absl::IsCancelled(metadata_status))
-        return metadata_status;
-      if (!metadata_status.ok())
-        std::cerr << "Calibration PNG metadata unavailable for " << png << ": " << metadata_status << "\n";
-    }
+    metadata_frames.emplace_back(left_file, frame_pairs[index].left_source);
+    metadata_frames.emplace_back(right_file, frame_pairs[index].right_source);
     input_files.emplace_back(left_file, right_file);
+  }
+  CalibrationFrameExifWriter exif_writer(is_cancelled);
+  const auto metadata_statuses = exif_writer.WriteAll(metadata_frames);
+  for (size_t i = 0; i < metadata_frames.size(); ++i) {
+    if (absl::IsCancelled(metadata_statuses[i]))
+      return metadata_statuses[i];
+    if (!metadata_statuses[i].ok())
+      std::cerr << "Calibration PNG metadata unavailable for " << metadata_frames[i].first << ": "
+                << metadata_statuses[i] << "\n";
   }
   size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();

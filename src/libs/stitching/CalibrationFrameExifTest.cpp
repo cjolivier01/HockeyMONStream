@@ -44,12 +44,18 @@ std::string atom(const std::string& type, const std::string& data) {
 int main(int argc, char** argv) {
   using namespace hm::stitching;
   using namespace hm::stitching::frame_exif;
-  // Optional real-recording smoke check: test_binary video png original_pts_seconds.
-  if (argc == 4) {
+  // Optional real-recording smoke check: test_binary [video png original_pts_seconds]...
+  if (argc >= 4 && (argc - 1) % 3 == 0) {
     CalibrationFrameExifWriter writer;
-    const auto status = writer.Write(argv[2], {argv[1], std::stod(argv[3])});
-    std::cout << status << '\n';
-    return status.ok() ? 0 : 1;
+    std::vector<std::pair<std::filesystem::path, CalibrationFrameSource>> frames;
+    for (int i = 1; i < argc; i += 3)
+      frames.push_back({argv[i + 1], {argv[i], std::stod(argv[i + 2])}});
+    bool success = true;
+    for (const auto& status : writer.WriteAll(frames)) {
+      std::cout << status << '\n';
+      success &= status.ok();
+    }
+    return success ? 0 : 1;
   }
   bool ok = true;
   const auto gopro = Parse(
@@ -380,6 +386,22 @@ int main(int argc, char** argv) {
       }
     }
     // All sampled frames from a chapter reuse one metadata read.
+    const auto second_video = path.parent_path() / ("second-camera-" + std::to_string(getpid()) + ".mp4");
+    const auto batch_left = path.parent_path() / ("batch-left-" + std::to_string(getpid()) + ".png");
+    const auto batch_right = path.parent_path() / ("batch-right-" + std::to_string(getpid()) + ".png");
+    std::filesystem::copy_file(path, second_video, std::filesystem::copy_options::overwrite_existing);
+    std::ofstream(batch_left, std::ios::binary).write(reinterpret_cast<const char*>(png_bytes), sizeof(png_bytes));
+    std::ofstream(batch_right, std::ios::binary).write(reinterpret_cast<const char*>(png_bytes), sizeof(png_bytes));
+    CalibrationFrameExifWriter batch_writer;
+    const auto batch_statuses =
+        batch_writer.WriteAll({{batch_left, {path, 0.05}}, {batch_right, {second_video, 0.05}}});
+    ok &= expect(
+        batch_statuses.size() == 2 && batch_statuses[0].ok() && batch_statuses[1].ok() &&
+            read(batch_left).find("eXIf") != std::string::npos && read(batch_right).find("eXIf") != std::string::npos,
+        "Batched independent camera frames must both receive EXIF");
+    std::filesystem::remove(second_video);
+    std::filesystem::remove(batch_left);
+    std::filesystem::remove(batch_right);
     std::filesystem::remove(path);
     ok &= expect(writer.Write(png, {path, 0.01}).ok(), "Further frame writes must use the chapter metadata cache");
     const auto preserved = read(png);
