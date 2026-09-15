@@ -12,7 +12,9 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
+#include <system_error>
 
 #include "hstream/src/libs/common/Process.h"
 #include "tools/cpp/runfiles/runfiles.h"
@@ -70,6 +72,32 @@ const char* const kTags[] = {
 // Source PTS is rounded to nanoseconds, while metadata intervals may use a
 // rational frame rate. Use the same bounded tolerance at packet and frame edges.
 constexpr double kTimestampTolerance = 1e-6;
+
+// Run each pair using one worker and the calling thread. If the runtime cannot
+// create the worker, execute both items inline so callers still receive their
+// normal status results instead of a std::system_error escaping WriteAll().
+template <typename Work, typename Save>
+void two_at_a_time(size_t count, Work work, Save save) {
+  using Result = decltype(work(size_t{}));
+  for (size_t begin = 0; begin < count; begin += 2) {
+    std::optional<std::future<Result>> first;
+    try {
+      first.emplace(std::async(std::launch::async, [&, begin] { return work(begin); }));
+    } catch (const std::system_error&) {
+      // Thread-resource exhaustion is not a metadata failure. Preserve the
+      // prior sequential behavior and let work return the per-item status.
+    }
+    if (!first) {
+      save(begin, work(begin));
+      if (begin + 1 < count)
+        save(begin + 1, work(begin + 1));
+      continue;
+    }
+    if (begin + 1 < count)
+      save(begin + 1, work(begin + 1));
+    save(begin, first->get());
+  }
+}
 
 struct UtcTime {
   time_t seconds;
@@ -264,7 +292,9 @@ std::optional<frame_exif::Insta360Clock> insta_clock(const std::vector<unsigned 
 
 namespace frame_exif {
 absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
-    const std::filesystem::path& video, unsigned type, size_t max_bytes) {
+    const std::filesystem::path& video,
+    unsigned type,
+    size_t max_bytes) {
   std::ifstream input(video, std::ios::binary | std::ios::ate);
   if (!input)
     return absl::NotFoundError("Cannot open camera metadata source: " + video.string());
@@ -646,11 +676,9 @@ std::vector<absl::Status> CalibrationFrameExifWriter::WriteAll(
     std::lock_guard<std::mutex> lock(cancellation_mutex);
     return is_cancelled_ && is_cancelled_();
   };
-  for (size_t begin = 0; begin < videos.size(); begin += 2) {
-    std::vector<std::future<absl::StatusOr<frame_exif::Metadata>>> tasks;
-    const size_t end = std::min(videos.size(), begin + 2);
-    for (size_t i = begin; i < end; ++i) {
-      tasks.push_back(std::async(std::launch::async, [&, i] {
+  two_at_a_time(
+      videos.size(),
+      [&](size_t i) -> absl::StatusOr<frame_exif::Metadata> {
         const auto& video = videos[i];
         std::vector<std::string> arguments{
             "-ee",
@@ -676,11 +704,8 @@ std::vector<absl::Status> CalibrationFrameExifWriter::WriteAll(
         const auto json = exiftool(std::move(arguments), cancelled);
         return json.ok() ? frame_exif::Parse(*json, frame_exif::ReadInsta360Clock(video).value_or(std::nullopt))
                          : absl::StatusOr<frame_exif::Metadata>(json.status());
-      }));
-    }
-    for (size_t i = begin; i < end; ++i)
-      cache_.emplace(videos[i], tasks[i - begin].get());
-  }
+      },
+      [&](size_t i, absl::StatusOr<frame_exif::Metadata> metadata) { cache_.emplace(videos[i], std::move(metadata)); });
 
   std::vector<size_t> writes;
   std::vector<frame_exif::Tags> tags(frames.size());
@@ -700,12 +725,10 @@ std::vector<absl::Status> CalibrationFrameExifWriter::WriteAll(
     if (!tags[i].empty())
       writes.push_back(i);
   }
-  for (size_t begin = 0; begin < writes.size(); begin += 2) {
-    std::vector<std::future<absl::Status>> tasks;
-    const size_t end = std::min(writes.size(), begin + 2);
-    for (size_t position = begin; position < end; ++position) {
-      const size_t i = writes[position];
-      tasks.push_back(std::async(std::launch::async, [&, i] {
+  two_at_a_time(
+      writes.size(),
+      [&](size_t position) {
+        const size_t i = writes[position];
         // ExifTool rewrites PNG chunks without re-encoding IDAT. Its temporary
         // file is renamed on success; -overwrite_original suppresses a backup.
         std::vector<std::string> arguments{"-overwrite_original", "-n"};
@@ -714,11 +737,8 @@ std::vector<absl::Status> CalibrationFrameExifWriter::WriteAll(
         arguments.insert(arguments.end(), {"--", std::filesystem::absolute(frames[i].first).string()});
         const auto written = exiftool(std::move(arguments), cancelled);
         return written.ok() ? absl::OkStatus() : written.status();
-      }));
-    }
-    for (size_t position = begin; position < end; ++position)
-      statuses[writes[position]] = tasks[position - begin].get();
-  }
+      },
+      [&](size_t position, absl::Status status) { statuses[writes[position]] = std::move(status); });
   return statuses;
 }
 
