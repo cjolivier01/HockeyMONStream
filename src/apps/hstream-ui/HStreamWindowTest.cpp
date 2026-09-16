@@ -8860,6 +8860,26 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(
           !HStreamWindowTestAccess::rinkLevelingInputsUnchanged(window), "Unsaved camera/FOV changes reject leveling"))
     return false;
+  auto* level_rink = require_child<QPushButton>(window, "selectRinkLevelingButton");
+  if (!expect(level_rink && level_rink->isEnabled(), "Level rink remains available to explain changed settings"))
+    return false;
+  bool leveling_message_seen = false;
+  QTimer dismiss_leveling_message;
+  QObject::connect(&dismiss_leveling_message, &QTimer::timeout, [&]() {
+    auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (!dialog)
+      return;
+    auto* message = qobject_cast<QMessageBox*>(dialog);
+    leveling_message_seen = message && message->windowTitle() == "Level rink" &&
+        message->text().contains("Camera or reference-frame settings changed") &&
+        message->text().contains("Save and finish stitching calibration before leveling the rink");
+    dialog->reject();
+  });
+  dismiss_leveling_message.start(10);
+  activate(level_rink);
+  dismiss_leveling_message.stop();
+  if (!expect(leveling_message_seen, "Clicking Level rink with changed inputs shows an actionable message"))
+    return false;
   HStreamWindowTestAccess::stageTestLeveling(window);
   const std::string before_rejected_leveling = YAML::Dump(YAML::LoadFile(config_path.string()));
   activate(save);
@@ -12149,7 +12169,25 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
           playback->isEnabled() && !reference->isEnabled(),
           "Multi-frame calibration must leave playback start editable"))
     return false;
+  playback->setTime(QTime(0, 13, 45, 250));
+  activate(save);
+  config = YAML::LoadFile(config_path.string());
+  if (!expect(
+          config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:13:45.250" &&
+              config["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:07" &&
+              config["stitching"]["calibration_frame_count"].as<int>() == 3,
+          "Saving multiple stitching frames must persist playback start and the disabled reference time"))
+    return false;
+  activate(create);
+  if (!expect(
+          frames->value() == 3 && playback->time() == QTime(0, 13, 45, 250) && reference->time() == QTime(0, 0, 7) &&
+              !reference->isEnabled(),
+          "Reloading a multi-frame game must restore both timestamps independently"))
+    return false;
   frames->setValue(1);
+  if (!expect(reference->time() == QTime(0, 0, 7), "Returning to one frame must retain the saved reference time"))
+    return false;
+  playback->setTime(QTime(0, 12, 30, 125));
   posts->setChecked(false);
   activate(save);
   config = YAML::LoadFile(config_path.string());
@@ -12217,8 +12255,12 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     }
     activate(start);
     const auto args = HStreamWindowTestAccess::pipelineArguments(&window);
+    const auto launched_config = YAML::LoadFile(config_path.string());
     ok &= expect(
         args.contains("--start-time=00:15:00") && args.contains("--options=stitching.sync_method=auto") &&
+            launched_config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:15:00" &&
+            QString::fromStdString(launched_config["stitching"]["stitch_frame_time"].as<std::string>("00:00:00")) ==
+                reference->time().toString("HH:mm:ss") &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_PROJECTION_CROP_FLOW") ==
                 (crop->isChecked() ? "1" : "") &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_RINK_LEVELING_FLOW") ==

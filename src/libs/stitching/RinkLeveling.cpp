@@ -364,11 +364,15 @@ absl::StatusOr<RinkCornerLevelingEstimate> EstimateRinkLevelingFromCorners(
   if (!along.ok())
     return along.status();
   const double orthogonality_error = std::asin(std::clamp(std::abs(across->dot(*along)), 0.0, 1.0));
-  if (orthogonality_error > 10 * kRadians)
-    return absl::InvalidArgumentError(
-        "The corners do not form a rectangle. Use straight-line intersections and the same side-board order in both images");
+  // Orthogonality depends on lens/pose calibration as well as the selected
+  // points. Especially at a low camera height, small ray errors can produce a
+  // large angle mismatch while the ice normal remains usable. Report it for
+  // preview inspection instead of treating it as proof of incorrect marks.
   Vector up = across->cross(*along);
-  up /= cv::norm(up);
+  const double up_length = cv::norm(up);
+  if (up_length < 0.01)
+    return absl::InvalidArgumentError("These corners are too nearly aligned to determine the ice plane");
+  up /= up_length;
   // All four intersections with the ice must be in front of the camera.
   // Choosing the normal away from the selected rays makes the camera above it.
   Vector center(0, 0, 0);

@@ -92,7 +92,7 @@ class RinkLevelingDialog : public QDialog {
   std::array<ScoreboardSelectionCanvas*, 2> canvases_{};
   std::array<QVector<QPoint>, 2> post_marks_;
   std::array<QVector<QPoint>, 2> corner_marks_;
-  std::array<QDoubleSpinBox*, 2> angle_spins_{};
+  std::array<QDoubleSpinBox*, 3> angle_spins_{};
   QCheckBox* post_method_check_{nullptr};
   QLabel* instructions_{nullptr};
   QLabel* status_{nullptr};

@@ -7272,8 +7272,10 @@ void HStreamWindow::selectRinkLeveling() {
   if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
     return;
   if (!rinkLevelingInputsUnchanged()) {
-    appendLog(
-        "Camera or reference-frame settings changed. Save and finish stitching calibration before selecting posts.");
+    const QString message =
+        "Camera or reference-frame settings changed. Save and finish stitching calibration before leveling the rink.";
+    appendLog(message);
+    QMessageBox::information(this, "Level rink", message);
     return;
   }
   RinkLevelingDialog dialog(
