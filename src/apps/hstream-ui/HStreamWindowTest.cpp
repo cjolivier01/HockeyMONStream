@@ -12141,8 +12141,17 @@ bool test_preset_reload_with_missing_tracker() {
       "  stitching_calibration: {frame_count: 4, control_points: 1700}\n"
       "  playback_start_time: '00:12:30.250'\n");
   config["pipeline"]["ds-playtracker"]["config-file"] = missing_tracker;
+  config["hstream_ui"]["generated_runtime_keys"] = YAML::Load("[pipeline.ds-playtracker.config-file]");
+  config["hstream_ui"]["generated_runtime_values"]["pipeline.ds-playtracker.config-file"] =
+      "hstream-ui/previous-tracker.yaml";
+  config["hstream_ui"]["playtracker_config_base"] = YAML::Node(YAML::NodeType::Null);
   std::ofstream(config_path) << YAML::Dump(config) << '\n';
-  for (int run = 0; run < 3; ++run) {
+  for (int run = 0; run < 4; ++run) {
+    if (run == 3) {
+      fs::create_directories(fs::path(missing_tracker).parent_path());
+      std::ofstream(missing_tracker)
+          << "play-tracker: {ignore-largest-bbox: true, ignore-largest-bbox-count: 3, min-tracked-players: 7}\n";
+    }
     HStreamWindow window;
     auto* selector = require_child<QComboBox>(&window, "gameSelector");
     auto* auto_fov = require_child<QCheckBox>(&window, "projectionAutoFovCheck");
@@ -12172,14 +12181,38 @@ bool test_preset_reload_with_missing_tracker() {
       auto_fov->setChecked(!auto_fov->isChecked());
       activate(save);
       const auto saved = YAML::LoadFile(config_path);
+      YAML::Node generated_keys;
+      bool custom_reference_is_generated = false;
+      if (lookup_yaml_path(saved, {"hstream_ui", "generated_runtime_keys"}, &generated_keys) &&
+          generated_keys.IsSequence()) {
+        for (const auto& key : generated_keys)
+          custom_reference_is_generated |= key.as<std::string>() == "pipeline.ds-playtracker.config-file";
+      }
       if (!expect(
               saved["stitching"]["projection_framing"]["auto_fov"].as<bool>() == auto_fov->isChecked() &&
                   saved["pipeline"]["ds-playtracker"]["config-file"].as<std::string>() == missing_tracker &&
-                  !save->isEnabled(),
+                  !custom_reference_is_generated &&
+                  !lookup_yaml_path(saved, {"hstream_ui", "playtracker_config_base"}, nullptr) && !save->isEnabled(),
               "Save Preset must persist Auto FOV edits without replacing an unavailable tracker configuration")) {
         std::cerr << window.logText().toStdString() << '\n';
         return false;
       }
+    } else if (run == 3) {
+      auto_fov->setChecked(!auto_fov->isChecked());
+      activate(save);
+      const auto recovered = YAML::LoadFile(config_path);
+      if (!expect(
+              !save->isEnabled() &&
+                  recovered["hstream_ui"]["playtracker_config_base"].as<std::string>() == missing_tracker,
+              "Restoring a missing custom tracker must keep that explicit base on the next save"))
+        return false;
+      const auto native = YAML::LoadFile((fs::path(config_path).parent_path() /
+                                          recovered["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+                                             .string());
+      if (!expect(
+              native["play-tracker"]["min-tracked-players"].as<int>() == 7,
+              "The recovered custom tracker must supply the next sidecar, not a stale generated base"))
+        return false;
     }
   }
   return QDir(game_directory).removeRecursively();
@@ -12715,6 +12748,43 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     user_config["rink"]["tracking"]["cam_oversized_percent"] = 125.5;
     std::ofstream(QDir(user_config_directory).filePath("hstream.yaml").toStdString()) << user_config << '\n';
     std::ofstream(copied_config) << "{}\n";
+    {
+      // A game override equal to baseline is still intentional when a
+      // temporarily unavailable user tracker has a different native default.
+      const QString hidden_native = native_path + ".temporarily-missing";
+      if (!QFile::rename(native_path, hidden_native))
+        return false;
+      std::ofstream(copied_config) << "rink: {tracking: {cam_ignore_largest: true, cam_ignore_largest_count: 1}}\n";
+      HStreamWindow missing_window;
+      auto* game_id = require_child<QLineEdit>(&missing_window, "gameIdEdit");
+      auto* create = require_child<QPushButton>(&missing_window, "createGameButton");
+      auto* auto_fov = require_child<QCheckBox>(&missing_window, "projectionAutoFovCheck");
+      auto* save = require_child<QPushButton>(&missing_window, "savePresetButton");
+      if (!game_id || !create || !auto_fov || !save)
+        return false;
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+      auto_fov->setChecked(!auto_fov->isChecked());
+      activate(save);
+      const auto saved = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          !save->isEnabled() && saved["rink"]["tracking"]["cam_ignore_largest"].as<bool>(false) &&
+              saved["rink"]["tracking"]["cam_ignore_largest_count"].as<int>(-1) == 1,
+          "Unrelated saves must preserve explicit tracker overrides equal to fallback defaults");
+      if (!QFile::rename(hidden_native, native_path))
+        return false;
+      HStreamWindow recovered_window;
+      game_id = require_child<QLineEdit>(&recovered_window, "gameIdEdit");
+      create = require_child<QPushButton>(&recovered_window, "createGameButton");
+      if (!game_id || !create)
+        return false;
+      game_id->setText("ui-user-stitch-default");
+      activate(create);
+      ok &= expect(
+          recovered_window.cameraControlValue("Ignore_Largest_Count") == 1,
+          "A recovered user tracker must not replace the untouched game-level override");
+      std::ofstream(copied_config) << "{}\n";
+    }
     HStreamWindow native_window;
     ok &= expect(
         native_window.cameraControlValue("Oversized_Player_Percent") == 175.5,
