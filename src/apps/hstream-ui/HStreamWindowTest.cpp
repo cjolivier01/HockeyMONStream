@@ -10851,7 +10851,7 @@ bool test_camera_controls(HStreamWindow* window) {
           "A saved tracker preset should reference its immutable sidecar")) {
     return false;
   }
-  const fs::path committed_sidecar = committed_sidecar_node.as<std::string>();
+  const fs::path committed_sidecar = config.parent_path() / committed_sidecar_node.as<std::string>();
   std::ifstream committed_config_input(config, std::ios::binary);
   const std::string committed_config(
       (std::istreambuf_iterator<char>(committed_config_input)), std::istreambuf_iterator<char>());
@@ -10874,7 +10874,7 @@ bool test_camera_controls(HStreamWindow* window) {
               {"pipeline", "ds-playtracker", "config-file"},
               &after_failed_retirement_sidecar) &&
               after_failed_retirement_sidecar.IsScalar() &&
-              after_failed_retirement_sidecar.as<std::string>() == committed_sidecar.string(),
+              config.parent_path() / after_failed_retirement_sidecar.as<std::string>() == committed_sidecar,
           "A failed retirement marker should leave the old sidecar active") ||
       !expect(
           sidecars_after_failed_retirement.size() == 1,
@@ -10912,7 +10912,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool has_visible_sidecar = lookup_yaml_path(
       visible_after_post_commit_error, {"pipeline", "ds-playtracker", "config-file"}, &visible_sidecar_node);
   const fs::path visible_sidecar = has_visible_sidecar && visible_sidecar_node.IsScalar()
-      ? fs::path(visible_sidecar_node.as<std::string>())
+      ? config.parent_path() / visible_sidecar_node.as<std::string>()
       : fs::path();
   if (!expect(save->isEnabled(), "A post-commit durability error should keep Save Preset enabled") ||
       !expect(
@@ -11079,8 +11079,9 @@ bool test_camera_controls(HStreamWindow* window) {
   YAML::Node saved_playtracker_config_path;
   const bool has_saved_playtracker_config_path =
       lookup_yaml_path(saved, {"pipeline", "ds-playtracker", "config-file"}, &saved_playtracker_config_path);
-  const fs::path playtracker_config_path =
-      has_saved_playtracker_config_path ? fs::path(saved_playtracker_config_path.as<std::string>()) : fs::path();
+  const fs::path playtracker_config_path = has_saved_playtracker_config_path
+      ? config.parent_path() / saved_playtracker_config_path.as<std::string>()
+      : fs::path();
   YAML::Node playtracker_config = has_saved_playtracker_config_path && fs::exists(playtracker_config_path)
       ? YAML::LoadFile(playtracker_config_path.string())
       : YAML::Node();
@@ -11999,8 +12000,8 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool has_same_prefix_tracker_path =
       lookup_yaml_path(same_prefix, {"pipeline", "ds-playtracker", "config-file"}, &same_prefix_tracker_path);
   YAML::Node same_prefix_tracker =
-      has_same_prefix_tracker_path && fs::exists(same_prefix_tracker_path.as<std::string>())
-      ? YAML::LoadFile(same_prefix_tracker_path.as<std::string>())
+      has_same_prefix_tracker_path && fs::exists(config.parent_path() / same_prefix_tracker_path.as<std::string>())
+      ? YAML::LoadFile((config.parent_path() / same_prefix_tracker_path.as<std::string>()).string())
       : YAML::Node();
   YAML::Node preserved_custom_tracker_value;
   const bool preserved_custom_tracker_config =
@@ -12075,7 +12076,8 @@ bool test_camera_controls(HStreamWindow* window) {
   max_speed_x->setValue(333);
   activate(save);
   const YAML::Node saved_one_box_game = YAML::LoadFile(config.string());
-  const fs::path saved_one_box_path = saved_one_box_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
+  const fs::path saved_one_box_path =
+      config.parent_path() / saved_one_box_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
   const YAML::Node saved_one_box = YAML::LoadFile(saved_one_box_path.string());
   const YAML::Node saved_one_box_sequence = saved_one_box["play-tracker"]["live-boxes"];
   if (!expect(
@@ -12114,6 +12116,73 @@ bool test_camera_controls(HStreamWindow* window) {
              "Preset GC should never delete the aged playtracker sidecar referenced by the committed config") &&
       expect(!lookup_yaml_path(after_aged_active_save, {"stitching", "stitch_frame_time"}, nullptr),
              "Saving the default stitch-frame time should omit stitching.stitch_frame_time");
+}
+
+bool test_preset_reload_with_missing_tracker() {
+  const QString game_name = "saved-preset-missing-tracker";
+  const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
+  if (!QDir().mkpath(game_directory))
+    return false;
+  const auto config_path = QDir(game_directory).filePath("config.yaml").toStdString();
+  const std::string missing_tracker =
+      QDir(game_directory).filePath("removed-worktree/configs/play_tracker_config.yaml").toStdString();
+  YAML::Node config = YAML::Load(
+      "stitching:\n"
+      "  mapping_backend: nona\n"
+      "  run_autooptimizer: true\n"
+      "  projection: general-panini\n"
+      "  projection_framing: {auto_fov: true, horizontal_fov: 160}\n"
+      "  camera_config: gopro-hero-11\n"
+      "  camera_fov: {horizontal_fov: 108, vertical_fov: 90}\n"
+      "  stitch_frame_time: '00:00:07.125'\n"
+      "rink:\n"
+      "  tracking: {cam_ignore_largest: true, cam_ignore_largest_count: 3}\n"
+      "hstream_ui:\n"
+      "  stitching_calibration: {frame_count: 4, control_points: 1700}\n"
+      "  playback_start_time: '00:12:30.250'\n");
+  config["pipeline"]["ds-playtracker"]["config-file"] = missing_tracker;
+  std::ofstream(config_path) << YAML::Dump(config) << '\n';
+  for (int run = 0; run < 3; ++run) {
+    HStreamWindow window;
+    auto* selector = require_child<QComboBox>(&window, "gameSelector");
+    auto* auto_fov = require_child<QCheckBox>(&window, "projectionAutoFovCheck");
+    auto* fov = require_child<QDoubleSpinBox>(&window, "projectionHorizontalFovSpin");
+    auto* camera = require_child<QComboBox>(&window, "stitchCameraConfigurationCombo");
+    auto* reference = require_child<QTimeEdit>(&window, "stitchFrameTimeEdit");
+    auto* playback = require_child<QTimeEdit>(&window, "playbackStartTimeEdit");
+    auto* frames = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
+    auto* cp = require_child<QSpinBox>(&window, "controlPointsSpin");
+    auto* save = require_child<QPushButton>(&window, "savePresetButton");
+    if (!selector || !auto_fov || !fov || !camera || !reference || !playback || !frames || !cp || !save)
+      return false;
+    selector->setCurrentIndex(selector->findText(game_name));
+    if (!expect(
+            auto_fov->isChecked() == (run != 1) && fov->value() == 160 &&
+                camera->currentData().toString() == "gopro-hero-11" && reference->time() == QTime(0, 0, 7, 125) &&
+                playback->time() == QTime(0, 12, 30, 250) && frames->value() == 4 && cp->value() == 1700,
+            "A missing tracker file must not discard saved stitching, camera, or playback settings on a fresh UI load")) {
+      std::cerr << window.logText().toStdString() << '\n';
+      return false;
+    }
+    if (!expect(
+            window.cameraControlValue("Ignore_Largest_Count") == 3,
+            "Canonical tracker controls must still load when their native config is unavailable"))
+      return false;
+    if (run < 2) {
+      auto_fov->setChecked(!auto_fov->isChecked());
+      activate(save);
+      const auto saved = YAML::LoadFile(config_path);
+      if (!expect(
+              saved["stitching"]["projection_framing"]["auto_fov"].as<bool>() == auto_fov->isChecked() &&
+                  saved["pipeline"]["ds-playtracker"]["config-file"].as<std::string>() == missing_tracker &&
+                  !save->isEnabled(),
+              "Save Preset must persist Auto FOV edits without replacing an unavailable tracker configuration")) {
+        std::cerr << window.logText().toStdString() << '\n';
+        return false;
+      }
+    }
+  }
+  return QDir(game_directory).removeRecursively();
 }
 
 bool test_stitching_iteration_controls(const QString& source_game_directory) {
@@ -12672,11 +12741,13 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(save);
       const YAML::Node saved_native_game = YAML::LoadFile(copied_config.string());
       const YAML::Node sidecar =
-          YAML::LoadFile(saved_native_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>());
+          YAML::LoadFile((copied_config.parent_path() /
+                          saved_native_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+                             .string());
       ok &= expect(
           sidecar["play-tracker"]["min-tracked-players"].as<int>() == 7 &&
               sidecar["play-tracker"]["oversized-bbox-percent"].as<double>() == 185.25 &&
-              saved_native_game["hstream_ui"]["playtracker_config_base"].as<std::string>() == native_path.toStdString(),
+              saved_native_game["hstream_ui"]["playtracker_config_base"].IsNull(),
           "Saving size filters must retain the user native base and its unrelated settings");
       activate(create);
       ok &= expect(
@@ -12730,20 +12801,71 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       count->setValue(2);
       activate(save);
       const YAML::Node saved_game = YAML::LoadFile(copied_config.string());
-      const YAML::Node sidecar =
-          YAML::LoadFile(saved_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>());
+      const YAML::Node sidecar = YAML::LoadFile(
+          (copied_config.parent_path() / saved_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+              .string());
       ok &= expect(
           sidecar["play-tracker"]["min-tracked-players"].as<int>() == 7 &&
               !sidecar["play-tracker"]["ignore-oversized-bboxes"].as<bool>() &&
               sidecar["play-tracker"]["oversized-bbox-percent"].as<double>() == 125.5 &&
-              saved_game["hstream_ui"]["playtracker_config_base"].as<std::string>() ==
-                  default_native_path.toStdString(),
+              saved_game["hstream_ui"]["playtracker_config_base"].IsNull(),
           "Save must preserve the structural native base and higher-priority effective size values");
       activate(create);
       ok &= expect(
           count->value() == 2 && structural_window.cameraControlValue("Oversized_Player_Percent") == 125.5 &&
               structural_window.cameraControlValue("Ignore_Oversized_Players") == 0,
           "Saving a count change must not replace untouched user size settings with structural native values");
+      QTemporaryDir relocated_runtime;
+      const QString relocated_configs = QDir(relocated_runtime.path()).filePath("configs");
+      if (!relocated_runtime.isValid() || !QDir().mkpath(relocated_configs) ||
+          !QFile::copy(default_native_path, QDir(relocated_configs).filePath("default_tracker.yaml")) ||
+          !QFile::copy(
+              QDir(app_dir).filePath("ds_hockey_app_config.yaml"),
+              QDir(relocated_configs).filePath("ds_hockey_app_config.yaml")) ||
+          !QDir(app_dir).removeRecursively())
+        return false;
+      HStreamWindow relocated_window;
+      HStreamWindowTestAccess::setDevelopmentRuntimeRoot(&relocated_window, relocated_runtime.path());
+      auto* relocated_game = require_child<QLineEdit>(&relocated_window, "gameIdEdit");
+      auto* relocated_load = require_child<QPushButton>(&relocated_window, "createGameButton");
+      auto* relocated_save = require_child<QPushButton>(&relocated_window, "savePresetButton");
+      auto* relocated_count = require_child<QSpinBox>(&relocated_window, "cameraSpin_Ignore_Largest_Count");
+      if (!relocated_game || !relocated_load || !relocated_save || !relocated_count)
+        return false;
+      relocated_game->setText("ui-user-stitch-default");
+      activate(relocated_load);
+      ok &= expect(
+          relocated_count->value() == 2,
+          "Reopening from a new runtime must reload the preset after the original runtime is removed");
+      relocated_count->setValue(4);
+      activate(relocated_save);
+      const auto relocated_saved = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          !relocated_save->isEnabled() && relocated_saved["hstream_ui"]["playtracker_config_base"].IsNull() &&
+              !fs::path(relocated_saved["pipeline"]["ds-playtracker"]["config-file"].as<std::string>()).is_absolute() &&
+              YAML::Dump(relocated_saved).find(runtime_root.path().toStdString()) == std::string::npos,
+          "Saving after runtime relocation must resolve the inherited tracker again without storing checkout paths");
+      const fs::path moved_game = copied_game.parent_path() / "ui-moved-preset";
+      fs::rename(copied_game, moved_game);
+      {
+        HStreamWindow moved_window;
+        HStreamWindowTestAccess::setDevelopmentRuntimeRoot(&moved_window, relocated_runtime.path());
+        auto* moved_id = require_child<QLineEdit>(&moved_window, "gameIdEdit");
+        auto* moved_load = require_child<QPushButton>(&moved_window, "createGameButton");
+        auto* moved_save = require_child<QPushButton>(&moved_window, "savePresetButton");
+        auto* moved_count = require_child<QSpinBox>(&moved_window, "cameraSpin_Ignore_Largest_Count");
+        if (!moved_id || !moved_load || !moved_save || !moved_count)
+          return false;
+        moved_id->setText("ui-moved-preset");
+        activate(moved_load);
+        ok &= expect(
+            moved_count->value() == 4 && moved_window.cameraControlValue("Oversized_Player_Percent") == 125.5,
+            "A moved game must reload the saved tracker sidecar relative to its new directory");
+        moved_count->setValue(5);
+        activate(moved_save);
+        ok &= expect(!moved_save->isEnabled(), "A moved game must remain editable and savable");
+      }
+      fs::rename(moved_game, copied_game);
     } else {
       ok = false;
     }
@@ -14201,6 +14323,13 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRESET_RELOAD_ONLY")) {
+    HStreamWindow window;
+    return test_preset_reload_with_missing_tracker() && test_game_setup(&window, source_root.path()) &&
+            test_nonzero_user_stitch_frame_default(window.gameDirectoryText()) && test_camera_controls(&window)
+        ? 0
+        : 1;
+  }
   const bool rink_leveling_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RINK_LEVELING_FLOW_ONLY");
   const bool iteration_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ITERATION_ONLY");
   const bool crop_flow_only = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_CROP_FLOW_ONLY");
@@ -14212,7 +14341,8 @@ int main(int argc, char** argv) {
   window.show();
 
   if (iteration_only)
-    return test_game_setup(&window, source_root.path()) && test_stitching_iteration_controls(window.gameDirectoryText())
+    return test_preset_reload_with_missing_tracker() && test_game_setup(&window, source_root.path()) &&
+            test_stitching_iteration_controls(window.gameDirectoryText())
         ? 0
         : 1;
 
@@ -14259,7 +14389,7 @@ int main(int argc, char** argv) {
     std::cerr << "test_game_setup failed\n";
     return 1;
   }
-  if (!test_stitching_iteration_controls(window.gameDirectoryText()))
+  if (!test_preset_reload_with_missing_tracker() || !test_stitching_iteration_controls(window.gameDirectoryText()))
     return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";
