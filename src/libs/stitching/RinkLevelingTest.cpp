@@ -188,6 +188,20 @@ bool test_corner_geometry() {
   ok &= expect(
       noise.ok() && near(noise->rotation_degrees, desired, 0.15),
       "Small corner picking errors must give a bounded leveling estimate");
+  // A low, side-board camera sees distant corners at shallow angles. Modest
+  // calibration/picking errors can exceed the old 10-degree rectangle cutoff
+  // even though the recovered ice tilt remains within about one degree.
+  std::array<Vec, 4> shallow_points{
+      unit({2, -26, -1.5}), unit({28, -26, -1.5}), unit({2, 26, -1.5}), unit({28, 26, -1.5})};
+  shallow_points[0][2] += 0.01;
+  shallow_points[1][2] -= 0.01;
+  for (auto& point : shallow_points)
+    point = rotate(rotate(point, desired, true), published);
+  const auto shallow = leveling::EstimateRinkLevelingFromCorners(
+      {{shallow_points[0], shallow_points[1]}, {shallow_points[2], shallow_points[3]}}, published, desired[0]);
+  ok &= expect(
+      shallow.ok() && shallow->orthogonality_error_degrees > 10 && near(shallow->rotation_degrees, desired, 1.5),
+      "A calibration angle mismatch must remain advisory when the corners still determine usable tilt");
   auto crossed = edges;
   std::swap(crossed[1].first, crossed[1].second);
   ok &= expect(
@@ -202,11 +216,16 @@ bool test_corner_geometry() {
   coincident[0].second = coincident[0].first;
   ok &= expect(
       !leveling::EstimateRinkLevelingFromCorners(coincident, published, 0).ok(), "Coincident corners must be rejected");
-  auto skewed = corners({0, 0, 0}, {0, 0, 0});
-  skewed[1].second = unit({14, 28, -5});
+  auto concave = corners({0, 0, 0}, {0, 0, 0});
+  concave[1].second = unit({14, 0, -5});
   ok &= expect(
-      !leveling::EstimateRinkLevelingFromCorners(skewed, {0, 0, 0}, 0).ok(),
-      "Marks that do not describe a rectangle must be rejected");
+      !leveling::EstimateRinkLevelingFromCorners(concave, {0, 0, 0}, 0).ok(),
+      "Concave corner order must be rejected even when angle mismatch is advisory");
+  // Both pairs of edge planes intersect cleanly, but their vanishing
+  // directions are almost parallel and cannot define a stable normal.
+  const auto parallel = leveling::EstimateRinkLevelingFromCorners(
+      {{unit({0, -3, -1}), unit({0, 3, -1})}, {unit({0.018, -1, -1}), unit({0.018, 5, -1})}}, {0, 0, 0}, 0);
+  ok &= expect(!parallel.ok(), "Nearly parallel vanishing directions must reject an unstable ice normal");
   auto invalid = edges;
   invalid[0].first[0] = std::numeric_limits<double>::quiet_NaN();
   ok &= expect(

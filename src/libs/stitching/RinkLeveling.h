@@ -38,6 +38,7 @@ struct RinkLevelingEstimate {
 
 struct RinkCornerLevelingEstimate {
   std::array<double, 3> rotation_degrees{};
+  // Advisory calibration/selection mismatch; inspect the preview before use.
   double orthogonality_error_degrees{0};
 };
 

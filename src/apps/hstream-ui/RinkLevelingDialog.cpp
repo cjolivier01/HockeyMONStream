@@ -13,6 +13,7 @@
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
@@ -133,19 +134,23 @@ RinkLevelingDialog::RinkLevelingDialog(
   });
   layout->addWidget(tabs_, 1);
   auto* angles = new QHBoxLayout();
+  const std::array<QString, 3> angle_names{"Yaw", "Pitch", "Roll"};
   for (size_t index = 0; index < angle_spins_.size(); ++index) {
-    angles->addWidget(new QLabel(index == 0 ? "Pitch" : "Roll"));
+    angles->addWidget(new QLabel(angle_names[index]));
     auto* spin = new QDoubleSpinBox();
-    spin->setObjectName(index == 0 ? "rinkLevelingPitch" : "rinkLevelingRoll");
+    spin->setObjectName("rinkLeveling" + angle_names[index]);
     spin->setRange(-180, 180);
     spin->setDecimals(3);
     spin->setSingleStep(0.25);
     spin->setSuffix(QString::fromUtf8("°"));
-    spin->setValue(initial_rotation_[index + 1]);
+    spin->setValue(initial_rotation_[index]);
     angle_spins_[index] = spin;
-    connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this]() {
-      estimate_timer_.stop();
-      manual_angles_ = true;
+    connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, index]() {
+      // Yaw changes the view direction without replacing a pending tilt fit.
+      if (index != 0) {
+        estimate_timer_.stop();
+        manual_angles_ = true;
+      }
       preview_requested_ = false;
       invalidatePreview();
     });
@@ -169,7 +174,7 @@ RinkLevelingDialog::RinkLevelingDialog(
   layout->addWidget(status_);
   auto* note = new QLabel(
       QString(
-          "Preview uses the saved projection and crop. The estimate levels the scene; you can fine-tune pitch "
+          "Preview uses the saved projection and crop. The estimate levels the scene; you can adjust yaw, pitch "
           "and roll. ") +
       (in_progress_calibration_
            ? "Use angles continues calibration with the result. Skip leveling keeps the configured angles."
@@ -353,7 +358,7 @@ void RinkLevelingDialog::loadSnapshot() {
 }
 
 std::array<double, 3> RinkLevelingDialog::rotationDegrees() const {
-  return {initial_rotation_[0], angle_spins_[0]->value(), angle_spins_[1]->value()};
+  return {angle_spins_[0]->value(), angle_spins_[1]->value(), angle_spins_[2]->value()};
 }
 
 void RinkLevelingDialog::setBusy(bool busy) {
@@ -397,9 +402,10 @@ void RinkLevelingDialog::switchMethod(bool corners) {
     canvases_[camera]->setLineSelectionMode(corner_method_ ? 2 : 8);
     canvases_[camera]->setPoints(restored[camera]);
   }
-  for (size_t index = 0; index < angle_spins_.size(); ++index) {
+  // Changing the tilt method does not reset the user's view direction.
+  for (size_t index = 1; index < angle_spins_.size(); ++index) {
     const QSignalBlocker blocked(angle_spins_[index]);
-    angle_spins_[index]->setValue(initial_rotation_[index + 1]);
+    angle_spins_[index]->setValue(initial_rotation_[index]);
   }
   instructions_->setText(
       corner_method_
@@ -591,18 +597,20 @@ void RinkLevelingDialog::estimate() {
         }
         std::array<double, 3> rotation;
         QString message;
+        double rectangle_mismatch = 0;
         if (corner_method_) {
           const auto result =
-              hm::stitching::EstimateRinkLevelingFromCorners(*rays, published_rotation_, initial_rotation_[0]);
+              hm::stitching::EstimateRinkLevelingFromCorners(*rays, published_rotation_, angle_spins_[0]->value());
           if (!result.ok()) {
             fail(QString::fromStdString(result.status().ToString()));
             return;
           }
           rotation = result->rotation_degrees;
+          rectangle_mismatch = result->orthogonality_error_degrees;
           message = QString("Used four corners; rectangle angle mismatch %1°. Use Next to inspect Preview.")
                         .arg(result->orthogonality_error_degrees, 0, 'f', 2);
         } else {
-          const auto result = hm::stitching::EstimateRinkLeveling(*rays, published_rotation_, initial_rotation_[0]);
+          const auto result = hm::stitching::EstimateRinkLeveling(*rays, published_rotation_, angle_spins_[0]->value());
           if (!result.ok()) {
             fail(QString::fromStdString(result.status().ToString()));
             return;
@@ -613,14 +621,59 @@ void RinkLevelingDialog::estimate() {
                         .arg(count)
                         .arg(result->rms_residual_degrees, 0, 'f', 2);
         }
-        for (size_t index = 0; index < angle_spins_.size(); ++index) {
-          const QSignalBlocker blocked(angle_spins_[index]);
-          angle_spins_[index]->setValue(rotation[index + 1]);
+        auto apply_estimate = [this, rotation, message]() {
+          for (size_t index = 0; index < angle_spins_.size(); ++index) {
+            const QSignalBlocker blocked(angle_spins_[index]);
+            angle_spins_[index]->setValue(rotation[index]);
+          }
+          estimated_ = true;
+          status_->setText(message);
+          if (preview_requested_)
+            requestPreview();
+        };
+        if (rectangle_mismatch <= 10) {
+          apply_estimate();
+          return;
         }
-        estimated_ = true;
-        status_->setText(message);
-        if (preview_requested_)
-          requestPreview();
+        auto* confirmation = new QMessageBox(
+            QMessageBox::Warning,
+            "Check rectangle points",
+            QString(
+                "The rectangle check found an angle mismatch of %1°. Camera calibration or point placement "
+                "can cause this mismatch.\n\nUse these points anyway and inspect the preview, or return to "
+                "the camera images to adjust them.")
+                .arg(rectangle_mismatch, 0, 'f', 2),
+            QMessageBox::NoButton,
+            this);
+        confirmation->setObjectName("rinkLevelingRectangleWarning");
+        confirmation->setAttribute(Qt::WA_DeleteOnClose);
+        confirmation->setInformativeText(
+            QString(
+                "If the points are correct, check the camera's FOV setting. Stabilization such as HyperSmooth "
+                "can narrow the recorded field of view. ") +
+            (in_progress_calibration_
+                 ? "To change camera settings, return to the points, choose Cancel calibration, then recalibrate."
+                 : "To change camera settings, return to the points, choose Cancel, then recalibrate."));
+        auto* use_points = confirmation->addButton("Use points anyway", QMessageBox::AcceptRole);
+        auto* select_again = confirmation->addButton("Select points again", QMessageBox::RejectRole);
+        confirmation->setDefaultButton(select_again);
+        confirmation->setEscapeButton(select_again);
+        rectangle_confirmation_ = confirmation;
+        setBusy(true);
+        // Keep the normal event loop running so backend completion can close
+        // both dialogs without resuming an obsolete estimate.
+        connect(confirmation, &QDialog::finished, this, [this, confirmation, use_points, apply_estimate]() {
+          rectangle_confirmation_ = nullptr;
+          setBusy(false);
+          if (confirmation->clickedButton() == use_points) {
+            apply_estimate();
+          } else {
+            fail("Adjust the rectangle points, then continue to Preview. Use Clear to start over.");
+            if (tabs_->currentIndex() == 2)
+              tabs_->setCurrentIndex(0);
+          }
+        });
+        confirmation->open();
       });
 }
 
@@ -736,6 +789,11 @@ void RinkLevelingDialog::acceptAngles() {
 void RinkLevelingDialog::reject() {
   estimate_timer_.stop();
   preview_requested_ = false;
+  if (rectangle_confirmation_) {
+    rectangle_confirmation_->disconnect(this);
+    rectangle_confirmation_->close();
+    rectangle_confirmation_ = nullptr;
+  }
   if (process_) {
     process_->disconnect(this);
     process_->kill();
