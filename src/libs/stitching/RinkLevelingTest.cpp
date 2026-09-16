@@ -221,6 +221,11 @@ bool test_corner_geometry() {
   ok &= expect(
       !leveling::EstimateRinkLevelingFromCorners(concave, {0, 0, 0}, 0).ok(),
       "Concave corner order must be rejected even when angle mismatch is advisory");
+  // Both pairs of edge planes intersect cleanly, but their vanishing
+  // directions are almost parallel and cannot define a stable normal.
+  const auto parallel = leveling::EstimateRinkLevelingFromCorners(
+      {{unit({0, -3, -1}), unit({0, 3, -1})}, {unit({0.018, -1, -1}), unit({0.018, 5, -1})}}, {0, 0, 0}, 0);
+  ok &= expect(!parallel.ok(), "Nearly parallel vanishing directions must reject an unstable ice normal");
   auto invalid = edges;
   invalid[0].first[0] = std::numeric_limits<double>::quiet_NaN();
   ok &= expect(

@@ -12248,6 +12248,11 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     posts->setChecked((selection & 2) != 0);
     // A changed reference also ensures enabled crop review waits for fresh calibration.
     reference->setTime(QTime(0, 0, selection == 0 ? 0 : 8 + selection));
+    // Play must persist fresh edits without Save Preset, including the
+    // reference time while its control is disabled for multiple frames.
+    playback->setTime(QTime(0, 15, selection + 1, 125));
+    frames->setValue(selection == 2 ? 3 : 1);
+    const QString selected_playback = playback->time().toString("HH:mm:ss.zzz");
     archive->setChecked(selection == 3);
     if (!set_test_calibration_status(&window, "pending")) {
       ok = false;
@@ -12257,8 +12262,10 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     const auto args = HStreamWindowTestAccess::pipelineArguments(&window);
     const auto launched_config = YAML::LoadFile(config_path.string());
     ok &= expect(
-        args.contains("--start-time=00:15:00") && args.contains("--options=stitching.sync_method=auto") &&
-            launched_config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:15:00" &&
+        args.contains("--start-time=" + selected_playback) && args.contains("--options=stitching.sync_method=auto") &&
+            QString::fromStdString(launched_config["hstream_ui"]["playback_start_time"].as<std::string>()) ==
+                selected_playback &&
+            launched_config["stitching"]["calibration_frame_count"].as<int>() == frames->value() &&
             QString::fromStdString(launched_config["stitching"]["stitch_frame_time"].as<std::string>("00:00:00")) ==
                 reference->time().toString("HH:mm:ss") &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_PROJECTION_CROP_FLOW") ==
