@@ -15558,8 +15558,15 @@ std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
     throw std::runtime_error(user.status().ToString());
   constexpr const char* file_key = "pipeline.ds-playtracker.config-file";
   YAML::Node configured_file;
+  YAML::Node original_file;
+  const bool has_original = original &&
+      !resolve_ui_persistent_playtracker_config(game_config, game_dir, pipelineWorkingDirectory()).isEmpty() &&
+      lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &original_file);
   int native_rank = 0;
-  if (lookup_yaml_path(game_config, file_key, &configured_file)) {
+  if (has_original && !original_file.IsNull()) {
+    configured_file.reset(original_file);
+    native_rank = 2;
+  } else if (!has_original && lookup_yaml_path(game_config, file_key, &configured_file)) {
     native_rank = 2;
   } else if (lookup_yaml_path(*user, file_key, &configured_file)) {
     native_rank = 1;
@@ -15570,13 +15577,8 @@ std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
       lookup_yaml_path(app_config, "ds-playtracker.config-file", &configured_file);
     }
   }
-  // On Save/Reset compare against the original native file, not a generated
-  // sidecar containing a previous UI override.
-  if (original) {
-    YAML::Node original_file;
-    if (lookup_yaml_path(game_config, "hstream_ui.playtracker_config_base", &original_file))
-      configured_file.reset(original_file);
-  }
+  // A null base means the sidecar inherited its source. Resolve the user or
+  // bundled config again instead of pinning it to the previous checkout.
   if (configured_file.IsDefined() && !configured_file.IsNull()) {
     if (!configured_file.IsScalar())
       throw std::invalid_argument("pipeline.ds-playtracker.config-file must be a file path");
@@ -15606,18 +15608,31 @@ std::pair<QString, int> HStreamWindow::resolvePlaytrackerConfig(
   return {QString(), native_rank};
 }
 
-std::map<QString, double> HStreamWindow::readPlayerSizeControls(const YAML::Node& game_config, bool inherited) const {
+std::map<QString, double> HStreamWindow::readPlayerSizeControls(
+    const YAML::Node& game_config,
+    bool inherited,
+    QString* native_error) const {
   const auto user = hm::user_config::load_or_create();
   if (!user.ok())
     throw std::runtime_error(user.status().ToString());
   const QString game_dir = game_id_edit_ ? gameDirectory(game_id_edit_->text()) : gameRoot();
-  const auto [native_file, native_rank] = resolvePlaytrackerConfig(game_config, inherited, game_dir);
+  int native_rank = 0;
   YAML::Node native(YAML::NodeType::Map);
-  if (!native_file.isEmpty()) {
-    const YAML::Node document = YAML::LoadFile(native_file.toStdString());
-    if (!document["play-tracker"].IsMap())
-      throw std::invalid_argument("Native tracker config must contain a play-tracker map");
-    native.reset(document["play-tracker"]);
+  try {
+    const auto resolved = resolvePlaytrackerConfig(game_config, inherited, game_dir);
+    native_rank = resolved.second;
+    if (!resolved.first.isEmpty()) {
+      const YAML::Node document = YAML::LoadFile(resolved.first.toStdString());
+      if (!document["play-tracker"].IsMap())
+        throw std::invalid_argument("Native tracker config must contain a play-tracker map");
+      native.reset(document["play-tracker"]);
+    }
+  } catch (const std::exception& error) {
+    if (!native_error)
+      throw;
+    // An unavailable external tracker file must not discard the game's
+    // independent saved settings. Canonical size controls still load below.
+    *native_error = QString::fromUtf8(error.what());
   }
   auto effective = [&](const char* canonical_key, const char* native_key) {
     YAML::Node value;
@@ -15654,6 +15669,7 @@ std::map<QString, double> HStreamWindow::readPlayerSizeControls(const YAML::Node
 void HStreamWindow::loadSavedControlConfig() {
   setStitchingIterationSettings(default_iteration_settings_);
   inherited_player_size_controls_.clear();
+  unavailable_playtracker_config_error_.clear();
   if (!game_id_edit_ || game_id_edit_->text().isEmpty()) {
     captureSavedControlState();
     return;
@@ -15873,8 +15889,8 @@ void HStreamWindow::loadSavedControlConfig() {
       staged_high_bit_depth_mode = forced < 0 ? "auto" : forced != 0 ? "1" : "0";
       stage_control(id, forced > 0 ? 1 : 0);
     };
-    inherited_player_size_controls_ = readPlayerSizeControls(config, true);
-    for (const auto& [id, value] : readPlayerSizeControls(config, false))
+    inherited_player_size_controls_ = readPlayerSizeControls(config, true, &unavailable_playtracker_config_error_);
+    for (const auto& [id, value] : readPlayerSizeControls(config, false, &unavailable_playtracker_config_error_))
       stage_control(id, value);
     stage_integer_path("rink.camera.stop_on_dir_change_delay", "Stop_Direction_Change_Delay_Frames");
     stage_boolean_path("rink.camera.cancel_stop_on_opposite_dir", "Cancel_Stop_On_Opposite_Direction");
@@ -16384,6 +16400,9 @@ void HStreamWindow::loadSavedControlConfig() {
     updateCropRotationControls();
     synchronizeStitchedColorControls();
     appendLog(QString("loaded %1 saved camera controls").arg(loaded));
+    if (!unavailable_playtracker_config_error_.isEmpty())
+      appendLog(QString("Loaded saved settings, but tracker defaults are unavailable: %1")
+                    .arg(unavailable_playtracker_config_error_));
     captureSavedControlState();
     if (normalized_nona_without_autooptimizer) {
       saved_mapping_backend_ = "nona";
@@ -16424,10 +16443,14 @@ bool HStreamWindow::applySavedControlConfig(
   if (!yaml_defined(config) || config.IsNull()) {
     config = YAML::Node(YAML::NodeType::Map);
   }
+  const YAML::Node unavailable_tracker_snapshot =
+      unavailable_playtracker_config_error_.isEmpty() ? YAML::Node() : YAML::Clone(config);
   YAML::Node previous_hstream_ui = map_value(config, "hstream_ui");
   YAML::Node previous_generated = map_value(previous_hstream_ui, "generated_runtime_keys");
   YAML::Node previous_generated_values = map_value(previous_hstream_ui, "generated_runtime_values");
-  YAML::Node previous_playtracker_config_base = map_value(previous_hstream_ui, "playtracker_config_base");
+  YAML::Node previous_playtracker_config_base;
+  const bool had_playtracker_config_base =
+      lookup_yaml_path(config, "hstream_ui.playtracker_config_base", &previous_playtracker_config_base);
   YAML::Node previous_stitch_rotation;
   const bool previous_stitch_rotation_found =
       lookup_yaml_path(config, "stitching.post_stitch_rotate_degrees", &previous_stitch_rotation);
@@ -16475,13 +16498,16 @@ bool HStreamWindow::applySavedControlConfig(
   remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
   write_stitching_iteration_settings(config, stitchingIterationSettings());
   YAML::Node current_playtracker_config;
-  if (previous_playtracker_config_base && previous_playtracker_config_base.IsScalar() &&
+  if (had_playtracker_config_base &&
       (!lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &current_playtracker_config) ||
        (game_id_edit_ &&
         !resolve_ui_persistent_playtracker_config(
              config, gameDirectory(game_id_edit_->text()), pipelineWorkingDirectory())
              .isEmpty()))) {
-    config["pipeline"]["ds-playtracker"]["config-file"] = previous_playtracker_config_base.as<std::string>();
+    if (previous_playtracker_config_base.IsNull())
+      remove_yaml_path(config, {"pipeline", "ds-playtracker", "config-file"});
+    else
+      config["pipeline"]["ds-playtracker"]["config-file"] = YAML::Clone(previous_playtracker_config_base);
   }
 
   int previous_max_output_width = std::numeric_limits<int>::min();
@@ -16834,7 +16860,34 @@ bool HStreamWindow::applySavedControlConfig(
       has_control(controls, "Overshoot_Speed_Ratio_x100") || has_control(controls, "Max_Speed_X_x10") ||
       has_control(controls, "Max_Speed_Y_x10") || has_control(controls, "Max_Accel_X_x10") ||
       has_control(controls, "Max_Accel_Y_x10");
-  if (has_playtracker_runtime_controls && game_id_edit_) {
+  const QStringList tracker_control_ids = {
+      "Ignore_Largest_Count",
+      "Ignore_Oversized_Players",
+      "Oversized_Player_Percent",
+      "Stop_Direction_Change_Delay_Frames",
+      "Zoom_In_Aggressiveness",
+      "Cancel_Stop_On_Opposite_Direction",
+      "Stop_Cancel_Hysteresis_Frames",
+      "Stop_Delay_Cooldown_Frames",
+      "Time_To_Dest_Speed_Limit_Frames",
+      "Overshoot_Stop_Delay_Frames",
+      "Post_Nonstop_Stop_Delay_Frames",
+      "Overshoot_Speed_Ratio_x100",
+      "Max_Speed_X_x10",
+      "Max_Speed_Y_x10",
+      "Max_Accel_X_x10",
+      "Max_Accel_Y_x10",
+      "Apply_To_Fast_Box",
+      "Apply_To_Follower_Box"};
+  if (!unavailable_playtracker_config_error_.isEmpty()) {
+    for (const QString& id : tracker_control_ids) {
+      const auto saved = saved_camera_controls_.find(id);
+      if (saved == saved_camera_controls_.end() || cameraPresetControlValue(id) != saved->second) {
+        appendLog(QString("Could not save changed tracker controls: %1").arg(unavailable_playtracker_config_error_));
+        return false;
+      }
+    }
+  } else if (has_playtracker_runtime_controls && game_id_edit_) {
     const QString game_dir = gameDirectory(game_id_edit_->text());
     QDir runtime_dir(QDir(game_dir).filePath(kUiDirectoryName));
     if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
@@ -16844,6 +16897,10 @@ bool HStreamWindow::applySavedControlConfig(
       const QString runtime_config_path = runtime_dir.filePath(
           QString("play_tracker_config_%1.yaml").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
       try {
+        YAML::Node configured_reference;
+        const bool has_configured_reference =
+            lookup_yaml_path(config, "pipeline.ds-playtracker.config-file", &configured_reference);
+        configured_reference.reset(YAML::Clone(configured_reference));
         const QString configured_playtracker_config = resolvePlaytrackerConfig(config, true, game_dir).first;
         const QString base_playtracker_config = configured_playtracker_config.isEmpty()
             ? pipelineConfigPath("play_tracker_config.yaml")
@@ -16942,10 +16999,12 @@ bool HStreamWindow::applySavedControlConfig(
         if (published_playtracker_sidecar) {
           *published_playtracker_sidecar = QFileInfo(runtime_config_path).absoluteFilePath();
         }
-        config["pipeline"]["ds-playtracker"]["config-file"] = runtime_config_path.toStdString();
-        if (!configured_playtracker_config.isEmpty() && configured_playtracker_config != runtime_config_path) {
-          config["hstream_ui"]["playtracker_config_base"] = configured_playtracker_config.toStdString();
-        }
+        config["pipeline"]["ds-playtracker"]["config-file"] =
+            QDir(game_dir).relativeFilePath(runtime_config_path).toStdString();
+        // Preserve the configured reference, not its resolved absolute path.
+        // Null records inheritance from the user/bundled configuration.
+        config["hstream_ui"]["playtracker_config_base"] =
+            has_configured_reference ? YAML::Clone(configured_reference) : YAML::Node(YAML::NodeType::Null);
         mark_runtime_key("pipeline.ds-playtracker.config-file");
         appendLog(QString("playtracker runtime config saved %1").arg(runtime_config_path));
       } catch (const std::exception& exc) {
@@ -16962,6 +17021,62 @@ bool HStreamWindow::applySavedControlConfig(
     config["hstream_ui"]["camera_control_targets"]["apply_to_follower_box"] =
         slider_value("Apply_To_Follower_Box") != 0;
     mark_runtime_key("hstream_ui.camera_control_targets.apply_to_follower_box");
+  }
+  if (!unavailable_playtracker_config_error_.isEmpty()) {
+    // Native defaults are unknown, so retain untouched tracker overrides
+    // verbatim, including overrides equal to today's fallback defaults.
+    auto restore_tracker_path = [&](const QString& path) {
+      const std::string key = path.toStdString();
+      YAML::Node previous;
+      const bool present = lookup_yaml_path(unavailable_tracker_snapshot, path, &previous);
+      remove_yaml_path(config, path);
+      if (present) {
+        const auto parts = path.split('.');
+        YAML::Node parent = config;
+        for (int index = 0; index + 1 < parts.size(); ++index)
+          parent.reset(parent[parts[index].toStdString()]);
+        parent[parts.back().toStdString()] = YAML::Clone(previous);
+      }
+      generated_key_set.erase(key);
+      YAML::Node generated_value;
+      if (present && lookup_yaml_key(previous_generated_values, key.c_str(), &generated_value) &&
+          generated_value.IsScalar() && generated_value.as<std::string>() == YAML::Dump(previous) &&
+          previous_generated.IsSequence()) {
+        for (const auto& generated_key : previous_generated) {
+          if (generated_key.as<std::string>() == key)
+            generated_key_set.insert(key);
+        }
+      }
+    };
+    for (const QString& id : tracker_control_ids)
+      restore_tracker_path("hstream_ui.camera_controls." + id);
+    for (const QString path :
+         {"pipeline.ds-playtracker.config-file",
+          "rink.tracking.cam_ignore_largest",
+          "rink.tracking.cam_ignore_largest_count",
+          "rink.tracking.cam_ignore_oversized",
+          "rink.tracking.cam_oversized_percent",
+          "rink.camera.stop_on_dir_change_delay",
+          "rink.camera.cancel_stop_on_opposite_dir",
+          "rink.camera.stop_cancel_hysteresis_frames",
+          "rink.camera.stop_delay_cooldown_frames",
+          "rink.camera.time_to_dest_speed_limit_frames",
+          "rink.camera.zoom_in_aggressiveness",
+          "rink.camera.breakaway_detection.overshoot_stop_delay_count",
+          "rink.camera.breakaway_detection.post_nonstop_stop_delay_count",
+          "rink.camera.breakaway_detection.overshoot_scale_speed_ratio",
+          "hstream_ui.camera_control_targets.apply_to_fast_box",
+          "hstream_ui.camera_control_targets.apply_to_follower_box"})
+      restore_tracker_path(path);
+    // A replacement custom reference must not inherit the old sidecar's base.
+    if (had_playtracker_config_base && game_id_edit_ &&
+        !resolve_ui_persistent_playtracker_config(
+             config, gameDirectory(game_id_edit_->text()), pipelineWorkingDirectory())
+             .isEmpty())
+      config["hstream_ui"]["playtracker_config_base"] = YAML::Clone(previous_playtracker_config_base);
+    generated_runtime_keys = YAML::Node(YAML::NodeType::Sequence);
+    for (const auto& key : generated_key_set)
+      generated_runtime_keys.push_back(key);
   }
   if (generated_runtime_keys.size() > 0) {
     for (const auto& path_node : generated_runtime_keys) {

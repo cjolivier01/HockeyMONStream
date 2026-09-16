@@ -466,7 +466,8 @@ class HStreamWindow : public QMainWindow {
       const YAML::Node& game_config,
       bool original,
       const QString& game_dir) const;
-  std::map<QString, double> readPlayerSizeControls(const YAML::Node& game_config, bool inherited) const;
+  std::map<QString, double> readPlayerSizeControls(
+      const YAML::Node& game_config, bool inherited, QString* native_error = nullptr) const;
   void loadSavedControlConfig();
   bool sendLiveCameraControl(const QString& id, double value);
   bool publishRuntimeControlBatch(
@@ -801,6 +802,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, QSpinBox*> camera_spinboxes_;
   std::map<QString, QDoubleSpinBox*> camera_double_spinboxes_;
   std::map<QString, double> inherited_player_size_controls_;
+  QString unavailable_playtracker_config_error_;
   std::map<QString, QCheckBox*> camera_checkboxes_;
   std::map<QString, QLabel*> camera_value_labels_;
   std::map<QString, QSlider*> stitched_color_sliders_;
