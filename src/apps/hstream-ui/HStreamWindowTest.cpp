@@ -129,6 +129,21 @@ struct HStreamWindowTestAccess {
     window->active_stitch_max_output_width_ = width;
   }
 
+  static void setActiveCalibrationControlPoints(HStreamWindow* window, int control_points) {
+    window->active_calibration_control_points_ = control_points;
+  }
+
+  static void setActiveCameraSelection(
+      HStreamWindow* window,
+      const hm::stitching::StitchCameraSelection& selection) {
+    window->active_camera_selection_ = selection;
+  }
+
+  static void resetActiveCalibrationSettings(HStreamWindow* window) {
+    window->active_calibration_control_points_ = 0;
+    window->active_camera_selection_ = window->default_camera_selection_;
+  }
+
   static void clearCalibrationDiagnostics(HStreamWindow* window) {
     window->calibration_diagnostic_lines_.clear();
     window->calibration_cuda_out_of_memory_ = false;
@@ -14317,6 +14332,53 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
       seam_analysis.contains("seam/panorama generation or artifact publication step failed") &&
       seam_analysis.contains("enblend failed to generate seam_file.png") &&
       !seam_analysis.contains("did not produce enough geometrically consistent overlap");
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(
+      window, "Skipping pooled stitching calibration: NOT_FOUND: Required Hugin executable not found: pto_gen");
+  const QString missing_hugin_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window,
+      "No stitching calibration frame pair produced a usable Hugin solution after 5 candidate attempts: NOT_FOUND: "
+      "Required Hugin executable not found: pto_gen");
+  const bool missing_hugin_failure_is_not_physical_overlap =
+      missing_hugin_analysis.contains("Hugin/NONA command-line toolchain is incomplete") &&
+      missing_hugin_analysis.contains("pto_gen") &&
+      !missing_hugin_analysis.contains("did not produce enough geometrically consistent overlap");
+  const QString invalid_pto_gen_analysis =
+      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "NOT_FOUND: HM_PTO_GEN is not executable: /bad/pto_gen");
+  const bool invalid_pto_gen_is_toolchain_failure =
+      invalid_pto_gen_analysis.contains("Hugin/NONA command-line toolchain is incomplete") &&
+      invalid_pto_gen_analysis.contains("HM_PTO_GEN is not executable") &&
+      !invalid_pto_gen_analysis.contains("active calibration stage returned a terminal error");
+  const QString invalid_autooptimiser_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window, "NOT_FOUND: HM_AUTOOPTIMISER is not executable: /bad/autooptimiser");
+  const bool invalid_autooptimiser_is_toolchain_failure =
+      invalid_autooptimiser_analysis.contains("Hugin/NONA command-line toolchain is incomplete") &&
+      invalid_autooptimiser_analysis.contains("HM_AUTOOPTIMISER is not executable") &&
+      !invalid_autooptimiser_analysis.contains("panorama optimizer rejected");
+  const QString invalid_nona_analysis =
+      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "NOT_FOUND: HM_NONA is not executable: /bad/nona");
+  const bool invalid_nona_is_toolchain_failure =
+      invalid_nona_analysis.contains("Hugin/NONA command-line toolchain is incomplete") &&
+      invalid_nona_analysis.contains("HM_NONA is not executable") &&
+      !invalid_nona_analysis.contains("active calibration stage returned a terminal error");
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  HStreamWindowTestAccess::setActiveCalibrationControlPoints(window, 250);
+  HStreamWindowTestAccess::setActiveCameraSelection(window, {"gopro-hero-11", 108.0, 90.0});
+  const QString settings_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window, "No stitching calibration frame pair produced a usable solution after 4 candidate attempts");
+  const bool settings_failure_is_not_physical_overlap =
+      settings_analysis.contains("selected calibration settings") && settings_analysis.contains("CP limit is 250") &&
+      settings_analysis.contains("gopro-hero-11") &&
+      !settings_analysis.contains("did not produce enough geometrically consistent overlap");
+  const QString unsafe_final_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window,
+      "No stitching calibration frame pair produced a usable solution after 4 candidate attempts: "
+      "FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent");
+  const bool unsafe_final_failure_keeps_specific_cause =
+      unsafe_final_analysis.contains("unsafe or implausibly large canvas") &&
+      !unsafe_final_analysis.contains("selected calibration settings") &&
+      !unsafe_final_analysis.contains("did not produce enough geometrically consistent overlap");
+  HStreamWindowTestAccess::resetActiveCalibrationSettings(window);
 
   return expect(
              combo_protected && spin_protected && check_protected && radio_protected && pane_scrolled,
@@ -14326,7 +14388,18 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
       expect(diagnosis_is_actionable,
              "Calibration failures must explain the cause, bounded fallbacks, and corrective action") &&
       expect(seam_failure_is_not_misclassified,
-             "A late seam/publication failure must retain its cause instead of being presented as non-overlap");
+             "A late seam/publication failure must retain its cause instead of being presented as non-overlap") &&
+      expect(missing_hugin_failure_is_not_physical_overlap,
+             "A missing Hugin executable must not be presented as physical non-overlap") &&
+      expect(invalid_pto_gen_is_toolchain_failure,
+             "An invalid HM_PTO_GEN override must be presented as a toolchain failure") &&
+      expect(invalid_autooptimiser_is_toolchain_failure,
+             "An invalid HM_AUTOOPTIMISER override must be presented as a toolchain failure") &&
+      expect(invalid_nona_is_toolchain_failure, "An invalid HM_NONA override must be presented as a toolchain failure") &&
+      expect(settings_failure_is_not_physical_overlap,
+             "A reduced CP/lens-profile mismatch must not be presented as physical non-overlap") &&
+      expect(unsafe_final_failure_keeps_specific_cause,
+             "A specific final geometry failure must not be hidden by the generic settings fallback");
 }
 
 bool test_camera_experiment_initial_controls(HStreamWindow* window) {
