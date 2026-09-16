@@ -2890,8 +2890,27 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
       camera};
 }
 
+bool is_missing_hugin_executable(const absl::Status& status) {
+  if (!absl::IsNotFound(status))
+    return false;
+  std::string message(status.message());
+  std::transform(message.begin(), message.end(), message.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return message.find("required hugin executable not found") != std::string::npos ||
+      message.find("hm_pto_gen is not executable") != std::string::npos ||
+      message.find("hm_autooptimiser is not executable") != std::string::npos ||
+      message.find("hm_pano_modify is not executable") != std::string::npos ||
+      message.find("hm_nona is not executable") != std::string::npos ||
+      message.find("hm_enblend is not executable") != std::string::npos;
+}
+
 bool should_retry_stitching_calibration_candidate(const absl::Status& status, bool alignment_complete) {
-  return !alignment_complete && (absl::IsFailedPrecondition(status) || absl::IsNotFound(status));
+  if (alignment_complete)
+    return false;
+  if (absl::IsNotFound(status))
+    return !is_missing_hugin_executable(status);
+  return absl::IsFailedPrecondition(status);
 }
 
 absl::StatusOr<Synchronization> calculate_stitching_synchronization(

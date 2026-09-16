@@ -8559,8 +8559,9 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   const bool useful = cuda_out_of_memory || gpu_buffer_allocation_failure || rejected_hypothesis ||
       rejected_candidate || diagnostic.startsWith("Trying ") || diagnostic.startsWith("OpenCV mapping backend ") ||
       diagnostic.contains("FAILED_PRECONDITION:") || diagnostic.contains("INVALID_ARGUMENT:") ||
-      diagnostic.contains("RESOURCE_EXHAUSTED:") || diagnostic.contains("INTERNAL:") ||
-      diagnostic.contains("HSTREAM_CALIBRATION") || diagnostic.contains("enblend", Qt::CaseInsensitive) ||
+      diagnostic.contains("NOT_FOUND:") || diagnostic.contains("RESOURCE_EXHAUSTED:") ||
+      diagnostic.contains("INTERNAL:") || diagnostic.contains("HSTREAM_CALIBRATION") ||
+      diagnostic.contains("enblend", Qt::CaseInsensitive) ||
       diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
   if (!useful)
     return;
@@ -8606,7 +8607,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
          ++diagnostic) {
       if (!diagnostic->startsWith("HSTREAM_CALIBRATION") &&
           (diagnostic->contains("FAILED_PRECONDITION:") || diagnostic->contains("INVALID_ARGUMENT:") ||
-           diagnostic->contains("RESOURCE_EXHAUSTED:") || diagnostic->contains("INTERNAL:"))) {
+           diagnostic->contains("NOT_FOUND:") || diagnostic->contains("RESOURCE_EXHAUSTED:") ||
+           diagnostic->contains("INTERNAL:"))) {
         root_cause = *diagnostic;
         break;
       }
@@ -8616,6 +8618,19 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
     root_cause = "The calibration process ended without reporting a specific cause.";
 
   const QString evidence = root_cause.toLower();
+  const int active_control_points = active_calibration_control_points_ > 0 ? active_calibration_control_points_
+                                                                           : stitchingCalibrationControlPoints();
+  const bool reduced_control_point_limit =
+      active_control_points > 0 && active_control_points < kDefaultStitchCalibrationControlPoints;
+  const bool nondefault_camera_profile = active_camera_selection_ != default_camera_selection_;
+  const bool generic_geometry_failure = evidence.contains("no stitching calibration frame pair") ||
+      evidence.contains("usable solution") || evidence.contains("usable hugin solution") ||
+      evidence.contains("usable opencv solution");
+  const bool invalid_hugin_executable_override = evidence.contains("hm_pto_gen is not executable") ||
+      evidence.contains("hm_autooptimiser is not executable") || evidence.contains("hm_pano_modify is not executable") ||
+      evidence.contains("hm_nona is not executable") || evidence.contains("hm_enblend is not executable");
+  const bool missing_hugin_executable =
+      evidence.contains("required hugin executable not found") || invalid_hugin_executable_override;
   QString explanation;
   QString action;
   if (cuda_out_of_memory) {
@@ -8635,20 +8650,21 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
               "Close other GPU-intensive applications and press Play to retry. %1 If the failure occurred before "
               "canvas generation, also set 10-bit / FP16 mode to Force off or use lower-resolution source video.")
               .arg(width_guidance);
+  } else if (missing_hugin_executable) {
+    explanation = "Calibration found control points, but the Hugin/NONA command-line toolchain is incomplete.";
+    action =
+        "Install the Hugin command-line tools or set HM_PTO_GEN, HM_AUTOOPTIMISER, HM_PANO_MODIFY, HM_NONA, and "
+        "HM_ENBLEND to valid executables, then press Play to retry.";
   } else if (
       evidence.contains("enblend") || evidence.contains("seam_file") || evidence.contains("seam file") ||
       evidence.contains("artifact publication") || evidence.contains("publish stitch artifact")) {
     explanation = "Alignment completed, but the seam/panorama generation or artifact publication step failed.";
     action = "Check the reported diagnostic, available disk space, and write access to the game directory.";
-  } else if (
-      evidence.contains("insufficient consensus") || evidence.contains("usable match") ||
-      evidence.contains("control point") || evidence.contains("no stitching calibration frame pair")) {
-    explanation =
-        "The cameras did not produce enough geometrically consistent overlap. Repeated rink markings can create "
-        "many descriptor matches while still leaving too few matches for one safe transform.";
+  } else if (evidence.contains("autooptimiser")) {
+    explanation = "Hugin's panorama optimizer rejected the selected control-point geometry.";
     action =
-        "Choose a stitch frame with players, boards, or other unique detail in the overlap; increase Frames; verify "
-        "the Left/Right assignments and lens profile; then press Play to retry.";
+        "Try a frame with clearer overlap or use AKAZE + MAGSAC++ + Rectilinear, which does not depend on Hugin "
+        "autooptimization.";
   } else if (
       evidence.contains("unsafe") || evidence.contains("pole") || evidence.contains("canvas extent") ||
       evidence.contains("canvas dimension") || evidence.contains("output surface is smaller")) {
@@ -8670,11 +8686,39 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
       (evidence.contains("cuda") && evidence.contains("memory"))) {
     explanation = "Calibration exhausted CPU/GPU memory while building the mapping canvas.";
     action = "Set a lower Max stitched width, close other GPU workloads, and press Play to retry.";
-  } else if (evidence.contains("autooptimiser")) {
-    explanation = "Hugin's panorama optimizer rejected the selected control-point geometry.";
+  } else if (generic_geometry_failure && (reduced_control_point_limit || nondefault_camera_profile)) {
+    QStringList settings;
+    if (reduced_control_point_limit) {
+      settings << QString("CP limit is %1; the default calibration limit is %2")
+                      .arg(active_control_points)
+                      .arg(kDefaultStitchCalibrationControlPoints);
+    }
+    if (nondefault_camera_profile) {
+      settings << QString("lens profile is %1 (HFOV %2, VFOV %3); default is %4 (HFOV %5, VFOV %6)")
+                      .arg(QString::fromStdString(active_camera_selection_.configuration))
+                      .arg(active_camera_selection_.horizontal_fov, 0, 'g', 6)
+                      .arg(active_camera_selection_.vertical_fov, 0, 'g', 6)
+                      .arg(QString::fromStdString(default_camera_selection_.configuration))
+                      .arg(default_camera_selection_.horizontal_fov, 0, 'g', 6)
+                      .arg(default_camera_selection_.vertical_fov, 0, 'g', 6);
+    }
+    explanation =
+        "Calibration could not produce a safe geometry with the selected calibration settings. This does not by itself "
+        "prove that the camera views lack overlap.";
+    action = QString(
+                 "Restore the known-good stitching settings and retry: %1. If it still fails, choose a frame with more "
+                 "unique overlap detail or increase Frames.")
+                 .arg(settings.join("; "));
+  } else if (
+      evidence.contains("insufficient consensus") || evidence.contains("usable match") ||
+      evidence.contains("control point") || evidence.contains("control-point") ||
+      evidence.contains("no stitching calibration frame pair")) {
+    explanation =
+        "The cameras did not produce enough geometrically consistent overlap. Repeated rink markings can create "
+        "many descriptor matches while still leaving too few matches for one safe transform.";
     action =
-        "Try a frame with clearer overlap or use AKAZE + MAGSAC++ + Rectilinear, which does not depend on Hugin "
-        "autooptimization.";
+        "Choose a stitch frame with players, boards, or other unique detail in the overlap; increase Frames; verify "
+        "the Left/Right assignments and lens profile; then press Play to retry.";
   } else {
     explanation = "The active calibration stage returned a terminal error.";
     action =

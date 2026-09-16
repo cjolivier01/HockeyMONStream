@@ -31,6 +31,9 @@ namespace {
 bool expect_candidate_retry_policy_preserves_late_failure() {
   const absl::Status geometry_failure = absl::FailedPreconditionError("candidate geometry rejected");
   const absl::Status missing_candidate_input = absl::NotFoundError("candidate input unavailable");
+  const absl::Status missing_hugin_executable =
+      absl::NotFoundError("Required Hugin executable not found: pto_gen");
+  const absl::Status invalid_hugin_override = absl::NotFoundError("HM_PTO_GEN is not executable: /bad/pto_gen");
   const absl::Status seam_failure = absl::FailedPreconditionError("enblend failed to generate seam_file.png");
   const absl::Status dimension_failure = absl::ResourceExhaustedError("mapping canvas exceeds dimension limit");
   // OpenCV emits canvas/started before MAGSAC or affine fitting. The first
@@ -49,6 +52,8 @@ bool expect_candidate_retry_policy_preserves_late_failure() {
   return accepted_later_candidate &&
       hm::stitching::should_retry_stitching_calibration_candidate(geometry_failure, false) &&
       hm::stitching::should_retry_stitching_calibration_candidate(missing_candidate_input, false) &&
+      !hm::stitching::should_retry_stitching_calibration_candidate(missing_hugin_executable, false) &&
+      !hm::stitching::should_retry_stitching_calibration_candidate(invalid_hugin_override, false) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(dimension_failure, false) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(seam_failure, true) &&
       !hm::stitching::should_retry_stitching_calibration_candidate(absl::InternalError("publication failed"), true);
