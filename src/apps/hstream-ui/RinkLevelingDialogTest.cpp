@@ -15,6 +15,7 @@
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTabWidget>
 
@@ -321,14 +322,73 @@ int main(int argc, char** argv) {
     auto* status = dialog.findChild<QLabel*>("rinkLevelingStatus");
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     auto* next = dialog.findChild<QPushButton*>("nextRinkLevelingButton");
+    auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
+    const auto original_angles = dialog.rotationDegrees();
+    const auto preview_arguments = read(bin.filePath("rink-preview-arguments"));
+    auto warning = [&]() -> QMessageBox* {
+      for (auto* message : dialog.findChildren<QMessageBox*>("rinkLevelingRectangleWarning")) {
+        if (message->isVisible())
+          return message;
+      }
+      return nullptr;
+    };
     left->setPoints({{10, 20}, {70, 80}});
     right->setPoints({{20, 30}, {80, 70}});
+    // A direct Preview-tab click must wait for the choice, and return to a
+    // camera image if the user declines the mismatched estimate.
+    tabs->setCurrentIndex(2);
+    if (!expect(waitUntil([&]() { return warning() != nullptr; }), "Rectangle mismatch opens a choice dialog"))
+      return 1;
     ok &= expect(
-        estimateComplete(dialog) && status->text().contains("camera calibration") && !accept->isEnabled() &&
-            dialog.rotationDegrees()[0] == 13,
-        "Rectangle mismatch is advisory, keeps yaw, and still requires inspecting a preview");
+        warning()->defaultButton()->text() == "Select points again" &&
+            warning()->escapeButton() == warning()->defaultButton() && warning()->text().contains("12.31") &&
+            warning()->informativeText().contains("FOV") && warning()->informativeText().contains("HyperSmooth") &&
+            dialog.rotationDegrees() == original_angles && !accept->isEnabled() && !next->isEnabled() &&
+            read(bin.filePath("rink-preview-arguments")) == preview_arguments,
+        "Mismatch confirmation defaults to reselecting, explains FOV, and blocks applying or rendering the estimate");
+    warning()->defaultButton()->click();
+    QTest::qWait(250);
+    ok &= expect(
+        !warning() && tabs->currentIndex() == 0 && next->isEnabled() && !accept->isEnabled() &&
+            dialog.rotationDegrees() == original_angles && left->points().size() == 2 && right->points().size() == 2 &&
+            read(bin.filePath("rink-preview-arguments")) == preview_arguments,
+        "Select points again preserves marks for adjustment and stops the pending preview without reprompting");
     advanceToPreview(dialog);
-    ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "A mismatched rectangle can proceed to Preview");
+    if (!expect(waitUntil([&]() { return warning() != nullptr; }), "Retrying the same points still requires a choice"))
+      return 1;
+    QTest::keyClick(warning(), Qt::Key_Escape);
+    ok &= expect(
+        !warning() && !accept->isEnabled() && dialog.isVisible(), "Escape returns to selection, keeping leveling open");
+    right->setPoints({{21, 30}, {80, 70}});
+    if (!expect(
+            waitUntil([&]() { return warning() != nullptr; }),
+            "Automatic estimation also asks about mismatched points"))
+      return 1;
+    for (auto* button : warning()->buttons()) {
+      if (button->text() == "Use points anyway") {
+        button->click();
+        break;
+      }
+    }
+    ok &= expect(
+        estimateComplete(dialog) && dialog.rotationDegrees()[0] == 13 && !accept->isEnabled(),
+        "Use points anyway applies the estimate and preserves yaw, with acceptance still requiring a preview");
+    advanceToPreview(dialog);
+    ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "Confirmed rectangle points can proceed to Preview");
+    dialog.findChild<QPushButton*>("previousRinkLevelingButton")->click();
+    right->setPoints({{22, 30}, {80, 70}});
+    next->click();
+    if (!expect(waitUntil([&]() { return warning() != nullptr; }), "Changed points require fresh confirmation"))
+      return 1;
+    for (auto* button : warning()->buttons()) {
+      if (button->text() == "Use points anyway") {
+        button->click();
+        break;
+      }
+    }
+    ok &= expect(
+        waitUntil([&]() { return accept->isEnabled(); }) && tabs->currentIndex() == 2,
+        "Use points anyway resumes a requested preview");
     dialog.findChild<QPushButton*>("previousRinkLevelingButton")->click();
     std::swap(rays[2], rays[3]);
     ok &= write_corner_tool();
@@ -338,6 +398,48 @@ int main(int argc, char** argv) {
         waitUntil([&]() { return next->isEnabled() && status->text().contains("corner order crosses"); }) &&
             !accept->isEnabled(),
         "Crossed selections still block acceptance after a successful advisory preview");
+    std::swap(rays[2], rays[3]);
+    ok &= write_corner_tool();
+    // The backend can finish while the choice is open. Closing the leveling
+    // dialog must dismiss the prompt without applying or rendering its result.
+    QTemporaryDir staging;
+    ok &= staging.isValid() && writeInProgressSnapshot(staging, source, pto);
+    RinkLevelingDialog pending(
+        staging.path(),
+        original_angles,
+        nullptr,
+        std::nullopt,
+        true,
+        hm::stitching::StitchProjection::kRectilinear,
+        {},
+        previewFraming(original_angles));
+    pending.show();
+    static_cast<ScoreboardSelectionCanvas*>(pending.findChild<QWidget*>("rinkLevelingCamera0"))
+        ->setPoints({{10, 20}, {70, 80}});
+    static_cast<ScoreboardSelectionCanvas*>(pending.findChild<QWidget*>("rinkLevelingCamera1"))
+        ->setPoints({{20, 30}, {80, 70}});
+    advanceToPreview(pending);
+    QPointer<QMessageBox> pending_warning;
+    if (!expect(
+            waitUntil([&]() {
+              pending_warning = pending.findChild<QMessageBox*>("rinkLevelingRectangleWarning");
+              return pending_warning && pending_warning->isVisible();
+            }),
+            "In-progress calibration asks before using mismatched points"))
+      return 1;
+    ok &= expect(
+        pending_warning->informativeText().contains("Cancel calibration") &&
+            pending.findChild<QPushButton*>("cancelRinkCalibrationButton"),
+        "Mismatch guidance points to the existing whole-calibration cancellation option");
+    const auto before_completion = read(bin.filePath("rink-preview-arguments"));
+    pending.closeAfterBackendCompletion();
+    QTest::qWait(250);
+    ok &= expect(
+        (!pending_warning || !pending_warning->isVisible()) && !pending.isVisible() &&
+            pending.closedAfterBackendCompletion() && !pending.calibrationCancellationRequested() &&
+            pending.rotationDegrees() == original_angles &&
+            read(bin.filePath("rink-preview-arguments")) == before_completion,
+        "Backend completion dismisses the pending warning without applying or previewing the estimate");
     ok &= script(bin.filePath("pano_trafo"), "cat >/dev/null\ncat <<'RAYS'\n" + transformed + "RAYS\n");
   }
   {

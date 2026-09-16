@@ -2,6 +2,7 @@
 
 #include <QtCore/QByteArray>
 #include <QtCore/QPoint>
+#include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
@@ -20,6 +21,7 @@ class QLabel;
 class QPushButton;
 class QDoubleSpinBox;
 class QCheckBox;
+class QMessageBox;
 class QTabWidget;
 class ScoreboardSelectionCanvas;
 
@@ -104,6 +106,7 @@ class RinkLevelingDialog : public QDialog {
   QPushButton* accept_button_{nullptr};
   QTimer estimate_timer_;
   QProcess* process_{nullptr};
+  QPointer<QMessageBox> rectangle_confirmation_;
   bool busy_{false};
   bool estimated_{false};
   bool previewed_{false};
