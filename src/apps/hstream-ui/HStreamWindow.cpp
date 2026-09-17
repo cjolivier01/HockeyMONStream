@@ -1107,11 +1107,11 @@ QString writable_runtime_cache_root(const QString& working_dir) {
   return QDir(fallback.path()).absolutePath();
 }
 
-void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root, const QString& bazel_bin_path) {
+QString stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root, const QString& bazel_bin_path) {
   const QDir bazel_bin(bazel_bin_path);
   const QDir root(bazel_bin.filePath("src/gst-plugins"));
   if (!root.exists()) {
-    return;
+    return {};
   }
 
   const QString arch = runtime_architecture_name();
@@ -1121,7 +1121,7 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root
       QDir(cache_root)
           .filePath(QString("gst-plugin-path/%1/%2/%3").arg(arch, output_configuration, runtime_launch_key())));
   if (!runtime_dir.exists() && !runtime_dir.mkpath(".")) {
-    return;
+    return {};
   }
   const QFileInfoList stale_links = runtime_dir.entryInfoList(QStringList("*.so"), QDir::Files | QDir::System);
   for (const QFileInfo& stale : stale_links) {
@@ -1179,10 +1179,22 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root
       if (!onnxruntime_it.hasNext())
         continue;
       const QFileInfo onnxruntime(onnxruntime_it.next());
-      const QString link_path = runtime_lib_dir.filePath("libonnxruntime.so.1");
-      QFile::remove(link_path);
-      staged_runtime_library = QFile::link(onnxruntime.canonicalFilePath(), link_path) ||
-          QFileInfo(link_path).isFile() || staged_runtime_library;
+      const QDir runtime_source(QFileInfo(onnxruntime.canonicalFilePath()).absolutePath());
+      // Keep the dlopen-only CUDA providers adjacent to the staged core.
+      for (const QString& name :
+           {QString("libonnxruntime.so.1"),
+            QString("libonnxruntime_providers_shared.so"),
+            QString("libonnxruntime_providers_cuda.so")}) {
+        const QFileInfo source(
+            name == "libonnxruntime.so.1" ? onnxruntime.canonicalFilePath() : runtime_source.filePath(name));
+        if (!source.isFile())
+          return QString("matching ONNX Runtime library is missing: %1").arg(source.absoluteFilePath());
+        const QString link_path = runtime_lib_dir.filePath(name);
+        QFile::remove(link_path);
+        if (!QFile::link(source.canonicalFilePath(), link_path))
+          return QString("could not stage ONNX Runtime library: %1").arg(link_path);
+        staged_runtime_library = true;
+      }
       break;
     }
     const QFileInfo yolo(bazel_bin.filePath("src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"));
@@ -1197,6 +1209,7 @@ void stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_root
     prepend_env_path(env, "LD_LIBRARY_PATH", runtime_lib_dir.absolutePath());
 
   prepend_env_path(env, "GST_PLUGIN_PATH", runtime_dir.absolutePath());
+  return {};
 }
 
 bool is_tegra_runtime() {
@@ -1260,7 +1273,7 @@ QString configure_pipeline_runtime_environment(
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib");
   prepend_env_path(env, "LD_LIBRARY_PATH", "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   if (!bazel_bin_path.isEmpty())
-    stage_bazel_gst_plugins(env, cache_root, bazel_bin_path);
+    return stage_bazel_gst_plugins(env, cache_root, bazel_bin_path);
   return {};
 }
 

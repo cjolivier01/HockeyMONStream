@@ -75,8 +75,17 @@ Desktop x86_64 and ARM64/SBSA use ONNX Runtime 1.30.0 with CUDA 13 and cuDNN 9.
 Jetson uses NVIDIA's JetPack 6 CUDA 12.6 ONNX Runtime 1.24.0 distribution with
 cuDNN 9, using the ABI-24 SDK headers from 1.24.1. The ARM wheels supply only
 native libraries; Python and TensorRT execution providers are not packaged.
-Bazel and installed packages keep the CUDA/shared provider libraries beside the
-core runtime for dynamic loading.
+Bazel, the CLI/UI/exported-job launch caches, and installed packages keep the
+CUDA/shared provider libraries beside the core runtime for dynamic loading.
+ONNX Runtime opens these providers relative to its loaded core library, so a
+core-only launch cache fails even when providers appear elsewhere in
+`LD_LIBRARY_PATH`. The process environment must also exist before registering
+CUDA, including when calibration loads a neural matcher as its first model.
+It remains alive until process exit to avoid ONNX Runtime 1.30's environment
+destructor accessing CUDA provider globals after their static destruction;
+individual sessions and tensors still release normally.
+Run `//src/libs/onnx:session_test` with `HM_REQUIRE_CUDA_TESTS=1` to exercise
+CUDA initialization and inference before any CPU session.
 
 The CUDA SuperPoint graph extracts the two images sequentially and uses float16
 for the convolution network. NMS, descriptor normalization/sampling and LightGlue

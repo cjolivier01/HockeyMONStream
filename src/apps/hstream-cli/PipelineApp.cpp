@@ -805,6 +805,16 @@ absl::Status stage_bazel_runtime_libraries(
   auto status = stage_library(onnxruntime, "libonnxruntime.so.1");
   if (!status.ok())
     return status;
+  // ORT resolves dlopen-only providers beside the path used to load its core,
+  // including this per-launch SONAME link. LD_LIBRARY_PATH alone cannot supply
+  // a provider when ORT constructs an absolute path under runtime_dir.
+  if (!onnxruntime.empty()) {
+    for (const char* provider : {"libonnxruntime_providers_shared.so", "libonnxruntime_providers_cuda.so"}) {
+      status = stage_library(onnxruntime.parent_path() / provider, provider);
+      if (!status.ok())
+        return status;
+    }
+  }
   if (fs::is_regular_file(yolo, ec) && !ec) {
     status = stage_library(yolo, "libnvdsinfer_custom_impl_Yolo.so");
     if (!status.ok())

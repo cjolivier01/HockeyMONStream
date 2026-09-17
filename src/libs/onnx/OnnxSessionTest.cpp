@@ -1,6 +1,10 @@
 #include "hstream/src/libs/onnx/OnnxSession.h"
 
+#include <unistd.h>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <vector>
@@ -47,6 +51,43 @@ hm::onnx::TensorContract output_contract() {
 
 int main() {
   bool ok = true;
+  // This must precede every CPU session: loading a CPU model first hides a
+  // missing ORT environment when CUDA registers its provider/logger.
+  if (const char* require_cuda = std::getenv("HM_REQUIRE_CUDA_TESTS");
+      require_cuda && std::string(require_cuda) == "1") {
+    std::string path = (std::filesystem::temp_directory_path() / "hstream-cuda-first-XXXXXX").string();
+    const int fd = ::mkstemp(path.data());
+    if (fd < 0)
+      return 1;
+    ::close(fd);
+    {
+      std::ofstream model(path, std::ios::binary);
+      model.write(reinterpret_cast<const char*>(kAddModel), sizeof(kAddModel));
+    }
+    auto first = hm::onnx::Session::Create(
+        path,
+        {{"left", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, 2}}, {"right", ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, {1, 2}}},
+        {output_contract()},
+        false,
+        hm::onnx::ExecutionProvider::kCuda);
+    std::filesystem::remove(path);
+    if (!first.ok()) {
+      std::cerr << "FAIL: CUDA must initialize before any CPU session: " << first.status() << '\n';
+      return 1;
+    }
+    const float left[] = {1.25f, -2.0f};
+    const float right[] = {3.0f, 0.5f};
+    auto result = (*first)->RunFloatInputs({{"left", {1, 2}, left, 2}, {"right", {1, 2}, right, 2}});
+    if (!result.ok()) {
+      std::cerr << result.status() << '\n';
+      return 1;
+    }
+    auto values = result->front().float_data();
+    ok &= expect(
+        values.ok() && (*values)[0] == 4.25f && (*values)[1] == -1.5f,
+        "first-session CUDA inference must use both inputs");
+  }
+
   auto empty_count = hm::onnx::checked_element_count({2, 0});
   ok &= expect(empty_count.ok() && *empty_count == 0, "zero-sized output tensors must be representable");
   ok &= expect(

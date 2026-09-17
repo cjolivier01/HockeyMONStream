@@ -12,8 +12,12 @@ namespace hm::onnx {
 namespace {
 
 Ort::Env& environment() {
-  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "hstream");
-  return env;
+  // Keep this one environment for the process lifetime. CUDA is loaded lazily
+  // after Env construction, so its static destructors can run before Env's.
+  // Releasing Env at exit then calls provider Shutdown on already-freed state
+  // (observed with ORT 1.30). Sessions and tensors still release normally.
+  static Ort::Env* const env = new Ort::Env(ORT_LOGGING_LEVEL_WARNING, "hstream");
+  return *env;
 }
 
 Ort::SessionOptions session_options(
@@ -173,8 +177,12 @@ absl::StatusOr<std::unique_ptr<Session>> Session::Create(
     ExecutionProvider provider,
     const std::string& profile_prefix) {
   try {
+    // CUDA provider registration uses ORT's default logger. Construct the
+    // process environment before configuring providers, including the first
+    // session in calibration (which need not have loaded a CPU model first).
+    auto& env = environment();
     auto options = session_options(use_cpu_memory_arena, provider, profile_prefix);
-    auto session = std::make_unique<Ort::Session>(environment(), model_path.c_str(), options);
+    auto session = std::make_unique<Ort::Session>(env, model_path.c_str(), options);
     auto result = std::unique_ptr<Session>(new Session(std::move(session), std::move(inputs), std::move(outputs)));
     auto status = result->ValidateModelContract();
     if (!status.ok())
@@ -199,8 +207,9 @@ absl::StatusOr<std::unique_ptr<Session>> Session::CreateFromBytes(
     return absl::InvalidArgumentError("ONNX model bytes must not be empty");
   }
   try {
+    auto& env = environment();
     auto options = session_options();
-    auto session = std::make_unique<Ort::Session>(environment(), bytes, byte_count, options);
+    auto session = std::make_unique<Ort::Session>(env, bytes, byte_count, options);
     auto result = std::unique_ptr<Session>(new Session(std::move(session), std::move(inputs), std::move(outputs)));
     auto status = result->ValidateModelContract();
     if (!status.ok())
