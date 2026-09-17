@@ -67,6 +67,33 @@ int main() {
         "second 16-bit image must use the same preprocessing");
   }
 
+  auto superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right);
+  ok &= expect(superpoint.ok(), "valid SuperPoint images must preprocess");
+  if (superpoint.ok()) {
+    ok &= expect(
+        superpoint->tensor_size == cv::Size(2048, 1152) && superpoint->resized_sizes[0] == cv::Size(2048, 1152) &&
+            superpoint->resized_sizes[1] == cv::Size(1152, 1152),
+        "SuperPoint must preserve aspect ratios in its doubled canvas");
+    const size_t image_plane = static_cast<size_t>(1152) * 2048;
+    ok &= expect(superpoint->tensor.size() == 2 * image_plane, "SuperPoint must receive two grayscale planes");
+    const float left_gray = (0.299f * 10 + 0.587f * 20 + 0.114f * 30) / 255.0f;
+    const float right_gray = (0.299f * 40 + 0.587f * 50 + 0.114f * 60) / 255.0f;
+    ok &= expect(
+        std::abs(superpoint->tensor[image_plane - 1] - left_gray) < 1e-6f &&
+            std::abs(superpoint->tensor[image_plane + 1151 * 2048 + 1151] - right_gray) < 1e-6f,
+        "SuperPoint must normalize grayscale through the last resized pixel of both images");
+    ok &= expect(
+        superpoint->tensor[image_plane + 1152] == 0.0f && superpoint->tensor.back() == 0.0f,
+        "SuperPoint padding must remain zero");
+  }
+  auto superpoint16 = hm::stitching::FeatureMatcher::PrepareSuperPoint(left16, right16);
+  ok &= expect(superpoint16.ok(), "16-bit SuperPoint images must preprocess");
+  if (superpoint16.ok()) {
+    ok &= expect(
+        std::abs(superpoint16->tensor[0] - (0.299f * 1000 + 0.587f * 2000 + 0.114f * 3000) / 65535.0f) < 1e-6f,
+        "16-bit SuperPoint input must use normalized grayscale");
+  }
+
   auto loftr_prepared = hm::stitching::FeatureMatcher::PrepareLoFTR(left, right);
   ok &= expect(loftr_prepared.ok(), "valid LoFTR images must preprocess");
   if (loftr_prepared.ok()) {
@@ -87,8 +114,9 @@ int main() {
   hm::stitching::FeaturePairInput metadata;
   metadata.source_sizes[0] = {7680, 4320};
   metadata.source_sizes[1] = {7680, 4320};
-  metadata.resized_sizes[0] = {1024, 576};
-  metadata.resized_sizes[1] = {1024, 576};
+  metadata.resized_sizes[0] = {2048, 1152};
+  metadata.resized_sizes[1] = {2048, 1152};
+  metadata.tensor_size = {2048, 1152};
   std::vector<float> keypoints(static_cast<size_t>(2) * hm::stitching::FeatureMatcher::kKeypointsPerImage * 2, 0.0f);
   auto set_keypoint = [&](int image, int index, float x, float y) {
     const size_t offset = (static_cast<size_t>(image) * hm::stitching::FeatureMatcher::kKeypointsPerImage + index) * 2;
@@ -97,10 +125,10 @@ int main() {
   };
   set_keypoint(0, 0, 10.0f, 30.0f);
   set_keypoint(0, 1, 20.0f, 10.0f);
-  set_keypoint(0, 2, 30.0f, 20.0f);
+  set_keypoint(0, 2, 1500.0f, 900.0f);
   set_keypoint(1, 0, 40.0f, 35.0f);
   set_keypoint(1, 1, 50.0f, 15.0f);
-  set_keypoint(1, 2, 60.0f, 25.0f);
+  set_keypoint(1, 2, 1530.0f, 905.0f);
   std::vector<int64_t> matches = {0, 0, 0, 0, 1, 1, 0, 2, 2};
   std::vector<float> scores = {0.9f, 0.8f, 0.7f};
   auto result = hm::stitching::FeatureMatcher::Postprocess(
@@ -114,7 +142,11 @@ int main() {
         result->selected[0].left.y < result->selected.back().left.y,
         "selected control points must be ordered evenly by left Y");
     ok &= expect(
-        std::abs(result->selected[0].left.x - 153.25f) < 1e-4f, "inverse resize must preserve half-pixel centers");
+        std::abs(result->selected[0].left.x - 76.375f) < 1e-4f, "inverse resize must preserve half-pixel centers");
+    ok &= expect(
+        std::abs(result->selected.back().left.x - 5626.375f) < 1e-4f &&
+            std::abs(result->selected.back().right.y - 3395.125f) < 1e-4f,
+        "matches beyond the old canvas must map back to source coordinates");
     ok &= expect(
         result->accepted[0].left_index == 0 && result->accepted[0].right_index == 0,
         "accepted matches must retain exported keypoint indices for exact parity checks");

@@ -57,6 +57,9 @@ struct AkazeMatchingCalibration {
 
 class FeatureMatcher {
  public:
+  static constexpr int kSuperPointInputWidth = 2048;
+  static constexpr int kSuperPointInputHeight = 1152;
+  // Frozen RGB canvas for DeDoDe and the legacy ALIKED parity graph.
   static constexpr int kInputWidth = 1024;
   static constexpr int kInputHeight = 576;
   static constexpr int kKeypointsPerImage = 1024;
@@ -78,6 +81,7 @@ class FeatureMatcher {
   // explicit so it cannot be mistaken for the production SuperPoint graph.
   static absl::StatusOr<std::unique_ptr<FeatureMatcher>> CreateLegacyAlikedParity(const std::string& model_path);
   static absl::StatusOr<FeaturePairInput> Prepare(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
+  static absl::StatusOr<FeaturePairInput> PrepareSuperPoint(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeaturePairInput> PrepareLoFTR(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeatureMatchResult> Postprocess(
       const FeaturePairInput& input,

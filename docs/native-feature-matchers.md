@@ -3,11 +3,17 @@
 `stitching.control_point_matcher` accepts four native, Python-free runtime
 backends:
 
-- `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph.
+- `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
+  with a 2048 × 1152 canvas per camera. Images are resized with aspect ratio
+  preserved, padded on the right/bottom with zeros, and converted to grayscale
+  floats in `[0,1]`; the input tensor is `[2,1,1152,2048]`. The graph supports
+  dynamic spatial dimensions, so this resolution uses the existing model asset.
+  The keypoint limit remains 1024 per image.
 - `dedode-lightglue` uses DeDoDe `L-C4-v2` detection, `B-upright`
   descriptors, and the `dedodeb` LightGlue weights in a fixed-shape ONNX
-  graph. Because one embedded checkpoint has no recorded redistribution grant,
-  HStream does not host or automatically download this graph. A user who has
+  graph with a 1024 × 576 RGB canvas per camera. Because one embedded checkpoint
+  has no recorded redistribution grant, HStream does not host or automatically
+  download this graph. A user who has
   permission to use the checkpoint can run
   `scripts/export_dedode_lightglue_onnx.py` with the three verified checkpoints
   in the PyTorch hub cache, then set `HM_DEDODE_LIGHTGLUE_ONNX_MODEL` to the
@@ -19,6 +25,9 @@ backends:
 - `akaze-hamming` uses OpenCV AKAZE with binary M-LDB descriptors, Hamming
   distance, a strict 0.75 Lowe ratio in both directions, and a mutual
   cross-check. It does not require a model asset.
+
+The SuperPoint resolution applies when generating new control points. Existing
+saved calibration is reused until explicitly regenerated.
 
 The DeDoDe and LightGlue source projects are MIT and Apache-2.0 respectively;
 Kornia and the EfficientLoFTR artifact are Apache-2.0. The DeDoDe graph also
