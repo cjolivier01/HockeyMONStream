@@ -124,7 +124,7 @@ int main() {
       {"AKAZE + M-LDB + Hamming", hm::stitching::ControlPointMatcher::kAkazeHamming, {}},
   };
   const char* requested_resolution = std::getenv("HM_SUPERPOINT_SMOKE_RESOLUTION");
-  auto resolution = hm::stitching::ParseControlPointResolution(requested_resolution ? requested_resolution : "native");
+  auto resolution = hm::stitching::ParseControlPointResolution(requested_resolution ? requested_resolution : "auto");
   if (!resolution.ok()) {
     std::cerr << resolution.status() << '\n';
     return 1;

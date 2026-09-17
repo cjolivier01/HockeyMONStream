@@ -49,23 +49,29 @@ int main() {
 
   using hm::stitching::ControlPointResolution;
   YAML::Node resolution_private(YAML::NodeType::Map);
-  const YAML::Node reduced_config = YAML::Load("stitching: {control_point_resolution: 2k}");
+  const auto alternate_resolution = hm::stitching::DefaultControlPointResolution() == ControlPointResolution::kNative
+      ? ControlPointResolution::k2K
+      : ControlPointResolution::kNative;
+  const std::string alternate_name = hm::stitching::ControlPointResolutionName(alternate_resolution);
+  YAML::Node reduced_config;
+  reduced_config["stitching"]["control_point_resolution"] = alternate_name;
   auto materialized_resolution =
       hm::stitching::materialize_control_point_resolution(resolution_private, reduced_config);
   ok &= expect(
       materialized_resolution.ok() && *materialized_resolution &&
-          hm::stitching::read_control_point_resolution(resolution_private).value() == ControlPointResolution::k2K,
-      "worker resolution must materialize a reduced size inherited from another layer");
+          hm::stitching::read_control_point_resolution(resolution_private).value() == alternate_resolution,
+      "worker resolution must materialize a different size inherited from another layer");
   ok &= expect(
       hm::stitching::restore_generated_control_point_resolution(resolution_private) &&
-          hm::stitching::read_control_point_resolution(resolution_private).value() == ControlPointResolution::kNative,
+          hm::stitching::read_control_point_resolution(resolution_private).value() ==
+              hm::stitching::DefaultControlPointResolution(),
       "generated resolution must not pin an inherited setting as a game override");
-  resolution_private["stitching"]["control_point_resolution"] = "2k";
+  resolution_private["stitching"]["control_point_resolution"] = alternate_name;
   auto displaced = hm::stitching::materialize_control_point_resolution(resolution_private, YAML::Node());
   ok &= expect(
       displaced.ok() && *displaced && hm::stitching::restore_generated_control_point_resolution(resolution_private) &&
-          hm::stitching::read_control_point_resolution(resolution_private).value() == ControlPointResolution::k2K,
-      "temporary native resolution must restore a displaced explicit 2K override");
+          hm::stitching::read_control_point_resolution(resolution_private).value() == alternate_resolution,
+      "temporary auto resolution must restore a displaced explicit override");
   ok &= expect(
       !hm::stitching::read_control_point_resolution(YAML::Load("stitching: {control_point_resolution: []}")).ok(),
       "invalid resolution YAML must fail explicitly");
@@ -78,7 +84,7 @@ int main() {
   ok &= expect(
       materialized_provider.ok() && *materialized_provider &&
           hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCpu,
-      "worker provider must materialize a cpu size inherited from another layer");
+      "worker provider must materialize CPU execution inherited from another layer");
   ok &= expect(
       hm::stitching::restore_generated_control_point_execution_provider(provider_private) &&
           hm::stitching::read_control_point_execution_provider(provider_private).value() == ExecutionProvider::kCuda,
@@ -987,6 +993,8 @@ stitching:
 
   YAML::Node backend_generation(YAML::NodeType::Map);
   backend_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  // Historical claims without a resolution field always mean native, including on Jetson.
+  backend_generation["stitching"]["control_point_resolution"] = "native";
   backend_generation["stitching"]["mapping_backend"] = "opencv-magsac";
   backend_generation["stitching"]["projection"] = "rectilinear";
   backend_generation["stitching"]["run_autooptimizer"] = false;
@@ -1001,7 +1009,7 @@ stitching:
       hm::stitching::publish_game_config(root, YAML::Dump(backend_generation) + "\n").ok(),
       "backend-generation fixture must publish");
   const hm::stitching::StitchingBackendChoices magsac_choices{
-      "superpoint-lightglue", "opencv-magsac", "rectilinear", false};
+      "superpoint-lightglue", "opencv-magsac", "rectilinear", false, {}, {}, {}, ControlPointResolution::kNative};
   const hm::stitching::StitchingBackendChoices affine_choices{
       "superpoint-lightglue", "opencv-affine-ransac", "rectilinear", false};
   const absl::Status reserved =

@@ -876,9 +876,9 @@ absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML:
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
     const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node();
     if (!value || value.IsNull())
-      return ControlPointResolution::kNative;
+      return DefaultControlPointResolution();
     if (!value.IsScalar())
-      return absl::InvalidArgumentError("stitching.control_point_resolution must be native or 2k");
+      return absl::InvalidArgumentError("stitching.control_point_resolution must be auto, native or 2k");
     return ParseControlPointResolution(value.as<std::string>());
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read control-point resolution: " + std::string(exception.what()));

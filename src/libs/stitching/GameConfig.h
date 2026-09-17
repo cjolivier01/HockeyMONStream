@@ -103,7 +103,7 @@ struct StitchingBackendChoices {
   std::vector<double> projection_parameters;
   StitchProjectionFraming projection_framing;
   StitchCameraSelection camera;
-  ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
+  ControlPointResolution control_point_resolution{DefaultControlPointResolution()};
   hm::onnx::ExecutionProvider control_point_execution_provider{hm::onnx::ExecutionProvider::kCuda};
 };
 

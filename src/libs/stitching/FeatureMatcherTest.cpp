@@ -73,13 +73,25 @@ int main() {
           hm::stitching::ParseControlPointResolution("2k").ok() &&
           !hm::stitching::ParseControlPointResolution("bad-size").ok(),
       "resolution accepts native and 2k, rejecting unknown values");
+  const auto auto_resolution = hm::stitching::ParseControlPointResolution("auto");
+#ifdef IS_TEGRA
+  const auto expected_default = ControlPointResolution::k2K;
+#else
+  const auto expected_default = ControlPointResolution::kNative;
+#endif
+  auto default_input = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right);
+  ok &= expect(
+      auto_resolution.ok() && *auto_resolution == expected_default && default_input.ok() &&
+          default_input->tensor_size ==
+              (expected_default == ControlPointResolution::k2K ? cv::Size(2048, 1152) : cv::Size(160, 104)),
+      "auto and default preprocessing must use 2K on Jetson and native elsewhere");
   auto reduced = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::k2K);
   ok &= expect(
       reduced.ok() && reduced->tensor_size == cv::Size(2048, 1152) &&
           reduced->resized_sizes[0] == cv::Size(2048, 1152) && reduced->resized_sizes[1] == cv::Size(1152, 1152) &&
           reduced->tensor[static_cast<size_t>(2048) * 1152 + 1152] == 0.0f,
       "2K reproduces the aspect-preserving canvas and per-camera padding");
-  auto superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right);
+  auto superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::kNative);
   ok &= expect(superpoint.ok(), "valid SuperPoint images must preprocess");
   if (superpoint.ok()) {
     ok &= expect(
@@ -99,7 +111,8 @@ int main() {
             superpoint->tensor.back() == 0.0f,
         "SuperPoint padding must remain zero");
   }
-  auto superpoint16 = hm::stitching::FeatureMatcher::PrepareSuperPoint(left16, right16);
+  auto superpoint16 =
+      hm::stitching::FeatureMatcher::PrepareSuperPoint(left16, right16, ControlPointResolution::kNative);
   ok &= expect(superpoint16.ok(), "16-bit SuperPoint images must preprocess");
   if (superpoint16.ok()) {
     ok &= expect(
@@ -108,7 +121,7 @@ int main() {
   }
   ok &= expect(!hm::stitching::FeatureMatcher::PrepareSuperPoint({}, right).ok(), "empty SuperPoint images must fail");
   const cv::Mat tiny(2, 3, CV_8UC3, cv::Scalar::all(255));
-  auto tiny_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(tiny, tiny);
+  auto tiny_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(tiny, tiny, ControlPointResolution::kNative);
   ok &= expect(
       tiny_superpoint.ok() && tiny_superpoint->tensor_size == cv::Size(32, 32) &&
           tiny_superpoint->resized_sizes[0] == tiny.size() && tiny_superpoint->tensor[3] == 0.0f,
@@ -118,7 +131,8 @@ int main() {
   full_size.at<cv::Vec3b>(2160, 3840) = {255, 255, 255};
   full_size.at<cv::Vec3b>(2159, 3839) = {255, 255, 255};
   const cv::Mat cropped = full_size(cv::Rect(0, 0, 3840, 2160));
-  auto full_superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(full_size, cropped);
+  auto full_superpoint =
+      hm::stitching::FeatureMatcher::PrepareSuperPoint(full_size, cropped, ControlPointResolution::kNative);
   ok &= expect(full_superpoint.ok(), "full-resolution non-contiguous SuperPoint images must preprocess");
   if (full_superpoint.ok()) {
     const size_t image_plane = static_cast<size_t>(2168) * 3848;

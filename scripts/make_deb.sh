@@ -1071,12 +1071,13 @@ for elf in "${package_elfs[@]}"; do
   CUDA_NEEDED="$(patchelf --print-needed "${elf}" \
     | grep -E '^lib(cudart|npp[^.]*|cublas[^.]*|cufft[^.]*|curand[^.]*|cusolver[^.]*|cusparse[^.]*|nvrtc[^.]*|nvJitLink)[.]so[.][0-9]+$' || true)"
   # CUDA component ABI versions do not all equal the toolkit major.
-  # cuRAND remains ABI 10, cuFFT 11 and cuSOLVER 11 in both CUDA 12/13.
+  # cuRAND remains ABI 10. cuFFT/cuSOLVER use ABI 11 with CUDA 12
+  # and ABI 12 with CUDA 13; cuSPARSE remains ABI 12.
   while IFS= read -r cuda_needed; do
     [[ -n "${cuda_needed}" ]] || continue
     case "${cuda_needed}" in
       libcurand.so.*) component_abi=10 ;;
-      libcufft*.so.*|libcusolver*.so.*) component_abi=11 ;;
+      libcufft*.so.*|libcusolver*.so.*) component_abi=$((EXPECTED_CUDA_SONAME - 1)) ;;
       libcusparse.so.*) component_abi=12 ;;
       *) component_abi="${EXPECTED_CUDA_SONAME}" ;;
     esac

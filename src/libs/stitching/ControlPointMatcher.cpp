@@ -8,16 +8,26 @@
 
 namespace hm::stitching {
 
+ControlPointResolution DefaultControlPointResolution() {
+#ifdef IS_TEGRA
+  return ControlPointResolution::k2K;
+#else
+  return ControlPointResolution::kNative;
+#endif
+}
+
 const char* ControlPointResolutionName(ControlPointResolution resolution) {
   return resolution == ControlPointResolution::k2K ? "2k" : "native";
 }
 
 absl::StatusOr<ControlPointResolution> ParseControlPointResolution(const std::string& value) {
+  if (value == "auto")
+    return DefaultControlPointResolution();
   if (value == "native")
     return ControlPointResolution::kNative;
   if (value == "2k")
     return ControlPointResolution::k2K;
-  return absl::InvalidArgumentError("stitching.control_point_resolution must be native or 2k: " + value);
+  return absl::InvalidArgumentError("stitching.control_point_resolution must be auto, native or 2k: " + value);
 }
 
 const char* ControlPointMatcherName(ControlPointMatcher matcher) {

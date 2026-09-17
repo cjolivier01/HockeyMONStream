@@ -4,7 +4,8 @@
 backends:
 
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
-  at each camera image's original resolution by default. Images are
+  at each camera image's original resolution on desktop/SBSA by default.
+  Jetson defaults to the 2K canvas described below. In native mode, images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
   zeros to a shared canvas covering both images, rounded up to multiples of 8.
   A minimum 32 × 32 canvas supports the graph's fixed top-1024 operation for tiny
@@ -29,8 +30,10 @@ backends:
   distance, a strict 0.75 Lowe ratio in both directions, and a mutual
   cross-check. It does not require a model asset.
 
-`stitching.control_point_resolution` accepts `native` (default) or `2k` for
-SuperPoint + LightGlue. `2k` restores the 2048 × 1152 grayscale canvas from the
+`stitching.control_point_resolution` accepts `auto` (default), `native`, or `2k`
+for SuperPoint + LightGlue. `auto` resolves to `2k` on Jetson and `native` on
+desktop/SBSA. Explicit user/game/CLI `native` and `2k` selections override this
+platform default; the UI displays the effective size. `2k` restores the 2048 × 1152 grayscale canvas from the
 earlier doubled-resolution implementation: each camera is resized preserving
 aspect ratio and padded; matches are converted back to source coordinates.
 Both execution providers support these sizes; CUDA uses the graph described below.
@@ -59,7 +62,7 @@ claims. For example:
 ```yaml
 stitching:
   control_point_execution_provider: cuda
-  control_point_resolution: native
+  control_point_resolution: auto
 ```
 
 CUDA uses visible device 0 (`CUDA_VISIBLE_DEVICES` controls visibility). Failure
@@ -87,7 +90,9 @@ threshold. Numerical differences may change the selected keypoints and matches.
 On an RTX 5090, HStream's matcher processed a pair of 7680 × 4320 frames in
 0.995 seconds with 45 accepted matches; 2K took 0.294 seconds with 315 accepted
 matches on the same pair. The earlier 56.16 seconds / 39 matches
-measurement used CPU. These times include preprocessing, inference and match
+measurement used CPU. Jetson Orin also completed the native 8K pair on CUDA
+in 21.63 seconds (47 accepted matches); its default is 2K to reduce calibration
+time and memory. These times include preprocessing, inference and match
 filtering, but exclude model load, image decoding and geometric calibration.
 Full resolution still requires substantial GPU memory; larger images or smaller
 GPUs may exceed memory/cuDNN limits. Choose `2k` explicitly when needed. There is
@@ -102,7 +107,7 @@ saved camera frames at their original resolution, set
 `//src/libs/stitching:native_model_smoke_test`; this reads `left.png` and
 `right.png` without modifying the game's calibration. Set
 `HM_REQUIRE_ONNX_MODEL_TESTS=1` to fail if model assets are unavailable. Set
-`HM_SUPERPOINT_SMOKE_RESOLUTION=2k` to check the reduced mode instead. Both modes
+`HM_SUPERPOINT_SMOKE_RESOLUTION=native` or `2k` to override the platform default. Both modes
 verify synthetic translation in the original source coordinates. Set
 `HM_MATCHER_SMOKE_PROVIDER=cuda` to exercise CUDA (the test defaults to CPU), and
 `HM_MATCHER_SMOKE_PROFILE_DIR=/existing/directory` to record operator placement

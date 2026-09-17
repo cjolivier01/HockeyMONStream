@@ -79,7 +79,7 @@ class FeatureMatcher {
       const std::string& model_path,
       ControlPointMatcher matcher = ControlPointMatcher::kSuperPointLightGlue,
       AkazeMatchingCalibration akaze_calibration = {},
-      ControlPointResolution resolution = ControlPointResolution::kNative,
+      ControlPointResolution resolution = DefaultControlPointResolution(),
       hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda,
       const std::string& profile_prefix = {});
   // The release qualification oracle predates the selectable production
@@ -90,7 +90,7 @@ class FeatureMatcher {
   static absl::StatusOr<FeaturePairInput> PrepareSuperPoint(
       const cv::Mat& left_bgr,
       const cv::Mat& right_bgr,
-      ControlPointResolution resolution = ControlPointResolution::kNative);
+      ControlPointResolution resolution = DefaultControlPointResolution());
   static absl::StatusOr<FeaturePairInput> PrepareLoFTR(const cv::Mat& left_bgr, const cv::Mat& right_bgr);
   static absl::StatusOr<FeatureMatchResult> Postprocess(
       const FeaturePairInput& input,
@@ -156,7 +156,7 @@ class FeatureMatcher {
       const std::function<void()>& inference_complete,
       const std::function<bool()>& is_cancelled) const;
 
-  ControlPointResolution resolution_{ControlPointResolution::kNative};
+  ControlPointResolution resolution_{DefaultControlPointResolution()};
   ControlPointMatcher matcher_{ControlPointMatcher::kSuperPointLightGlue};
   std::unique_ptr<hm::onnx::Session> session_;
   int input_channels_{0};
