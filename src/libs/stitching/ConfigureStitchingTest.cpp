@@ -385,6 +385,15 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   };
   first->artifact_lock.reset();
 
+  config["stitching"]["control_point_resolution"] = "2k";
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "selecting 2K must invalidate artifacts without recorded resolution"))
+    return false;
+  config["stitching"]["control_point_resolution"] = "native";
+  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, true, "native selection must retain compatible legacy calibration"))
+    return false;
+
   YAML::Node fov_only_config;
   fov_only_config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
   if (!write_text_file(dir / "config.yaml", YAML::Dump(fov_only_config) + "\n") ||

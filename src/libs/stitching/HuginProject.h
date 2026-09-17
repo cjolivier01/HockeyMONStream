@@ -56,6 +56,7 @@ class HuginProject {
     std::optional<std::vector<double>> projection_parameters;
     std::optional<StitchProjectionFraming> projection_framing;
     std::optional<ControlPointMatcher> control_point_matcher;
+    std::optional<ControlPointResolution> control_point_resolution;
     std::optional<std::string> akaze_calibration_fingerprint;
     std::optional<StitchCameraSelection> camera;
   };
@@ -73,6 +74,7 @@ class HuginProject {
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
     ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
+    ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
     MappingBackend mapping_backend{MappingBackend::kNona};
     bool run_autooptimizer{true};
     std::optional<StitchProjection> projection;

@@ -67,6 +67,18 @@ int main() {
         "second 16-bit image must use the same preprocessing");
   }
 
+  using hm::stitching::ControlPointResolution;
+  ok &= expect(
+      hm::stitching::ParseControlPointResolution("native").ok() &&
+          hm::stitching::ParseControlPointResolution("2k").ok() &&
+          !hm::stitching::ParseControlPointResolution("bad-size").ok(),
+      "resolution accepts native and 2k, rejecting unknown values");
+  auto reduced = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right, ControlPointResolution::k2K);
+  ok &= expect(
+      reduced.ok() && reduced->tensor_size == cv::Size(2048, 1152) &&
+          reduced->resized_sizes[0] == cv::Size(2048, 1152) && reduced->resized_sizes[1] == cv::Size(1152, 1152) &&
+          reduced->tensor[static_cast<size_t>(2048) * 1152 + 1152] == 0.0f,
+      "2K reproduces the aspect-preserving canvas and per-camera padding");
   auto superpoint = hm::stitching::FeatureMatcher::PrepareSuperPoint(left, right);
   ok &= expect(superpoint.ok(), "valid SuperPoint images must preprocess");
   if (superpoint.ok()) {
@@ -191,6 +203,21 @@ int main() {
             native_matches->accepted[0].left == cv::Point2f(3840, 2160) &&
             native_matches->accepted[0].right == cv::Point2f(3839, 2159),
         "native-resolution matches must keep exact source coordinates and reject per-image padding");
+    set_keypoint(0, 0, 10.0f, 30.0f);
+    set_keypoint(1, 0, 40.0f, 35.0f);
+    set_keypoint(1, 1, 50.0f, 15.0f);
+  }
+  if (reduced.ok()) {
+    set_keypoint(0, 0, 1279.5f, 639.5f);
+    set_keypoint(1, 0, 575.5f, 575.5f);
+    set_keypoint(1, 1, 1200.0f, 500.0f);
+    auto scaled = hm::stitching::FeatureMatcher::Postprocess(
+        *reduced, keypoints.data(), keypoints.size(), matches.data(), 6, scores.data(), 2, 5);
+    ok &= expect(
+        scaled.ok() && scaled->accepted.size() == 1 &&
+            cv::norm(scaled->accepted[0].left - cv::Point2f(99.5f, 49.5f)) < 1e-4 &&
+            cv::norm(scaled->accepted[0].right - cv::Point2f(49.5f, 49.5f)) < 1e-4,
+        "2K matches return source pixel-center coordinates and reject camera padding");
     set_keypoint(0, 0, 10.0f, 30.0f);
     set_keypoint(1, 0, 40.0f, 35.0f);
     set_keypoint(1, 1, 50.0f, 15.0f);

@@ -12233,6 +12233,66 @@ bool test_preset_reload_with_missing_tracker() {
   return QDir(game_directory).removeRecursively();
 }
 
+bool test_control_point_resolution(const QString& source_game_directory) {
+  const fs::path source(source_game_directory.toStdString());
+  const fs::path fixture = source.parent_path() / "ui-feature-resolution";
+  std::error_code error;
+  fs::copy(source, fixture, fs::copy_options::recursive, error);
+  if (error)
+    return expect(false, "Could not copy the resolution fixture: " + error.message());
+  const fs::path config_path = fixture / "config.yaml";
+  YAML::Node config =
+      fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node(YAML::NodeType::Map);
+  config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  config["stitching"]["control_point_resolution"] = "native";
+  config["hstream_ui"].remove("generated_control_point_resolution");
+  config["hstream_ui"].remove("generated_stitching_backend_choices");
+  config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  std::ofstream(config_path) << YAML::Dump(config) << '\n';
+  for (int run = 0; run < 2; ++run) {
+    HStreamWindow window;
+    window.show();
+    auto* game = require_child<QLineEdit>(&window, "gameIdEdit");
+    auto* create = require_child<QPushButton>(&window, "createGameButton");
+    auto* save = require_child<QPushButton>(&window, "savePresetButton");
+    auto* matcher = require_child<QComboBox>(&window, "controlPointMatcherCombo");
+    auto* resolution = require_child<QComboBox>(&window, "controlPointResolutionCombo");
+    if (!game || !create || !save || !matcher || !resolution)
+      return false;
+    game->setText("ui-feature-resolution");
+    activate(create);
+    if (!expect(
+            resolution->isEnabled() && resolution->currentData() == (run == 0 ? "native" : "2k"),
+            "SuperPoint must default to native and reload an explicitly saved 2K size"))
+      return false;
+    resolution->setCurrentIndex(resolution->findData("2k"));
+    for (const auto& choice : std::vector<std::pair<const char*, const char*>>{
+             {"akaze-hamming", "1920"}, {"dedode-lightglue", "1024"}, {"loftr", "1600"}}) {
+      matcher->setCurrentIndex(matcher->findData(choice.first));
+      if (!expect(
+              !resolution->isEnabled() && resolution->currentText().contains(choice.second),
+              "Fixed-size matchers must display their actual size with the control disabled"))
+        return false;
+    }
+    matcher->setCurrentIndex(matcher->findData("superpoint-lightglue"));
+    if (!expect(
+            resolution->isEnabled() && resolution->currentData() == "2k",
+            "Switching algorithms must preserve the selected SuperPoint resolution"))
+      return false;
+    if (run == 0) {
+      activate(save);
+      const auto saved = YAML::LoadFile(config_path.string());
+      if (!expect(
+              saved["stitching"]["control_point_resolution"].as<std::string>() == "2k" &&
+                  saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
+                  saved["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features",
+              "Saving a different image size must restart calibration from features"))
+        return false;
+    }
+  }
+  return true;
+}
+
 bool test_stitching_iteration_controls(const QString& source_game_directory) {
   const fs::path source(source_game_directory.toStdString());
   const fs::path fixture = source.parent_path() / "ui-stitching-iterations";
@@ -14466,6 +14526,12 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_FFMPEG", fake_ffmpeg.toLocal8Bit());
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RESOLUTION_ONLY")) {
+    HStreamWindow window;
+    return test_game_setup(&window, source_root.path()) && test_control_point_resolution(window.gameDirectoryText())
+        ? 0
+        : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRESET_RELOAD_ONLY")) {
     HStreamWindow window;
     return test_preset_reload_with_missing_tracker() && test_game_setup(&window, source_root.path()) &&
@@ -14532,7 +14598,8 @@ int main(int argc, char** argv) {
     std::cerr << "test_game_setup failed\n";
     return 1;
   }
-  if (!test_preset_reload_with_missing_tracker() || !test_stitching_iteration_controls(window.gameDirectoryText()))
+  if (!test_control_point_resolution(window.gameDirectoryText()) || !test_preset_reload_with_missing_tracker() ||
+      !test_stitching_iteration_controls(window.gameDirectoryText()))
     return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";

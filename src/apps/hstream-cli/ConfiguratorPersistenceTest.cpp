@@ -400,6 +400,46 @@ play-tracker:
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kOutputRootKey] = (root / "configured-output").string();
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
 
+  // Resolution follows baseline -> user -> game -> CLI and generated worker values
+  // must not turn a temporary override into persistent game intent.
+  YAML::Node resolution_user = YAML::Clone(user_overlay);
+  resolution_user["stitching"]["control_point_resolution"] = "2k";
+  std::ofstream(user_config_path) << YAML::Dump(resolution_user) << '\n';
+  for (const bool game_override : {false, true}) {
+    const std::string game = game_override ? "resolution-game" : "resolution-user";
+    fs::create_directories(games / game);
+    if (game_override)
+      std::ofstream(games / game / "config.yaml") << "stitching: {control_point_resolution: native}\n";
+    hm::Configurator resolution_config(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    const bool loaded = resolution_config.configure().ok();
+    ok &= expect(
+        loaded &&
+            resolution_config.config()["stitching"]["control_point_resolution"].as<std::string>() ==
+                (game_override ? "native" : "2k"),
+        "Game resolution must override the user setting, which overrides the native baseline");
+    if (!loaded)
+      continue;
+    ok &= expect(
+        resolution_config.apply_config_item("stitching.control_point_resolution", game_override ? "2k" : "native")
+                .ok() &&
+            resolution_config.persist_effective_stitching_backend_choices().ok() &&
+            resolution_config.persist_effective_stitching_backend_choices().ok(),
+        "Explicit resolution overrides must survive repeated worker publication");
+    const auto persisted = YAML::LoadFile((games / game / "config.yaml").string());
+    ok &= expect(
+        hm::stitching::read_control_point_resolution(persisted).value() ==
+            (game_override ? hm::stitching::ControlPointResolution::k2K
+                           : hm::stitching::ControlPointResolution::kNative),
+        "The worker must receive the effective CLI resolution");
+    hm::Configurator reloaded(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+    ok &= expect(
+        reloaded.configure().ok() &&
+            reloaded.config()["stitching"]["control_point_resolution"].as<std::string>() ==
+                (game_override ? "native" : "2k"),
+        "Reload must restore original game intent or inherit the user resolution again");
+  }
+  std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
+
   const fs::path mapping_structure_path = root / "mapping-structure.yaml";
   YAML::Node mapping_structure(YAML::NodeType::Map);
   mapping_structure["application"] = YAML::Node(YAML::NodeType::Map);

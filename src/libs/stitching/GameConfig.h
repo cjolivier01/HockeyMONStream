@@ -13,6 +13,7 @@
 #include "absl/status/statusor.h"
 #include "yaml-cpp/yaml.h"
 
+#include "hstream/src/libs/stitching/ControlPointMatcher.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
 namespace hm::stitching {
@@ -85,6 +86,10 @@ absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config)
 bool restore_generated_stitch_rink_context(YAML::Node& config);
 absl::StatusOr<bool> materialize_stitch_rink_context(YAML::Node& config, const YAML::Node& effective);
 
+absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config);
+bool restore_generated_control_point_resolution(YAML::Node& config);
+absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, const YAML::Node& effective);
+
 struct StitchingBackendChoices {
   std::string control_point_matcher;
   std::string mapping_backend;
@@ -93,6 +98,7 @@ struct StitchingBackendChoices {
   std::vector<double> projection_parameters;
   StitchProjectionFraming projection_framing;
   StitchCameraSelection camera;
+  ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
 };
 
 // Camera configuration definitions live in the shared baseline under

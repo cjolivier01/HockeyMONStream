@@ -312,7 +312,8 @@ FeatureMatcher::FeatureMatcher(
 absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     const std::string& model_path,
     ControlPointMatcher matcher,
-    AkazeMatchingCalibration akaze_calibration) {
+    AkazeMatchingCalibration akaze_calibration,
+    ControlPointResolution resolution) {
   if (matcher == ControlPointMatcher::kAkazeHamming) {
     if (akaze_calibration.left.has_value() != akaze_calibration.right.has_value()) {
       return absl::InvalidArgumentError("AKAZE lens calibration must contain both cameras or neither camera");
@@ -379,7 +380,9 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
   }
   if (!session.ok())
     return session.status();
-  return std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher, std::move(*session), input_channels));
+  auto result = std::unique_ptr<FeatureMatcher>(new FeatureMatcher(matcher, std::move(*session), input_channels));
+  result->resolution_ = resolution;
+  return result;
 }
 
 absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::CreateLegacyAlikedParity(
@@ -402,7 +405,12 @@ absl::StatusOr<FeaturePairInput> FeatureMatcher::Prepare(const cv::Mat& left_bgr
   return prepare_feature_pair(left_bgr, right_bgr, 3, {kInputWidth, kInputHeight}, true);
 }
 
-absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareSuperPoint(const cv::Mat& left_bgr, const cv::Mat& right_bgr) {
+absl::StatusOr<FeaturePairInput> FeatureMatcher::PrepareSuperPoint(
+    const cv::Mat& left_bgr,
+    const cv::Mat& right_bgr,
+    ControlPointResolution resolution) {
+  if (resolution == ControlPointResolution::k2K)
+    return prepare_feature_pair(left_bgr, right_bgr, 1, {kSuperPointReducedWidth, kSuperPointReducedHeight}, true);
   // The batch shares a canvas, but each image retains its original pixels and coordinates.
   const auto align_up = [](int dimension) {
     return (static_cast<int64_t>(std::max(kSuperPointMinimumDimension, dimension)) + kSuperPointDimensionAlignment -
@@ -736,7 +744,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     return absl::FailedPreconditionError("Feature matcher has no inference session");
 
   auto input = matcher_ == ControlPointMatcher::kLoFTR ? PrepareLoFTR(left_bgr, right_bgr)
-      : input_channels_ == 1                           ? PrepareSuperPoint(left_bgr, right_bgr)
+      : input_channels_ == 1                           ? PrepareSuperPoint(left_bgr, right_bgr, resolution_)
                                                        : Prepare(left_bgr, right_bgr);
   if (!input.ok())
     return input.status();

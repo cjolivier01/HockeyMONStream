@@ -13,6 +13,11 @@ enum class ControlPointMatcher {
   kAkazeHamming,
 };
 
+// SuperPoint has a dynamic graph; the other backends retain their established sizes.
+enum class ControlPointResolution { kNative, k2K };
+const char* ControlPointResolutionName(ControlPointResolution resolution);
+absl::StatusOr<ControlPointResolution> ParseControlPointResolution(const std::string& value);
+
 const char* ControlPointMatcherName(ControlPointMatcher matcher);
 absl::StatusOr<ControlPointMatcher> ParseControlPointMatcher(const std::string& value);
 

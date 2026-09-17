@@ -871,6 +871,59 @@ absl::StatusOr<std::string> read_stitch_rink_selection(const YAML::Node& config)
   }
 }
 
+absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node();
+    if (!value || value.IsNull())
+      return ControlPointResolution::kNative;
+    if (!value.IsScalar())
+      return absl::InvalidArgumentError("stitching.control_point_resolution must be native or 2k");
+    return ParseControlPointResolution(value.as<std::string>());
+  } catch (const YAML::Exception& exception) {
+    return absl::InvalidArgumentError("Unable to read control-point resolution: " + std::string(exception.what()));
+  }
+}
+
+bool restore_generated_control_point_resolution(YAML::Node& config) {
+  const YAML::Node values = config;
+  const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();
+  const YAML::Node marker = ui && ui.IsMap() ? ui["generated_control_point_resolution"] : YAML::Node();
+  if (!marker || !marker.IsMap() || !marker["generated"] || !marker["generated"].IsScalar())
+    return false;
+  const YAML::Node stitching = values["stitching"];
+  const YAML::Node current = stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node();
+  if (current && YAML::Dump(current) == YAML::Dump(marker["generated"])) {
+    if (marker["previous"])
+      config["stitching"]["control_point_resolution"] = YAML::Clone(marker["previous"]);
+    else
+      config["stitching"].remove("control_point_resolution");
+  }
+  config["hstream_ui"].remove("generated_control_point_resolution");
+  return true;
+}
+
+absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, const YAML::Node& effective) {
+  ControlPointResolution resolution;
+  HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(effective));
+  const std::string before = YAML::Dump(config);
+  restore_generated_control_point_resolution(config);
+  ControlPointResolution previous;
+  HM_ASSIGN_OR_RETURN(previous, read_control_point_resolution(config));
+  if (previous != resolution) {
+    YAML::Node marker(YAML::NodeType::Map);
+    const YAML::Node values = config;
+    const YAML::Node stitching = values && values.IsMap() ? values["stitching"] : YAML::Node();
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node();
+    if (value)
+      marker["previous"] = YAML::Clone(value);
+    marker["generated"] = ControlPointResolutionName(resolution);
+    config["hstream_ui"]["generated_control_point_resolution"] = marker;
+    config["stitching"]["control_point_resolution"] = ControlPointResolutionName(resolution);
+  }
+  return YAML::Dump(config) != before;
+}
+
 bool restore_generated_stitch_rink_context(YAML::Node& config) {
   try {
     const YAML::Node values = config;
@@ -1654,7 +1707,15 @@ absl::Status validate_backend_generation_claim(
     }
     const bool claim_framing_matches = *parsed_expected_backend != MappingBackend::kNona ||
         *parsed_claim_framing == expected_choices.projection_framing;
-    const bool claim_matches = claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
+    ControlPointResolution claim_resolution = ControlPointResolution::kNative;
+    if (claim["control_point_resolution"]) {
+      if (!claim["control_point_resolution"].IsScalar())
+        return absl::AbortedError("Invalid control-point resolution in generation claim");
+      HM_ASSIGN_OR_RETURN(
+          claim_resolution, ParseControlPointResolution(claim["control_point_resolution"].as<std::string>()));
+    }
+    const bool claim_matches = claim_resolution == expected_choices.control_point_resolution &&
+        claim["invalidation_id"].as<std::string>() == expected_invalidation_id &&
         claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
         claim["projection"].as<std::string>() == expected_choices.projection &&
@@ -1675,11 +1736,14 @@ absl::Status validate_backend_generation_claim(
       };
       std::ostringstream detail;
       detail << "Stitching backend choices were superseded for this calibration generation: expected {id="
-             << expected_invalidation_id << ", matcher=" << expected_choices.control_point_matcher
+             << expected_invalidation_id
+             << ", resolution=" << ControlPointResolutionName(expected_choices.control_point_resolution)
+             << ", matcher=" << expected_choices.control_point_matcher
              << ", backend=" << expected_choices.mapping_backend << ", projection=" << expected_choices.projection
              << ", autooptimizer=" << (expected_choices.run_autooptimizer ? "true" : "false")
              << ", parameters=" << format_parameters(expected_choices.projection_parameters)
              << "}, reserved {id=" << claim["invalidation_id"].as<std::string>()
+             << ", resolution=" << ControlPointResolutionName(claim_resolution)
              << ", matcher=" << claim["control_point_matcher"].as<std::string>()
              << ", backend=" << claim["mapping_backend"].as<std::string>()
              << ", projection=" << claim["projection"].as<std::string>()
@@ -1722,7 +1786,9 @@ absl::Status validate_backend_generation_claim(
     auto worker_camera = read_worker_camera_selection(config);
     if (!worker_camera.ok())
       return worker_camera.status();
-    const bool worker_tuple_matches =
+    ControlPointResolution worker_resolution;
+    HM_ASSIGN_OR_RETURN(worker_resolution, read_control_point_resolution(config));
+    const bool worker_tuple_matches = worker_resolution == expected_choices.control_point_resolution &&
         stitching["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
         stitching["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
         stitching["projection"].as<std::string>() == expected_choices.projection &&
@@ -1780,6 +1846,7 @@ absl::Status reserve_stitching_backend_generation_in_config(
     if (!claim_has_current_generation) {
       claim["invalidation_id"] = expected_invalidation_id;
       claim["control_point_matcher"] = expected_choices.control_point_matcher;
+      claim["control_point_resolution"] = ControlPointResolutionName(expected_choices.control_point_resolution);
       claim["mapping_backend"] = expected_choices.mapping_backend;
       claim["projection"] = expected_choices.projection;
       claim["run_autooptimizer"] = expected_choices.run_autooptimizer;

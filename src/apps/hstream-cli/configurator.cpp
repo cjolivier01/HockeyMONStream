@@ -8102,6 +8102,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   stitching::write_stitch_projection_framing(config_, projection_framing);
   stitching::write_stitch_camera_selection(config_, camera);
 
+  stitching::ControlPointResolution resolution;
+  HM_ASSIGN_OR_RETURN(resolution, stitching::read_control_point_resolution(config_));
   const stitching::StitchingBackendChoices backend_choices{
       matcher_name,
       backend_name,
@@ -8109,8 +8111,11 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       run_autooptimizer,
       projection_parameters,
       projection_framing,
-      camera};
+      camera,
+      resolution};
 
+  bool resolution_changed = false;
+  HM_ASSIGN_OR_RETURN(resolution_changed, stitching::materialize_control_point_resolution(private_config_, config_));
   bool rink_context_changed = false;
   HM_ASSIGN_OR_RETURN(rink_context_changed, stitching::materialize_stitch_rink_context(private_config_, config_));
   std::vector<double> private_projection_parameters;
@@ -8148,7 +8153,7 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       displaced_generated_projection_parameters->IsSequence() &&
       (!private_parameter_projection.has_value() || *private_parameter_projection != projection_name);
 
-  const bool private_matches = !rink_context_changed && private_matcher_value.has_value() &&
+  const bool private_matches = !resolution_changed && !rink_context_changed && private_matcher_value.has_value() &&
       *private_matcher_value == matcher && private_backend_value.has_value() && *private_backend_value == backend &&
       private_projection_value.has_value() && *private_projection_value == projection &&
       private_autooptimizer_value.has_value() && *private_autooptimizer_value == run_autooptimizer &&
@@ -8466,9 +8471,10 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
   if (private_config.has_value()) {
     const YAML::Node original_private_config = YAML::Clone(*private_config);
     private_config_ = YAML::Clone(*private_config);
+    const bool restored_resolution = stitching::restore_generated_control_point_resolution(private_config_);
     const bool restored_rink_context = stitching::restore_generated_stitch_rink_context(private_config_);
     loaded_generated_stitching_backend_choices_ =
-        normalize_generated_stitching_backend_choices(private_config_) || restored_rink_context;
+        normalize_generated_stitching_backend_choices(private_config_) || restored_rink_context || restored_resolution;
     persisted_private_config_ =
         YAML::Clone(loaded_generated_stitching_backend_choices_ ? original_private_config : private_config_);
     record_explicit_overlay(private_config_, {}, 2);
@@ -8746,6 +8752,8 @@ absl::Status Configurator::complete_configuration(
               stitching::ValidateStitchProjectionFraming(
                   expected_projection, expected_projection_parameters, expected_projection_framing));
         }
+        stitching::ControlPointResolution expected_resolution;
+        HM_ASSIGN_OR_RETURN(expected_resolution, stitching::read_control_point_resolution(config_));
         const stitching::StitchingBackendChoices expected_backend_choices{
             get_node_value(config_, "stitching.control_point_matcher", std::string()),
             get_node_value(config_, "stitching.mapping_backend", std::string()),
@@ -8753,7 +8761,8 @@ absl::Status Configurator::complete_configuration(
             expected_run_autooptimizer,
             expected_projection_parameters,
             expected_projection_framing,
-            expected_camera};
+            expected_camera,
+            expected_resolution};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));

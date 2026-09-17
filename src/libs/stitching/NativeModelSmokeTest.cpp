@@ -115,8 +115,15 @@ int main() {
       {"EfficientLoFTR outdoor", hm::stitching::ControlPointMatcher::kLoFTR, loftr_path},
       {"AKAZE + M-LDB + Hamming", hm::stitching::ControlPointMatcher::kAkazeHamming, {}},
   };
+  const char* requested_resolution = std::getenv("HM_SUPERPOINT_SMOKE_RESOLUTION");
+  auto resolution = hm::stitching::ParseControlPointResolution(requested_resolution ? requested_resolution : "native");
+  if (!resolution.ok()) {
+    std::cerr << resolution.status() << '\n';
+    return 1;
+  }
   for (const auto& matcher_case : cases) {
-    auto matcher = hm::stitching::FeatureMatcher::Create(matcher_case.path.string(), matcher_case.matcher);
+    auto matcher =
+        hm::stitching::FeatureMatcher::Create(matcher_case.path.string(), matcher_case.matcher, {}, *resolution);
     if (!matcher.ok()) {
       std::cerr << "FAIL: " << matcher_case.name << " model contract: " << matcher.status() << '\n';
       return 1;
@@ -157,14 +164,17 @@ int main() {
           ++translated;
       }
       if (translated * 2 < matches->accepted.size()) {
-        std::cerr << "FAIL: SuperPoint matches must preserve the source translation after full-resolution inference\n";
+        std::cerr
+            << "FAIL: SuperPoint matches must preserve the source translation after inference in source coordinates\n";
         return 1;
       }
     }
-    std::cout << matcher_case.name << " (" << matcher_left.cols << 'x' << matcher_left.rows << ", "
-              << matcher_right.cols << 'x' << matcher_right.rows << "): " << matches->accepted_match_count
-              << " matches in " << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
-              << " s\n";
+    std::cout << matcher_case.name
+              << (superpoint ? std::string(" resolution=") + hm::stitching::ControlPointResolutionName(*resolution)
+                             : "")
+              << " (" << matcher_left.cols << 'x' << matcher_left.rows << ", " << matcher_right.cols << 'x'
+              << matcher_right.rows << "): " << matches->accepted_match_count << " matches in "
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() << " s\n";
   }
   return 0;
 }

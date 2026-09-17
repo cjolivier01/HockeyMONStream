@@ -4,7 +4,7 @@
 backends:
 
 - `superpoint-lightglue` uses the existing SuperPoint + LightGlue ONNX graph
-  at each camera image's original resolution, without resizing. Images are
+  at each camera image's original resolution by default. Images are
   converted to grayscale floats in `[0,1]` and padded on the right/bottom with
   zeros to a shared canvas covering both images, rounded up to multiples of 8.
   A minimum 32 × 32 canvas supports the graph's fixed top-1024 operation for tiny
@@ -29,8 +29,31 @@ backends:
   distance, a strict 0.75 Lowe ratio in both directions, and a mutual
   cross-check. It does not require a model asset.
 
-The SuperPoint resolution applies when generating new control points. Existing
-saved calibration is reused until explicitly regenerated.
+`stitching.control_point_resolution` accepts `native` (default) or `2k` for
+SuperPoint + LightGlue. `2k` restores the 2048 × 1152 grayscale canvas from the
+earlier doubled-resolution implementation: each camera is resized preserving
+aspect ratio and padded; matches are converted back to source coordinates.
+No new ONNX export or download is needed.
+
+The UI's **Image size** selector sits beside the control-point count. It remembers
+the SuperPoint choice when switching matchers. For the other backends it is
+disabled and displays their actual processing size: AKAZE at a maximum dimension
+of 1920 pixels, EfficientLoFTR at 1600 (aligned down to multiples of 32), and DeDoDe
+at 1024 × 576. These backends retain their existing size regardless of the saved
+SuperPoint preference. This setting is independent of the stitched output width.
+
+The resolution uses the normal baseline → user → game → CLI precedence; for example,
+`--options=stitching.control_point_resolution=2k`. Save Preset or starting a run with
+a changed UI resolution marks calibration stale from **features**. Immutable worker
+generation claims include the selection, and canvas provenance version 9 records it.
+Older provenance remains readable; selecting `2k` invalidates artifacts whose
+resolution was not recorded. Generated worker overrides restore the previous game
+setting on the next config load, so a one-run CLI override does not become a default.
+
+The bundled ONNX Runtime currently uses its **CPU execution provider**, including
+SuperPoint and LightGlue. Choosing native resolution does not enable CUDA.
+The measured 7680 × 4320 camera pair produced 39 accepted matches in 56.16 seconds
+on CPU; that was not a GPU benchmark.
 Full-resolution inference increases calibration memory and runtime with source
 image size; there is no automatic downscaling fallback. SuperPoint disables
 ONNX Runtime's CPU memory arena so large temporary activation buffers can be
@@ -42,7 +65,9 @@ saved camera frames at their original resolution, set
 `HM_SUPERPOINT_SMOKE_GAME_DIR=/path/to/game` when running
 `//src/libs/stitching:native_model_smoke_test`; this reads `left.png` and
 `right.png` without modifying the game's calibration. Set
-`HM_REQUIRE_ONNX_MODEL_TESTS=1` to fail if model assets are unavailable.
+`HM_REQUIRE_ONNX_MODEL_TESTS=1` to fail if model assets are unavailable. Set
+`HM_SUPERPOINT_SMOKE_RESOLUTION=2k` to check the reduced mode instead. Both modes
+verify synthetic translation in the original source coordinates.
 
 The DeDoDe and LightGlue source projects are MIT and Apache-2.0 respectively;
 Kornia and the EfficientLoFTR artifact are Apache-2.0. The DeDoDe graph also
