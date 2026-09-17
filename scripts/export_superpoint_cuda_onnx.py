@@ -36,8 +36,8 @@ def convert(source: Path, destination: Path) -> None:
             return
         index = producer[value]
         needed.add(index)
-        for value in model.graph.node[index].input:
-            visit(value)
+        for input_name in model.graph.node[index].input:
+            visit(input_name)
 
     for value in EXTRACTOR_OUTPUTS:
         visit(value)
