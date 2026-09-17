@@ -92,16 +92,6 @@
       "problemMatcher": []
     },
     {
-      "label": "Make: pipeline-app",
-      "type": "shell",
-      "command": "make",
-      "args": ["pipeline-app"],
-      "options": {
-        "cwd": "${workspaceRoot}",
-      },
-      "problemMatcher": []
-    },
-    {
       "label": "Make: hstream-cli",
       "type": "shell",
       "command": "make",
@@ -166,16 +156,6 @@
       "type": "shell",
       "command": "make",
       "args": ["run-hstream-ui"],
-      "options": {
-        "cwd": "${workspaceRoot}",
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Make: run-pipeline-app",
-      "type": "shell",
-      "command": "make",
-      "args": ["run-pipeline-app"],
       "options": {
         "cwd": "${workspaceRoot}",
       },

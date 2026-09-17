@@ -19,10 +19,10 @@
     - To run the older two-stage flow, pass `--two-stage` (stage `-1` stitching/rink-mask configuration with `FAKE`, then stage `0` main pipeline).
     - Supports `-t N`, `-t=N`, or `--time-limit=N`.
     - If configured pretrained assets are missing, it will download the assets declared in YAML `pretrained-assets`.
-  - Direct `pipeline-app` invocation (useful for debugging configs):
-    - Display only: `bazel-bin/src/apps/pipeline-app/pipeline-app -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
-    - Encode to file: `bazel-bin/src/apps/pipeline-app/pipeline-app -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
-    - Fake sink (no UI): `bazel-bin/src/apps/pipeline-app/pipeline-app -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=FAKE --options=pipeline.hmaudio.enable=1`
+  - Direct `hstream-cli` invocation (useful for debugging configs):
+    - Display only: `bazel-bin/src/apps/hstream-cli/hstream-cli -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=RENDER --options=pipeline.hmaudio.enable=1`
+    - Encode to file: `bazel-bin/src/apps/hstream-cli/hstream-cli -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1`
+    - Fake sink (no UI): `bazel-bin/src/apps/hstream-cli/hstream-cli -g <game_id> --enable-sources=URI-MULTIPLE --enable-sinks=FAKE --options=pipeline.hmaudio.enable=1`
     - Explicit two-stage debugging: add `-c configs/ds_hockey_configure_stitching.yaml -c configs/ds_hockey_app_config.yaml`.
     - Multi-sink (comma-separated): `... --enable-sinks=RENDER,ENCODE_FILE`
     - All commands support an optional time limit: append `-t N` (or `--time-limit=N`) to stop after processing `N` seconds of video.
@@ -78,8 +78,8 @@ Notes:
 ## Architecture Overview
 
 ### Entry points and process ownership
-- The main user-facing entry points are `hstream-ui` (desktop UI) and `hstream-cli` (CLI). HockeyMONStream uses C++17/GStreamer/DeepStream; runtime names remain `hstream-*`. `pipeline-app` is a compatibility/developer target that compiles the same sources as `hstream-cli` in `src/apps/pipeline-app/BUILD.bazel`.
-- `src/apps/pipeline-app/PipelineApp.cpp` owns CLI startup, stage execution, the GLib main loop, runtime commands, seeking, and shutdown. `configurator.cpp` resolves configuration and prepares source, calibration, model, and output settings. `deepstream_app.cpp` assembles and tears down the graph using `AppCtx`/`NvDsPipeline` from `deepstream_app.h` and the bin builders in `src/apps/apps-common/`.
+- The main user-facing entry points are `hstream-ui` (desktop UI) and `hstream-cli` (CLI). HockeyMONStream uses C++17/GStreamer/DeepStream; runtime names remain `hstream-*`. The CLI source and single executable target live in `src/apps/hstream-cli/` (`//src/apps/hstream-cli:hstream-cli`).
+- `src/apps/hstream-cli/PipelineApp.cpp` owns CLI startup, stage execution, the GLib main loop, runtime commands, seeking, and shutdown. `configurator.cpp` resolves configuration and prepares source, calibration, model, and output settings. `deepstream_app.cpp` assembles and tears down the graph using `AppCtx`/`NvDsPipeline` from `deepstream_app.h` and the bin builders in `src/apps/apps-common/`.
 - The Qt desktop app is `src/apps/hstream-ui/`. Its `HStreamWindow.cpp` currently launches `hstream-cli` with `QProcess`, sends runtime commands through stdin, and consumes process output for status and acknowledgments. Preview windows are embedded using native window IDs. Pipeline mutations belong in the runner's runtime handlers; UI controls must honor their acknowledgments and stage/run generations.
 - `src/libs/pipeline_controller/` currently provides runtime types and GStreamer property/graph inspection (`GstPropertyService`), not an in-process pipeline owner. `docs/in-process-ui-runtime-control-design.md` describes a proposed architecture; verify implemented behavior in the source before treating its phases as complete.
 - `src/apps/hstream-job/` exports saved jobs as Bash scripts that invoke `hstream-cli`; `src/apps/hstream-assets/` and `src/libs/assets/` manage declared pretrained assets. `src/apps/dual-record/` is a separate camera-recording application.
@@ -103,7 +103,7 @@ camera files / live sources -> decode and batch -> hmstitcher
 | Rendering, scoreboard, GPU preview, and encoding | `src/libs/draw_display/`, `src/libs/scoreboard/`, `src/apps/apps-common/HmGpuPreview.cpp`, `deepstream_sink_bin.cpp`, `EncoderDimensions.cpp` |
 | Shared frame metadata and configuration helpers | `src/libs/common/`; in particular `DecodedFrameSequenceMeta`, `DetectionSnapshotMeta`, `PreviewOverlayMeta`, `BaselineConfig`, and `UserConfig` |
 
-- `hmstitcher`, `vpplaytracker`, and `playcropper` are variants registered by the shared `videoprep` plugin and selected by `plugin-type`. The Program path's `vpplaytracker` uses `PlayTrackerCtx`; do not confuse the separately registered `gst-playtracker` element with the whole camera-policy implementation. CUDA kernels live alongside their owning libraries/plugins and use Bazel `cuda_library` targets.
+- `hmstitcher`, `vpplaytracker`, and `playcropper` are variants registered by the shared `videoprep` plugin and selected by `plugin-type`. The Program path's `vpplaytracker` uses `PlayTrackerCtx`; the separate `playtracker` element is registered in `gst-playtracker/`. CUDA kernels live alongside their owning libraries/plugins and use Bazel `cuda_library` targets.
 - URI-MULTIPLE discovery supports GoPro/Insta360 chapters and `cam1`, `cam2`, etc. directories, mirroring HockeyMON's `hmlib/orientation.py`. The playlist frame barrier and `hstreamlosslessmux` preserve synchronized decoded-frame sequences across chapter changes. Preserve sequence metadata, cancellation, and EOS behavior when changing batching or seeking; timeout-based partial batches or leaky queues can break recording completeness.
 - The stitched archive has a separate route from the Program crop; GPU previews also have their own routing/overlay controls. Trace the actual tee and surface format before changing a sink. See `docs/stitched-archive-resolution.md` for native canvas versus encoder limits and the GPU Data-Path Guidelines above for memory-transfer constraints.
 

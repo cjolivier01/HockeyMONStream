@@ -98,7 +98,7 @@ class JobScriptTest(unittest.TestCase):
             bin_dir.mkdir(parents=True)
             tool = bin_dir / "hstream-job"
             shutil.copy2(TOOL, tool)
-            runner = bin_dir / "hstream-cli" if installed else bin_dir.parent / "pipeline-app/hstream-cli"
+            runner = bin_dir / "hstream-cli" if installed else bin_dir.parent / "hstream-cli/hstream-cli"
             runner.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.runner, runner)
             wrapper_called = layout / "wrapper-called"

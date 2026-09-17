@@ -11,15 +11,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 show_help() {
   cat <<'EOF'
 Usage:
-  ./run.sh --game-id=<game_id> [wrapper options] [pipeline-app options]
-  ./hm_run.sh --game-id=<game_id> [wrapper options] [pipeline-app options]
+  ./run.sh --game-id=<game_id> [wrapper options] [hstream-cli options]
+  ./hm_run.sh --game-id=<game_id> [wrapper options] [hstream-cli options]
 
 Common:
   -g, --game-id ID                     Game directory ID under $HM_GAME_DIR or ~/Videos
   -t N, -t=N, --time-limit=N           Stop after N seconds of video
   -k, --enable-sinks SINKS             Comma-separated sinks: FAKE, RENDER, ENCODE_FILE, RTSP, WEBRTC
   --show                               Render when display is available; RTSP preview when headless
-  -c, --config FILE                    Additional pipeline-app config file
+  -c, --config FILE                    Additional hstream-cli config file
   --options key=value                  Override pipeline config; repeatable
 
 Pipeline staging:
@@ -55,7 +55,7 @@ Related:
 
 Notes:
   Game directories default to ~/Videos/<game_id>. Set HM_GAME_DIR to override the games root.
-  Unrecognized arguments are forwarded to pipeline-app.
+  Unrecognized arguments are forwarded to hstream-cli.
 EOF
 }
 
@@ -185,9 +185,9 @@ if [ -e "${YOLO_CUSTOM_IMPL}" ]; then
   fi
 fi
 
-PIPELINE_APP_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
-if [ -x "${PIPELINE_APP_BIN}" ]; then
-  PIPELINE_APP_BIN="$(readlink -f "${PIPELINE_APP_BIN}")"
+HSTREAM_CLI_BIN="${SCRIPT_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
+if [ -x "${HSTREAM_CLI_BIN}" ]; then
+  HSTREAM_CLI_BIN="$(readlink -f "${HSTREAM_CLI_BIN}")"
 fi
 if [ -n "${CONDA_PREFIX:-}" ]; then
   # Conda environments often ship their own GLib/GStreamer stack. Adding `${CONDA_PREFIX}/lib` ahead of system
@@ -368,7 +368,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
   fi
   case "$arg" in
     --one-pass-only|--stage0-only|--two-stage|--configure-first|--models-int8|--int8-models|--quant-int8|--models-int8-calibrate|--int8-calibrate|--calibrate-int8|--models-bf16|--bf16-models|--models-bf16-build|--bf16-build|--stitcher-minimize-blend|--minimize-blend)
-      # run.sh-only flag; do not forward to pipeline-app
+      # run.sh-only flag; do not forward to hstream-cli
       continue
       ;;
     --int8-calib-frames|--int8-calib-batch-size|--int8-calib-start-seconds|--stitcher-compute|--stitcher-compute-precision)
@@ -377,7 +377,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
       continue
       ;;
     --int8-calib-frames=*|--int8-calib-batch-size=*|--int8-calib-start-seconds=*|--stitcher-compute=*|--stitcher-compute-precision=*)
-      # run.sh-only flag; do not forward to pipeline-app
+      # run.sh-only flag; do not forward to hstream-cli
       continue
       ;;
     --show)
@@ -1040,10 +1040,10 @@ if [ "${ssh_forwarded_display}" -eq 1 ] && [ "${HM_ALLOW_SSH_RENDER:-0}" != "1" 
   unset DISPLAY
 fi
 
-if [ ! -x "${PIPELINE_APP_BIN}" ]; then
-  echo "hstream-cli is not built at ${PIPELINE_APP_BIN}; build //src/apps/pipeline-app:hstream-cli first"
+if [ ! -x "${HSTREAM_CLI_BIN}" ]; then
+  echo "hstream-cli is not built at ${HSTREAM_CLI_BIN}; build //src/apps/hstream-cli:hstream-cli first"
   exit 2
 fi
 
-"${PIPELINE_APP_BIN}" "${pipeline_args[@]}"
-# bazel-bin/src/apps/pipeline-app/hstream-cli -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1 $@
+"${HSTREAM_CLI_BIN}" "${pipeline_args[@]}"
+# bazel-bin/src/apps/hstream-cli/hstream-cli -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE --options=pipeline.hmaudio.enable=1 $@

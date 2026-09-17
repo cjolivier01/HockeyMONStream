@@ -3,7 +3,7 @@ exports_files([
   "configurator.cpp",
 ])
 
-PIPELINE_APP_SRCS = glob(
+HSTREAM_CLI_SRCS = glob(
     [
         "*.cpp",
         "*.h",
@@ -11,24 +11,24 @@ PIPELINE_APP_SRCS = glob(
     exclude = ["*Test.cpp"],
 )
 
-PIPELINE_APP_COPTS = [
+HSTREAM_CLI_COPTS = [
     "-x",
     "c++",
     "-std=c++17",
 ]
 
-PIPELINE_APP_LINKOPTS = [
+HSTREAM_CLI_LINKOPTS = [
     "-lX11",
     "-ldl",
     "-lm",
 ]
 
-PIPELINE_APP_RUNTIME_DATA = [
+HSTREAM_CLI_RUNTIME_DATA = [
     "//src/gst-plugins:hstream_runtime_plugins",
     "//src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo",
 ]
 
-PIPELINE_APP_DEPS = [
+HSTREAM_CLI_DEPS = [
     "//src/libs/assets:asset_manager",
     # "//src/libs/common:mod_pipeline",
     "//src/libs/common:utils",
@@ -58,27 +58,18 @@ PIPELINE_APP_DEPS = [
 
 filegroup(
     name = "runtime_sources",
-    srcs = PIPELINE_APP_SRCS,
+    srcs = HSTREAM_CLI_SRCS,
     visibility = ["//visibility:public"],
-)
-
-cc_binary(
-    name = "pipeline-app",
-    srcs = PIPELINE_APP_SRCS,
-    copts = PIPELINE_APP_COPTS,
-    data = PIPELINE_APP_RUNTIME_DATA,
-    linkopts = PIPELINE_APP_LINKOPTS,
-    deps = PIPELINE_APP_DEPS,
 )
 
 cc_binary(
     name = "hstream-cli",
-    srcs = PIPELINE_APP_SRCS,
-    copts = PIPELINE_APP_COPTS,
-    data = PIPELINE_APP_RUNTIME_DATA,
-    linkopts = PIPELINE_APP_LINKOPTS,
+    srcs = HSTREAM_CLI_SRCS,
+    copts = HSTREAM_CLI_COPTS,
+    data = HSTREAM_CLI_RUNTIME_DATA,
+    linkopts = HSTREAM_CLI_LINKOPTS,
     visibility = ["//visibility:public"],
-    deps = PIPELINE_APP_DEPS,
+    deps = HSTREAM_CLI_DEPS,
 )
 
 cc_test(
@@ -90,16 +81,16 @@ cc_test(
         "configurator.h",
         "deepstream_app.h",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
     data = ["//configs:ds_hockey_app_config.yaml"],
-    linkopts = PIPELINE_APP_LINKOPTS,
-    deps = PIPELINE_APP_DEPS,
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = HSTREAM_CLI_DEPS,
 )
 
 cc_test(
     name = "telemetry_configuration_test",
     srcs = ["TelemetryConfiguration.h", "TelemetryConfigurationTest.cpp"],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
     deps = ["@yaml-cpp", "@com_google_absl//absl/status:statusor"],
 )
 
@@ -124,7 +115,7 @@ cc_test(
         "PipelineAssetOptions.h",
         "PipelineAssetOptionsTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
     deps = [
         "//src/libs/assets:asset_manager",
         "//src/libs/common:utils",
@@ -217,7 +208,7 @@ cc_test(
         "PlaybackProgress.h",
         "PlaybackProgressTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
 )
 
 cc_test(
@@ -227,7 +218,7 @@ cc_test(
         "PipelineRuntimeEnvironment.h",
         "PipelineRuntimeEnvironmentTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
 )
 
 cc_test(
@@ -237,7 +228,7 @@ cc_test(
         "PipelineRuntimePaths.h",
         "PipelineRuntimePathsTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
 )
 
 cc_test(
@@ -246,7 +237,7 @@ cc_test(
         "PreviewOverlayRuntime.h",
         "PreviewOverlayRuntimeTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
 )
 
 cc_test(
@@ -255,7 +246,7 @@ cc_test(
         "RuntimePropertyAllowlist.h",
         "RuntimePropertyAllowlistTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
 )
 
 cc_test(
@@ -264,7 +255,7 @@ cc_test(
         "RuntimePropertyValueParser.h",
         "RuntimePropertyValueParserTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
 )
 
 cc_test(
@@ -273,7 +264,7 @@ cc_test(
         "StitchFrameTimePlan.h",
         "StitchFrameTimePlanTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
     deps = [
         "//src/libs/common:utils_base",
         "@yaml-cpp",
@@ -288,7 +279,7 @@ cc_test(
         "StitcherOnePassConfig.h",
     ],
     args = ["$(location //configs:ds_hockey_app_config.yaml)"],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
     data = ["//configs:ds_hockey_app_config.yaml"],
     deps = [
         "//src/libs/assets:asset_manager",
@@ -312,7 +303,7 @@ cc_test(
         "TensorRtModelCache.h",
         "TensorRtModelCacheTest.cpp",
     ],
-    copts = PIPELINE_APP_COPTS,
+    copts = HSTREAM_CLI_COPTS,
     deps = [
         "//src/libs/assets:asset_manager",
         "@com_google_absl//absl/status",
@@ -330,7 +321,7 @@ cc_test(
         "-x",
         "c++",
         "-std=c++17",
-        "-Isrc/apps/pipeline-app",
+        "-Isrc/apps/hstream-cli",
     ],
     includes = [
         ".",

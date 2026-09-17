@@ -9,7 +9,7 @@ HStream can save the detector/tracker inputs and camera-policy outputs used by
 HockeyMOM camera-model and DriveGPT tooling. In `hstream-ui`, select **Save
 DriveGPT CSVs** before starting a Program run. The UI stages the run under its
 output working root, normally `~/hstream_output/<game-id>` (or
-`$HM_OUTPUT_WORK_DIR/<game-id>`). Direct `pipeline-app` runs can opt in with:
+`$HM_OUTPUT_WORK_DIR/<game-id>`). Direct `hstream-cli` runs can opt in with:
 
 ```text
 --options=pipeline.ds-playtracker.private-properties.telemetry-csv-dir=/path/to/working-directory

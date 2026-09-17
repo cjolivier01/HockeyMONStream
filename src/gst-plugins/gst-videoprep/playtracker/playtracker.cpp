@@ -98,7 +98,7 @@ DsPlayTrackerRuntimeTuning camera_geometry_tuning(
 
 PlayTrackerPriv::~PlayTrackerPriv() {
   Shutdown();
-  // Only pipeline-app's post-NULL finalization action may authorize a
+  // Only hstream-cli's post-NULL finalization action may authorize a
   // successful commit. If teardown bypasses that action, retain a failed,
   // unpublished generation rather than trusting an earlier local EOS.
   if (telemetry_csv_.active()) {
@@ -113,7 +113,7 @@ PlayTrackerPriv::~PlayTrackerPriv() {
 }
 
 void PlayTrackerPriv::Shutdown() {
-  // Stop the frame worker before pipeline-app decides whether the pipeline-wide
+  // Stop the frame worker before hstream-cli decides whether the pipeline-wide
   // NULL transition succeeded. The app invokes the explicit finalization
   // property only after that transition, so a later child-element stop failure
   // cannot race behind an already committed telemetry generation.

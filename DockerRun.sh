@@ -10,8 +10,8 @@ Usage:
   ./DockerRun.sh --help
 
 Main commands:
-  run                  Build pipeline-app if needed, then run ./run.sh
-  pipeline-app         Build and run bazel-bin/src/apps/pipeline-app/pipeline-app
+  run                  Build hstream-cli if needed, then run ./run.sh
+  hstream-cli         Build and run bazel-bin/src/apps/hstream-cli/hstream-cli
   video-player         Build and run bazel-bin/src/apps/video-player/video-player
   dual-record          Build and run bazel-bin/src/apps/dual-record/dual-record
   dual-recordd         Build and run bazel-bin/src/apps/dual-record/dual-recordd
@@ -42,7 +42,7 @@ Examples:
   ./DockerBuild.sh --target-platform x86_64
   ./DockerRun.sh bash
   ./DockerRun.sh run --game-id stockton-r3 -t=60
-  ./DockerRun.sh pipeline-app -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE
+  ./DockerRun.sh hstream-cli -c configs/ds_hockey_app_config.yaml --enable-sources=URI-MULTIPLE
   ./DockerRun.sh dual-record --out-dir /Videos/captures --duration-sec 30
   ./DockerRun.sh --target-platform jetson run --game-id stockton-r3 -t=60
 EOF

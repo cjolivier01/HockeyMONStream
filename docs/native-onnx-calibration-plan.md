@@ -579,7 +579,7 @@ with Python-related environment variables unset:
 2. Existing configured-game one-pass path.
 3. Clean unconfigured-game one-pass path.
 4. Explicit `--two-stage` path.
-5. Direct `pipeline-app`/`hstream-cli` display, encode, and fake-sink variants
+5. Direct `hstream-cli` display, encode, and fake-sink variants
    with short time limits where the host supports them.
 6. `hstream-ui` Play path, including asset progress and native scoreboard
    selection.

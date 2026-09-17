@@ -35,7 +35,7 @@ WINDOWS_SIGNING_TIMESTAMP_URL ?= http://timestamp.digicert.com
 all: print_targets
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	hstream-job hstream-cli run-hstream-cli hstream-ui run-hstream-ui pipeline-app run-pipeline-app \
+	hstream-job hstream-cli run-hstream-cli hstream-ui run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson wsl-deb windows-installer publish publish-dry-run delete-release
 
@@ -75,11 +75,8 @@ test:
 qualify-native-onnx:
 	scripts/qualify_native_onnx.sh
 
-pipeline-app:
-	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:pipeline-app
-
 hstream-cli:
-	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/pipeline-app:hstream-cli
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-cli:hstream-cli
 
 hstream-job:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/hstream-job:hstream-job
@@ -101,7 +98,7 @@ hstream-gst-plugins:
 		//src/gst-plugins/gst-fieldmask:libnvdsgst_dsfieldmask.so
 
 run-hstream-cli: hstream-cli
-	bazel-bin/src/apps/pipeline-app/hstream-cli \
+	bazel-bin/src/apps/hstream-cli/hstream-cli \
 		-c configs/ds_hockey_configure_stitching.yaml \
 		-c configs/ds_hockey_app_config.yaml \
 		--enable-sources=URI-MULTIPLE \
@@ -110,14 +107,6 @@ run-hstream-cli: hstream-cli
 
 run-hstream-ui: hstream-ui
 	bazel-bin/src/apps/hstream-ui/hstream-ui
-
-run-pipeline-app: pipeline-app
-	bazel-bin/src/apps/pipeline-app/pipeline-app \
-		-c configs/ds_hockey_configure_stitching.yaml \
-		-c configs/ds_hockey_app_config.yaml \
-		--enable-sources=URI-MULTIPLE \
-		--enable-sinks=RENDER \
-		--options=pipeline.hmaudio.enable=1
 
 video-player:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) //src/apps/video-player:video-player
@@ -186,12 +175,10 @@ print_targets:
 		'Apps' \
 		'----' \
 		'hstream-job   Build the standalone job script exporter.' \
-		'hstream-cli   Build //src/apps/pipeline-app:hstream-cli.' \
+		'hstream-cli   Build //src/apps/hstream-cli:hstream-cli.' \
 		'run-hstream-cli  Run hstream-cli with the canonical hockey config (RENDER sink).' \
 		'hstream-ui    Build //src/apps/hstream-ui:hstream-ui.' \
 		'run-hstream-ui   Run the hstream-ui desktop control surface.' \
-		'pipeline-app   Build //src/apps/pipeline-app:pipeline-app.' \
-		'run-pipeline-app  Run legacy pipeline-app with the canonical hockey config (RENDER sink).' \
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \
 		'yolo-custom-lib Build //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo.' \

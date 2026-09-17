@@ -32,9 +32,9 @@ UI visual target: [pipeline-ui-runtime-control-mockup.png](pipeline-ui-runtime-c
 
 ## Existing Context
 
-`pipeline-app` currently owns a C++ `GstPipeline` created in `create_pipeline()` and driven through `PipelineApplication`.
-The installed CLI command should be renamed to `hstream-cli`, with `pipeline-app` kept only as a compatibility/developer
-target while existing scripts migrate. It already has:
+`hstream-cli` currently owns a C++ `GstPipeline` created in `create_pipeline()` and driven through `PipelineApplication`.
+The single CLI executable target is `//src/apps/hstream-cli:hstream-cli`; the desktop UI currently launches it as a
+child process. Moving pipeline ownership into the UI process remains a design proposal. The runner already has:
 
 - A real in-process `GstPipeline` (`pipeline->pipeline = gst_pipeline_new("pipeline")`).
 - Existing tee points that are useful but must be classified before runtime use:
@@ -83,7 +83,7 @@ Add three layers:
    - Exposes typed operations for start/stop, preview attachment, dynamic outputs, camera controls, runtime property introspection, and status.
    - Contains no Qt dependencies.
 
-2. `src/apps/pipeline-app`
+2. `src/apps/hstream-cli`
    - Remains the CLI implementation, exposed as `hstream-cli`.
    - Becomes a thin wrapper around `pipeline_controller`.
    - Keeps existing flags and behavior.

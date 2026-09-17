@@ -1,5 +1,5 @@
-#include "src/apps/pipeline-app/StitcherOnePassConfig.h"
-#include "src/apps/pipeline-app/configurator.h"
+#include "src/apps/hstream-cli/StitcherOnePassConfig.h"
+#include "src/apps/hstream-cli/configurator.h"
 
 #include <algorithm>
 #include <atomic>

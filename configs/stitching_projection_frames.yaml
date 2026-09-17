@@ -9,7 +9,7 @@ output_dir: ../projection-review
 
 pipeline:
   workspace: ..
-  executable: bazel-bin/src/apps/pipeline-app/pipeline-app
+  executable: bazel-bin/src/apps/hstream-cli/hstream-cli
   config_root: configs
   config: configs/ds_hockey_app_config.yaml
   timeout_seconds: 360

@@ -559,7 +559,7 @@ def run_state(
       }
   )
   command = [
-      str(args.pipeline_app),
+      str(args.hstream_cli),
       "-g",
       game_id,
       "--enable-sources=URI-MULTIPLE",
@@ -790,7 +790,7 @@ def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser()
   parser.add_argument("--source-game-dir", type=Path, required=True)
   parser.add_argument("--workspace", type=Path, default=Path.cwd())
-  parser.add_argument("--pipeline-app", type=Path)
+  parser.add_argument("--hstream-cli", type=Path)
   parser.add_argument("--config-root", type=Path)
   parser.add_argument("--pipeline-config", type=Path)
   parser.add_argument("--output-dir", type=Path)
@@ -828,7 +828,7 @@ def parse_args() -> argparse.Namespace:
   args = parser.parse_args()
   args.workspace = args.workspace.resolve()
   args.source_game_dir = args.source_game_dir.resolve()
-  args.pipeline_app = (args.pipeline_app or args.workspace / "bazel-bin/src/apps/pipeline-app/pipeline-app").resolve()
+  args.hstream_cli = (args.hstream_cli or args.workspace / "bazel-bin/src/apps/hstream-cli/hstream-cli").resolve()
   args.config_root = (args.config_root or args.workspace / "configs").resolve()
   args.pipeline_config = (args.pipeline_config or args.config_root / "ds_hockey_app_config.yaml").resolve()
   if args.timeout is None:
@@ -1284,8 +1284,8 @@ def capture_case_samples(
 def main() -> int:
   args = parse_args()
   source_config = args.source_game_dir / "config.yaml"
-  if not source_config.is_file() or not args.pipeline_app.is_file():
-    raise SystemExit("source config or pipeline-app is missing")
+  if not source_config.is_file() or not args.hstream_cli.is_file():
+    raise SystemExit("source config or hstream-cli is missing")
   lock_path = Path(tempfile.gettempdir()) / "hstream-stitching-calibration-matrix.lock"
   lock_stream = lock_path.open("a+", encoding="utf-8")
   try:

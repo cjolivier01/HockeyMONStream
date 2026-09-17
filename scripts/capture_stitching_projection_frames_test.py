@@ -22,7 +22,7 @@ class ProjectionFrameConfigTest(unittest.TestCase):
     source_game = root / "source-game"
     source_game.mkdir()
     (source_game / "config.yaml").write_text("{}\n", encoding="utf-8")
-    executable = root / "pipeline-app"
+    executable = root / "hstream-cli"
     executable.touch()
     pipeline_config = root / "pipeline.yaml"
     pipeline_config.touch()

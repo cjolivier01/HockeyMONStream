@@ -27,7 +27,7 @@ for other rink, court, and field sports.
 4. Adds optional scoreboard/graphics and writes an archive or routes video to
    live RTMP/RTSP outputs.
 
-The implementation is a DeepStream-style C++17 application (`pipeline-app`)
+The implementation is a DeepStream-style C++17 application (`hstream-cli`)
 with custom GStreamer, CUDA, and ONNX plugins for multi-camera synchronization,
 video stitching, rink masking, object detection, play tracking, live routing,
 and archive output. It is the performance-oriented counterpart to the Python
@@ -196,7 +196,8 @@ fails instead of silently selecting another copy.
 
 ## Repo Layout
 
-- `src/apps/pipeline-app`: main DeepStream app
+- `src/apps/hstream-ui`: main desktop UI entry point
+- `src/apps/hstream-cli`: main CLI entry point and DeepStream pipeline
 - `src/gst-plugins`: custom plugins (videoprep/stitcher/playtracker/fieldmask/etc)
 - `src/libs/*`: C++ libraries (stitching, overlays, scoreboard, camera utilities, etc)
 - `configs/`: YAML configs

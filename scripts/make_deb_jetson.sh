@@ -177,7 +177,7 @@ bazelisk --batch --output_base="${output_base}" build \
   --action_env=TMPDIR=/var/tmp \
   --sandbox_tmpfs_path=/var/tmp \
   --config=opt --config=deb_jetson \
-  //src/apps/pipeline-app:hstream-cli \
+  //src/apps/hstream-cli:hstream-cli \
   //src/apps/hstream-assets:hstream-assets \
   //src/apps/hstream-job:hstream-job \
   //src/libs/nvdsinfer_custom_impl_Yolo:nvdsinfer_custom_impl_Yolo \
@@ -192,7 +192,7 @@ if [[ ! -x "${cuobjdump}" ]]; then
   exit 1
 fi
 cuda_elfs=(
-  bazel-bin/src/apps/pipeline-app/hstream-cli
+  bazel-bin/src/apps/hstream-cli/hstream-cli
   bazel-bin/src/apps/hstream-assets/hstream-assets
   bazel-bin/src/libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
   bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so

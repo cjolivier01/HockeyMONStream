@@ -97,7 +97,7 @@ validate_native_cuda_code() {
 }
 
 validate_native_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
-validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/pipeline-app/hstream-cli"
+validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 
 rm -rf "${CONTAINER_OUTPUT_DIR}"
 mkdir -p "${CONTAINER_OUTPUT_DIR}"

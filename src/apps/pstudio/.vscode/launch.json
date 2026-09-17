@@ -47,12 +47,12 @@
       "preLaunchTask": "Build All",
     },
     {
-      "name": "(CUDA) pipeline-app",
+      "name": "(CUDA) hstream-cli",
       "type": "cuda-gdb",
       "request": "launch",
       "cwd": "${workspaceFolder}",
       "debuggerPath": "/usr/local/cuda/bin/cuda-gdb",
-      "program": "${workspaceFolder}/bazel-bin/src/apps/pipeline-app/pipeline-app",
+      "program": "${workspaceFolder}/bazel-bin/src/apps/hstream-cli/hstream-cli",
       "args": "-c ${workspaceFolder}/configs/ds_hockey_app_config.yaml -g ev-cougars-2 --enable-sources=URI-MULTIPLE --enable-sinks=RENDER",
       "initCommands": [
         "directory ${workspaceFolder}",

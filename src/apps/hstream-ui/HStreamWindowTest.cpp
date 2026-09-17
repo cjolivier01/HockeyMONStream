@@ -719,8 +719,8 @@ bool test_matching_development_runtime_selection() {
   const fs::path execution_root = fs::path(temporary_root.path().toStdString()) / "output-base/execroot/synthetic";
   const fs::path output_apps = execution_root / "bazel-out" / "k8-opt" / "bin" / "src" / "apps";
   const fs::path application = output_apps / "hstream-ui" / "hstream-ui";
-  const fs::path matching_runner = output_apps / "pipeline-app" / "hstream-cli";
-  const fs::path unrelated_runner = workspace_root / "bazel-bin" / "src" / "apps" / "pipeline-app" / "hstream-cli";
+  const fs::path matching_runner = output_apps / "hstream-cli" / "hstream-cli";
+  const fs::path unrelated_runner = workspace_root / "bazel-bin" / "src" / "apps" / "hstream-cli" / "hstream-cli";
   const std::vector<fs::path> runtime_artifacts = {
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so",
       execution_root / "bazel-out/k8-opt/bin/src/gst-plugins/gst-fieldmask/libnvdsgst_dsfieldmask.so",

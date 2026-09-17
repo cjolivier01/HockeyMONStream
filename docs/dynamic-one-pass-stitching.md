@@ -60,7 +60,7 @@ remap and stitch path for every framing combination.
 
 ## Validation
 
-- Build `//src/apps/pipeline-app:pipeline-app` and relevant `gst-videoprep` tests.
+- Build `//src/apps/hstream-cli:hstream-cli` and relevant `gst-videoprep` tests.
 - Run the cleaned one-pass repro:
   `cd ~/Videos/chicago-4 && ../clean.sh && cd - && ./run.sh --one-pass-only --game-id=chicago-4 --enable-sinks=FAKE -t 2`
 - Confirm the run no longer logs guessed `hmstitcher` fallback dimensions and does not emit `Output surface is smaller than expected stitched canvas`.

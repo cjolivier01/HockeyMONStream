@@ -1,5 +1,5 @@
 #!/bin/bash
-bazel-bin/src/apps/pipeline-app/pipeline-app \
+bazel-bin/src/apps/hstream-cli/hstream-cli \
   -c \
   ./configs/dual_save_video.yaml \
   --enable-sources=CSI \
